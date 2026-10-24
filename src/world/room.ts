@@ -115,8 +115,10 @@ export function buildRoom(M: Materials) {
 
 	// West wall with glazing opening [WINDOW.zMin, WINDOW.zMax] x [sill, head]
 	const wx = x0 - T / 2;
-	wall('west', wx, (z0 + WINDOW.zMin) / 2, T, WINDOW.zMin - z0, gapH, H);
-	wall('west', wx, (WINDOW.zMax + z1) / 2, T, z1 - WINDOW.zMax, gapH, H);
+	// side walls run through the corners (to the outer face of the north/south
+	// walls) so the two inner faces continue behind each other: no T-junction cracks
+	wall('west', wx, (z0 - T + WINDOW.zMin) / 2, T, WINDOW.zMin - z0 + T, gapH, H);
+	wall('west', wx, (WINDOW.zMax + z1 + T) / 2, T, z1 + T - WINDOW.zMax, gapH, H);
 	wall('west', wx, (WINDOW.zMin + WINDOW.zMax) / 2, T, WINDOW.zMax - WINDOW.zMin, WINDOW.head, H);
 	gap(wx - gapD, (z0 + WINDOW.zMin) / 2, T, WINDOW.zMin - z0);
 	gap(wx - gapD, (WINDOW.zMax + z1) / 2, T, z1 - WINDOW.zMax);
@@ -125,8 +127,8 @@ export function buildRoom(M: Materials) {
 	const ex = x1 + T / 2;
 	const dz0 = DOOR.zCenter - DOOR.width / 2 - 0.012, dz1 = DOOR.zCenter + DOOR.width / 2 + 0.012;
 	const dH = DOOR.height + 0.012;
-	wall('east', ex, (z0 + dz0) / 2, T, dz0 - z0, gapH, H);
-	wall('east', ex, (dz1 + z1) / 2, T, z1 - dz1, gapH, H);
+	wall('east', ex, (z0 - T + dz0) / 2, T, dz0 - z0 + T, gapH, H);
+	wall('east', ex, (dz1 + z1 + T) / 2, T, z1 + T - dz1, gapH, H);
 	wall('east', ex, (dz0 + dz1) / 2, T, dz1 - dz0, dH, H);
 	gap(ex + gapD, (z0 + dz0) / 2, T, dz0 - z0);
 	gap(ex + gapD, (dz1 + z1) / 2, T, z1 - dz1);
@@ -189,6 +191,8 @@ export function buildRoom(M: Materials) {
 	terraceMat.color.set(0x9a958d);
 	terraceMat.clearcoat = 0;
 	terraceMat.roughness = 1;
+	// outdoors: lit by the real sky HDRI (assigned in main), not the room probe
+	terraceMat.userData.noBoxProjection = true;
 	// one instanced mesh, per-slab tone variation like real cast pavers
 	const slabGeo = roundedBox(0.59, 0.05, 0.89, 0.006, 1);
 	const pav = new THREE.InstancedMesh(slabGeo, terraceMat, 6 * 9);

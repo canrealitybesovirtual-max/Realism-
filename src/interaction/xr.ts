@@ -95,7 +95,16 @@ export class XRControls {
 	private makeHand(i: number, factory: XRControllerModelFactory): Hand {
 		const ray = this.renderer.xr.getController(i);
 		const grip = this.renderer.xr.getControllerGrip(i);
-		grip.add(factory.createControllerModel(grip));
+		// Official controller meshes come from the WebXR input-profiles CDN. If
+		// that cannot be reached, show a neutral built-in controller instead so
+		// the hands never disappear.
+		const model = factory.createControllerModel(grip);
+		grip.add(model);
+		const fallback = fallbackController();
+		grip.add(fallback);
+		const check = setInterval(() => {
+			if (model.children.length > 0) { fallback.visible = false; clearInterval(check); }
+		}, 500);
 		this.rig.add(ray, grip);
 		const line = new THREE.Line(
 			new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]),
@@ -383,6 +392,20 @@ export class XRControls {
 		this.rig.position.y = 0;
 		this.rig.rotation.y += angle;
 	}
+}
+
+/** Simple stand-in controller: grip handle with a ring, in matte graphite. */
+function fallbackController(): THREE.Group {
+	const g = new THREE.Group();
+	const mat = new THREE.MeshStandardMaterial({ color: 0x2a2b2e, roughness: 0.55 });
+	const handle = new THREE.Mesh(new THREE.CapsuleGeometry(0.017, 0.07, 6, 16), mat);
+	handle.rotation.x = -0.35;
+	handle.position.set(0, -0.01, 0.045);
+	const ring = new THREE.Mesh(new THREE.TorusGeometry(0.038, 0.007, 10, 40), mat);
+	ring.rotation.x = Math.PI / 2 - 0.5;
+	ring.position.set(0, 0.012, -0.01);
+	g.add(handle, ring);
+	return g;
 }
 
 function isChildOf(o: THREE.Object3D, parent: THREE.Object3D): boolean {

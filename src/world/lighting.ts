@@ -3,7 +3,7 @@ import { UltraHDRLoader } from 'three/examples/jsm/loaders/UltraHDRLoader.js';
 import { GroundedSkybox } from 'three/examples/jsm/objects/GroundedSkybox.js';
 import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
 import { ROOM, WINDOW, SUN } from '../config';
-import { setProbeBox } from '../render/boxProjection';
+import { setProbeBox, setSunPortal } from '../render/boxProjection';
 
 export function sunDirection(): THREE.Vector3 {
 	const az = THREE.MathUtils.degToRad(SUN.azimuthDeg);
@@ -27,7 +27,7 @@ export async function loadExterior(scene: THREE.Scene, url: string): Promise<{ s
 	// find the sun in the image (brightest texel) to align the dome
 	const sunU = findSunU(hdr);
 	const height = 1.5; // camera height of the HDRI capture, roughly
-	const sky = new GroundedSkybox(hdr, height, 80, 96);
+	const sky = new GroundedSkybox(hdr, height, 80, 64);
 	sky.name = 'sky';
 	// SphereGeometry maps u -> direction (-cos 2πu, ., +sin 2πu), then z is flipped by the
 	// GroundedSkybox (scale z = -1): (-cos, ., -sin).
@@ -74,15 +74,16 @@ export function createLights(scene: THREE.Scene, quality: 'high' | 'xr'): Lights
 	sun.position.copy(focus).addScaledVector(dir, 12);
 	sun.target.position.copy(focus);
 	sun.castShadow = true;
-	const s = quality === 'high' ? 4096 : 2048;
+	const s = quality === 'high' ? 4096 : 2048; // one static-ish map, re-rendered only when props move
 	sun.shadow.mapSize.set(s, s);
 	const cam = sun.shadow.camera as THREE.OrthographicCamera;
 	cam.left = -4.2; cam.right = 4.2; cam.top = 4.2; cam.bottom = -4.2;
 	cam.near = 4; cam.far = 22;
-	sun.shadow.bias = -0.0002;
-	sun.shadow.normalBias = 0.015;
+	sun.shadow.bias = -0.0001;
+	sun.shadow.normalBias = 0.01;
 	sun.shadow.radius = 2.5;
 	scene.add(sun, sun.target);
+	setSunPortal(dir, -ROOM.width / 2, -ROOM.width / 2 - ROOM.wallThickness, WINDOW.zMin, WINDOW.zMax, WINDOW.sill, WINDOW.head);
 
 	// Skylight entering through the glazing: an area light filling the opening.
 	const zMid = (WINDOW.zMin + WINDOW.zMax) / 2;

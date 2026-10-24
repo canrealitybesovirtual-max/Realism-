@@ -16,6 +16,11 @@ export const boxProjectionUniforms = {
 	uBPMax: { value: new THREE.Vector3() },
 	uBPPos: { value: new THREE.Vector3() },
 	uBPEnabled: { value: 0 },
+	// sun portal: world direction toward the sun, aperture planes x and (zMin, zMax, yMin, yMax)
+	uSunDirW: { value: new THREE.Vector3(0, 1, 0) },
+	uPortalX: { value: new THREE.Vector2() },
+	uPortalRect: { value: new THREE.Vector4() },
+	uPortalOn: { value: 0 },
 };
 
 const VERT_DECL = /* glsl */`
@@ -40,6 +45,32 @@ uniform vec3 uBPMin;
 uniform vec3 uBPMax;
 uniform vec3 uBPPos;
 uniform float uBPEnabled;
+
+uniform vec3 uSunDirW;
+uniform vec2 uPortalX;
+uniform vec4 uPortalRect;
+uniform float uPortalOn;
+
+// 1 if the ray toward the sun passes through a rectangular aperture in the plane x = px
+float bpAperture( vec3 p, float px ) {
+	float t = ( px - p.x ) / uSunDirW.x;
+	if ( t < 0.0 ) return 1.0; // point is already beyond this plane (inside the reveal)
+	vec3 h = p + uSunDirW * t;
+	float e = 0.003; // a few mm of penumbra at the opening's edge
+	float a = smoothstep( uPortalRect.x - e, uPortalRect.x + e, h.z ) * ( 1.0 - smoothstep( uPortalRect.y - e, uPortalRect.y + e, h.z ) );
+	float b = smoothstep( uPortalRect.z - e, uPortalRect.z + e, h.y ) * ( 1.0 - smoothstep( uPortalRect.w - e, uPortalRect.w + e, h.y ) );
+	return a * b;
+}
+
+// Interior surfaces can only see the sun through the window opening, which
+// is a tunnel through the wall: test both its inner and outer apertures.
+// The shadow map still handles the frame, mullions and furniture; this
+// removes light leaking through wall junctions in the shadow map.
+float bpSunPortal( vec3 p ) {
+	if ( uPortalOn < 0.5 ) return 1.0;
+	if ( uSunDirW.x > -1e-4 ) return 0.0;
+	return bpAperture( p, uPortalX.x ) * bpAperture( p, uPortalX.y );
+}
 
 vec3 bpParallax( vec3 dirW ) {
 	if ( uBPEnabled < 0.5 ) return dirW;
@@ -106,6 +137,9 @@ const ENV_PARS = /* glsl */`
 // measures how much of the hemisphere is open, which for the soft skylight is
 // a good proxy for its visibility (dark under the desk, open near the glass).
 const RECT_BEGIN = THREE.ShaderChunk.lights_fragment_begin.replace(
+	'getDirectionalLightInfo( directionalLight, directLight );',
+	'getDirectionalLightInfo( directionalLight, directLight );\n\t\tdirectLight.color *= bpSunPortal( vBPWorldPos );',
+).replace(
 	'#if ( NUM_RECT_AREA_LIGHTS > 0 ) && defined( RE_Direct_RectArea )',
 	`vec3 bpRectDiffuse0 = reflectedLight.directDiffuse;
 vec3 bpRectSpecular0 = reflectedLight.directSpecular;
@@ -122,7 +156,7 @@ const RECT_AO = /* glsl */`
 	reflectedLight.directSpecular -= bpRectSpecular * ( 1.0 - ambientOcclusion );
 #endif
 `;
-if (!RECT_BEGIN.includes('bpRectDiffuse0') || !RECT_BEGIN.includes('bpRectSpecular =')) {
+if (!RECT_BEGIN.includes('bpRectDiffuse0') || !RECT_BEGIN.includes('bpRectSpecular =') || !RECT_BEGIN.includes('bpSunPortal')) {
 	throw new Error('lights_fragment_begin layout changed; update the rect-area AO patch');
 }
 
@@ -130,7 +164,7 @@ const patched = new WeakSet<THREE.Material>();
 
 /** Patch a standard/physical material to use the room's box-projected probe. */
 export function applyBoxProjection(mat: THREE.Material): void {
-	if (patched.has(mat)) return;
+	if (patched.has(mat) || mat.userData.noBoxProjection) return;
 	if (!(mat instanceof THREE.MeshStandardMaterial)) return;
 	patched.add(mat);
 	const prev = mat.onBeforeCompile;
@@ -147,7 +181,7 @@ export function applyBoxProjection(mat: THREE.Material): void {
 			.replace('#include <aomap_fragment>', '#include <aomap_fragment>\n' + RECT_AO);
 	};
 	const prevKey = mat.customProgramCacheKey.bind(mat);
-	mat.customProgramCacheKey = () => prevKey() + '|bp2';
+	mat.customProgramCacheKey = () => prevKey() + '|bp3';
 	mat.needsUpdate = true;
 }
 
@@ -156,4 +190,13 @@ export function setProbeBox(min: THREE.Vector3, max: THREE.Vector3, probePos: TH
 	boxProjectionUniforms.uBPMax.value.copy(max);
 	boxProjectionUniforms.uBPPos.value.copy(probePos);
 	boxProjectionUniforms.uBPEnabled.value = 1;
+}
+
+/** Configure the window "portal" through which the sun may reach interior surfaces. */
+export function setSunPortal(sunDir: THREE.Vector3, innerX: number, outerX: number, zMin: number, zMax: number, yMin: number, yMax: number) {
+	const u = boxProjectionUniforms;
+	u.uSunDirW.value.copy(sunDir).normalize();
+	u.uPortalX.value.set(innerX, outerX);
+	u.uPortalRect.value.set(zMin, zMax, yMin, yMax);
+	u.uPortalOn.value = 1;
 }

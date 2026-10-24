@@ -19,7 +19,9 @@ import { KEY_INDEX } from './computer/keyLayout';
 
 const params = new URLSearchParams(location.search);
 if (params.has('emulate')) (await import('./dev/emulator')).installEmulator();
-const quality = (params.get('q') as 'high' | 'xr') ?? 'high';
+// standalone headsets (Quest browser etc.) get the lighter tier: 2K shadow map, fewer AO samples
+const isStandaloneHMD = /OculusBrowser|Quest|Pico|Wolvic/i.test(navigator.userAgent);
+const quality = (params.get('q') as 'high' | 'xr') ?? (isStandaloneHMD ? 'xr' : 'high');
 
 // ---------------------------------------------------------------------- renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -67,12 +69,23 @@ function setView(name: string) {
 }
 
 async function init() {
-	const [{ sky }, w] = await Promise.all([
+	const [{ sky, hdr }, w] = await Promise.all([
 		loadExterior(scene, '/env/spruit_sunrise_4k.hdr.jpg'),
 		buildWorkstation(M, scene, computer.texture),
 		initPhysics(),
 	]);
 	ws = w;
+	// exterior surfaces take their image-based light from the sky, not the room
+	{
+		const pm = new THREE.PMREMGenerator(renderer);
+		const outdoor = pm.fromEquirectangular(hdr).texture;
+		pm.dispose();
+		const terrace = scene.getObjectByName('terrace') as THREE.Mesh;
+		const tm = terrace.material as THREE.MeshPhysicalMaterial;
+		tm.envMap = outdoor;
+		tm.envMapRotation.set(0, sky.rotation.y, 0);
+		tm.envMapIntensity = 0.9;
+	}
 	scene.traverse((o) => {
 		const m = (o as THREE.Mesh).material;
 		if (m) (Array.isArray(m) ? m : [m]).forEach(applyBoxProjection);
@@ -109,9 +122,9 @@ async function init() {
 	xr = new XRControls(renderer, scene, camera, physics, targets, walk, owner);
 	if (params.get('view')) setView(params.get('view')!);
 
-	if ('xr' in navigator) {
-		const btn = VRButton.createButton(renderer);
-		document.body.appendChild(btn);
+	// only offer VR when a headset runtime can actually start a session
+	if ('xr' in navigator && await navigator.xr!.isSessionSupported('immersive-vr').catch(() => false)) {
+		document.body.appendChild(VRButton.createButton(renderer));
 	}
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;

@@ -4,7 +4,6 @@ export interface View { pos: [number, number, number]; target: [number, number, 
 
 export const VIEWS: Record<string, View> = {
 	// entering from the door, standing
-	clockCheck: { pos: [1.2, 1.9, -1.4], target: [1.25, 1.9, -2.5], fov: 50 },
 	door: { pos: [1.75, 1.62, 1.55], target: [-0.6, 1.05, -1.6], fov: 70 },
 	// seated at the desk, looking at the monitor
 	seated: { pos: [-0.15, 1.18, -1.05], target: [-0.15, 1.08, -2.4], fov: 70 },
@@ -16,6 +15,9 @@ export const VIEWS: Record<string, View> = {
 	window: { pos: [0.6, 1.62, 0.4], target: [-2.5, 1.3, 0.2], fov: 70 },
 	// close-up of the desk surface and peripherals
 	deskClose: { pos: [0.25, 1.15, -1.25], target: [-0.25, 0.74, -2.0], fov: 55 },
+	cornerZoom: { pos: [1.4, 1.5, -1.6], target: [2.2, 1.5, -2.5], fov: 30 },
+	// east wall: sideboard and print
+	credenza: { pos: [-0.6, 1.62, 1.0], target: [2.2, 0.95, -0.55], fov: 65 },
 	// low angle near floor, checks contact shadows and floor reflections
 	low: { pos: [1.2, 0.45, 0.6], target: [-0.6, 0.35, -1.9], fov: 70 },
 };

@@ -14,41 +14,54 @@ export function buildMouse(M: Materials) {
 	const g = new THREE.Group();
 	g.name = 'mouse';
 	const L = MOUSE.length / 2, H = MOUSE.height;
-	const body = new THREE.SphereGeometry(1, 64, 40);
+	// Plan: a squarish superellipse (straight flanks, rounded ends), slightly
+	// narrower at the buttons. Elevation: hump toward the palm, flat base.
+	const halfWAt = (zn: number) => 0.0305 + 0.0025 * zn - 0.002 * zn * zn;
+	const humpAt = (zn: number) => H * (0.52 + 0.48 * (1 - Math.pow((zn - 0.32) / 1.32, 2))) - 0.004;
+	const body = new THREE.SphereGeometry(1, 72, 48);
 	const p = body.getAttribute('position');
+	const col = new Float32Array(p.count * 3);
+	const sp = (v: number, e: number) => Math.sign(v) * Math.pow(Math.abs(v), e);
 	for (let i = 0; i < p.count; i++) {
 		const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-		const zn = z; // -1 front .. +1 back
-		const halfW = 0.029 + 0.004 * zn - 0.0045 * zn * zn;
-		const hump = H * (0.5 + 0.5 * (1 - Math.pow((zn - 0.35) / 1.35, 2))) - 0.004;
-		const yy = y > 0 ? 0.004 + y * hump : 0.004 + y * 0.004;
-		// slight right-hand tilt of the top (ergonomic)
-		const xx = x * halfW;
-		p.setXYZ(i, xx, yy + (y > 0 ? -xx * 0.08 * y : 0), z * L);
+		const zn = sp(z, 0.8);
+		const xx = sp(x, 0.6) * halfWAt(zn);
+		const yy = y > 0 ? 0.004 + y * humpAt(zn) - xx * 0.06 * y : 0.004 + y * 0.004;
+		p.setXYZ(i, xx, yy, zn * L);
+		// two-tone: a darker skirt below the waist line
+		const c = yy < 0.013 ? 0.55 : 1.0;
+		col.set([c, c, c], i * 3);
 	}
+	body.setAttribute('color', new THREE.BufferAttribute(col, 3));
 	body.computeVertexNormals();
 	const shellMat = M.softTouch.clone();
 	shellMat.name = 'mouse-graphite';
-	shellMat.color.set(0x34363a);
-	shellMat.roughness = 0.58;
+	shellMat.color.set(0x45484d);
+	shellMat.roughness = 0.55;
+	shellMat.vertexColors = true;
 	const top = new THREE.Mesh(body, shellMat);
 	top.name = 'mouse-body';
 	top.castShadow = top.receiveShadow = true;
 	g.add(top);
 
-	// button seam: a thin dark groove along the centre line at the front
-	const seamPts: THREE.Vector3[] = [];
-	for (let k = 0; k <= 20; k++) {
-		const zn = -1 + k * 0.035;
-		const hump = H * (0.5 + 0.5 * (1 - Math.pow((zn - 0.35) / 1.35, 2))) - 0.004;
-		const y = 0.004 + Math.sqrt(Math.max(0, 1 - zn * zn)) * hump;
-		seamPts.push(new THREE.Vector3(0, y + 0.0002, zn * L));
+	// seams: centre split between the buttons, and the buttons' back edge
+	const surfY = (xn: number, zn: number) => {
+		const yn = Math.sqrt(Math.max(0, 1 - Math.pow(Math.abs(xn), 2 / 0.6) - Math.pow(Math.abs(zn), 2 / 0.8)));
+		return 0.004 + yn * humpAt(zn) + 0.0003;
+	};
+	const seamA: THREE.Vector3[] = [], seamB: THREE.Vector3[] = [];
+	for (let k = 0; k <= 16; k++) { const zn = -0.97 + k * 0.035; seamA.push(new THREE.Vector3(0, surfY(0, zn), zn * L)); }
+	for (let k = 0; k <= 16; k++) {
+		const xn = -0.75 + k * (1.5 / 16), zn = -0.42 + 0.06 * xn * xn;
+		seamB.push(new THREE.Vector3(sp(xn, 0.6) * halfWAt(zn) * 0.98, surfY(xn * 0.98, zn), zn * L));
 	}
-	const seam = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(seamPts), 40, 0.0006, 5), M.shadowGap);
-	g.add(seam);
+	for (const pts of [seamA, seamB]) {
+		const seam = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 48, 0.0005, 5), M.shadowGap);
+		g.add(seam);
+	}
 	// scroll wheel peeking through the top
-	const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.0095, 0.0095, 0.007, 28).rotateZ(Math.PI / 2), M.rubber);
-	wheel.position.set(0, 0.0275, -0.033);
+	const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.0065, 28).rotateZ(Math.PI / 2), M.rubber);
+	wheel.position.set(0, surfY(0, -0.55) - 0.0062, -0.55 * L);
 	g.add(wheel);
 	// PTFE skates
 	const skate = new THREE.Mesh(beveledPanel(0.03, 0.012, 0.0008, 0.005, 0.0002).rotateX(-Math.PI / 2), M.paper);

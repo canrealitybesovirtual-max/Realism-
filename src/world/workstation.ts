@@ -8,6 +8,7 @@ import { buildMonitor, MONITOR } from './furniture/monitor';
 import { buildKeyboard, KB_SIZE } from './furniture/keyboard';
 import { buildChair } from './furniture/chair';
 import { buildMouse, buildPC } from './furniture/peripherals';
+import { buildCredenza } from './furniture/credenza';
 import { buildMug, buildNotebook, buildPen, buildDeskPad, buildSocket, buildArtPrint } from './furniture/props';
 import { tube, merge } from '../util/geometry';
 
@@ -94,8 +95,16 @@ export async function buildWorkstation(M: Materials, scene: THREE.Scene, screenT
 	const socket = buildSocket(M);
 	socket.position.set(cx + 0.38, 0.3, -ROOM.depth / 2);
 	scene.add(socket);
+	const credenza = buildCredenza(M);
+	credenza.group.position.set(ROOM.width / 2 - 0.02, 0, -0.55);
+	credenza.group.rotation.y = -Math.PI / 2;
+	scene.add(credenza.group);
+	colliders.push({
+		center: new THREE.Vector3(ROOM.width / 2 - 0.02 - credenza.size.z / 2, credenza.size.y / 2, -0.55),
+		half: new THREE.Vector3(credenza.size.z / 2, credenza.size.y / 2, credenza.size.x / 2),
+	});
 	const art = buildArtPrint(M);
-	art.position.set(ROOM.width / 2, 1.5, -0.55);
+	art.position.set(ROOM.width / 2, 1.42, -0.55);
 	art.rotation.y = -Math.PI / 2;
 	scene.add(art);
 
@@ -123,6 +132,21 @@ export async function buildWorkstation(M: Materials, scene: THREE.Scene, screenT
 	lamp.position.set(cx - 0.66, deskY, deskBack + 0.13);
 	lamp.rotation.y = THREE.MathUtils.degToRad(-55);
 	scene.add(lamp);
+	// The asset's soil is a 54k-triangle sculpt that is almost entirely hidden
+	// under the leaves; swap it for a low-poly mound with the same CC0 material.
+	const dirt = plant.getObjectByName('potted_plant_02_dirt') as THREE.Mesh | undefined;
+	if (dirt) {
+		dirt.geometry.computeBoundingBox();
+		const bb = dirt.geometry.boundingBox!;
+		const r = (bb.max.x - bb.min.x) / 2, c = bb.getCenter(new THREE.Vector3());
+		const mound = new THREE.LatheGeometry([0, 0.35, 0.7, 0.92, 1].map((t, i) => new THREE.Vector2(t * r, bb.max.y - (bb.max.y - bb.min.y) * (i === 0 ? 0.15 : t * t * 0.6))).reverse(), 32);
+		mound.rotateY(0.3);
+		mound.translate(c.x, 0, c.z);
+		const uv = mound.getAttribute('uv'), pos = mound.getAttribute('position');
+		for (let i = 0; i < uv.count; i++) uv.setXY(i, 0.5 + (pos.getX(i) - c.x) / (2 * r), 0.5 + (pos.getZ(i) - c.z) / (2 * r));
+		dirt.geometry.dispose();
+		dirt.geometry = mound;
+	}
 	plant.position.set(-ROOM.width / 2 + 0.36, 0, -ROOM.depth / 2 + 0.36);
 	plant.rotation.y = 0.7;
 	scene.add(plant);

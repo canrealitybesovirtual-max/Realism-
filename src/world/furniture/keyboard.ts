@@ -31,7 +31,7 @@ export const KB_SIZE = { w: keyW + 2 * KB.marginX, d: keyD + KB.marginTop + KB.m
 function capGeometry(wU: number): THREE.BufferGeometry {
 	const gap = 0.0011;
 	const w = wU * UNIT - gap, d = UNIT - gap, h = KB.capHeight;
-	const g = new RoundedBoxGeometry(w, h, d, 3, 0.0016);
+	const g = new RoundedBoxGeometry(w, h, d, 2, 0.0016);
 	g.translate(0, h / 2, 0);
 	// sculpt: taper the top, cylindrical dish, slight rearward lean
 	const pos = g.getAttribute('position');
