@@ -70,7 +70,7 @@ function setView(name: string) {
 
 async function init() {
 	const [{ sky, hdr }, w] = await Promise.all([
-		loadExterior(scene, '/env/spruit_sunrise_4k.hdr.jpg'),
+		loadExterior(scene, 'env/spruit_sunrise_4k.hdr.jpg'),
 		buildWorkstation(M, scene, computer.texture),
 		initPhysics(),
 	]);

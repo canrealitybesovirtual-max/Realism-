@@ -111,7 +111,8 @@ export async function buildWorkstation(M: Materials, scene: THREE.Scene, screenT
 	// ---------------------------------------------------------------- Poly Haven models (CC0)
 	const gltf = new GLTFLoader();
 	const load = async (name: string) => {
-		const r = await gltf.loadAsync(`/models/${name}/${name}_1k.gltf`);
+		// self-contained glTF JSON, packed by scripts/pack-models.mjs
+		const r = await gltf.loadAsync(`models/${name}/${name}.json`);
 		r.scene.traverse((o) => {
 			const m = o as THREE.Mesh;
 			if (m.isMesh) {

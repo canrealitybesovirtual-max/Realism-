@@ -44,7 +44,7 @@ const rep = (tileMetres: number, tileV = tileMetres): [number, number] => [1 / t
 export type Materials = ReturnType<typeof createMaterials>;
 
 export function createMaterials() {
-	const T = '/textures/';
+	const T = 'textures/'; // relative: the app may be served from a sub-path
 
 	const concrete = new THREE.MeshPhysicalMaterial({
 		name: 'polished-concrete',
