@@ -111,8 +111,11 @@ export async function buildWorkstation(M: Materials, scene: THREE.Scene, screenT
 	// ---------------------------------------------------------------- Poly Haven models (CC0)
 	const gltf = new GLTFLoader();
 	const load = async (name: string) => {
-		// self-contained glTF JSON, packed by scripts/pack-models.mjs
-		const r = await gltf.loadAsync(`models/${name}/${name}.json`);
+		// Self-contained glTF JSON (scripts/pack-models.mjs). Its buffer is a
+		// data: URI, which strict hosts (Claude artifacts) refuse to fetch, so
+		// decode it here and hand GLTFLoader an in-memory GLB instead.
+		const json = await (await fetch(`models/${name}/${name}.json`)).json();
+		const r = await gltf.parseAsync(gltfJsonToGlb(json), `models/${name}/`);
 		r.scene.traverse((o) => {
 			const m = o as THREE.Mesh;
 			if (m.isMesh) {
@@ -252,6 +255,38 @@ export async function buildWorkstation(M: Materials, scene: THREE.Scene, screenT
 			if (hands.hour) hands.hour.rotation.z = -((h / 12) * Math.PI * 2 - base.hour);
 		},
 	};
+}
+
+/** Build a binary glTF (GLB) from glTF JSON whose buffers are base64 data URIs. */
+function gltfJsonToGlb(json: any): ArrayBuffer {
+	const decoded: Uint8Array[] = json.buffers.map((b: { uri: string }) => {
+		const bin = atob(b.uri.slice(b.uri.indexOf(',') + 1));
+		const u = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+		return u;
+	});
+	// GLB holds one BIN chunk: concatenate buffers (4-byte aligned) and remap views
+	const offsets: number[] = [];
+	let total = 0;
+	for (const d of decoded) { offsets.push(total); total += Math.ceil(d.length / 4) * 4; }
+	for (const v of json.bufferViews) { v.byteOffset = (v.byteOffset ?? 0) + offsets[v.buffer]; v.buffer = 0; }
+	json.buffers = [{ byteLength: total }];
+	const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+	const jsonLen = Math.ceil(jsonBytes.length / 4) * 4;
+	const out = new ArrayBuffer(12 + 8 + jsonLen + 8 + total);
+	const dv = new DataView(out), u8 = new Uint8Array(out);
+	dv.setUint32(0, 0x46546c67, true); // 'glTF'
+	dv.setUint32(4, 2, true);
+	dv.setUint32(8, out.byteLength, true);
+	dv.setUint32(12, jsonLen, true);
+	dv.setUint32(16, 0x4e4f534a, true); // 'JSON'
+	u8.fill(0x20, 20, 20 + jsonLen);
+	u8.set(jsonBytes, 20);
+	const binStart = 20 + jsonLen;
+	dv.setUint32(binStart, total, true);
+	dv.setUint32(binStart + 4, 0x004e4942, true); // 'BIN'
+	decoded.forEach((d, i) => u8.set(d, binStart + 8 + offsets[i]));
+	return out;
 }
 
 export type Workstation = Awaited<ReturnType<typeof buildWorkstation>>;

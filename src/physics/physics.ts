@@ -44,7 +44,12 @@ export interface Prop {
 	held: boolean;
 }
 
-export async function initPhysics() { await RAPIER.init(); }
+let rapierReady = false;
+/** Load Rapier's WASM. Returns false (instead of throwing) where WebAssembly is blocked. */
+export async function initPhysics(): Promise<boolean> {
+	try { await RAPIER.init(); rapierReady = true; } catch (e) { console.warn('Physics unavailable:', e); }
+	return rapierReady;
+}
 
 export class Physics {
 	world: RAPIER.World;
@@ -53,7 +58,11 @@ export class Physics {
 	private acc = 0;
 	private holds = new Map<Prop, { target: THREE.Vector3; targetRot: THREE.Quaternion; maxSpeed: number }>();
 
+	/** false when the WASM engine could not start: props then stay where they are */
+	readonly enabled = rapierReady;
+
 	constructor() {
+		if (!this.enabled) { this.world = null as unknown as RAPIER.World; return; }
 		this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 		this.world.timestep = this.dt;
 		// a few more solver iterations for stable stacked resting contacts
@@ -61,6 +70,7 @@ export class Physics {
 	}
 
 	addStatic(c: StaticCollider) {
+		if (!this.enabled) return;
 		const desc = RAPIER.ColliderDesc.cuboid(c.half.x, c.half.y, c.half.z)
 			.setTranslation(c.center.x, c.center.y, c.center.z)
 			.setFriction(0.7)
@@ -182,6 +192,7 @@ export class Physics {
 
 	// ------------------------------------------------------------------ stepping
 	step(frameDt: number) {
+		if (!this.enabled) return;
 		this.acc += Math.min(frameDt, 0.1);
 		let n = 0;
 		while (this.acc >= this.dt && n < 8) {
@@ -204,6 +215,7 @@ export class Physics {
 
 	/** Find the prop whose collider contains / is nearest to a point within radius. */
 	propNear(point: THREE.Vector3, radius: number): Prop | null {
+		if (!this.enabled) return null;
 		let best: Prop | null = null, bestD = radius;
 		const ball = new RAPIER.Ball(radius);
 		this.world.intersectionsWithShape(point, { x: 0, y: 0, z: 0, w: 1 }, ball, (col) => {

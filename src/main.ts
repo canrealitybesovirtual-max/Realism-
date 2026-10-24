@@ -101,11 +101,13 @@ async function init() {
 	// physics
 	physics = new Physics();
 	for (const c of [...room.colliders, ...ws.colliders]) physics.addStatic(c);
-	const props = [physics.addProp(mugDesc(ws.mug.group)), physics.addProp(notebookDesc(ws.notebook.group)), physics.addProp(penDesc(ws.pen.group))];
 	shadows = new ContactShadows(scene, physics);
-	shadows.add(props[0], 0.05);
-	shadows.add(props[1], 0.09, 0.75);
-	shadows.add(props[2], 0.012, 6);
+	if (physics.enabled) {
+		const props = [physics.addProp(mugDesc(ws.mug.group)), physics.addProp(notebookDesc(ws.notebook.group)), physics.addProp(penDesc(ws.pen.group))];
+		shadows.add(props[0], 0.05);
+		shadows.add(props[1], 0.09, 0.75);
+		shadows.add(props[2], 0.012, 6);
+	}
 
 	// interaction
 	const targets: InteractionTargets = {
@@ -123,8 +125,19 @@ async function init() {
 	if (params.get('view')) setView(params.get('view')!);
 
 	// only offer VR when a headset runtime can actually start a session
-	if ('xr' in navigator && await navigator.xr!.isSessionSupported('immersive-vr').catch(() => false)) {
+	const vrOk = 'xr' in navigator && await navigator.xr!.isSessionSupported('immersive-vr').catch(() => false);
+	if (vrOk) {
 		document.body.appendChild(VRButton.createButton(renderer));
+	} else if ('xr' in navigator && window.self !== window.top) {
+		// Embedded pages (e.g. a Claude artifact) only get the headset if the
+		// host frame grants xr-spatial-tracking. Offer the same page on its own.
+		const a = document.createElement('a');
+		a.id = 'vr-elsewhere';
+		a.href = location.href;
+		a.target = '_blank';
+		a.rel = 'noopener';
+		a.textContent = 'VR is blocked in this embedded view. Open the room in its own tab';
+		document.body.appendChild(a);
 	}
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
@@ -167,7 +180,7 @@ function statsProvider(): Record<string, string> {
 		'Draw calls': String(renderer.info.render.calls),
 		'Triangles': renderer.info.render.triangles.toLocaleString(),
 		'GPU': glInfo.length > 40 ? glInfo.slice(0, 40) + '…' : glInfo,
-		'Physics bodies': String(physics?.props.length ?? 0) + ' dynamic',
+		'Physics bodies': physics?.enabled === false ? 'unavailable (WebAssembly blocked)' : String(physics?.props.length ?? 0) + ' dynamic',
 		'XR session': s ? (s.visibilityState ?? 'active') : 'none',
 		'Clock': new Date().toLocaleTimeString(),
 	};
@@ -198,7 +211,7 @@ renderer.setAnimationLoop((t) => {
 		ws.keyboard.update(dt);
 		computer.update(now);
 		// the sun's shadow map only needs re-rendering when something moves
-		const awake = physics.props.some((p) => !p.body.isSleeping());
+		const awake = physics.props.some((p) => !p.body.isSleeping()); // empty when physics is unavailable
 		if (awake || shadowsDirty) { renderer.shadowMap.needsUpdate = true; shadowsDirty = awake; }
 	} else {
 		renderer.shadowMap.needsUpdate = true;
