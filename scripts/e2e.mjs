@@ -7,7 +7,7 @@
 // WebXR:   a virtual Meta Quest 3 (IWER, ?emulate) enters VR; the right
 //          controller ray clicks the monitor, the left controller tip pokes
 //          keys on the 3D keyboard, the ray grabs and drops the mug, the
-//          thumbsticks teleport and snap-turn.
+//          left stick walks smoothly (blocked by walls/furniture), right stick snap-turns.
 // Exits non-zero if any check fails.
 
 import { createRequire } from 'node:module';
@@ -187,19 +187,28 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	const r1 = await page.evaluate(() => window.__studio.xr.rig.rotation.y);
 	check('xr: thumbstick flick snap-turns 30 degrees', Math.abs(Math.abs(r1 - r0) - Math.PI / 6) < 1e-3, `${(r1 - r0).toFixed(3)} rad`);
 
-	// 5. teleport: left stick forward, aim at open floor, release
-	await page.evaluate(() => {
-		const s = window.__studio;
-		const head = s.renderer.xr.getCamera().getWorldPosition(new s.THREE.Vector3());
-		window.__head0 = head.toArray();
-		window.__aim('left', [head.x, 1.0, head.z], [head.x + 0.3, 0.0, head.z + 1.6]);
-		window.__iwer.controllers.left.updateAxes('thumbstick', 0, -1);
-	});
-	await frames(page, 4);
+	// 5. smooth walking: left stick forward moves the head the way it faces
+	const headPos = () => page.evaluate(() => { const s = window.__studio; return s.camera.getWorldPosition(new s.THREE.Vector3()).toArray(); });
+	const headFwd = () => page.evaluate(() => { const s = window.__studio; const f = new s.THREE.Vector3(0, 0, -1).applyQuaternion(s.camera.getWorldQuaternion(new s.THREE.Quaternion())); return [f.x, f.z]; });
+	const h0 = await headPos(), f0 = await headFwd();
+	await page.evaluate(() => window.__iwer.controllers.left.updateAxes('thumbstick', 0, -1));
+	await frames(page, 10);
+	const vigOn = await page.evaluate(() => window.__studio.xr.vignette.visible);
 	await page.evaluate(() => window.__iwer.controllers.left.updateAxes('thumbstick', 0, 0));
-	await frames(page, 3);
-	const moved = await page.evaluate(() => { const s = window.__studio; const h = s.renderer.xr.getCamera().getWorldPosition(new s.THREE.Vector3()); return Math.hypot(h.x - window.__head0[0], h.z - window.__head0[2]); });
-	check('xr: thumbstick teleport moves the user to the aimed floor point', moved > 0.5, `${moved.toFixed(2)} m`);
+	await frames(page, 25);
+	const h1 = await headPos();
+	const d = [h1[0] - h0[0], h1[2] - h0[2]], dist = Math.hypot(d[0], d[1]);
+	const along = (d[0] * f0[0] + d[1] * f0[1]) / (dist * Math.hypot(f0[0], f0[1]) || 1);
+	check('xr: left stick walks smoothly in the looking direction', dist > 0.2 && along > 0.95, `${dist.toFixed(2)} m, cos=${along.toFixed(3)}`);
+	const settled = await page.evaluate(() => ({ v: window.__studio.xr.walkVel.length(), vig: window.__studio.xr.vignette.visible }));
+	check('xr: comfort vignette shows while walking and clears after stopping', vigOn && !settled.vig && settled.v === 0, JSON.stringify({ vigOn, ...settled }));
+	// keep walking toward the north wall for a long time: must stop at it
+	await page.evaluate(() => { const s = window.__studio; s.xr.rig.rotation.y = 0; window.__iwer.controllers.left.updateAxes('thumbstick', 0, -1); });
+	await frames(page, 160);
+	await page.evaluate(() => window.__iwer.controllers.left.updateAxes('thumbstick', 0, 0));
+	await frames(page, 10);
+	const h2 = await headPos();
+	check('xr: walking into a wall or desk is blocked (no passing through)', h2[2] > -2.5 + 0.15 && Math.abs(h2[0]) < 2.2, `head at x=${h2[0].toFixed(2)} z=${h2[2].toFixed(2)}`);
 
 	check('xr: no runtime errors during the session', errors.length === 0, errors.slice(0, 3).join(' | '));
 	await page.close();

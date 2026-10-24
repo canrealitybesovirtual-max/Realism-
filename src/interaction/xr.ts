@@ -13,9 +13,11 @@ import { KB } from '../world/furniture/keyboard';
  *  2. Poke typing: the controller tip pressing a key on the 3D keyboard.
  *  3. Pointing ray: monitor (absolute cursor; trigger = click, stick = scroll),
  *     keycaps (trigger = type), props / desk mouse (squeeze or trigger = grab).
- *  4. Locomotion on the thumbstick when not pointing at the monitor:
- *     push forward to aim a teleport arc, release to go; flick left/right to
- *     snap-turn 30 degrees.
+ *  4. Locomotion (independent of 1-3, so you can walk while holding things):
+ *     left stick walks smoothly in the direction you are looking, sliding
+ *     along walls and furniture; right stick flicks snap-turn 30 degrees, and
+ *     scrolls instead while the right ray points at the monitor. A mild
+ *     vignette narrows the view only while moving, for comfort.
  *
  * Input ownership: a controller that starts a click on the monitor owns the
  * OS pointer until the trigger is released; the other controller's ray then
@@ -40,7 +42,6 @@ interface Hand {
 	pointKey: number;
 	pointProp: Prop | null;
 	screenClick: boolean;
-	teleportAim: boolean;
 	turnReady: boolean;
 	scrollAcc: number;
 }
@@ -51,14 +52,13 @@ export class XRControls {
 	readonly rig = new THREE.Group();
 	private hands: Hand[] = [];
 	private raycaster = new THREE.Raycaster();
-	private arc: THREE.Line;
-	private marker: THREE.Mesh;
-	private teleportTarget: THREE.Vector3 | null = null;
+	private walkVel = new THREE.Vector2();
+	private vignette: THREE.Mesh;
 
 	constructor(
 		private renderer: THREE.WebGLRenderer,
 		private scene: THREE.Scene,
-		camera: THREE.PerspectiveCamera,
+		private camera: THREE.PerspectiveCamera,
 		private physics: Physics,
 		private targets: InteractionTargets,
 		private walk: Walkable,
@@ -69,15 +69,21 @@ export class XRControls {
 		const factory = new XRControllerModelFactory();
 		for (let i = 0; i < 2; i++) this.hands.push(this.makeHand(i, factory));
 
-		// teleport arc + landing marker
-		const arcGeo = new THREE.BufferGeometry().setFromPoints(new Array(40).fill(0).map(() => new THREE.Vector3()));
-		this.arc = new THREE.Line(arcGeo, new THREE.LineBasicMaterial({ color: 0x7fd3ff, transparent: true, opacity: 0.85 }));
-		this.arc.frustumCulled = false;
-		this.arc.visible = false;
-		scene.add(this.arc);
-		this.marker = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.2, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x7fd3ff, transparent: true, opacity: 0.9 }));
-		this.marker.visible = false;
-		scene.add(this.marker);
+		// comfort vignette: a dark ring just in front of the eyes, faded in with walking speed
+		this.vignette = new THREE.Mesh(
+			new THREE.RingGeometry(0.05, 0.6, 48),
+			new THREE.ShaderMaterial({
+				transparent: true, depthTest: false, depthWrite: false,
+				uniforms: { uStrength: { value: 0 } },
+				vertexShader: 'varying vec2 vP; void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+				fragmentShader: 'uniform float uStrength; varying vec2 vP; void main() { float r = length(vP); gl_FragColor = vec4(0.0, 0.0, 0.0, uStrength * smoothstep(0.065, 0.14, r)); }',
+			}),
+		);
+		this.vignette.position.z = -0.1;
+		this.vignette.renderOrder = 999;
+		this.vignette.frustumCulled = false;
+		this.vignette.visible = false;
+		camera.add(this.vignette);
 
 		renderer.xr.addEventListener('sessionstart', () => {
 			// stand the user in the room facing the desk, a step back from the chair
@@ -122,7 +128,7 @@ export class XRControls {
 		const hand: Hand = {
 			index: i, ray, grip, source: null, line, dot, tip, prevButtons: [], held: null, holdingMouse: false,
 			mouseGrabOffset: new THREE.Vector3(), velHistory: [], pokeKey: -1, pointing: null, pointKey: -1, pointProp: null,
-			screenClick: false, teleportAim: false, turnReady: true, scrollAcc: 0,
+			screenClick: false, turnReady: true, scrollAcc: 0,
 		};
 		ray.addEventListener('connected', (e: any) => { hand.source = e.data; });
 		ray.addEventListener('disconnected', () => { this.releaseAll(hand); hand.source = null; });
@@ -133,6 +139,7 @@ export class XRControls {
 		if (!this.renderer.xr.isPresenting) return;
 		this.rig.updateMatrixWorld(true);
 		for (const h of this.hands) this.updateHand(h, dt, now);
+		this.locomotion(dt);
 	}
 
 	private buttons(h: Hand) {
@@ -261,14 +268,11 @@ export class XRControls {
 			if (h.held || h.holdingMouse) return;
 		}
 
-		// ---------------------------------------------------- 4. locomotion / scrolling
-		if (h.pointing === 'screen') {
+		// right stick scrolls the screen while this ray points at it (see locomotion)
+		if (h.pointing === 'screen' && h.source.handedness !== 'left') {
 			h.scrollAcc += btn.stickY * dt * 1200;
 			if (Math.abs(h.scrollAcc) > 40) { os.wheel(h.scrollAcc); h.scrollAcc = 0; }
-			if (h.teleportAim) this.cancelTeleport(h);
-			return;
 		}
-		this.locomotion(h, btn.stickX, btn.stickY, origin, dir);
 	}
 
 	/**
@@ -321,72 +325,70 @@ export class XRControls {
 		this.releaseProp(h);
 		if (h.holdingMouse) { h.holdingMouse = false; this.targets.computer.os.pointerUp(); this.owner.release('xr-mouse-' + h.index); }
 		if (h.screenClick) { this.targets.computer.os.pointerUp(); h.screenClick = false; this.owner.release('xr-' + h.index); }
-		this.cancelTeleport(h);
 	}
 
 	// ------------------------------------------------------------------ locomotion
-	private locomotion(h: Hand, sx: number, sy: number, origin: THREE.Vector3, dir: THREE.Vector3) {
-		// snap turn
-		if (Math.abs(sx) > 0.75 && h.turnReady && !h.teleportAim) {
-			this.snapTurn(sx > 0 ? -Math.PI / 6 : Math.PI / 6);
-			h.turnReady = false;
+	private locomotion(dt: number) {
+		let moveX = 0, moveY = 0, turnX = 0, turnHand: Hand | null = null;
+		for (const h of this.hands) {
+			const ax = h.source?.gamepad?.axes;
+			if (!ax) continue;
+			const x = ax[2] ?? 0, y = ax[3] ?? 0;
+			// left stick walks; right stick turns. With one controller, it does both.
+			if (h.source!.handedness === 'left' || this.hands.filter((o) => o.source).length === 1) { moveX = x; moveY = y; }
+			if (h.source!.handedness !== 'left') { turnX = x; turnHand = h; }
 		}
-		if (Math.abs(sx) < 0.3) h.turnReady = true;
-		// teleport
-		if (sy < -0.6) {
-			h.teleportAim = true;
-			this.aimTeleport(origin, dir);
-		} else if (h.teleportAim && sy > -0.3) {
-			h.teleportAim = false;
-			if (this.teleportTarget) this.teleportTo(this.teleportTarget);
-			this.arc.visible = false; this.marker.visible = false;
+		// snap turn (not while the right ray is scrolling the monitor)
+		if (turnHand && turnHand.pointing !== 'screen') {
+			if (Math.abs(turnX) > 0.75 && turnHand.turnReady) { this.snapTurn(turnX > 0 ? -Math.PI / 6 : Math.PI / 6); turnHand.turnReady = false; }
+			if (Math.abs(turnX) < 0.3) turnHand.turnReady = true;
 		}
+		// smooth walk relative to where the head faces, with a radial dead zone
+		const mag = Math.min(1, Math.hypot(moveX, moveY));
+		const dead = 0.15;
+		const want = new THREE.Vector2();
+		if (mag > dead) {
+			const k = ((mag - dead) / (1 - dead)) / mag;
+			const f = new THREE.Vector3(0, 0, -1).applyQuaternion(this.headQuat());
+			f.y = 0;
+			if (f.lengthSq() < 1e-6) f.set(0, 0, -1);
+			f.normalize();
+			const fwd = -moveY * k, side = moveX * k;
+			want.set(f.x * fwd - f.z * side, f.z * fwd + f.x * side).multiplyScalar(XRControls.WALK_SPEED);
+		}
+		// ease in/out (about 0.15 s) instead of instant starts and stops
+		this.walkVel.lerp(want, 1 - Math.exp(-dt * 12));
+		if (this.walkVel.lengthSq() < 1e-6) this.walkVel.set(0, 0);
+		const speed = this.walkVel.length();
+		if (speed > 0) {
+			const head = this.headPos();
+			const dx = this.walkVel.x * dt, dz = this.walkVel.y * dt;
+			// slide along walls/furniture; if the head is already inside a footprint
+			// (leaning over the desk), do not trap the user there
+			const [nx, nz] = this.walk.ok(head.x, head.z, 0.2) ? this.walk.slide(head.x, head.z, dx, dz, 0.2) : [head.x + dx, head.z + dz];
+			this.rig.position.x += nx - head.x;
+			this.rig.position.z += nz - head.z;
+		}
+		const v = Math.min(1, speed / XRControls.WALK_SPEED);
+		this.vignette.visible = v > 0.02;
+		(this.vignette.material as THREE.ShaderMaterial).uniforms.uStrength.value = 0.55 * v;
 	}
 
-	private cancelTeleport(h: Hand) {
-		h.teleportAim = false;
-		this.arc.visible = false; this.marker.visible = false; this.teleportTarget = null;
-	}
+	/*
+	 * Head pose in world space. Use the scene camera (a child of the rig, posed
+	 * by the XR manager each frame), not renderer.xr.getCamera(): that
+	 * ArrayCamera has no parent, so getWorldPosition() on it rebuilds its matrix
+	 * without the rig and silently drops every turn and step taken so far.
+	 */
+	private headPos() { this.camera.updateMatrixWorld(true); return new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld); }
+	private headQuat() { this.camera.updateMatrixWorld(true); return this.camera.getWorldQuaternion(new THREE.Quaternion()); }
 
-	private aimTeleport(origin: THREE.Vector3, dir: THREE.Vector3) {
-		// ballistic arc, 7 m/s launch, sampled until it reaches the floor
-		const pts: THREE.Vector3[] = [];
-		const v = dir.clone().multiplyScalar(7);
-		const p = origin.clone();
-		let landed: THREE.Vector3 | null = null;
-		for (let i = 0; i < 40; i++) {
-			pts.push(p.clone());
-			const next = p.clone().addScaledVector(v, 0.03);
-			v.y -= 9.81 * 0.03;
-			if (next.y <= 0) {
-				const t = p.y / (p.y - next.y);
-				landed = p.clone().lerp(next, t);
-				pts.push(landed.clone());
-				break;
-			}
-			p.copy(next);
-		}
-		while (pts.length < 40) pts.push(pts[pts.length - 1].clone());
-		(this.arc.geometry as THREE.BufferGeometry).setFromPoints(pts.slice(0, 40));
-		const valid = !!landed && this.walk.ok(landed.x, landed.z, 0.2);
-		const col = valid ? 0x7fd3ff : 0xff6b6b;
-		(this.arc.material as THREE.LineBasicMaterial).color.set(col);
-		this.arc.visible = true;
-		this.marker.visible = !!landed;
-		if (landed) { this.marker.position.set(landed.x, 0.003, landed.z); (this.marker.material as THREE.MeshBasicMaterial).color.set(col); }
-		this.teleportTarget = valid ? landed : null;
-	}
-
-	/** Move the rig so the user's head (not the rig origin) lands on the target. */
-	private teleportTo(target: THREE.Vector3) {
-		const head = this.renderer.xr.getCamera().getWorldPosition(new THREE.Vector3());
-		this.rig.position.x += target.x - head.x;
-		this.rig.position.z += target.z - head.z;
-	}
+	/** Comfortable indoor walking pace, m/s. */
+	static WALK_SPEED = 1.3;
 
 	private snapTurn(angle: number) {
 		// rotate about the head so the user does not swing around the rig origin
-		const head = this.renderer.xr.getCamera().getWorldPosition(new THREE.Vector3());
+		const head = this.headPos();
 		const offset = this.rig.position.clone().sub(head).applyAxisAngle(new THREE.Vector3(0, 1, 0), angle);
 		this.rig.position.copy(head).add(offset);
 		this.rig.position.y = 0;

@@ -103,6 +103,7 @@ Rapier (compat WASM build) steps at a fixed 120 Hz with an accumulator and inter
   1. Holding something.
   2. Poke typing, with 2 mm press / 4 mm release hysteresis and a haptic tick.
   3. The pointing ray (screen, keys, props, desk mouse).
-  4. Locomotion: a teleport arc, validated against walls and furniture footprints, and 30° snap turns about the head.
-- When pointing at the monitor, the stick scrolls instead.
+  4. Locomotion, independent of the above so you can walk while holding things: the left stick walks smoothly at 1.3 m/s relative to the head's facing (dead zone, eased start/stop, sliding along walls and furniture footprints) with a mild comfort vignette while moving; the right stick snap-turns 30° about the head.
+- When the right ray points at the monitor, its stick scrolls instead of turning.
+- Head pose comes from the scene camera inside the rig, never from `renderer.xr.getCamera().getWorldPosition()`, which drops the rig transform.
 - Controller models come from the WebXR input-profiles CDN. A built-in model is shown when that is unreachable.
