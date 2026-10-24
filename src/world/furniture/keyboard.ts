@@ -203,6 +203,7 @@ export function buildKeyboard(M: Materials) {
 		caps,
 		/** set a key's target state; animated in update() */
 		setKey(index: number, down: boolean) { target[index] = down ? 1 : 0; },
+		pressedAmount(index: number) { return pressed[index]; },
 		tapKey(index: number) { target[index] = 1; setTimeout(() => (target[index] = 0), 90); },
 		update(dt: number) {
 			let dirty = false;
