@@ -108,3 +108,71 @@ export function merge(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
 }
 
 export { mergeVertices };
+
+/** Closed rounded-rectangle outline as 2D points (counter-clockwise). */
+export function roundedRectPoints(w: number, h: number, r: number, seg = 4): THREE.Vector2[] {
+	r = Math.min(r, w / 2, h / 2);
+	const pts: THREE.Vector2[] = [];
+	const corners: [number, number, number][] = [
+		[w / 2 - r, h / 2 - r, 0], [-w / 2 + r, h / 2 - r, Math.PI / 2],
+		[-w / 2 + r, -h / 2 + r, Math.PI], [w / 2 - r, -h / 2 + r, Math.PI * 1.5],
+	];
+	for (const [cx, cy, a0] of corners) for (let i = 0; i <= seg; i++) {
+		const a = a0 + (i / seg) * Math.PI / 2;
+		pts.push(new THREE.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r));
+	}
+	return pts;
+}
+
+export interface LoftStation {
+	/** centre of the cross-section */
+	pos: THREE.Vector3;
+	/** local cross-section axes (profile x -> side, profile y -> up) */
+	side: THREE.Vector3;
+	up: THREE.Vector3;
+	scale: [number, number];
+}
+
+/**
+ * Loft a closed 2D profile through a list of stations, with end caps.
+ * Used for tapered parts such as chair base arms and the backrest spine.
+ */
+export function loft(profile: THREE.Vector2[], stations: LoftStation[], caps = true): THREE.BufferGeometry {
+	const n = profile.length, m = stations.length;
+	const pos: number[] = [];
+	const idx: number[] = [];
+	for (const st of stations) for (const p of profile) {
+		const v = st.pos.clone().addScaledVector(st.side, p.x * st.scale[0]).addScaledVector(st.up, p.y * st.scale[1]);
+		pos.push(v.x, v.y, v.z);
+	}
+	for (let j = 0; j < m - 1; j++) for (let i = 0; i < n; i++) {
+		const a = j * n + i, b = j * n + ((i + 1) % n), c = (j + 1) * n + i, d = (j + 1) * n + ((i + 1) % n);
+		idx.push(a, c, b, b, c, d);
+	}
+	if (caps) {
+		for (const [j, flip] of [[0, true], [m - 1, false]] as const) {
+			const c = stations[j].pos;
+			const ci = pos.length / 3;
+			pos.push(c.x, c.y, c.z);
+			for (let i = 0; i < n; i++) {
+				const a = j * n + i, b = j * n + ((i + 1) % n);
+				if (flip) idx.push(ci, b, a); else idx.push(ci, a, b);
+			}
+		}
+	}
+	// make the winding outward-facing regardless of station frame handedness
+	let vol = 0;
+	for (let t = 0; t < idx.length; t += 3) {
+		const [a, b, c] = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3];
+		vol += pos[a] * (pos[b + 1] * pos[c + 2] - pos[b + 2] * pos[c + 1])
+			- pos[a + 1] * (pos[b] * pos[c + 2] - pos[b + 2] * pos[c])
+			+ pos[a + 2] * (pos[b] * pos[c + 1] - pos[b + 1] * pos[c]);
+	}
+	if (vol < 0) for (let t = 0; t < idx.length; t += 3) [idx[t + 1], idx[t + 2]] = [idx[t + 2], idx[t + 1]];
+	const g = new THREE.BufferGeometry();
+	g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+	g.setIndex(idx);
+	g.computeVertexNormals();
+	const ng = toCreasedNormals(g, 0.9);
+	return boxProjectUVs(ng);
+}

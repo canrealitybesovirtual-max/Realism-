@@ -4,6 +4,7 @@ export interface View { pos: [number, number, number]; target: [number, number, 
 
 export const VIEWS: Record<string, View> = {
 	// entering from the door, standing
+	clockCheck: { pos: [1.2, 1.9, -1.4], target: [1.25, 1.9, -2.5], fov: 50 },
 	door: { pos: [1.75, 1.62, 1.55], target: [-0.6, 1.05, -1.6], fov: 70 },
 	// seated at the desk, looking at the monitor
 	seated: { pos: [-0.15, 1.18, -1.05], target: [-0.15, 1.08, -2.4], fov: 70 },

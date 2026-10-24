@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ROOM, WINDOW, DOOR } from '../config';
-import { box, merge, roundedBox, lathe } from '../util/geometry';
+import { box, merge, roundedBox, boxProjectUVs } from '../util/geometry';
 import type { Materials } from './materials';
 import { type AOReceiver, setReceiverUV1 } from '../render/aoBake';
 
@@ -132,23 +132,41 @@ export function buildRoom(M: Materials) {
 	gap(ex + gapD, (dz1 + z1) / 2, T, z1 - dz1);
 
 	// ------------------------------------------------------------------ ceiling
-	const ceilingGeo = box(W + 2 * T, 0.2, D + 2 * T, 0, H + 0.1, 0);
+	// Ceiling soffit: a plane with real cut-outs for the downlights, plus a
+	// slab above it so it is opaque to the sun's shadow camera.
+	const downlightXZ: [number, number][] = [[-0.9, -1.0], [0.9, -1.0], [-0.9, 1.1], [0.9, 1.1]];
+	const ceilShape = new THREE.Shape();
+	ceilShape.moveTo(x0 - T, z0 - T); ceilShape.lineTo(x1 + T, z0 - T);
+	ceilShape.lineTo(x1 + T, z1 + T); ceilShape.lineTo(x0 - T, z1 + T); ceilShape.closePath();
+	for (const [lx, lz] of downlightXZ) {
+		const hole = new THREE.Path();
+		hole.absarc(lx, lz, 0.031, 0, Math.PI * 2, true);
+		ceilShape.holes.push(hole);
+	}
+	const soffit = new THREE.ShapeGeometry(ceilShape, 24);
+	soffit.rotateX(Math.PI / 2); // shape (x, y) -> world (x, 0, z = y), facing down
+	soffit.translate(0, H, 0);
+	boxProjectUVs(soffit);
+	const ceilingGeo = merge([soffit, box(W + 2 * T, 0.2, D + 2 * T, 0, H + 0.15, 0)]);
 	solid(0, H + 0.1, 0, W / 2 + T, 0.1, D / 2 + T);
 
-	// recessed downlights: 4 trims, off during the day
+	// slim flush downlights (trim ring + recessed reflector + lens), off by day
 	const downlights = new THREE.Group();
 	downlights.name = 'downlights';
-	const trimGeo = lathe([[0.0, 0], [0.041, 0], [0.041, 0.002], [0.036, 0.004], [0.032, 0.03], [0.0, 0.03]], 40);
-	const lensGeo = new THREE.CircleGeometry(0.03, 32).rotateX(Math.PI / 2);
-	const trimMat = new THREE.MeshStandardMaterial({ name: 'downlight-trim', color: 0xf2f2f0, roughness: 0.35 });
-	const lensMat = new THREE.MeshStandardMaterial({ name: 'downlight-lens', color: 0xe8e8e4, roughness: 0.2, emissive: 0xfff4e6, emissiveIntensity: 0.0 });
-	for (const [lx, lz] of [[-0.9, -1.0], [0.9, -1.0], [-0.9, 1.1], [0.9, 1.1]]) {
-		const trim = new THREE.Mesh(trimGeo, trimMat);
-		trim.position.set(lx, H - 0.0005, lz);
-		trim.rotation.x = Math.PI; // open side down
+	const ringGeo = new THREE.RingGeometry(0.031, 0.042, 48).rotateX(Math.PI / 2);
+	const coneGeo = new THREE.CylinderGeometry(0.031, 0.018, 0.035, 40, 1, true);
+	const lensGeo = new THREE.CircleGeometry(0.018, 32).rotateX(Math.PI / 2);
+	const trimMat = new THREE.MeshStandardMaterial({ name: 'downlight-trim', color: 0xf2f2f0, roughness: 0.35, side: THREE.DoubleSide });
+	const reflMat = new THREE.MeshStandardMaterial({ name: 'downlight-reflector', color: 0xd8d8d8, metalness: 1, roughness: 0.25, side: THREE.BackSide });
+	const lensMat = new THREE.MeshStandardMaterial({ name: 'downlight-lens', color: 0xf0eee8, roughness: 0.3, emissive: 0xfff4e6, emissiveIntensity: 0.0 });
+	for (const [lx, lz] of downlightXZ) {
+		const ring = new THREE.Mesh(ringGeo, trimMat);
+		ring.position.set(lx, H - 0.0015, lz);
+		const cone = new THREE.Mesh(coneGeo, reflMat);
+		cone.position.set(lx, H + 0.0175 - 0.0015, lz);
 		const lens = new THREE.Mesh(lensGeo, lensMat);
-		lens.position.set(lx, H + 0.026, lz);
-		downlights.add(trim, lens);
+		lens.position.set(lx, H + 0.033, lz);
+		downlights.add(ring, cone, lens);
 	}
 	group.add(downlights);
 

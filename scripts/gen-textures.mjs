@@ -273,7 +273,7 @@ async function mesh() {
 		H[k] = strand;
 		const L = Math.round((0.10 + strand * 0.06) * 255);
 		rgba[k * 4] = rgba[k * 4 + 1] = rgba[k * 4 + 2] = L;
-		rgba[k * 4 + 3] = Math.round(clamp(0.18 + strand * 0.9) * 255);
+		rgba[k * 4 + 3] = Math.round(clamp(strand) * 255); // open weave: alpha = strand coverage
 	}
 	await save('mesh_rgba.png', S, S, 4, rgba);
 	await save('mesh_nor.jpg', S, S, 3, heightToNormal(H, S, 2.0), { quality: 92 });

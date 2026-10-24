@@ -32,7 +32,7 @@ for (const v of views) {
 	await page.evaluate((name) => window.__studio.setView(name), v);
 	// let a few frames render (shadow maps, texture uploads)
 	await page.evaluate(() => new Promise((r) => { let n = 0; const f = () => (++n > 4 ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); }));
-	await page.screenshot({ path: `${out}/${v}.png` });
+	await page.screenshot({ path: `${out}/${v}.png`, timeout: 300000 });
 	console.log('shot', v);
 }
 const errs = logs.filter((l) => /error|warn/i.test(l));

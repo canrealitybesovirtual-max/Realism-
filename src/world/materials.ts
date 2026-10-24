@@ -160,7 +160,10 @@ export function createMaterials() {
 		map: tex(T + 'mesh_rgba.png', { srgb: true, repeat: rep(0.02) }),
 		normalMap: tex(T + 'mesh_nor.jpg', { repeat: rep(0.02) }),
 		roughness: 0.7,
-		alphaTest: 0.35,
+		// alpha-to-coverage keeps the open weave semi-transparent at a distance
+		// (plain alpha test turns fully opaque or vanishes as mips average out)
+		alphaTest: 0.08,
+		alphaToCoverage: true,
 		side: THREE.DoubleSide,
 	});
 

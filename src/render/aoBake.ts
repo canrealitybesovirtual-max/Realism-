@@ -34,13 +34,14 @@ export function setReceiverUV1(geo: THREE.BufferGeometry, r: AOReceiver, matrixW
 	const pos = geo.getAttribute('position');
 	const uv1 = new Float32Array(pos.count * 2);
 	const p = new THREE.Vector3();
-	const halfU = 0.5 / r.res[0], halfV = 0.5 / r.res[1];
 	for (let i = 0; i < pos.count; i++) {
 		p.fromBufferAttribute(pos, i);
 		if (matrixWorld) p.applyMatrix4(matrixWorld);
 		p.sub(r.origin);
-		uv1[i * 2] = THREE.MathUtils.clamp(p.dot(r.u) / r.sizeU, halfU, 1 - halfU);
-		uv1[i * 2 + 1] = THREE.MathUtils.clamp(p.dot(r.v) / r.sizeV, halfV, 1 - halfV);
+		// unclamped: faces that run past the receiver (into wall thickness) must
+		// interpolate linearly; the map's clamp-to-edge wrapping handles the rest
+		uv1[i * 2] = p.dot(r.u) / r.sizeU;
+		uv1[i * 2 + 1] = p.dot(r.v) / r.sizeV;
 	}
 	geo.setAttribute('uv1', new THREE.BufferAttribute(uv1, 2));
 }
@@ -200,6 +201,7 @@ export class PlanarAOBaker {
 		R.setClearColor(prev.clearColor, prev.clearAlpha);
 		out.texture.generateMipmaps = false;
 		out.texture.minFilter = THREE.LinearFilter;
+		out.texture.userData.rt = out; // kept for debugging / readback
 		return out.texture;
 	}
 
