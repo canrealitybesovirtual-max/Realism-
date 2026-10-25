@@ -10,6 +10,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>CQC Loop</title>
 <!--
+  STEP 72 — TOUCH. In the headset an empty hand no longer passes through
+  guns: it rests on the gun in your other hand or on one lying on a bench,
+  fingers open onto it instead of sinking in, and the controller taps when
+  you touch it and buzzes faintly as you slide over it. Push a loose gun on
+  purpose and it slides away. Hold a long gun in one hand and rest its
+  handguard on your other open palm: it steadies (less droop, less recoil).
+  ?touch=off turns it off. See PROJECT_RULES.step72.
   STEP 71 — REAL GUNS. The M4A1-S is gone (its bench now holds the M4A4).
   Every gun now uses its real weight, calibre and accuracy: rifle rounds hit
   about twice as hard as a pistol and go through the men's pistol-rated
@@ -2022,7 +2029,14 @@ const PROJECT_RULES = {
     'Heft (headset): realHeft slerps a two-handed long gun from last frame toward the hands at REAL.heft.rate / mass per second (vrGunPose and freeGunPose). ?weight=off. Desktop ADS time = adsTime * (REAL.ads.base + REAL.ads.perKg * mass).',
     'Sounds: SHOT_DEFS.r556 (M4A4) and r338 (AWP), baked with the others; earsShot entries for both.'
   ],
-  currentStep: 71
+  step72: [
+    'Touch (TOUCH, touchHand, ?touch=off): every empty headset hand (tracked after handClipWorld, controller after handClipWorld) is tested against guns within TOUCH.reach of their own size. Palm samples (h.gcPalm, with the ball of the thumb) and the five knuckles are found against the gun\'s contact cloud (gcEntries / gcNearest); the drawn hand moves out along the surface normal by the deepest penetration past TOUCH.skin, up to TOUCH.iters times. Past TOUCH.maxPush total it stops resisting for that gun (the real hand is through it).',
+    'Controller hands: each finger (and the thumb, which also swings off the palm) whose bones are in the gun (gcSegs on h.tgt) opens by TOUCH.fingerStep until clear, up to TOUCH.fingerIters steps. Tracked fingers are not touched (they are the user\'s own).',
+    'Haptics: first contact pulse(TOUCH.tap, tapMs); while in contact and moving, every TOUCH.rubEvery s a pulse of speed * TOUCH.rub (capped rubMax).',
+    'Shove: a loose (not kinematic, not held) gun pushed into faster than TOUCH.shoveSpeed and deeper than TOUCH.shoveDepth is brought up to speed * TOUCH.shove (at most TOUCH.shoveMax m/s) along the push, its downward part removed (never driven into the bench).',
+    'Palm rest: a long gun held in one hand whose underside (surface normal y < -0.5) is touched within TOUCH.restNear of its support point sets g.palmRestT; for TOUCH.restHold s the one-hand droop is x restDroop, its lag rate x restRate (vrGunPose, freeGunPose) and recoil x restRecoil (fireGun).'
+  ],
+  currentStep: 72
 };
 
 /* ============================================================================
@@ -13809,7 +13823,7 @@ function fireGun(g, now) {
   // Recoil: an impulse on the gun's spring. A second hand soaks up about half.
   // Step 71: a long burst climbs harder shot by shot (your hold breaks down), and the muzzle drifts toward
   // your firing hand's side (right for a right hand) by d.recoil.bias of the yaw.
-  const two = g.support ? d.recoil.twoHand : 1;
+  const two = g.support ? d.recoil.twoHand : palmRested(g) ? TOUCH.restRecoil : 1;   // step 72: an open palm under the handguard helps
   const j = 0.9 + Math.random() * 0.2;
   g.burst = d.rpm && now - (g.lastShotT || -9) < 1.6 * 60 / d.rpm ? (g.burst || 0) + 1 : 0;
   g.lastShotT = now;
@@ -14146,8 +14160,9 @@ function vrGunPose(g, dt, P, Q) {
     realHeft(g, dt, Q);                                                // step 71
   } else if (d.oneHand && g.hasBase) {
     // One hand on a heavy gun: it lags your wrist and the muzzle droops.
-    Q.multiply(_wq.setFromAxisAngle(_wv.set(1, 0, 0), -d.oneHand.droop));
-    _wq2.copy(g.baseQuat).slerp(Q, 1 - Math.exp(-d.oneHand.rate * dt));
+    const rest = palmRested(g);                                         // step 72: resting on your other palm
+    Q.multiply(_wq.setFromAxisAngle(_wv.set(1, 0, 0), -d.oneHand.droop * (rest ? TOUCH.restDroop : 1)));
+    _wq2.copy(g.baseQuat).slerp(Q, 1 - Math.exp(-d.oneHand.rate * (rest ? TOUCH.restRate : 1) * dt));
     Q.copy(_wq2);
   }
 }
@@ -22015,7 +22030,7 @@ function handsUpdate(dt, now) {
           hs.squeeze = pg && now < hs.sqUntil;                          // steadier muzzle while squeezing
         }
         for (let i = 0; i < 20; i++) h.vel[i] = 0;
-        if (!vh.prop) { handClipWorld(vh, HD_hP, dt); placeHand(h, 'tracked', HD_hP, HD_hQ, dt); continue; }
+        if (!vh.prop) { handClipWorld(vh, HD_hP, dt); touchHand(vh, h, HD_hP, HD_hQ, dt, false); placeHand(h, 'tracked', HD_hP, HD_hQ, dt); continue; }   // step 72
       }
       const s = padState(ctrl.userData.gamepad);
       const p = vh.prop, it = p && p.item, g = it && it.kind === 'gun' ? it : null;
@@ -22034,7 +22049,7 @@ function handsUpdate(dt, now) {
       if (!done) {
         freeFrame(vh, h, HD_hP, HD_hQ);
         if (it && !g) { if (it.free) freeItemHand(h, it, p, HD_hP, HD_hQ); else itemContact(h, it, HD_hP, HD_hQ); }   // step 65           // step 26.1: round the magazine / light / grenade / shell
-        if (!p && !vh.door) handClipWorld(vh, HD_hP, dt);          // step 30: an empty hand stops on walls
+        if (!p && !vh.door) { handClipWorld(vh, HD_hP, dt); touchHand(vh, h, HD_hP, HD_hQ, dt, true); }   // step 30: an empty hand stops on walls; step 72: and on guns
         placeHand(h, g ? 'gunfree' : p ? 'prop' : 'free', HD_hP, HD_hQ, dt);
       }
       applyFingers(h, dt);
@@ -25449,6 +25464,129 @@ Object.assign(WEAPON_DEFS.awp, { mass: 6.9, capacity: 5, spread: 0.00012, sound:
 Object.assign(MAG_DEFS.awp, { label: '5-round .338 magazine', capacity: 5 });
 Object.assign(CONFIG.cover.energy, { m1911: 1.15, g17: 1.0, akmn: 2.6, m4a4: 2.2, awp: 6.0 });
 
+/* ===========================================================================
+ *  STEP 72 — TOUCH (headset). An empty hand, tracked or on a controller, used
+ *  to stop only on walls (step 30): it went straight through the gun in your
+ *  other hand and through guns lying on a bench. Now it meets them:
+ *    surface   the palm, the ball of the thumb and the knuckles are tested
+ *              against the gun's contact cloud (step 26) and the drawn hand
+ *              is pushed out along the surface normal, so it rests on the
+ *              gun. More than TOUCH.maxPush in and it lets go of the fight
+ *              (your real hand is through the gun; chasing it would pop).
+ *    fingers   (controller hands) a finger whose bones are in the gun opens
+ *              until it lies on it. Tracked fingers stay your own.
+ *    feel      first contact taps the controller; sliding along the gun
+ *              buzzes faintly with your speed, like running a hand over it.
+ *    shove     a loose gun you push into on purpose (fast, deep) slides
+ *              away. A slow reach to pick it up never knocks it off.
+ *    rest      one hand on a long gun's grip and the other open hand under
+ *              its handguard: it steadies like a real rest (droop and lag
+ *              cut to TOUCH.restDroop / restRate, recoil to restRecoil).
+ *  Costs nothing unless a hand is within TOUCH.reach of a gun. ?touch=off.
+ *  See PROJECT_RULES.step72.
+ * ========================================================================= */
+const TOUCH = {
+  on: !/[?&]touch=off/.test(location.search),
+  reach: 0.12,        // m beyond a gun's own size before a hand is tested against it
+  skin: 0.0125,       // m: palm and knuckle radius (GUNPHYS.palmR)
+  maxPush: 0.035,     // m: deeper than this the drawn hand stops resisting
+  iters: 3,
+  tap: 0.32, tapMs: 14,          // first contact
+  rub: 0.5, rubMax: 0.22, rubMs: 7, rubEvery: 0.045,   // sliding: strength per m/s, cap, pulse length, s between pulses
+  shoveSpeed: 0.4, shoveDepth: 0.012, shove: 0.6, shoveMax: 0.8,   // m/s, m, share of the push, m/s most given to the gun
+  restNear: 0.14, restHold: 0.12,   // m from the support point; s the rest outlasts the touch
+  restDroop: 0.25, restRate: 2.5, restRecoil: 0.7,
+  fingerStep: 0.14, fingerIters: 8,
+  ease: 14            // 1/s: how fast a push is let go
+};
+const _tqP = new THREE.Vector3(), _tqN = new THREE.Vector3(), _tqW = new THREE.Vector3(), _tqG = new THREE.Vector3(), _tqQ = new THREE.Quaternion(), _tqM = new THREE.Matrix4();
+const _tqO = [0, 0, 0], _tqS = new THREE.Vector3(), _tqI = new THREE.Vector3(), _tqD = new THREE.Vector3();
+function palmRested(g) { return performance.now() / 1000 - (g.palmRestT || -9) < TOUCH.restHold; }
+function touchHand(vh, h, P, Q, dt, fingers) {
+  const st = vh.touch || (vh.touch = { on: false, rubT: 0, last: new THREE.Vector3(), has: false, gun: null, n: new THREE.Vector3(), off: new THREE.Vector3() });
+  if (!TOUCH.on || !GUNPHYS.contact || !HANDS.ready) { st.on = false; st.off.set(0, 0, 0); return; }
+  const prev = st.on ? st.gun : null;
+  _tqI.copy(P);
+  const speed = st.has && dt > 0 ? st.last.distanceTo(P) / dt : 0;
+  st.last.copy(P); st.has = true;
+  gcTips(h);
+  let touched = null, depthMax = 0;
+  for (const p of props) {
+    const g = p.item;
+    if (!g || g.kind !== 'gun' || p.removing || g.primary === vh || g.support === vh || g.rack === vh) continue;
+    if (!CONTACT.clouds.has('gun:' + g.type)) continue;
+    const e = p.root.matrixWorld.elements, dx = P.x - e[12], dy = P.y - e[13], dz = P.z - e[14];
+    const R = TOUCH.reach + Math.hypot(...g.def.col.half) + Math.hypot(...g.def.col.center);
+    if (dx * dx + dy * dy + dz * dz > R * R) continue;
+    // Palm, ball of the thumb and knuckles out of the gun, along the surface they are in (hand space).
+    let push = 0, deep = false;
+    _tqS.copy(P);
+    const pts = h.gcPalm.concat([1, 4, 7, 10, 13].map((i) => h.rp[i]));
+    for (let it = 0; it < TOUCH.iters; it++) {
+      const ents = gcEntries(g, P, Q);
+      let worst = 0;
+      for (const q of pts) {
+        const d = gcNearest(q.x, q.y, q.z, TOUCH.skin + 0.01, ents, GC_v);
+        if (d < TOUCH.skin && TOUCH.skin - d > worst) { worst = TOUCH.skin - d; _tqN.copy(GC_v); _tqP.copy(q).addScaledVector(GC_v, -d); }
+      }
+      if (worst <= 1e-4) break;
+      _tqW.copy(_tqN).applyQuaternion(Q);                            // the surface normal, world
+      // Too deep, or the nearest surface is now the far side (the real hand crossed the middle): stop resisting.
+      if (push + worst > TOUCH.maxPush || (prev === g && _tqW.dot(st.n) < -0.2)) { deep = true; break; }
+      push += worst;
+      if (worst > depthMax) depthMax = worst;
+      P.addScaledVector(_tqW, worst);
+      if (!touched) {
+        touched = g;
+        _tqG.copy(_tqP).applyQuaternion(Q).add(P);                   // the contact point, world
+        g.touchN = (g.touchN || new THREE.Vector3()).copy(_tqW);
+      }
+    }
+    if (deep) { P.copy(_tqS); if (touched === g) { touched = null; depthMax = 0; } continue; }   // through it: leave the hand where it is
+    if (!touched || touched !== g) continue;
+    // A loose gun pushed into on purpose slides away (yours never: it is in your other hand).
+    if (!p.kinematic && !p.holders.length && speed > TOUCH.shoveSpeed && depthMax > TOUCH.shoveDepth && p.body) {
+      // Toward a capped speed along the push (never past it, however long you keep pushing), and never down
+      // into what it lies on: pressing on a gun from above holds it there.
+      _tqW.copy(g.touchN).negate(); if (_tqW.y < 0) _tqW.y = 0;
+      if (_tqW.lengthSq() > 0.09) {
+        _tqW.normalize();
+        const v = Math.min(TOUCH.shoveMax, speed * TOUCH.shove), m = p.body.mass ? p.body.mass() : g.def.mass, lv = p.body.linvel();
+        const dv = v - (lv.x * _tqW.x + lv.y * _tqW.y + lv.z * _tqW.z);
+        if (dv > 0) p.body.applyImpulse({ x: _tqW.x * dv * m, y: _tqW.y * dv * m, z: _tqW.z * dv * m }, true);
+      }
+    }
+    // The open hand under a one-handed long gun's handguard is a rest.
+    if (g.primary && !g.support && g.def.cls !== 'pistol' && g.touchN.y < -0.5 && g.wr && g.wr.support) {
+      _tqM.copy(p.root.matrixWorld).invert();
+      if (_tqW.copy(_tqG).applyMatrix4(_tqM).distanceTo(g.wr.support) < TOUCH.restNear) g.palmRestT = performance.now() / 1000;
+    }
+    // Fingers (controller hands): open the ones that are in the gun until they lie on it.
+    if (fingers) {
+      const ents = gcEntries(g, P, Q);
+      for (let k = 0; k < 5; k++) {
+        for (let n = 0; n < TOUCH.fingerIters && gcSegs(h, k, k === 0 ? 1 : 0, 2, h.tgt, _tqO, ents); n++) {
+          if (k === 0) {                                                 // thumb: both flex joints open and it swings off the palm
+            h.tgt[2] = Math.max(GUNPHYS.minFlex, h.tgt[2] - TOUCH.fingerStep); h.tgt[3] = Math.max(GUNPHYS.minFlex, h.tgt[3] - TOUCH.fingerStep);
+            h.tgt[1] -= TOUCH.fingerStep * 0.5;
+          } else for (let j = 0; j < 3; j++) h.tgt[k * 4 + j] = Math.max(GUNPHYS.minFlex, h.tgt[k * 4 + j] - TOUCH.fingerStep);
+        }
+      }
+    }
+    break;
+  }
+  // The push is taken at once and let go over 1 / TOUCH.ease s, so leaving a gun (or giving up on it) never pops.
+  if (touched) { st.gun = touched; st.n.copy(touched.touchN); }
+  _tqD.subVectors(P, _tqI);
+  if (_tqD.lengthSq() >= st.off.lengthSq()) st.off.copy(_tqD); else st.off.lerp(_tqD, 1 - Math.exp(-TOUCH.ease * dt));
+  P.copy(_tqI).add(st.off);
+  // Feel it: a tap on first contact, a faint rub while sliding over it.
+  const now = performance.now() / 1000;
+  if (touched && !st.on) { pulse(vh, TOUCH.tap, TOUCH.tapMs); st.rubT = now; }
+  else if (touched && speed > 0.05 && now - st.rubT > TOUCH.rubEvery) { pulse(vh, Math.min(TOUCH.rubMax, speed * TOUCH.rub), TOUCH.rubMs); st.rubT = now; }
+  st.on = !!touched;
+}
+
 function x64Float(g) {      // the bake stores quantized attributes; the bake into design space needs floats
   for (const n of ['position', 'normal', 'uv']) {
     const a = g.attributes[n]; if (!a || (a.array instanceof Float32Array && !a.normalized)) continue;
@@ -25699,7 +25837,7 @@ function freeGunPose(g, dt, P, Q) {
     }
     realHeft(g, dt, Q);                                                // step 71
   } else if (g.def.oneHand && g.hasBase) {
-    _fgQ2.copy(g.baseQuat).slerp(Q, 1 - Math.exp(-g.def.oneHand.rate * dt));
+    _fgQ2.copy(g.baseQuat).slerp(Q, 1 - Math.exp(-g.def.oneHand.rate * (palmRested(g) ? TOUCH.restRate : 1) * dt));   // step 72
     Q.copy(_fgQ2);
   }
   return true;
