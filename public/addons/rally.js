@@ -759,7 +759,7 @@
           var surf = nr.d <= hw - 0.4 ? 0 : 1, bank = 0;
           var off = nr.d - hw;
           if (off > BANK[0] && off < BANK[4] && !bankGap(nr.ri, nr.k, nr.side)) { bank = bankProfile(off) * bankH(nr.ri, nr.k, nr.side); surf = 2; }
-          return { h: y + bank * 0.85, surf: surf, road: nr };
+          return { h: y + bank * 0.85, surf: surf, road: nr, bank: bank * 0.85 };
         }
         return { h: terrainH(x, z), surf: 1, road: nr };
       }
@@ -1067,6 +1067,9 @@
       var M = {
         root: root, sky: sky, fog: fog, car: car, camMode: 0, input: function () { return driveInput(); },
         groundAt: groundAt, startAudio: startAudio, stopAudio: stopAudio,
+        roads: roads, nearestRoad: nearestRoad,
+        /** optional input source (replays, tests): () => {thr, brk, steer, hb} */
+        inputOverride: null,
         spawn: { x: spawnX, z: spawnZ, yaw: spawnYaw },
         updateBlockers: function () {
           var bl = [];
@@ -1155,6 +1158,7 @@
       }
       // keyboard, plus (in VR) analog triggers and either stick
       function driveInput() {
+        if (M.inputOverride) return M.inputOverride();
         var I = {
           thr: keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0,
           brk: keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0,
@@ -1188,34 +1192,48 @@
           var target = I.steer * maxS;
           var rate = (target === 0 || Math.sign(target) !== Math.sign(steer)) ? 4.5 : 2.6;
           steer += clamp(target - steer, -rate * dt, rate * dt);
-          // ground at wheels
-          var hs = [], surf = 0, roadHere = null;
+          // ground at wheels; snowbanks are soft (the car ploughs into them, it does not ride up them)
+          var hs = [], surf = 0, roadHere = null, bankPush = [0, 0], inBank = 0;
           for (var w = 0; w < 4; w++) {
             var wd = car.wheels[w], p = wheelPos(fx, fz, sx, sz, wd.x, wd.z), gr = groundAt(p[0], p[1]);
-            hs.push(gr.h); surf += gr.surf; if (w === 0) roadHere = gr;
+            var h = gr.h;
+            if (gr.surf === 2 && gr.road) {
+              var bank = gr.bank || 0;
+              h -= bank * 0.75; inBank++;
+              var ox = p[0] - gr.road.qx, oz = p[1] - gr.road.qz, ol = Math.hypot(ox, oz) || 1;
+              bankPush[0] -= ox / ol * bank; bankPush[1] -= oz / ol * bank;
+            }
+            hs.push(h); surf += gr.surf; if (w === 0) roadHere = gr;
           }
           surf /= 4;
           var hFront = (hs[0] + hs[1]) / 2, hRear = (hs[2] + hs[3]) / 2, hLeft = (hs[0] + hs[2]) / 2, hRight = (hs[1] + hs[3]) / 2;
           var gh = (hFront * B + hRear * A) / (A + B);
           var pitchG = Math.atan2(hFront - hRear, A + B), rollG = Math.atan2(hLeft - hRight, TRACK);
-          // vertical
-          var ny = car.y + car.vy * dt - 0.5 * GR * dt * dt;
-          var grounded;
-          if (ny <= gh + 0.002) {
-            if (gh - car.y > 0.9 && !car.air) { // wall-like step: refuse
-              car.vx *= -0.2; car.vz *= -0.2; car.x -= fx * vF * dt * 2; car.z -= fz * vF * dt * 2; continue;
-            }
-            var newVy = (gh - car.y) / dt;
-            car.vy = car.air ? Math.max(newVy, 0) : clamp(newVy, -15, 15);
-            car.y = gh; grounded = true; car.air = false;
+          // vertical: a damped suspension (12 cm of travel) follows the ground, so
+          // crests and dips keep the tyres loaded instead of launching the car;
+          // only a real drop-off (more than the travel) makes it airborne
+          var vGround = car.gh0 === undefined ? 0 : clamp((gh - car.gh0) / dt, -8, 8);
+          car.gh0 = gh;
+          if (gh - car.y > 0.9 && !car.air) { // wall-like step: refuse
+            car.vx *= -0.2; car.vz *= -0.2; car.x -= fx * vF * dt * 2; car.z -= fz * vF * dt * 2; continue;
+          }
+          var e = car.y - gh, TRAVEL = 0.12, grounded, load = 1;
+          if (e > TRAVEL) {
+            car.vy -= GR * dt; car.y += car.vy * dt; grounded = false; car.air = true;
+            if (car.y < gh) { car.y = gh; car.vy = Math.max(car.vy, vGround); grounded = true; car.air = false; }
           } else {
-            car.prevVy = car.vy; car.vy -= GR * dt; car.y = ny; grounded = false; car.air = true;
+            var K = 70, Cd = 2 * Math.sqrt(K);
+            var ay = -K * e - Cd * (car.vy - vGround);
+            car.vy += (ay - GR * 0) * dt; car.y += car.vy * dt;
+            if (car.y < gh - 0.06) { car.y = gh - 0.06; car.vy = Math.max(car.vy, vGround); } // bump stop
+            load = clamp((GR + ay) / GR, 0.15, 1.8); // weight on the tyres over crests and through dips
+            grounded = true; car.air = false;
           }
           car.pitchT = grounded ? pitchG : car.pitchT; car.rollT = grounded ? rollG : car.rollT * 0.995;
           var Fx = 0, FyF = 0, FyR = 0, torque = 0;
           if (grounded) {
             var mu = surf < 0.5 ? 0.95 : surf < 1.5 ? 0.72 : 0.6;
-            var NF = MASS * GR * B / (A + B), NR = MASS * GR * A / (A + B);
+            var NF = MASS * GR * B / (A + B) * load, NR = MASS * GR * A / (A + B) * load;
             var vfa = Math.max(Math.abs(vF), 2.2);
             var aF = Math.atan2(vL + car.r * A, vfa) - steer * Math.sign(vF || 1);
             var aR = Math.atan2(vL - car.r * B, vfa);
@@ -1246,6 +1264,11 @@
             var ax = (fx * (Fx - FyF * Math.sin(steer)) + sx * (FyF * Math.cos(steer) + FyR)) / MASS + (fx * gF + sx * gx) * GR * 0.9;
             var az = (fz * (Fx - FyF * Math.sin(steer)) + sz * (FyF * Math.cos(steer) + FyR)) / MASS + (fz * gF + sz * gx) * GR * 0.9;
             car.vx += ax * dt; car.vz += az * dt;
+            if (inBank) {
+              // ploughing snow: pushed back toward the road and slowed down
+              car.vx += bankPush[0] * 9 * dt; car.vz += bankPush[1] * 9 * dt;
+              var bd = Math.max(0, 1 - inBank * 0.22 * dt); car.vx *= bd; car.vz *= bd; car.r *= Math.max(0, 1 - inBank * 0.5 * dt);
+            }
             if (!thr && !brk && Math.hypot(car.vx, car.vz) < 0.3) { car.vx *= 0.9; car.vz *= 0.9; }
             car.r += torque / IZ * dt;
             car.r *= 1 - 0.6 * dt;

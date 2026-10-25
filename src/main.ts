@@ -14,7 +14,7 @@ import { mugDesc, notebookDesc, penDesc, pistolDesc, firearmDesc } from './physi
 import { Firearm, FIREARMS } from './world/firearm';
 import { FirearmSystem, type Gun } from './world/firearmSystem';
 import { GunEffects } from './world/gunEffects';
-import { ShootingRange } from './world/range';
+import { ShootingRange, RANGE_ORIGIN } from './world/range';
 import { EntityWorld, registerScene } from './engine/entities';
 import { Runtime } from './engine/runtime';
 import { Editor } from './engine/editor';
@@ -26,6 +26,7 @@ import { CodeApp } from './computer/codeApp';
 import { AgentApp } from './computer/agentApp';
 import { ProfilerApp } from './computer/profilerApp';
 import { Diagnostics } from './engine/diagnostics';
+import { MagazineManager, makeAmmoCan } from './world/magazines';
 import { AssetLibrary } from './engine/assets';
 import { AssetsApp } from './computer/assetsApp';
 import { log } from './engine/log';
@@ -90,6 +91,7 @@ let gameplay: Gameplay | undefined;
 let codeApp: CodeApp | undefined;
 let agentApp: AgentApp | undefined;
 let diag: Diagnostics | undefined;
+let mags: MagazineManager | undefined;
 let assets: AssetLibrary | undefined;
 log.capture();
 
@@ -167,6 +169,17 @@ async function init() {
 			shadows.add(prop, f.bolted ? 0.12 : 0.06, f.bolted ? 4 : 2);
 			guns.push(new FirearmSystem(f, prop, gunFx, scene, camera));
 		}
+		// real magazines: drop out as objects, seat by hand, spares in a belt pouch, ammo cans refill
+		mags = new MagazineManager(physics, scene);
+		for (const g of guns) if (g instanceof FirearmSystem) { mags.register(g); g.mags = mags; }
+		const refill = () => { mags!.refill((id) => FIREARMS[id as 'g17' | 'awp'].capacity); for (const g of guns) if (g instanceof FirearmSystem) g.say('Pouch refilled'); };
+		const officeCan = makeAmmoCan(refill);
+		officeCan.position.set(ROOM.width / 2 - 0.3, 0, 1.32);
+		officeCan.rotation.y = -Math.PI / 2;
+		scene.add(officeCan);
+		const rangeCan = makeAmmoCan(refill);
+		rangeCan.position.set(RANGE_ORIGIN.x + 0.62, 0.87, RANGE_ORIGIN.z - 0.32);
+		scene.add(rangeCan);
 	}
 
 	// interaction
@@ -176,6 +189,7 @@ async function init() {
 		computer,
 		gun,
 		guns,
+		get mags() { return mags; },
 		mouse: new DeskMouse(ws.mouse.group, new THREE.Vector3(DESK.centerX + 0.12, DESK.height, DESK.centerZ + DESK.depth / 2 - 0.19), new THREE.Vector2(0.4, 0.16)),
 	};
 	computer.onKeyVisual = (i, down) => ws.keyboard.setKey(i, down);
@@ -257,7 +271,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets, mags });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */

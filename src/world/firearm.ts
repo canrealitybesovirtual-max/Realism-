@@ -111,7 +111,7 @@ class Part {
 	}
 }
 
-type Phase = { t: number; dur: number; kind: 'bolt' | 'reload' };
+type Phase = { t: number; dur: number; kind: 'bolt' | 'rack' };
 
 export class Firearm {
 	readonly group = new THREE.Group();
@@ -132,8 +132,24 @@ export class Firearm {
 	laserOn = false;
 
 	// state
+	/** rounds in the inserted magazine (0 when none is inserted) */
 	magazine: number;
+	/** is a magazine in the magwell? */
+	magIn = true;
 	chambered = true;
+	/** pistol: slide held open (empty magazine) until released or racked */
+	slideLocked = false;
+	/** set by a hand on the slide (0 forward .. 1 back), or null when let go */
+	handSlide: number | null = null;
+	/** set by a hand on the bolt handle: lift 0..1, draw 0..1 */
+	handBolt: { lift: number; draw: number } | null = null;
+	/** bolt position (0 = closed) */
+	boltLift = 0;
+	boltDraw = 0;
+	private boltOpened = false;
+	private slideRacked = false;
+	/** inserting a magazine (desktop): 1 = just under the gun .. 0 = seated */
+	private magSeat = 0;
 	/** bolt gun: the spent case is still in the chamber until the bolt is worked */
 	needsCycle = false;
 	recoil = 0;
@@ -148,7 +164,7 @@ export class Firearm {
 	private magPart: Part | null = null;
 	private triggerPart: Part | null = null;
 	/** events for sound and brass, set by the owner */
-	on: (e: 'bolt' | 'eject' | 'magOut' | 'magIn' | 'slideRelease' | 'chamber') => void = () => {};
+	on: (e: 'bolt' | 'eject' | 'ejectLive' | 'magOut' | 'magIn' | 'slideRelease' | 'slideLock' | 'chamber' | 'rack') => void = () => {};
 
 	static async load(loader: GLTFLoader, spec: FirearmSpec): Promise<Firearm> {
 		const gltf = await loadPackedGltf(loader, spec.packed);
@@ -241,6 +257,8 @@ export class Firearm {
 	get busy() { return this.cycling > 0 || !!this.phase; }
 	get roundsLeft() { return this.magazine + (this.chambered && !this.needsCycle ? 1 : 0); }
 	get bolted() { return this.spec.action === 'bolt'; }
+	/** the action is closed and ready (slide forward / bolt down) */
+	get inBattery() { return this.bolted ? this.boltLift < 0.05 && this.boltDraw < 0.02 : this.slideT < 0.08 && !this.slideLocked && this.handSlide === null; }
 
 	/** analog trigger position, 0..1 (animates the trigger blade) */
 	setTrigger(v: number) { this.triggerPull = v; }
@@ -248,6 +266,7 @@ export class Firearm {
 	/** Pull the trigger: 'fired', 'click' (nothing to fire) or null (mechanism busy). */
 	fire(): 'fired' | 'click' | null {
 		if (this.busy) return null;
+		if (!this.inBattery) return null; // the action is open: the trigger does nothing
 		if (!this.chambered || this.needsCycle) return 'click';
 		this.recoil = 1;
 		if (this.bolted) {
@@ -255,26 +274,78 @@ export class Firearm {
 			this.needsCycle = true;
 			this.cycling = 0.15;
 		} else {
-			// recoil-operated: the slide cycles, ejects and feeds the next round
+			// recoil-operated: the slide cycles, ejects the case and feeds the next
+			// round; with an empty magazine the follower locks the slide open
 			this.cycling = 0.07;
 			this.slideVel = 14;
-			if (this.magazine > 0) this.magazine--;
-			else this.chambered = false; // last round: slide locks back
+			if (this.magIn && this.magazine > 0) this.magazine--;
+			else { this.chambered = false; if (this.magIn) this.slideLocked = true; }
 		}
 		return 'fired';
 	}
 
-	/** Work the bolt (bolt gun) or rack the slide (pistol). */
+	/** Magazine release: out it comes with whatever it still holds (null if none in). */
+	releaseMag(): number | null {
+		if (!this.magIn) return null;
+		const rounds = this.magazine;
+		this.magIn = false; this.magazine = 0; this.magSeat = 0;
+		this.on('magOut');
+		return rounds;
+	}
+
+	/** Seat a magazine. `animate` lifts it into the magwell over a moment (desktop). */
+	insertMag(rounds: number, animate = false) {
+		if (this.magIn) return false;
+		this.magIn = true; this.magazine = Math.max(0, Math.min(this.spec.capacity, rounds));
+		this.magSeat = animate ? 1 : 0;
+		this.on('magIn');
+		return true;
+	}
+
+	/** Pistol slide stop: let a locked-back slide run forward (it chambers if it can). */
+	slideRelease() {
+		if (this.bolted || !this.slideLocked) return;
+		this.slideLocked = false;
+		this.slideRacked = true;
+		this.on('slideRelease');
+	}
+
+	/** Work the bolt / rack the slide as one quick motion (desktop, buttons). */
 	cycle() {
 		if (this.busy) return;
 		if (this.bolted) { this.phase = { t: 0, dur: 0.85, kind: 'bolt' }; this.on('bolt'); }
-		else if (!this.chambered && this.magazine > 0) { this.slideVel = 10; this.magazine--; this.chambered = true; this.on('slideRelease'); }
+		else { this.phase = { t: 0, dur: 0.32, kind: 'rack' }; this.on('rack'); }
 	}
 
+	/** the old one-button reload (kept for scripts): swap in a full magazine */
 	reload() {
-		if (this.busy || this.magazine === this.spec.capacity) return;
-		this.phase = { t: 0, dur: this.bolted ? 2.1 : 1.6, kind: 'reload' };
-		this.on('magOut');
+		if (this.busy) return;
+		this.releaseMag();
+		this.insertMag(this.spec.capacity, true);
+	}
+
+	/** slide pulled to the rear by a hand / the rack motion: the chamber empties */
+	private slideBack() {
+		if (this.chambered) { this.chambered = false; this.on('ejectLive'); }
+		this.slideRacked = true;
+		if (this.slideLocked) this.slideLocked = false;
+	}
+	/** slide back home after a rack: feed a round, or lock open on an empty magazine */
+	private slideHome() {
+		this.slideRacked = false;
+		if (this.magIn && this.magazine > 0 && !this.chambered) { this.magazine--; this.chambered = true; this.on('chamber'); }
+	}
+
+	/** bolt drawn fully back: the case (or a live round) comes out */
+	private boltBack() {
+		if (this.chambered || this.needsCycle) this.on(this.needsCycle ? 'eject' : 'ejectLive');
+		this.chambered = false; this.needsCycle = false;
+		this.boltOpened = true;
+	}
+	/** bolt pushed forward: it strips the top round from the magazine */
+	private boltForward() {
+		this.boltOpened = false;
+		if (this.magIn && this.magazine > 0) { this.magazine--; this.chambered = true; this.on('chamber'); }
 	}
 
 	toggleAccessory() {
@@ -294,44 +365,50 @@ export class Firearm {
 		this.cycling = Math.max(0, this.cycling - dt);
 		this.recoil = Math.max(0, this.recoil - dt * s.recoil.decay);
 		const M = new THREE.Matrix4();
-		// slide: blown back by the shot, returned by its spring, held open when empty
-		if (this.slidePart && s.slide) {
-			if (this.slideVel > 0) { this.slideT += this.slideVel * dt * 6; if (this.slideT >= 1) { this.slideT = 1; this.slideVel = 0; } }
-			else if (this.chambered) this.slideT = Math.max(0, this.slideT - dt * 16);
-			this.slidePart.set(M.makeTranslation(0, 0, this.slideT * s.slide.travel));
+		// slide: blown back by a shot, pulled by a hand, returned by its spring
+		if (s.slide) {
+			const was = this.slideT;
+			let hand = this.handSlide;
+			if (this.phase?.kind === 'rack') { const u = this.phase.t / this.phase.dur; hand = u < 0.5 ? THREE.MathUtils.smoothstep(u, 0, 0.45) : null; }
+			if (hand !== null) {
+				this.slideVel = 0;
+				this.slideT = THREE.MathUtils.clamp(hand, 0, 1);
+			} else if (this.slideVel > 0) {
+				this.slideT += this.slideVel * dt * 6;
+				if (this.slideT >= 1) { this.slideT = 1; this.slideVel = 0; if (this.slideLocked) this.on('slideLock'); }
+			} else if (!this.slideLocked) this.slideT = Math.max(0, this.slideT - dt * 16);
+			if (hand !== null && was < 0.9 && this.slideT >= 0.9) this.slideBack();
+			if (this.slideRacked && this.slideT <= 0.02 && hand === null) this.slideHome();
+			// racked with an empty magazine: the follower catches the slide
+			if (this.slideRacked && hand === null && this.slideT > 0.5 && this.magIn && this.magazine === 0 && !this.chambered && !this.slideLocked) { this.slideLocked = true; this.slideRacked = false; this.slideT = 1; this.on('slideLock'); }
+			if (this.slidePart) this.slidePart.set(M.makeTranslation(0, 0, this.slideT * s.slide.travel));
 		}
 		if (this.triggerPart) this.triggerPart.set(this.pivot(new THREE.Vector3(0, 0.03, -0.05), new THREE.Vector3(1, 0, 0), -this.triggerPull * 0.25));
-		// timed sequences
-		let lift = 0, draw = 0, magDrop = 0;
-		if (this.phase) {
-			const p = this.phase;
-			p.t += dt;
-			const u = p.t / p.dur;
-			if (p.kind === 'bolt') {
-				// lift the handle, draw the bolt (case out), push it home (round in), lower
-				const seg = (a: number, b: number) => THREE.MathUtils.smoothstep(u, a, b);
+		// bolt: driven by a hand, or by the quick bolt motion
+		if (s.bolt) {
+			let lift = this.boltLift, draw = this.boltDraw;
+			if (this.handBolt) {
+				lift = THREE.MathUtils.clamp(this.handBolt.lift, 0, 1);
+				draw = THREE.MathUtils.clamp(this.handBolt.draw, 0, 1);
+				// a turn-bolt only slides when the handle is up, and only turns down when home
+				if (this.boltLift < 0.9) draw = Math.min(draw, this.boltDraw);
+				if (this.boltDraw > 0.05) lift = Math.max(lift, 0.92);
+			} else if (this.phase?.kind === 'bolt') {
+				const u = this.phase.t / this.phase.dur, seg = (a: number, b: number) => THREE.MathUtils.smoothstep(u, a, b);
 				lift = seg(0, 0.18) * (1 - seg(0.82, 1));
 				draw = seg(0.2, 0.45) * (1 - seg(0.55, 0.8));
-				if (u >= 0.42 && !p['ejected' as never]) {
-					(p as any).ejected = true;
-					if (this.needsCycle || this.chambered) this.on('eject');
-					this.chambered = false; this.needsCycle = false;
-				}
-				if (u >= 0.7 && !(p as any).fed) {
-					(p as any).fed = true;
-					if (this.magazine > 0) { this.magazine--; this.chambered = true; this.on('chamber'); }
-				}
 			} else {
-				// magazine out, a fresh one in; release the slide / leave the bolt to you
-				magDrop = THREE.MathUtils.smoothstep(u, 0.05, 0.3) * (1 - THREE.MathUtils.smoothstep(u, 0.55, 0.8));
-				if (u >= 0.55 && !(p as any).filled) { (p as any).filled = true; this.magazine = s.capacity; this.on('magIn'); }
-				if (u >= 0.9 && !(p as any).released && !this.bolted && !this.chambered) {
-					(p as any).released = true;
-					this.magazine--; this.chambered = true; this.slideVel = 0; this.on('slideRelease');
-				}
+				// let go: the handle stays where it was (a bolt does not spring back)
 			}
-			if (p.t >= p.dur) this.phase = null;
+			if (this.boltDraw < 0.85 && draw >= 0.85) this.boltBack();
+			if (this.boltOpened && this.boltDraw >= 0.3 && draw < 0.3) this.boltForward();
+			if (this.boltLift < 0.1 && lift >= 0.1 && !this.phase) this.on('bolt');
+			this.boltLift = lift; this.boltDraw = draw;
 		}
+		if (this.phase) { this.phase.t += dt; if (this.phase.t >= this.phase.dur) this.phase = null; }
+		const lift = this.boltLift, draw = this.boltDraw;
+		this.magSeat = Math.max(0, this.magSeat - dt * 3);
+		const magDrop = this.magIn ? THREE.MathUtils.smoothstep(this.magSeat, 0, 1) : 1;
 		if (this.handlePart && s.bolt) {
 			const R = this.pivot(new THREE.Vector3(0, this.boltAxisY(), 0), new THREE.Vector3(0, 0, 1), -THREE.MathUtils.degToRad(s.bolt.lift) * lift);
 			const T = new THREE.Matrix4().makeTranslation(0, 0, draw * s.bolt.travel);
@@ -339,8 +416,8 @@ export class Firearm {
 			for (const c of this.carrierParts) c.set(T);
 		}
 		if (this.magPart) {
-			this.magPart.node.visible = magDrop < 0.97;
-			this.magPart.set(M.makeTranslation(0, -0.16 * magDrop, 0.02 * magDrop));
+			this.magPart.node.visible = this.magIn;
+			this.magPart.set(M.makeTranslation(0, -0.12 * magDrop, 0.015 * magDrop));
 		}
 		// laser dot on whatever the beam meets
 		if (this.laserDot) {
@@ -371,6 +448,17 @@ export class Firearm {
 			.multiply(new THREE.Matrix4().makeRotationAxis(axis, angle))
 			.multiply(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
 	}
+
+	/** the magazine's mesh, its pose in the gun frame, and the bolt handle / slide grip points (gun frame) */
+	magNode() { return this.magPart?.node ?? null; }
+	slideGripPoint() { return this.spec.slide ? this.sight.clone().add(new THREE.Vector3(0, -0.012, 0.05)) : null; }
+	boltHandlePoint() {
+		if (!this.handlePart) return null;
+		const b = new THREE.Box3().setFromObject(this.handlePart.node), inv = new THREE.Matrix4().copy(this.group.matrixWorld).invert();
+		return b.getCenter(new THREE.Vector3()).applyMatrix4(inv);
+	}
+	/** where the bolt axis is (gun frame), for turning the handle */
+	boltAxis() { return new THREE.Vector3(0, this.boltAxisY(), 0); }
 
 	world(local: THREE.Vector3, out = new THREE.Vector3()) { this.group.updateMatrixWorld(true); return out.copy(local).applyMatrix4(this.group.matrixWorld); }
 	dirWorld(x: number, y: number, z: number, out = new THREE.Vector3()) { return out.set(x, y, z).transformDirection(this.group.matrixWorld); }

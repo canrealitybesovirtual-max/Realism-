@@ -97,9 +97,11 @@ export class DesktopControls {
 			if (e.code === 'KeyE' && !e.repeat) this.primary();
 			const g = this.heldGun();
 			if (g && !e.repeat) {
+				// R: magazine out / in; F: rack the slide or work the bolt; L: light / laser
 				if (e.code === 'KeyR') g.reload();
-				// F: work the bolt (rifle) or switch the weapon light (pistol)
-				if (e.code === 'KeyF') { if (g.twoHanded) g.primary(); else g.secondary(); }
+				if (e.code === 'KeyF') { if (g.cycle) g.cycle(); else if (g.twoHanded) g.primary(); else g.secondary(); }
+				if (e.code === 'KeyL') { if (g.accessory) g.accessory(); else g.secondary(); }
+				if (e.code === 'KeyB') g.secondary(); // slide stop
 			}
 		});
 		addEventListener('keyup', (e) => {
@@ -120,9 +122,11 @@ export class DesktopControls {
 		if (!this.held && tool?.active() && this.mode === 'walk' && tool.desktopClick(this.camera)) return;
 		// gameplay: using what the crosshair is on (Interactable, Door, ...) comes before picking it up
 		const play = this.targets.gameplay;
-		if (!this.held && play && this.mode === 'walk') {
+		if (this.mode === 'walk' && (!this.held || this.heldGun())) {
 			const o = useTarget(this.camera.getWorldPosition(new THREE.Vector3()), this.camera.getWorldDirection(new THREE.Vector3()), this.camera);
-			if (o && play.use(o)) return;
+			const use = onUseOf(o);
+			if (use && !fromClick) { use(); return; }
+			if (!this.held && o && play?.use(o)) return;
 		}
 		const gun = this.heldGun();
 		if (this.held && fromClick && gun) {
@@ -184,8 +188,27 @@ export class DesktopControls {
 		if (this.hand) this.hand.visible = false;
 	}
 
+	private hud: HTMLDivElement | null = null;
+	private hudText = '';
+	/** small gun readout at the bottom of the screen while holding a gun */
+	private updateHud() {
+		const g = this.heldGun();
+		const t = g?.status ? g.status() + '   ·   R magazine   F rack / bolt   L light / laser   B slide stop' : '';
+		if (t === this.hudText) return;
+		this.hudText = t;
+		if (!this.hud) {
+			this.hud = document.createElement('div');
+			this.hud.id = 'gun-hud';
+			Object.assign(this.hud.style, { position: 'fixed', left: '50%', bottom: '18px', transform: 'translateX(-50%)', padding: '6px 14px', borderRadius: '8px', background: 'rgba(10,12,16,0.62)', color: '#e8ebef', font: '500 13px system-ui, sans-serif', pointerEvents: 'none', zIndex: '20', whiteSpace: 'nowrap' });
+			document.body.appendChild(this.hud);
+		}
+		this.hud.textContent = t;
+		this.hud.style.display = t ? 'block' : 'none';
+	}
+
 	update(dt: number) {
-		if (!this.enabled) return;
+		if (!this.enabled) { if (this.hud) this.hud.style.display = 'none'; this.hudText = ''; return; }
+		this.updateHud();
 		// look
 		this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
 		this.camera.updateMatrixWorld();
@@ -258,6 +281,12 @@ export class DesktopControls {
 
 const useRay = new THREE.Raycaster();
 /** the first visible mesh within arm's reach (2.5 m) along a ray */
+/** an object (or its parent) that does something when used: userData.onUse */
+export function onUseOf(o: THREE.Object3D | null): (() => void) | null {
+	for (let p = o; p; p = p.parent) if (typeof p.userData.onUse === 'function') return p.userData.onUse;
+	return null;
+}
+
 export function useTarget(origin: THREE.Vector3, dir: THREE.Vector3, camera: THREE.Camera): THREE.Object3D | null {
 	let scene: THREE.Object3D = camera;
 	while (scene.parent) scene = scene.parent;

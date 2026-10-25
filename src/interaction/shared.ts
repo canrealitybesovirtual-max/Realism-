@@ -101,6 +101,8 @@ export interface InteractionTargets {
 	editorTool?: import('../engine/worldTool').WorldTool;
 	/** every usable gun (the pistol included) */
 	guns?: import('../world/firearmSystem').Gun[];
+	/** real magazines + belt pouch */
+	mags?: import('../world/magazines').MagazineManager;
 	screen: THREE.Mesh;
 	keycaps: THREE.Mesh;
 	computer: Computer;

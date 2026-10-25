@@ -187,6 +187,16 @@ export class Physics {
 		}
 	}
 
+	/** Remove a prop for good (e.g. a magazine pushed into a gun). */
+	removeProp(prop: Prop) {
+		if (!this.enabled) return;
+		this.holds.delete(prop);
+		const i = this.props.indexOf(prop);
+		if (i >= 0) this.props.splice(i, 1);
+		this.world.removeRigidBody(prop.body);
+		prop.desc.object.parent?.remove(prop.desc.object);
+	}
+
 	/** Take a prop out of the simulation (or put it back), keeping it for undo. */
 	setPropEnabled(prop: Prop, on: boolean) {
 		prop.body.setEnabled(on);
