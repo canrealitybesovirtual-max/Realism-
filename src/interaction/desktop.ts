@@ -81,6 +81,7 @@ export class DesktopControls {
 			if (this.mode === 'computer') { this.targets.computer.os.wheel(e.deltaY); return; }
 			const g = this.heldGun();
 			if (g?.zoom && this.ads) { g.zoom(Math.exp(-e.deltaY * 0.0015)); return; }
+			if (this.targets.editorTool?.desktopWheel(e.deltaY)) return;
 			if (this.held) this.held.dist = THREE.MathUtils.clamp(this.held.dist - e.deltaY * 0.0006, 0.3, 1.2);
 		}, { passive: true });
 		addEventListener('keydown', (e) => {
@@ -90,6 +91,8 @@ export class DesktopControls {
 				if (this.targets.computer.physicalKey(e)) e.preventDefault();
 				return;
 			}
+			const tool = this.targets.editorTool;
+			if (tool?.active() && !this.held && tool.desktopKey(e.code, e.ctrlKey || e.metaKey, e.shiftKey, this.camera)) { e.preventDefault(); return; }
 			this.keys.add(e.code);
 			if (e.code === 'KeyE' && !e.repeat) this.primary();
 			const g = this.heldGun();
@@ -112,6 +115,9 @@ export class DesktopControls {
 	heldGun() { return this.held ? gunFor(this.targets.guns, this.held.prop) : null; }
 
 	private primary(fromClick = false) {
+		// World tool: clicking selects / places scene objects (the monitor still opens the computer)
+		const tool = this.targets.editorTool;
+		if (!this.held && tool?.active() && this.mode === 'walk' && tool.desktopClick(this.camera)) return;
 		const gun = this.heldGun();
 		if (this.held && fromClick && gun) {
 			// holding a gun: click fires (at the crosshair from the hip, along the
@@ -176,6 +182,8 @@ export class DesktopControls {
 		if (!this.enabled) return;
 		// look
 		this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
+		this.camera.updateMatrixWorld();
+		this.targets.editorTool?.desktopUpdate(this.camera);
 		// walk
 		if (this.mode === 'walk') {
 			const f = (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) - (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0);

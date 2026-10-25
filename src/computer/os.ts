@@ -11,11 +11,12 @@ import { WindowManager, TITLE_H, type Rect, type Win } from './windowManager';
  * screen pixels, and physical or virtual key presses into `key()`.
  */
 
+export type { Rect };
 export interface KeyInput { code: string; key: string; shift: boolean; ctrl: boolean; alt: boolean; meta: boolean; }
 export interface OSStorage { get(k: string): string | null; set(k: string, v: string): void; }
 export type CursorStyle = 'arrow' | 'text' | 'move' | 'pointer' | 'crosshair' | 'resize';
 
-interface App {
+export interface App {
 	id: string;
 	title: string;
 	defaultRect: Rect;
@@ -71,6 +72,16 @@ export class DesktopOS {
 	}
 
 	invalidate() { this.dirty = true; }
+
+	/** add an app (and its dock icon, before System) */
+	registerApp(app: App) {
+		this.apps.set(app.id, app);
+		if (!this.dockApps.includes(app.id)) {
+			const i = this.dockApps.indexOf('system');
+			this.dockApps.splice(i < 0 ? this.dockApps.length : i, 0, app.id);
+		}
+		this.invalidate();
+	}
 
 	openApp(id: string) {
 		const existing = this.wm.byApp(id);

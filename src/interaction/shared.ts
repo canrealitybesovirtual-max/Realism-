@@ -95,6 +95,8 @@ export class PointerOwner {
 export interface InteractionTargets {
 	/** the pistol, when loaded */
 	gun?: import('../world/pistolSystem').PistolSystem;
+	/** the editor's in-world tools (select / carry), when the Studio is set up */
+	editorTool?: import('../engine/worldTool').WorldTool;
 	/** every usable gun (the pistol included) */
 	guns?: import('../world/firearmSystem').Gun[];
 	screen: THREE.Mesh;

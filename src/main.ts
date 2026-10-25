@@ -15,6 +15,13 @@ import { Firearm, FIREARMS } from './world/firearm';
 import { FirearmSystem, type Gun } from './world/firearmSystem';
 import { GunEffects } from './world/gunEffects';
 import { ShootingRange } from './world/range';
+import { EntityWorld, registerScene } from './engine/entities';
+import { Runtime } from './engine/runtime';
+import { Editor } from './engine/editor';
+import { EditorViewport } from './engine/viewport';
+import { WorldTool } from './engine/worldTool';
+import { StudioApp } from './computer/studioApp';
+import { log } from './engine/log';
 import { Pistol } from './world/pistol';
 import { PistolSystem } from './world/pistolSystem';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -68,6 +75,10 @@ let gun: PistolSystem | undefined;
 const guns: Gun[] = [];
 let gunFx: GunEffects | undefined;
 let range: ShootingRange | undefined;
+let runtime: Runtime | undefined;
+let editor: Editor | undefined;
+let viewport: EditorViewport | undefined;
+log.capture();
 
 function setView(name: string) {
 	const v = VIEWS[name];
@@ -168,6 +179,20 @@ async function init() {
 			gunProps: guns.map((g) => ({ prop: g.prop, bolted: g.twoHanded })),
 		});
 	}
+	// the engine / editor layer over the running game (Studio app on the computer)
+	{
+		const world = new EntityWorld(scene, physics.enabled ? physics : null);
+		registerScene(world, { props: physics.props, lamp: ws.lamp, plant: ws.plant, clock: ws.clock });
+		runtime = new Runtime(world);
+		const rt = runtime;
+		editor = new Editor(world, runtime, { world, physics: physics.enabled ? physics : null, scene, onMoved: (e) => rt.authored(e.id, e.object.position, e.object.quaternion) }, scene);
+		viewport = new EditorViewport(ws.monitor.screen.material as THREE.MeshStandardMaterial, computer.os.W, computer.os.H);
+		const studio = new StudioApp(computer.os, editor, viewport, () => camera.getWorldPosition(new THREE.Vector3()));
+		studio.playerForward = () => { const d = camera.getWorldDirection(new THREE.Vector3()); d.y = 0; return d.lengthSq() ? d.normalize() : new THREE.Vector3(0, 0, -1); };
+		computer.os.registerApp(studio);
+		targets.editorTool = new WorldTool(editor, scene, ws.monitor.screen);
+		log.info(`Engine: ${world.list.length} entities registered`);
+	}
 	// bullets ignore the pointer dots and the comfort vignette
 	if (gun) scene.traverse((o) => { if ((o as THREE.Mesh).isMesh && !o.name && (o.parent === scene || o.parent === camera)) gun!.effects.ignore.add(o); });
 	if (params.get('view')) setView(params.get('view')!);
@@ -194,7 +219,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, THREE, KEY_INDEX });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, log, THREE, KEY_INDEX });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -257,10 +282,15 @@ renderer.setAnimationLoop((t) => {
 	if (now - fpsT > 1000) { fps = (frames * 1000) / (now - fpsT); frames = 0; fpsT = now; }
 	if (ws && physics) {
 		if (renderer.xr.isPresenting) xr?.update(dt, now); else desktop?.update(dt);
-		physics.step(dt);
-		for (const g of guns) g.update(dt);
-		gunFx?.update(dt);
-		range?.update(dt);
+		// the simulation advances only while the runtime plays (or steps)
+		const sdt = runtime ? runtime.frameDt(dt) : dt;
+		if (sdt > 0) {
+			physics.step(sdt);
+			for (const g of guns) g.update(sdt);
+			gunFx?.update(sdt);
+		}
+		range?.update(sdt); // with 0 while paused: clays freeze, the exit and hints still work
+		editor?.update();
 		shadows.update();
 		ws.updateClock();
 		ws.keyboard.update(dt);
@@ -271,6 +301,7 @@ renderer.setAnimationLoop((t) => {
 	} else {
 		renderer.shadowMap.needsUpdate = true;
 	}
+	viewport?.render(renderer, scene);
 	// scopes render their magnified view for the eye that is behind them
 	if (guns.length) {
 		// (in VR the scene camera inside the rig carries the head pose; the XR

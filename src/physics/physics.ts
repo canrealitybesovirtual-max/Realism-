@@ -187,6 +187,19 @@ export class Physics {
 		}
 	}
 
+	/** Take a prop out of the simulation (or put it back), keeping it for undo. */
+	setPropEnabled(prop: Prop, on: boolean) {
+		prop.body.setEnabled(on);
+		if (on) prop.body.wakeUp();
+	}
+
+	/** Static props hold their place (and still collide); dynamic ones fall and can be carried. */
+	setPropStatic(prop: Prop, fixed: boolean) {
+		prop.body.setBodyType(fixed ? RAPIER.RigidBodyType.Fixed : RAPIER.RigidBodyType.Dynamic, true);
+		(prop as any).fixed = fixed;
+	}
+	isPropStatic(prop: Prop) { return !!(prop as any).fixed; }
+
 	/** Move a prop instantly (no sweep), at rest. */
 	teleport(prop: Prop, pos: THREE.Vector3, rot: THREE.Quaternion) {
 		this.holds.delete(prop);
@@ -220,6 +233,7 @@ export class Physics {
 		const a = this.acc / this.dt;
 		const p = new THREE.Vector3(), q = new THREE.Quaternion();
 		for (const prop of this.props) {
+			if (!prop.body.isEnabled()) continue; // taken out (deleted, or carried by the editor)
 			this.pos(prop, p); this.rot(prop, q);
 			prop.desc.object.position.lerpVectors(prop.prevPos, p, a);
 			prop.desc.object.quaternion.slerpQuaternions(prop.prevRot, q, a);

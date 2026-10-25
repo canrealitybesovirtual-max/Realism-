@@ -391,6 +391,12 @@ export class XRControls {
 			(h.line.material as THREE.LineBasicMaterial).opacity = 0.3;
 		}
 
+		// the editor's World tool: select / carry scene objects (the monitor and keys keep working)
+		const tool = this.targets.editorTool;
+		if (tool?.active() && (tool.carrying(h.index) || (h.pointing !== 'screen' && h.pointing !== 'key'))) {
+			const d = tool.xr(h.index, h.ray.matrixWorld, h.grip.matrixWorld, gripPos, btn, dt);
+			if (d !== null) { h.line.visible = true; h.line.scale.z = Math.max(0.05, d); h.dot.visible = false; (h.line.material as THREE.LineBasicMaterial).opacity = 0.75; return; }
+		}
 		// screen pointer
 		const os = this.targets.computer.os;
 		const id = 'xr-' + h.index;
@@ -497,7 +503,7 @@ export class XRControls {
 			if (h.source!.handedness !== 'left') { turnX = x; turnHand = h; }
 		}
 		// snap turn (not while the right ray is scrolling the monitor)
-		if (turnHand && turnHand.pointing !== 'screen') {
+		if (turnHand && turnHand.pointing !== 'screen' && !this.targets.editorTool?.carrying(turnHand.index)) {
 			if (Math.abs(turnX) > 0.75 && turnHand.turnReady) { this.snapTurn(turnX > 0 ? -Math.PI / 6 : Math.PI / 6); turnHand.turnReady = false; }
 			if (Math.abs(turnX) < 0.3) turnHand.turnReady = true;
 		}
