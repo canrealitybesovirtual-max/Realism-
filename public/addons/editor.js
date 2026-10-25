@@ -506,6 +506,11 @@
         if (!video.el && inRect(x, y, b.choose)) return "pointer";
         return "arrow";
       }
+      // a headset session cannot show the browser's file dialog
+      choose() {
+        if (S.renderer.xr && S.renderer.xr.isPresenting) { this.note = "Take the headset off (exit VR) to pick a file; it keeps playing when you come back."; this.os.invalidate(); return; }
+        picker.click();
+      }
       seekTo(x, r) {
         var v = video.el, tr = this.layout(r).track;
         if (!v || !v.duration) return;
@@ -514,14 +519,14 @@
       }
       toggle() {
         var v = video.el, self = this;
-        if (!v) { picker.click(); return; }
+        if (!v) { this.choose(); return; }
         if (v.paused) { this.note = ""; v.play().catch(function (e) { self.note = "Playback was blocked: " + e.message; self.os.invalidate(); }); }
         else v.pause();
         this.os.invalidate();
       }
       pointerDown(x, y, r) {
         var b = this.layout(r), v = video.el;
-        if (inRect(x, y, b.open) || (!v && inRect(x, y, b.choose))) { picker.click(); return; }
+        if (inRect(x, y, b.open) || (!v && inRect(x, y, b.choose))) { this.choose(); return; }
         if (inRect(x, y, b.play)) { this.toggle(); return; }
         if (inRect(x, y, b.mute)) { if (v) v.muted = !v.muted; this.os.invalidate(); return; }
         if (inRect(x, y, { x: b.track.x - 10, y: b.track.y - 12, w: b.track.w + 20, h: b.track.h + 24 })) { this.seeking = true; this.seekTo(x, r); return; }
@@ -532,7 +537,7 @@
       key(e) {
         var v = video.el;
         if (e.code === "Space" || e.code === "KeyK") { this.toggle(); return true; }
-        if (e.code === "KeyO") { picker.click(); return true; }
+        if (e.code === "KeyO") { this.choose(); return true; }
         if (!v) return false;
         if (e.code === "ArrowLeft" || e.code === "KeyJ") { v.currentTime = Math.max(0, v.currentTime - (e.code === "KeyJ" ? 10 : 5)); return true; }
         if (e.code === "ArrowRight" || e.code === "KeyL") { v.currentTime = Math.min(v.duration || 0, v.currentTime + (e.code === "KeyL" ? 10 : 5)); return true; }

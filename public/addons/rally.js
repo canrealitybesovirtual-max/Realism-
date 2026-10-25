@@ -47,14 +47,16 @@
   credits.textContent = "Car: “art of rally Latest Version 2027” by FarHandle5255 · Textures: “Snowy Mountain Road Scene” by 99.Miles · Sketchfab, CC BY 4.0";
   document.body.appendChild(credits);
   var hintText = "";
+  var onHint = function () {}, onFade = function () {};
   function setHint(t) {
     if (t === hintText) return; hintText = t;
+    onHint(t);
     if (!t) { hint.style.display = "none"; return; }
     hint.innerHTML = t; hint.style.display = "block";
   }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
-  async function fadeOut(msg) { fade.textContent = msg || ""; fade.classList.add("on"); await sleep(380); }
-  async function fadeIn() { fade.classList.remove("on"); await sleep(50); fade.textContent = ""; }
+  async function fadeOut(msg) { onFade(true, msg); fade.textContent = msg || ""; fade.classList.add("on"); await sleep(380); }
+  async function fadeIn() { onFade(false); fade.classList.remove("on"); await sleep(50); fade.textContent = ""; }
 
   waitForStudio().then(function (ctx) {
     var S = ctx.S, os = ctx.os, THREE = S.THREE, scene = S.scene, camera = S.camera, renderer = S.renderer, desk = S.desktop;
@@ -173,6 +175,145 @@
     var ray = new THREE.Raycaster(); ray.far = 2.6;
     var lookYaw = 0, lookPitch = 0, lookIdle = 0;
 
+    // ---------- VR: controllers, in-headset hint + fade, rig placement ----------
+    // In a headset the camera sits inside the XR rig and the headset owns its
+    // pose, so everything that moves "the player" moves the rig instead.
+    var xr = S.xr;
+    function inXR() { return !!(xr && renderer.xr && renderer.xr.isPresenting); }
+    var _e = new THREE.Euler(0, 0, 0, "YXZ"), UP = new THREE.Vector3(0, 1, 0);
+    function headWorld(out) { camera.updateMatrixWorld(true); return (out || new THREE.Vector3()).setFromMatrixPosition(camera.matrixWorld); }
+    function headLocalYaw() { return _e.setFromQuaternion(camera.quaternion, "YXZ").y; }
+    // put the real head at world (x, z) looking along yaw, with the rig's floor at height y
+    function placeHead(x, z, y, yaw) {
+      var rig = xr.rig;
+      rig.position.set(0, 0, 0); rig.quaternion.setFromAxisAngle(UP, yaw - headLocalYaw()); rig.scale.set(1, 1, 1);
+      rig.updateMatrixWorld(true);
+      var h = camera.position.clone().applyMatrix4(rig.matrixWorld);
+      rig.position.set(x - h.x, y, z - h.z);
+      rig.updateMatrixWorld(true);
+    }
+    // driver's seat: the head pose (in rig space) at the moment of sitting
+    // down maps onto the driver's eye point, so leaning and looking around
+    // still work; X re-centres
+    var seatRef = null;
+    var EYE_LOCAL = new THREE.Vector3(0.36, 1.12, -0.12); // left-hand drive: +X is the left side when +Z is forward
+    function recenterSeat() { seatRef = { p: camera.position.clone(), yaw: headLocalYaw() }; }
+    var _seat = new THREE.Matrix4(), _ref = new THREE.Matrix4(), _qy = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+    function placeSeat() {
+      if (!seatRef) recenterSeat();
+      var car = map.car; car.root.updateMatrixWorld(true);
+      _seat.compose(EYE_LOCAL, _qy.setFromAxisAngle(UP, Math.PI), ONE).premultiply(car.root.matrixWorld);
+      _ref.compose(seatRef.p, _qy.setFromAxisAngle(UP, seatRef.yaw), ONE).invert();
+      _seat.multiply(_ref).decompose(xr.rig.position, xr.rig.quaternion, xr.rig.scale);
+      xr.rig.scale.set(1, 1, 1);
+      xr.rig.updateMatrixWorld(true);
+    }
+    // entering VR while on the mountain: the studio's XR code has just put the
+    // rig in the room, so carry the player over once the head pose is live
+    var needPlace = 0, carryPos = null;
+    renderer.xr.addEventListener("sessionstart", function () {
+      if (mode === "room") return;
+      carryPos = mode === "foot" ? camera.position.clone() : null; // still the desktop pose here
+      needPlace = 3; // frames
+    });
+    var lastHead = new THREE.Vector3(), lastHeadYaw = 0;
+    renderer.xr.addEventListener("sessionend", function () {
+      if (xr) xr.seated = false;
+      dash.visible = false;
+      if (mode === "foot") { camera.position.copy(lastHead); desk.yaw = lastHeadYaw; desk.pitch = 0; }
+      else if (mode === "drive") map.snapCamera();
+    });
+
+    // gamepads (controllers only; tracked hands have none)
+    var padPrev = {};
+    function pads() {
+      var out = { left: null, right: null }, ses = renderer.xr.getSession && renderer.xr.getSession();
+      if (!ses) return out;
+      for (var i = 0; i < ses.inputSources.length; i++) {
+        var src = ses.inputSources[i];
+        if (src.gamepad && !src.hand && (src.handedness === "left" || src.handedness === "right")) out[src.handedness] = src.gamepad;
+      }
+      return out;
+    }
+    function pressed(gp, i) { return !!(gp && gp.buttons[i] && gp.buttons[i].pressed); }
+    function value(gp, i) { return gp && gp.buttons[i] ? gp.buttons[i].value : 0; }
+    function edge(side, gp, i) { var k = side + i, now = pressed(gp, i), was = !!padPrev[k]; padPrev[k] = now; return now && !was; }
+    function vrButtons() {
+      var P = pads();
+      return { P: P, A: edge("right", P.right, 4), B: edge("right", P.right, 5), X: edge("left", P.left, 4), Y: edge("left", P.left, 5), RT: edge("right", P.right, 0) };
+    }
+    function rumble(strength, ms) {
+      var P = pads();
+      [P.left, P.right].forEach(function (gp) {
+        var a = gp && gp.hapticActuators && gp.hapticActuators[0];
+        if (a && a.pulse) try { a.pulse(Math.min(1, strength), ms); } catch (e) {}
+      });
+    }
+
+    // hint panel a little below the line of sight; the fade is a dark shell round the head
+    var vrHintCv = document.createElement("canvas"); vrHintCv.width = 1024; vrHintCv.height = 256;
+    var vrHintTex = new THREE.CanvasTexture(vrHintCv); vrHintTex.colorSpace = THREE.SRGBColorSpace;
+    var vrHint = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.16), new THREE.MeshBasicMaterial({ map: vrHintTex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }));
+    vrHint.name = "rally-vr-hint"; vrHint.position.set(0, -0.2, -0.9); vrHint.renderOrder = 1003; vrHint.visible = false; vrHint.frustumCulled = false;
+    camera.add(vrHint);
+    var vrFade = new THREE.Mesh(new THREE.SphereGeometry(0.25, 16, 12), new THREE.MeshBasicMaterial({ color: 0x05070a, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false }));
+    vrFade.name = "rally-vr-fade"; vrFade.renderOrder = 1002; vrFade.visible = false; vrFade.frustumCulled = false;
+    camera.add(vrFade);
+    if (S.gun && S.gun.effects && S.gun.effects.ignore) { S.gun.effects.ignore.add(vrHint); S.gun.effects.ignore.add(vrFade); }
+    var vrHintText = "", fadeTarget = 0, fadeMsg = "";
+    function vrText(t) {
+      // desktop hints say "E"; in VR the same action is the A (or X) button
+      return (t || "").replace(/<kbd>E<\/kbd>/g, "A \u00b7 ").replace(/<br\s*\/?>/g, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/g, " ");
+    }
+    function drawVRHint(t) {
+      if (t === vrHintText) return; vrHintText = t;
+      var c = vrHintCv.getContext("2d");
+      c.clearRect(0, 0, 1024, 256);
+      if (!t) { vrHintTex.needsUpdate = true; return; }
+      c.font = "600 40px system-ui, sans-serif";
+      var lines = [];
+      t.split("\n").forEach(function (para) {
+        var line = "";
+        para.split(" ").forEach(function (w) { var tt = line ? line + " " + w : w; if (c.measureText(tt).width > 940 && line) { lines.push(line); line = w; } else line = tt; });
+        lines.push(line);
+      });
+      lines = lines.slice(0, 4);
+      var h = lines.length * 52 + 34, y0 = (256 - h) / 2;
+      rr(c, 12, y0, 1000, h, 28); c.fillStyle = "rgba(14,16,20,0.82)"; c.fill();
+      c.fillStyle = "#ffffff"; c.textAlign = "center"; c.textBaseline = "middle";
+      lines.forEach(function (l, i) { c.fillText(l, 512, y0 + 17 + 26 + i * 52); });
+      vrHintTex.needsUpdate = true;
+    }
+    onHint = function (t) { if (!fadeMsg) drawVRHint(vrText(t)); };
+    onFade = function (on, msg) { fadeTarget = on ? 1 : 0; fadeMsg = on ? (msg || "") : ""; drawVRHint(fadeMsg || vrText(hintText)); };
+    function updateVRLayer(dt) {
+      var on = inXR();
+      var m = vrFade.material;
+      m.opacity += (fadeTarget - m.opacity) * Math.min(1, dt * 14);
+      vrFade.visible = on && m.opacity > 0.01;
+      vrHint.visible = on && !!vrHintText;
+    }
+
+    // dashboard speedometer, shown while driving in VR
+    var dashCv = document.createElement("canvas"); dashCv.width = 256; dashCv.height = 128;
+    var dashTex = new THREE.CanvasTexture(dashCv); dashTex.colorSpace = THREE.SRGBColorSpace;
+    var dash = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.08), new THREE.MeshBasicMaterial({ map: dashTex, transparent: true, toneMapped: false }));
+    dash.name = "rally-vr-dash"; dash.visible = false;
+    // car frame: +Z forward, driver's eye at EYE_LOCAL; the panel sits above the
+    // instrument binnacle, tilted back toward the driver
+    dash.position.set(0.36, 0.86, 0.5); dash.rotation.set(-0.35, Math.PI, 0, "YXZ");
+    var dashShown = "";
+    function drawDash(kmh, gearTxt) {
+      var key = kmh + "|" + gearTxt; if (key === dashShown) return; dashShown = key;
+      var c = dashCv.getContext("2d"); c.clearRect(0, 0, 256, 128);
+      rr(c, 4, 4, 248, 120, 18); c.fillStyle = "rgba(10,12,16,0.85)"; c.fill();
+      c.fillStyle = "#fff"; c.textAlign = "right"; c.textBaseline = "alphabetic";
+      c.font = "700 64px system-ui, sans-serif"; c.fillText(String(kmh), 170, 84);
+      c.font = "600 22px system-ui, sans-serif"; c.fillStyle = "#c9d3de"; c.fillText("km/h", 170, 112);
+      c.textAlign = "center"; c.font = "700 44px system-ui, sans-serif"; c.fillStyle = "#6cc4ff"; c.fillText(gearTxt, 214, 80);
+      dashTex.needsUpdate = true;
+    }
+
     addEventListener("keydown", function (e) {
       if (mode === "drive") {
         keys.add(e.code);
@@ -213,16 +354,49 @@
     var last = performance.now();
     var origRender = renderer.render.bind(renderer);
     renderer.render = function (sc, cam) {
-      if (sc === scene && cam === camera && !(renderer.xr && renderer.xr.isPresenting)) {
+      if (sc === scene && cam === camera) {
         var now = performance.now(), dt = Math.min((now - last) / 1000, 0.05); last = now;
         try { tick(dt, now / 1000); } catch (err) { console.error(err); }
       }
       return origRender(sc, cam);
     };
 
+    var doorBox = new THREE.Box3(), xray = new THREE.Raycaster(); xray.far = 6;
+    function rightRay() {
+      var h = xr && xr.hands && xr.hands.find(function (q) { return q.source && q.source.handedness === "right" && !q.source.hand; });
+      if (!h) return null;
+      h.ray.updateMatrixWorld(true);
+      xray.ray.origin.setFromMatrixPosition(h.ray.matrixWorld);
+      xray.ray.direction.set(0, 0, -1).transformDirection(h.ray.matrixWorld);
+      return xray;
+    }
     function tick(dt, t) {
+      var xrOn = inXR();
+      updateVRLayer(dt);
+      if (xrOn) { headWorld(lastHead); lastHeadYaw = _e.setFromQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()), "YXZ").y; }
+      var vb = xrOn ? vrButtons() : null;
+      if (xrOn && needPlace > 0 && --needPlace === 0 && map) {
+        if (mode === "foot") {
+          var cx0 = carryPos ? carryPos.x : OFFX + map.spawn.x, cz0 = carryPos ? carryPos.z : map.spawn.z;
+          placeHead(cx0, cz0, map.groundAt(cx0 - OFFX, cz0).h, desk.yaw);
+        } else if (mode === "drive") { xr.seated = true; recenterSeat(); map.car.root.add(dash); dash.visible = true; }
+      } else if (!xrOn) needPlace = 0;
       if (mode === "room") {
         hintAction = null;
+        if (xrOn) {
+          if (busy || !roomDoor) { setHint(""); return; }
+          // walk up to the door (or point at it) and press A / X, or pull the trigger at it
+          doorBox.setFromObject(roomDoor);
+          var hp = headWorld(), dc = doorBox.getCenter(new THREE.Vector3());
+          var near = Math.hypot(hp.x - dc.x, hp.z - dc.z) < 1.5;
+          var rr0 = rightRay(), aimed = !!(rr0 && rr0.ray.intersectsBox(doorBox));
+          if (near || aimed) {
+            if (dest === "rally") { hintAction = "door-open"; setHint("<kbd>E</kbd>Open the door to Snowy Mountain Rally"); }
+            else setHint("Locked. Choose where it leads in the Door app on the computer.");
+          } else setHint("");
+          if (hintAction && (vb.A || vb.X || (aimed && vb.RT))) act();
+          return;
+        }
         if (busy || desk.mode !== "walk" || desk.held || !roomDoor || document.pointerLockElement !== renderer.domElement) { setHint(""); return; }
         ray.setFromCamera(new THREE.Vector2(0, 0), camera);
         var hit = ray.intersectObject(roomDoor, true)[0];
@@ -234,6 +408,14 @@
       }
       if (!map) return;
       map.update(dt, t);
+      if (xrOn && !busy) {
+        if (mode === "foot" && hintAction && (vb.A || vb.X)) act();
+        else if (mode === "drive") {
+          if (vb.B) exitCar();
+          else if (vb.Y) { map.resetCar(); flash("Back on the road"); }
+          else if (vb.X) { recenterSeat(); flash("Seat re-centred"); }
+        }
+      }
     }
 
     // ---------- entering / leaving ----------
@@ -241,6 +423,7 @@
       if (busy) return; busy = true; setHint("");
       try {
         if (desk.held) desk.drop(false);
+        if (inXR()) xr.hands.forEach(function (h) { xr.releaseAll(h); });
         await fadeOut(map ? "" : "Building the mountain…");
         if (!map) { await sleep(30); map = await buildMap(); }
         saved = {
@@ -264,8 +447,10 @@
         desk.walk.bounds = new THREE.Box2(new THREE.Vector2(OFFX - 1170, -1170), new THREE.Vector2(OFFX + 1170, 1170));
         map.updateBlockers();
         var sp = map.spawn;
-        camera.position.set(OFFX + sp.x, map.groundAt(sp.x, sp.z).h + EYE, sp.z);
         desk.yaw = sp.yaw; desk.pitch = -0.05;
+        // in VR camera.position is the head inside the rig (the headset's), so move the rig
+        if (inXR()) placeHead(OFFX + sp.x, sp.z, map.groundAt(sp.x, sp.z).h, sp.yaw);
+        else camera.position.set(OFFX + sp.x, map.groundAt(sp.x, sp.z).h + EYE, sp.z);
         mode = "foot"; credits.style.display = "block";
         renderer.shadowMap.needsUpdate = true;
       } finally {
@@ -283,7 +468,9 @@
       scene.backgroundIntensity = saved.bgI; scene.backgroundBlurriness = saved.bgB;
       camera.near = saved.near; camera.far = saved.far; camera.updateProjectionMatrix();
       desk.walk.bounds = saved.bounds; desk.walk.blockers = saved.blockers;
-      camera.position.set(1.5, EYE, 1.55); desk.yaw = Math.PI / 2; desk.pitch = 0;
+      desk.yaw = Math.PI / 2; desk.pitch = 0;
+      if (inXR()) placeHead(1.5, 1.55, 0, Math.PI / 2);
+      else camera.position.set(1.5, EYE, 1.55);
       mode = "room"; credits.style.display = "none";
       renderer.shadowMap.needsUpdate = true;
       await fadeIn(); busy = false;
@@ -296,6 +483,10 @@
       document.body.classList.add("rl-driving"); hud.style.display = "block";
       map.startAudio();
       map.snapCamera();
+      if (inXR()) {
+        xr.seated = true; recenterSeat(); map.car.root.add(dash); dash.visible = true;
+        flash("Right trigger: gas \u00b7 Left trigger: brake / reverse\nStick: steer \u00b7 A: handbrake\nB: get out \u00b7 Y: back on the road \u00b7 X: re-centre seat", 9);
+      }
       await fadeIn(); busy = false;
     }
     async function exitCar() {
@@ -308,8 +499,11 @@
       car.vx = car.vz = car.vy = 0; car.r = 0; car.vf = 0;
       var lx = Math.cos(car.yaw), lz = -Math.sin(car.yaw);
       var px = car.x + lx * 2.0, pz = car.z + lz * 2.0;
-      camera.position.set(OFFX + px, map.groundAt(px, pz).h + EYE, pz);
+      if (!inXR()) camera.position.set(OFFX + px, map.groundAt(px, pz).h + EYE, pz);
       desk.yaw = car.yaw + Math.PI; desk.pitch = -0.1;
+      if (xr) xr.seated = false;
+      dash.visible = false;
+      if (inXR()) placeHead(OFFX + px, pz, map.groundAt(px, pz).h, car.yaw + Math.PI);
       desk.enabled = true; keys.clear();
       mode = "foot";
       document.body.classList.remove("rl-driving"); hud.style.display = "none";
@@ -317,7 +511,7 @@
       await fadeIn(); busy = false;
     }
     var flashTimer = 0;
-    function flash(t) { setHint(t); flashTimer = 1.6; }
+    function flash(t, secs) { setHint(t); flashTimer = secs || 1.6; }
 
     // ---------- data ----------
     // map + car data (packed by hand from the CC BY 4.0 sources credited above):
@@ -882,10 +1076,12 @@
         },
         update: function (dt, t) {
           if (flashTimer > 0) { flashTimer -= dt; if (flashTimer <= 0) setHint(""); }
-          var cw = camera.position;
+          var xrOn = inXR();
+          var cw = xrOn ? headWorld() : camera.position;
           if (mode === "foot") {
             var lx = cw.x - OFFX, lz = cw.z;
-            cw.y = groundAt(lx, lz).h + EYE;
+            if (xrOn) xr.rig.position.y = groundAt(lx, lz).h; // standing on the snow
+            else cw.y = groundAt(lx, lz).h + EYE;
             hintAction = null;
             if (!busy && flashTimer <= 0) {
               var dCar = Math.hypot(lx - car.x, lz - car.z), dDoor = Math.hypot(lx - doorPos.x, lz - doorPos.z);
@@ -895,9 +1091,16 @@
             }
           } else if (mode === "drive") {
             stepCar(dt);
-            updateCamera(dt);
+            if (!xrOn) updateCamera(dt);
           }
           car.sync(dt);
+          if (mode === "drive" && xrOn) {
+            placeSeat(); cw = headWorld();
+            // the wheel feel: tyres slipping and hard landings come through the controllers
+            if (car.air) car.wasAir = true;
+            else if (car.wasAir) { car.wasAir = false; rumble(0.6, 90); }
+            else if (car.slip > 0.25) rumble(car.slip * 0.45, 40);
+          }
           // light follows the camera, snapped to shadow texels
           var lx = cw.x - OFFX, lz = cw.z, snap = 120 / 2048;
           lx = Math.round(lx / snap) * snap; lz = Math.round(lz / snap) * snap;
@@ -934,18 +1137,39 @@
         }
         return out;
       }
+      // keyboard, plus (in VR) analog triggers and either stick
+      function driveInput() {
+        var I = {
+          thr: keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0,
+          brk: keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0,
+          steer: (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0) - (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0),
+          hb: keys.has("Space")
+        };
+        if (inXR()) {
+          var Pd = pads();
+          var rt = value(Pd.right, 0), lt = value(Pd.left, 0);
+          if (rt > 0.04) I.thr = Math.max(I.thr, rt);
+          if (lt > 0.04) I.brk = Math.max(I.brk, lt);
+          var sl = (Pd.left && Pd.left.axes[2]) || 0, sr = (Pd.right && Pd.right.axes[2]) || 0;
+          var sx = Math.abs(sl) > Math.abs(sr) ? sl : sr, dz = 0.08;
+          if (Math.abs(sx) > dz) {
+            var k = (Math.abs(sx) - dz) / (1 - dz);
+            I.steer = -Math.sign(sx) * Math.pow(k, 1.3); // finer near the centre
+          }
+          I.hb = I.hb || pressed(Pd.right, 4);
+        }
+        return I;
+      }
       function stepCar(dtAll) {
         var steps = Math.max(1, Math.ceil(dtAll / (1 / 120))), dt = dtAll / steps;
-        var thr = keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0;
-        var brk = keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0;
-        var left = keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0, right = keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0;
-        var hb = keys.has("Space");
+        var I = driveInput();
+        var thr = I.thr, brk = I.brk, hb = I.hb;
         for (var it = 0; it < steps; it++) {
           var fx = Math.sin(car.yaw), fz = Math.cos(car.yaw), sx = Math.cos(car.yaw), sz = -Math.sin(car.yaw); // s = car's left
           var vF = car.vx * fx + car.vz * fz, vL = car.vx * sx + car.vz * sz, speed = Math.hypot(car.vx, car.vz);
           // steering
           var maxS = 0.58 / (1 + Math.abs(vF) * 0.05);
-          var target = (left - right) * maxS;
+          var target = I.steer * maxS;
           var rate = (target === 0 || Math.sign(target) !== Math.sign(steer)) ? 4.5 : 2.6;
           steer += clamp(target - steer, -rate * dt, rate * dt);
           // ground at wheels
@@ -982,10 +1206,10 @@
             // longitudinal
             var drive = 0, brake = 0;
             if (thr) {
-              if (vF < -0.5) brake = 1; else { var P = 150000; drive = Math.min(mu * NR * 1.05, P / Math.max(Math.abs(vF), 4)); }
+              if (vF < -0.5) brake = thr; else { var P = 150000; drive = thr * Math.min(mu * NR * 1.05, P / Math.max(Math.abs(vF), 4)); }
             }
             if (brk) {
-              if (vF > 0.5) brake = 1; else drive = -Math.min(MASS * GR * 0.35, 40000 / Math.max(Math.abs(vF), 4)) * (vF > -14 ? 1 : 0);
+              if (vF > 0.5) brake = Math.max(brake, brk); else drive = -brk * Math.min(MASS * GR * 0.35, 40000 / Math.max(Math.abs(vF), 4)) * (vF > -14 ? 1 : 0);
             }
             var Fbrake = brake * mu * MASS * GR * 0.9 * Math.sign(vF);
             var Fhb = hb ? mu * NR * 0.6 * Math.sign(vF) : 0;
@@ -1052,10 +1276,11 @@
         rpm += (target - rpm) * Math.min(1, dtAll * 8);
         document.getElementById("rl-kmh").textContent = Math.round(v * 3.6);
         document.getElementById("rl-gear").textContent = gear === 0 ? "R" : String(gear);
+        if (dash.visible) drawDash(Math.round(v * 3.6), gear === 0 ? "R" : String(gear));
         if (audio) {
           var tnow = audio.ac.currentTime, f = rpm / 60 * 4;
           audio.o1.frequency.setTargetAtTime(f, tnow, 0.03); audio.o2.frequency.setTargetAtTime(f / 2, tnow, 0.03);
-          audio.lp.frequency.setTargetAtTime(500 + rpm * 0.35 + (thr ? 900 : 0), tnow, 0.05);
+          audio.lp.frequency.setTargetAtTime(500 + rpm * 0.35 + thr * 900, tnow, 0.05);
           audio.skid.gain.setTargetAtTime(car.air ? 0 : car.slip * 0.35, tnow, 0.06);
         }
       }

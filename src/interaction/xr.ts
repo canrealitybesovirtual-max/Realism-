@@ -63,6 +63,12 @@ const _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matr
 
 export class XRControls {
 	readonly rig = new THREE.Group();
+	/**
+	 * Seated (e.g. driving a car, see public/addons/rally.js): the rig is placed
+	 * by someone else, so walking, snap turn, rays and grabbing are off; the
+	 * hands still follow the controllers.
+	 */
+	seated = false;
 	private hands: Hand[] = [];
 	private raycaster = new THREE.Raycaster();
 	private walkVel = new THREE.Vector2();
@@ -162,7 +168,8 @@ export class XRControls {
 		if (!this.renderer.xr.isPresenting) return;
 		this.rig.updateMatrixWorld(true);
 		for (const h of this.hands) this.updateHand(h, dt, now);
-		this.locomotion(dt);
+		if (this.seated) this.vignette.visible = false;
+		else this.locomotion(dt);
 	}
 
 	private buttons(h: Hand) {
@@ -208,7 +215,8 @@ export class XRControls {
 			if (tracked) h.visual.updateTracked(h.handSpace.joints);
 		} else for (const o of h.ctrlVisuals) o.visible = !tracked;
 		const btn = this.buttons(h);
-		this.handLogic(h, btn, dt, now);
+		if (this.seated) { this.releaseAll(h); h.line.visible = false; h.dot.visible = false; h.pointing = null; }
+		else this.handLogic(h, btn, dt, now);
 		if (h.visual && !tracked) {
 			const tipW = h.visual.indexTip();
 			const local = (this.targets.keycaps.parent as THREE.Object3D).worldToLocal(tipW);
@@ -482,8 +490,8 @@ export class XRControls {
 	 * ArrayCamera has no parent, so getWorldPosition() on it rebuilds its matrix
 	 * without the rig and silently drops every turn and step taken so far.
 	 */
-	private headPos() { this.camera.updateMatrixWorld(true); return new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld); }
-	private headQuat() { this.camera.updateMatrixWorld(true); return this.camera.getWorldQuaternion(new THREE.Quaternion()); }
+	headPos() { this.camera.updateMatrixWorld(true); return new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld); }
+	headQuat() { this.camera.updateMatrixWorld(true); return this.camera.getWorldQuaternion(new THREE.Quaternion()); }
 
 	/** Comfortable indoor walking pace, m/s. */
 	static WALK_SPEED = 1.3;
