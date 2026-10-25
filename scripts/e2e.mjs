@@ -86,7 +86,11 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 		const t = p.body.translation(), v = p.body.linvel();
 		return { name: p.desc.name, y: t.y, speed: Math.hypot(v.x, v.y, v.z) };
 	}));
-	for (const p of props) check(`physics: ${p.name} rests on the desk`, p.y > 0.73 && p.y < 0.76 && p.speed < 0.02, `y=${p.y.toFixed(4)} v=${p.speed.toFixed(4)}`);
+	for (const p of props) {
+		// the pistol lies on its side on the sideboard (top 0.662 m, half-width of the gun 0.016 m)
+		const [lo, hi, where] = p.name === 'pistol' ? [0.67, 0.69, 'sideboard'] : [0.73, 0.76, 'desk'];
+		check(`physics: ${p.name} rests on the ${where}`, p.y > lo && p.y < hi && p.speed < 0.02, `y=${p.y.toFixed(4)} v=${p.speed.toFixed(4)}`);
+	}
 	await page.close();
 }
 
