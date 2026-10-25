@@ -152,7 +152,7 @@ async function init() {
 		for (const f of [g17, awp]) {
 			const prop = physics.addProp(firearmDesc(f.group, f.spec.id, f.spec.mass, f.colliders));
 			shadows.add(prop, f.bolted ? 0.12 : 0.06, f.bolted ? 4 : 2);
-			guns.push(new FirearmSystem(f, prop, gunFx, scene));
+			guns.push(new FirearmSystem(f, prop, gunFx, scene, camera));
 		}
 	}
 
@@ -190,7 +190,7 @@ async function init() {
 		const studio = new StudioApp(computer.os, editor, viewport, () => camera.getWorldPosition(new THREE.Vector3()));
 		studio.playerForward = () => { const d = camera.getWorldDirection(new THREE.Vector3()); d.y = 0; return d.lengthSq() ? d.normalize() : new THREE.Vector3(0, 0, -1); };
 		computer.os.registerApp(studio);
-		targets.editorTool = new WorldTool(editor, scene, ws.monitor.screen);
+		targets.editorTool = new WorldTool(editor, scene, ws.monitor.screen, camera);
 		log.info(`Engine: ${world.list.length} entities registered`);
 	}
 	// bullets ignore the pointer dots and the comfort vignette

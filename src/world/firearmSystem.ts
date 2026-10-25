@@ -47,7 +47,8 @@ export class FirearmSystem implements Gun {
 	private zeroAngle: number;
 	private raycaster = new THREE.Raycaster();
 
-	constructor(readonly gun: Firearm, readonly prop: Prop, private effects: GunEffects, private scene: THREE.Scene) {
+	constructor(readonly gun: Firearm, readonly prop: Prop, private effects: GunEffects, private scene: THREE.Scene, camera?: THREE.Camera) {
+		if (camera) this.raycaster.camera = camera; // the laser's ray may cross sprites
 		this.label = gun.spec.label;
 		this.twoHanded = !!gun.spec.forend;
 		const g = this.gun;

@@ -23,7 +23,9 @@ export class WorldTool {
 	private hand: { index: number; push: number } | null = null;
 	private rc = new THREE.Raycaster();
 
-	constructor(private ed: Editor, private scene: THREE.Scene, private screen: THREE.Object3D) {}
+	constructor(private ed: Editor, private scene: THREE.Scene, private screen: THREE.Object3D, camera: THREE.Camera) {
+		this.rc.camera = camera; // Sprite.raycast needs one
+	}
 
 	active() { return this.ed.worldTool; }
 	carrying(index: number) { return this.hand?.index === index && !!this.ed.moving; }
