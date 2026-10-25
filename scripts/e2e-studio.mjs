@@ -120,7 +120,7 @@ const frames = (p, n) => p.evaluate((n) => new Promise((r) => { let i = 0; const
 	await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 0));
 	await frames(p, 2);
 	const sel = await p.evaluate(() => window.__studio.editor.selection.map((e) => e.id).join(','));
-	check('world tool (VR): trigger on the mug selects it (does not grab it)', sel === 'mug' && !window.__never, sel);
+	check('world tool (VR): trigger on the mug selects it (does not grab it)', sel === 'mug', sel);
 	await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue('squeeze', 1));
 	await frames(p, 3);
 	await p.evaluate((m) => window.__aim('right', [m[0] - 0.1, m[1] + 0.45, m[2] + 0.35], [m[0] - 0.4, m[1] + 0.04, m[2]]), mug);

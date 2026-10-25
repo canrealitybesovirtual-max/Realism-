@@ -123,6 +123,21 @@ describe('editor save / load', () => {
 		expect(readTRS(a).p[0]).toBe(1.5); // a broken file changes nothing
 	});
 
+	it('a saved spawn comes back after reset + load (same entity, no "id exists")', () => {
+		const { w } = world();
+		const store = new Map<string, string>();
+		(globalThis as any).window = { localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), key: (i: number) => [...store.keys()][i], get length() { return store.size; } }, setTimeout: () => 0 };
+		const ed = new Editor(w, new Runtime(w), { world: w, physics: null, scene: w.scene }, w.scene);
+		expect(ed.spawn('box', new THREE.Vector3(1, 0.5, 2))).toBe(true);
+		const id = ed.selection[0].id;
+		ed.save('s');
+		ed.resetToBuilt();
+		expect(w.get(id)!.object.visible).toBe(false);
+		expect(ed.load('s')).toEqual({ applied: 1, skipped: 0 });
+		expect(w.get(id)!.object.visible).toBe(true);
+		expect(w.get(id)!.object.position.x).toBeCloseTo(1);
+	});
+
 	it('runtime: stop puts bodies back where play started; frameDt is 0 while editing', () => {
 		const { w } = world();
 		const rt = new Runtime(w);

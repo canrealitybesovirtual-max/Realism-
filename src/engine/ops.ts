@@ -54,7 +54,9 @@ export function validateOp(o: any, w: EntityWorld): string | null {
 			const s = o.spec;
 			if (!s || !['box', 'sphere', 'cylinder', 'ramp', 'light', 'clone'].includes(s.kind) || typeof s.dynamic !== 'boolean' || !vec(s.size, 0.01, 50)) return 'bad spawn spec';
 			if (s.kind === 'clone' && (typeof s.source !== 'string' || !w.get(s.source))) return 'clone source missing';
-			if (w.get(o.id)) return 'id already exists';
+			// replaying a save after a reset: the same spawned entity, currently undone, comes back
+			const ex = w.get(o.id);
+			if (ex && !(ex.spawn && ex.deleted)) return 'id already exists';
 			return trsOk(o.to) && colorOk(o.color) ? null : 'bad spawn transform';
 		}
 	}
@@ -103,7 +105,9 @@ export function opToCommand(o: Op, ctx: OpContext): Command {
 			return { label: `Delete ${ent.name}`, live: !ent.bakedStatic, note: ent.bakedStatic ? 'its baked shadow and static collision remain until reload' : undefined, do() { set(true); }, undo() { set(false); } };
 		}
 		case 'spawn': {
-			let made: Entity | null = null;
+			const existing = w.get(o.id);
+			let made: Entity | null = existing && existing.spawn && existing.deleted ? existing : null;
+			if (made) applyTRS(w, made, o.to);
 			return {
 				label: `Spawn ${o.spec.kind === 'clone' ? 'copy of ' + w.get(o.spec.source!)!.name : o.spec.kind}`,
 				live: true,
