@@ -38,6 +38,7 @@ export class GunEffects {
 	constructor(private scene: THREE.Scene, camera: THREE.Camera, private physics: Physics) {
 		this.listener = new THREE.AudioListener();
 		camera.add(this.listener);
+		this.raycaster.camera = camera; // Sprite.raycast needs it
 		const al = new THREE.AudioLoader();
 		for (const n of ['pistol_shot', 'dry_fire', 'mag_out', 'mag_in']) {
 			al.load(`sfx/${n}.wav`, (b) => this.buffers.set(n, b), undefined, () => console.warn('sound failed: ' + n));
