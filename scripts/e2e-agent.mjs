@@ -25,6 +25,21 @@ const GOOD = {
 };
 const BAD = { summary: 'Sneaky', ops: [{ op: 'script', id: 'x', script: { id: 'x', name: 'X', source: 'function start() { fetch("https://example.com") }' } }] };
 
+/** a minimal GLB with `tris` triangles, `s` metres across */
+function glb(s, tris) {
+	const pos = new Float32Array(tris * 9);
+	for (let t = 0; t < tris; t++) { const a = (t / tris) * Math.PI * 2, b = ((t + 1) / tris) * Math.PI * 2; pos.set([0, s, 0, Math.cos(a) * s / 2, 0, Math.sin(a) * s / 2, Math.cos(b) * s / 2, 0, Math.sin(b) * s / 2], t * 9); }
+	const bin = Buffer.from(pos.buffer);
+	let jb = Buffer.from(JSON.stringify({ asset: { version: '2.0' }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }], meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }], accessors: [{ bufferView: 0, componentType: 5126, count: tris * 3, type: 'VEC3', min: [-s / 2, 0, -s / 2], max: [s / 2, s, s / 2] }], bufferViews: [{ buffer: 0, byteLength: bin.length }], buffers: [{ byteLength: bin.length }] }));
+	jb = Buffer.concat([jb, Buffer.alloc((4 - (jb.length % 4)) % 4, 0x20)]);
+	const head = Buffer.alloc(12), jh = Buffer.alloc(8), bh = Buffer.alloc(8);
+	const total = 12 + 8 + jb.length + 8 + bin.length;
+	head.writeUInt32LE(0x46546c67, 0); head.writeUInt32LE(2, 4); head.writeUInt32LE(total, 8);
+	jh.writeUInt32LE(jb.length, 0); jh.writeUInt32LE(0x4e4f534a, 4); bh.writeUInt32LE(bin.length, 0); bh.writeUInt32LE(0x004e4942, 4);
+	const out = Buffer.concat([head, jh, jb, bh, bin]);
+	return out.buffer.slice(out.byteOffset, out.byteOffset + out.length);
+}
+
 async function open(withClaude) {
 	const p = await b.newPage({ viewport: { width: 900, height: 600 } });
 	p.on('pageerror', (e) => errors.push(e.message));
@@ -58,7 +73,7 @@ const frames = (p, n) => p.evaluate((n) => new Promise((r) => { let i = 0; const
 	await S(async () => { window.__os.type('make the mug spin and add a crate'); window.__os.key('Enter', 'Enter'); for (let i = 0; i < 50 && !window.__studio.assistant.proposal; i++) await new Promise((r) => setTimeout(r, 50)); window.__os.draw(); });
 	const prop = await S(() => { const a = window.__studio.assistant; return { steps: a.steps.map((s) => s.status), diff: a.steps[0]?.diff?.added, asked: window.__asked[0] ?? '' }; });
 	check('typed request goes to Claude with the scene and selection in the prompt', /REQUEST: make the mug spin/.test(prop.asked) && /Selected: mug/.test(prop.asked) && /mug \| /.test(prop.asked));
-	check('proposal is previewed step by step (script diff; step on the new crate is checked later)', prop.steps.join() === 'ok,ok,ok' && prop.diff === 2, JSON.stringify(prop));
+	check('proposal is previewed step by step (all steps valid, new 3-line script shown as +3)', prop.steps.join() === 'ok,ok,ok' && prop.diff === 3, JSON.stringify(prop));
 	const before = await S(() => ({ crate: !!window.__studio.editor.world.get('agent-crate'), comps: window.__studio.editor.world.get('mug').components.length }));
 	check('nothing changes before approval', !before.crate && before.comps === 0, JSON.stringify(before));
 	await S(() => { const a = window.__studio.assistant; a.confirmApply = true; window.__os.draw(); window.__os.key('Enter', 'Enter'); });
@@ -108,6 +123,26 @@ const frames = (p, n) => p.evaluate((n) => new Promise((r) => { let i = 0; const
 	const regs = await S(() => window.__studio.diag.regressions().map((r) => `${r.what} +${r.pct.toFixed(0)}%`));
 	check('adding 400 meshes is flagged as a regression (draw calls / triangles)', regs.some((r) => /draw calls|triangles/.test(r)), regs.join(', '));
 	await S(() => { const s = window.__studio; s.scene.remove(s.scene.getObjectByName('load-test')); });
+
+	// ---------------------------------------------------------------- assets
+	await S(() => { window.__studio.computer.os.openApp('assets'); window.__os.draw(); });
+	await p.waitForFunction(() => window.__studio.assets.ready, null, { timeout: 30000 });
+	const imp = await S(async (bytes) => {
+		const a = window.__studio.assetsApp, buf = new Uint8Array(bytes).buffer;
+		await a.importFile({ name: 'pyramid.glb', arrayBuffer: async () => buf });
+		const ok = a.status;
+		await a.importFile({ name: 'evil.glb', arrayBuffer: async () => new TextEncoder().encode('<script>alert(1)</script>').buffer });
+		return { ok, bad: a.status, list: window.__studio.assets.list.map((x) => x.name + ':' + x.tris) };
+	}, [...new Uint8Array(glb(2, 4))]);
+	check('a valid GLB is imported after checks; a fake one is refused', /Imported pyramid/.test(imp.ok) && /Refused evil.glb: not a GLB/.test(imp.bad) && imp.list.includes('pyramid:4'), JSON.stringify(imp));
+	const placed = await S(() => { const s = window.__studio, a = s.assetsApp; a.placeAsset(s.assets.list[0].id); const e = s.editor.world.list.find((x) => x.spawn?.kind === 'asset' && !x.deleted); return e ? { id: e.id, name: e.name, prop: !!e.prop } : null; });
+	check('placing the model spawns it in the world with a physics body', !!placed && placed.name === 'pyramid' && placed.prop, JSON.stringify(placed));
+	const round = await S(async (id) => { const s = window.__studio, ed = s.editor; ed.save('asset-test'); ed.resetToBuilt(); const gone = s.editor.world.get(id).deleted; const r = ed.load('asset-test'); return { gone, r, back: !s.editor.world.get(id).deleted }; }, placed?.id);
+	check('scenes with imported models save and load (model kept in IndexedDB)', round.gone && round.back && round.r.skipped === 0, JSON.stringify(round));
+	const pf = await S(() => { const s = window.__studio, a = s.assetsApp; s.editor.select(s.editor.world.list.find((x) => x.spawn?.kind === 'asset' && !x.deleted)); a.saveSelectionAsPrefab(); const p = s.assets.prefabs.at(-1); const n = s.editor.world.list.filter((x) => x.spawn?.kind === 'asset' && !x.deleted).length; a.placePrefab(p); return { name: p?.name, before: n, after: s.editor.world.list.filter((x) => x.spawn?.kind === 'asset' && !x.deleted).length }; });
+	check('save as prefab, then place the prefab', pf.name === 'pyramid' && pf.after === pf.before + 1, JSON.stringify(pf));
+	const env = await S(() => { const s = window.__studio, r = s.renderer, e0 = r.toneMappingExposure; s.editor.apply({ op: 'env', id: 'environment', key: 'exposure', value: 1.6 }); const e1 = r.toneMappingExposure; s.editor.undo(); return { e0, e1, e2: r.toneMappingExposure }; });
+	check('environment exposure changes live and undoes', env.e1 === 1.6 && env.e2 === env.e0, JSON.stringify(env));
 	await p.close();
 }
 

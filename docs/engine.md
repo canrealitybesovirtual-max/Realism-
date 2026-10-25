@@ -82,6 +82,48 @@ The **Code** app has two sides, kept clearly apart.
 - **Drafts.** Unsaved edits are kept in the computer's storage, because Vite reloads the page after a source write.
 - **In the published artifact** there is no dev server. The Project side says so and offers nothing; nothing is simulated.
 
+## Claude assistant (stage 5)
+
+The **Assistant** app takes a request in plain words ("make the mug spin slowly while playing"). How it reaches Claude:
+
+- **Local dev.** The dev server calls the Messages API (`claude-opus-5-5`, with the default refusal fallbacks) using `ANTHROPIC_API_KEY` from *its own* environment, so the key never reaches the page.
+- **Published artifact.** The page uses claude.ai's `sample` capability, on the viewer's own account; claude.ai asks the viewer before the first call.
+- **Neither available.** The app says it is unavailable and offers nothing.
+
+Claude never acts on the game directly. Its answer is parsed as a **proposal**: a summary, notes, and up to 60 ordinary scene ops (`engine/agent.ts`). Every step is previewed:
+
+- each op is validated now, or later if it depends on an object the proposal itself creates,
+- script steps show their full diff,
+- a step that breaks the rules, such as a script using `fetch`, marks the proposal invalid and it cannot be applied.
+
+**Apply** asks for confirmation and runs `Editor.applyBatch`. Each op is validated against the scene as the previous ones left it. Any failure undoes everything already done, so the scene is unchanged. Success is one undo step, saved with the scene like any other edit.
+
+## Diagnostics (stage 5)
+
+The **Profiler** app (`engine/diagnostics.ts`) reports measurements from the real frame loop:
+
+- **CPU time per section:** input, simulation, editor + computer, render submission.
+- **Renderer counts:** draw calls and triangles across all passes (shadow map, Studio viewport, scopes, both eyes).
+- **Memory:** GPU geometry / texture / shader counts and estimated texture memory.
+- **Most expensive objects:** ranked by triangles; click one to select it.
+- **Baseline:** "Capture baseline" averages 3 s. Later averages more than 25 % worse are flagged as regressions.
+- **Overlays in the world:** Rapier's own collider geometry, entity bounds, and the Studio camera's frustum.
+
+GPU time is not measured (no timer queries); in VR the headset paces the frame rate. The app says both.
+
+## Assets and world building (stage 5)
+
+The **Assets** app has three parts.
+
+- **Import .glb.** Imported files are untrusted, so they are checked before use:
+  - limits: ≤ 25 MB, GLB 2.0 header and length, ≤ 1.5 M triangles, ≤ 48 textures up to 8192 px, ≤ 5000 nodes;
+  - a full parse by three.js;
+  - unit-mistake rescaling (a model hundreds of units across is assumed to be in centimetres), with notes.
+
+  glTF holds only data, no code. Accepted files are stored in IndexedDB under their content hash, and saved scenes refer to them by id. A save that names a model this browser does not have skips that object with a warning. The file picker cannot open inside an immersive VR session: import on the desktop, then place the model in VR.
+- **Prefabs.** A prefab remembers what to spawn (primitive, copy or imported model), its scale, colour and components. Placing one is a single all-or-nothing batch.
+- **Environment.** Exposure, reflections / bounce intensity and shadow softness, as undoable `env` ops. The sun and the window light are entities you edit in Studio.
+
 ## Live vs reload
 
 | Change | Live? |
@@ -109,7 +151,8 @@ The **Code** app has two sides, kept clearly apart.
 - Deleting original scene content requires confirmation, and undo always brings it back.
 - Credentials never reach the browser:
   - **Artifact:** the hosted page reaches Claude only through the claude.ai host's `sample` capability, so the page holds no key.
-  - **Local development:** any agent with file access runs in the dev server with the key in its environment. See stage 4–5 below.
+  - **Local development:** the dev server holds `ANTHROPIC_API_KEY` in its own environment and returns only Claude's text to the page.
+- The assistant's output is a proposal of typed ops. It is validated, shown and applied only on approval, as one undoable transaction.
 
 ## Stages
 
@@ -117,7 +160,20 @@ The **Code** app has two sides, kept clearly apart.
 2. **Done.** World tools on desktop and in VR, runtime controls, spawning and duplication, and autosave (`scripts/e2e-studio.mjs`).
 3. **Done.** Component API, gameplay components, and the Logic node editor with typed ports and live debugging (`tests/unit/gameplay.test.ts`).
 4. **Done.** The Code workstation: runtime scripts with hot reload and error boundaries, and project files through the guarded dev-server API. Tests: `tests/unit/scripts.test.ts`, `tests/unit/codeTools.test.ts` and `scripts/e2e-code.mjs` (in-world input; the project part runs against the dev server).
-5. Claude agent (ops and patches proposed for approval), diagnostics (performance overlay, colliders, bounds, frustum, expensive objects) and asset import.
+5. **Done.**
+   - **Claude assistant** (proposals → preview → approve → transaction).
+   - **Profiler** with overlays and regression flags.
+   - **Assets:** GLB import with checks, prefabs, environment ops.
+   - **Tests:** `tests/unit/agent.test.ts`, `tests/unit/assets.test.ts` and `scripts/e2e-agent.mjs`. The e2e uses a labelled test double for claude.ai's `sample`; no real Claude call is made in tests.
+
+## Files by stage
+
+| Stage | Files |
+|---|---|
+| 1–2 | `src/engine/{entities,commands,ops,runtime,editor,viewport,worldTool,log}.ts`, `src/computer/studioApp.ts`, `scripts/e2e-studio.mjs`, `tests/unit/engine.test.ts` |
+| 3 | `src/engine/{components,graph,gameplay}.ts`, `src/computer/logicApp.ts`, `tests/unit/gameplay.test.ts` |
+| 4 | `src/engine/{scripts,codeTools}.ts`, `src/computer/{codeApp,projectFiles}.ts`, `tools/studioServer.ts`, `vite.config.ts`, `scripts/e2e-code.mjs`, `tests/unit/{scripts,codeTools}.test.ts` |
+| 5 | `src/engine/{agent,agentPrompt,diagnostics,assets}.ts`, `src/computer/{agentApp,profilerApp,assetsApp}.ts`, `Editor.applyBatch`, `env` / `asset` ops, `scripts/e2e-agent.mjs`, `tests/unit/{agent,assets}.test.ts` |
 
 ## Known limitations
 
@@ -126,4 +182,7 @@ The **Code** app has two sides, kept clearly apart.
 - A script that moves a *dynamic* physics body (`moveBy` / `moveTo` / `rotateBy`) teleports it each frame, and gravity still acts between frames, so upward motion is partly cancelled. To animate an object freely, make it Static in Studio's physics section; to push it physically, use `self.impulse`.
 - TypeScript diagnostics come from running the real compiler (“Type check”), not as you type: there is no TS parser in the page. JavaScript files and scripts are checked as you type.
 - Project files cannot be created or deleted from the Code app (only edited and restored).
+- The assistant was tested with a test double, not a live Claude call: no API key was available where it was built. Proposal quality depends on Claude; every proposal is validated either way.
+- Imported models are stored per browser (IndexedDB). They do not travel with a scene save to another device. Animations in a GLB are kept but not played.
+- The reflection probe is captured once at load; lighting edits do not re-capture it.
 - The Studio UI is drawn on the 1920×1080 monitor canvas and sized for monitor distance. In VR, use the ray or the desk mouse on it.

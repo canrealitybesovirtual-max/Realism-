@@ -105,7 +105,7 @@ export function previewProposal(p: Proposal, w: EntityWorld, gp: Gameplay): Step
 		const step: StepPreview = { i, label, status: depends ? 'later' : why ? 'error' : 'ok', why: why ?? undefined };
 		if (o.op === 'script' && o.script && !why) {
 			const before = gp.scripts.get(o.id)?.source ?? '';
-			const st = diffStats(diffLines(before, o.script.source));
+			const st = before ? diffStats(diffLines(before, o.script.source)) : { added: o.script.source.split('\n').length, removed: 0 };
 			step.diff = { before, after: o.script.source, ...st };
 		}
 		return step;

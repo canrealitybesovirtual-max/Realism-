@@ -105,15 +105,19 @@ It also carries the engine tools, which edit the running game you are standing i
 - **Studio:** hierarchy, live viewport, inspector, components, play / pause / step / stop, undo, save / load / autosave recovery. In the world: click (desktop) or trigger (VR) selects; G or squeeze carries.
 - **Logic:** node graphs with typed ports and live debugging, attached to objects with a *Script graph* component.
 - **Code:** JavaScript scripts on objects, checked as you type and hot-reloaded when you Apply (Ctrl+S) while playing. With `npm run dev` it also edits the project's own source files, through a guarded dev-server API (allowlist, confirmation, conflict check, checkpoints and restore), and runs the real type check and unit tests. In the published page the project side says it is unavailable.
+- **Assistant:** ask Claude for a change in plain words; it proposes validated scene ops (scripts shown as diffs), and you approve or reject. It runs on claude.ai (your account) or through the dev server with `ANTHROPIC_API_KEY`. One Undo reverts an applied proposal.
+- **Profiler:** CPU time per frame section, draw calls, triangles, memory, the most expensive objects, a regression baseline, and collider / bounds / frustum overlays.
+- **Assets:** import `.glb` models (checked, stored in the browser), prefabs, exposure / reflections / shadow softness.
 
 ## Checks
 
 ```
 npm run typecheck
-npm test                         # 65 unit tests: engine ops/undo/save, components, graphs, scripts, diff/highlighter, editor, calculator, window manager, physics, hands and grasps
+npm test                         # 75 unit tests: engine ops/undo/save, components, graphs, scripts, agent proposals, asset checks, diff/highlighter, editor, calculator, window manager, physics, hands and grasps
 npm run dev & node scripts/e2e.mjs        # 36 browser checks, desktop + emulated Quest 3 WebXR
 npm run dev & node scripts/e2e-studio.mjs # 16 editor checks (world tools on desktop and in VR, runtime, save/load)
 npm run dev & node scripts/e2e-code.mjs   # code workstation through the computer's own input, incl. project files on the dev server
+npm run preview & node scripts/e2e-agent.mjs --url http://localhost:4173/  # assistant (with a sample() test double), profiler, assets
 npm run dev & npm run shots               # renders the fixed viewpoints to ./shots
 npm run dev & node scripts/metrics.mjs    # draw calls, triangles, CPU ms per frame
 npm run textures                 # regenerate the procedural PBR textures
