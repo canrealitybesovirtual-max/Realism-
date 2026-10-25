@@ -301,7 +301,7 @@
     dash.name = "rally-vr-dash"; dash.visible = false;
     // car frame: +Z forward, driver's eye at EYE_LOCAL; the panel sits above the
     // instrument binnacle, tilted back toward the driver
-    dash.position.set(0.36, 0.86, 0.5); dash.rotation.set(-0.35, Math.PI, 0, "YXZ");
+    dash.position.set(0.36, 0.95, 0.56); dash.rotation.set(-0.35, Math.PI, 0, "YXZ");
     var dashShown = "";
     function drawDash(kmh, gearTxt) {
       var key = kmh + "|" + gearTxt; if (key === dashShown) return; dashShown = key;
