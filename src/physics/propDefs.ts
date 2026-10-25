@@ -46,3 +46,11 @@ export function pistolDesc(object: THREE.Object3D): PropDesc {
 		],
 	};
 }
+
+export function firearmDesc(object: THREE.Object3D, name: string, mass: number, hull: { half: [number, number, number]; offset: [number, number, number] }[]): PropDesc {
+	// polymer / steel against wood or concrete; hull from the model's own parts
+	return {
+		name, object, mass, friction: 0.6, restitution: 0.06, angularDamping: 0.8,
+		shapes: hull.map((c) => ({ kind: 'cuboid' as const, size: c.half, offset: c.offset })),
+	};
+}

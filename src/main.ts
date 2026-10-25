@@ -10,7 +10,10 @@ import { VIEWS } from './views';
 import { buildWorkstation, type Workstation } from './world/workstation';
 import { Computer } from './computer/computer';
 import { Physics, initPhysics } from './physics/physics';
-import { mugDesc, notebookDesc, penDesc, pistolDesc } from './physics/propDefs';
+import { mugDesc, notebookDesc, penDesc, pistolDesc, firearmDesc } from './physics/propDefs';
+import { Firearm, FIREARMS } from './world/firearm';
+import { FirearmSystem, type Gun } from './world/firearmSystem';
+import { GunEffects } from './world/gunEffects';
 import { Pistol } from './world/pistol';
 import { PistolSystem } from './world/pistolSystem';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -61,6 +64,8 @@ let xr: XRControls | null = null;
 let shadows: ContactShadows;
 let shadowsDirty = true;
 let gun: PistolSystem | undefined;
+const guns: Gun[] = [];
+let gunFx: GunEffects | undefined;
 
 function setView(name: string) {
 	const v = VIEWS[name];
@@ -73,10 +78,13 @@ function setView(name: string) {
 }
 
 async function init() {
-	const [{ sky, hdr }, w, pistol] = await Promise.all([
+	const loader = new GLTFLoader();
+	const [{ sky, hdr }, w, pistol, g17, awp] = await Promise.all([
 		loadExterior(scene, 'env/spruit_sunrise_4k.hdr.jpg'),
 		buildWorkstation(M, scene, computer.texture),
-		Pistol.load(new GLTFLoader()),
+		Pistol.load(loader),
+		Firearm.load(loader, FIREARMS.g17),
+		Firearm.load(loader, FIREARMS.awp),
 		initPhysics(),
 	]);
 	ws = w;
@@ -84,6 +92,12 @@ async function init() {
 	pistol.group.position.set(ROOM.width / 2 - 0.02 - 0.2, 0.662 + 0.016, -0.32);
 	pistol.group.rotation.set(0, 0.35, Math.PI / 2);
 	scene.add(pistol.group);
+	// the Glock beside it; the rifle on the floor along the sideboard, bolt up
+	g17.group.position.set(ROOM.width / 2 - 0.02 - 0.22, 0.662 + 0.019, -0.62);
+	g17.group.rotation.set(0, -0.4, Math.PI / 2);
+	awp.group.position.set(ROOM.width / 2 - 0.02 - 0.42 - 0.16, 0.05, 0.85);
+	awp.group.rotation.set(0, 0, Math.PI / 2);
+	scene.add(g17.group, awp.group);
 	// exterior surfaces take their image-based light from the sky, not the room
 	{
 		const pm = new THREE.PMREMGenerator(renderer);
@@ -101,7 +115,7 @@ async function init() {
 	});
 	await texturesLoaded();
 	// movable things must not leave baked shadows behind when moved
-	const movable = [ws.mug.group, ws.notebook.group, ws.pen.group, ws.mouse.group, pistol.group];
+	const movable = [ws.mug.group, ws.notebook.group, ws.pen.group, ws.mouse.group, pistol.group, g17.group, awp.group];
 	if (!params.has('noao')) bakeAO([sky, scene.getObjectByName('window-glass')!, ...movable]);
 	const probe = new RoomProbe(renderer, 256);
 	probe.capture(scene, 3, [], (i) => { lights.bounce.visible = i === 0; });
@@ -118,7 +132,14 @@ async function init() {
 		shadows.add(props[2], 0.012, 6);
 		const pistolProp = physics.addProp(pistolDesc(pistol.group));
 		shadows.add(pistolProp, 0.05, 2);
-		gun = new PistolSystem(pistol, pistolProp, scene, camera, physics);
+		gunFx = new GunEffects(scene, camera, physics);
+		gun = new PistolSystem(pistol, pistolProp, scene, camera, physics, gunFx);
+		guns.push(gun);
+		for (const f of [g17, awp]) {
+			const prop = physics.addProp(firearmDesc(f.group, f.spec.id, f.spec.mass, f.colliders));
+			shadows.add(prop, f.bolted ? 0.12 : 0.06, f.bolted ? 4 : 2);
+			guns.push(new FirearmSystem(f, prop, gunFx, scene));
+		}
 	}
 
 	// interaction
@@ -127,6 +148,7 @@ async function init() {
 		keycaps: ws.keyboard.caps,
 		computer,
 		gun,
+		guns,
 		mouse: new DeskMouse(ws.mouse.group, new THREE.Vector3(DESK.centerX + 0.12, DESK.height, DESK.centerZ + DESK.depth / 2 - 0.19), new THREE.Vector2(0.4, 0.16)),
 	};
 	computer.onKeyVisual = (i, down) => ws.keyboard.setKey(i, down);
@@ -161,7 +183,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, THREE, KEY_INDEX });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, THREE, KEY_INDEX });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -225,18 +247,27 @@ renderer.setAnimationLoop((t) => {
 	if (ws && physics) {
 		if (renderer.xr.isPresenting) xr?.update(dt, now); else desktop?.update(dt);
 		physics.step(dt);
-		gun?.update(dt);
+		for (const g of guns) g.update(dt);
+		gunFx?.update(dt);
 		shadows.update();
 		ws.updateClock();
 		ws.keyboard.update(dt);
 		computer.update(now);
 		// the sun's shadow map only needs re-rendering when something moves
-		const awake = physics.props.some((p) => !p.body.isSleeping()) || !!gun?.effects.active; // empty when physics is unavailable
+		const awake = physics.props.some((p) => !p.body.isSleeping()) || !!gunFx?.active; // empty when physics is unavailable
 		if (awake || shadowsDirty) { renderer.shadowMap.needsUpdate = true; shadowsDirty = awake; }
 	} else {
 		renderer.shadowMap.needsUpdate = true;
 	}
+	// scopes render their magnified view for the eye that is behind them
+	if (guns.length) {
+		// (in VR the scene camera inside the rig carries the head pose; the XR
+		// camera's own world position ignores the rig)
+		const eye = camera.getWorldPosition(_eye);
+		for (const g of guns) g.renderScope?.(renderer, scene, eye);
+	}
 	renderer.render(scene, camera);
 });
+const _eye = new THREE.Vector3();
 
 init().catch((e) => { console.error(e); document.getElementById('loading')!.textContent = 'Error: ' + e.message; });

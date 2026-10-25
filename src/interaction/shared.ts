@@ -95,6 +95,8 @@ export class PointerOwner {
 export interface InteractionTargets {
 	/** the pistol, when loaded */
 	gun?: import('../world/pistolSystem').PistolSystem;
+	/** every usable gun (the pistol included) */
+	guns?: import('../world/firearmSystem').Gun[];
 	screen: THREE.Mesh;
 	keycaps: THREE.Mesh;
 	computer: Computer;

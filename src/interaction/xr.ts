@@ -4,7 +4,8 @@ import type { Physics, Prop } from '../physics/physics';
 import type { Walkable, InteractionTargets, PointerOwner } from './shared';
 import { KEYS } from '../computer/keyLayout';
 import { KB } from '../world/furniture/keyboard';
-import { XRHand, graspFor, GRASP_KINDS, type GraspKind } from './xrHands';
+import { XRHand, graspFor, rayToGun, GRASP_KINDS, type GraspKind } from './xrHands';
+import { gunFor, type Gun } from '../world/firearmSystem';
 
 /**
  * WebXR controls.
@@ -57,6 +58,8 @@ interface Hand {
 	screenClick: boolean;
 	turnReady: boolean;
 	scrollAcc: number;
+	/** this hand holds the fore-end of a rifle the other hand is firing */
+	supporting: Gun | null;
 }
 
 const _v = new THREE.Vector3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
@@ -149,7 +152,7 @@ export class XRControls {
 		const hand: Hand = {
 			index: i, ray, grip, source: null, line, dot, tip, prevButtons: [], held: null, holdingMouse: false,
 			mouseGrabOffset: new THREE.Vector3(), velHistory: [], pokeKey: -1, pointing: null, pointKey: -1, pointProp: null,
-			screenClick: false, turnReady: true, scrollAcc: 0,
+			screenClick: false, turnReady: true, scrollAcc: 0, supporting: null,
 			visual: null, handSpace, ctrlVisuals: [model, fallback, tip], pinching: false,
 		};
 		ray.addEventListener('connected', (e: any) => {
@@ -196,8 +199,9 @@ export class XRControls {
 			triggerValue: h.source?.hand ? (h.pinching ? 1 : 0) : (b[0]?.value ?? 0),
 			squeezeValue: h.source?.hand ? 0 : (b[1]?.value ?? 0),
 			thumbTouch: [3, 4, 5].some((i) => b[i]?.touched || b[i]?.pressed),
-			// A / X: reload while holding the pistol
+			// A / X and B / Y: gun actions (reload, bolt, light / laser)
 			faceDown: !!pressed[4] && !was[4],
+			faceUp: !!pressed[5] && !was[5],
 		};
 	}
 
@@ -225,7 +229,7 @@ export class XRControls {
 				h.ray.matrixWorld,
 				{ trigger: btn.triggerValue, squeeze: btn.squeezeValue, thumbTouch: btn.thumbTouch },
 				{ point: !h.held && !h.holdingMouse && (nearKeys || h.pointing === 'screen' || h.pointing === 'key'), holding: h.holdingMouse ? 'mouse' : h.held?.kind ?? null },
-				h.holdingMouse ? this.targets.mouse.object.matrixWorld : null,
+				h.holdingMouse ? this.targets.mouse.object.matrixWorld : h.held && gunFor(this.targets.guns, h.held.prop) ? h.held.prop.desc.object.matrixWorld : null,
 				dt,
 			);
 		}
@@ -264,25 +268,66 @@ export class XRControls {
 				const k = THREE.MathUtils.smoothstep(Math.min(1, h.held.age / 0.25), 0, 1);
 				_v.lerp(gp, k); _q.slerp(gq, k);
 			}
-			const gun = this.targets.gun;
-			if (gun?.isPistol(h.held.prop)) {
+			const gun = gunFor(this.targets.guns, h.held.prop);
+			if (gun) {
+				// the bore follows the pointing ray, eased in from where it was grabbed
+				if (!h.source.hand) {
+					const k = THREE.MathUtils.smoothstep(Math.min(1, h.held.age / 0.25), 0, 1);
+					_m.multiplyMatrices(h.ray.matrixWorld, rayToGun(h.source.handedness === 'left' ? 'left' : 'right'));
+					const gp = new THREE.Vector3(), gq = new THREE.Quaternion();
+					_m.decompose(gp, gq, new THREE.Vector3());
+					_v.lerp(gp, k); _q.slerp(gq, k);
+				}
+				// a second hand on the fore-end aims the rifle: the bore turns about
+				// the grip to point through the supporting hand
+				const sup = this.hands.find((o) => o !== h && o.supporting === gun && o.source);
+				const fore = gun.forendPoint?.();
+				if (sup && fore) {
+					const M = new THREE.Matrix4().compose(_v, _q, new THREE.Vector3(1, 1, 1));
+					const pivot = new THREE.Vector3(0, 0.02, -0.04).applyMatrix4(M);
+					const now = fore.clone().applyMatrix4(M).sub(pivot).normalize();
+					const want = this.grabPoint(sup).sub(pivot).normalize();
+					const turn = new THREE.Quaternion().setFromUnitVectors(now, want);
+					_q.premultiply(turn);
+					_v.sub(pivot).applyQuaternion(turn).add(pivot);
+				}
 				// recoil kicks the held gun up and back about its grip
-				_m.compose(_v, _q, new THREE.Vector3(1, 1, 1)).multiply(gun.pistol.recoilMatrix());
+				_m.compose(_v, _q, new THREE.Vector3(1, 1, 1)).multiply(gun.recoilMatrix());
 				_m.decompose(_v, _q, new THREE.Vector3());
+				gun.setTrigger?.(btn.triggerValue);
 				if (btn.triggerDown) {
 					const r = gun.pullTrigger();
-					if (r === 'fired') this.pulse(h, 1.0, 60); else if (r === 'click') this.pulse(h, 0.2, 10);
+					if (r === 'fired') { this.pulse(h, 1.0, gun.twoHanded ? 110 : 60); if (sup) this.pulse(sup, 0.8, 90); }
+					else if (r === 'click') this.pulse(h, 0.2, 10);
 				}
-				if (btn.faceDown) gun.reload();
+				if (btn.faceDown) gun.primary();
+				if (btn.faceUp) gun.secondary();
+				// stick up / down: scope magnification
+				if (gun.zoom && Math.abs(btn.stickY) > 0.3) gun.zoom(Math.exp(-btn.stickY * dt * 1.6));
 			}
 			this.physics.setHoldTarget(h.held.prop, _v, _q);
 			// the pistol is held with the grip (trigger fires); other objects can be
 			// carried with either button
-			const releasing = btn.squeezeUp || (btn.triggerUp && !btn.squeeze && !this.targets.gun?.isPistol(h.held.prop));
+			const releasing = btn.squeezeUp || (btn.triggerUp && !btn.squeeze && !gun);
 			if (releasing) this.releaseProp(h);
 			else if (h.held.age > 0.6 && this.physics.holdError(h.held.prop) > 0.4) this.releaseProp(h, false); // stuck: let go in place
 			h.line.visible = false; h.dot.visible = false;
 			return;
+		}
+		if (h.supporting) {
+			if (btn.squeezeUp || !this.hands.some((o) => o !== h && o.held && h.supporting!.owns(o.held.prop))) h.supporting = null;
+			h.line.visible = false; h.dot.visible = false;
+			return;
+		}
+		if (btn.squeezeDown) {
+			for (const o of this.hands) {
+				const g = o !== h && o.held ? gunFor(this.targets.guns, o.held.prop) : null;
+				const fore = g?.forendPoint?.();
+				if (g && fore) {
+					const at = fore.clone().applyMatrix4(g.prop.desc.object.matrixWorld);
+					if (at.distanceTo(gripPos) < 0.16) { h.supporting = g; this.pulse(h, 0.35, 20); h.line.visible = false; h.dot.visible = false; return; }
+				}
+			}
 		}
 		if (h.holdingMouse) {
 			const target = gripPos.clone().add(h.mouseGrabOffset);
@@ -372,7 +417,7 @@ export class XRControls {
 			else {
 				const cand = near ?? (h.pointing === 'prop' && h.pointProp && hit!.distance < 1.2 ? h.pointProp : null);
 				// a gun is only picked up with the grip, so a trigger pull never grabs (or fires) by accident
-				if (cand && !(this.targets.gun?.isPistol(cand) && !btn.squeezeDown)) this.grabProp(h, cand);
+				if (cand && !(gunFor(this.targets.guns, cand) && !btn.squeezeDown)) this.grabProp(h, cand);
 			}
 			if (h.held || h.holdingMouse) return;
 		}
@@ -407,7 +452,7 @@ export class XRControls {
 		// keep the object where it is relative to the hand: offset = grip^-1 * object
 		this.physics.grab(prop, 6);
 		const objM = new THREE.Matrix4().compose(this.physics.pos(prop), this.physics.rot(prop), new THREE.Vector3(1, 1, 1));
-		const kind = GRASP_KINDS.find((k) => k === prop.desc.name) ?? null;
+		const kind = gunFor(this.targets.guns, prop) ? 'pistol' : GRASP_KINDS.find((k) => k === prop.desc.name) ?? null;
 		h.held = { prop, offset: this.handFrame(h).clone().invert().multiply(objM), kind, age: 0 };
 		this.pulse(h, 0.45, 25);
 	}

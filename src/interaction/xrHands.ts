@@ -104,6 +104,11 @@ function rayToPistolWrist(handedness: 'left' | 'right'): THREE.Matrix4 {
 	return new THREE.Matrix4().makeTranslation(t.x, t.y, t.z).multiply(gunToWrist);
 }
 
+/** Controller ray -> gun pose (bore along the ray), for any gun held in the pistol grip. */
+export function rayToGun(handedness: 'left' | 'right'): THREE.Matrix4 {
+	return rayToPistolWrist(handedness).multiply(pistolInHand(handedness));
+}
+
 /** Object pose in wrist space for a natural grip, derived from the posed hand itself. */
 function computeGrasp(kind: GraspKind, handedness: 'left' | 'right'): THREE.Matrix4 {
 	if (kind === 'pistol') return pistolInHand(handedness);
@@ -164,6 +169,7 @@ export class XRHand {
 	private target: HandPose = structuredClone(POSES.gripController);
 	private rayWrist: THREE.Matrix4;
 	private pistolWrist: THREE.Matrix4;
+	private gunWrist: THREE.Matrix4;
 	private mouseWrist: THREE.Matrix4;
 	/** wrist (hand root) in world space, valid after update */
 	readonly wrist = new THREE.Matrix4();
@@ -174,6 +180,7 @@ export class XRHand {
 		scene.add(this.model.root);
 		this.rayWrist = rayToWrist(handedness);
 		this.pistolWrist = rayToPistolWrist(handedness);
+		this.gunWrist = pistolInHand(handedness).invert();
 		this.mouseWrist = mouseToWrist(handedness);
 	}
 
@@ -183,6 +190,9 @@ export class XRHand {
 	updateController(rayWorld: THREE.Matrix4, input: HandInputs, ctx: HandContext, mouseWorld: THREE.Matrix4 | null, dt: number) {
 		// placement
 		if (ctx.holding === 'mouse' && mouseWorld) this.wrist.multiplyMatrices(mouseWorld, this.mouseWrist);
+		// a gun: the hand sits on its grip wherever the gun actually is (recoil, a
+		// supporting hand steering a rifle)
+		else if (ctx.holding === 'pistol' && mouseWorld) this.wrist.multiplyMatrices(mouseWorld, this.gunWrist);
 		else this.wrist.multiplyMatrices(rayWorld, ctx.holding === 'pistol' ? this.pistolWrist : this.rayWrist);
 		this.model.root.matrix.copy(this.wrist);
 		this.model.root.matrixWorldNeedsUpdate = true;

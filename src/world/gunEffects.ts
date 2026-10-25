@@ -15,6 +15,27 @@ import { GROUP_PROP, GROUP_STATIC } from '../physics/physics';
 
 type Surface = 'plaster' | 'concrete' | 'wood' | 'glass' | 'screen' | 'metal' | 'other';
 
+/**
+ * Exterior ballistics, simplified to a point mass with quadratic drag
+ * (dv/dt = -k v|v| - g). k is fitted to published velocity tables:
+ * 9x19 115 gr leaves at ~360 m/s and keeps ~83 % after 100 m;
+ * .338 Lapua 250 gr leaves at ~900 m/s and is near 500 m/s at 1000 m.
+ */
+export interface Cartridge {
+	v0: number; k: number; impulse: number;
+	caseR: number; caseLen: number; caseMass: number;
+	sound: string; volume: number; flash: number;
+}
+export const CARTRIDGES: Record<'9mm' | '338', Cartridge> = {
+	'9mm': { v0: 360, k: 0.0019, impulse: 1.4, caseR: 0.0049, caseLen: 0.019, caseMass: 0.0045, sound: 'pistol_shot', volume: 1, flash: 1 },
+	'338': { v0: 900, k: 0.00059, impulse: 6, caseR: 0.0074, caseLen: 0.0693, caseMass: 0.021, sound: 'rifle_shot', volume: 1, flash: 1.9 },
+};
+export interface ShotResult { hit: string | null; point: THREE.Vector3 | null; surface?: Surface; distance: number; time: number }
+export interface BulletHit { point: THREE.Vector3; normal: THREE.Vector3; dir: THREE.Vector3; speed: number; object: THREE.Object3D; cart: Cartridge }
+/** userData.onBulletHit on an object (or an ancestor): return false to also leave the default mark */
+export type BulletHitHandler = (h: BulletHit) => boolean | void;
+interface Bullet { pos: THREE.Vector3; vel: THREE.Vector3; cart: Cartridge; exclude?: RAPIER.RigidBody; res: ShotResult; travelled: number; t: number; done?: boolean }
+
 const groups = (member: number, filter: number) => (member << 16) | filter;
 
 /** muzzle-flash light peak; the room is exposed for daylight, so a few
@@ -32,7 +53,8 @@ export class GunEffects {
 	private flashFresh = false;
 	private decals: THREE.Mesh[] = [];
 	private decalTex: Record<'hole' | 'crack', THREE.Texture>;
-	private puffs: { s: THREE.Sprite; t: number; life: number; v: THREE.Vector3; grow: number }[] = [];
+	private puffs: { s: THREE.Sprite; t: number; life: number; v: THREE.Vector3; grow: number; base?: number }[] = [];
+	private bullets: Bullet[] = [];
 	private puffTex: THREE.Texture;
 	private casings: { body: RAPIER.RigidBody; mesh: THREE.Mesh; t: number }[] = [];
 	private casingGeo = new THREE.CylinderGeometry(0.0049, 0.0049, 0.019, 12);
@@ -46,10 +68,10 @@ export class GunEffects {
 		camera.add(this.listener);
 		this.raycaster.camera = camera; // Sprite.raycast needs it
 		const al = new THREE.AudioLoader();
-		for (const n of ['pistol_shot', 'dry_fire', 'mag_out', 'mag_in']) {
+		for (const n of ['pistol_shot', 'dry_fire', 'mag_out', 'mag_in', 'rifle_shot', 'bolt', 'brass']) {
 			al.load(`sfx/${n}.wav`, (b) => this.buffers.set(n, b), undefined, () => console.warn('sound failed: ' + n));
 		}
-		for (let i = 0; i < 4; i++) { const v = new THREE.PositionalAudio(this.listener); v.setRefDistance(1.2); v.setRolloffFactor(1.2); scene.add(v); this.voices.push(v); }
+		for (let i = 0; i < 8; i++) { const v = new THREE.PositionalAudio(this.listener); v.setRefDistance(1.2); v.setRolloffFactor(1.2); scene.add(v); this.voices.push(v); }
 
 		this.flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTexture(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
 		this.flash.visible = false;
@@ -77,58 +99,97 @@ export class GunEffects {
 	}
 
 	/**
-	 * Fire from `origin` along `dir`. Visual surface hits come from the render
-	 * meshes (exact surface), physics hits from Rapier (to push props).
+	 * Fire a round: muzzle effects, then a bullet that flies (gravity + drag,
+	 * see Cartridge) from aimOrigin along aimDir. The returned record fills in
+	 * when it hits; close hits resolve before this returns.
 	 */
-	shot(muzzle: THREE.Vector3, forward: THREE.Vector3, port: THREE.Vector3, right: THREE.Vector3, up: THREE.Vector3, aimOrigin: THREE.Vector3, aimDir: THREE.Vector3, exclude?: RAPIER.RigidBody) {
-		this.play('pistol_shot', muzzle, 1, 0.96 + Math.random() * 0.08);
+	shot(muzzle: THREE.Vector3, forward: THREE.Vector3, port: THREE.Vector3, right: THREE.Vector3, up: THREE.Vector3, aimOrigin: THREE.Vector3, aimDir: THREE.Vector3, exclude?: RAPIER.RigidBody, cart: Cartridge = CARTRIDGES['9mm'], eject = true): ShotResult {
+		this.play(cart.sound, muzzle, cart.volume, 0.96 + Math.random() * 0.08);
 		// flash: a star sprite a little ahead of the muzzle + a warm light pulse
-		this.flash.position.copy(muzzle).addScaledVector(forward, 0.03);
-		const s = 0.09 + Math.random() * 0.05;
+		this.flash.position.copy(muzzle).addScaledVector(forward, 0.03 * cart.flash);
+		const s = (0.09 + Math.random() * 0.05) * cart.flash;
 		this.flash.scale.set(s, s, s);
 		(this.flash.material as THREE.SpriteMaterial).rotation = Math.random() * Math.PI;
 		this.flash.visible = true;
 		this.flashLight.position.copy(muzzle);
 		this.flashT = 0.055;
 		this.flashFresh = true;
-		this.smoke(muzzle, forward);
-		this.ejectCasing(port, right, up, forward);
+		this.smoke(muzzle, forward, cart.flash);
+		if (eject) this.ejectCasing(port, right, up, forward, cart);
+		const res: ShotResult = { hit: null, point: null, distance: 0, time: 0 };
+		const b: Bullet = { pos: aimOrigin.clone(), vel: aimDir.clone().normalize().multiplyScalar(cart.v0), cart, exclude, res, travelled: 0, t: 0 };
+		// the first 40 ms in fine steps right away: anything in the room is hit
+		// before the trigger handler returns
+		for (let k = 0; k < 4 && !b.done; k++) this.stepBullet(b, 0.01);
+		if (!b.done) this.bullets.push(b);
+		return res;
+	}
 
-		// physics: does the bullet strike a movable prop first?
-		const ray = new RAPIER.Ray(aimOrigin, aimDir);
+	/** Advance a bullet by dt, testing the segment it sweeps. */
+	private stepBullet(b: Bullet, dt: number) {
+		const from = b.pos.clone();
+		const speed = b.vel.length();
+		// drag: dv/dt = -k v |v|; gravity
+		b.vel.multiplyScalar(1 / (1 + b.cart.k * speed * dt));
+		b.vel.y -= 9.81 * dt;
+		const to = from.clone().addScaledVector(b.vel, dt);
+		const seg = to.clone().sub(from), len = seg.length();
+		const dir = seg.divideScalar(len || 1);
+		b.t += dt;
+		// physics props (to push them) and rendered surfaces (exact marks)
 		const phit = this.physics.enabled
-			? this.physics.world.castRayAndGetNormal(ray, 60, true, undefined, groups(GROUP_PROP, GROUP_STATIC | GROUP_PROP), undefined, exclude)
+			? this.physics.world.castRayAndGetNormal(new RAPIER.Ray(from, dir), len, true, undefined, groups(GROUP_PROP, GROUP_STATIC | GROUP_PROP), undefined, b.exclude)
 			: null;
-		// visuals: the exact rendered surface
-		this.raycaster.set(aimOrigin, aimDir);
-		this.raycaster.far = 60;
+		this.raycaster.set(from, dir);
+		this.raycaster.far = len;
 		const vhit = this.raycaster.intersectObjects(this.scene.children, true).find((h) => this.hittable(h.object));
+		const done = (hit: string, point: THREE.Vector3, surface?: Surface) => {
+			b.done = true;
+			Object.assign(b.res, { hit, point, surface, distance: b.travelled + from.distanceTo(point), time: b.t });
+		};
 		if (phit) {
 			const body = phit.collider.parent();
 			const prop = this.physics.props.find((p) => p.body === body);
 			if (prop && (!vhit || phit.timeOfImpact <= vhit.distance + 0.05)) {
-				const p = new THREE.Vector3().copy(aimOrigin).addScaledVector(aimDir, phit.timeOfImpact);
-				// a 9 mm round carries ~2.5 N s; props absorb part of it
-				body!.applyImpulseAtPoint(new THREE.Vector3().copy(aimDir).multiplyScalar(1.4), p, true);
+				const p = from.clone().addScaledVector(dir, phit.timeOfImpact);
+				// momentum: a 9 mm round carries ~2.5 N s, a .338 ~20 N s; props absorb part of it
+				body!.applyImpulseAtPoint(dir.clone().multiplyScalar(b.cart.impulse), p, true);
 				this.puff(p, new THREE.Vector3(phit.normal.x, phit.normal.y, phit.normal.z), 'other');
-				return { hit: prop.desc.name, point: p };
+				done(prop.desc.name, p);
+				return;
 			}
 		}
 		if (vhit && vhit.face) {
 			const n = vhit.face.normal.clone().transformDirection(vhit.object.matrixWorld);
-			if (n.dot(aimDir) > 0) n.negate();
+			if (n.dot(dir) > 0) n.negate();
+			// targets (clays, steel) react themselves; anything else gets a mark
+			let handled = false;
+			for (let o: THREE.Object3D | null = vhit.object; o && !handled; o = o.parent) {
+				const cb = o.userData.onBulletHit as BulletHitHandler | undefined;
+				if (cb) handled = cb({ point: vhit.point.clone(), normal: n, dir: dir.clone(), speed: b.vel.length(), object: vhit.object, cart: b.cart }) !== false;
+			}
 			const surf = classify(vhit.object);
-			this.decal(vhit.point, n, surf);
-			this.puff(vhit.point, n, surf);
-			return { hit: vhit.object.name || 'surface', point: vhit.point.clone(), surface: surf };
+			if (!handled) {
+				this.decal(vhit.point, n, surf);
+				this.puff(vhit.point, n, surf, Math.max(1, vhit.point.distanceTo(this.listener.getWorldPosition(new THREE.Vector3())) / 25));
+			}
+			done(vhit.object.name || 'surface', vhit.point.clone(), surf);
+			return;
 		}
-		return { hit: null };
+		b.pos.copy(to);
+		b.travelled += len;
+		if (b.travelled > 2500 || b.pos.y < -200 || b.t > 6) { b.done = true; b.res.distance = b.travelled; }
+	}
+
+	/** Eject a spent case (bolt guns do this when the bolt is pulled back). */
+	eject(port: THREE.Vector3, right: THREE.Vector3, up: THREE.Vector3, forward: THREE.Vector3, cart: Cartridge, gentle = false) {
+		this.ejectCasing(port, right, up, forward, cart, gentle ? 0.45 : 1);
 	}
 
 	private hittable(o: THREE.Object3D): boolean {
 		if (!(o as THREE.Mesh).isMesh || !o.visible) return false;
 		for (let p: THREE.Object3D | null = o; p; p = p.parent) {
-			if (this.ignore.has(p) || p.name === 'sky' || p.name.startsWith('contact-shadow') || p.name.startsWith('hand-') || p.name === 'pistol' || p.name === 'decal') return false;
+			if (this.ignore.has(p) || p.name === 'sky' || p.name.startsWith('contact-shadow') || p.name.startsWith('hand-') || p.name === 'pistol' || p.name.startsWith('gun-') || p.name === 'decal' || p.userData.noBullet) return false;
 		}
 		return true;
 	}
@@ -152,20 +213,20 @@ export class GunEffects {
 		if (this.decals.length > 60) { const old = this.decals.shift()!; this.scene.remove(old); old.geometry.dispose(); (old.material as THREE.Material).dispose(); }
 	}
 
-	private puff(p: THREE.Vector3, n: THREE.Vector3, surf: Surface) {
+	private puff(p: THREE.Vector3, n: THREE.Vector3, surf: Surface, scale = 1) {
 		const col = surf === 'wood' ? 0x9a7a55 : surf === 'plaster' ? 0xf0ede6 : surf === 'glass' || surf === 'screen' ? 0xe8f0f8 : 0xb0aca6;
 		for (let i = 0; i < 6; i++) {
 			const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.puffTex, color: col, transparent: true, depthWrite: false, opacity: 0.8 }));
 			s.position.copy(p).addScaledVector(n, 0.01);
-			s.scale.setScalar(0.015);
-			const v = n.clone().multiplyScalar(0.5 + Math.random() * 0.8).add(new THREE.Vector3((Math.random() - 0.5) * 0.6, Math.random() * 0.4, (Math.random() - 0.5) * 0.6));
+			s.scale.setScalar(0.015 * scale);
+			const v = n.clone().multiplyScalar(0.5 + Math.random() * 0.8).add(new THREE.Vector3((Math.random() - 0.5) * 0.6, Math.random() * 0.4, (Math.random() - 0.5) * 0.6)).multiplyScalar(Math.sqrt(scale));
 			this.scene.add(s);
-			this.puffs.push({ s, t: 0, life: 0.45 + Math.random() * 0.35, v, grow: 0.16 });
+			this.puffs.push({ s, t: 0, life: (0.45 + Math.random() * 0.35) * Math.min(3, Math.sqrt(scale)), v, grow: 0.16 * scale, base: 0.015 * scale });
 		}
 	}
 
-	private smoke(p: THREE.Vector3, fwd: THREE.Vector3) {
-		for (let i = 0; i < 3; i++) {
+	private smoke(p: THREE.Vector3, fwd: THREE.Vector3, amount = 1) {
+		for (let i = 0; i < Math.round(3 * amount); i++) {
 			const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.puffTex, color: 0xd6d6d6, transparent: true, depthWrite: false, opacity: 0.35 }));
 			s.position.copy(p).addScaledVector(fwd, 0.02 + i * 0.015);
 			s.scale.setScalar(0.02);
@@ -174,18 +235,20 @@ export class GunEffects {
 		}
 	}
 
-	private ejectCasing(port: THREE.Vector3, right: THREE.Vector3, up: THREE.Vector3, fwd: THREE.Vector3) {
+	private ejectCasing(port: THREE.Vector3, right: THREE.Vector3, up: THREE.Vector3, fwd: THREE.Vector3, cart: Cartridge = CARTRIDGES['9mm'], force = 1) {
 		if (!this.physics.enabled) return;
+		this.play('brass', port, 0.25, 0.9 + Math.random() * 0.2);
 		const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), right);
 		const body = this.physics.world.createRigidBody(RAPIER.RigidBodyDesc.dynamic()
 			.setTranslation(port.x, port.y, port.z).setRotation(q).setCcdEnabled(true).setLinearDamping(0.1).setAngularDamping(0.2));
-		this.physics.world.createCollider(RAPIER.ColliderDesc.cylinder(0.0095, 0.0049).setMass(0.0045).setRestitution(0.45).setFriction(0.4)
+		this.physics.world.createCollider(RAPIER.ColliderDesc.cylinder(cart.caseLen / 2, cart.caseR).setMass(cart.caseMass).setRestitution(0.45).setFriction(0.4)
 			.setCollisionGroups(groups(GROUP_PROP, GROUP_STATIC)), body);
 		// out to the right and up, a little back, spinning end over end
-		const v = right.clone().multiplyScalar(2.2 + Math.random() * 0.8).addScaledVector(up, 1.6 + Math.random() * 0.6).addScaledVector(fwd, -0.4);
+		const v = right.clone().multiplyScalar((2.2 + Math.random() * 0.8) * force).addScaledVector(up, (1.6 + Math.random() * 0.6) * force).addScaledVector(fwd, -0.4 * force);
 		body.setLinvel(v, true);
 		body.setAngvel(fwd.clone().multiplyScalar(25 + Math.random() * 15), true);
 		const mesh = new THREE.Mesh(this.casingGeo, this.casingMat);
+		mesh.scale.set(cart.caseR / 0.0049, cart.caseLen / 0.019, cart.caseR / 0.0049);
 		mesh.castShadow = true;
 		mesh.name = 'decal'; // not a bullet target
 		this.scene.add(mesh);
@@ -204,6 +267,12 @@ export class GunEffects {
 	get active() { return this.casings.some((c) => !c.body.isSleeping()); }
 
 	update(dt: number) {
+		// bullets in flight (long range): one swept segment per frame
+		for (let i = this.bullets.length - 1; i >= 0; i--) {
+			const b = this.bullets[i];
+			this.stepBullet(b, Math.min(dt, 1 / 30));
+			if (b.done) this.bullets.splice(i, 1);
+		}
 		if (this.flashFresh) {
 			this.flashFresh = false;
 			this.flashLight.intensity = FLASH_LIGHT;
@@ -218,7 +287,7 @@ export class GunEffects {
 			const k = p.t / p.life;
 			p.s.position.addScaledVector(p.v, dt);
 			p.v.multiplyScalar(Math.exp(-dt * 3));
-			p.s.scale.setScalar(0.015 + p.grow * k * (p.life > 1 ? 0.6 : 0.3));
+			p.s.scale.setScalar((p.base ?? 0.015) + p.grow * k * (p.life > 1 ? 0.6 : 0.3));
 			(p.s.material as THREE.SpriteMaterial).opacity = (1 - k) * (p.life > 1 ? 0.3 : 0.75);
 			if (k >= 1) { this.scene.remove(p.s); (p.s.material as THREE.Material).dispose(); this.puffs.splice(i, 1); }
 		}

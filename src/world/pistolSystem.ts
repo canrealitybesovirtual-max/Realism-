@@ -1,20 +1,23 @@
 import * as THREE from 'three';
 import type { Physics, Prop } from '../physics/physics';
 import type { Pistol } from './pistol';
-import { GunEffects } from './gunEffects';
+import { GunEffects, type ShotResult } from './gunEffects';
+import type { Gun } from './firearmSystem';
 
 /**
  * The pistol as a usable object: its physics prop, its mechanism and the
  * effects of firing. Input code (VR / desktop) calls pullTrigger() and
  * reload() while holding it.
  */
-export class PistolSystem {
+export class PistolSystem implements Gun {
 	readonly effects: GunEffects;
-	lastShot: ReturnType<GunEffects['shot']> | null = null;
+	lastShot: ShotResult | null = null;
 	shotsFired = 0;
+	readonly label = 'Walther P38';
+	readonly twoHanded = false;
 
-	constructor(readonly pistol: Pistol, readonly prop: Prop, scene: THREE.Scene, camera: THREE.Camera, physics: Physics) {
-		this.effects = new GunEffects(scene, camera, physics);
+	constructor(readonly pistol: Pistol, readonly prop: Prop, scene: THREE.Scene, camera: THREE.Camera, physics: Physics, effects?: GunEffects) {
+		this.effects = effects ?? new GunEffects(scene, camera, physics);
 		pistol.onReloadStage = (stage) => this.effects.play(stage === 'out' ? 'mag_out' : 'mag_in', pistol.group.getWorldPosition(new THREE.Vector3()), 0.8);
 	}
 
@@ -38,10 +41,14 @@ export class PistolSystem {
 	}
 
 	reload() { this.pistol.reload(); }
+	primary() { this.pistol.reload(); }
+	secondary() {}
+	recoilMatrix(out = new THREE.Matrix4()) { return this.pistol.recoilMatrix(out); }
+	eyePoint() { return new THREE.Vector3(0, 0.083, 0.53); }
+	owns(prop: Prop | null | undefined) { return this.isPistol(prop); }
 
 	update(dt: number) {
-		this.pistol.update(dt);
-		this.effects.update(dt);
+		this.pistol.update(dt); // the shared effects are updated by their owner
 	}
 
 	isPistol(prop: Prop | null | undefined) { return !!prop && prop === this.prop; }

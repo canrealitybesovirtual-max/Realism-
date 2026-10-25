@@ -1,8 +1,9 @@
 import * as THREE from 'three';
+import { gunFor } from '../world/firearmSystem';
 import type { Physics, Prop } from '../physics/physics';
 import { type Walkable, type InteractionTargets, type PointerOwner } from './shared';
 import { EYE_HEIGHT_STANDING } from '../config';
-import { XRHand, graspFor, GRASP_KINDS, type GraspKind } from './xrHands';
+import { XRHand, graspFor, rayToGun, GRASP_KINDS, type GraspKind } from './xrHands';
 
 /**
  * Desktop (non-VR) controls.
@@ -27,6 +28,8 @@ export class DesktopControls {
 	private crosshair = document.getElementById('crosshair');
 	private overlay = document.getElementById('overlay');
 	enabled = true;
+	/** right mouse held with a gun: aiming down the sights / through the scope */
+	ads = false;
 
 	constructor(
 		private camera: THREE.PerspectiveCamera,
@@ -67,12 +70,17 @@ export class DesktopControls {
 			if (document.pointerLockElement !== dom) return;
 			if (this.mode === 'computer') { if (e.button === 0) this.targets.computer.os.pointerDown(); return; }
 			if (e.button === 0) this.primary(true);
+			if (e.button === 2 && this.heldGun()) this.ads = true;
 		});
 		dom.addEventListener('mouseup', (e) => {
 			if (this.mode === 'computer' && e.button === 0) this.targets.computer.os.pointerUp();
+			if (e.button === 2) this.ads = false;
 		});
+		dom.addEventListener('contextmenu', (e) => e.preventDefault());
 		dom.addEventListener('wheel', (e) => {
 			if (this.mode === 'computer') { this.targets.computer.os.wheel(e.deltaY); return; }
+			const g = this.heldGun();
+			if (g?.zoom && this.ads) { g.zoom(Math.exp(-e.deltaY * 0.0015)); return; }
 			if (this.held) this.held.dist = THREE.MathUtils.clamp(this.held.dist - e.deltaY * 0.0006, 0.3, 1.2);
 		}, { passive: true });
 		addEventListener('keydown', (e) => {
@@ -84,7 +92,12 @@ export class DesktopControls {
 			}
 			this.keys.add(e.code);
 			if (e.code === 'KeyE' && !e.repeat) this.primary();
-			if (e.code === 'KeyR' && !e.repeat && this.held && this.targets.gun?.isPistol(this.held.prop)) this.targets.gun.reload();
+			const g = this.heldGun();
+			if (g && !e.repeat) {
+				if (e.code === 'KeyR') g.reload();
+				// F: work the bolt (rifle) or switch the weapon light (pistol)
+				if (e.code === 'KeyF') { if (g.twoHanded) g.primary(); else g.secondary(); }
+			}
 		});
 		addEventListener('keyup', (e) => {
 			this.keys.delete(e.code);
@@ -93,12 +106,15 @@ export class DesktopControls {
 		addEventListener('blur', () => this.keys.clear());
 	}
 
+	heldGun() { return this.held ? gunFor(this.targets.guns, this.held.prop) : null; }
+
 	private primary(fromClick = false) {
-		const gun = this.targets.gun;
-		if (this.held && fromClick && gun?.isPistol(this.held.prop)) {
-			// holding the pistol: click fires at the crosshair, E puts it down
-			const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-			gun.pullTrigger({ origin: this.camera.position.clone(), dir });
+		const gun = this.heldGun();
+		if (this.held && fromClick && gun) {
+			// holding a gun: click fires (at the crosshair from the hip, along the
+			// bore when aiming), E puts it down
+			if (this.ads) gun.pullTrigger();
+			else gun.pullTrigger({ origin: this.camera.position.clone(), dir: new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion) });
 			return;
 		}
 		if (this.held) { this.drop(); return; }
@@ -141,7 +157,7 @@ export class DesktopControls {
 		// remember the prop's orientation relative to the view so it turns with you
 		const rel = camQ.clone().invert().multiply(this.physics.rot(prop));
 		this.physics.grab(prop, 5);
-		const kind = GRASP_KINDS.find((k) => k === prop.desc.name) ?? null;
+		const kind = gunFor(this.targets.guns, prop) ? 'pistol' : GRASP_KINDS.find((k) => k === prop.desc.name) ?? null;
 		this.held = { prop, dist: THREE.MathUtils.clamp(distance, 0.45, 0.9), rot: rel, last: this.physics.pos(prop), vel: new THREE.Vector3(), kind, age: 0 };
 	}
 
@@ -149,6 +165,7 @@ export class DesktopControls {
 		if (!this.held) return;
 		this.physics.release(this.held.prop, toss ? this.held.vel : new THREE.Vector3());
 		this.held = null;
+		this.ads = false;
 		if (this.hand) this.hand.visible = false;
 	}
 
@@ -184,17 +201,25 @@ export class DesktopControls {
 				const rayPos = this.camera.position.clone().add(new THREE.Vector3(0.13, -0.12, -(this.held.dist - 0.1)).applyQuaternion(camQ));
 				const rayQ = camQ.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.15, 0.12, 0)));
 				const ray = new THREE.Matrix4().compose(rayPos, rayQ, new THREE.Vector3(1, 1, 1));
-				this.hand.updateController(ray, { trigger: 0, squeeze: 0, thumbTouch: true }, { point: false, holding: this.held.kind }, null, dt);
-				const g = new THREE.Matrix4().multiplyMatrices(this.hand.wrist, graspFor(this.held.kind, 'right'));
+				const heldGun = gunFor(this.targets.guns, this.held.prop);
+				this.hand.updateController(ray, { trigger: 0, squeeze: 0, thumbTouch: true }, { point: false, holding: this.held.kind }, heldGun ? this.held.prop.desc.object.matrixWorld : null, dt);
+				// a gun is carried along the view (bore forward), the hand drawn on its grip
+				const g = heldGun ? ray.clone().multiply(rayToGun('right')) : new THREE.Matrix4().multiplyMatrices(this.hand.wrist, graspFor(this.held.kind, 'right'));
 				const gp = new THREE.Vector3(), gq = new THREE.Quaternion();
 				g.decompose(gp, gq, new THREE.Vector3());
 				const k = THREE.MathUtils.smoothstep(Math.min(1, this.held.age / 0.25), 0, 1);
 				target = target.lerp(gp, k);
 				rot = rot.slerp(gq, k);
 			}
-			const gun = this.targets.gun;
-			if (gun?.isPistol(this.held.prop)) {
-				const m = new THREE.Matrix4().compose(target, rot, new THREE.Vector3(1, 1, 1)).multiply(gun.pistol.recoilMatrix());
+			const gun = gunFor(this.targets.guns, this.held.prop);
+			if (gun) {
+				if (this.ads && gun.eyePoint) {
+					// eye on the sight line: the gun's eye point sits at the camera, bore along the view
+					const e = gun.eyePoint();
+					const m = new THREE.Matrix4().compose(this.camera.position, this.camera.quaternion, new THREE.Vector3(1, 1, 1)).multiply(new THREE.Matrix4().makeTranslation(-e.x, -e.y, -e.z));
+					m.decompose(target, rot, new THREE.Vector3());
+				}
+				const m = new THREE.Matrix4().compose(target, rot, new THREE.Vector3(1, 1, 1)).multiply(gun.recoilMatrix());
 				m.decompose(target, rot, new THREE.Vector3());
 			}
 			this.physics.setHoldTarget(this.held.prop, target, rot);
