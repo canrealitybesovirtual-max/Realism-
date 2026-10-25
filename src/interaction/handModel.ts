@@ -114,7 +114,7 @@ export class HandModel {
 		const { geometry, groups } = this.build();
 		const skin = new THREE.MeshPhysicalMaterial({
 			name: 'skin', color: SKIN.color, roughness: 0.52, sheen: 0.35, sheenRoughness: 0.6,
-			sheenColor: new THREE.Color(0xff9a7a), alphaHash: true, vertexColors: true,
+			sheenColor: new THREE.Color(0xff9a7a),
 		});
 		const nail = new THREE.MeshPhysicalMaterial({
 			name: 'nail', color: SKIN.nail, roughness: 0.38, clearcoat: 0.35, clearcoatRoughness: 0.3,
@@ -326,8 +326,11 @@ export class HandModel {
 		{
 			const thumbBone = this.chain.thumb[0];
 			const stations = [
-				{ z: 0.045, w: 0.054, h: 0.039, cx: 0.0, cy: -0.002, a: 0.0 },
-				{ z: 0.03, w: 0.056, h: 0.038, cx: 0.0, cy: -0.002, a: 0.55 },
+				// rounded, closed wrist end (a dithered fade looked grainy in the headset)
+				{ z: 0.05, w: 0.004, h: 0.003, cx: 0.0, cy: -0.002, a: 1 },
+				{ z: 0.047, w: 0.034, h: 0.025, cx: 0.0, cy: -0.002, a: 1 },
+				{ z: 0.04, w: 0.05, h: 0.036, cx: 0.0, cy: -0.002, a: 1 },
+				{ z: 0.03, w: 0.055, h: 0.038, cx: 0.0, cy: -0.002, a: 1 },
 				{ z: 0.012, w: 0.058, h: 0.035, cx: 0.0, cy: -0.003, a: 1 },
 				{ z: -0.012, w: 0.066, h: 0.034, cx: -0.001, cy: -0.004, a: 1 },
 				{ z: -0.04, w: 0.078, h: 0.032, cx: 0.002, cy: -0.004, a: 1 },
