@@ -10,7 +10,7 @@ const p = await b.newPage({ viewport: { width: 900, height: 900 } });
 const errs = [];
 p.on('pageerror', (e) => { errs.push(e.message); console.log('[pageerror]', e.message); });
 p.on('console', (m) => { if (m.type() === 'error') { errs.push(m.text()); console.log('[error]', m.text().slice(0, 300)); } });
-await p.goto('http://localhost:5173/?emulate&noao');
+await p.goto((process.env.URL || 'http://localhost:5173/') + '?emulate&noao');
 await p.waitForFunction(() => window.__studio?.ready && window.__rally, null, { timeout: 600000 });
 await p.click('#VRButton', { timeout: 180000 });
 await p.waitForFunction(() => window.__studio.renderer.xr.isPresenting, null, { timeout: 60000 });
