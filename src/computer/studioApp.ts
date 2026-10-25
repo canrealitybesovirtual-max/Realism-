@@ -4,6 +4,7 @@ import type { Editor } from '../engine/editor';
 import type { EditorViewport } from '../engine/viewport';
 import { LAYERS, type Entity, type Layer, readTRS, writeTRS, type TRS } from '../engine/entities';
 import { log } from '../engine/log';
+import { COMPONENTS } from '../engine/components';
 
 /**
  * "Studio": the editor on the in-world computer. The world around the desk is
@@ -37,6 +38,11 @@ export class StudioApp implements App {
 	private listScroll = 0;
 	private inspScroll = 0;
 	private multi = false;
+	private picking = false;
+	/** set by main: open the Logic app on a graph */
+	openLogic: ((graphId: string) => void) | null = null;
+	/** set by main: make a starter graph, returns its id */
+	makeGraph: (() => string | null) | null = null;
 	private matIndex = 0;
 	private text: { id: string; value: string; commit: (s: string) => void } | null = null;
 	private confirm: { msg: string; yes: () => void } | null = null;
@@ -418,14 +424,46 @@ export class StudioApp implements App {
 				y += 40;
 			}
 		}
-		// components
-		if (e.components.length) {
+		// components (gameplay behaviour; runs while playing)
+		if (!e.locked) {
 			y += 6; head('Components');
 			for (const comp of e.components) {
-				c.fillStyle = C.text; c.font = `600 15px ${ui}`; c.fillText(comp.type, X + 16, y + 12); y += 24;
-				c.fillStyle = C.dim; c.font = `400 14px ${ui}`;
-				for (const [k, v] of Object.entries(comp.data)) { c.fillText(`${k}: ${v}`, X + 28, y + 10); y += 22; }
+				const def = COMPONENTS.get(comp.type);
+				c.fillStyle = C.text; c.font = `600 16px ${ui}`; c.fillText(def?.label ?? comp.type, X + 16, y + 14);
+				this.button(c, '✕', X + W - 52, y, 36, 28, () => this.ed.apply({ op: 'comp', id: e.id, ctype: comp.type, data: null }));
+				y += 32;
+				if (def) {
+					c.fillStyle = C.dim; c.font = `400 13px ${ui}`; wrap(c, def.description, X + 16, y + 8, W - 32, 18);
+					y += 18 * Math.ceil(c.measureText(def.description).width / (W - 32)) + 8;
+					for (const [k, f] of Object.entries(def.fields)) {
+						const v = comp.data[k];
+						const set = (nv: number | string | boolean) => this.ed.apply({ op: 'comp', id: e.id, ctype: comp.type, data: { ...comp.data, [k]: nv } });
+						c.fillStyle = C.text; c.font = `500 15px ${ui}`; c.fillText(f.label ?? k, X + 28, y + 16);
+						if (f.kind === 'bool') this.button(c, v ? 'On' : 'Off', X + 200, y, 90, 30, () => set(!v), !!v);
+						else if (f.kind === 'number') {
+							const lo = f.min ?? -1e4, hi = f.max ?? 1e4;
+							this.numField(c, `${comp.type}.${k}`, Number(v), X + 200, y, 160, 30, Math.max(0.001, Math.min(1, (hi - lo) / 600)), 'none', false, (nv, live) => {
+								const cl = THREE.MathUtils.clamp(+nv.toFixed(4), lo, hi);
+								if (live) comp.data[k] = cl; // preview (read live by the running component)
+								else { comp.data[k] = (this as any)._cv; set(cl); }
+							}, () => { (this as any)._cv = comp.data[k]; });
+						} else this.textField(c, `${comp.type}.${k}`, String(v), X + 200, y, W - 216, 30, (sv) => set(sv.slice(0, 120)));
+						y += 38;
+					}
+					if (comp.type === 'Graph') {
+						this.button(c, 'New graph', X + 28, y, 130, 30, () => this.newGraphFor(e));
+						this.button(c, 'Edit in Logic', X + 166, y, 150, 30, () => this.openLogic?.(String(comp.data.graph)), false, !!comp.data.graph);
+						y += 40;
+					}
+				}
+				y += 6;
 			}
+			// add a component
+			if (this.picking) {
+				const free = [...COMPONENTS.values()].filter((d) => !e.components.some((c2) => c2.type === d.type));
+				for (const d of free) { this.button(c, '+ ' + d.label, X + 16, y, W - 32, 30, () => { this.picking = false; this.ed.apply({ op: 'comp', id: e.id, ctype: d.type, data: {} }); }); y += 34; }
+				this.button(c, 'Cancel', X + 16, y, 120, 30, () => { this.picking = false; }); y += 38;
+			} else { this.button(c, '+ Add component', X + 16, y, 200, 32, () => { this.picking = true; }); y += 40; }
 		}
 		const contentH = y + this.inspScroll - Y;
 		this.inspScroll = Math.min(this.inspScroll, Math.max(0, contentH - H + 20));
@@ -474,7 +512,7 @@ export class StudioApp implements App {
 	private numField(c: CanvasRenderingContext2D, id: string, value: number, x: number, y: number, w: number, h: number, step: number, axis: string, locked: boolean | undefined, set: (v: number, live: boolean) => void, begin: () => void) {
 		const editing = this.text?.id === id;
 		rr(c, x, y, w, h, 6); c.fillStyle = editing ? '#0f1114' : C.panel2; c.fill();
-		c.fillStyle = axis === 'x' ? C.x : axis === 'y' ? C.y : C.z; c.fillRect(x, y + 6, 3, h - 12);
+		if (axis !== 'none') { c.fillStyle = axis === 'x' ? C.x : axis === 'y' ? C.y : C.z; c.fillRect(x, y + 6, 3, h - 12); }
 		c.font = `400 16px ${this.os.fonts.mono}`; c.fillStyle = locked ? '#5d636b' : C.text; c.textBaseline = 'middle';
 		c.fillText(editing ? this.text!.value + '▏' : fmt(value), x + 10, y + h / 2 + 1);
 		if (locked) return;
@@ -539,6 +577,13 @@ export class StudioApp implements App {
 	}
 
 	private ask(msg: string, yes: () => void) { this.confirm = { msg, yes }; }
+	private newGraphFor(e: Entity) {
+		const id = this.makeGraph?.();
+		if (!id) return;
+		const comp = e.components.find((c) => c.type === 'Graph');
+		this.ed.apply({ op: 'comp', id: e.id, ctype: 'Graph', data: { ...(comp?.data ?? {}), graph: id } });
+		this.openLogic?.(id);
+	}
 	private askDelete() {
 		const r = this.ed.delete(false);
 		if (r === 'confirm') this.ask(`Delete ${this.ed.selection.map((e) => e.name).join(', ')}? It is part of the original scene (undo brings it back).`, () => this.ed.delete(true));

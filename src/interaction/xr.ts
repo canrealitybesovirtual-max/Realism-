@@ -6,6 +6,7 @@ import { KEYS } from '../computer/keyLayout';
 import { KB } from '../world/furniture/keyboard';
 import { XRHand, graspFor, rayToGun, GRASP_KINDS, type GraspKind } from './xrHands';
 import { gunFor, type Gun } from '../world/firearmSystem';
+import { useTarget } from './desktop';
 
 /**
  * WebXR controls.
@@ -415,6 +416,11 @@ export class XRControls {
 			const k = h.pointKey;
 			setTimeout(() => this.targets.computer.onKeyVisual(k, false), 110);
 			this.pulse(h, 0.3, 10);
+		}
+		// gameplay: the trigger uses an Interactable / Door / ... it points at
+		if (btn.triggerDown && h.pointing !== 'screen' && h.pointing !== 'key' && this.targets.gameplay) {
+			const o = useTarget(origin, dir, this.camera);
+			if (o && this.targets.gameplay.use(o)) { this.pulse(h, 0.4, 20); return; }
 		}
 		// grabbing
 		const grabPressed = btn.squeezeDown || (btn.triggerDown && (h.pointing === 'prop' || h.pointing === 'mouse' || near || mouseNear) && h.pointing !== 'screen');

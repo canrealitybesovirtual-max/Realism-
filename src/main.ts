@@ -21,7 +21,9 @@ import { Editor } from './engine/editor';
 import { EditorViewport } from './engine/viewport';
 import { WorldTool } from './engine/worldTool';
 import { StudioApp } from './computer/studioApp';
+import { LogicApp } from './computer/logicApp';
 import { log } from './engine/log';
+import { Gameplay } from './engine/gameplay';
 import { Pistol } from './world/pistol';
 import { PistolSystem } from './world/pistolSystem';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -78,6 +80,7 @@ let range: ShootingRange | undefined;
 let runtime: Runtime | undefined;
 let editor: Editor | undefined;
 let viewport: EditorViewport | undefined;
+let gameplay: Gameplay | undefined;
 log.capture();
 
 function setView(name: string) {
@@ -185,11 +188,20 @@ async function init() {
 		registerScene(world, { props: physics.props, lamp: ws.lamp, plant: ws.plant, clock: ws.clock });
 		runtime = new Runtime(world);
 		const rt = runtime;
-		editor = new Editor(world, runtime, { world, physics: physics.enabled ? physics : null, scene, onMoved: (e) => rt.authored(e.id, e.object.position, e.object.quaternion) }, scene);
+		const opCtx = { world, physics: physics.enabled ? physics : null, scene, onMoved: (e: import('./engine/entities').Entity) => rt.authored(e.id, e.object.position, e.object.quaternion), gameplay: undefined as Gameplay | undefined };
+		editor = new Editor(world, runtime, opCtx, scene);
+		gameplay = new Gameplay(world, opCtx.physics, runtime, () => camera.getWorldPosition(new THREE.Vector3()), gunFx?.listener ?? null);
+		opCtx.gameplay = gameplay;
+		targets.gameplay = gameplay;
+		gameplay.start(); // the game starts in play mode
 		viewport = new EditorViewport(ws.monitor.screen.material as THREE.MeshStandardMaterial, computer.os.W, computer.os.H);
 		const studio = new StudioApp(computer.os, editor, viewport, () => camera.getWorldPosition(new THREE.Vector3()));
 		studio.playerForward = () => { const d = camera.getWorldDirection(new THREE.Vector3()); d.y = 0; return d.lengthSq() ? d.normalize() : new THREE.Vector3(0, 0, -1); };
 		computer.os.registerApp(studio);
+		const logic = new LogicApp(computer.os, editor, gameplay);
+		computer.os.registerApp(logic);
+		studio.openLogic = (id) => { logic.graphId = id; computer.os.openApp('logic'); };
+		studio.makeGraph = () => logic.newGraph();
 		targets.editorTool = new WorldTool(editor, scene, ws.monitor.screen, camera);
 		log.info(`Engine: ${world.list.length} entities registered`);
 	}
@@ -219,7 +231,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, log, THREE, KEY_INDEX });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -288,6 +300,7 @@ renderer.setAnimationLoop((t) => {
 			physics.step(sdt);
 			for (const g of guns) g.update(sdt);
 			gunFx?.update(sdt);
+			gameplay?.update(sdt);
 		}
 		range?.update(sdt); // with 0 while paused: clays freeze, the exit and hints still work
 		editor?.update();

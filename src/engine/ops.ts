@@ -2,6 +2,9 @@ import * as THREE from 'three';
 import type { Physics, Prop } from '../physics/physics';
 import type { Entity, EntityWorld, SpawnSpec, TRS } from './entities';
 import { readTRS } from './entities';
+import { COMPONENTS, defaults, validateComponent, type Data } from './components';
+import { validateGraph, type GraphDoc } from './graph';
+import type { Gameplay } from './gameplay';
 import { type Command, applyTRS, makeMaterialUnique, setLight, setMaterial, setPhysics, rename, type MatKey, type PhysKey } from './commands';
 
 /**
@@ -20,9 +23,11 @@ export type Op =
 	| { op: 'static'; id: string; value: boolean }
 	| { op: 'rename'; id: string; name: string }
 	| { op: 'delete'; id: string }
-	| { op: 'spawn'; id: string; spec: SpawnSpec; to: TRS; color: string };
+	| { op: 'spawn'; id: string; spec: SpawnSpec; to: TRS; color: string }
+	| { op: 'comp'; id: string; ctype: string; data: Data | null }
+	| { op: 'graph'; id: string; graph: GraphDoc | null };
 
-export interface OpContext { world: EntityWorld; physics: Physics | null; scene: THREE.Scene; onMoved?(e: Entity): void }
+export interface OpContext { world: EntityWorld; physics: Physics | null; scene: THREE.Scene; onMoved?(e: Entity): void; gameplay?: Gameplay }
 
 const num = (v: unknown, lo = -1e5, hi = 1e5) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 const vec = (v: unknown, lo?: number, hi?: number) => Array.isArray(v) && v.length === 3 && v.every((x) => num(x, lo, hi));
@@ -32,6 +37,12 @@ const colorOk = (c: unknown) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(
 /** null if fine, else the reason */
 export function validateOp(o: any, w: EntityWorld): string | null {
 	if (!o || typeof o !== 'object' || typeof o.op !== 'string' || typeof o.id !== 'string' || o.id.length > 80) return 'malformed';
+	if (o.op === 'graph') {
+		if (!/^[\w-]{1,40}$/.test(o.id)) return 'bad graph id';
+		if (o.graph === null) return null;
+		const why = validateGraph(o.graph);
+		return why ?? (o.graph.id === o.id ? null : 'graph id mismatch');
+	}
 	const e = w.get(o.id);
 	if (o.op !== 'spawn' && !e) return `unknown entity ${o.id}`;
 	if (e?.locked && o.op !== 'light' && o.op !== 'mat' && o.op !== 'rename') return `${e.name} is locked`;
@@ -49,6 +60,10 @@ export function validateOp(o: any, w: EntityWorld): string | null {
 			return o.key === 'mass' ? (num(o.value, 0.001, 5000) ? null : 'bad mass') : num(o.value, o.key === 'gravity' ? -5 : 0, o.key === 'gravity' ? 5 : 2) ? null : 'bad physics value';
 		case 'static': return e?.prop && typeof o.value === 'boolean' ? null : 'no physics body';
 		case 'rename': return typeof o.name === 'string' && o.name.length > 0 && o.name.length <= 60 ? null : 'bad name';
+		case 'comp':
+			if (e?.locked) return `${e.name} is locked`;
+			if (typeof o.ctype !== 'string' || !COMPONENTS.has(o.ctype)) return `unknown component ${o.ctype}`;
+			return o.data === null ? null : validateComponent(o.ctype, o.data);
 		case 'delete': return null;
 		case 'spawn': {
 			const s = o.spec;
@@ -94,6 +109,29 @@ export function opToCommand(o: Op, ctx: OpContext): Command {
 			return { label: `${e!.name}: ${o.value ? 'static' : 'dynamic'}`, live: true, do() { set(o.value); }, undo() { set(before); } };
 		}
 		case 'rename': return rename(e!, o.name, w);
+		case 'comp': {
+			const ent = e!;
+			const prev = ent.components.find((c) => c.type === o.ctype);
+			const before = prev ? { ...prev.data } : null;
+			const set = (d: Data | null) => {
+				const i = ent.components.findIndex((c) => c.type === o.ctype);
+				if (d === null) { if (i >= 0) ent.components.splice(i, 1); }
+				else if (i >= 0) ent.components[i].data = { ...defaults(o.ctype), ...d };
+				else ent.components.push({ type: o.ctype, data: { ...defaults(o.ctype), ...d } });
+				w.version++;
+				ctx.gameplay?.refresh({ entity: ent });
+			};
+			const label = o.data === null ? `Remove ${o.ctype} from ${ent.name}` : prev ? `${ent.name}: edit ${o.ctype}` : `Add ${o.ctype} to ${ent.name}`;
+			return { label, live: true, do() { set(o.data); }, undo() { set(before); } };
+		}
+		case 'graph': {
+			const graphs = ctx.gameplay?.graphs;
+			if (!graphs) throw new Error('graphs are unavailable');
+			const prev = graphs.get(o.id);
+			const before = prev ? structuredClone(prev) : null;
+			const set = (g: GraphDoc | null) => { if (g) graphs.set(o.id, structuredClone(g)); else graphs.delete(o.id); w.version++; ctx.gameplay?.refresh({ graph: o.id }); };
+			return { label: o.graph === null ? `Delete graph ${prev?.name ?? o.id}` : `${prev ? 'Edit' : 'New'} graph ${o.graph.name}`, live: true, do() { set(o.graph); }, undo() { set(before); } };
+		}
 		case 'delete': {
 			const ent = e!;
 			const set = (gone: boolean) => {
@@ -185,7 +223,7 @@ const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
  */
 export function compactOps(ops: Op[]): Op[] {
 	const out: Op[] = [];
-	const key = (o: Op) => o.op === 'trs' ? `trs|${o.id}` : o.op === 'mat' ? `mat|${o.id}|${o.mi}|${o.key}` : o.op === 'light' ? `light|${o.id}|${o.li}|${o.key}` : o.op === 'phys' ? `phys|${o.id}|${o.key}` : o.op === 'static' ? `static|${o.id}` : o.op === 'rename' ? `rename|${o.id}` : null;
+	const key = (o: Op) => o.op === 'trs' ? `trs|${o.id}` : o.op === 'mat' ? `mat|${o.id}|${o.mi}|${o.key}` : o.op === 'light' ? `light|${o.id}|${o.li}|${o.key}` : o.op === 'phys' ? `phys|${o.id}|${o.key}` : o.op === 'static' ? `static|${o.id}` : o.op === 'rename' ? `rename|${o.id}` : o.op === 'comp' ? `comp|${o.id}|${o.ctype}` : o.op === 'graph' ? `graph|${o.id}` : null;
 	const last = new Map<string, number>();
 	for (const o of ops) {
 		// after "make unique" the material index points at a new material: do not

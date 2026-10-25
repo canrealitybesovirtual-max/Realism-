@@ -23,6 +23,8 @@ export class Runtime {
 	private stepPending = 0;
 	private editState = new Map<string, BodyState>();
 	onChange: (m: Mode) => void = () => {};
+	/** more observers (gameplay, UI): (new mode, previous mode) */
+	listeners: ((m: Mode, prev: Mode) => void)[] = [];
 	/** simulated seconds since the page loaded (gameplay clock) */
 	time = 0;
 
@@ -37,7 +39,14 @@ export class Runtime {
 		return 0;
 	}
 
-	private set(m: Mode) { if (m === this.mode) return; this.mode = m; log.info('Runtime: ' + m); this.onChange(m); }
+	private set(m: Mode) {
+		if (m === this.mode) return;
+		const prev = this.mode;
+		this.mode = m;
+		log.info('Runtime: ' + m);
+		this.onChange(m);
+		for (const l of this.listeners) l(m, prev);
+	}
 
 	play() {
 		if (this.mode === 'edit') this.record();

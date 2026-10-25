@@ -118,6 +118,12 @@ export class DesktopControls {
 		// World tool: clicking selects / places scene objects (the monitor still opens the computer)
 		const tool = this.targets.editorTool;
 		if (!this.held && tool?.active() && this.mode === 'walk' && tool.desktopClick(this.camera)) return;
+		// gameplay: using what the crosshair is on (Interactable, Door, ...) comes before picking it up
+		const play = this.targets.gameplay;
+		if (!this.held && play && this.mode === 'walk') {
+			const o = useTarget(this.camera.getWorldPosition(new THREE.Vector3()), this.camera.getWorldDirection(new THREE.Vector3()), this.camera);
+			if (o && play.use(o)) return;
+		}
 		const gun = this.heldGun();
 		if (this.held && fromClick && gun) {
 			// holding a gun: click fires (at the crosshair from the hip, along the
@@ -248,4 +254,18 @@ export class DesktopControls {
 			if (hv !== this.hover) { this.hover = hv; this.crosshair?.classList.toggle('hot', !!hv); }
 		}
 	}
+}
+
+const useRay = new THREE.Raycaster();
+/** the first visible mesh within arm's reach (2.5 m) along a ray */
+export function useTarget(origin: THREE.Vector3, dir: THREE.Vector3, camera: THREE.Camera): THREE.Object3D | null {
+	let scene: THREE.Object3D = camera;
+	while (scene.parent) scene = scene.parent;
+	useRay.set(origin, dir); useRay.far = 2.5; useRay.camera = camera;
+	for (const h of useRay.intersectObjects(scene.children, true)) {
+		if (!(h.object as THREE.Mesh).isMesh || h.object.userData.noBullet || h.object.name === 'editor-highlight') continue;
+		let vis = true; for (let p: THREE.Object3D | null = h.object; p; p = p.parent) if (!p.visible) vis = false;
+		if (vis) return h.object;
+	}
+	return null;
 }
