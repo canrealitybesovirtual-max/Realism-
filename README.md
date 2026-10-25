@@ -59,8 +59,8 @@ A canvas-rendered desktop (menu bar, dock, draggable windows) with four apps:
 
 ```
 npm run typecheck
-npm test                         # 33 unit tests: editor, calculator, window manager, key layout, physics, hands and grasps
-npm run dev & node scripts/e2e.mjs        # 33 browser checks, desktop + emulated Quest 3 WebXR
+npm test                         # 35 unit tests: editor, calculator, window manager, key layout, physics, hands and grasps (incl. the pistol grip fit)
+npm run dev & node scripts/e2e.mjs        # 34 browser checks, desktop + emulated Quest 3 WebXR
 npm run dev & npm run shots               # renders the fixed viewpoints to ./shots
 npm run dev & node scripts/metrics.mjs    # draw calls, triangles, CPU ms per frame
 npm run textures                 # regenerate the procedural PBR textures
