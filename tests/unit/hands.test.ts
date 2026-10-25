@@ -88,3 +88,34 @@ describe('grasps', () => {
 		for (const p of [t, i]) expect(Math.hypot(p.y, p.z)).toBeLessThan(0.02);
 	});
 });
+
+describe('pistol grasp', () => {
+	// grip of the Poly Haven service pistol in its own frame (measured from the mesh)
+	const grip = { x: [-0.015, 0.016], y: [-0.045, 0.035], z: [0.004, 0.036] };
+	const inside = (p: THREE.Vector3, m = 0) => p.x > grip.x[0] + m && p.x < grip.x[1] - m && p.y > grip.y[0] + m && p.y < grip.y[1] - m && p.z > grip.z[0] + m && p.z < grip.z[1] - m;
+	for (const side of ['right', 'left'] as const) {
+		it(`${side} hand wraps the grip, index at the trigger, thumb on the far side`, () => {
+			const { h, j } = landmarks('pistolGrip', side);
+			const g = graspFor('pistol', side);
+			const L = (p: THREE.Vector3) => toLocal(g, p);
+			const s = side === 'right' ? 1 : -1;
+			// palm against the grip side, fingers round the front strap
+			for (const f of ['middle', 'ring', 'pinky'] as const) {
+				const tip = L(h.tipWorld(f)), knuckle = L(j(`${f}-finger-phalanx-proximal`)), pip = L(j(`${f}-finger-phalanx-intermediate`));
+				expect(knuckle.x * s).toBeGreaterThan(0.005); // knuckles on the palm side
+				expect(tip.x * s).toBeLessThan(0.005); // tips reach round to the other side
+				expect(pip.z < 0.01 || pip.x * s < -0.015).toBe(true); // middle joints round the front strap or on the far panel
+				for (const p of [tip, knuckle, pip]) expect(inside(p, 0.004)).toBe(false);
+				expect(tip.y).toBeGreaterThan(grip.y[0] - 0.01);
+				expect(tip.y).toBeLessThan(0.01);
+			}
+			// index finger reaches the trigger (inside the guard: y 0..0.03, z -0.05..-0.005)
+			const it_ = L(j('index-finger-phalanx-distal'));
+			expect(it_.y).toBeGreaterThan(-0.005); expect(it_.y).toBeLessThan(0.035);
+			expect(it_.z).toBeGreaterThan(-0.055); expect(it_.z).toBeLessThan(0.0);
+			// thumb on the other side of the frame, wrist behind the grip
+			expect(L(h.tipWorld('thumb')).x * s).toBeLessThan(-0.008);
+			expect(L(new THREE.Vector3()).z).toBeGreaterThan(0.04);
+		});
+	}
+});

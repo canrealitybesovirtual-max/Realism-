@@ -24,6 +24,8 @@ export class GunEffects {
 	private flash: THREE.Sprite;
 	private flashLight: THREE.PointLight;
 	private flashT = 0;
+	/** set by shot(): the flash survives the update of the frame it was fired in */
+	private flashFresh = false;
 	private decals: THREE.Mesh[] = [];
 	private decalTex: Record<'hole' | 'crack', THREE.Texture>;
 	private puffs: { s: THREE.Sprite; t: number; life: number; v: THREE.Vector3; grow: number }[] = [];
@@ -84,6 +86,7 @@ export class GunEffects {
 		this.flash.visible = true;
 		this.flashLight.position.copy(muzzle);
 		this.flashT = 0.055;
+		this.flashFresh = true;
 		this.smoke(muzzle, forward);
 		this.ejectCasing(port, right, up, forward);
 
@@ -197,7 +200,10 @@ export class GunEffects {
 	get active() { return this.casings.some((c) => !c.body.isSleeping()); }
 
 	update(dt: number) {
-		if (this.flashT > 0) {
+		if (this.flashFresh) {
+			this.flashFresh = false;
+			this.flashLight.intensity = 7;
+		} else if (this.flashT > 0) {
 			this.flashT -= dt;
 			this.flashLight.intensity = Math.max(0, this.flashT / 0.055) * 7;
 			if (this.flashT <= 0.03) this.flash.visible = false;

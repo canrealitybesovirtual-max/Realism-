@@ -44,14 +44,69 @@ function mouseToWrist(handedness: 'left' | 'right'): THREE.Matrix4 {
 	return new THREE.Matrix4().compose(new THREE.Vector3(0.004, 0.047, 0.095), q, new THREE.Vector3(1, 1, 1));
 }
 
+/** Circle through three points (centre), for fitting finger arcs. */
+function circumcentre(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) {
+	const ab = b.clone().sub(a), ac = c.clone().sub(a);
+	const n = new THREE.Vector3().crossVectors(ab, ac);
+	const t = new THREE.Vector3().crossVectors(n, ab).multiplyScalar(ac.lengthSq())
+		.add(new THREE.Vector3().crossVectors(ac, n).multiplyScalar(ab.lengthSq()))
+		.divideScalar(2 * n.lengthSq());
+	return a.clone().add(t);
+}
+
+/**
+ * Pistol pose in wrist space. The middle, ring and little fingers of the
+ * pistolGrip pose wrap a tube: each finger's arc is fitted with a circle,
+ * and the line through the circle centres is where the grip's axis goes.
+ * The gun's right side faces the palm (left side for a left hand), the
+ * muzzle points the way the fingers would extend, and the grip height is
+ * set so the middle finger sits just under the trigger guard.
+ */
+function pistolInHand(handedness: 'left' | 'right'): THREE.Matrix4 {
+	const h = new HandModel(handedness);
+	h.setPose(POSES.pistolGrip);
+	h.root.updateMatrixWorld(true);
+	const joint = (name: string) => new THREE.Vector3().setFromMatrixPosition(h.bones.find((b) => b.name === name)!.matrixWorld);
+	const centre = (f: 'middle' | 'ring' | 'pinky') => circumcentre(
+		joint(`${f}-finger-phalanx-proximal`),
+		joint(`${f}-finger-phalanx-intermediate`).lerp(joint(`${f}-finger-phalanx-distal`), 0.5),
+		h.tipWorld(f),
+	);
+	const cm = centre('middle'), cp = centre('pinky');
+	const up = cm.clone().sub(cp).normalize(); // grip axis, toward the slide
+	const fwd = new THREE.Vector3(0, 0, -1).addScaledVector(up, up.z).normalize(); // muzzle, square to the grip
+	// grip axis in the gun frame rakes back slightly (bottom further back)
+	const rake = Math.atan2(0.006, 0.06);
+	const Y = up.clone().applyAxisAngle(new THREE.Vector3().crossVectors(up, fwd).normalize(), -rake);
+	const Z = fwd.clone().negate().addScaledVector(Y, fwd.dot(Y)).normalize();
+	const X = new THREE.Vector3().crossVectors(Y, Z);
+	const m = new THREE.Matrix4().makeBasis(X, Y, Z);
+	// grip centre under the middle finger (gun frame: front strap z~0.004,
+	// back strap z~0.035, trigger guard bottom y~0) lands on the middle arc centre
+	const gripAtMiddle = new THREE.Vector3(0, -0.012, 0.02).applyMatrix4(new THREE.Matrix4().extractRotation(m));
+	m.setPosition(cm.sub(gripAtMiddle));
+	// the index finger runs above the knuckle line of the others, so the bore
+	// sits pitched up relative to the wrapped fingers (a real grip angle)
+	const c = new THREE.Vector3(0, -0.012, 0.02);
+	const pitch = THREE.MathUtils.degToRad(18); // puts the index pad on the trigger (fitted in tests/unit/hands)
+	return m.multiply(new THREE.Matrix4().makeTranslation(c.x, c.y, c.z)).multiply(new THREE.Matrix4().makeRotationX(pitch)).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+}
+
+/**
+ * Controller ray -> wrist while holding the pistol: the barrel lies along
+ * the pointing ray (aiming is where you point) and the wrist stays where it
+ * is when holding the bare controller.
+ */
+function rayToPistolWrist(handedness: 'left' | 'right'): THREE.Matrix4 {
+	const gunToWrist = pistolInHand(handedness).invert();
+	const wristPos = new THREE.Vector3().setFromMatrixPosition(rayToWrist(handedness));
+	const t = wristPos.sub(new THREE.Vector3().setFromMatrixPosition(gunToWrist));
+	return new THREE.Matrix4().makeTranslation(t.x, t.y, t.z).multiply(gunToWrist);
+}
+
 /** Object pose in wrist space for a natural grip, derived from the posed hand itself. */
 function computeGrasp(kind: GraspKind, handedness: 'left' | 'right'): THREE.Matrix4 {
-	if (kind === 'pistol') {
-		// The barrel lines up with the controller's pointing ray (what people
-		// expect when aiming), the grip sits in the palm under the ray origin.
-		const inRay = new THREE.Matrix4().makeTranslation(0, -0.03, 0.035);
-		return rayToWrist(handedness).invert().multiply(inRay);
-	}
+	if (kind === 'pistol') return pistolInHand(handedness);
 	const h = new HandModel(handedness);
 	h.setPose(kind === 'mug' ? POSES.mugHandle : kind === 'notebook' ? POSES.book : POSES.pinch);
 	h.root.updateMatrixWorld(true);
@@ -108,6 +163,7 @@ export class XRHand {
 	private pose: HandPose = structuredClone(POSES.gripController);
 	private target: HandPose = structuredClone(POSES.gripController);
 	private rayWrist: THREE.Matrix4;
+	private pistolWrist: THREE.Matrix4;
 	private mouseWrist: THREE.Matrix4;
 	/** wrist (hand root) in world space, valid after update */
 	readonly wrist = new THREE.Matrix4();
@@ -117,6 +173,7 @@ export class XRHand {
 		this.model.root.matrixAutoUpdate = false;
 		scene.add(this.model.root);
 		this.rayWrist = rayToWrist(handedness);
+		this.pistolWrist = rayToPistolWrist(handedness);
 		this.mouseWrist = mouseToWrist(handedness);
 	}
 
@@ -126,7 +183,7 @@ export class XRHand {
 	updateController(rayWorld: THREE.Matrix4, input: HandInputs, ctx: HandContext, mouseWorld: THREE.Matrix4 | null, dt: number) {
 		// placement
 		if (ctx.holding === 'mouse' && mouseWorld) this.wrist.multiplyMatrices(mouseWorld, this.mouseWrist);
-		else this.wrist.multiplyMatrices(rayWorld, this.rayWrist);
+		else this.wrist.multiplyMatrices(rayWorld, ctx.holding === 'pistol' ? this.pistolWrist : this.rayWrist);
 		this.model.root.matrix.copy(this.wrist);
 		this.model.root.matrixWorldNeedsUpdate = true;
 
@@ -138,7 +195,7 @@ export class XRHand {
 		else if (ctx.holding === 'pistol') {
 			blendPose(POSES.pistolGrip, POSES.pistolGrip, 0, t);
 			// trigger finger squeezes with the analog trigger
-			t.index[0] += input.trigger * 16; t.index[1] += input.trigger * 26; t.index[2] += input.trigger * 12;
+			t.index[1] += input.trigger * 12; t.index[2] += input.trigger * 10;
 		}
 		else if (ctx.holding === 'mouse') {
 			blendPose(POSES.mouse, POSES.mouse, 0, t);
