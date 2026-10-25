@@ -61,9 +61,11 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	await page.keyboard.press('Backspace'); // remove the typed "j"
 
 	// click the Calculator dock icon (OS pixel coords), then compute 7*6=
+	// (icon centres come from the dock's layout: add-ons can add icons)
 	const calc = await page.evaluate(() => {
 		const os = window.__studio.computer.os;
-		os.pointerMove(917, 1020); os.pointerDown(); os.pointerUp();
+		const L = os.dockLayout(), i = os.dockApps.indexOf('calculator');
+		os.pointerMove(L.x + 18 + i * (L.s + L.gap) + L.s / 2, L.y + 12 + L.s / 2); os.pointerDown(); os.pointerUp();
 		return os.wm.focused?.app;
 	});
 	check('desktop: dock click opens Calculator', calc === 'calculator', String(calc));
@@ -140,8 +142,11 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	const relaxed = (await handState()).find((h) => h.side === 'right').index;
 	check('xr: pulling the trigger curls the index finger, releasing relaxes it', curled > 70 && relaxed < 45, `flex ${curled.toFixed(0)}° -> ${relaxed.toFixed(0)}°`);
 
-	// 1. ray-click the Sketch dock icon (i = 2) on the monitor
-	const iconX = 779 + 18 + 2 * 86 + 34, iconY = 1020;
+	// 1. ray-click the Sketch dock icon on the monitor
+	const [iconX, iconY] = await page.evaluate(() => {
+		const os = window.__studio.computer.os, L = os.dockLayout(), i = os.dockApps.indexOf('sketch');
+		return [L.x + 18 + i * (L.s + L.gap) + L.s / 2, L.y + 12 + L.s / 2];
+	});
 	await page.evaluate(([x, y]) => { const t = window.__screenPoint(x, y); window.__aim('right', [t[0] + 0.05, t[1] + 0.1, t[2] + 0.7], t); }, [iconX, iconY]);
 	await frames(page, 4);
 	const cursor = await page.evaluate(() => ({ ...window.__studio.computer.os.cursor }));
