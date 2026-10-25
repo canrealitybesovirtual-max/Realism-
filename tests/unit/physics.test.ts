@@ -121,9 +121,22 @@ describe('physics: holding and throwing', () => {
 		const pen = ph.addProp(penDesc(obj(1.5, 1.2, -1.5)));
 		ph.grab(pen);
 		run(ph, 0.1, () => ph.setHoldTarget(pen, new THREE.Vector3(1.5, 1.2, -1.5), new THREE.Quaternion()));
-		ph.release(pen, new THREE.Vector3(0, 0, -20)); // clamped to 5 m/s internally
+		ph.release(pen, new THREE.Vector3(0, 0, -20)); // clamped to 14 m/s internally
 		run(ph, 2);
 		expect(ph.pos(pen).z).toBeGreaterThan(-2.5);
 		expect(ph.pos(pen).y).toBeGreaterThan(-0.005);
+	});
+
+	it('a throw keeps the hand\'s speed (up to 14 m/s) and its spin', () => {
+		const ph = makeWorld();
+		const mug = ph.addProp(mugDesc(obj(0, 1.4, 0.5)));
+		ph.grab(mug);
+		run(ph, 0.05, () => ph.setHoldTarget(mug, new THREE.Vector3(0, 1.4, 0.5), new THREE.Quaternion()));
+		ph.release(mug, new THREE.Vector3(0, 2, 9), new THREE.Vector3(6, 0, 0));
+		const v = mug.body.linvel(), w = mug.body.angvel();
+		expect(Math.hypot(v.x, v.y, v.z)).toBeCloseTo(Math.hypot(2, 9), 0);
+		expect(w.x).toBeCloseTo(6, 0);
+		ph.release(mug, new THREE.Vector3(0, 0, 40));
+		expect(speed(mug)).toBeLessThanOrEqual(14.01);
 	});
 });

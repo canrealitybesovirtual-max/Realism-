@@ -27,6 +27,7 @@ import { AgentApp } from './computer/agentApp';
 import { ProfilerApp } from './computer/profilerApp';
 import { Diagnostics } from './engine/diagnostics';
 import { MagazineManager, makeAmmoCan } from './world/magazines';
+import { MONITOR_SIZES, setMonitorSize } from './world/furniture/monitor';
 import { AssetLibrary } from './engine/assets';
 import { AssetsApp } from './computer/assetsApp';
 import { log } from './engine/log';
@@ -116,6 +117,10 @@ async function init() {
 		initPhysics(),
 	]);
 	ws = w;
+	// Settings → screen size: resize the physical monitor (remembered)
+	computer.os.displaySizes = MONITOR_SIZES;
+	computer.os.onDisplaySize = (inch) => { setMonitorSize(w.monitor.head, inch); shadowsDirty = true; };
+	if (computer.os.displaySize !== 27) setMonitorSize(w.monitor.head, computer.os.displaySize);
 	// the pistol lies on its side on the sideboard, muzzle toward the window
 	pistol.group.position.set(ROOM.width / 2 - 0.02 - 0.2, 0.662 + 0.016, -0.32);
 	pistol.group.rotation.set(0, 0.35, Math.PI / 2);

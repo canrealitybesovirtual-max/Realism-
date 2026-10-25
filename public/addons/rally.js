@@ -523,6 +523,8 @@
       desk.enabled = true; keys.clear();
       mode = "foot";
       document.body.classList.remove("rl-driving"); hud.style.display = "none";
+      // the door home comes to where you got out (unless it is already close)
+      if (Math.hypot(px - map.doorPos().x, pz - map.doorPos().z) > 10) map.placeDoor(px, pz, new THREE.Vector3(lx, 0, lz), 4);
       map.updateBlockers();
       await fadeIn(); busy = false;
     }
@@ -1010,7 +1012,7 @@
       var roadPt = { x: pk[pi * 2], z: pk[pi * 2 + 1] };
       var tg = { x: main.T[pi * 2], z: main.T[pi * 2 + 1] };
       var doorPos = { x: park.x + parkDir[0] * 9, z: park.z + parkDir[1] * 9 };
-      var doorObj = new THREE.Group();
+      var doorObj = new THREE.Group(), doorPop = 1;
       (function () {
         var frameM = new THREE.MeshStandardMaterial({ color: 0x3b3e44, roughness: 0.6 });
         var panelM = new THREE.MeshStandardMaterial({ color: 0xefede8, roughness: 0.4 });
@@ -1080,6 +1082,23 @@
           desk.walk.blockers = bl;
         },
         snapCamera: function () { camState.init = false; },
+        doorPos: function () { return doorPos; },
+        /** put the door home near (x, z): `dist` metres out, 40 degrees to the right of `dir`, facing back */
+        placeDoor: function (x, z, dir, dist) {
+          var a = -0.7, dx = dir.x * Math.cos(a) - dir.z * Math.sin(a), dz = dir.x * Math.sin(a) + dir.z * Math.cos(a);
+          var px = x + dx * dist, pz = z + dz * dist;
+          // keep it off the road and out of the trees
+          for (var k = 0; k < 8; k++) {
+            var nr = nearestRoad(px, pz);
+            if ((!nr || nr.d > 7) && !treeHit(px, pz, 0.8)) break;
+            px += dx * 1.5; pz += dz * 1.5;
+          }
+          doorPos.x = px; doorPos.z = pz;
+          doorObj.position.set(px, groundAt(px, pz).h - 0.02, pz);
+          doorObj.rotation.y = Math.atan2(x - px, z - pz);
+          doorObj.scale.setScalar(0.01); doorPop = 0;
+          this.updateBlockers();
+        },
         resetCar: function () {
           var nr = nearestRoad(car.x, car.z), best = nr;
           if (!best) {
@@ -1097,8 +1116,18 @@
           if (flashTimer > 0) { flashTimer -= dt; if (flashTimer <= 0) setHint(""); }
           var xrOn = inXR();
           var cw = xrOn ? headWorld() : camera.position;
+          if (doorPop < 1) { doorPop = Math.min(1, doorPop + dt / 0.35); var e2 = 1 - Math.pow(1 - doorPop, 3); doorObj.scale.setScalar(Math.max(0.01, e2)); }
+          if (mode !== "drive") { car.gaugeRpm = Math.max(0, car.gaugeRpm - dt * 2500); car.gaugeKmh = 0; }
           if (mode === "foot") {
             var lx = cw.x - OFFX, lz = cw.z;
+            // the door home keeps up with you: walk away from it and it turns up
+            // a few steps away, beside where you are looking
+            if (!busy && Math.hypot(lx - doorPos.x, lz - doorPos.z) > 18) {
+              var fwd = new THREE.Vector3();
+              if (xrOn) camera.getWorldDirection(fwd); else fwd.set(-Math.sin(desk.yaw), 0, -Math.cos(desk.yaw));
+              fwd.y = 0; if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1); fwd.normalize();
+              M.placeDoor(lx, lz, fwd, 4.2);
+            }
             if (xrOn) xr.rig.position.y = groundAt(lx, lz).h; // standing on the snow
             else cw.y = groundAt(lx, lz).h + EYE;
             hintAction = null;
@@ -1110,9 +1139,10 @@
             }
           } else if (mode === "drive") {
             stepCar(dt);
+            car.sync(dt); // move the car first, then put the camera in it (no lag)
             if (!xrOn) updateCamera(dt);
           }
-          car.sync(dt);
+          if (mode !== "drive") car.sync(dt);
           if (mode === "drive" && xrOn) {
             placeSeat(); cw = headWorld();
             // the wheel feel: tyres slipping and hard landings come through the controllers
@@ -1177,9 +1207,47 @@
             I.steer = -Math.sign(sx) * Math.pow(k, 1.3); // finer near the centre
           }
           I.hb = I.hb || pressed(Pd.right, 4);
+          // hands on the wheel: grab the rim (grip button) and turn it; this
+          // overrides the stick while at least one hand holds on
+          var wheelSteer = handWheel(Pd);
+          if (wheelSteer !== null) I.steer = wheelSteer;
         }
+        I.hands = wheelHold.left || wheelHold.right ? true : false;
         return I;
       }
+      var MAXW = THREE.MathUtils.degToRad(200); // wheel angle for full steering lock
+      var wheelHold = { left: null, right: null };
+      function handWheel(Pd) {
+        var sw = car.steerWheel;
+        if (!sw || !xr || !xr.hands) return null;
+        sw.updateMatrixWorld(true);
+        var centre = new THREE.Vector3().setFromMatrixPosition(sw.matrixWorld);
+        var axis = sw.userData.axis.clone().transformDirection(car.body.matrixWorld);
+        var u = new THREE.Vector3(0, 1, 0).transformDirection(car.body.matrixWorld); u.addScaledVector(axis, -u.dot(axis)).normalize();
+        var v = new THREE.Vector3().crossVectors(axis, u);
+        var R = sw.userData.radius || 0.19, held = [];
+        ["left", "right"].forEach(function (side) {
+          var h = xr.hands.find(function (q) { return q.source && q.source.handedness === side && !q.source.hand; });
+          var gp = Pd[side], squeeze = pressed(gp, 1);
+          if (!h || !squeeze) { wheelHold[side] = null; return; }
+          var d = h.grip.getWorldPosition(new THREE.Vector3()).sub(centre);
+          var along = d.dot(axis); d.addScaledVector(axis, -along);
+          var r = d.length(), ang = Math.atan2(d.dot(v), d.dot(u));
+          if (!wheelHold[side]) {
+            if (r > R * 0.5 && r < R * 1.6 && Math.abs(along) < 0.13) { wheelHold[side] = { a0: ang, w0: car.wheelAngle }; rumbleOne(gp, 0.35, 25); }
+            else return;
+          }
+          var da = ang - wheelHold[side].a0; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;
+          // keep turning past half a turn: re-anchor as the hand goes round
+          if (Math.abs(da) > 1.2) { wheelHold[side].w0 += da; wheelHold[side].a0 = ang; da = 0; }
+          held.push(wheelHold[side].w0 + da);
+        });
+        if (!held.length) return null;
+        var w = held.reduce(function (a, b) { return a + b; }, 0) / held.length;
+        car.wheelAngle = clamp(w, -MAXW * 1.1, MAXW * 1.1);
+        return clamp(car.wheelAngle / MAXW, -1, 1);
+      }
+      function rumbleOne(gp, s, ms) { var a = gp && gp.hapticActuators && gp.hapticActuators[0]; if (a && a.pulse) try { a.pulse(s, ms); } catch (e) {} }
       function stepCar(dtAll) {
         var steps = Math.max(1, Math.ceil(dtAll / (1 / 120))), dt = dtAll / steps;
         var I = driveInput();
@@ -1234,6 +1302,10 @@
           if (grounded) {
             var mu = surf < 0.5 ? 0.95 : surf < 1.5 ? 0.72 : 0.6;
             var NF = MASS * GR * B / (A + B) * load, NR = MASS * GR * A / (A + B) * load;
+            // weight transfer (centre of mass ~0.5 m up): braking loads the front tyres,
+            // accelerating the rear - trail-braking turns in, lifting off mid-corner bites
+            var dN = clamp(MASS * (car.ax || 0) * 0.5 / (A + B), -0.45 * NF, 0.45 * NR);
+            NF -= dN; NR += dN;
             var vfa = Math.max(Math.abs(vF), 2.2);
             var aF = Math.atan2(vL + car.r * A, vfa) - steer * Math.sign(vF || 1);
             var aR = Math.atan2(vL - car.r * B, vfa);
@@ -1313,6 +1385,8 @@
         var target = 900 + clamp((v - gLow) / (gTop - gLow), 0, 1.05) * 6200;
         if (thr && car.slip > 0.6) target = Math.max(target, 5200);
         rpm += (target - rpm) * Math.min(1, dtAll * 8);
+        if (!I.hands) car.wheelAngle += (I.steer * MAXW - car.wheelAngle) * Math.min(1, dtAll * 10);
+        car.gaugeKmh = v * 3.6; car.gaugeRpm = rpm;
         document.getElementById("rl-kmh").textContent = Math.round(v * 3.6);
         document.getElementById("rl-gear").textContent = gear === 0 ? "R" : String(gear);
         if (dash.visible) drawDash(Math.round(v * 3.6), gear === 0 ? "R" : String(gear));
@@ -1346,7 +1420,7 @@
           camState.look.set(cx + Math.sin(camState.yawC) * 2.5, cy + 1.0, cz + Math.cos(camState.yawC) * 2.5);
           camera.lookAt(camState.look);
         } else {
-          var local = map.camMode === 1 ? new THREE.Vector3(-0.36, 1.12, -0.12) : new THREE.Vector3(0, 0.75, 2.45);
+          var local = map.camMode === 1 ? new THREE.Vector3(0.36, 1.12, -0.12) : new THREE.Vector3(0, 0.75, 2.45);
           car.root.updateMatrixWorld(true);
           var wpos = local.applyMatrix4(car.body.matrixWorld);
           camera.position.copy(wpos);
@@ -1396,9 +1470,92 @@
         steerG.position.set(w.x, w.y, w.z); steerG.add(spin); rootG.add(steerG);
         return { x: w.x, y: w.y, z: w.z, r: w.r, steer: steerG, spin: spin, base: w.y };
       });
+      // moving interior parts get their own meshes: the steering wheel (rim +
+      // badge) turns about its column; the two gauge needles about their hubs
+      var matName = function (p) { return cm.materials[p.mat].name; };
+      var near = function (p, x, y, z, r) { return Math.hypot(p.pc[0] - x, p.pc[1] - y, p.pc[2] - z) < r; };
+      var wheelParts = cm.parts.filter(function (p) { return p.group === -1 && matName(p) === "Material_68" && near(p, 0.385, 0.872, 0.355, 0.03); });
+      var needleParts = cm.parts.filter(function (p) { return p.group === -1 && matName(p) === "gauge_needle"; });
+      var hubParts = needleParts.map(function (n) {
+        var best = null, bd = 0.05;
+        cm.parts.forEach(function (p) { if (p.group === -1 && matName(p) === "plastic") { var d = Math.hypot(p.pc[0] - n.pc[0], p.pc[1] - n.pc[1], p.pc[2] - n.pc[2]); if (d < bd) { bd = d; best = p; } } });
+        return best;
+      });
+      var special = new Set(wheelParts.concat(needleParts));
+      function partGeometry(ps) {
+        var nv = 0, ni = 0;
+        ps.forEach(function (p) { nv += p.vcount; ni += p.icount; });
+        var pos = new Float32Array(nv * 3), nrm = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+        var vo = 0, io = 0;
+        ps.forEach(function (p) {
+          var q = new Int16Array(geo, p.pos, p.vcount * 3);
+          for (var i = 0; i < p.vcount; i++) for (var a = 0; a < 3; a++) pos[(vo + i) * 3 + a] = q[i * 3 + a] / 32767 * p.ps[a] + p.pc[a];
+          var nq = new Int8Array(geo, p.nrm, p.vcount * 3);
+          for (var i = 0; i < p.vcount * 3; i++) nrm[vo * 3 + i] = nq[i] / 127;
+          if (p.uv != null) {
+            var uq = new Int16Array(geo, p.uv, p.vcount * 2);
+            for (var i = 0; i < p.vcount; i++) { uv[(vo + i) * 2] = uq[i * 2] / 32767 * p.us[0] + p.uc[0]; uv[(vo + i) * 2 + 1] = uq[i * 2 + 1] / 32767 * p.us[1] + p.uc[1]; }
+          }
+          var src = p.idx32 ? new Uint32Array(geo, p.idx, p.icount) : new Uint16Array(geo, p.idx, p.icount);
+          for (var i = 0; i < p.icount; i++) idx[io + i] = src[i] + vo;
+          vo += p.vcount; io += p.icount;
+        });
+        var g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("normal", new THREE.BufferAttribute(nrm, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+        g.setIndex(new THREE.BufferAttribute(idx, 1));
+        return g;
+      }
+      // the direction of least spread of a part's vertices: the normal of a wheel / dial
+      function thinAxis(g) {
+        var a = g.attributes.position, n = a.count, c = new THREE.Vector3();
+        for (var i = 0; i < n; i++) { c.x += a.getX(i); c.y += a.getY(i); c.z += a.getZ(i); }
+        c.divideScalar(n);
+        var C = [0, 0, 0, 0, 0, 0]; // xx xy xz yy yz zz
+        for (var i = 0; i < n; i++) { var x = a.getX(i) - c.x, y = a.getY(i) - c.y, z = a.getZ(i) - c.z; C[0] += x * x; C[1] += x * y; C[2] += x * z; C[3] += y * y; C[4] += y * z; C[5] += z * z; }
+        // inverse power iteration on the covariance (smallest eigenvector)
+        var m = new THREE.Matrix3().set(C[0], C[1], C[2], C[1], C[3], C[4], C[2], C[4], C[5]);
+        var inv = m.clone().invert(), v = new THREE.Vector3(0.3, 0.2, 1).normalize();
+        for (var k = 0; k < 40; k++) v.applyMatrix3(inv).normalize();
+        return { centre: c, axis: v };
+      }
+      function pivotMesh(ps, centre, axis, parent) {
+        var g = partGeometry(ps); g.translate(-centre.x, -centre.y, -centre.z);
+        var pivot = new THREE.Group(); pivot.position.copy(centre);
+        var mesh = new THREE.Mesh(g, mats[ps[0].mat]); mesh.castShadow = false; mesh.receiveShadow = true;
+        pivot.add(mesh); parent.add(pivot);
+        pivot.userData.axis = axis;
+        return pivot;
+      }
+      var eyeLocal = new THREE.Vector3(0.36, 1.12, -0.12);
+      var steerWheel = null, needles = [];
+      if (wheelParts.length) {
+        var rim = wheelParts.reduce(function (a, b) { return a.vcount > b.vcount ? a : b; });
+        var ta = thinAxis(partGeometry([rim]));
+        if (ta.axis.dot(eyeLocal.clone().sub(ta.centre)) < 0) ta.axis.negate(); // points at the driver
+        // the badge is drawn separately but turns with the rim
+        var byMat = {};
+        wheelParts.forEach(function (p) { (byMat[p.mat] = byMat[p.mat] || []).push(p); });
+        steerWheel = new THREE.Group(); steerWheel.position.copy(ta.centre); steerWheel.userData.axis = ta.axis; body.add(steerWheel);
+        Object.keys(byMat).forEach(function (k) {
+          var g = partGeometry(byMat[k]); g.translate(-ta.centre.x, -ta.centre.y, -ta.centre.z);
+          var mesh = new THREE.Mesh(g, mats[+k]); mesh.receiveShadow = true; steerWheel.add(mesh);
+        });
+        steerWheel.userData.radius = Math.max(rim.ps[0], rim.ps[1], rim.ps[2]);
+      }
+      needleParts.forEach(function (np, i) {
+        var hub = hubParts[i];
+        var c = hub ? new THREE.Vector3(hub.pc[0], hub.pc[1], hub.pc[2]) : new THREE.Vector3(np.pc[0], np.pc[1], np.pc[2]);
+        var axis = thinAxis(partGeometry([np])).axis;
+        if (axis.dot(eyeLocal.clone().sub(c)) < 0) axis.negate();
+        var pv = pivotMesh([np], c, axis, body);
+        // the left dial (higher +X: the car's left) is the tachometer, the right one the speedometer
+        pv.userData.kind = np.pc[0] > 0.38 ? "tach" : "speed";
+        needles.push(pv);
+      });
+
       // merge parts by group + material
       var buckets = {};
-      cm.parts.forEach(function (p) { var k = p.group + ":" + p.mat; (buckets[k] = buckets[k] || []).push(p); });
+      cm.parts.forEach(function (p) { if (special.has(p)) return; var k = p.group + ":" + p.mat; (buckets[k] = buckets[k] || []).push(p); });
       Object.keys(buckets).forEach(function (k) {
         var ps = buckets[k], nv = 0, ni = 0;
         ps.forEach(function (p) { nv += p.vcount; ni += p.icount; });
@@ -1427,7 +1584,9 @@
         (grp >= 0 ? wheelG[grp].spin : body).add(mesh);
       });
       var car = {
-        root: rootG, body: body, wheels: wheelG,
+        root: rootG, body: body, wheels: wheelG, steerWheel: steerWheel, needles: needles,
+        /** steering wheel angle (rad, + = turned left) and gauge readings, set by the driving code */
+        wheelAngle: 0, gaugeKmh: 0, gaugeRpm: 900,
         x: 0, y: 0, z: 0, yaw: 0, vx: 0, vy: 0, vz: 0, r: 0, vf: 0, steer: 0, air: false, prevVy: 0, land: 0, landT: 0,
         pitchT: 0, rollT: 0, pitch: 0, roll: 0, ax: 0, aL: 0, slip: 0, spinA: 0,
         sync: function (dt) {
@@ -1440,6 +1599,12 @@
           body.rotation.set(-dive, 0, -sway); body.position.y = -0.01 - Math.abs(sway) * 0.2;
           this.spinA += this.vf * (dt || 0) / 0.34;
           wheelG.forEach(function (w, i) { w.spin.rotation.x = car.spinA; w.steer.rotation.y = i < 2 ? car.steer : 0; });
+          if (steerWheel) steerWheel.quaternion.setFromAxisAngle(steerWheel.userData.axis, car.wheelAngle);
+          // needles sweep clockwise (as the driver sees them) from their rest mark
+          needles.forEach(function (n) {
+            var frac = n.userData.kind === "tach" ? clamp(car.gaugeRpm / 8000, 0, 1.02) : clamp(car.gaugeKmh / 200, 0, 1.02);
+            n.quaternion.setFromAxisAngle(n.userData.axis, -frac * THREE.MathUtils.degToRad(250));
+          });
         }
       };
       return car;

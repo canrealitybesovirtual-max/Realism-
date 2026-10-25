@@ -51,7 +51,7 @@ interface Hand {
 	pinching: boolean;
 	holdingMouse: boolean;
 	mouseGrabOffset: THREE.Vector3;
-	velHistory: { p: THREE.Vector3; t: number }[];
+	velHistory: { p: THREE.Vector3; q: THREE.Quaternion; t: number }[];
 	pokeKey: number;
 	pointing: 'screen' | 'key' | 'prop' | 'mouse' | null;
 	pointKey: number;
@@ -254,8 +254,10 @@ export class XRControls {
 	private handLogic(h: Hand, btn: ReturnType<XRControls['buttons']>, dt: number, now: number) {
 		if (!h.source) return;
 		const gripPos = this.grabPoint(h);
-		h.velHistory.push({ p: gripPos.clone(), t: now });
-		while (h.velHistory.length > 6) h.velHistory.shift();
+		h.velHistory.push({ p: gripPos.clone(), q: h.grip.getWorldQuaternion(new THREE.Quaternion()), t: now });
+		// keep about the last 90 ms, whatever the frame rate
+		while (h.velHistory.length > 2 && now - h.velHistory[0].t > 90) h.velHistory.shift();
+		while (h.velHistory.length > 24) h.velHistory.shift();
 
 		// ---------------------------------------------------- 1. holding
 		if (h.held) {
@@ -553,7 +555,7 @@ export class XRControls {
 
 	private grabProp(h: Hand, prop: Prop) {
 		// keep the object where it is relative to the hand: offset = grip^-1 * object
-		this.physics.grab(prop, 6);
+		this.physics.grab(prop, 12);
 		const objM = new THREE.Matrix4().compose(this.physics.pos(prop), this.physics.rot(prop), new THREE.Vector3(1, 1, 1));
 		const kind = gunFor(this.targets.guns, prop) ? 'pistol' : GRASP_KINDS.find((k) => k === prop.desc.name) ?? null;
 		h.held = { prop, offset: this.handFrame(h).clone().invert().multiply(objM), kind, age: 0 };
@@ -563,13 +565,23 @@ export class XRControls {
 	private releaseProp(h: Hand, toss = true) {
 		if (!h.held) return;
 		const hist = h.velHistory;
-		let vel = new THREE.Vector3();
+		let vel = new THREE.Vector3(), spin: THREE.Vector3 | undefined;
 		if (hist.length >= 2) {
 			const a = hist[0], b = hist[hist.length - 1];
 			const t = (b.t - a.t) / 1000;
-			if (t > 0) vel = b.p.clone().sub(a.p).divideScalar(t);
+			if (t > 0) {
+				vel = b.p.clone().sub(a.p).divideScalar(t);
+				// the wrist's turn over the same window: the object spins with it, and a
+				// point held away from the grip is flung faster (v + w x r)
+				const dq = b.q.clone().multiply(a.q.clone().invert()).normalize();
+				if (dq.w < 0) dq.set(-dq.x, -dq.y, -dq.z, -dq.w);
+				const ang = 2 * Math.acos(Math.min(1, dq.w)), sn = Math.sqrt(Math.max(0, 1 - dq.w * dq.w));
+				spin = sn > 1e-4 ? new THREE.Vector3(dq.x / sn, dq.y / sn, dq.z / sn).multiplyScalar(ang / t) : new THREE.Vector3();
+				const r = this.physics.pos(h.held.prop).sub(b.p);
+				vel.add(new THREE.Vector3().crossVectors(spin, r));
+			}
 		}
-		this.physics.release(h.held.prop, toss ? vel : new THREE.Vector3());
+		this.physics.release(h.held.prop, toss ? vel : new THREE.Vector3(), toss ? spin : undefined);
 		h.held = null;
 	}
 

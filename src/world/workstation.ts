@@ -134,7 +134,8 @@ export async function buildWorkstation(M: Materials, scene: THREE.Scene, screenT
 	};
 	// the lamp's origin is the desk surface: its mounting peg drops into a grommet hole
 	lamp.position.set(cx - 0.66, deskY, deskBack + 0.13);
-	lamp.rotation.y = THREE.MathUtils.degToRad(-55);
+	// turned so the arm's back elbow clears the wall (7 cm) and the shade reaches over the desk
+	lamp.rotation.y = THREE.MathUtils.degToRad(90);
 	scene.add(lamp);
 	// The asset's soil is a 54k-triangle sculpt that is almost entirely hidden
 	// under the leaves; swap it for a low-poly mound with the same CC0 material.

@@ -18,7 +18,8 @@ npm run dev          # http://localhost:5173  (use https / a tunnel for a headse
 | Pick up / drop / throw | Click or **E** on the mug, notebook or pen; a hand appears holding it. Mouse wheel changes the holding distance |
 | Use the computer | Click the monitor. The mouse now drives the on-screen cursor (and the desk mouse); typing goes to the computer and animates the 3D keys |
 | Stop using the computer | **Esc** |
-| Pistol | Pick it up from the sideboard like any object. While holding it, click fires where you look; **R** reloads |
+| Screen size | On the computer: **System** app → Screen size (24", 27", 32", 43"); remembered |
+| Guns | Pick one up like any object. Click fires where you look; right mouse aims. **R**: magazine out, press again for a magazine in (a loaded one lying within reach, else the fullest spare on your belt). **F**: rack the slide / work the bolt. **B**: slide stop. **L**: light / laser. A line at the bottom shows rounds and spares. **E** on an ammo can refills the belt |
 
 **VR (WebXR headset)**
 
@@ -31,10 +32,10 @@ Your controllers appear as animated hands. Fingers follow the trigger, grip and 
 | Use the mouse | Grab the desk mouse (grip) and slide it on the pad. Trigger clicks while holding it |
 | Pick up | Grip near an object, or point at it within 1.2 m and grip / trigger. Release to drop or throw |
 | Walk | Left stick: smooth walking in the direction you look (walls and furniture stop you; edges dim slightly while moving, for comfort). Works while holding things |
-| Pistol | Grip to pick it up (it stays in your hand when you let go of the trigger). Trigger fires; **A / X** reloads. Release grip to put it down |
+| Guns | Grip to pick one up; trigger fires. **A / X**: magazine release - the magazine drops out as a real object. **Reload by hand:** squeeze your other hand at your hip to draw a spare magazine, bring it up to the magwell (it seats when lined up). **Glock:** grab the back of the slide with the other hand and pull it to rack; **B / Y** is the slide stop when it is locked back (else the light). **AWM:** grab the bolt handle, lift it, pull it back (the case flies out), push it forward and down. Let a magazine go at your hip to put it back on the belt; point at an ammo can and pull the trigger to refill. The old service pistol keeps its simple **A** reload |
 | Snowy Mountain Rally | Pick it in the **Door** app on the computer, then walk to the office door and press **A** (or point at it and pull the trigger) |
 | Get in the car | Walk up to it and press **A** |
-| Drive | Right trigger: gas · Left trigger: brake, then reverse (both analog) · Either stick: steer · **A**: handbrake · **B**: get out · **Y**: back on the road · **X**: re-centre the seat |
+| Drive | Right trigger: gas · Left trigger: brake, then reverse (both analog) · **Steer with your hands:** grip the steering wheel's rim (one or both hands) and turn it, or use either stick · **A**: handbrake · **B**: get out · **Y**: back on the road · **X**: re-centre the seat. The speedometer and rev counter in the dash work. The door back to the studio follows you around the map on foot and comes to where you get out |
 | Turn | Right stick: flick left/right to snap-turn 30°. Up/down scrolls when pointing at the monitor |
 
 URL options:
@@ -54,7 +55,7 @@ URL options:
 | | Service pistol (P38) | Glock 17 Gen 5 | AWM .338 Lapua (AWP) |
 |---|---|---|---|
 | Where | Sideboard | Sideboard | Floor by the sideboard |
-| Action | Semi-auto, 8 rounds | Semi-auto, 17+1, slide locks back on empty | Bolt action, 5 rounds; work the bolt after each shot |
+| Action | Semi-auto, 8 rounds | Semi-auto, 17+1; slide locks back on an empty magazine; real magazines | Bolt action, 5+1; work the bolt after each shot; real magazines |
 | Extras | | Olight weapon light | Scope 5-20x, mil-dot reticle; laser |
 | Ballistics | 9x19, 360 m/s | 9x19, 360 m/s, zeroed 25 m | .338 Lapua, 900 m/s, zeroed 100 m |
 
@@ -63,13 +64,14 @@ URL options:
 - **VR:**
   - The bore follows your controller and the hand sits on the grip.
   - Grip the AWP's fore-end with your other hand to aim it with both hands.
-  - **A/X:** reload (pistols) or work the bolt (rifle).
-  - **B/Y:** weapon light (Glock), magazine (rifle) or laser.
+  - **A/X:** magazine release (G17 / AWM): it falls out with the rounds it still holds; a magazine dropped or picked up keeps its count.
+  - **Reload:** draw a spare at your hip with the free hand and push it into the magwell; rack the slide / work the bolt by hand to chamber.
+  - **B/Y:** slide stop (Glock locked back), else weapon light / laser.
   - **Stick up/down:** scope zoom.
 - **Desktop:**
   - Hold right mouse to aim down the sights or scope. Click fires.
-  - **R** reloads.
-  - **F** works the bolt (rifle) or switches the light (Glock).
+  - **R:** magazine out / in. **F:** rack the slide or work the bolt. **B:** slide stop. **L:** light / laser.
+  - Ammo cans (office floor by the sideboard, range bench) refill the belt pouch: three spare magazines per gun.
   - The mouse wheel zooms while aiming.
 
 **Shooting Range:** in the Door app on the computer, pick *Shooting Range*, then go through the office door.

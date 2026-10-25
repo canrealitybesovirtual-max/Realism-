@@ -67,7 +67,10 @@ check('vr: squeezing at the hip draws a full spare magazine into the hand', draw
 const well = await p.evaluate(() => { const s = window.__studio, T = s.THREE, fs = s.guns.find((x) => x.gun?.spec.id === 'g17'); const P = new T.Vector3(); s.mags.seatedPose(fs).decompose(P, new T.Quaternion(), new T.Vector3()); const h = s.xr.hands.find((x) => x.source?.handedness === 'left'); const mag = h.held.prop.desc.object.getWorldPosition(new T.Vector3()); const grip = h.grip.getWorldPosition(new T.Vector3()); return { well: P.toArray(), magFromGrip: mag.sub(grip).toArray() }; });
 const target = well.well.map((v, i) => v - well.magFromGrip[i]);
 for (let i = 0; i < 6; i++) { await put('left', target, [0, -1, 0]); await frames(4); const done = await p.evaluate(() => window.__studio.guns.find((x) => x.gun?.spec.id === 'g17').gun.magIn); if (done) break; }
-const seated = await p.evaluate(() => { const s = window.__studio, fs = s.guns.find((x) => x.gun?.spec.id === 'g17'), h = s.xr.hands.find((x) => x.source?.handedness === 'left'); return { magIn: fs.gun.magIn, mag: fs.gun.magazine, leftEmpty: !h.held }; });
+const seated = await p.evaluate(() => { const s = window.__studio, T = s.THREE, fs = s.guns.find((x) => x.gun?.spec.id === 'g17'), h = s.xr.hands.find((x) => x.source?.handedness === 'left');
+	const dbg = {};
+	if (h.held) { const want = s.mags.seatedPose(fs), wp = new T.Vector3(), wq = new T.Quaternion(); want.decompose(wp, wq, new T.Vector3()); const o = h.held.prop.desc.object; dbg.dist = +o.getWorldPosition(new T.Vector3()).distanceTo(wp).toFixed(3); dbg.ang = +o.getWorldQuaternion(new T.Quaternion()).angleTo(wq).toFixed(2); dbg.grip = +h.grip.getWorldPosition(new T.Vector3()).distanceTo(wp).toFixed(3); }
+	return { magIn: fs.gun.magIn, mag: fs.gun.magazine, leftEmpty: !h.held, dbg }; });
 check('vr: the magazine seats when the hand brings it to the magwell', seated.magIn && seated.mag === 17 && seated.leftEmpty, JSON.stringify(seated));
 await p.evaluate(() => window.__btn('left', 'squeeze', 0));
 await frames(4);

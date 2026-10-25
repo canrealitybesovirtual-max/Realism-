@@ -65,8 +65,12 @@ export class Physics {
 		if (!this.enabled) { this.world = null as unknown as RAPIER.World; return; }
 		this.world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 		this.world.timestep = this.dt;
-		// a few more solver iterations for stable stacked resting contacts
-		this.world.integrationParameters.numSolverIterations = 8;
+		// a few more solver iterations for stable stacked resting contacts, and
+		// extra friction passes so things resting on slopes / each other don't creep
+		const ip = this.world.integrationParameters as any;
+		ip.numSolverIterations = 8;
+		if ('numAdditionalFrictionIterations' in ip) ip.numAdditionalFrictionIterations = 4;
+		if ('numInternalPgsIterations' in ip) ip.numInternalPgsIterations = 2;
 	}
 
 	addStatic(c: StaticCollider) {
@@ -129,7 +133,7 @@ export class Physics {
 	}
 
 	// ------------------------------------------------------------------ holding
-	grab(prop: Prop, maxSpeed = 6) {
+	grab(prop: Prop, maxSpeed = 12) {
 		prop.held = true;
 		prop.body.wakeUp();
 		prop.body.setGravityScale(0, true);
@@ -148,18 +152,28 @@ export class Physics {
 		return h ? this.pos(prop).distanceTo(h.target) : 0;
 	}
 
-	release(prop: Prop, throwVel?: THREE.Vector3) {
+	/**
+	 * Let go. A throw takes the hand's velocity (a hard overarm throw is
+	 * 10-15 m/s) and, when given, its spin; otherwise the object keeps a
+	 * little of the spin it had.
+	 */
+	release(prop: Prop, throwVel?: THREE.Vector3, throwSpin?: THREE.Vector3) {
 		this.holds.delete(prop);
 		prop.held = false;
 		prop.body.setGravityScale(1, true);
 		if (throwVel) {
 			const v = throwVel.clone();
-			if (v.length() > 5) v.setLength(5);
+			if (v.length() > 14) v.setLength(14);
 			prop.body.setLinvel(v, true);
 		}
-		// keep a little of the spin, not all of it
-		const w = prop.body.angvel();
-		prop.body.setAngvel({ x: w.x * 0.5, y: w.y * 0.5, z: w.z * 0.5 }, true);
+		if (throwSpin) {
+			const w = throwSpin.clone();
+			if (w.length() > 25) w.setLength(25);
+			prop.body.setAngvel(w, true);
+		} else {
+			const w = prop.body.angvel();
+			prop.body.setAngvel({ x: w.x * 0.5, y: w.y * 0.5, z: w.z * 0.5 }, true);
+		}
 	}
 
 	private _v = new THREE.Vector3();
@@ -169,8 +183,12 @@ export class Physics {
 			const b = prop.body;
 			// linear: critically-damped approach, capped speed
 			const p = this.pos(prop);
-			const v = this._v.copy(h.target).sub(p).divideScalar(this.dt * 3);
-			if (v.length() > h.maxSpeed) v.setLength(h.maxSpeed);
+			const err = this._v.copy(h.target).sub(p);
+			// follows a fast hand closely; when far off its target it is being
+			// blocked (pressed into a wall), so it pushes gently instead of tunnelling
+			const cap = err.length() > 0.2 ? Math.min(5, h.maxSpeed) : h.maxSpeed;
+			const v = err.divideScalar(this.dt * 3);
+			if (v.length() > cap) v.setLength(cap);
 			b.setLinvel(v, true);
 			// angular: shortest rotation to target over a few steps
 			const q = this.rot(prop);

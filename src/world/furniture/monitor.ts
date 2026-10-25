@@ -101,3 +101,18 @@ export function buildMonitor(M: Materials, screenTexture: THREE.Texture) {
 
 	return { group: g, screen, head };
 }
+
+/** physical screen sizes offered in Settings (diagonal, inches) */
+export const MONITOR_SIZES = [24, 27, 32, 43] as const;
+
+/**
+ * Resize the monitor head (panel + screen) to a diagonal in inches. The stand
+ * stays; the head grows about its mount, raised so its lower edge keeps its
+ * height above the desk.
+ */
+export function setMonitorSize(head: THREE.Object3D, inches: number) {
+	const k = inches / 27;
+	head.scale.setScalar(k);
+	head.position.y = MONITOR.centerY + 0.18 * (k - 1);
+	head.updateMatrixWorld(true);
+}

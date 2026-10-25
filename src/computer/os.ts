@@ -73,6 +73,18 @@ export class DesktopOS {
 
 	invalidate() { this.dirty = true; }
 
+	/** physical monitor sizes the Settings offer, and the current one (saved) */
+	displaySizes: readonly number[] = [27];
+	get displaySize() { return Number(this.storage.get('display.size') ?? 27); }
+	/** set by the owner: resize the physical monitor */
+	onDisplaySize: (inch: number) => void = () => {};
+	setDisplaySize(inch: number) {
+		if (!this.displaySizes.includes(inch)) return;
+		this.storage.set('display.size', String(inch));
+		this.onDisplaySize(inch);
+		this.invalidate();
+	}
+
 	/** add an app (and its dock icon, before System) */
 	registerApp(app: App) {
 		this.apps.set(app.id, app);
@@ -717,10 +729,16 @@ class SketchApp implements App {
 class SystemApp implements App {
 	id = 'system';
 	title = 'System';
-	defaultRect = { x: 1300, y: 640, w: 560, h: 330 };
-	minSize: [number, number] = [420, 260];
+	defaultRect = { x: 1300, y: 560, w: 560, h: 420 };
+	minSize: [number, number] = [520, 400];
 	private lastSec = -1;
+	private sizeHits: { x: number; y: number; w: number; h: number; inch: number }[] = [];
 	constructor(private os: DesktopOS) {}
+	pointerUp(x: number, y: number) {
+		const h = this.sizeHits.find((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+		if (h) this.os.setDisplaySize(h.inch);
+	}
+	cursor(x: number, y: number): CursorStyle { return this.sizeHits.some((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) ? 'pointer' : 'arrow'; }
 	drawIcon(ctx: CanvasRenderingContext2D, x: number, y: number, s: number) {
 		iconBase(ctx, x, y, s, ['#3b3f46', '#16181c']);
 		ctx.strokeStyle = '#30d158'; ctx.lineWidth = s * 0.06; ctx.lineJoin = 'round';
@@ -731,12 +749,30 @@ class SystemApp implements App {
 	draw(ctx: CanvasRenderingContext2D, r: Rect, _f: boolean, now: number) {
 		this.lastSec = Math.floor(now / 1000);
 		ctx.fillStyle = '#ffffff'; ctx.fillRect(r.x, r.y, r.w, r.h);
-		const st = this.os.stats();
 		ctx.font = `600 20px ${FONT_UI}`; ctx.fillStyle = '#1d1d1f';
-		ctx.fillText('This computer', r.x + 24, r.y + 40);
+		// Display: the physical screen size of this monitor
+		let y = r.y + 40;
+		ctx.fillText('Screen size', r.x + 24, y);
+		y += 16;
+		this.sizeHits = [];
+		const sizes = this.os.displaySizes, bw = 104, gap = 10;
+		sizes.forEach((inch, i) => {
+			const bx = r.x + 24 + i * (bw + gap), on = inch === this.os.displaySize;
+			ctx.beginPath(); ctx.roundRect(bx, y, bw, 40, 9);
+			ctx.fillStyle = on ? '#0a84ff' : '#ececef'; ctx.fill();
+			ctx.fillStyle = on ? '#fff' : '#1d1d1f'; ctx.font = `600 17px ${FONT_UI}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+			ctx.fillText(`${inch}\u2033`, bx + bw / 2, y + 21);
+			ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+			this.sizeHits.push({ x: bx - r.x, y: y - r.y, w: bw, h: 40, inch });
+		});
+		y += 84;
+		ctx.font = `600 20px ${FONT_UI}`; ctx.fillStyle = '#1d1d1f';
+		ctx.fillText('This computer', r.x + 24, y);
 		ctx.font = `400 18px ${FONT_UI}`;
-		let y = r.y + 80;
+		y += 40;
+		const st = this.os.stats();
 		for (const [k, v] of Object.entries(st)) {
+			if (y > r.y + r.h - 8) break;
 			ctx.fillStyle = '#8a8a8e'; ctx.fillText(k, r.x + 24, y);
 			ctx.fillStyle = '#1d1d1f'; ctx.fillText(v, r.x + 200, y);
 			y += 32;
