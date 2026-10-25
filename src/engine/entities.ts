@@ -38,7 +38,7 @@ export interface Entity {
 	components: Component[];
 }
 
-export interface SpawnSpec { kind: 'box' | 'sphere' | 'cylinder' | 'ramp' | 'light' | 'clone'; source?: string; dynamic: boolean; size: [number, number, number] }
+export interface SpawnSpec { kind: 'box' | 'sphere' | 'cylinder' | 'ramp' | 'light' | 'clone' | 'asset'; source?: string; /** imported asset id (kind 'asset') */ asset?: string; dynamic: boolean; size: [number, number, number] }
 
 let nextSpawn = 1;
 

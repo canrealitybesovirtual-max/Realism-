@@ -20,6 +20,8 @@ Op shapes (ids must be existing entity ids from the scene unless spawned earlier
 - {"op":"phys","id":ID,"key":"mass"|"friction"|"restitution"|"gravity","value":number}   {"op":"static","id":ID,"value":true|false}
 - {"op":"rename","id":ID,"name":"..."}   {"op":"delete","id":ID}
 - {"op":"spawn","id":NEWID,"spec":{"kind":"box"|"sphere"|"cylinder"|"ramp"|"light","dynamic":bool,"size":[x,y,z]},"to":{...},"color":"#rrggbb"}  NEWID like "agent-crate-1", unused
+  imported models: "spec":{"kind":"asset","asset":ASSETID,"dynamic":false,"size":[x,y,z]} (ids listed under ASSETS); copies: "spec":{"kind":"clone","source":ID,"dynamic":bool,"size":[1,1,1]}
+- {"op":"env","id":"environment","key":"exposure"(0.2..3)|"envIntensity"(0..3)|"shadowSoftness"(0..8),"value":number}
 - {"op":"comp","id":ID,"ctype":TYPE,"data":{field:value}}  add/update a component (data null removes it)
 - {"op":"graph","id":GID,"graph":{"id":GID,"name":"...","nodes":[{"id":"n1","type":NODE,"x":0,"y":0,"params":{...}}],"links":[{"from":"n1","out":"out","to":"n2","in":"in"}]}}
 - {"op":"script","id":SID,"script":{"id":SID,"name":"...","source":"..."}}  then attach with {"op":"comp","id":ID,"ctype":"Script","data":{"script":SID}}

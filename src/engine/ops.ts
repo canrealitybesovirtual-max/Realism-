@@ -6,6 +6,7 @@ import { COMPONENTS, defaults, validateComponent, type Data } from './components
 import { validateGraph, type GraphDoc } from './graph';
 import type { Gameplay } from './gameplay';
 import { validateScriptDoc, type ScriptDoc } from './scripts';
+import { assetCache } from './assets';
 import { type Command, applyTRS, makeMaterialUnique, setLight, setMaterial, setPhysics, rename, type MatKey, type PhysKey } from './commands';
 
 /**
@@ -27,9 +28,29 @@ export type Op =
 	| { op: 'spawn'; id: string; spec: SpawnSpec; to: TRS; color: string }
 	| { op: 'comp'; id: string; ctype: string; data: Data | null }
 	| { op: 'graph'; id: string; graph: GraphDoc | null }
-	| { op: 'script'; id: string; script: ScriptDoc | null };
+	| { op: 'script'; id: string; script: ScriptDoc | null }
+	| { op: 'env'; id: 'environment'; key: EnvKey; value: number };
 
-export interface OpContext { world: EntityWorld; physics: Physics | null; scene: THREE.Scene; onMoved?(e: Entity): void; gameplay?: Gameplay }
+/** scene-wide settings (op 'env') and their ranges */
+export type EnvKey = 'exposure' | 'envIntensity' | 'shadowSoftness';
+export const ENV: Record<EnvKey, { label: string; min: number; max: number }> = {
+	exposure: { label: 'Exposure', min: 0.2, max: 3 },
+	envIntensity: { label: 'Reflections / bounce light', min: 0, max: 3 },
+	shadowSoftness: { label: 'Shadow softness', min: 0, max: 8 },
+};
+export function readEnv(ctx: OpContext, key: EnvKey): number {
+	if (key === 'exposure') return ctx.renderer?.toneMappingExposure ?? 1;
+	if (key === 'envIntensity') return ctx.scene.environmentIntensity;
+	const sun = ctx.scene.getObjectByName('sun') as THREE.DirectionalLight | undefined;
+	return sun?.shadow.radius ?? 0;
+}
+function writeEnv(ctx: OpContext, key: EnvKey, v: number) {
+	if (key === 'exposure') { if (ctx.renderer) ctx.renderer.toneMappingExposure = v; }
+	else if (key === 'envIntensity') ctx.scene.environmentIntensity = v;
+	else { const sun = ctx.scene.getObjectByName('sun') as THREE.DirectionalLight | undefined; if (sun) { sun.shadow.radius = v; sun.shadow.needsUpdate = true; } }
+}
+
+export interface OpContext { world: EntityWorld; physics: Physics | null; scene: THREE.Scene; onMoved?(e: Entity): void; gameplay?: Gameplay; renderer?: THREE.WebGLRenderer }
 
 const num = (v: unknown, lo = -1e5, hi = 1e5) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 const vec = (v: unknown, lo?: number, hi?: number) => Array.isArray(v) && v.length === 3 && v.every((x) => num(x, lo, hi));
@@ -48,6 +69,10 @@ export function validateOp(o: any, w: EntityWorld): string | null {
 	if (o.op === 'script') {
 		if (!/^[\w-]{1,40}$/.test(o.id)) return 'bad script id';
 		return o.script === null ? null : validateScriptDoc(o.script, o.id);
+	}
+	if (o.op === 'env') {
+		const r = ENV[o.key as EnvKey];
+		return o.id === 'environment' && r && num(o.value, r.min, r.max) ? null : 'bad environment setting';
 	}
 	const e = w.get(o.id);
 	if (o.op !== 'spawn' && !e) return `unknown entity ${o.id}`;
@@ -73,8 +98,9 @@ export function validateOp(o: any, w: EntityWorld): string | null {
 		case 'delete': return null;
 		case 'spawn': {
 			const s = o.spec;
-			if (!s || !['box', 'sphere', 'cylinder', 'ramp', 'light', 'clone'].includes(s.kind) || typeof s.dynamic !== 'boolean' || !vec(s.size, 0.01, 50)) return 'bad spawn spec';
+			if (!s || !['box', 'sphere', 'cylinder', 'ramp', 'light', 'clone', 'asset'].includes(s.kind) || typeof s.dynamic !== 'boolean' || !vec(s.size, 0.01, 50)) return 'bad spawn spec';
 			if (s.kind === 'clone' && (typeof s.source !== 'string' || !w.get(s.source))) return 'clone source missing';
+			if (s.kind === 'asset' && (typeof s.asset !== 'string' || !assetCache.has(s.asset))) return 'imported asset not available in this browser (import the file again)';
 			// replaying a save after a reset: the same spawned entity, currently undone, comes back
 			const ex = w.get(o.id);
 			if (ex && !(ex.spawn && ex.deleted)) return 'id already exists';
@@ -146,6 +172,10 @@ export function opToCommand(o: Op, ctx: OpContext): Command {
 			const set = (d: ScriptDoc | null) => { if (d) scripts.set(o.id, { ...d }); else scripts.delete(o.id); w.version++; ctx.gameplay?.refresh({ script: o.id }); };
 			return { label: o.script === null ? `Delete script ${prev?.name ?? o.id}` : `${prev ? 'Edit' : 'New'} script ${o.script.name}`, live: true, do() { set(o.script); }, undo() { set(before); } };
 		}
+		case 'env': {
+			const before = readEnv(ctx, o.key);
+			return { label: `${ENV[o.key].label}: ${o.value}`, live: true, do() { writeEnv(ctx, o.key, o.value); }, undo() { writeEnv(ctx, o.key, before); } };
+		}
 		case 'delete': {
 			const ent = e!;
 			const set = (gone: boolean) => {
@@ -189,6 +219,12 @@ function spawn(o: Extract<Op, { op: 'spawn' }>, ctx: OpContext): Entity {
 		obj = src.object.clone(true);
 		obj.traverse((m) => { if ((m as THREE.Mesh).isMesh) { const mesh = m as THREE.Mesh; mesh.castShadow = true; } });
 		if (src.prop) shapes = src.prop.desc.shapes.map((x) => ({ kind: x.kind === 'capsuleX' ? 'cuboid' : x.kind, size: x.kind === 'capsuleX' ? [x.size[1] + x.size[0], x.size[0], x.size[0]] : [...x.size], offset: x.offset ? [...x.offset] : undefined } as any));
+	} else if (s.kind === 'asset') {
+		const a = assetCache.get(s.asset!)!;
+		obj = a.scene.clone(true);
+		const box = new THREE.Box3().setFromObject(obj);
+		const sz = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+		shapes = [{ kind: 'cuboid', size: [Math.max(0.01, sz.x / 2), Math.max(0.01, sz.y / 2), Math.max(0.01, sz.z / 2)], offset: [c.x, c.y, c.z] }];
 	} else if (s.kind === 'light') {
 		const l = new THREE.PointLight(new THREE.Color(o.color), 3, 6, 2);
 		const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.04, 16, 12), new THREE.MeshStandardMaterial({ color: o.color, emissive: o.color, emissiveIntensity: 2 }));
@@ -216,7 +252,7 @@ function spawn(o: Extract<Op, { op: 'spawn' }>, ctx: OpContext): Entity {
 		prop = physics.addProp({ name: o.id, object: obj, mass: Math.max(0.05, Math.min(200, vol * 600)), friction: 0.6, restitution: 0.15, shapes: shapes as any });
 		if (!s.dynamic) physics.setPropStatic(prop, true);
 	}
-	return w.add({ id: o.id, name: s.kind === 'clone' ? w.get(s.source!)!.name + ' copy' : cap(s.kind), layer: 'Spawned', object: obj, prop, spawn: s, components: [] });
+	return w.add({ id: o.id, name: s.kind === 'clone' ? w.get(s.source!)!.name + ' copy' : s.kind === 'asset' ? assetCache.get(s.asset!)!.info.name : cap(s.kind), layer: 'Spawned', object: obj, prop, spawn: s, components: [] });
 }
 
 function rampGeometry(x: number, y: number, z: number) {
@@ -237,7 +273,7 @@ const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
  */
 export function compactOps(ops: Op[]): Op[] {
 	const out: Op[] = [];
-	const key = (o: Op) => o.op === 'trs' ? `trs|${o.id}` : o.op === 'mat' ? `mat|${o.id}|${o.mi}|${o.key}` : o.op === 'light' ? `light|${o.id}|${o.li}|${o.key}` : o.op === 'phys' ? `phys|${o.id}|${o.key}` : o.op === 'static' ? `static|${o.id}` : o.op === 'rename' ? `rename|${o.id}` : o.op === 'comp' ? `comp|${o.id}|${o.ctype}` : o.op === 'graph' ? `graph|${o.id}` : o.op === 'script' ? `script|${o.id}` : null;
+	const key = (o: Op) => o.op === 'trs' ? `trs|${o.id}` : o.op === 'mat' ? `mat|${o.id}|${o.mi}|${o.key}` : o.op === 'light' ? `light|${o.id}|${o.li}|${o.key}` : o.op === 'phys' ? `phys|${o.id}|${o.key}` : o.op === 'static' ? `static|${o.id}` : o.op === 'rename' ? `rename|${o.id}` : o.op === 'comp' ? `comp|${o.id}|${o.ctype}` : o.op === 'graph' ? `graph|${o.id}` : o.op === 'script' ? `script|${o.id}` : o.op === 'env' ? `env|${o.key}` : null;
 	const last = new Map<string, number>();
 	for (const o of ops) {
 		// after "make unique" the material index points at a new material: do not

@@ -24,6 +24,10 @@ import { StudioApp } from './computer/studioApp';
 import { LogicApp } from './computer/logicApp';
 import { CodeApp } from './computer/codeApp';
 import { AgentApp } from './computer/agentApp';
+import { ProfilerApp } from './computer/profilerApp';
+import { Diagnostics } from './engine/diagnostics';
+import { AssetLibrary } from './engine/assets';
+import { AssetsApp } from './computer/assetsApp';
 import { log } from './engine/log';
 import { Gameplay } from './engine/gameplay';
 import { Pistol } from './world/pistol';
@@ -85,6 +89,8 @@ let viewport: EditorViewport | undefined;
 let gameplay: Gameplay | undefined;
 let codeApp: CodeApp | undefined;
 let agentApp: AgentApp | undefined;
+let diag: Diagnostics | undefined;
+let assets: AssetLibrary | undefined;
 log.capture();
 
 function setView(name: string) {
@@ -192,7 +198,7 @@ async function init() {
 		registerScene(world, { props: physics.props, lamp: ws.lamp, plant: ws.plant, clock: ws.clock });
 		runtime = new Runtime(world);
 		const rt = runtime;
-		const opCtx = { world, physics: physics.enabled ? physics : null, scene, onMoved: (e: import('./engine/entities').Entity) => rt.authored(e.id, e.object.position, e.object.quaternion), gameplay: undefined as Gameplay | undefined };
+		const opCtx = { world, physics: physics.enabled ? physics : null, scene, onMoved: (e: import('./engine/entities').Entity) => rt.authored(e.id, e.object.position, e.object.quaternion), gameplay: undefined as Gameplay | undefined, renderer };
 		editor = new Editor(world, runtime, opCtx, scene);
 		gameplay = new Gameplay(world, opCtx.physics, runtime, () => camera.getWorldPosition(new THREE.Vector3()), gunFx?.listener ?? null);
 		opCtx.gameplay = gameplay;
@@ -212,6 +218,16 @@ async function init() {
 		studio.makeScript = () => code.newScript();
 		const assistant = agentApp = new AgentApp(computer.os, editor, gameplay, code.project);
 		computer.os.registerApp(assistant);
+		diag = new Diagnostics(renderer, scene, world, opCtx.physics, viewport.camera);
+		const profiler = new ProfilerApp(computer.os, diag, editor, () => renderer.xr.isPresenting);
+		computer.os.registerApp(profiler);
+		let store: Storage | null = null;
+		try { store = window.localStorage; } catch { /* no storage */ }
+		assets = new AssetLibrary(loader, store);
+		void assets.preload().then(() => computer.os.invalidate());
+		const assetsApp = new AssetsApp(computer.os, editor, assets, opCtx, () => ({ pos: camera.getWorldPosition(new THREE.Vector3()), fwd: camera.getWorldDirection(new THREE.Vector3()) }), () => renderer.xr.isPresenting);
+		computer.os.registerApp(assetsApp);
+		(window as any).__studio.assetsApp = assetsApp;
 		targets.editorTool = new WorldTool(editor, scene, ws.monitor.screen, camera);
 		log.info(`Engine: ${world.list.length} entities registered`);
 	}
@@ -241,7 +257,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -302,8 +318,10 @@ renderer.setAnimationLoop((t) => {
 	const now = t ?? performance.now();
 	frames++;
 	if (now - fpsT > 1000) { fps = (frames * 1000) / (now - fpsT); frames = 0; fpsT = now; }
+	diag?.begin();
 	if (ws && physics) {
 		if (renderer.xr.isPresenting) xr?.update(dt, now); else desktop?.update(dt);
+		diag?.mark('input');
 		// the simulation advances only while the runtime plays (or steps)
 		const sdt = runtime ? runtime.frameDt(dt) : dt;
 		if (sdt > 0) {
@@ -313,6 +331,7 @@ renderer.setAnimationLoop((t) => {
 			gameplay?.update(sdt);
 		}
 		range?.update(sdt); // with 0 while paused: clays freeze, the exit and hints still work
+		diag?.mark('sim');
 		editor?.update();
 		shadows.update();
 		ws.updateClock();
@@ -321,6 +340,7 @@ renderer.setAnimationLoop((t) => {
 		// the sun's shadow map only needs re-rendering when something moves
 		const awake = physics.props.some((p) => !p.body.isSleeping()) || !!gunFx?.active; // empty when physics is unavailable
 		if (awake || shadowsDirty) { renderer.shadowMap.needsUpdate = true; shadowsDirty = awake; }
+		diag?.mark('editor');
 	} else {
 		renderer.shadowMap.needsUpdate = true;
 	}
@@ -333,6 +353,8 @@ renderer.setAnimationLoop((t) => {
 		for (const g of guns) g.renderScope?.(renderer, scene, eye);
 	}
 	renderer.render(scene, camera);
+	diag?.mark('render');
+	diag?.end(dt);
 });
 const _eye = new THREE.Vector3();
 

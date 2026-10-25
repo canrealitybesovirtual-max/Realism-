@@ -5,6 +5,7 @@ import { NODES } from './graph';
 import { validateOp, type Op } from './ops';
 import { readTRS } from './entities';
 import { diffLines, diffStats } from './codeTools';
+import { assetCache } from './assets';
 
 /**
  * The Claude development agent's contract with the engine.
@@ -48,6 +49,7 @@ export function sceneContext(w: EntityWorld, gp: Gameplay, selection: string[], 
 		'', `GRAPH NODE TYPES: ${NODES.map((n) => `${n.type}(${Object.keys(n.params).join(',')})`).join(' ')}`,
 		'', 'GRAPHS:', ...(graphs.length ? graphs : ['(none)']),
 		'', 'SCRIPTS:', ...(scripts.length ? scripts : ['(none)']),
+		'', 'ASSETS (imported models):', ...([...assetCache.values()].map((a) => `${a.info.id} "${a.info.name}" ${a.info.size.join('x')} m`).concat(assetCache.size ? [] : ['(none)'])),
 	].join('\n');
 }
 
@@ -79,7 +81,8 @@ function describe(o: Op, w: EntityWorld, gp: Gameplay): string {
 		case 'static': return `${name(o.id)}: ${o.value ? 'static' : 'dynamic'}`;
 		case 'rename': return `Rename ${name(o.id)} → "${o.name}"`;
 		case 'delete': return `Delete ${name(o.id)}`;
-		case 'spawn': return `Spawn ${o.spec?.kind} "${o.id}" at ${o.to?.p?.map(r2).join(', ')}`;
+		case 'env': return `Environment: ${o.key} → ${o.value}`;
+		case 'spawn': return `Spawn ${o.spec?.kind === 'asset' ? assetCache.get(o.spec.asset ?? '')?.info.name ?? 'model' : o.spec?.kind} "${o.id}" at ${o.to?.p?.map(r2).join(', ')}`;
 		case 'comp': return o.data === null ? `Remove ${o.ctype} from ${name(o.id)}` : `${name(o.id)}: ${w.get(o.id)?.components.some((c) => c.type === o.ctype) ? 'set' : 'add'} ${o.ctype} ${JSON.stringify(o.data)}`;
 		case 'graph': return o.graph === null ? `Delete graph ${o.id}` : `${gp.graphs.has(o.id) ? 'Replace' : 'New'} graph "${o.graph.name}" (${o.graph.nodes?.length} nodes)`;
 		case 'script': return o.script === null ? `Delete script ${o.id}` : `${gp.scripts.has(o.id) ? 'Edit' : 'New'} script "${o.script.name}"`;
