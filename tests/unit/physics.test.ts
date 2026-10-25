@@ -56,6 +56,20 @@ describe('physics: props at rest', () => {
 	});
 });
 
+describe('physics: picking', () => {
+	it('propNear picks the prop whose surface is closest, not the nearest centre', () => {
+		const ph = makeWorld();
+		const nb = ph.addProp(notebookDesc(obj(0, DESK_Y, -2.0)));
+		const pen = ph.addProp(penDesc(obj(0, DESK_Y + 0.0153 + 0.0049, -2.0))); // pen across the middle of the notebook
+		run(ph, 1);
+		// both orders matter: a point on the notebook's corner -> notebook, a point on the pen -> pen
+		const corner = new THREE.Vector3(0.06, DESK_Y + 0.016, -1.92);
+		expect(ph.propNear(corner, 0.09)).toBe(nb);
+		const onPen = ph.pos(pen).add(new THREE.Vector3(0.03, 0.006, 0));
+		expect(ph.propNear(onPen, 0.09)).toBe(pen);
+	});
+});
+
 describe('physics: holding and throwing', () => {
 	it('a held mug follows the hand smoothly and settles after release', () => {
 		const ph = makeWorld();

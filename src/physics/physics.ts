@@ -213,7 +213,7 @@ export class Physics {
 		}
 	}
 
-	/** Find the prop whose collider contains / is nearest to a point within radius. */
+	/** The prop whose collider surface is nearest to a point, within radius. */
 	propNear(point: THREE.Vector3, radius: number): Prop | null {
 		if (!this.enabled) return null;
 		let best: Prop | null = null, bestD = radius;
@@ -222,8 +222,11 @@ export class Physics {
 			const body = col.parent();
 			const prop = this.props.find((pp) => pp.body === body);
 			if (prop) {
-				const d = this.pos(prop).distanceTo(point);
-				if (d < bestD + 0.2 || !best) { best = prop; bestD = d; }
+				// distance to the collider's surface (0 inside), not to the body origin:
+				// a pen lying on a notebook must not win just because its centre is closer
+				const proj = col.projectPoint(point, true);
+				const d = proj ? Math.hypot(proj.point.x - point.x, proj.point.y - point.y, proj.point.z - point.z) : Infinity;
+				if (d < bestD || !best) { best = prop; bestD = d; }
 			}
 			return true;
 		}, undefined, groups(GROUP_STATIC | GROUP_PROP, GROUP_PROP));

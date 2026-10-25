@@ -123,6 +123,19 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 		};
 	});
 
+	// 0. hands replace the controllers, and the trigger curls the index finger
+	const handState = () => page.evaluate(() => window.__studio.xr.hands.map((h) => ({ side: h.source?.handedness, hand: !!h.visual?.model.root.visible, ctrl: h.ctrlVisuals.some((o) => o.visible), index: h.visual?.pose.index[0] ?? null })));
+	await page.evaluate(() => window.__aim('right', [1.2, 1.2, 0.5], [1.2, 1.2, 2]));
+	const hs0 = await handState();
+	check('xr: animated hands are shown instead of controller models', hs0.every((h) => h.hand && !h.ctrl), JSON.stringify(hs0));
+	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 1));
+	await frames(page, 6);
+	const curled = (await handState()).find((h) => h.side === 'right').index;
+	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 0));
+	await frames(page, 6);
+	const relaxed = (await handState()).find((h) => h.side === 'right').index;
+	check('xr: pulling the trigger curls the index finger, releasing relaxes it', curled > 70 && relaxed < 45, `flex ${curled.toFixed(0)}° -> ${relaxed.toFixed(0)}°`);
+
 	// 1. ray-click the Sketch dock icon (i = 2) on the monitor
 	const iconX = 779 + 18 + 2 * 86 + 34, iconY = 1020;
 	await page.evaluate(([x, y]) => { const t = window.__screenPoint(x, y); window.__aim('right', [t[0] + 0.05, t[1] + 0.1, t[2] + 0.7], t); }, [iconX, iconY]);
@@ -139,24 +152,31 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	// 2. focus Notes via API, then poke "h", "i" on the 3D keyboard with the left tip
 	await page.evaluate(() => { const os = window.__studio.computer.os; os.openApp('notes'); });
 	const notesBefore = await page.evaluate(() => window.__studio.computer.os.apps.get('notes').buf.text);
+	// the animated hand's index fingertip does the pressing: steer the
+	// controller so that fingertip hovers over the key, then press and lift
+	const leftTip = () => page.evaluate(() => { const h = window.__studio.xr.hands.find((x) => x.source?.handedness === 'left'); return h.visual.indexTip().toArray(); });
 	for (const code of ['KeyH', 'KeyI']) {
-		// hover 3 cm above the key, pointing down, then press 9 mm into it, then lift
 		const keyTop = await page.evaluate((code) => {
 			const s = window.__studio; const THREE = s.THREE;
-			const i = s.KEY_INDEX.get(code);
-			const p = s.ws.keyboard.keyLocal(i, new THREE.Vector3());
+			const p = s.ws.keyboard.keyLocal(s.KEY_INDEX.get(code), new THREE.Vector3());
 			p.y += 0.001;
 			return s.ws.keyboard.deck.localToWorld(p).toArray();
 		}, code);
-		const pose = async (dy) => {
-			// ray origin is the tip origin + 3 cm back along the ray; ray points down
-			await page.evaluate(([k, dy]) => window.__aim('left', [k[0], k[1] + 0.03 + 0.007 + dy, k[2]], [k[0], k[1] - 1, k[2] + 0.0001]), [keyTop, dy]);
-			await frames(page, 3);
+		// controller held ~20 cm above and behind the key, pointing down-forward at it
+		let ray = [keyTop[0], keyTop[1] + 0.16, keyTop[2] + 0.1];
+		const place = async (dy) => {
+			for (let it = 0; it < 4; it++) {
+				await page.evaluate(([r]) => window.__aim('left', r, [r[0], r[1] - 0.8, r[2] - 0.5]), [ray]);
+				await frames(page, 2);
+				const t = await leftTip();
+				const want = [keyTop[0], keyTop[1] + 0.007 + dy, keyTop[2]];
+				ray = ray.map((v, k) => v + (want[k] - t[k]));
+			}
 		};
-		await pose(0.03); await pose(-0.004); await pose(0.03);
+		await place(0.025); await place(-0.004); await place(0.025);
 	}
 	const notesAfter = await page.evaluate(() => window.__studio.computer.os.apps.get('notes').buf.text);
-	check('xr: poking 3D keys types into Notes', notesAfter === notesBefore + 'hi', JSON.stringify(notesAfter.slice(-6)));
+	check('xr: poking 3D keys with the hand\'s index fingertip types into Notes', notesAfter === notesBefore + 'hi', JSON.stringify(notesAfter.slice(-6)));
 
 	// 3. grab the mug with the ray + squeeze, lift it 25 cm, drop it
 	const mug0 = await page.evaluate(() => { const t = window.__studio.physics.props[0].body.translation(); return [t.x, t.y, t.z]; });
@@ -171,6 +191,17 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	await frames(page, 12);
 	const lifted = await page.evaluate(() => window.__studio.physics.props[0].body.translation().y);
 	check('xr: held mug follows the hand upward', lifted > mug0[1] + 0.18, `y ${mug0[1].toFixed(3)} -> ${lifted.toFixed(3)}`);
+	const grasp = await page.evaluate(() => {
+		const s = window.__studio, T = s.THREE;
+		const h = s.xr.hands.find((x) => x.source?.handedness === 'right');
+		const bone = (n) => new T.Vector3().setFromMatrixPosition(h.visual.model.bones.find((b) => b.name === n).matrixWorld);
+		const f = bone('index-finger-phalanx-intermediate').add(bone('middle-finger-phalanx-intermediate')).multiplyScalar(0.5);
+		const mug = s.physics.props[0].desc.object;
+		mug.updateMatrixWorld(true);
+		return { kind: h.held?.kind, local: mug.worldToLocal(f).toArray() };
+	});
+	const gl = grasp.local;
+	check('xr: held mug settles with its handle on the curled fingers', grasp.kind === 'mug' && gl[0] > 0.035 && gl[0] < 0.075 && gl[1] > 0.015 && gl[1] < 0.085 && Math.abs(gl[2]) < 0.03, JSON.stringify(gl.map((v) => +v.toFixed(3))));
 	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('squeeze', 0));
 	await frames(page, 90);
 	const dropped = await page.evaluate(() => { const p = window.__studio.physics.props[0]; const t = p.body.translation(); const v = p.body.linvel(); return { held: p.held, y: t.y, v: Math.hypot(v.x, v.y, v.z) }; });
@@ -209,6 +240,34 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	await frames(page, 10);
 	const h2 = await headPos();
 	check('xr: walking into a wall or desk is blocked (no passing through)', h2[2] > -2.5 + 0.15 && Math.abs(h2[0]) < 2.2, `head at x=${h2[0].toFixed(2)} z=${h2[2].toFixed(2)}`);
+
+	// 6. hand tracking: the skeleton follows the tracked joints, a pinch at the notebook grabs it
+	await page.evaluate(() => { window.__iwer.primaryInputMode = 'hand'; });
+	await frames(page, 6);
+	const tr = await page.evaluate(() => {
+		const s = window.__studio, T = s.THREE;
+		return s.xr.hands.map((h) => {
+			const j = h.handSpace.joints['index-finger-tip'];
+			const jt = j ? new T.Vector3().setFromMatrixPosition(j.matrixWorld) : null;
+			const mt = h.visual?.model.tipWorld('index');
+			return { tracked: !!h.source?.hand, visible: !!h.visual?.model.root.visible, tipError: jt && mt ? jt.distanceTo(mt) : 1 };
+		});
+	});
+	check('xr: tracked hands follow the joints (index tip within 1.5 cm)', tr.every((t) => t.tracked && t.visible && t.tipError < 0.015), JSON.stringify(tr.map((t) => ({ ...t, tipError: +t.tipError.toFixed(4) }))));
+	// put the right hand's pinch point on the notebook, then pinch
+	// a corner of the notebook, away from the pen lying across it
+	const nb = await page.evaluate(() => { const s = window.__studio; const o = s.physics.props[1].desc.object; o.updateMatrixWorld(true); return o.localToWorld(new s.THREE.Vector3(0.05, 0.02, 0.08)).toArray(); });
+	for (let it = 0; it < 4; it++) {
+		const pp = await page.evaluate(() => { const s = window.__studio; const h = s.xr.hands.find((x) => x.source?.handedness === 'right'); return s.xr.grabPoint(h).toArray(); });
+		await page.evaluate(([nb, pp]) => { const s = window.__studio, d = window.__iwer; const c = d.hands.right.position; const rigQ = s.xr.rig.getWorldQuaternion(new s.THREE.Quaternion()).invert(); const delta = new s.THREE.Vector3(nb[0] - pp[0], nb[1] - pp[1], nb[2] - pp[2]).applyQuaternion(rigQ); c.set(c.x + delta.x, c.y + delta.y, c.z + delta.z); }, [nb, pp]);
+		await frames(page, 2);
+	}
+	await page.evaluate(() => { window.__iwer.hands.right.poseId = 'pinch'; });
+	await frames(page, 6);
+	const pinchHeld = await page.evaluate(() => { const s = window.__studio; const h = s.xr.hands.find((x) => x.source?.handedness === 'right'); return { pinching: h.pinching, held: h.held?.prop.desc.name ?? null }; });
+	check('xr: a tracked pinch at the notebook picks it up', pinchHeld.pinching && pinchHeld.held === 'notebook', JSON.stringify(pinchHeld));
+	await page.evaluate(() => { window.__iwer.hands.right.poseId = 'default'; window.__iwer.primaryInputMode = 'controller'; });
+	await frames(page, 6);
 
 	check('xr: no runtime errors during the session', errors.length === 0, errors.slice(0, 3).join(' | '));
 	await page.close();

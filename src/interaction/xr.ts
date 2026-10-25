@@ -4,6 +4,7 @@ import type { Physics, Prop } from '../physics/physics';
 import type { Walkable, InteractionTargets, PointerOwner } from './shared';
 import { KEYS } from '../computer/keyLayout';
 import { KB } from '../world/furniture/keyboard';
+import { XRHand, graspFor, type GraspKind } from './xrHands';
 
 /**
  * WebXR controls.
@@ -19,6 +20,14 @@ import { KB } from '../world/furniture/keyboard';
  *     scrolls instead while the right ray points at the monitor. A mild
  *     vignette narrows the view only while moving, for comfort.
  *
+ * Hands: by default the controllers are drawn as animated human hands
+ * (see xrHands.ts / handModel.ts): fingers follow the analog trigger, grip
+ * and thumb rest; the index finger extends near the keyboard and screen and
+ * does the key presses; held objects settle into a natural grasp. With
+ * WebXR hand tracking the skeleton follows the tracked joints and a
+ * thumb-index pinch acts as the trigger. ?controllers shows plain
+ * controller models instead.
+ *
  * Input ownership: a controller that starts a click on the monitor owns the
  * OS pointer until the trigger is released; the other controller's ray then
  * cannot move the cursor. Grabs and pokes never fall through to locomotion.
@@ -33,7 +42,11 @@ interface Hand {
 	dot: THREE.Mesh;
 	tip: THREE.Mesh;
 	prevButtons: boolean[];
-	held: { prop: Prop; offset: THREE.Matrix4 } | null;
+	held: { prop: Prop; offset: THREE.Matrix4; kind: GraspKind | null; age: number } | null;
+	visual: XRHand | null;
+	handSpace: THREE.XRHandSpace;
+	ctrlVisuals: THREE.Object3D[];
+	pinching: boolean;
 	holdingMouse: boolean;
 	mouseGrabOffset: THREE.Vector3;
 	velHistory: { p: THREE.Vector3; t: number }[];
@@ -54,6 +67,7 @@ export class XRControls {
 	private raycaster = new THREE.Raycaster();
 	private walkVel = new THREE.Vector2();
 	private vignette: THREE.Mesh;
+	readonly handsEnabled = !new URLSearchParams(location.search).has('controllers');
 
 	constructor(
 		private renderer: THREE.WebGLRenderer,
@@ -111,7 +125,8 @@ export class XRControls {
 		const check = setInterval(() => {
 			if (model.children.length > 0) { fallback.visible = false; clearInterval(check); }
 		}, 500);
-		this.rig.add(ray, grip);
+		const handSpace = this.renderer.xr.getHand(i);
+		this.rig.add(ray, grip, handSpace);
 		const line = new THREE.Line(
 			new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]),
 			new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 }),
@@ -129,9 +144,17 @@ export class XRControls {
 			index: i, ray, grip, source: null, line, dot, tip, prevButtons: [], held: null, holdingMouse: false,
 			mouseGrabOffset: new THREE.Vector3(), velHistory: [], pokeKey: -1, pointing: null, pointKey: -1, pointProp: null,
 			screenClick: false, turnReady: true, scrollAcc: 0,
+			visual: null, handSpace, ctrlVisuals: [model, fallback, tip], pinching: false,
 		};
-		ray.addEventListener('connected', (e: any) => { hand.source = e.data; });
-		ray.addEventListener('disconnected', () => { this.releaseAll(hand); hand.source = null; });
+		ray.addEventListener('connected', (e: any) => {
+			hand.source = e.data;
+			const side = (e.data as XRInputSource).handedness === 'left' ? 'left' : 'right';
+			if (this.handsEnabled && (!hand.visual || hand.visual.handedness !== side)) {
+				if (hand.visual) this.scene.remove(hand.visual.model.root);
+				hand.visual = new XRHand(side, this.scene);
+			}
+		});
+		ray.addEventListener('disconnected', () => { this.releaseAll(hand); hand.source = null; if (hand.visual) hand.visual.visible = false; });
 		return hand;
 	}
 
@@ -143,9 +166,19 @@ export class XRControls {
 	}
 
 	private buttons(h: Hand) {
-		const gp = h.source?.gamepad;
+		const gp = h.source?.hand ? undefined : h.source?.gamepad;
 		const b = gp?.buttons ?? [];
 		const pressed = b.map((x) => x.pressed);
+		if (h.source?.hand) {
+			// tracked hand: a thumb-index pinch is both "trigger" and "grip"
+			// (closes under 1.5 cm, opens over 3 cm so it does not flicker)
+			const tt = h.handSpace.joints['thumb-tip'], it = h.handSpace.joints['index-finger-tip'];
+			if (tt && it) {
+				const d = tt.getWorldPosition(_v).distanceTo(it.getWorldPosition(new THREE.Vector3()));
+				h.pinching = h.pinching ? d < 0.03 : d < 0.015;
+			}
+			pressed[0] = pressed[1] = h.pinching;
+		}
 		const was = h.prevButtons;
 		h.prevButtons = pressed;
 		const axes = gp?.axes ?? [];
@@ -153,6 +186,9 @@ export class XRControls {
 			trigger: !!pressed[0], triggerDown: !!pressed[0] && !was[0], triggerUp: !pressed[0] && !!was[0],
 			squeeze: !!pressed[1], squeezeDown: !!pressed[1] && !was[1], squeezeUp: !pressed[1] && !!was[1],
 			stickX: axes[2] ?? 0, stickY: axes[3] ?? 0,
+			triggerValue: h.source?.hand ? (h.pinching ? 1 : 0) : (b[0]?.value ?? 0),
+			squeezeValue: h.source?.hand ? 0 : (b[1]?.value ?? 0),
+			thumbTouch: [3, 4, 5].some((i) => b[i]?.touched || b[i]?.pressed),
 		};
 	}
 
@@ -163,18 +199,65 @@ export class XRControls {
 
 	private updateHand(h: Hand, dt: number, now: number) {
 		if (!h.source) { h.line.visible = false; h.dot.visible = false; return; }
+		const tracked = !!h.source.hand;
+		if (h.visual) {
+			h.visual.visible = true;
+			for (const o of h.ctrlVisuals) o.visible = false;
+			if (tracked) h.visual.updateTracked(h.handSpace.joints);
+		} else for (const o of h.ctrlVisuals) o.visible = !tracked;
 		const btn = this.buttons(h);
-		const gripPos = h.grip.getWorldPosition(new THREE.Vector3());
+		this.handLogic(h, btn, dt, now);
+		if (h.visual && !tracked) {
+			const tipW = h.visual.indexTip();
+			const local = (this.targets.keycaps.parent as THREE.Object3D).worldToLocal(tipW);
+			const nearKeys = Math.abs(local.x) < 0.3 && Math.abs(local.z) < 0.26 && local.y < 0.2 && local.y > -0.04;
+			h.visual.updateController(
+				h.ray.matrixWorld,
+				{ trigger: btn.triggerValue, squeeze: btn.squeezeValue, thumbTouch: btn.thumbTouch },
+				{ point: !h.held && !h.holdingMouse && (nearKeys || h.pointing === 'screen' || h.pointing === 'key'), holding: h.holdingMouse ? 'mouse' : h.held?.kind ?? null },
+				h.holdingMouse ? this.targets.mouse.object.matrixWorld : null,
+				dt,
+			);
+		}
+	}
+
+	/** Reference frame objects are held relative to: the tracked wrist, else the target ray. */
+	private handFrame(h: Hand): THREE.Matrix4 {
+		const w = h.handSpace.joints['wrist'];
+		return h.source?.hand && w ? w.matrixWorld : h.ray.matrixWorld;
+	}
+
+	/** Grab/press point: between thumb and index when tracked, else the grip. */
+	private grabPoint(h: Hand, out = new THREE.Vector3()) {
+		const tt = h.handSpace.joints['thumb-tip'], it = h.handSpace.joints['index-finger-tip'];
+		if (h.source?.hand && tt && it) return tt.getWorldPosition(out).add(it.getWorldPosition(new THREE.Vector3())).multiplyScalar(0.5);
+		return h.grip.getWorldPosition(out);
+	}
+
+	private handLogic(h: Hand, btn: ReturnType<XRControls['buttons']>, dt: number, now: number) {
+		if (!h.source) return;
+		const gripPos = this.grabPoint(h);
 		h.velHistory.push({ p: gripPos.clone(), t: now });
 		while (h.velHistory.length > 6) h.velHistory.shift();
 
 		// ---------------------------------------------------- 1. holding
 		if (h.held) {
-			_m.multiplyMatrices(h.grip.matrixWorld, h.held.offset);
+			h.held.age += dt; // simulated seconds
+			// where the object was relative to the hand when grabbed...
+			_m.multiplyMatrices(this.handFrame(h), h.held.offset);
 			_m.decompose(_v, _q, new THREE.Vector3());
+			// ...eases over 0.25 s into a natural grasp in the animated hand
+			if (h.visual && h.held.kind && !h.source.hand) {
+				const g = new THREE.Matrix4().multiplyMatrices(h.visual.wrist, graspFor(h.held.kind, h.visual.handedness));
+				const gp = new THREE.Vector3(), gq = new THREE.Quaternion();
+				g.decompose(gp, gq, new THREE.Vector3());
+				const k = THREE.MathUtils.smoothstep(Math.min(1, h.held.age / 0.25), 0, 1);
+				_v.lerp(gp, k); _q.slerp(gq, k);
+			}
 			this.physics.setHoldTarget(h.held.prop, _v, _q);
 			const releasing = btn.squeezeUp || (btn.triggerUp && !btn.squeeze);
-			if (releasing || this.physics.holdError(h.held.prop) > 0.4) this.releaseProp(h);
+			if (releasing) this.releaseProp(h);
+			else if (h.held.age > 0.6 && this.physics.holdError(h.held.prop) > 0.4) this.releaseProp(h, false); // stuck: let go in place
 			h.line.visible = false; h.dot.visible = false;
 			return;
 		}
@@ -194,7 +277,7 @@ export class XRControls {
 		}
 
 		// ---------------------------------------------------- 2. poke typing
-		const tipW = h.tip.getWorldPosition(new THREE.Vector3());
+		const tipW = h.visual ? h.visual.indexTip() : h.tip.getWorldPosition(new THREE.Vector3());
 		const poked = this.pokeKey(tipW, h.pokeKey);
 		if (poked !== h.pokeKey) {
 			if (poked >= 0) {
@@ -298,11 +381,12 @@ export class XRControls {
 		// keep the object where it is relative to the hand: offset = grip^-1 * object
 		this.physics.grab(prop, 6);
 		const objM = new THREE.Matrix4().compose(this.physics.pos(prop), this.physics.rot(prop), new THREE.Vector3(1, 1, 1));
-		h.held = { prop, offset: new THREE.Matrix4().copy(h.grip.matrixWorld).invert().multiply(objM) };
+		const kind = (['mug', 'notebook', 'pen'] as const).find((k) => k === prop.desc.name) ?? null;
+		h.held = { prop, offset: this.handFrame(h).clone().invert().multiply(objM), kind, age: 0 };
 		this.pulse(h, 0.45, 25);
 	}
 
-	private releaseProp(h: Hand) {
+	private releaseProp(h: Hand, toss = true) {
 		if (!h.held) return;
 		const hist = h.velHistory;
 		let vel = new THREE.Vector3();
@@ -311,7 +395,7 @@ export class XRControls {
 			const t = (b.t - a.t) / 1000;
 			if (t > 0) vel = b.p.clone().sub(a.p).divideScalar(t);
 		}
-		this.physics.release(h.held.prop, vel);
+		this.physics.release(h.held.prop, toss ? vel : new THREE.Vector3());
 		h.held = null;
 	}
 

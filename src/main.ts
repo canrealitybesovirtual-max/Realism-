@@ -123,11 +123,15 @@ async function init() {
 	desktop = new DesktopControls(camera, renderer.domElement, physics, targets, walk, owner);
 	xr = new XRControls(renderer, scene, camera, physics, targets, walk, owner);
 	if (params.get('view')) setView(params.get('view')!);
+	if (params.has('handpreview')) {
+		if (desktop) desktop.enabled = false;
+		(await import('./dev/handPreview')).addHandPreview(scene, camera, params.get('handpreview') || 'all');
+	}
 
 	// only offer VR when a headset runtime can actually start a session
 	const vrOk = 'xr' in navigator && await navigator.xr!.isSessionSupported('immersive-vr').catch(() => false);
 	if (vrOk) {
-		document.body.appendChild(VRButton.createButton(renderer));
+		document.body.appendChild(VRButton.createButton(renderer, { optionalFeatures: ['hand-tracking'] }));
 	} else if ('xr' in navigator && window.self !== window.top) {
 		// Embedded pages (e.g. a Claude artifact) only get the headset if the
 		// host frame grants xr-spatial-tracking. Offer the same page on its own.

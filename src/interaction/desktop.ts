@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Physics, Prop } from '../physics/physics';
 import { type Walkable, type InteractionTargets, type PointerOwner } from './shared';
 import { EYE_HEIGHT_STANDING } from '../config';
+import { XRHand, graspFor, type GraspKind } from './xrHands';
 
 /**
  * Desktop (non-VR) controls.
@@ -19,7 +20,9 @@ export class DesktopControls {
 	private pitch: number;
 	private keys = new Set<string>();
 	private raycaster = new THREE.Raycaster();
-	private held: { prop: Prop; dist: number; rot: THREE.Quaternion; last: THREE.Vector3; vel: THREE.Vector3 } | null = null;
+	private held: { prop: Prop; dist: number; rot: THREE.Quaternion; last: THREE.Vector3; vel: THREE.Vector3; kind: GraspKind | null; age: number } | null = null;
+	/** first-person right hand, shown while holding something */
+	private hand: XRHand | null = null;
 	private hover: 'screen' | 'prop' | null = null;
 	private crosshair = document.getElementById('crosshair');
 	private overlay = document.getElementById('overlay');
@@ -130,13 +133,15 @@ export class DesktopControls {
 		// remember the prop's orientation relative to the view so it turns with you
 		const rel = camQ.clone().invert().multiply(this.physics.rot(prop));
 		this.physics.grab(prop, 5);
-		this.held = { prop, dist: THREE.MathUtils.clamp(distance, 0.45, 0.9), rot: rel, last: this.physics.pos(prop), vel: new THREE.Vector3() };
+		const kind = (['mug', 'notebook', 'pen'] as const).find((k) => k === prop.desc.name) ?? null;
+		this.held = { prop, dist: THREE.MathUtils.clamp(distance, 0.45, 0.9), rot: rel, last: this.physics.pos(prop), vel: new THREE.Vector3(), kind, age: 0 };
 	}
 
-	private drop() {
+	private drop(toss = true) {
 		if (!this.held) return;
-		this.physics.release(this.held.prop, this.held.vel);
+		this.physics.release(this.held.prop, toss ? this.held.vel : new THREE.Vector3());
 		this.held = null;
+		if (this.hand) this.hand.visible = false;
 	}
 
 	update(dt: number) {
@@ -158,15 +163,34 @@ export class DesktopControls {
 		}
 		// held prop follows a point in front of the view
 		if (this.held) {
+			this.held.age += dt; // simulated time, so slow frames do not count as "stuck"
 			const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-			const target = this.camera.position.clone().addScaledVector(fwd, this.held.dist).add(new THREE.Vector3(0, -0.08, 0));
-			const rot = this.camera.quaternion.clone().multiply(this.held.rot);
+			let target = this.camera.position.clone().addScaledVector(fwd, this.held.dist).add(new THREE.Vector3(0, -0.08, 0));
+			let rot = this.camera.quaternion.clone().multiply(this.held.rot);
+			if (this.held.kind && this.camera.parent) {
+				// show a right hand holding it, low and to the right of the view, the
+				// way you would carry it; the object eases into the hand's grasp
+				this.hand ??= new XRHand('right', this.camera.parent);
+				this.hand.visible = true;
+				const camQ = this.camera.quaternion;
+				const rayPos = this.camera.position.clone().add(new THREE.Vector3(0.13, -0.12, -(this.held.dist - 0.1)).applyQuaternion(camQ));
+				const rayQ = camQ.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.15, 0.12, 0)));
+				const ray = new THREE.Matrix4().compose(rayPos, rayQ, new THREE.Vector3(1, 1, 1));
+				this.hand.updateController(ray, { trigger: 0, squeeze: 0, thumbTouch: true }, { point: false, holding: this.held.kind }, null, dt);
+				const g = new THREE.Matrix4().multiplyMatrices(this.hand.wrist, graspFor(this.held.kind, 'right'));
+				const gp = new THREE.Vector3(), gq = new THREE.Quaternion();
+				g.decompose(gp, gq, new THREE.Vector3());
+				const k = THREE.MathUtils.smoothstep(Math.min(1, this.held.age / 0.25), 0, 1);
+				target = target.lerp(gp, k);
+				rot = rot.slerp(gq, k);
+			}
 			this.physics.setHoldTarget(this.held.prop, target, rot);
 			const p = this.physics.pos(this.held.prop);
 			this.held.vel.copy(p).sub(this.held.last).divideScalar(Math.max(dt, 1e-3));
 			this.held.last.copy(p);
 			// if it is stuck behind something, let go rather than drag it through
-			if (this.physics.holdError(this.held.prop) > 0.45) this.drop();
+			// (after it has had time to travel from where it was picked up)
+			if (this.held.age > 0.6 && this.physics.holdError(this.held.prop) > 0.45) this.drop(false);
 		}
 		// hover feedback on the crosshair
 		if (this.mode === 'walk' && document.pointerLockElement === this.dom) {

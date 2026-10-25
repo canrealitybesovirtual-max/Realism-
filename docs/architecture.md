@@ -32,7 +32,9 @@ src/
   interaction/
     shared.ts             walkable area, desk mouse, single pointer-owner lock
     desktop.ts            pointer-lock walking, use-the-computer mode, grab/throw
-    xr.ts                 controllers, ray/poke/grab, desk mouse, teleport, snap turn
+    xr.ts                 controllers, ray/poke/grab, desk mouse, smooth walking, snap turn
+    handModel.ts          procedural skinned hand (20 bones, WebXR joint convention), named poses
+    xrHands.ts            hand placement, pose animation from input/context, object grasps
   dev/emulator.ts         IWER virtual Quest 3, loaded only with ?emulate
 scripts/
   gen-textures.mjs        procedural PBR texture sets (concrete, plaster, oak, fabric, mesh)
@@ -107,3 +109,19 @@ Rapier (compat WASM build) steps at a fixed 120 Hz with an accumulator and inter
 - When the right ray points at the monitor, its stick scrolls instead of turning.
 - Head pose comes from the scene camera inside the rig, never from `renderer.xr.getCamera().getWorldPosition()`, which drops the rig transform.
 - Controller models come from the WebXR input-profiles CDN. A built-in model is shown when that is unreachable.
+
+## Hands
+
+`HandModel` builds one smooth skinned mesh: a lofted palm, finger tubes blended across the joints, fingernails, and a forearm that dithers out.
+
+- **Skeleton:** 20 bones that use the WebXR hand-joint frame (−Z along the bone, +Y out of the back of the hand). The same rig therefore takes either named poses (joint flexion in degrees) or tracked joint matrices.
+- **Controller-driven hands:** `XRHand` places the wrist at a fixed offset from the controller's target ray, then eases (about 60 ms) toward a target pose:
+  - Fingers wrap the handle, and the grip closes them to a fist.
+  - The index finger follows the analog trigger.
+  - The thumb lifts off when it isn't touching the stick or face buttons.
+  - The index extends near the keyboard, the screen or a pointed-at key.
+  - While holding something, the hand switches to that object's grasp pose.
+- **Grasps:** `graspFor()` derives where an object sits in the hand from the posed hand itself, such as thumb and index tips for the pen, or the curled middle phalanges for the mug handle. Objects with an obvious upright stay level while the controller is level. A grabbed object eases from where you grabbed it into that grasp over 0.25 s, driven by physics, so walls still block it.
+- **Desk mouse:** while you hold it, the hand is placed on the mouse rather than at the controller.
+- **Hand tracking:** the skeleton copies the tracked joint matrices. A thumb–index pinch (closes under 1.5 cm, opens over 3 cm) acts as trigger and grip. Grabs use the pinch point, and held objects keep their offset from the tracked wrist.
+- **Desktop mode:** a right hand appears low in the view while you carry something.

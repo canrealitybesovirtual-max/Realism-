@@ -15,16 +15,18 @@ npm run dev          # http://localhost:5173  (use https / a tunnel for a headse
 |---|---|
 | Look | Click the view to capture the mouse, then move it |
 | Walk | W A S D (Shift = faster) |
-| Pick up / drop / throw | Click or **E** on the mug, notebook or pen. Mouse wheel changes the holding distance |
+| Pick up / drop / throw | Click or **E** on the mug, notebook or pen; a hand appears holding it. Mouse wheel changes the holding distance |
 | Use the computer | Click the monitor. The mouse now drives the on-screen cursor (and the desk mouse); typing goes to the computer and animates the 3D keys |
 | Stop using the computer | **Esc** |
 
 **VR (WebXR headset)**
 
+Your controllers appear as animated hands. Fingers follow the trigger, grip and thumb rest, and the index finger extends near the keyboard and screen. Held objects settle into a natural grasp: pen in a pinch, fingers through the mug handle, thumb over the notebook, palm on the mouse. Quest hand tracking also works without controllers: your fingers drive the hand, a pinch clicks and grabs, and your fingertip types. Add `?controllers` to the URL to see plain controller models instead.
+
 | Action | Input |
 |---|---|
 | Click on the monitor | Point the controller at the screen and pull the trigger. The stick scrolls |
-| Type | Poke the keys of the 3D keyboard with the tip of the controller (haptic tick on each press). Or point at a key and pull the trigger. Shift, Ctrl and Caps are sticky: tap Shift, then a letter |
+| Type | Poke the keys of the 3D keyboard with the hand's index fingertip (haptic tick on each press). Or point at a key and pull the trigger. Shift, Ctrl and Caps are sticky: tap Shift, then a letter |
 | Use the mouse | Grab the desk mouse (grip) and slide it on the pad. Trigger clicks while holding it |
 | Pick up | Grip near an object, or point at it within 1.2 m and grip / trigger. Release to drop or throw |
 | Walk | Left stick: smooth walking in the direction you look (walls and furniture stop you; edges dim slightly while moving, for comfort). Works while holding things |
@@ -39,6 +41,8 @@ URL options:
 | `?view=seated` | Fixed viewpoint (see `src/views.ts`) |
 | `?emulate` | Virtual Quest 3 via IWER, for testing without a headset |
 | `?noao` | Skip the AO bake |
+| `?controllers` | Show controller models instead of hands in VR |
+| `?handpreview=fist,point` | Development: hands in named poses on the desk |
 
 ## The computer
 
@@ -53,8 +57,8 @@ A canvas-rendered desktop (menu bar, dock, draggable windows) with four apps:
 
 ```
 npm run typecheck
-npm test                         # 23 unit tests: editor, calculator, window manager, key layout, physics
-npm run dev & node scripts/e2e.mjs        # 23 browser checks, desktop + emulated Quest 3 WebXR
+npm test                         # 33 unit tests: editor, calculator, window manager, key layout, physics, hands and grasps
+npm run dev & node scripts/e2e.mjs        # 28 browser checks, desktop + emulated Quest 3 WebXR
 npm run dev & npm run shots               # renders the fixed viewpoints to ./shots
 npm run dev & node scripts/metrics.mjs    # draw calls, triangles, CPU ms per frame
 npm run textures                 # regenerate the procedural PBR textures
