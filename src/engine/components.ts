@@ -214,3 +214,8 @@ defineComponent({
 	type: 'Graph', label: 'Script graph', description: 'Runs a node graph with this entity as "Self".',
 	fields: { graph: { kind: 'string', default: '' } },
 });
+
+defineComponent({
+	type: 'Script', label: 'Script', description: 'Runs a JavaScript behaviour (edit it in the Code app). Hot-reloads when you apply changes while playing.',
+	fields: { script: { kind: 'string', default: '' } },
+});

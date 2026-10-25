@@ -5,6 +5,7 @@ import { readTRS } from './entities';
 import { COMPONENTS, defaults, validateComponent, type Data } from './components';
 import { validateGraph, type GraphDoc } from './graph';
 import type { Gameplay } from './gameplay';
+import { validateScriptDoc, type ScriptDoc } from './scripts';
 import { type Command, applyTRS, makeMaterialUnique, setLight, setMaterial, setPhysics, rename, type MatKey, type PhysKey } from './commands';
 
 /**
@@ -25,7 +26,8 @@ export type Op =
 	| { op: 'delete'; id: string }
 	| { op: 'spawn'; id: string; spec: SpawnSpec; to: TRS; color: string }
 	| { op: 'comp'; id: string; ctype: string; data: Data | null }
-	| { op: 'graph'; id: string; graph: GraphDoc | null };
+	| { op: 'graph'; id: string; graph: GraphDoc | null }
+	| { op: 'script'; id: string; script: ScriptDoc | null };
 
 export interface OpContext { world: EntityWorld; physics: Physics | null; scene: THREE.Scene; onMoved?(e: Entity): void; gameplay?: Gameplay }
 
@@ -42,6 +44,10 @@ export function validateOp(o: any, w: EntityWorld): string | null {
 		if (o.graph === null) return null;
 		const why = validateGraph(o.graph);
 		return why ?? (o.graph.id === o.id ? null : 'graph id mismatch');
+	}
+	if (o.op === 'script') {
+		if (!/^[\w-]{1,40}$/.test(o.id)) return 'bad script id';
+		return o.script === null ? null : validateScriptDoc(o.script, o.id);
 	}
 	const e = w.get(o.id);
 	if (o.op !== 'spawn' && !e) return `unknown entity ${o.id}`;
@@ -131,6 +137,14 @@ export function opToCommand(o: Op, ctx: OpContext): Command {
 			const before = prev ? structuredClone(prev) : null;
 			const set = (g: GraphDoc | null) => { if (g) graphs.set(o.id, structuredClone(g)); else graphs.delete(o.id); w.version++; ctx.gameplay?.refresh({ graph: o.id }); };
 			return { label: o.graph === null ? `Delete graph ${prev?.name ?? o.id}` : `${prev ? 'Edit' : 'New'} graph ${o.graph.name}`, live: true, do() { set(o.graph); }, undo() { set(before); } };
+		}
+		case 'script': {
+			const scripts = ctx.gameplay?.scripts;
+			if (!scripts) throw new Error('scripts are unavailable');
+			const prev = scripts.get(o.id);
+			const before = prev ? { ...prev } : null;
+			const set = (d: ScriptDoc | null) => { if (d) scripts.set(o.id, { ...d }); else scripts.delete(o.id); w.version++; ctx.gameplay?.refresh({ script: o.id }); };
+			return { label: o.script === null ? `Delete script ${prev?.name ?? o.id}` : `${prev ? 'Edit' : 'New'} script ${o.script.name}`, live: true, do() { set(o.script); }, undo() { set(before); } };
 		}
 		case 'delete': {
 			const ent = e!;
@@ -223,7 +237,7 @@ const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
  */
 export function compactOps(ops: Op[]): Op[] {
 	const out: Op[] = [];
-	const key = (o: Op) => o.op === 'trs' ? `trs|${o.id}` : o.op === 'mat' ? `mat|${o.id}|${o.mi}|${o.key}` : o.op === 'light' ? `light|${o.id}|${o.li}|${o.key}` : o.op === 'phys' ? `phys|${o.id}|${o.key}` : o.op === 'static' ? `static|${o.id}` : o.op === 'rename' ? `rename|${o.id}` : o.op === 'comp' ? `comp|${o.id}|${o.ctype}` : o.op === 'graph' ? `graph|${o.id}` : null;
+	const key = (o: Op) => o.op === 'trs' ? `trs|${o.id}` : o.op === 'mat' ? `mat|${o.id}|${o.mi}|${o.key}` : o.op === 'light' ? `light|${o.id}|${o.li}|${o.key}` : o.op === 'phys' ? `phys|${o.id}|${o.key}` : o.op === 'static' ? `static|${o.id}` : o.op === 'rename' ? `rename|${o.id}` : o.op === 'comp' ? `comp|${o.id}|${o.ctype}` : o.op === 'graph' ? `graph|${o.id}` : o.op === 'script' ? `script|${o.id}` : null;
 	const last = new Map<string, number>();
 	for (const o of ops) {
 		// after "make unique" the material index points at a new material: do not
