@@ -43,6 +43,9 @@ export class StudioApp implements App {
 	openLogic: ((graphId: string) => void) | null = null;
 	/** set by main: make a starter graph, returns its id */
 	makeGraph: (() => string | null) | null = null;
+	/** set by main: open the Code app on a script / make a starter script */
+	openCode: ((scriptId: string) => void) | null = null;
+	makeScript: (() => string | null) | null = null;
 	private matIndex = 0;
 	private text: { id: string; value: string; commit: (s: string) => void } | null = null;
 	private confirm: { msg: string; yes: () => void } | null = null;
@@ -455,6 +458,11 @@ export class StudioApp implements App {
 						this.button(c, 'Edit in Logic', X + 166, y, 150, 30, () => this.openLogic?.(String(comp.data.graph)), false, !!comp.data.graph);
 						y += 40;
 					}
+					if (comp.type === 'Script') {
+						this.button(c, 'New script', X + 28, y, 130, 30, () => this.newScriptFor(e));
+						this.button(c, 'Edit in Code', X + 166, y, 150, 30, () => this.openCode?.(String(comp.data.script)), false, !!comp.data.script);
+						y += 40;
+					}
 				}
 				y += 6;
 			}
@@ -583,6 +591,12 @@ export class StudioApp implements App {
 		const comp = e.components.find((c) => c.type === 'Graph');
 		this.ed.apply({ op: 'comp', id: e.id, ctype: 'Graph', data: { ...(comp?.data ?? {}), graph: id } });
 		this.openLogic?.(id);
+	}
+	private newScriptFor(e: Entity) {
+		const id = this.makeScript?.();
+		if (!id) return;
+		this.ed.apply({ op: 'comp', id: e.id, ctype: 'Script', data: { script: id } });
+		this.openCode?.(id);
 	}
 	private askDelete() {
 		const r = this.ed.delete(false);

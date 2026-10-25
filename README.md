@@ -100,12 +100,20 @@ A canvas-rendered desktop (menu bar, dock, draggable windows) with four apps:
 - **Sketch:** draw with the mouse or a controller.
 - **System:** live renderer and XR statistics.
 
+It also carries the engine tools, which edit the running game you are standing in (details in [docs/engine.md](docs/engine.md)):
+
+- **Studio:** hierarchy, live viewport, inspector, components, play / pause / step / stop, undo, save / load / autosave recovery. In the world: click (desktop) or trigger (VR) selects; G or squeeze carries.
+- **Logic:** node graphs with typed ports and live debugging, attached to objects with a *Script graph* component.
+- **Code:** JavaScript scripts on objects, checked as you type and hot-reloaded when you Apply (Ctrl+S) while playing. With `npm run dev` it also edits the project's own source files, through a guarded dev-server API (allowlist, confirmation, conflict check, checkpoints and restore), and runs the real type check and unit tests. In the published page the project side says it is unavailable.
+
 ## Checks
 
 ```
 npm run typecheck
-npm test                         # 35 unit tests: editor, calculator, window manager, key layout, physics, hands and grasps (incl. the pistol grip fit)
-npm run dev & node scripts/e2e.mjs        # 34 browser checks, desktop + emulated Quest 3 WebXR
+npm test                         # 65 unit tests: engine ops/undo/save, components, graphs, scripts, diff/highlighter, editor, calculator, window manager, physics, hands and grasps
+npm run dev & node scripts/e2e.mjs        # 36 browser checks, desktop + emulated Quest 3 WebXR
+npm run dev & node scripts/e2e-studio.mjs # 16 editor checks (world tools on desktop and in VR, runtime, save/load)
+npm run dev & node scripts/e2e-code.mjs   # code workstation through the computer's own input, incl. project files on the dev server
 npm run dev & npm run shots               # renders the fixed viewpoints to ./shots
 npm run dev & node scripts/metrics.mjs    # draw calls, triangles, CPU ms per frame
 npm run textures                 # regenerate the procedural PBR textures

@@ -22,6 +22,7 @@ import { EditorViewport } from './engine/viewport';
 import { WorldTool } from './engine/worldTool';
 import { StudioApp } from './computer/studioApp';
 import { LogicApp } from './computer/logicApp';
+import { CodeApp } from './computer/codeApp';
 import { log } from './engine/log';
 import { Gameplay } from './engine/gameplay';
 import { Pistol } from './world/pistol';
@@ -81,6 +82,7 @@ let runtime: Runtime | undefined;
 let editor: Editor | undefined;
 let viewport: EditorViewport | undefined;
 let gameplay: Gameplay | undefined;
+let codeApp: CodeApp | undefined;
 log.capture();
 
 function setView(name: string) {
@@ -202,6 +204,10 @@ async function init() {
 		computer.os.registerApp(logic);
 		studio.openLogic = (id) => { logic.graphId = id; computer.os.openApp('logic'); };
 		studio.makeGraph = () => logic.newGraph();
+		const code = codeApp = new CodeApp(computer.os, editor, gameplay);
+		computer.os.registerApp(code);
+		studio.openCode = (id) => { code.openScript(id); computer.os.openApp('workbench'); };
+		studio.makeScript = () => code.newScript();
 		targets.editorTool = new WorldTool(editor, scene, ws.monitor.screen, camera);
 		log.info(`Engine: ${world.list.length} entities registered`);
 	}
@@ -231,7 +237,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
