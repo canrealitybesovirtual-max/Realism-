@@ -25,7 +25,9 @@ await p.evaluate(() => {
     d.position.set(local.x, local.y, local.z); d.quaternion.set(q.x, q.y, q.z, q.w);
   };
   window.__btn = (hand, name, v) => window.__iwer.controllers[hand].updateButtonValue(name, v);
-  s.computer.os.apps.get('door').pointerDown(800, 300, { x: 0, y: 0, w: 1180, h: 760 });
+  // pick the rally card by id (the Door app has several destinations)
+  const door = s.computer.os.apps.get('door'), r = { x: 0, y: 0, w: 1180, h: 760 }, k = door.cards(r).find((c) => c.d.id === 'rally');
+  door.pointerDown(k.x + k.w / 2, k.y + k.h / 2, r);
 });
 const press = async (hand, name) => { await p.evaluate(([h, n]) => window.__btn(h, n, 1), [hand, name]); await frames(3); await p.evaluate(([h, n]) => window.__btn(h, n, 0), [hand, name]); await frames(2); };
 // stand a metre from the door, facing it
