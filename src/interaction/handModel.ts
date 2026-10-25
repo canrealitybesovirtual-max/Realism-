@@ -45,6 +45,8 @@ export const POSES = {
 	mugHandle: P([8, 18, 14, 20], [62, 88, 52], [66, 92, 56], [70, 92, 54], [64, 76, 42], 0),
 	/** flat thumb-over-fingers grip on a book cover */
 	book: P([34, 52, 8, 4], [18, 14, 6], [20, 16, 6], [22, 18, 8], [24, 20, 10], 2),
+	/** pistol grip: three fingers wrapped round the grip, index on the trigger, thumb along the frame */
+	pistolGrip: P([22, 30, 18, 10], [24, 32, 14], [78, 92, 50], [82, 92, 50], [84, 88, 48], 0),
 	/** palm resting over a mouse, index/middle on the buttons */
 	mouse: P([4, 30, 12, 10], [22, 22, 12], [24, 24, 12], [34, 36, 18], [40, 40, 20], 5),
 } satisfies Record<string, HandPose>;

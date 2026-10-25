@@ -34,3 +34,15 @@ export function penDesc(object: THREE.Object3D): PropDesc {
 		shapes: [{ kind: 'capsuleX', size: [0.0049, 0.066] }],
 	};
 }
+
+export function pistolDesc(object: THREE.Object3D): PropDesc {
+	// slide/barrel block plus the grip; ~0.95 kg loaded (Walther P38: 0.8 kg empty)
+	return {
+		name: 'pistol', object, mass: 0.95, friction: 0.6, restitution: 0.08,
+		angularDamping: 0.6,
+		shapes: [
+			{ kind: 'cuboid', size: [0.016, 0.019, 0.105], offset: [0, 0.062, -0.065] },
+			{ kind: 'cuboid', size: [0.015, 0.042, 0.026], offset: [0, -0.003, 0.016] }, // grip bottom at y = -0.045
+		],
+	};
+}

@@ -19,6 +19,9 @@ src/
     lighting.ts           HDRI sky dome, sun, window area light, RoomProbe (multi-bounce)
     workstation.ts        places all furniture/props/assets at real positions
     furniture/*.ts        desk, chair, monitor, keyboard, mouse, PC, sideboard, props
+    pistol.ts             CC0 pistol: slide split + animation, ammo, recoil transform
+    gunEffects.ts         shot audio, muzzle flash, hit decals and dust, physical brass
+    pistolSystem.ts       ties the pistol to its physics body and the effects
   computer/
     keyLayout.ts          ANSI TKL layout shared by 3D keyboard, animation and VR typing
     textBuffer.ts         editor model (pure, unit-tested)
@@ -125,3 +128,11 @@ Rapier (compat WASM build) steps at a fixed 120 Hz with an accumulator and inter
 - **Desk mouse:** while you hold it, the hand is placed on the mouse rather than at the controller.
 - **Hand tracking:** the skeleton copies the tracked joint matrices. A thumb–index pinch (closes under 1.5 cm, opens over 3 cm) acts as trigger and grip. Grabs use the pinch point, and held objects keep their offset from the tracked wrist.
 - **Desktop mode:** a right hand appears low in the view while you carry something.
+
+## Pistol
+
+- **Model:** Poly Haven's CC0 Service Pistol (Walther P38 pattern), real scale. The slide is separated from the single scanned mesh by geometry (triangles above the frame rail and behind the exposed barrel) so it can cycle 22 mm per shot and lock back when empty.
+- **Physics:** a 0.95 kg body made of two cuboids (slide and grip). It rests, falls and is thrown like the other props. Each shot pushes the gun back 0.15 N·s.
+- **Shots:** hitscan from the muzzle along the bore, or along the view in desktop mode. A prop that is hit takes a 1.4 N·s impulse at the hit point. Any other surface gets a decal (a bullet hole, or a crack on glass and the monitor) and a dust puff. Casings eject from the port as real Rapier bodies.
+- **Feedback:** spatial audio for the shot, dry fire and magazine out/in; a muzzle flash sprite with a brief point light; haptics; and recoil. Recoil is a transform about the grip (9° muzzle rise, 2.5 cm back) applied to the hold target, so the hand and gun kick together.
+- **Hands:** the `pistolGrip` pose wraps three fingers round the grip, with the index on the trigger following the analog value. The grasp aligns the bore with the controller ray, so aiming happens where you point.

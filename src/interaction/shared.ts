@@ -93,6 +93,8 @@ export class PointerOwner {
 }
 
 export interface InteractionTargets {
+	/** the pistol, when loaded */
+	gun?: import('../world/pistolSystem').PistolSystem;
 	screen: THREE.Mesh;
 	keycaps: THREE.Mesh;
 	computer: Computer;

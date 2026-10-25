@@ -207,6 +207,35 @@ const frames = (page, n) => page.evaluate((n) => new Promise((r) => { let i = 0;
 	const dropped = await page.evaluate(() => { const p = window.__studio.physics.props[0]; const t = p.body.translation(); const v = p.body.linvel(); return { held: p.held, y: t.y, v: Math.hypot(v.x, v.y, v.z) }; });
 	check('xr: released mug falls and comes to rest on a surface', !dropped.held && dropped.y < lifted - 0.1 && dropped.y > -0.01 && dropped.v < 0.05, JSON.stringify(dropped));
 
+	// 3b. pick up the pistol from the sideboard, fire at the wall, empty it, reload
+	const gun0 = await page.evaluate(() => { const t = window.__studio.gun.prop.body.translation(); return [t.x, t.y, t.z]; });
+	await page.evaluate((g) => window.__aim('right', [g[0] - 0.3, g[1] + 0.3, g[2]], [g[0], g[1] + 0.02, g[2]]), gun0);
+	await frames(page, 3);
+	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('squeeze', 1));
+	await frames(page, 3);
+	const gunHeld = await page.evaluate(() => { const h = window.__studio.xr.hands.find((x) => x.source?.handedness === 'right'); return { held: window.__studio.gun.prop.held, kind: h.held?.kind }; });
+	check('xr: squeeze at the pistol picks it up in a pistol grip', gunHeld.held && gunHeld.kind === 'pistol', JSON.stringify(gunHeld));
+	// raise it and point at the wall behind the sideboard (+X)
+	await page.evaluate((g) => window.__aim('right', [g[0] - 0.35, 1.25, g[2]], [3.5, 1.25, g[2]]), gun0);
+	await frames(page, 40);
+	const aimErr = await page.evaluate(() => { const s = window.__studio; const g = s.gun.pistol; g.group.updateMatrixWorld(true); const f = g.forwardWorld(); return Math.acos(Math.min(1, f.x)) * 180 / Math.PI; });
+	check('xr: held pistol\'s barrel lines up with the controller ray (< 6°)', aimErr < 6, `${aimErr.toFixed(1)}°`);
+	const pull = async () => { await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 1)); await frames(page, 3); await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 0)); await frames(page, 14); };
+	await pull();
+	const shot1 = await page.evaluate(() => { const g = window.__studio.gun; return { ammo: g.pistol.ammo, fired: g.shotsFired, hit: g.lastShot?.hit ?? null, held: g.prop.held, x: g.lastShot?.point?.x }; });
+	check('xr: trigger fires one round and the bullet hits the wall', shot1.ammo === 7 && shot1.fired === 1 && shot1.hit && shot1.x > 2.0 && shot1.held, JSON.stringify(shot1));
+	for (let i = 0; i < 8; i++) await pull();
+	const dry = await page.evaluate(() => { const g = window.__studio.gun; return { ammo: g.pistol.ammo, fired: g.shotsFired }; });
+	check('xr: magazine holds 8 rounds, then the trigger only clicks', dry.ammo === 0 && dry.fired === 8, JSON.stringify(dry));
+	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('a-button', 1));
+	await frames(page, 3);
+	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('a-button', 0));
+	await frames(page, 90);
+	const reloaded = await page.evaluate(() => window.__studio.gun.pistol.ammo);
+	check('xr: A button reloads a full magazine', reloaded === 8, String(reloaded));
+	await page.evaluate(() => window.__iwer.controllers.right.updateButtonValue('squeeze', 0));
+	await frames(page, 30);
+
 	// 4. snap turn with the right stick
 	await page.evaluate(() => window.__aim('right', [1.5, 1.0, 1.5], [1.5, 1.0, 3])); // point away from everything
 	await frames(page, 2);

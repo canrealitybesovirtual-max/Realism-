@@ -7,7 +7,8 @@ import { HandModel, POSES, blendPose, type HandPose } from './handModel';
  * context, and where a held object sits in the hand.
  */
 
-export type GraspKind = 'mug' | 'notebook' | 'pen';
+export type GraspKind = 'mug' | 'notebook' | 'pen' | 'pistol';
+export const GRASP_KINDS: readonly GraspKind[] = ['mug', 'notebook', 'pen', 'pistol'];
 
 export interface HandInputs {
 	trigger: number; // 0..1 analog
@@ -24,7 +25,7 @@ export interface HandContext {
 // Wrist pose in the controller's target-ray space (-Z forward, +Y up when the
 // controller is held level). Quest-style grip: the handle sits in the palm
 // tilted ~40 degrees, the back of the hand faces outward, the thumb on top.
-function rayToWrist(handedness: 'left' | 'right'): THREE.Matrix4 {
+export function rayToWrist(handedness: 'left' | 'right'): THREE.Matrix4 {
 	const s = handedness === 'right' ? 1 : -1;
 	const fingers = new THREE.Vector3(0, -0.45, -0.89).normalize(); // hand -Z, ~27 deg below the ray
 	const dorsal = new THREE.Vector3(0.93 * s, 0.32, -0.1); // hand +Y
@@ -45,6 +46,12 @@ function mouseToWrist(handedness: 'left' | 'right'): THREE.Matrix4 {
 
 /** Object pose in wrist space for a natural grip, derived from the posed hand itself. */
 function computeGrasp(kind: GraspKind, handedness: 'left' | 'right'): THREE.Matrix4 {
+	if (kind === 'pistol') {
+		// The barrel lines up with the controller's pointing ray (what people
+		// expect when aiming), the grip sits in the palm under the ray origin.
+		const inRay = new THREE.Matrix4().makeTranslation(0, -0.03, 0.035);
+		return rayToWrist(handedness).invert().multiply(inRay);
+	}
 	const h = new HandModel(handedness);
 	h.setPose(kind === 'mug' ? POSES.mugHandle : kind === 'notebook' ? POSES.book : POSES.pinch);
 	h.root.updateMatrixWorld(true);
@@ -128,6 +135,11 @@ export class XRHand {
 		if (ctx.holding === 'mug') blendPose(POSES.mugHandle, POSES.mugHandle, 0, t);
 		else if (ctx.holding === 'notebook') blendPose(POSES.book, POSES.book, 0, t);
 		else if (ctx.holding === 'pen') blendPose(POSES.pinch, POSES.pinch, 0, t);
+		else if (ctx.holding === 'pistol') {
+			blendPose(POSES.pistolGrip, POSES.pistolGrip, 0, t);
+			// trigger finger squeezes with the analog trigger
+			t.index[0] += input.trigger * 16; t.index[1] += input.trigger * 26; t.index[2] += input.trigger * 12;
+		}
 		else if (ctx.holding === 'mouse') {
 			blendPose(POSES.mouse, POSES.mouse, 0, t);
 			// clicking presses the index finger down onto the left button
