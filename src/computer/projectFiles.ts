@@ -11,6 +11,8 @@ export interface SearchHit { path: string; line: number; text: string }
 export class ProjectFiles {
 	state: 'checking' | 'ready' | 'unavailable' = 'checking';
 	canWrite = false;
+	/** the dev server has an API key in its environment for the Claude agent */
+	agent = false;
 	tasks: Record<string, string> = {};
 	private token = '';
 	files: FileEntry[] = [];
@@ -21,7 +23,7 @@ export class ProjectFiles {
 			const r = await fetch('/__studio/session', { headers: { 'x-studio': '1' } });
 			if (!r.ok || !(r.headers.get('content-type') ?? '').includes('json')) throw new Error('no dev server');
 			const s = await r.json();
-			this.token = s.token; this.canWrite = !!s.canWrite; this.tasks = s.tasks ?? {};
+			this.token = s.token; this.canWrite = !!s.canWrite; this.agent = !!s.agent; this.tasks = s.tasks ?? {};
 			this.state = 'ready';
 			await this.refresh();
 		} catch {
@@ -48,6 +50,7 @@ export class ProjectFiles {
 	checkpoint(id: string) { return this.call<Checkpoint & { text: string }>('checkpoint?id=' + id); }
 	restore(id: string) { return this.call<{ path: string; hash: string; checkpoint: string }>('restore', { method: 'POST', body: { id } }); }
 	search(q: string) { return this.call<{ hits: SearchHit[] }>('search?q=' + encodeURIComponent(q)).then((r) => r.hits); }
+	askClaude(request: string, context: string) { return this.call<{ text: string; truncated: boolean; model: string }>('agent', { method: 'POST', body: { request, context } }); }
 	run(task: string) { return this.call<TaskResult>('run', { method: 'POST', body: { task } }); }
 }
 

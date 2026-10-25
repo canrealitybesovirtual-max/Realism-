@@ -5,6 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { hashText } from '../src/engine/codeTools';
+import { buildPrompt } from '../src/engine/agentPrompt';
 
 /**
  * The code workstation's bridge to project files, for the local dev server
@@ -22,7 +23,12 @@ import { hashText } from '../src/engine/codeTools';
  * - the only commands are the type check and the unit tests, run without a
  *   shell, one at a time, with a time limit; their real output is returned;
  * - writes and commands only from this machine (loopback) unless
- *   STUDIO_ALLOW_LAN=1 - the headset on the LAN can browse and read.
+ *   STUDIO_ALLOW_LAN=1 - the headset on the LAN can browse and read;
+ * - the Claude agent route: the page sends a request + scene context, this
+ *   server calls the Messages API with ANTHROPIC_API_KEY from ITS
+ *   environment (the key never reaches the browser) and returns Claude's
+ *   text. It runs nothing: the page turns the reply into a proposal that
+ *   the person must approve.
  * Cross-site pages cannot use it: requests need a custom header (CORS
  * preflight, never answered) and the token is only readable same-origin.
  */
@@ -39,6 +45,23 @@ export function studioServer(): Plugin {
 	const token = crypto.randomBytes(18).toString('hex');
 	let root = process.cwd();
 	let running: string | null = null;
+	let agentBusy = false;
+	const hasKey = () => !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+	async function askClaude(prompt: string) {
+		const { default: Anthropic } = await import('@anthropic-ai/sdk');
+		const client = new Anthropic(); // reads ANTHROPIC_API_KEY from this process's environment
+		const r = await client.beta.messages.create({
+			model: 'claude-opus-5-5',
+			max_tokens: 16000,
+			output_config: { effort: 'high' },
+			betas: ['server-side-fallback-2026-07-01'],
+			fallbacks: 'default',
+			messages: [{ role: 'user', content: prompt }],
+		});
+		if (r.stop_reason === 'refusal') throw new Error('Claude declined this request');
+		const text = r.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
+		return { text, truncated: r.stop_reason === 'max_tokens', model: r.model };
+	}
 	const histDir = () => path.join(root, '.studio', 'history');
 
 	/** project-relative path if allowed, else null */
@@ -118,7 +141,7 @@ export function studioServer(): Plugin {
 		const route = url.pathname.replace(/^\/+/, '');
 		// same-origin only: a custom header is required (cross-site pages would need a CORS preflight, which is never answered)
 		if (req.headers['x-studio'] !== '1') return send(res, 403, { error: 'missing x-studio header' });
-		if (route === 'session') return send(res, 200, { token, canWrite: local(req), tasks: Object.fromEntries(Object.entries(TASKS).map(([k, v]) => [k, v.label])) });
+		if (route === 'session') return send(res, 200, { token, canWrite: local(req), agent: hasKey(), tasks: Object.fromEntries(Object.entries(TASKS).map(([k, v]) => [k, v.label])) });
 		if (req.headers['x-studio-token'] !== token) return send(res, 403, { error: 'bad or missing session token (reload the page)' });
 
 		if (req.method === 'GET' && route === 'files') return send(res, 200, { files: await listFiles() });
@@ -177,6 +200,16 @@ export function studioServer(): Plugin {
 			const cp = await checkpoint(rel, current, `before restoring ${b.id}`);
 			await fs.writeFile(abs, d.text);
 			return send(res, 200, { path: rel, hash: hashText(d.text), checkpoint: cp });
+		}
+		if (route === 'agent') {
+			if (!hasKey()) return send(res, 503, { error: 'ANTHROPIC_API_KEY is not set in the dev server\'s environment' });
+			if (typeof b.request !== 'string' || !b.request.trim() || b.request.length > 4000) return send(res, 400, { error: 'request missing or too long' });
+			if (typeof b.context !== 'string' || b.context.length > 200_000) return send(res, 400, { error: 'context missing or too large' });
+			if (agentBusy) return send(res, 409, { error: 'Claude is already working on a request' });
+			agentBusy = true;
+			try { return send(res, 200, await askClaude(buildPrompt(b.request, b.context))); }
+			catch (e) { return send(res, 502, { error: (e as Error).message }); }
+			finally { agentBusy = false; }
 		}
 		if (route === 'run') {
 			if (!TASKS[b.task]) return send(res, 400, { error: `only these can run: ${Object.keys(TASKS).join(', ')}` });

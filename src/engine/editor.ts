@@ -36,7 +36,7 @@ export class Editor {
 	constructor(readonly world: EntityWorld, readonly runtime: Runtime, private ctx: OpContext, private scene: THREE.Scene) {
 		try { this.storage = window.localStorage; } catch { this.storage = null; }
 		this.history.onChange = () => this.scheduleAutosave();
-		this.history.onEvict = (c) => { const op = (c as any).op as Op | undefined; if (op) this.committed.push(op); };
+		this.history.onEvict = (c) => { const op = (c as any).op as Op | undefined; if (op) this.committed.push(op); if ((c as any).ops) this.committed.push(...(c as any).ops); };
 		runtime.onChange = (m) => { this.worldTool = m === 'edit'; };
 	}
 
@@ -56,13 +56,46 @@ export class Editor {
 		return ok;
 	}
 
+	/**
+	 * Several ops as one transaction (agent proposals, imports): each op is
+	 * validated against the scene as the earlier ones left it; if any is
+	 * refused or fails, everything already applied is undone and nothing
+	 * stays. On success it is a single undo step.
+	 */
+	applyBatch(ops: Op[], label: string): { ok: true } | { ok: false; index: number; why: string } {
+		let fail: { index: number; why: string } | null = null;
+		let done: Command[] = [];
+		const ctx = this.ctx, world = this.world;
+		const batch: Command & { ops: Op[] } = {
+			label, live: true, ops,
+			do() {
+				done = [];
+				for (let i = 0; i < ops.length; i++) {
+					const why = validateOp(ops[i], world);
+					if (why) { fail = { index: i, why }; break; }
+					try { const c = opToCommand(ops[i], ctx); c.do(); done.push(c); if (!c.live) batch.note = c.note; }
+					catch (err) { fail = { index: i, why: (err as Error).message }; break; }
+				}
+				if (fail) {
+					for (const c of done.reverse()) { try { c.undo(); } catch { /* best effort */ } }
+					done = [];
+					throw new Error(`step ${fail.index + 1} (${ops[fail.index]?.op}): ${fail.why} - nothing was changed`);
+				}
+			},
+			undo() { for (const c of [...done].reverse()) c.undo(); },
+		};
+		const ok = this.history.run(batch);
+		this.selectionVersion++;
+		return ok ? { ok: true } : { ok: false, ...(fail ?? { index: -1, why: 'failed' }) };
+	}
+
 	undo() { this.history.undo(); this.selectionVersion++; }
 	redo() { this.history.redo(); this.selectionVersion++; }
 
 	/** the scene as data: everything applied since load */
 	ops(): Op[] {
-		const live = (this.history as any).done as (Command & { op?: Op })[];
-		return compactOps([...this.committed, ...live.map((c) => c.op).filter((o): o is Op => !!o)]);
+		const live = (this.history as any).done as (Command & { op?: Op; ops?: Op[] })[];
+		return compactOps([...this.committed, ...live.flatMap((c) => c.ops ?? (c.op ? [c.op] : []))]);
 	}
 
 	// ------------------------------------------------------------------ selection

@@ -37,8 +37,8 @@ await S(() => {
 });
 
 // 1. new script from the sidebar, attached to the selected mug
-const made = await S(() => { const s = window.__studio; const n = s.gameplay.scripts.size; window.__os.click(150, 56 + 10 + 42 + 17); return { n0: n, n1: s.gameplay.scripts.size, text: window.__os.text(), dbg: { st: s.code.status, side: s.code.side, hl: s.code.hits.map((h) => [h.x, h.y, h.w, h.h].join(",")).join(" "), hits: s.code.hits.length, cur: s.computer.os.cursor, foc: s.computer.os.wm.focused?.app, wins: s.computer.os.wm.windows.map((w) => w.app + ":" + w.x + "," + w.y) } }; });
-check('“+ New script” makes a script and opens it in the editor', made.n1 === made.n0 + 1 && /function update/.test(made.text ?? ''), JSON.stringify({ n0: made.n0, n1: made.n1, dbg: made.dbg }));
+const made = await S(() => { const s = window.__studio; const n = s.gameplay.scripts.size; window.__os.click(150, 56 + 10 + 42 + 17); return { n0: n, n1: s.gameplay.scripts.size, text: window.__os.text() }; });
+check('“+ New script” makes a script and opens it in the editor', made.n1 === made.n0 + 1 && /function update/.test(made.text ?? ''), JSON.stringify({ n0: made.n0, n1: made.n1 }));
 await S(() => { const s = window.__studio; s.runtime.stop(); s.editor.select(s.editor.world.get('mug')); });
 const attached = await S(() => { const ok = window.__os.button('Attach to selected'); const e = window.__studio.editor.world.get('mug'); return ok && e.components.some((c) => c.type === 'Script'); });
 check('“Attach to selected” adds a Script component to the mug', attached);
@@ -53,13 +53,13 @@ const banned = await S(() => { window.__os.draw(); return window.__studio.code.c
 check('page globals (window) are flagged as errors in the editor', banned?.severity === 'error' && /window/.test(banned.message), JSON.stringify(banned));
 
 // 3. a working script, applied while playing -> hot reload in the running game
-await S(() => { window.__studio.runtime.play(); window.__os.key('KeyA', 'a', { ctrl: true }); window.__os.type("function start() {\napi.state.n = (api.state.n || 0) + 1;\nself.setColor('#ff00ff');\n}\nfunction update(dt) {\nself.moveBy(0, 0.2 * dt, 0);\n}"); window.__os.key('KeyS', 's', { ctrl: true }); });
+await S(() => { window.__studio.editor.apply({ op: 'static', id: 'mug', value: true }); window.__studio.runtime.play(); window.__os.key('KeyA', 'a', { ctrl: true }); window.__os.type("function start() {\napi.state.n = (api.state.n || 0) + 1;\nself.setColor('#ff00ff');\n}\nfunction update(dt) {\nself.moveBy(0, 0.2 * dt, 0);\n}"); window.__os.key('KeyS', 's', { ctrl: true }); });
 const y0 = await S(() => window.__studio.editor.world.get('mug').object.position.y);
 // wait for 0.6 s of simulated time (frame rate under SwiftShader varies a lot)
 const tPlay = await S(() => window.__studio.runtime.time);
 await p.waitForFunction((t) => window.__studio.runtime.time > t + 0.6, tPlay, { timeout: 120000 });
 const hot = await S(() => { const s = window.__studio, m = s.editor.world.get('mug'); let col = ''; m.object.traverse((o) => { if (o.isMesh && !col) col = o.material.color.getHexString(); }); return { y: m.object.position.y, col, status: s.code.status }; });
-check('Apply while playing hot-reloads: the mug (a dynamic body, so gravity pulls against the script) rises and turns magenta', hot.y > y0 + 0.008 && hot.col === 'ff00ff' && /hot-reloaded/.test(hot.status), JSON.stringify({ y0, ...hot }));
+check('Apply while playing hot-reloads: the (static) mug rises and turns magenta', hot.y > y0 + 0.08 && hot.col === 'ff00ff' && /hot-reloaded/.test(hot.status), JSON.stringify({ y0, ...hot }));
 
 // 4. a runaway loop is stopped, the game keeps running and the error points at the line
 await S(() => { window.__os.key('KeyA', 'a', { ctrl: true }); window.__os.type('function update(dt) {\nlet i = 0;\nwhile (true) { i++; }\n}'); window.__os.key('KeyS', 's', { ctrl: true }); });
