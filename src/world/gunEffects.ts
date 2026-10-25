@@ -34,7 +34,12 @@ export interface ShotResult { hit: string | null; point: THREE.Vector3 | null; s
 export interface BulletHit { point: THREE.Vector3; normal: THREE.Vector3; dir: THREE.Vector3; speed: number; object: THREE.Object3D; cart: Cartridge }
 /** userData.onBulletHit on an object (or an ancestor): return false to also leave the default mark */
 export type BulletHitHandler = (h: BulletHit) => boolean | void;
-interface Bullet { pos: THREE.Vector3; vel: THREE.Vector3; cart: Cartridge; exclude?: RAPIER.RigidBody; res: ShotResult; travelled: number; t: number; done?: boolean }
+interface Bullet { pos: THREE.Vector3; vel: THREE.Vector3; cart: Cartridge; exclude?: RAPIER.RigidBody; res: ShotResult; travelled: number; t: number; frameT: number; ahead: number; done?: boolean }
+/**
+ * Hit test for fast-moving targets (clays): given a bullet segment and how far
+ * into the current frame it starts (s), return where along it (0..1) it hits.
+ */
+export type Sweeper = (from: THREE.Vector3, to: THREE.Vector3, dt: number, offset: number, cart: Cartridge) => { f: number; name: string; onHit: () => void } | null;
 
 const groups = (member: number, filter: number) => (member << 16) | filter;
 
@@ -43,7 +48,7 @@ const groups = (member: number, filter: number) => (member << 16) | filter;
 const FLASH_LIGHT = 0.35;
 
 export class GunEffects {
-	private listener: THREE.AudioListener;
+	readonly listener: THREE.AudioListener;
 	private buffers = new Map<string, AudioBuffer>();
 	private voices: THREE.PositionalAudio[] = [];
 	private flash: THREE.Sprite;
@@ -62,6 +67,8 @@ export class GunEffects {
 	private raycaster = new THREE.Raycaster();
 	/** meshes that bullets must not hit (hands, the gun, effects, sky) */
 	ignore = new Set<THREE.Object3D>();
+	/** moving-target hit tests, see Sweeper */
+	sweepers: Sweeper[] = [];
 
 	constructor(private scene: THREE.Scene, camera: THREE.Camera, private physics: Physics) {
 		this.listener = new THREE.AudioListener();
@@ -117,10 +124,11 @@ export class GunEffects {
 		this.smoke(muzzle, forward, cart.flash);
 		if (eject) this.ejectCasing(port, right, up, forward, cart);
 		const res: ShotResult = { hit: null, point: null, distance: 0, time: 0 };
-		const b: Bullet = { pos: aimOrigin.clone(), vel: aimDir.clone().normalize().multiplyScalar(cart.v0), cart, exclude, res, travelled: 0, t: 0 };
+		const b: Bullet = { pos: aimOrigin.clone(), vel: aimDir.clone().normalize().multiplyScalar(cart.v0), cart, exclude, res, travelled: 0, t: 0, frameT: 0, ahead: 0 };
 		// the first 40 ms in fine steps right away: anything in the room is hit
 		// before the trigger handler returns
 		for (let k = 0; k < 4 && !b.done; k++) this.stepBullet(b, 0.01);
+		b.ahead = b.t; // it is now this far ahead of the world clock
 		if (!b.done) this.bullets.push(b);
 		return res;
 	}
@@ -147,6 +155,15 @@ export class GunEffects {
 			b.done = true;
 			Object.assign(b.res, { hit, point, surface, distance: b.travelled + from.distanceTo(point), time: b.t });
 		};
+		// fast movers first, in their own moving frame
+		let best: ReturnType<Sweeper> = null;
+		for (const sw of this.sweepers) { const h = sw(from, to, dt, b.frameT, b.cart); if (h && (!best || h.f < best.f)) best = h; }
+		b.frameT += dt;
+		if (best && (!vhit || best.f * len <= vhit.distance) && (!phit || best.f * len <= phit.timeOfImpact)) {
+			best.onHit();
+			done(best.name, from.clone().lerp(to, best.f));
+			return;
+		}
 		if (phit) {
 			const body = phit.collider.parent();
 			const prop = this.physics.props.find((p) => p.body === body);
@@ -270,7 +287,14 @@ export class GunEffects {
 		// bullets in flight (long range): one swept segment per frame
 		for (let i = this.bullets.length - 1; i >= 0; i--) {
 			const b = this.bullets[i];
-			this.stepBullet(b, Math.min(dt, 1 / 30));
+			// same clock as everything else (moving targets), in steps of <= 1/60 s
+			// (minus any time it already flew ahead when it was fired)
+			const used = Math.min(b.ahead, dt);
+			b.ahead -= used;
+			b.frameT = used;
+			const left = dt - used;
+			const n = Math.ceil(left * 60);
+			for (let k = 0; k < n && !b.done; k++) this.stepBullet(b, left / n);
 			if (b.done) this.bullets.splice(i, 1);
 		}
 		if (this.flashFresh) {

@@ -49,6 +49,39 @@ URL options:
 | `?controllers` | Show controller models instead of hands in VR |
 | `?handpreview=fist,point` | Development: hands in named poses on the desk |
 
+## Guns and the shooting range
+
+| | Service pistol (P38) | Glock 17 Gen 5 | AWM .338 Lapua (AWP) |
+|---|---|---|---|
+| Where | Sideboard | Sideboard | Floor by the sideboard |
+| Action | Semi-auto, 8 rounds | Semi-auto, 17+1, slide locks back on empty | Bolt action, 5 rounds; work the bolt after each shot |
+| Extras | | Olight weapon light | Scope 5-20x, mil-dot reticle; laser |
+| Ballistics | 9x19, 360 m/s | 9x19, 360 m/s, zeroed 25 m | .338 Lapua, 900 m/s, zeroed 100 m |
+
+- **Bullets fly.** They are projectiles with gravity and drag, not instant hits. At 500 m the .338 arrives after about 0.66 s and has dropped about 1.2 m below a 100 m zero, so hold over about 2.5 mil on the reticle.
+- **The scope magnifies.** It renders a zoomed view in the eyepiece. Mil-dots are true milliradians at every zoom. Your eye must be behind the eyepiece at the right distance, or the view darkens at the edges.
+- **VR:**
+  - The bore follows your controller and the hand sits on the grip.
+  - Grip the AWP's fore-end with your other hand to aim it with both hands.
+  - **A/X:** reload (pistols) or work the bolt (rifle).
+  - **B/Y:** weapon light (Glock), magazine (rifle) or laser.
+  - **Stick up/down:** scope zoom.
+- **Desktop:**
+  - Hold right mouse to aim down the sights or scope. Click fires.
+  - **R** reloads.
+  - **F** works the bolt (rifle) or switches the light (Glock).
+  - The mouse wheel zooms while aiming.
+
+**Shooting Range:** in the Door app on the computer, pick *Shooting Range*, then go through the office door.
+
+- **The firing line:** a covered bench. Every gun is laid on it when you arrive.
+- **The trap house:** 15 m out. Clays are 110 mm and fly at about 27 m/s; leading them with a single bullet is as hard as it sounds.
+  - **PULL:** green button, **P**, or a left-stick click in VR.
+  - **AUTO:** orange button, **O**, or a right-stick click.
+- **Steel plates:** on chains at 25 m (pistol), 50, 100, 200, 300, 500, 800 and 1000 m. A hit swings the plate and leaves a lead splash; the ring arrives after the sound's travel time.
+- **The bench board:** shows clays broken and steel hits.
+- **Back to the studio:** the door at the back of the firing line (**E**, or **A** in VR).
+
 ## Add-ons: Game Editor, Video, Door and the Snowy Mountain Rally
 
 `public/addons` holds plain scripts that build on `window.__studio` once the room has loaded.
@@ -84,6 +117,9 @@ npm run textures                 # regenerate the procedural PBR textures
   - [Desk Lamp Arm 01](https://polyhaven.com/a/desk_lamp_arm_01), [Potted Plant 02](https://polyhaven.com/a/potted_plant_02) and [Wall Clock](https://polyhaven.com/a/wall_clock), as 1K glTF.
   - These were fetched from a public GitHub mirror (`specht/backrooms-nachtschicht`), because the build environment could not reach Poly Haven's CDN. The files carry Poly Haven's naming and structure. Re-download them from polyhaven.com if you need verified originals.
 - **Pistol:** [Service Pistol](https://polyhaven.com/a/service_pistol) by Mateusz Sadek, Poly Haven, CC0 (1K glTF, fetched from the `vvanghelue/mini-cry` GitHub mirror). The scan is a single mesh, so the slide is split off at load time in `src/world/pistol.ts` and animated separately.
+- **Glock 17 Gen 5 + Olight, CC BY 4.0:** ["G17 Gen 5 Handgun + Olight - NSW Police Force"](https://sketchfab.com/3d-models/g17-gen-5-handgun-olight-nsw-police-force-0200c248eba14385ad2bee8d4dc4e586) by [8sianDude](https://sketchfab.com/haoliu95), Sketchfab. Textures were recompressed to 1024 px JPEG/PNG (`scripts/compress-glb.mjs`).
+- **AWP sniper rifle, CC BY 4.0:** ["Awp Sniper Rifle - Custom Scope"](https://sketchfab.com/3d-models/awp-sniper-rifle-custom-scope-f78a0ccafd304f15b46d087ad896478f) by [M37_R](https://sketchfab.com/ahmettanju.2013), Sketchfab. Scaled to a real AWM's 1.2 m; textures recompressed.
+- **More sounds, Freesound, CC0:** [Sniper Rifle](https://freesound.org/people/SuperPhat/sounds/514228/) by SuperPhat; bolt from [AR15 M4 Gun Hardware Magazine Movement Sounds](https://freesound.org/people/jackthemurray/sounds/393732/) by jackthemurray; brass from [shotgun sounds](https://freesound.org/people/lensflare8642/sounds/145209/) by lensflare8642. The range's clay break, steel ring and trap thunk are synthesised in code.
 - **Sounds, Freesound, CC0:** [9mm pistol shot](https://freesound.org/people/michorvath/sounds/427592/) by michorvath; [Dry Fire](https://freesound.org/people/brianhanson2nd/sounds/171211/) by brianhanson2nd; magazine out/in from [Colt SMG - Firing, Handling](https://freesound.org/people/hyperix6/sounds/676588/) by hyperix6.
 - **HDRI:** [Spruit Sunrise](https://polyhaven.com/a/spruit_sunrise), Poly Haven, CC0. The 4K UltraHDR JPEG comes from the three.js examples.
 - **Rally car and mountain textures, CC BY 4.0 (Sketchfab):** car "art of rally Latest Version 2027" by FarHandle5255; textures "Snowy Mountain Road Scene" by 99.Miles. They are packed into `public/addons/rally-data.json`, and the credit is shown on screen while you are on the mountain.

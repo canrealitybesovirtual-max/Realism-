@@ -187,6 +187,19 @@ export class Physics {
 		}
 	}
 
+	/** Move a prop instantly (no sweep), at rest. */
+	teleport(prop: Prop, pos: THREE.Vector3, rot: THREE.Quaternion) {
+		this.holds.delete(prop);
+		prop.held = false;
+		prop.body.setGravityScale(1, true);
+		prop.body.setTranslation(pos, true);
+		prop.body.setRotation(rot, true);
+		prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+		prop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+		prop.prevPos.copy(pos); prop.prevRot.copy(rot);
+		prop.desc.object.position.copy(pos); prop.desc.object.quaternion.copy(rot);
+	}
+
 	pos(prop: Prop, out = new THREE.Vector3()) { const t = prop.body.translation(); return out.set(t.x, t.y, t.z); }
 	rot(prop: Prop, out = new THREE.Quaternion()) { const r = prop.body.rotation(); return out.set(r.x, r.y, r.z, r.w); }
 

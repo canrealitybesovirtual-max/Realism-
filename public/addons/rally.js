@@ -63,13 +63,28 @@
     var UI = os.fonts.ui;
     var DESTS = [
       { id: "none", title: "Keep it shut", text: "The door stays locked." },
-      { id: "rally", title: "Snowy Mountain Rally", text: "5.5 km of snowy mountain road: a long loop with a shortcut through the pass. A car is waiting at the service park." }
+      { id: "rally", title: "Snowy Mountain Rally", text: "5.5 km of snowy mountain road: a long loop with a shortcut through the pass. A car is waiting at the service park." },
+      { id: "range", title: "Shooting Range", text: "Clay trap and steel plates from 25 m out to 1000 m. The AWM and the Glock wait on the bench." }
     ];
     var dest = os.storage.get("door.dest") || "none";
 
     // ---------- Door app on the computer ----------
     function paintPreview(c, id, x, y, w, h) {
       c.save(); rr(c, x, y, w, h, 12); c.clip();
+      if (id === "range") {
+        var sk = c.createLinearGradient(0, y, 0, y + h * 0.6); sk.addColorStop(0, "#7fb2e6"); sk.addColorStop(1, "#e4eef6");
+        c.fillStyle = sk; c.fillRect(x, y, w, h);
+        c.fillStyle = "#93a07a"; c.fillRect(x, y + h * 0.55, w, h * 0.45);
+        c.fillStyle = "#6f7d55"; c.beginPath(); c.moveTo(x, y + h); c.lineTo(x + w * 0.42, y + h * 0.55); c.lineTo(x + w * 0.58, y + h * 0.55); c.lineTo(x + w, y + h); c.fill();
+        [[0.3, 0.6, 0.05], [0.62, 0.58, 0.035], [0.47, 0.565, 0.02]].forEach(function (p) {
+          c.fillStyle = "#3d4046"; c.fillRect(x + w * p[0] - 1, y + h * p[1] - h * p[2] * 2.2, 2, h * p[2] * 2.2);
+          c.fillStyle = "#f4f4f0"; c.beginPath(); c.arc(x + w * p[0], y + h * p[1] - h * p[2] * 1.2, h * p[2] * 0.8, 0, 7); c.fill();
+        });
+        c.fillStyle = "#ff6a1a"; c.beginPath(); c.ellipse(x + w * 0.7, y + h * 0.3, w * 0.03, h * 0.012, -0.2, 0, 7); c.fill();
+        c.fillStyle = "#6b4a2e"; c.fillRect(x + w * 0.3, y + h * 0.86, w * 0.4, h * 0.06);
+        c.restore();
+        return;
+      }
       if (id === "none") {
         var g = c.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, "#3a3f47"); g.addColorStop(1, "#23262b");
         c.fillStyle = g; c.fillRect(x, y, w, h);
@@ -112,7 +127,7 @@
       id = "door"; title = "Door"; defaultRect = { x: 360, y: 110, w: 1180, h: 760 }; minSize = [760, 560];
       constructor(o) { this.os = o; }
       cards(r) {
-        var pad = 36, gap = 28, top = 104, cw = (r.w - pad * 2 - gap) / 2, ch = r.h - top - 92;
+        var pad = 36, gap = 28, top = 104, cw = (r.w - pad * 2 - gap * (DESTS.length - 1)) / DESTS.length, ch = r.h - top - 92;
         return DESTS.map(function (d, i) { return { d: d, x: pad + i * (cw + gap), y: top, w: cw, h: ch }; });
       }
       draw(c, r) {
@@ -345,7 +360,7 @@
     function act() {
       if (busy || !hintAction) return;
       var a = hintAction;
-      if (a === "door-open") enterMap();
+      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else enterMap(); }
       else if (a === "door-back") leaveMap();
       else if (a === "car") enterCar();
     }
@@ -381,6 +396,7 @@
           placeHead(cx0, cz0, map.groundAt(cx0 - OFFX, cz0).h, desk.yaw);
         } else if (mode === "drive") { xr.seated = true; recenterSeat(); map.car.root.add(dash); dash.visible = true; }
       } else if (!xrOn) needPlace = 0;
+      if (mode === "room" && S.range && S.range.active) { hintAction = null; setHint(""); return; }
       if (mode === "room") {
         hintAction = null;
         if (xrOn) {
@@ -391,7 +407,7 @@
           var near = Math.hypot(hp.x - dc.x, hp.z - dc.z) < 1.5;
           var rr0 = rightRay(), aimed = !!(rr0 && rr0.ray.intersectsBox(doorBox));
           if (near || aimed) {
-            if (dest === "rally") { hintAction = "door-open"; setHint("<kbd>E</kbd>Open the door to Snowy Mountain Rally"); }
+            if (dest !== "none") { hintAction = "door-open"; setHint("<kbd>E</kbd>Open the door to " + DESTS.find(function (q) { return q.id === dest; }).title); }
             else setHint("Locked. Choose where it leads in the Door app on the computer.");
           } else setHint("");
           if (hintAction && (vb.A || vb.X || (aimed && vb.RT))) act();
@@ -401,7 +417,7 @@
         ray.setFromCamera(new THREE.Vector2(0, 0), camera);
         var hit = ray.intersectObject(roomDoor, true)[0];
         if (hit) {
-          if (dest === "rally") { hintAction = "door-open"; setHint("<kbd>E</kbd>Open the door to Snowy Mountain Rally"); }
+          if (dest !== "none") { hintAction = "door-open"; setHint("<kbd>E</kbd>Open the door to " + DESTS.find(function (q) { return q.id === dest; }).title); }
           else setHint("Locked. Choose where it leads in the Door app on the computer.");
         } else setHint("");
         return;

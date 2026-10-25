@@ -72,7 +72,7 @@ export class XRControls {
 	 * hands still follow the controllers.
 	 */
 	seated = false;
-	private hands: Hand[] = [];
+	readonly hands: Hand[] = [];
 	private raycaster = new THREE.Raycaster();
 	private walkVel = new THREE.Vector2();
 	private vignette: THREE.Mesh;
@@ -475,6 +475,9 @@ export class XRControls {
 		h.mouseGrabOffset.copy(this.targets.mouse.object.getWorldPosition(new THREE.Vector3())).sub(gripPos);
 		this.pulse(h, 0.3, 15);
 	}
+
+	/** let go of everything in both hands */
+	releaseEverything() { for (const h of this.hands) { this.releaseAll(h); h.supporting = null; } }
 
 	private releaseAll(h: Hand) {
 		this.releaseProp(h);

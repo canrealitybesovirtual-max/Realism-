@@ -14,6 +14,7 @@ import { mugDesc, notebookDesc, penDesc, pistolDesc, firearmDesc } from './physi
 import { Firearm, FIREARMS } from './world/firearm';
 import { FirearmSystem, type Gun } from './world/firearmSystem';
 import { GunEffects } from './world/gunEffects';
+import { ShootingRange } from './world/range';
 import { Pistol } from './world/pistol';
 import { PistolSystem } from './world/pistolSystem';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -66,6 +67,7 @@ let shadowsDirty = true;
 let gun: PistolSystem | undefined;
 const guns: Gun[] = [];
 let gunFx: GunEffects | undefined;
+let range: ShootingRange | undefined;
 
 function setView(name: string) {
 	const v = VIEWS[name];
@@ -99,9 +101,10 @@ async function init() {
 	awp.group.rotation.set(0, 0, Math.PI / 2);
 	scene.add(g17.group, awp.group);
 	// exterior surfaces take their image-based light from the sky, not the room
+	let outdoor: THREE.Texture;
 	{
 		const pm = new THREE.PMREMGenerator(renderer);
-		const outdoor = pm.fromEquirectangular(hdr).texture;
+		outdoor = pm.fromEquirectangular(hdr).texture;
 		pm.dispose();
 		const terrace = scene.getObjectByName('terrace') as THREE.Mesh;
 		const tm = terrace.material as THREE.MeshPhysicalMaterial;
@@ -157,6 +160,14 @@ async function init() {
 	const owner = new PointerOwner();
 	desktop = new DesktopControls(camera, renderer.domElement, physics, targets, walk, owner);
 	xr = new XRControls(renderer, scene, camera, physics, targets, walk, owner);
+	// the outdoor range behind the office door (Door app on the computer)
+	if (physics.enabled && gunFx) {
+		range = new ShootingRange({
+			scene, camera, renderer, physics, walk, desktop, xr, sun: lights.sun, listener: gunFx.listener, effects: gunFx,
+			background: hdr, backgroundRotation: sky.rotation.y, env: outdoor,
+			gunProps: guns.map((g) => ({ prop: g.prop, bolted: g.twoHanded })),
+		});
+	}
 	// bullets ignore the pointer dots and the comfort vignette
 	if (gun) scene.traverse((o) => { if ((o as THREE.Mesh).isMesh && !o.name && (o.parent === scene || o.parent === camera)) gun!.effects.ignore.add(o); });
 	if (params.get('view')) setView(params.get('view')!);
@@ -183,7 +194,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, THREE, KEY_INDEX });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, THREE, KEY_INDEX });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -249,6 +260,7 @@ renderer.setAnimationLoop((t) => {
 		physics.step(dt);
 		for (const g of guns) g.update(dt);
 		gunFx?.update(dt);
+		range?.update(dt);
 		shadows.update();
 		ws.updateClock();
 		ws.keyboard.update(dt);

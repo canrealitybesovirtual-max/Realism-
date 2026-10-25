@@ -106,6 +106,9 @@ export class DesktopControls {
 		addEventListener('blur', () => this.keys.clear());
 	}
 
+	/** let go of anything carried (e.g. before being moved somewhere else) */
+	dropAll() { this.ads = false; this.drop(false); }
+
 	heldGun() { return this.held ? gunFor(this.targets.guns, this.held.prop) : null; }
 
 	private primary(fromClick = false) {
