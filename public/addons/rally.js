@@ -341,7 +341,7 @@
     });
 
     var hintAction = null;
-    window.__rally = { enterMap: function(){ return enterMap(); }, enterCar: function(){ return enterCar(); }, exitCar: function(){ return exitCar(); }, leaveMap: function(){ return leaveMap(); }, keys: keys, get map(){ return map; }, get mode(){ return mode; } };
+    window.__rally = { enterMap: function(){ return enterMap(); }, enterCar: function(){ return enterCar(); }, exitCar: function(){ return exitCar(); }, leaveMap: function(){ return leaveMap(); }, keys: keys, get map(){ return map; }, get mode(){ return mode; }, get input(){ return map && map.input ? map.input() : null; } };
     function act() {
       if (busy || !hintAction) return;
       var a = hintAction;
@@ -1049,7 +1049,7 @@
       function stopAudio() { if (audio) audio.master.gain.setTargetAtTime(0, audio.ac.currentTime, 0.08); }
 
       var M = {
-        root: root, sky: sky, fog: fog, car: car, camMode: 0,
+        root: root, sky: sky, fog: fog, car: car, camMode: 0, input: function () { return driveInput(); },
         groundAt: groundAt, startAudio: startAudio, stopAudio: stopAudio,
         spawn: { x: spawnX, z: spawnZ, yaw: spawnYaw },
         updateBlockers: function () {
