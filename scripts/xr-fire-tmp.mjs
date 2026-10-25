@@ -41,9 +41,7 @@ await p.evaluate(() => window.__aim("right", [1.5, 1.3, -0.15], [3.5, 1.35, -0.4
 await frames(30);
 for (let i = 0; i < 3; i++) { await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue("trigger", 1)); await frames(2); await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue("trigger", 0)); await frames(12); await p.evaluate(() => window.__aim("right", [1.5, 1.3, -0.15], [3.5, 1.3 + Math.random() * 0.1, -0.35 - Math.random() * 0.15])); }
 await frames(30);
-await p.screenshot({ path: out.replace(".png", "_holes.png"), timeout: 300000 });
-await p.evaluate(() => window.__look([1.25, 1.5, 0.05], [2.4, 1.3, -0.32]));
-await p.evaluate(() => { const e = window.__studio.gun.effects; const u = e.update.bind(e); e.update = (dt) => { u(dt); if (window.__holdFlash) { e.flash.visible = true; e.flashLight.intensity = 6; } }; });
+await p.evaluate(() => { const e = window.__studio.gun.effects; const u = e.update.bind(e); e.update = (dt) => { u(dt); if (window.__holdFlash) { e.flash.visible = true; e.flashLight.intensity = 0.35; } }; });
 await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue("trigger", 1));
 await p.evaluate(() => new Promise((r) => { const g = window.__studio.gun; const n = g.shotsFired; const f = () => (g.shotsFired > n ? (window.__holdFlash = true, r()) : requestAnimationFrame(f)); requestAnimationFrame(f); }));
 await frames(2);

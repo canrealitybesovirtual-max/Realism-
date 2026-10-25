@@ -17,6 +17,10 @@ type Surface = 'plaster' | 'concrete' | 'wood' | 'glass' | 'screen' | 'metal' | 
 
 const groups = (member: number, filter: number) => (member << 16) | filter;
 
+/** muzzle-flash light peak; the room is exposed for daylight, so a few
+ * candela at arm's length already lights the nearby walls warm for a frame */
+const FLASH_LIGHT = 0.35;
+
 export class GunEffects {
 	private listener: THREE.AudioListener;
 	private buffers = new Map<string, AudioBuffer>();
@@ -202,10 +206,10 @@ export class GunEffects {
 	update(dt: number) {
 		if (this.flashFresh) {
 			this.flashFresh = false;
-			this.flashLight.intensity = 7;
+			this.flashLight.intensity = FLASH_LIGHT;
 		} else if (this.flashT > 0) {
 			this.flashT -= dt;
-			this.flashLight.intensity = Math.max(0, this.flashT / 0.055) * 7;
+			this.flashLight.intensity = Math.max(0, this.flashT / 0.055) * FLASH_LIGHT;
 			if (this.flashT <= 0.03) this.flash.visible = false;
 		} else { this.flashLight.intensity = 0; this.flash.visible = false; }
 		for (let i = this.puffs.length - 1; i >= 0; i--) {
