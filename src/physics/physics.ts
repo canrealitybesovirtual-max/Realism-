@@ -288,6 +288,58 @@ export class Physics {
 		return best;
 	}
 
+	/**
+	 * How far a sphere has to move to clear the static scenery (walls, desk,
+	 * shelves): null when it is clear. Props are ignored.
+	 */
+	pushOutOfStatic(centre: THREE.Vector3, radius: number): THREE.Vector3 | null {
+		if (!this.enabled) return null;
+		const out = new THREE.Vector3();
+		let any = false;
+		const ball = new RAPIER.Ball(radius);
+		this.world.intersectionsWithShape(centre, { x: 0, y: 0, z: 0, w: 1 }, ball, (col) => {
+			const pr = col.projectPoint(centre, false);
+			if (!pr) return true;
+			const d = new THREE.Vector3(centre.x - pr.point.x, centre.y - pr.point.y, centre.z - pr.point.z);
+			const len = d.length();
+			if (len < 1e-6) return true;
+			// inside: out through the nearest face, then a radius more; outside: just clear the radius
+			if (pr.isInside) out.addScaledVector(d, -(len + radius) / len);
+			else if (len < radius) out.addScaledVector(d, (radius - len) / len);
+			any = true;
+			return true;
+		}, undefined, groups(GROUP_PROP, GROUP_STATIC));
+		return any && out.lengthSq() > 0 ? out : null;
+	}
+
+	/**
+	 * Move a sphere from `from` toward `to` through the static scenery: it stops
+	 * at the first surface and slides along it (up to three bounces), so a thin
+	 * desk top cannot be skipped over in one frame. Returns where it ends up.
+	 */
+	sweepSphere(from: THREE.Vector3, to: THREE.Vector3, radius: number): THREE.Vector3 {
+		if (!this.enabled) return to.clone();
+		const pos = from.clone(), rem = to.clone().sub(from), ball = new RAPIER.Ball(radius), rot = { x: 0, y: 0, z: 0, w: 1 };
+		const n = new THREE.Vector3();
+		for (let it = 0; it < 3 && rem.lengthSq() > 1e-10; it++) {
+			const hit = this.world.castShape(pos, rot, rem, ball, 0.0005, 1, false, undefined, groups(GROUP_PROP, GROUP_STATIC));
+			if (!hit) { pos.add(rem); break; }
+			const toi = hit.time_of_impact;
+			pos.addScaledVector(rem, toi);
+			// contact normal from the collider's surface to the sphere centre (world space)
+			const pr = hit.collider.projectPoint(pos, false);
+			if (!pr) break;
+			n.set(pos.x - pr.point.x, pos.y - pr.point.y, pos.z - pr.point.z);
+			if (pr.isInside) n.negate();
+			if (n.lengthSq() < 1e-12) break;
+			n.normalize();
+			rem.multiplyScalar(1 - toi);
+			const into = rem.dot(n);
+			if (into < 0) rem.addScaledVector(n, -into); // keep only the sliding part
+		}
+		return pos;
+	}
+
 	/** Prop owning a three.js object (walks up the parent chain). */
 	propForObject(o: THREE.Object3D | null): Prop | null {
 		while (o) {

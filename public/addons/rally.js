@@ -64,7 +64,8 @@
     var DESTS = [
       { id: "none", title: "Keep it shut", text: "The door stays locked." },
       { id: "rally", title: "Snowy Mountain Rally", text: "5.5 km of snowy mountain road: a long loop with a shortcut through the pass. A car is waiting at the service park." },
-      { id: "range", title: "Shooting Range", text: "Clay trap and steel plates from 25 m out to 1000 m. The AWM and the Glock wait on the bench." }
+      { id: "range", title: "Shooting Range", text: "Clay trap and steel plates from 25 m out to 1000 m. The AWM and the Glock wait on the bench." },
+      { id: "highway", title: "Highway", text: "An 8 km motorway loop, three lanes each way, with traffic. Your car waits in the lay-by." }
     ];
     var dest = os.storage.get("door.dest") || "none";
 
@@ -82,6 +83,28 @@
         });
         c.fillStyle = "#ff6a1a"; c.beginPath(); c.ellipse(x + w * 0.7, y + h * 0.3, w * 0.03, h * 0.012, -0.2, 0, 7); c.fill();
         c.fillStyle = "#6b4a2e"; c.fillRect(x + w * 0.3, y + h * 0.86, w * 0.4, h * 0.06);
+        c.restore();
+        return;
+      }
+      if (id === "highway") {
+        var hs = c.createLinearGradient(0, y, 0, y + h * 0.5); hs.addColorStop(0, "#4f86c9"); hs.addColorStop(1, "#cfe0ef");
+        c.fillStyle = hs; c.fillRect(x, y, w, h);
+        c.fillStyle = "#7f9a6a"; c.fillRect(x, y + h * 0.48, w, h * 0.52);
+        c.fillStyle = "#91a7c0"; c.beginPath(); c.moveTo(x, y + h * 0.5);
+        for (var i = 0; i <= 30; i++) c.lineTo(x + w * i / 30, y + h * (0.46 - 0.04 * Math.abs(Math.sin(i * 0.7 + 1)) - 0.02 * Math.sin(i * 1.9)));
+        c.lineTo(x + w, y + h * 0.5); c.fill();
+        var vx = x + w * 0.5, vy = y + h * 0.48;
+        function road(x0, x1, col) { c.fillStyle = col; c.beginPath(); c.moveTo(vx - 2, vy); c.lineTo(vx + 2, vy); c.lineTo(x + w * x1, y + h); c.lineTo(x + w * x0, y + h); c.fill(); }
+        road(-0.15, 1.15, "#4a4c50");
+        c.strokeStyle = "#b7b9ba"; c.lineWidth = 3; c.beginPath(); c.moveTo(vx, vy); c.lineTo(x + w * 0.5, y + h); c.stroke();
+        c.strokeStyle = "#eeeeea"; c.lineWidth = 2; c.setLineDash([10, 16]);
+        [0.12, 0.3, 0.7, 0.88].forEach(function (f) { c.beginPath(); c.moveTo(vx, vy); c.lineTo(x + w * f, y + h); c.stroke(); });
+        c.setLineDash([]);
+        [[0.62, 0.72, "#b8312f"], [0.36, 0.62, "#e8e6e0"], [0.79, 0.86, "#2f5d9c"]].forEach(function (q) {
+          var cx = x + w * q[0], cy = y + h * q[1], sc = (cy - vy) / (h * 0.52);
+          c.fillStyle = q[2]; rr(c, cx - 18 * sc, cy - 14 * sc, 36 * sc, 14 * sc, 3 * sc); c.fill();
+          c.fillStyle = "#1c2026"; c.fillRect(cx - 14 * sc, cy - 22 * sc, 28 * sc, 9 * sc);
+        });
         c.restore();
         return;
       }
@@ -356,11 +379,11 @@
     });
 
     var hintAction = null;
-    window.__rally = { enterMap: function(){ return enterMap(); }, enterCar: function(){ return enterCar(); }, exitCar: function(){ return exitCar(); }, leaveMap: function(){ return leaveMap(); }, keys: keys, get map(){ return map; }, get mode(){ return mode; }, get input(){ return map && map.input ? map.input() : null; } };
+    window.__rally = { enterMap: function(kind){ return enterMap(kind || "rally"); }, enterCar: function(){ return enterCar(); }, exitCar: function(){ return exitCar(); }, leaveMap: function(){ return leaveMap(); }, keys: keys, get map(){ return map; }, get mode(){ return mode; }, get input(){ return map && map.input ? map.input() : null; } };
     function act() {
       if (busy || !hintAction) return;
       var a = hintAction;
-      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else enterMap(); }
+      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else enterMap(dest === "highway" ? "highway" : "rally"); }
       else if (a === "door-back") leaveMap();
       else if (a === "car") enterCar();
     }
@@ -435,13 +458,17 @@
     }
 
     // ---------- entering / leaving ----------
-    async function enterMap() {
+    // Each map is built when you go there and freed when you come back, so the
+    // office never carries the mountain or the motorway around with it.
+    async function enterMap(kind) {
       if (busy) return; busy = true; setHint("");
+      kind = kind === "highway" ? "highway" : "rally";
       try {
         if (desk.held) desk.drop(false);
         if (inXR()) xr.hands.forEach(function (h) { xr.releaseAll(h); });
-        await fadeOut(map ? "" : "Building the mountain…");
-        if (!map) { await sleep(30); map = await buildMap(); }
+        await fadeOut(kind === "highway" ? "Building the highway\u2026" : "Building the mountain\u2026");
+        if (map && map.kind !== kind) { map.dispose(); map = null; }
+        if (!map) { await sleep(30); map = await buildMap(kind); }
         saved = {
           pos: camera.position.clone(), yaw: desk.yaw, pitch: desk.pitch,
           bounds: desk.walk.bounds.clone(), blockers: desk.walk.blockers.slice(),
@@ -457,17 +484,19 @@
         });
         map.root.visible = true;
         scene.background = map.sky; scene.fog = map.fog;
+        if (map.env) scene.environment = map.env;
         if ("environmentIntensity" in scene) scene.environmentIntensity = 0.55;
         scene.backgroundIntensity = 1; scene.backgroundBlurriness = 0;
         camera.near = 0.1; camera.far = 9000; camera.updateProjectionMatrix();
-        desk.walk.bounds = new THREE.Box2(new THREE.Vector2(OFFX - 1170, -1170), new THREE.Vector2(OFFX + 1170, 1170));
+        var bb = map.bounds;
+        desk.walk.bounds = new THREE.Box2(new THREE.Vector2(OFFX + bb.minX - 5, bb.minZ - 5), new THREE.Vector2(OFFX + bb.maxX + 5, bb.maxZ + 5));
         map.updateBlockers();
         var sp = map.spawn;
         desk.yaw = sp.yaw; desk.pitch = -0.05;
         // in VR camera.position is the head inside the rig (the headset's), so move the rig
         if (inXR()) placeHead(OFFX + sp.x, sp.z, map.groundAt(sp.x, sp.z).h, sp.yaw);
         else camera.position.set(OFFX + sp.x, map.groundAt(sp.x, sp.z).h + EYE, sp.z);
-        mode = "foot"; credits.style.display = "block";
+        mode = "foot"; credits.textContent = map.credits; credits.style.display = "block";
         renderer.shadowMap.needsUpdate = true;
       } finally {
         await fadeIn(); busy = false;
@@ -478,6 +507,7 @@
       await fadeOut("");
       map.stopAudio();
       map.root.visible = false;
+      map.dispose(); map = null;
       saved.hidden.forEach(function (o) { o.visible = true; });
       scene.background = saved.bg; scene.environment = saved.env; scene.fog = saved.fog;
       if ("environmentIntensity" in scene) scene.environmentIntensity = saved.envI;
@@ -532,15 +562,14 @@
     function flash(t, secs) { setHint(t); flashTimer = secs || 1.6; }
 
     // ---------- data ----------
-    // map + car data (packed by hand from the CC BY 4.0 sources credited above):
+    // car and snow-map data (packed by hand from the CC BY 4.0 sources credited
+    // above), in separate files so each map only downloads what it needs:
     // { meta, geo: base64 gzip, tex: base64 webp atlas }
-    var dataPromise = null;
-    function rallyData() {
-      if (!dataPromise) dataPromise = fetch("addons/rally-data.json").then(function (r) {
-        if (!r.ok) throw new Error("rally data " + r.status);
+    function fetchJSON(url) {
+      return fetch(url).then(function (r) {
+        if (!r.ok) throw new Error(url + " " + r.status);
         return r.json();
       });
-      return dataPromise;
     }
     function b64(s) {
       var bin = atob(s), u = new Uint8Array(bin.length);
@@ -562,9 +591,11 @@
       return t;
     }
 
-    // ---------- build the map ----------
-    async function buildMap() {
-      var data = await rallyData();
+    // ---------- the snowy mountain (one of the map "worlds") ----------
+    // A world provides the ground, roads, obstacles and lighting; the door,
+    // the car, the driving model and the cameras are shared (buildMap below).
+    async function buildSnowWorld() {
+      var data = await fetchJSON("addons/rally-snow.json");
       var meta = data.meta;
       var geo = await gunzip(b64(data.geo));
       var texBytes = b64(data.tex);
@@ -582,8 +613,7 @@
       }));
       T.trees.wrapS = T.trees.wrapT = THREE.ClampToEdgeWrapping;
 
-      var root = new THREE.Group(); root.name = "rally-map"; root.position.set(OFFX, 0, 0); root.visible = false;
-      scene.add(root);
+      var root = new THREE.Group(); root.name = "rally-map"; root.position.set(OFFX, 0, 0);
 
       // ---- terrain ----
       var N = W.N, SZ = W.S, cell = SZ / (N - 1), half = SZ / 2;
@@ -637,6 +667,7 @@
       }
       function terrainMaterial(farMode) {
         var m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0, normalMap: T.snowN, normalScale: new THREE.Vector2(0.55, 0.55) });
+        m.customProgramCacheKey = function () { return farMode ? "rally-snow-far" : "rally-snow-near"; }; // the variants patch differently
         m.onBeforeCompile = function (sh) {
           sh.uniforms.tSnow = { value: T.snow }; sh.uniforms.tRock = { value: T.rock };
           sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vWPos; varying vec3 vWNrm;")
@@ -971,15 +1002,111 @@
       })();
       scene.add(flakes); flakes.visible = false;
 
+      function treeHit(x, z, r) {
+        var ix = Math.floor(x / TG), iz = Math.floor(z / TG), out = null;
+        for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) {
+          var l = treeGrid.get(gkey(ix + a, iz + b)); if (!l) continue;
+          for (var q = 0; q < l.length; q++) {
+            var i = l[q], dx = x - treeCol[i], dz = z - treeCol[i + 1], rr2 = r + treeCol[i + 2], d2 = dx * dx + dz * dz;
+            if (d2 < rr2 * rr2) { var d = Math.sqrt(d2) || 0.001; out = { nx: dx / d, nz: dz / d, pen: rr2 - d }; }
+          }
+        }
+        return out;
+      }
+
+      // ---- where things start: the service park ----
+      var pi = park.i, tg = { x: main.T[pi * 2], z: main.T[pi * 2 + 1] };
+      var doorX = park.x + parkDir[0] * 9, doorZ = park.z + parkDir[1] * 9;
+      return {
+        kind: "rally", root: root, roads: roads, nearestRoad: nearestRoad, groundAt: groundAt, hit: treeHit,
+        clearSpot: function (x, z) { var nr = nearestRoad(x, z); return (!nr || nr.d > 7) && !treeHit(x, z, 0.8); },
+        /** back on the road: the nearest centre-line point, facing the way the car was going */
+        resetPose: function (x, z, yaw) {
+          var best = nearestRoad(x, z);
+          if (!best) {
+            var bd = 1e18;
+            roads.forEach(function (rd, ri) { for (var k = 0; k < rd.n; k += 4) { var d = (rd.P[k * 2] - x) ** 2 + (rd.P[k * 2 + 1] - z) ** 2; if (d < bd) { bd = d; best = { ri: ri, k: k }; } } });
+          }
+          var rd = roads[best.ri], k = best.k, tx = rd.T[k * 2], tz = rd.T[k * 2 + 1];
+          var dir = Math.sin(yaw) * tx + Math.cos(yaw) * tz >= 0 ? 1 : -1;
+          return { x: rd.P[k * 2], z: rd.P[k * 2 + 1], yaw: Math.atan2(tx * dir, tz * dir) };
+        },
+        sky: sky, fog: fog, env: null, sun: sun, sunDir: sunDir,
+        door: { x: doorX, z: doorZ, y: terrainH(doorX, doorZ) - 0.02, yaw: Math.atan2(-parkDir[0], -parkDir[1]) },
+        car: { x: park.x - parkDir[0] * 1.5 + tg.x * 4, z: park.z - parkDir[1] * 1.5 + tg.z * 4, yaw: Math.atan2(tg.x, tg.z) + 0.25 * parkSide },
+        // desktop yaw: forward = (-sin yaw, -cos yaw); face toward the road
+        spawn: { x: doorX - parkDir[0] * 2.2, z: doorZ - parkDir[1] * 2.2, yaw: Math.atan2(parkDir[0], parkDir[1]) },
+        bounds: { minX: -1165, maxX: 1165, minZ: -1165, maxZ: 1165 },
+        mu: [0.95, 0.72, 0.6], roll: [0.12, 0.45, 1.6], kick: [0.05, 0.25], sprayColor: 0xf2f6ff,
+        credits: "Car: \u201cart of rally Latest Version 2027\u201d by FarHandle5255 \u00b7 Textures: \u201cSnowy Mountain Road Scene\u201d by 99.Miles \u00b7 Sketchfab, CC BY 4.0",
+        update: function (dt, t, pl) {
+          flakes.visible = true;
+          flakes.material.uniforms.uTime.value = t; flakes.material.uniforms.uCam.value.copy(pl.cam);
+          flakes.material.uniforms.uScale.value = pl.focal * 0.012;
+        },
+        setActive: function (on) { if (!on) flakes.visible = false; },
+        dispose: function () {
+          scene.remove(flakes); flakes.geometry.dispose(); flakes.material.dispose();
+          root.removeFromParent();
+          disposeTree(root);
+          Object.keys(T).forEach(function (k) { T[k].dispose(); });
+          sky.dispose();
+        }
+      };
+    }
+
+    function disposeTree(o) {
+      o.traverse(function (m) {
+        if (m.geometry) m.geometry.dispose();
+        if (m.isInstancedMesh) m.dispose();
+        var mats = m.material ? (Array.isArray(m.material) ? m.material : [m.material]) : [];
+        mats.forEach(function (mt) { mt.dispose(); });
+        if (m.customDepthMaterial) m.customDepthMaterial.dispose();
+      });
+    }
+
+    // ---------- a map: a world plus the shared door, car and driving ----------
+    var carPromise = null, carData = null;
+    function getCar() {
+      if (!carPromise) carPromise = (async function () {
+        var data = await fetchJSON("addons/rally-car.json");
+        var geo = await gunzip(b64(data.geo));
+        return await buildCar(data.meta.car, geo);
+      })();
+      return carPromise;
+    }
+    var doorObj = null;
+    function makeDoor() {
+      var g = new THREE.Group();
+      var frameM = new THREE.MeshStandardMaterial({ color: 0x3b3e44, roughness: 0.6 });
+      var panelM = new THREE.MeshStandardMaterial({ color: 0xefede8, roughness: 0.4 });
+      var post = new THREE.BoxGeometry(0.1, 2.35, 0.14);
+      var l = new THREE.Mesh(post, frameM); l.position.set(-0.5, 1.175, 0); var r2 = l.clone(); r2.position.x = 0.5;
+      var top = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.1, 0.14), frameM); top.position.y = 2.3;
+      var panel = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.24, 0.045), panelM); panel.position.y = 1.13;
+      var knob = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 8), frameM); knob.position.set(0.34, 1.02, 0.05);
+      [l, r2, top, panel, knob].forEach(function (m) { m.castShadow = true; m.receiveShadow = true; g.add(m); });
+      var cv = document.createElement("canvas"); cv.width = 256; cv.height = 64; var c = cv.getContext("2d");
+      c.fillStyle = "#1d1f24"; c.fillRect(0, 0, 256, 64); c.fillStyle = "#f2f2f2"; c.font = "600 30px system-ui,sans-serif"; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText("Studio", 128, 34);
+      var st = new THREE.CanvasTexture(cv); st.colorSpace = THREE.SRGBColorSpace;
+      var sign = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), new THREE.MeshStandardMaterial({ map: st, roughness: 0.5 }));
+      sign.position.set(0, 1.85, 0.03); g.add(sign);
+      return g;
+    }
+
+    async function buildMap(kind) {
+      var W = kind === "highway" ? await (await S.loadMap("highway"))({ renderer: renderer, offsetX: OFFX }) : await buildSnowWorld();
+      var root = W.root, roads = W.roads, nearestRoad = W.nearestRoad, groundAt = W.groundAt, sun = W.sun, sunDir = W.sunDir;
+      scene.add(root);
       // ---- spray particles ----
       var spray = (function () {
         var n = 400, p = new Float32Array(n * 3), a = new Float32Array(n), s = new Float32Array(n);
         var g = new THREE.BufferGeometry();
         g.setAttribute("position", new THREE.BufferAttribute(p, 3)); g.setAttribute("aA", new THREE.BufferAttribute(a, 1)); g.setAttribute("aS", new THREE.BufferAttribute(s, 1));
         var m = new THREE.ShaderMaterial({
-          uniforms: { uScale: { value: 1 } },
+          uniforms: { uScale: { value: 1 }, uColor: { value: new THREE.Color(W.sprayColor) } },
           vertexShader: "attribute float aA; attribute float aS; uniform float uScale; varying float vA; void main(){ vec4 mv = viewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv; gl_PointSize = aS * uScale / max(0.5, -mv.z); vA = aA; }",
-          fragmentShader: "varying float vA; void main(){ vec2 d = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.0, length(d)) * vA; if (a < 0.01) discard; gl_FragColor = vec4(0.95, 0.97, 1.0, a); }",
+          fragmentShader: "uniform vec3 uColor; varying float vA; void main(){ vec2 d = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.0, length(d)) * vA; if (a < 0.01) discard; gl_FragColor = vec4(uColor, a); }",
           transparent: true, depthWrite: false
         });
         var pts = new THREE.Points(g, m); pts.frustumCulled = false; pts.renderOrder = 6;
@@ -1006,40 +1133,19 @@
         };
       })();
       scene.add(spray.obj); spray.obj.visible = false;
-
-      // ---- return door in the service park ----
-      var pk = main.P, pi = park.i;
-      var roadPt = { x: pk[pi * 2], z: pk[pi * 2 + 1] };
-      var tg = { x: main.T[pi * 2], z: main.T[pi * 2 + 1] };
-      var doorPos = { x: park.x + parkDir[0] * 9, z: park.z + parkDir[1] * 9 };
-      var doorObj = new THREE.Group(), doorPop = 1;
-      (function () {
-        var frameM = new THREE.MeshStandardMaterial({ color: 0x3b3e44, roughness: 0.6 });
-        var panelM = new THREE.MeshStandardMaterial({ color: 0xefede8, roughness: 0.4 });
-        var post = new THREE.BoxGeometry(0.1, 2.35, 0.14);
-        var l = new THREE.Mesh(post, frameM); l.position.set(-0.5, 1.175, 0); var r2 = l.clone(); r2.position.x = 0.5;
-        var top = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.1, 0.14), frameM); top.position.y = 2.3;
-        var panel = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.24, 0.045), panelM); panel.position.y = 1.13;
-        var knob = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 8), frameM); knob.position.set(0.34, 1.02, 0.05);
-        [l, r2, top, panel, knob].forEach(function (m) { m.castShadow = true; m.receiveShadow = true; doorObj.add(m); });
-        var cv = document.createElement("canvas"); cv.width = 256; cv.height = 64; var c = cv.getContext("2d");
-        c.fillStyle = "#1d1f24"; c.fillRect(0, 0, 256, 64); c.fillStyle = "#f2f2f2"; c.font = "600 30px system-ui,sans-serif"; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText("Studio", 128, 34);
-        var st = new THREE.CanvasTexture(cv); st.colorSpace = THREE.SRGBColorSpace;
-        var sign = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), new THREE.MeshStandardMaterial({ map: st, roughness: 0.5 }));
-        sign.position.set(0, 1.85, 0.03); doorObj.add(sign);
-      })();
-      doorObj.position.set(doorPos.x, terrainH(doorPos.x, doorPos.z) - 0.02, doorPos.z);
-      doorObj.rotation.y = Math.atan2(-parkDir[0], -parkDir[1]);
+      // ---- the door home ----
+      if (!doorObj) doorObj = makeDoor();
+      var doorPos = { x: W.door.x, z: W.door.z }, doorPop = 1;
+      doorObj.scale.setScalar(1);
+      doorObj.position.set(doorPos.x, W.door.y != null ? W.door.y : groundAt(doorPos.x, doorPos.z).h - 0.02, doorPos.z);
+      doorObj.rotation.y = W.door.yaw;
       root.add(doorObj);
-      var spawnX = doorPos.x - parkDir[0] * 2.2, spawnZ = doorPos.z - parkDir[1] * 2.2;
-      // desktop yaw: forward = (-sin yaw, -cos yaw); face toward the road
-      var spawnYaw = Math.atan2(parkDir[0], parkDir[1]);
 
-      // ---- car ----
-      var car = await buildCar(meta.car, geo);
+      // ---- car (built once, shared by every map) ----
+      var car = await getCar();
       root.add(car.root);
-      car.x = park.x - parkDir[0] * 1.5 + tg.x * 4; car.z = park.z - parkDir[1] * 1.5 + tg.z * 4;
-      car.yaw = Math.atan2(tg.x, tg.z) + 0.25 * parkSide;
+      car.x = W.car.x; car.z = W.car.z; car.yaw = W.car.yaw;
+      car.vx = car.vz = car.vy = 0; car.r = 0; car.vf = 0; car.air = false; car.gh0 = undefined; car.ax = 0;
       car.y = groundAt(car.x, car.z).h;
 
       // ---- audio ----
@@ -1067,17 +1173,18 @@
       function stopAudio() { if (audio) audio.master.gain.setTargetAtTime(0, audio.ac.currentTime, 0.08); }
 
       var M = {
-        root: root, sky: sky, fog: fog, car: car, camMode: 0, input: function () { return driveInput(); },
+        kind: W.kind, world: W, root: root, sky: W.sky, fog: W.fog, env: W.env, credits: W.credits, bounds: W.bounds,
+        car: car, camMode: 0, input: function () { return driveInput(); },
         groundAt: groundAt, startAudio: startAudio, stopAudio: stopAudio,
         roads: roads, nearestRoad: nearestRoad,
         /** optional input source (replays, tests): () => {thr, brk, steer, hb} */
         inputOverride: null,
-        spawn: { x: spawnX, z: spawnZ, yaw: spawnYaw },
+        spawn: W.spawn,
         updateBlockers: function () {
           var bl = [];
           var c = Math.cos(car.yaw), s = Math.sin(car.yaw), hx = Math.abs(c) * 0.95 + Math.abs(s) * 2.45, hz = Math.abs(s) * 0.95 + Math.abs(c) * 2.45;
           bl.push(new THREE.Box2(new THREE.Vector2(OFFX + car.x - hx, car.z - hz), new THREE.Vector2(OFFX + car.x + hx, car.z + hz)));
-          var dx = Math.abs(parkDir[1]) * 0.6 + 0.12, dz = Math.abs(parkDir[0]) * 0.6 + 0.12;
+          var dy = doorObj.rotation.y, dx = Math.abs(Math.cos(dy)) * 0.6 + 0.12, dz = Math.abs(Math.sin(dy)) * 0.6 + 0.12;
           bl.push(new THREE.Box2(new THREE.Vector2(OFFX + doorPos.x - dx, doorPos.z - dz), new THREE.Vector2(OFFX + doorPos.x + dx, doorPos.z + dz)));
           desk.walk.blockers = bl;
         },
@@ -1088,9 +1195,8 @@
           var a = -0.7, dx = dir.x * Math.cos(a) - dir.z * Math.sin(a), dz = dir.x * Math.sin(a) + dir.z * Math.cos(a);
           var px = x + dx * dist, pz = z + dz * dist;
           // keep it off the road and out of the trees
-          for (var k = 0; k < 8; k++) {
-            var nr = nearestRoad(px, pz);
-            if ((!nr || nr.d > 7) && !treeHit(px, pz, 0.8)) break;
+          for (var k = 0; k < 12; k++) {
+            if (W.clearSpot(px, pz)) break;
             px += dx * 1.5; pz += dz * 1.5;
           }
           doorPos.x = px; doorPos.z = pz;
@@ -1100,15 +1206,8 @@
           this.updateBlockers();
         },
         resetCar: function () {
-          var nr = nearestRoad(car.x, car.z), best = nr;
-          if (!best) {
-            var bd = 1e18;
-            roads.forEach(function (rd, ri) { for (var k = 0; k < rd.n; k += 4) { var d = (rd.P[k * 2] - car.x) ** 2 + (rd.P[k * 2 + 1] - car.z) ** 2; if (d < bd) { bd = d; best = { ri: ri, k: k }; } } });
-          }
-          var rd = roads[best.ri], k = best.k;
-          var fx = Math.sin(car.yaw), fz = Math.cos(car.yaw), tx = rd.T[k * 2], tz = rd.T[k * 2 + 1];
-          var dir = fx * tx + fz * tz >= 0 ? 1 : -1;
-          car.x = rd.P[k * 2]; car.z = rd.P[k * 2 + 1]; car.yaw = Math.atan2(tx * dir, tz * dir);
+          var pose = W.resetPose(car.x, car.z, car.yaw);
+          car.x = pose.x; car.z = pose.z; car.yaw = pose.yaw;
           car.y = groundAt(car.x, car.z).h + 0.3; car.vx = car.vz = car.vy = 0; car.r = 0; car.vf = 0; car.air = true;
           camState.init = false;
         },
@@ -1157,17 +1256,27 @@
           sun.target.position.set(lx, ly, lz); sun.position.set(lx + sunDir.x * 200, ly + sunDir.y * 200, lz + sunDir.z * 200);
           sun.target.updateMatrixWorld();
           renderer.shadowMap.needsUpdate = true;
-          flakes.visible = true; spray.obj.visible = true;
-          flakes.material.uniforms.uTime.value = t; flakes.material.uniforms.uCam.value.copy(cw);
+          spray.obj.visible = true;
           var focal = renderer.domElement.height * 0.5 / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-          flakes.material.uniforms.uScale.value = focal * 0.012; spray.obj.material.uniforms.uScale.value = focal;
+          spray.obj.material.uniforms.uScale.value = focal;
           spray.update(dt);
+          // the world's own life: snowfall, traffic
+          var pl = mode === "drive" ? { x: car.x, z: car.z, vx: car.vx, vz: car.vz } : { x: cw.x - OFFX, z: cw.z, vx: 0, vz: 0 };
+          pl.cam = cw; pl.focal = focal; pl.fwd = camera.getWorldDirection(new THREE.Vector3());
+          W.update(dt, t, pl);
+        },
+        /** free everything this map built (the car and the door are kept for the next map) */
+        dispose: function () {
+          if (audio) { try { audio.ac.close(); } catch (e) {} audio = null; }
+          root.remove(car.root); root.remove(doorObj);
+          scene.remove(spray.obj); spray.obj.geometry.dispose(); spray.obj.material.dispose();
+          W.dispose();
         }
       };
       var rootVisible = false;
       Object.defineProperty(root, "visible", {
         get: function () { return rootVisible; },
-        set: function (v) { rootVisible = v; if (!v) { flakes.visible = false; spray.obj.visible = false; } }
+        set: function (v) { rootVisible = v; W.setActive(v); if (!v) spray.obj.visible = false; }
       });
 
       // ---- vehicle dynamics ----
@@ -1175,17 +1284,6 @@
       var steer = 0, gear = 1, rpm = 900;
       var GEARS = [0, 11, 19, 28, 38, 49, 64];
       function wheelPos(fx, fz, sx, sz, wx, wz) { return [car.x + sx * wx + fx * wz, car.z + sz * wx + fz * wz]; }
-      function treeHit(x, z, r) {
-        var ix = Math.floor(x / TG), iz = Math.floor(z / TG), out = null;
-        for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) {
-          var l = treeGrid.get(gkey(ix + a, iz + b)); if (!l) continue;
-          for (var q = 0; q < l.length; q++) {
-            var i = l[q], dx = x - treeCol[i], dz = z - treeCol[i + 1], rr2 = r + treeCol[i + 2], d2 = dx * dx + dz * dz;
-            if (d2 < rr2 * rr2) { var d = Math.sqrt(d2) || 0.001; out = { nx: dx / d, nz: dz / d, pen: rr2 - d }; }
-          }
-        }
-        return out;
-      }
       // keyboard, plus (in VR) analog triggers and either stick
       function driveInput() {
         if (M.inputOverride) return M.inputOverride();
@@ -1300,7 +1398,7 @@
           car.pitchT = grounded ? pitchG : car.pitchT; car.rollT = grounded ? rollG : car.rollT * 0.995;
           var Fx = 0, FyF = 0, FyR = 0, torque = 0;
           if (grounded) {
-            var mu = surf < 0.5 ? 0.95 : surf < 1.5 ? 0.72 : 0.6;
+            var si = surf < 0.5 ? 0 : surf < 1.5 ? 1 : 2, mu = W.mu[si];
             var NF = MASS * GR * B / (A + B) * load, NR = MASS * GR * A / (A + B) * load;
             // weight transfer (centre of mass ~0.5 m up): braking loads the front tyres,
             // accelerating the rear - trail-braking turns in, lifting off mid-corner bites
@@ -1319,7 +1417,7 @@
             }
             var Fbrake = brake * mu * MASS * GR * 0.9 * Math.sign(vF);
             var Fhb = hb ? mu * NR * 0.6 * Math.sign(vF) : 0;
-            var drag = 0.42 * vF * Math.abs(vF) + MASS * (surf < 0.5 ? 0.12 : surf < 1.5 ? 0.45 : 1.6) * vF * 0.1;
+            var drag = 0.42 * vF * Math.abs(vF) + MASS * W.roll[si] * vF * 0.1;
             Fx = drive - Fbrake - Fhb - drag;
             // lateral with friction circle on rear
             var CF = 72000, CR = 80000;
@@ -1347,7 +1445,9 @@
             car.ax = (Fx) / MASS; car.aL = (FyF + FyR) / MASS;
             // spray
             var slip = Math.abs(aR) * Math.abs(vF) + (hb ? Math.abs(vF) * 0.3 : 0) + (thr && Math.abs(vF) < 12 ? 3 : 0);
-            if (Math.abs(vF) > 3 && Math.random() < Math.min(0.9, slip * 0.05 + (surf > 0.5 ? 0.25 : 0.05) * Math.abs(vF) / 20)) {
+            // snow kicks up all the time; on tarmac only real wheelspin and slides smoke
+            var kick = W.kick[surf > 0.5 ? 1 : 0], smoke = W.kick[0] > 0 ? slip : Math.max(0, slip - 5);
+            if (Math.abs(vF) > 3 && Math.random() < Math.min(0.9, smoke * 0.05 + kick * Math.abs(vF) / 20)) {
               for (var w = 2; w < 4; w++) {
                 var wd = car.wheels[w], p = wheelPos(fx, fz, sx, sz, wd.x, wd.z - 0.3);
                 spray.emit(OFFX + p[0], car.y + 0.15, p[1], -fx * vF * 0.25 + (Math.random() - 0.5) * 2, 1 + Math.random() * 2, -fz * vF * 0.25 + (Math.random() - 0.5) * 2, 0.25 + Math.random() * 0.25);
@@ -1361,18 +1461,32 @@
           }
           car.yaw += car.r * dt;
           car.x += car.vx * dt; car.z += car.vz * dt;
-          // trees (three circles along the car)
+          // trees, barriers and other cars (three circles along the car)
           for (var c = -1; c <= 1; c++) {
-            var cx = car.x + fx * c * 1.55, cz = car.z + fz * c * 1.55, h = treeHit(cx, cz, 0.95);
+            var cx = car.x + fx * c * 1.55, cz = car.z + fz * c * 1.55, h = W.hit(cx, cz, 0.95);
             if (h) {
               car.x += h.nx * h.pen; car.z += h.nz * h.pen;
-              var vn = car.vx * h.nx + car.vz * h.nz;
-              if (vn < 0) { car.vx -= 1.3 * vn * h.nx; car.vz -= 1.3 * vn * h.nz; car.vx *= 0.75; car.vz *= 0.75; car.r += c * vn * 0.08; }
+              // relative to the obstacle (traffic moves; trees and rails do not)
+              var ovx = h.vx || 0, ovz = h.vz || 0;
+              var vn = (car.vx - ovx) * h.nx + (car.vz - ovz) * h.nz;
+              if (vn < 0) {
+                // impulse along the contact normal (a little bounce), then Coulomb
+                // friction on the sliding part: glancing blows scrape along a rail,
+                // square hits stop the car
+                var jn = -1.3 * vn, MUK = 0.45;
+                var rvx = car.vx - ovx + jn * h.nx, rvz = car.vz - ovz + jn * h.nz;
+                var rvn = rvx * h.nx + rvz * h.nz, tx = rvx - rvn * h.nx, tz = rvz - rvn * h.nz, tl = Math.hypot(tx, tz);
+                var keep = tl > 1e-4 ? Math.max(0, 1 - MUK * jn / tl) : 0;
+                car.vx = ovx + rvn * h.nx + tx * keep; car.vz = ovz + rvn * h.nz + tz * keep;
+                car.r += c * vn * 0.08;
+                if (h.push) h.push(vn * h.nx * 1.3, vn * h.nz * 1.3); // the other car takes the opposite impulse
+                if (-vn > 3) rumble(Math.min(1, -vn / 12), 120);
+              }
             }
           }
-          var LIM = 1165;
-          if (Math.abs(car.x) > LIM) { car.x = clamp(car.x, -LIM, LIM); car.vx *= -0.3; }
-          if (Math.abs(car.z) > LIM) { car.z = clamp(car.z, -LIM, LIM); car.vz *= -0.3; }
+          var BB = W.bounds;
+          if (car.x < BB.minX || car.x > BB.maxX) { car.x = clamp(car.x, BB.minX, BB.maxX); car.vx *= -0.3; }
+          if (car.z < BB.minZ || car.z > BB.maxZ) { car.z = clamp(car.z, BB.minZ, BB.maxZ); car.vz *= -0.3; }
           car.vf = car.vx * Math.sin(car.yaw) + car.vz * Math.cos(car.yaw);
           car.steer = steer;
           if (car.y < -400) M.resetCar();

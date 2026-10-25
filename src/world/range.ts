@@ -19,7 +19,8 @@ import type { BulletHit } from './gunEffects';
  *   rings, heard after the sound's travel time, swings the plate and leaves
  *   a lead splash. Distance boards stand in front of each frame.
  */
-export const RANGE_ORIGIN = new THREE.Vector3(-5000, 0, 0);
+import { RANGE_ORIGIN } from './rangeOrigin';
+export { RANGE_ORIGIN };
 const EYE = 1.62;
 
 type Deps = {

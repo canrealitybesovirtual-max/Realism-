@@ -23,7 +23,7 @@ npm run dev          # http://localhost:5173  (use https / a tunnel for a headse
 
 **VR (WebXR headset)**
 
-Your controllers appear as animated hands. Fingers follow the trigger, grip and thumb rest, and the index finger extends near the keyboard and screen. Held objects settle into a natural grasp: pen in a pinch, fingers through the mug handle, thumb over the notebook, palm on the mouse. Quest hand tracking also works without controllers: your fingers drive the hand, a pinch clicks and grabs, and your fingertip types. Add `?controllers` to the URL to see plain controller models instead.
+Your controllers appear as animated hands. Fingers follow the trigger, grip and thumb rest, and the index finger extends near the keyboard and screen. Held objects settle into a natural grasp: pen in a pinch, fingers through the mug handle, thumb over the notebook, palm on the mouse. Anything else you pick up (a magazine, say) gets fingers that close until they touch it, and the hand stays where the object really is. An empty hand stops at the desk and the walls even when the controller goes through them. The skin has creases at the joints, palm lines, knuckle wrinkles, fine grain and nails with a lunula, all computed on the GPU (no textures). Quest hand tracking also works without controllers: your fingers drive the hand, a pinch clicks and grabs, and your fingertip types. Add `?controllers` to the URL to see plain controller models instead.
 
 | Action | Input |
 |---|---|
@@ -33,7 +33,7 @@ Your controllers appear as animated hands. Fingers follow the trigger, grip and 
 | Pick up | Grip near an object, or point at it within 1.2 m and grip / trigger. Release to drop or throw |
 | Walk | Left stick: smooth walking in the direction you look (walls and furniture stop you; edges dim slightly while moving, for comfort). Works while holding things |
 | Guns | Grip to pick one up; trigger fires. **A / X**: magazine release - the magazine drops out as a real object. **Reload by hand:** squeeze your other hand at your hip to draw a spare magazine, bring it up to the magwell (it seats when lined up). **Glock:** grab the back of the slide with the other hand and pull it to rack; **B / Y** is the slide stop when it is locked back (else the light). **AWM:** grab the bolt handle, lift it, pull it back (the case flies out), push it forward and down. Let a magazine go at your hip to put it back on the belt; point at an ammo can and pull the trigger to refill. The old service pistol keeps its simple **A** reload |
-| Snowy Mountain Rally | Pick it in the **Door** app on the computer, then walk to the office door and press **A** (or point at it and pull the trigger) |
+| Snowy Mountain Rally / Highway | Pick one in the **Door** app on the computer, then walk to the office door and press **A** (or point at it and pull the trigger) |
 | Get in the car | Walk up to it and press **A** |
 | Drive | Right trigger: gas · Left trigger: brake, then reverse (both analog) · **Steer with your hands:** grip the steering wheel's rim (one or both hands) and turn it, or use either stick · **A**: handbrake · **B**: get out · **Y**: back on the road · **X**: re-centre the seat. The speedometer and rev counter in the dash work. The door back to the studio follows you around the map on foot and comes to where you get out |
 | Turn | Right stick: flick left/right to snap-turn 30°. Up/down scrolls when pointing at the monitor |
@@ -84,14 +84,15 @@ URL options:
 - **The bench board:** shows clays broken and steel hits.
 - **Back to the studio:** the door at the back of the firing line (**E**, or **A** in VR).
 
-## Add-ons: Game Editor, Video, Door and the Snowy Mountain Rally
+## Add-ons: Game Editor, Video, Door, the Snowy Mountain Rally and the Highway
 
 `public/addons` holds plain scripts that build on `window.__studio` once the room has loaded.
 
 - **Game Editor (`editor.js`):** a computer app that runs JavaScript inside the live room. Its *Ask Claude* tab writes that code from a sentence. That needs the page to be opened on claude.ai while signed in; in a separate tab (which VR needs), use the *Code* tab.
 - **Video (`editor.js`):** plays a video file from your device on the monitor. The browser's file dialog cannot open inside a VR session, so pick the file before entering VR.
-- **Door + rally (`rally.js`, `rally-data.json`):** the Door app chooses where the office door leads. *Snowy Mountain Rally* is a 2.4 km terrain with a 5.5 km road loop and a car you can drive. On desktop: <kbd>E</kbd> at the door or the car, <kbd>W A S D</kbd> drive, <kbd>Space</kbd> handbrake, <kbd>C</kbd> camera, <kbd>R</kbd> back on the road. In VR, see the controls above. You sit in the driver's seat, calibrated to where your head is when you get in; tyre slip and landings rumble the controllers.
-- `node scripts/e2e-rally-vr.mjs` walks the whole thing in an emulated Quest 3.
+- **Door + maps (`rally.js`, `rally-car.json`, `rally-snow.json`, `src/maps/highway.ts`):** the Door app chooses where the office door leads. *Snowy Mountain Rally* is a 2.4 km terrain with a 5.5 km road loop and a car you can drive. *Highway* is a procedural 8 km motorway loop: three lanes each way, a concrete median barrier, guardrails, lamp posts, gantry signs, rolling grassland with trees, and about 30 cars of GLB traffic (Kenney's Car Kit). The traffic follows the car in front with the Intelligent Driver Model and changes lanes when it gains by it (keeping right otherwise); it brakes for you, and a car you hit gets shoved and pulls up. Your car waits on the hard shoulder by the lay-by.
+- **Each map loads on its own:** nothing behind the door is downloaded or built with the office. The highway is a separate code chunk plus `models/traffic/traffic.json`, fetched the first time you go; the rally map fetches only its own data. Both are built when you go through the door and freed (geometry, textures, audio) when you come back. The car is shared and kept. The shooting range is its own chunk too, built the first time you go there. On desktop: <kbd>E</kbd> at the door or the car, <kbd>W A S D</kbd> drive, <kbd>Space</kbd> handbrake, <kbd>C</kbd> camera, <kbd>R</kbd> back on the road. In VR, see the controls above. You sit in the driver's seat, calibrated to where your head is when you get in; tyre slip and landings rumble the controllers.
+- `node scripts/e2e-rally-vr.mjs` walks the whole thing in an emulated Quest 3; `node scripts/e2e-maps.mjs` checks the on-demand loading, the highway traffic, driving, barriers and crashes.
 
 ## The computer
 
@@ -136,7 +137,8 @@ npm run textures                 # regenerate the procedural PBR textures
 - **More sounds, Freesound, CC0:** [Sniper Rifle](https://freesound.org/people/SuperPhat/sounds/514228/) by SuperPhat; bolt from [AR15 M4 Gun Hardware Magazine Movement Sounds](https://freesound.org/people/jackthemurray/sounds/393732/) by jackthemurray; brass from [shotgun sounds](https://freesound.org/people/lensflare8642/sounds/145209/) by lensflare8642. The range's clay break, steel ring and trap thunk are synthesised in code.
 - **Sounds, Freesound, CC0:** [9mm pistol shot](https://freesound.org/people/michorvath/sounds/427592/) by michorvath; [Dry Fire](https://freesound.org/people/brianhanson2nd/sounds/171211/) by brianhanson2nd; magazine out/in from [Colt SMG - Firing, Handling](https://freesound.org/people/hyperix6/sounds/676588/) by hyperix6.
 - **HDRI:** [Spruit Sunrise](https://polyhaven.com/a/spruit_sunrise), Poly Haven, CC0. The 4K UltraHDR JPEG comes from the three.js examples.
-- **Rally car and mountain textures, CC BY 4.0 (Sketchfab):** car "art of rally Latest Version 2027" by FarHandle5255; textures "Snowy Mountain Road Scene" by 99.Miles. They are packed into `public/addons/rally-data.json`, and the credit is shown on screen while you are on the mountain.
+- **Rally car and mountain textures, CC BY 4.0 (Sketchfab):** car "art of rally Latest Version 2027" by FarHandle5255; textures "Snowy Mountain Road Scene" by 99.Miles. They are packed into `public/addons/rally-car.json` and `public/addons/rally-snow.json`, and the credit is shown on screen while you are on a map.
+- **Highway traffic and trees, CC0:** [Car Kit](https://kenney.nl/assets/car-kit) and [Nature Kit](https://kenney.nl/assets/nature-kit) by Kenney, taken from the `@netforge/asset-library-files` npm package and packed into `public/models/traffic/traffic.json` by `scripts/pack-traffic.cjs`. The road, terrain, sky and road textures are generated in code.
 - **Textures:** concrete, plaster, oak, upholstery, chair mesh and grit are procedurally generated by `scripts/gen-textures.mjs`. They are original to this project.
 - **Everything else** (furniture, hardware, architecture) is modelled in code, in `src/world`.
 

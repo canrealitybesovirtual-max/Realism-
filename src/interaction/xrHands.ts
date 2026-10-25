@@ -20,6 +20,16 @@ export interface HandContext {
 	/** index finger extended: near the keyboard or pointing at the screen */
 	point: boolean;
 	holding: GraspKind | 'mouse' | null;
+	/** any other object in the hand: its bounds (object space) and world pose; the fingers close onto it */
+	object?: { box: THREE.Box3; matrix: THREE.Matrix4 } | null;
+}
+
+/** Solid scenery for the hands: sweep a sphere through it, or push one out of it. */
+export interface SurfaceBlocker {
+	/** where a sphere moving from `from` to `to` ends up (stopped at, and sliding along, surfaces) */
+	sweep(from: THREE.Vector3, to: THREE.Vector3, radius: number): THREE.Vector3;
+	/** the correction that clears a sphere from the scenery, or null when it is clear */
+	push(centre: THREE.Vector3, radius: number): THREE.Vector3 | null;
 }
 
 // Wrist pose in the controller's target-ray space (-Z forward, +Y up when the
@@ -163,6 +173,12 @@ export function graspFor(kind: GraspKind, handedness: 'left' | 'right'): THREE.M
 	return graspCache.get(k)!;
 }
 
+/** palm and knuckle spheres (wrist space) that keep an empty hand out of the scenery */
+const HandSpheres: [THREE.Vector3, number][] = [
+	[new THREE.Vector3(0, -0.006, -0.05), 0.03],
+	[new THREE.Vector3(0, -0.002, -0.088), 0.022],
+];
+
 export class XRHand {
 	readonly model: HandModel;
 	private pose: HandPose = structuredClone(POSES.gripController);
@@ -173,6 +189,12 @@ export class XRHand {
 	private mouseWrist: THREE.Matrix4;
 	/** wrist (hand root) in world space, valid after update */
 	readonly wrist = new THREE.Matrix4();
+	/** keeps an empty hand on the near side of desks and walls (the controller can go through; the hand cannot) */
+	blocker: SurfaceBlocker | null = null;
+	/** how far the hand was held back from the controller last frame (metres) */
+	blocked = 0;
+	/** where the palm was last frame (after blocking), for sweeping */
+	private palmPrev: THREE.Vector3 | null = null;
 
 	constructor(readonly handedness: 'left' | 'right', scene: THREE.Object3D) {
 		this.model = new HandModel(handedness);
@@ -194,6 +216,30 @@ export class XRHand {
 		// supporting hand steering a rifle)
 		else if (ctx.holding === 'pistol' && mouseWorld) this.wrist.multiplyMatrices(mouseWorld, this.gunWrist);
 		else this.wrist.multiplyMatrices(rayWorld, ctx.holding === 'pistol' ? this.pistolWrist : this.rayWrist);
+		// an empty hand stops at surfaces: the palm sweeps from where it was (so
+		// a thin desk top cannot be passed in one frame), then palm and knuckles
+		// are pushed clear of anything they still touch
+		this.blocked = 0;
+		if (this.blocker && !ctx.holding && !ctx.object && !ctx.point) {
+			const [palmP, palmR] = HandSpheres[0];
+			const want = palmP.clone().applyMatrix4(this.wrist);
+			let at = want.clone();
+			if (this.palmPrev && this.palmPrev.distanceToSquared(want) < 0.25) {
+				at = this.blocker.sweep(this.palmPrev, want, palmR);
+				// more than 25 cm adrift (a teleport, a snap turn): let go rather than stick behind a wall
+				if (at.distanceToSquared(want) > 0.0625) at.copy(want);
+			}
+			const shift = at.sub(want);
+			for (let it = 0; it < 2; it++) for (const [p, r] of HandSpheres) {
+				const push = this.blocker.push(p.clone().applyMatrix4(this.wrist).add(shift), r);
+				if (push) shift.add(push);
+			}
+			if (shift.lengthSq() > 1e-10) {
+				this.blocked = shift.length();
+				const e = this.wrist.elements; e[12] += shift.x; e[13] += shift.y; e[14] += shift.z;
+			}
+			this.palmPrev = palmP.clone().applyMatrix4(this.wrist);
+		} else this.palmPrev = null;
 		this.model.root.matrix.copy(this.wrist);
 		this.model.root.matrixWorldNeedsUpdate = true;
 
@@ -206,6 +252,10 @@ export class XRHand {
 			blendPose(POSES.pistolGrip, POSES.pistolGrip, 0, t);
 			// trigger finger squeezes with the analog trigger
 			t.index[1] += input.trigger * 12; t.index[2] += input.trigger * 10;
+		}
+		else if (ctx.object) {
+			// anything else: each finger closes until it meets the object
+			this.fitToObject(t, ctx.object.box, ctx.object.matrix, Math.max(0.6, input.squeeze));
 		}
 		else if (ctx.holding === 'mouse') {
 			blendPose(POSES.mouse, POSES.mouse, 0, t);
@@ -225,6 +275,51 @@ export class XRHand {
 		// critically damped approach: quick but never snapping (about 60 ms)
 		blendPose(this.pose, t, 1 - Math.exp(-dt * 18), this.pose);
 		this.model.setPose(this.pose);
+	}
+
+	/**
+	 * Curl every finger (and the thumb) from open toward a fist, stopping where
+	 * it first touches the object's bounds: a binary search per finger on the
+	 * curl, testing the finger's bones as capsules against the box.
+	 */
+	private fitToObject(t: HandPose, box: THREE.Box3, objWorld: THREE.Matrix4, close: number) {
+		const fingers = ['thumb', 'index', 'middle', 'ring', 'pinky'] as const;
+		const lo = [0, 0, 0, 0, 0], hi = fingers.map(() => close);
+		const toObj = new THREE.Matrix4().copy(objWorld).invert().multiply(this.wrist);
+		const trial = structuredClone(POSES.open);
+		const pts: THREE.Vector3[] = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+		const radius = [0.0105, 0.0085, 0.009, 0.0085, 0.0075];
+		// work in wrist space (the hand hangs off the scene root, whose frame is the world's)
+		this.model.root.matrix.identity();
+		const touches = (fi: number) => {
+			const f = fingers[fi];
+			this.model.jointsWorld(f, pts);
+			for (const p of pts) p.applyMatrix4(toObj);
+			for (let k = 0; k < pts.length - 1; k++) for (let q = 0; q <= 4; q++) {
+				const s = pts[k].clone().lerp(pts[k + 1], q / 4);
+				if (box.distanceToPoint(s) < radius[fi]) return true;
+			}
+			return false;
+		};
+		for (let it = 0; it < 7; it++) {
+			const mid = lo.map((l, i) => (l + hi[i]) / 2);
+			fingers.forEach((f, i) => {
+				const v = blendPose(POSES.open, POSES.fist, mid[i]);
+				(trial as any)[f] = (v as any)[f];
+			});
+			trial.spread = 0;
+			this.model.setPose(trial);
+			this.model.root.updateMatrixWorld(true);
+			fingers.forEach((_, i) => { if (touches(i)) hi[i] = mid[i]; else lo[i] = mid[i]; });
+		}
+		this.model.root.matrix.copy(this.wrist);
+		this.model.root.matrixWorldNeedsUpdate = true;
+		fingers.forEach((f, i) => {
+			// rest on the surface (a hair past first contact: skin gives a little)
+			const v = blendPose(POSES.open, POSES.fist, Math.min(close, lo[i] + 0.03));
+			(t as any)[f] = (v as any)[f];
+		});
+		t.spread = 0;
 	}
 
 	/** Hand-tracking: copy the tracked joints onto the skeleton. */

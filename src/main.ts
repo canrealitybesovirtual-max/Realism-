@@ -14,7 +14,8 @@ import { mugDesc, notebookDesc, penDesc, pistolDesc, firearmDesc } from './physi
 import { Firearm, FIREARMS } from './world/firearm';
 import { FirearmSystem, type Gun } from './world/firearmSystem';
 import { GunEffects } from './world/gunEffects';
-import { ShootingRange, RANGE_ORIGIN } from './world/range';
+import type { ShootingRange } from './world/range';
+import { RANGE_ORIGIN } from './world/rangeOrigin';
 import { EntityWorld, registerScene } from './engine/entities';
 import { Runtime } from './engine/runtime';
 import { Editor } from './engine/editor';
@@ -85,6 +86,7 @@ let gun: PistolSystem | undefined;
 const guns: Gun[] = [];
 let gunFx: GunEffects | undefined;
 let range: ShootingRange | undefined;
+let rangeHandle: { readonly active: boolean; readonly loaded: boolean; enter(): Promise<void>; leave(): void } | undefined;
 let runtime: Runtime | undefined;
 let editor: Editor | undefined;
 let viewport: EditorViewport | undefined;
@@ -204,12 +206,26 @@ async function init() {
 	desktop = new DesktopControls(camera, renderer.domElement, physics, targets, walk, owner);
 	xr = new XRControls(renderer, scene, camera, physics, targets, walk, owner);
 	// the outdoor range behind the office door (Door app on the computer)
+	// is its own chunk: its code and scene are only loaded the first time you go
 	if (physics.enabled && gunFx) {
-		range = new ShootingRange({
+		const deps = {
 			scene, camera, renderer, physics, walk, desktop, xr, sun: lights.sun, listener: gunFx.listener, effects: gunFx,
 			background: hdr, backgroundRotation: sky.rotation.y, env: outdoor,
 			gunProps: guns.map((g) => ({ prop: g.prop, bolted: g.twoHanded })),
-		});
+		};
+		let loading: Promise<ShootingRange> | null = null;
+		rangeHandle = {
+			get active() { return !!range?.active; },
+			get loaded() { return !!range; },
+			async enter() {
+				if (!range) {
+					loading ??= import('./world/range').then((m) => new m.ShootingRange(deps));
+					range = await loading;
+				}
+				range.enter();
+			},
+			leave() { range?.leave(); },
+		};
 	}
 	// the engine / editor layer over the running game (Studio app on the computer)
 	{
@@ -276,7 +292,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets, mags });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range: rangeHandle, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets, mags });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -320,7 +336,14 @@ function statsProvider(): Record<string, string> {
 	};
 }
 
-(window as any).__studio = { ready: false, setView, renderer, scene, camera };
+(window as any).__studio = {
+	ready: false, setView, renderer, scene, camera,
+	/** extra maps live in their own chunks: fetched and built only when the player goes there */
+	loadMap: async (name: string) => {
+		if (name === 'highway') return (await import('./maps/highway')).buildHighway;
+		throw new Error(`unknown map ${name}`);
+	},
+};
 
 addEventListener('resize', () => {
 	camera.aspect = innerWidth / innerHeight;

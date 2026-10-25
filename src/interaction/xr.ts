@@ -164,6 +164,7 @@ export class XRControls {
 			if (this.handsEnabled && (!hand.visual || hand.visual.handedness !== side)) {
 				if (hand.visual) this.scene.remove(hand.visual.model.root);
 				hand.visual = new XRHand(side, this.scene);
+				if (this.physics.enabled) hand.visual.blocker = { sweep: (a, b, r) => this.physics.sweepSphere(a, b, r), push: (c, r) => this.physics.pushOutOfStatic(c, r) };
 			}
 		});
 		ray.addEventListener('disconnected', () => { this.releaseAll(hand); hand.source = null; if (hand.visual) hand.visual.visible = false; });
@@ -228,10 +229,21 @@ export class XRControls {
 			const tipW = h.visual.indexTip();
 			const local = (this.targets.keycaps.parent as THREE.Object3D).worldToLocal(tipW);
 			const nearKeys = Math.abs(local.x) < 0.3 && Math.abs(local.z) < 0.26 && local.y < 0.2 && local.y > -0.04;
+			// anything held without a dedicated grasp: the hand stays on the object
+			// where it really is (blocked by the desk, say), fingers closed onto it
+			const plain = h.held && !h.held.kind && !gunFor(this.targets.guns, h.held.prop) ? h.held : null;
+			let ray = h.ray.matrixWorld;
+			let object: { box: THREE.Box3; matrix: THREE.Matrix4 } | null = null;
+			if (plain) {
+				const o = plain.prop.desc.object;
+				o.updateMatrixWorld();
+				ray = new THREE.Matrix4().multiplyMatrices(o.matrixWorld, plain.offset.clone().invert());
+				object = { box: localBox(o), matrix: o.matrixWorld };
+			}
 			h.visual.updateController(
-				h.ray.matrixWorld,
+				ray,
 				{ trigger: btn.triggerValue, squeeze: btn.squeezeValue, thumbTouch: btn.thumbTouch },
-				{ point: !h.held && !h.holdingMouse && (nearKeys || h.pointing === 'screen' || h.pointing === 'key'), holding: h.holdingMouse ? 'mouse' : h.held?.kind ?? null },
+				{ point: !h.held && !h.holdingMouse && (nearKeys || h.pointing === 'screen' || h.pointing === 'key'), holding: h.holdingMouse ? 'mouse' : h.held?.kind ?? null, object },
 				h.holdingMouse ? this.targets.mouse.object.matrixWorld : h.held && gunFor(this.targets.guns, h.held.prop) ? h.held.prop.desc.object.matrixWorld : null,
 				dt,
 			);
@@ -686,4 +698,23 @@ function fallbackController(): THREE.Group {
 function isChildOf(o: THREE.Object3D, parent: THREE.Object3D): boolean {
 	for (let p: THREE.Object3D | null = o; p; p = p.parent) if (p === parent) return true;
 	return false;
+}
+
+/** An object's bounds in its own frame (meshes under it, cached per object). */
+const boxCache = new WeakMap<THREE.Object3D, THREE.Box3>();
+function localBox(o: THREE.Object3D): THREE.Box3 {
+	let b = boxCache.get(o);
+	if (b) return b;
+	b = new THREE.Box3();
+	o.updateMatrixWorld(true);
+	const inv = o.matrixWorld.clone().invert(), m = new THREE.Matrix4();
+	o.traverse((c) => {
+		const mesh = c as THREE.Mesh;
+		if (!mesh.isMesh || !mesh.geometry) return;
+		if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+		b!.union(mesh.geometry.boundingBox!.clone().applyMatrix4(m.multiplyMatrices(inv, mesh.matrixWorld)));
+	});
+	if (b.isEmpty()) b.set(new THREE.Vector3(-0.03, -0.03, -0.03), new THREE.Vector3(0.03, 0.03, 0.03));
+	boxCache.set(o, b);
+	return b;
 }

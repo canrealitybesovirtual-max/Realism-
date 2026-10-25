@@ -119,3 +119,73 @@ describe('pistol grasp', () => {
 		});
 	}
 });
+
+describe('skin detail and contact', () => {
+	it('every vertex carries skin coordinates: palm, fingers with creases at the joints, nails', () => {
+		const h = new HandModel('right');
+		const g = h.mesh.geometry, sk = g.getAttribute('aSkin'), jd = g.getAttribute('aJd'), kn = g.getAttribute('aKnuckle');
+		expect(sk.count).toBe(g.getAttribute('position').count);
+		const regions = new Set<number>();
+		let nearCrease = 0, knuckles = 0;
+		for (let i = 0; i < sk.count; i++) {
+			regions.add(sk.getW(i));
+			const near = Math.min(Math.abs(jd.getX(i)), Math.abs(jd.getY(i)), Math.abs(jd.getZ(i)));
+			if (sk.getW(i) === 1 && near < 0.0025) nearCrease++;
+			if (Math.max(kn.getX(i), kn.getY(i), kn.getZ(i)) > 0.9 && near < 0.004) knuckles++;
+		}
+		expect([...regions].sort()).toEqual([0, 1, 2]);
+		expect(nearCrease).toBeGreaterThan(100); // rings at every joint, on all five digits
+		expect(knuckles).toBeGreaterThan(100);
+	});
+
+	it('holding an object, each finger closes until it meets the surface', async () => {
+		const { XRHand } = await import('../../src/interaction/xrHands');
+		const scene = new THREE.Scene();
+		const hand = new XRHand('right', scene);
+		// a 5 x 3 x 12 cm box (a magazine-ish block) across the palm, below the knuckles
+		const box = new THREE.Box3(new THREE.Vector3(-0.025, -0.015, -0.06), new THREE.Vector3(0.025, 0.015, 0.06));
+		const ray = new THREE.Matrix4();
+		const wristFromRay = new THREE.Matrix4(); // the box sits in wrist space; find the wrist first
+		hand.updateController(ray, { trigger: 0, squeeze: 1, thumbTouch: false }, { point: false, holding: null }, null, 1);
+		wristFromRay.copy(hand.wrist);
+		const obj = wristFromRay.clone().multiply(new THREE.Matrix4().makeRotationY(Math.PI / 2)).multiply(new THREE.Matrix4().makeTranslation(0, 0, 0)).setPosition(
+			new THREE.Vector3(0, -0.035, -0.075).applyMatrix4(wristFromRay));
+		for (let i = 0; i < 30; i++) hand.updateController(ray, { trigger: 0, squeeze: 1, thumbTouch: false }, { point: false, holding: null, object: { box, matrix: obj } }, null, 1 / 60);
+		hand.model.root.updateMatrixWorld(true);
+		const inv = obj.clone().invert();
+		const gaps = (['index', 'middle', 'ring', 'pinky'] as const).map((f) => {
+			// nearest point of the finger (sampled along its bones) to the box
+			const pts = hand.model.jointsWorld(f, [0, 0, 0, 0, 0].map(() => new THREE.Vector3()));
+			let best = 1;
+			for (let k = 0; k < 4; k++) for (let q = 0; q <= 8; q++) best = Math.min(best, box.distanceToPoint(pts[k].clone().lerp(pts[k + 1], q / 8).applyMatrix4(inv)));
+			return best;
+		});
+		// every finger reaches the surface (skin radius ~9 mm) and none sinks deep into it
+		for (const g of gaps) { expect(g).toBeLessThan(0.013); }
+		const tipsInside = (['index', 'middle', 'ring', 'pinky'] as const).filter((f) => box.containsPoint(hand.model.tipWorld(f).applyMatrix4(inv)));
+		expect(tipsInside.length).toBe(0);
+	});
+
+	it('an empty hand stops at a surface the controller passes through', async () => {
+		const { XRHand } = await import('../../src/interaction/xrHands');
+		const hand = new XRHand('right', new THREE.Scene());
+		// a desk top 3 cm thick at y = 0 (solid from -0.03 to 0); the palm sweeps down onto it
+		const above = (c: THREE.Vector3, r: number) => c.y - r < 0 && c.y + r > -0.03;
+		hand.blocker = {
+			push: (c, r) => (above(c, r) ? new THREE.Vector3(0, r - c.y, 0) : null),
+			sweep: (a, b, r) => (a.y >= r && b.y < r ? new THREE.Vector3(b.x, r, b.z) : b.clone()),
+		};
+		const at = (y: number) => new THREE.Matrix4().makeTranslation(0, y, 0);
+		// the controller comes down from 20 cm above to 12 cm below the top, past the slab in one step
+		hand.updateController(at(0.2), { trigger: 0, squeeze: 0, thumbTouch: false }, { point: false, holding: null }, null, 1 / 60);
+		const ray = at(-0.12);
+		hand.updateController(ray, { trigger: 0, squeeze: 0, thumbTouch: false }, { point: false, holding: null }, null, 1 / 60);
+		hand.model.root.updateMatrixWorld(true);
+		const palm = new THREE.Vector3(0, -0.006, -0.05).applyMatrix4(hand.wrist);
+		expect(palm.y).toBeGreaterThan(0.029);
+		expect(hand.blocked).toBeGreaterThan(0.05);
+		// pointing at keys or holding something: no blocking (the finger has to reach the keys)
+		hand.updateController(ray, { trigger: 0, squeeze: 0, thumbTouch: false }, { point: true, holding: null }, null, 1 / 60);
+		expect(hand.blocked).toBe(0);
+	});
+});

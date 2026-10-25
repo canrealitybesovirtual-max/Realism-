@@ -140,3 +140,30 @@ describe('physics: holding and throwing', () => {
 		expect(speed(mug)).toBeLessThanOrEqual(14.01);
 	});
 });
+
+describe('physics: keeping hands out of the scenery', () => {
+	it('pushes a sphere out of the desk top and the wall, and leaves it alone in free air', () => {
+		const ph = makeWorld();
+		run(ph, 0.05); // scene queries see colliders once the world has stepped
+		const inDesk = ph.pushOutOfStatic(new THREE.Vector3(0, DESK_Y - 0.01, -2.0), 0.03)!;
+		expect(inDesk).not.toBeNull();
+		expect(inDesk.y).toBeGreaterThan(0.035); // out through the top, then clear by the radius
+		expect(Math.abs(inDesk.x) + Math.abs(inDesk.z)).toBeLessThan(0.005);
+		const nearWall = ph.pushOutOfStatic(new THREE.Vector3(1, 1.2, -2.48), 0.03)!;
+		expect(nearWall.z).toBeGreaterThan(0.005);
+		expect(ph.pushOutOfStatic(new THREE.Vector3(0, 1.2, 0), 0.03)).toBeNull();
+	});
+
+	it('a sphere swept down through the thin desk top stops on it and slides along', () => {
+		const ph = makeWorld();
+		run(ph, 0.05);
+		// from 20 cm above to 15 cm below the top (the slab is 2.8 cm thick), drifting sideways
+		const end = ph.sweepSphere(new THREE.Vector3(0, DESK_Y + 0.2, -2.0), new THREE.Vector3(0.1, DESK_Y - 0.15, -2.0), 0.03);
+		expect(end.y).toBeGreaterThan(DESK_Y + 0.028);
+		expect(end.y).toBeLessThan(DESK_Y + 0.035);
+		expect(end.x).toBeGreaterThan(0.09); // the sideways part of the motion is kept
+		// nothing in the way: it gets all the way
+		const free = ph.sweepSphere(new THREE.Vector3(0, 1.5, 0), new THREE.Vector3(0.2, 1.3, 0.1), 0.03);
+		expect(free.distanceTo(new THREE.Vector3(0.2, 1.3, 0.1))).toBeLessThan(1e-6);
+	});
+});

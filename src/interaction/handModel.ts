@@ -96,7 +96,128 @@ export const JOINT_NAMES = [
 	]),
 ] as const;
 
-const SKIN = { color: 0xc8987c, nail: 0xd2a091 };
+const SKIN = { color: 0xc49a83, nail: 0xd8a597 };
+
+/**
+ * Skin detail without textures: everything is computed in the hand's rest
+ * pose (the skinned mesh's bind positions), so it stays put on the skin as
+ * the fingers bend. Flexion creases on the palm side of every joint and the
+ * three main palm lines, wrinkles over the knuckles, pores and fine grain as
+ * bump (faded out before they would alias), a redder tint over knuckles and
+ * fingertips, a paler palm, and a little light bleeding through thin skin at
+ * grazing angles. Nails get a lunula, a pink bed and a pale free edge.
+ */
+function skinDetail(m: THREE.MeshPhysicalMaterial, kind: 'skin' | 'nail', side: number) {
+	m.customProgramCacheKey = () => 'hand-' + kind;
+	m.onBeforeCompile = (sh) => {
+		sh.uniforms.uSide = { value: side };
+		sh.vertexShader = sh.vertexShader
+			.replace('#include <common>', '#include <common>\nattribute vec4 aSkin; attribute vec3 aJd; attribute vec3 aKnuckle; varying vec4 vSkin; varying vec3 vJd; varying vec3 vKnuckle; varying vec3 vRest;')
+			.replace('#include <begin_vertex>', '#include <begin_vertex>\nvSkin = aSkin; vJd = aJd; vKnuckle = aKnuckle; vRest = position;');
+		const common = `
+varying vec4 vSkin; varying vec3 vJd; varying vec3 vKnuckle; varying vec3 vRest; uniform float uSide;
+float sdH(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float sdN(vec3 p) {
+	vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(sdH(i), sdH(i + vec3(1, 0, 0)), f.x), mix(sdH(i + vec3(0, 1, 0)), sdH(i + vec3(1, 1, 0)), f.x), f.y),
+		mix(mix(sdH(i + vec3(0, 0, 1)), sdH(i + vec3(1, 0, 1)), f.x), mix(sdH(i + vec3(0, 1, 1)), sdH(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+float sdLine(float d, float w) { return exp(-d * d / (w * w)); }
+vec3 sdPerturb(vec3 surf_pos, vec3 surf_norm, vec2 dHdxy, float faceDir) {
+	vec3 sx = dFdx(surf_pos), sy = dFdy(surf_pos);
+	vec3 r1 = cross(sy, surf_norm), r2 = cross(surf_norm, sx);
+	float det = dot(sx, r1) * faceDir;
+	vec3 grad = sign(det) * (dHdxy.x * r1 + dHdxy.y * r2);
+	return normalize(abs(det) * surf_norm - grad);
+}`;
+		// The height is a function of the interpolated skin coordinates. Its slope
+		// is taken from two extra evaluations one pixel over (not from dFdx of the
+		// result, which steps every 2 x 2 pixels and turns fine lines into stairs).
+		const skinFns = `
+float sdHeight(vec3 rp, vec4 sk, vec3 jd, vec3 knk, float fine, out float crease, out float dorsal) {
+	dorsal = smoothstep(-0.3, 0.3, sk.y);
+	crease = 0.0;
+	if (sk.w < 0.5) {
+		// palm: heart, head and life lines on the palm side
+		float x = rp.x * uSide, z = rp.z;
+		float heart = z - (-0.068 - 0.008 * sin((x + 0.015) / 0.057 * 3.14159));
+		float headL = z - (-0.052 + (x + 0.035) * 0.3);
+		float life = length(vec2(x + 0.062, z + 0.003)) - 0.061;
+		float lines = sdLine(heart, 0.0006) * smoothstep(-0.018, -0.014, x) * smoothstep(0.042, 0.038, x)
+			+ sdLine(headL, 0.0006) * smoothstep(-0.038, -0.034, x) * smoothstep(0.028, 0.024, x)
+			+ sdLine(life, 0.00065) * smoothstep(-0.06, -0.056, z) * smoothstep(0.03, 0.026, z) * smoothstep(-0.042, -0.038, x);
+		crease = (1.0 - dorsal) * clamp(lines, 0.0, 1.0);
+	} else if (sk.w < 1.5) {
+		float wob = 0.0005 * sin(rp.x * 1100.0 + rp.y * 700.0);
+		for (int i = 0; i < 3; i++) {
+			float d = jd[i];
+			// palm side: one deep and one fainter flexion crease at each joint
+			crease += (1.0 - dorsal) * (sdLine(d - 0.0007, 0.00045) + 0.6 * sdLine(d + 0.0013, 0.00045));
+			// back: rounded wrinkles over the knuckle, wavy across the finger
+			float w = knk[i] * dorsal * smoothstep(0.0058, 0.0018, abs(d));
+			crease += w * pow(0.5 + 0.5 * cos((d + wob) / 0.0012 * 6.2831853), 3.0) * 0.75 * fine;
+		}
+	}
+	crease = clamp(crease, 0.0, 1.0);
+	float grain = sdN(rp * 1400.0) - 0.5;
+	float pores = smoothstep(0.72, 0.95, sdN(rp * 2600.0 + 7.0));
+	return -0.00018 * crease + fine * (0.00001 * grain - 0.000012 * pores);
+}
+float sdSkin(out float crease, out float dorsal, out float mott, out vec2 dH) {
+	// aliasing guard: fade detail finer than about two pixels
+	float fine = 1.0 - smoothstep(0.00025, 0.0007, length(fwidth(vRest)));
+	mott = sdN(vRest * 160.0) * 0.6 + sdN(vRest * 420.0 + 3.0) * 0.4;
+	float c1, d1;
+	float h = sdHeight(vRest, vSkin, vJd, vKnuckle, fine, crease, dorsal);
+	float hx = sdHeight(vRest + dFdx(vRest), vSkin + dFdx(vSkin), vJd + dFdx(vJd), vKnuckle, fine, c1, d1);
+	float hy = sdHeight(vRest + dFdy(vRest), vSkin + dFdy(vSkin), vJd + dFdy(vJd), vKnuckle, fine, c1, d1);
+	dH = vec2(hx - h, hy - h);
+	return h;
+}`;
+		const nailFns = `
+float sdSkin(out float crease, out float dorsal, out float mott, out vec2 dH) {
+	crease = 0.0; dorsal = 1.0; mott = 0.5;
+	// faint ridges running along the nail
+	float fine = 1.0 - smoothstep(0.00025, 0.0006, length(fwidth(vRest)));
+	float u = vSkin.y, ux = u + dFdx(u), uy = u + dFdy(u);
+	float h = 0.000012 * fine * sin(u * 70.0);
+	dH = vec2(0.000012 * fine * sin(ux * 70.0) - h, 0.000012 * fine * sin(uy * 70.0) - h);
+	return h;
+}`;
+		sh.fragmentShader = sh.fragmentShader
+			.replace('#include <common>', '#include <common>\n' + common + (kind === 'skin' ? skinFns : nailFns))
+			.replace('#include <map_fragment>', '#include <map_fragment>\nfloat sdCrease, sdDorsal, sdMott; vec2 sdDH; sdSkin(sdCrease, sdDorsal, sdMott, sdDH);\n' + (kind === 'skin' ? `
+	{
+		vec3 c = diffuseColor.rgb;
+		c *= 0.94 + 0.12 * sdMott;
+		// palm paler and pinker, back of the hand a touch darker
+		c *= mix(vec3(1.05, 0.99, 0.97), vec3(0.97, 0.96, 0.955), sdDorsal);
+		// redder over the knuckles and toward the fingertips
+		float knuck = sdDorsal * max(vKnuckle.x * sdLine(vJd.x, 0.006), max(vKnuckle.y * sdLine(vJd.y, 0.006), vKnuckle.z * sdLine(vJd.z, 0.006)));
+		float tip = vSkin.w > 0.5 ? smoothstep(0.72, 1.02, vSkin.x) : 0.0;
+		c *= mix(vec3(1.0), vec3(1.03, 0.85, 0.83), clamp(knuck * 0.8 + tip * 0.55, 0.0, 1.0));
+		c *= 1.0 - 0.24 * sdCrease;
+		diffuseColor.rgb = c;
+	}` : `
+	{
+		vec3 c = diffuseColor.rgb;
+		float u = vSkin.y - 0.5, v = vSkin.x;
+		// the pale half-moon at the base, the white free edge at the tip
+		float lunula = 1.0 - smoothstep(0.24, 0.3, length(vec2(u * 0.9, v * 1.5)));
+		c = mix(c, c * vec3(1.28, 1.2, 1.18), lunula * 0.65);
+		c = mix(c, vec3(0.86, 0.81, 0.75), smoothstep(0.8, 0.9, v));
+		diffuseColor.rgb = c;
+	}`))
+			.replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n' + (kind === 'skin'
+				? 'roughnessFactor = clamp(mix(0.6, 0.47, sdDorsal) + 0.12 * sdCrease + 0.06 * (sdMott - 0.5), 0.3, 0.9);'
+				: ''))
+			.replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = sdPerturb(-vViewPosition, normal, sdDH, faceDirection);')
+			.replace('#include <opaque_fragment>', (kind === 'skin'
+				// light through thin skin: a warm glow at grazing angles, strongest on fingers
+				? 'outgoingLight += diffuseColor.rgb * vec3(0.16, 0.035, 0.02) * pow(1.0 - saturate(dot(normal, normalize(vViewPosition))), 2.5) * (vSkin.w > 0.5 ? 1.0 : 0.5);\n'
+				: '') + '#include <opaque_fragment>');
+	};
+}
 
 export class HandModel {
 	readonly root = new THREE.Group();
@@ -121,6 +242,8 @@ export class HandModel {
 		const nail = new THREE.MeshPhysicalMaterial({
 			name: 'nail', color: SKIN.nail, roughness: 0.38, clearcoat: 0.35, clearcoatRoughness: 0.3,
 		});
+		skinDetail(skin, 'skin', this.sign);
+		skinDetail(nail, 'nail', this.sign);
 		geometry.clearGroups();
 		for (const g of groups) geometry.addGroup(g.start, g.count, g.mat);
 		this.mesh = new THREE.SkinnedMesh(geometry, [skin, nail]);
@@ -204,9 +327,19 @@ export class HandModel {
 		// geometry buffers
 		const pos: number[] = [], nor: number[] = [], col: number[] = [], si: number[] = [], sw: number[] = [];
 		const skinIdx: number[] = [], nailIdx: number[] = [];
+		// per-vertex skin coordinates for the detail shader (see skinDetail):
+		// along (fingers: 0 base .. 1 tip; palm: z), sine of the angle round the
+		// finger (+1 on the back of the hand, -1 on the palm side; nails: 0..1
+		// across), signed distance to the nearest flexion crease, region
+		// (0 palm, 1 finger, 2 nail); plus how strongly the knuckle there wrinkles
+		// (the crease distances go in aJd: one signed distance per crease, so they
+		// interpolate cleanly; aKnuckle says how much the back wrinkles at each)
+		const sk: number[] = [], jd: number[] = [], kn: number[] = [];
+		let cur = [0, 0, 1, 0], curJd = [1, 1, 1], curKnuckle = [0, 0, 0];
 		const vert = (p: THREE.Vector3, b0: number, b1: number, w1: number, alpha = 1) => {
 			pos.push(p.x, p.y, p.z); nor.push(0, 0, 0); col.push(1, 1, 1, alpha);
 			si.push(b0, b1, 0, 0); sw.push(1 - w1, w1, 0, 0);
+			sk.push(cur[0], cur[1], cur[2], cur[3]); jd.push(curJd[0], curJd[1], curJd[2]); kn.push(curKnuckle[0], curKnuckle[1], curKnuckle[2]);
 			return pos.length / 3 - 1;
 		};
 		const RING = 14;
@@ -249,6 +382,11 @@ export class HandModel {
 			};
 			const rings: number[][] = [];
 			const nSamples = 30;
+			// flexion creases: the two finger joints, plus (fingers) the crease where the finger meets the palm
+			const isThumb = t.startInside < 0.01;
+			const creases = isThumb ? [joints[1], joints[2], 1] : [segLen[0] * 0.3, joints[1], joints[2]];
+			const knuckles = isThumb ? [0.8, 0.6, 0] : [0, 1, 0.55];
+			const creaseAt = (d: number) => creases.map((c) => d - c);
 			const start = -t.startInside, end = total;
 			for (let i = 0; i <= nSamples; i++) {
 				const d = start + (end - start) * (i / nSamples);
@@ -257,8 +395,10 @@ export class HandModel {
 				const y = new THREE.Vector3().crossVectors(dir.clone().negate(), x).normalize();
 				const [ba, bb, wb] = weightAt(d);
 				const ring: number[] = [];
+				curJd = creaseAt(d); curKnuckle = knuckles;
 				for (let j = 0; j < RING; j++) {
 					const a = (j / RING) * Math.PI * 2;
+					cur = [d / total, Math.sin(a), 1, 1];
 					// slightly flattened, fuller on the palm (pad) side
 					const sy = Math.sin(a) > 0 ? 0.84 : 0.92;
 					const p = c.clone().addScaledVector(x, Math.cos(a) * r).addScaledVector(y, Math.sin(a) * r * sy);
@@ -276,8 +416,10 @@ export class HandModel {
 				const x = new THREE.Vector3().crossVectors(t.up, tipDir.clone().negate()).normalize();
 				const y = new THREE.Vector3().crossVectors(tipDir.clone().negate(), x).normalize();
 				const ring: number[] = [];
+				curJd = creaseAt(total + t.radii[3] * Math.sin(ang));
 				for (let j = 0; j < RING; j++) {
 					const a = (j / RING) * Math.PI * 2;
+					cur = [1 + (t.radii[3] * Math.sin(ang)) / total, Math.sin(a), 1, 1];
 					const sy = Math.sin(a) > 0 ? 0.84 : 0.92;
 					ring.push(vert(c.clone().addScaledVector(x, Math.cos(a) * Math.max(r, 1e-4)).addScaledVector(y, Math.sin(a) * Math.max(r, 1e-4) * sy), lastBone, lastBone, 0));
 				}
@@ -294,6 +436,7 @@ export class HandModel {
 				for (const i of r0) cen.add(new THREE.Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]));
 				cen.divideScalar(r0.length).addScaledVector(dirAt(0), -0.004);
 				const [ba, bb, wb] = weightAt(-t.startInside);
+				cur = [0, -1, 1, 1]; curJd = creaseAt(-t.startInside);
 				const ci = vert(cen, ba, bb, wb);
 				for (let j = 0; j < RING; j++) skinIdx.push(ci, r0[j], r0[(j + 1) % RING]);
 			}
@@ -313,6 +456,7 @@ export class HandModel {
 					const row: number[] = [];
 					for (let j = 0; j <= nCols; j++) {
 						const a = Math.PI / 2 + span * (j / nCols * 2 - 1);
+						cur = [i / nRows, j / nCols, 1, 2]; curJd = [1, 1, 1]; curKnuckle = [0, 0, 0];
 						row.push(vert(c.clone().addScaledVector(x, Math.cos(a) * r).addScaledVector(y, Math.sin(a) * r * 0.84), lastBone, lastBone, 0));
 					}
 					grid.push(row);
@@ -352,6 +496,7 @@ export class HandModel {
 				const ring: number[] = [];
 				for (let j = 0; j < N; j++) {
 					const a = (j / N) * Math.PI * 2;
+					cur = [st.z, Math.sin(a), 1, 0]; curJd = [1, 1, 1]; curKnuckle = [0, 0, 0];
 					// superellipse cross-section: flat-ish back and palm, rounded sides
 					const c = Math.cos(a), sn = Math.sin(a);
 					const ex = 2.6;
@@ -382,6 +527,9 @@ export class HandModel {
 		geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
 		geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
 		geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+		geometry.setAttribute('aSkin', new THREE.Float32BufferAttribute(sk, 4));
+		geometry.setAttribute('aJd', new THREE.Float32BufferAttribute(jd, 3));
+		geometry.setAttribute('aKnuckle', new THREE.Float32BufferAttribute(kn, 3));
 		geometry.setIndex([...skinIdx, ...nailIdx]);
 		geometry.computeVertexNormals();
 		return { geometry, groups: [{ start: 0, count: skinIdx.length, mat: 0 }, { start: skinIdx.length, count: nailIdx.length, mat: 1 }] };
@@ -448,6 +596,15 @@ export class HandModel {
 	private parentIndex(i: number) {
 		this.parentIdx ??= this.bones.map((b) => this.bones.indexOf(b.parent as THREE.Bone));
 		return this.parentIdx[i];
+	}
+
+	/** World positions along a finger: its joints from the knuckle out, then the tip (5 points; the thumb repeats its base). */
+	jointsWorld(f: Finger, out: THREE.Vector3[]) {
+		const chain = this.chain[f];
+		const bones = f === 'thumb' ? [chain[0], chain[0], chain[1], chain[2]] : chain;
+		for (let i = 0; i < 4; i++) out[i].setFromMatrixPosition(this.bones[bones[i]].matrixWorld);
+		this.tipWorld(f, out[4]);
+		return out;
 	}
 
 	/** World position of a fingertip (end of the distal bone). */
