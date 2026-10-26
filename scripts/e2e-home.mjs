@@ -110,6 +110,7 @@ await p.waitForFunction(() => window.__studio.home.home.room === 'kitchen', null
 await p.evaluate(() => { window.__studio.desktop.pitch = 1.4; }); // look at the ceiling: nothing aimed
 await p.waitForTimeout(400);
 await say('make the chair red'); await waitIdle();
+await p.waitForFunction(() => document.querySelectorAll('#hc [data-c]').length > 0, null, { timeout: 20000 }).catch(() => {});
 const q = await p.evaluate(() => { const h = window.__studio.home.home; return { room: h.room, q: h.question?.say, n: h.question?.choices.length, buttons: document.querySelectorAll('#hc [data-c]').length }; });
 await p.evaluate(() => window.__studio.home.home.choose(1)); await waitIdle();
 const qa = await p.evaluate(() => { const h = window.__studio.home.home; return { verified: h.metrics[0].verified, c: h.house.items.get('kitchen.chair-2').slots && Object.values(h.house.items.get('kitchen.chair-2').slots).map((s) => s.mat.userData.finish?.color) }; });
@@ -129,7 +130,7 @@ check('open-ended request goes to Claude when available, or says plainly that it
 
 // ---- speed view ----
 await p.evaluate(() => { window.__studio.home.home.ui.openTab('perf'); window.__studio.home.home.ui.invalidate(); });
-await p.waitForTimeout(400);
+await p.waitForFunction(() => document.querySelectorAll('#hc table tr').length > 5, null, { timeout: 20000 }).catch(() => {});
 const perf = await p.evaluate(() => document.querySelectorAll('#hc table tr').length);
 check('the speed view lists the timed requests', perf > 5, `${perf - 1} rows`);
 await p.screenshot({ path: 'shots/home-panel.png', timeout: 120000 }).catch(() => console.log('(screenshot skipped: renderer too slow)'));
@@ -153,7 +154,7 @@ check('reset to the original home, then restore the named design', wReset !== wl
 // ---- a door ----
 await p.evaluate(() => { const S = window.__studio, h = S.home.home; h.placePlayer(new S.THREE.Vector3(8000 + 2.5, 0, -4.5), Math.PI); });
 await say('open the bedroom door'); await waitIdle();
-await p.waitForTimeout(1500);
+await p.waitForFunction(() => Math.abs(window.__studio.home.home.house.items.get('door.bedroom').door.leaf.rotation.y) > 1.4, null, { timeout: 30000 }).catch(() => {});
 const door = await p.evaluate(() => Math.abs(window.__studio.home.home.house.items.get('door.bedroom').door.leaf.rotation.y));
 check('"open the bedroom door" swings it open', door > 0.8, door.toFixed(2));
 
