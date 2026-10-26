@@ -1693,7 +1693,10 @@
         g.setIndex(new THREE.BufferAttribute(idx, 1));
         var mat = mats[ps[0].mat];
         var mesh = new THREE.Mesh(g, mat);
-        mesh.castShadow = !mat.transparent; mesh.receiveShadow = true;
+        // only pieces big enough to throw a shadow past the body cast one (the
+        // shadow pass would otherwise draw every interior trim piece again)
+        g.computeBoundingSphere();
+        mesh.castShadow = !mat.transparent && (ps[0].group >= 0 || g.boundingSphere.radius > 0.6); mesh.receiveShadow = true;
         var grp = ps[0].group;
         (grp >= 0 ? wheelG[grp].spin : body).add(mesh);
       });

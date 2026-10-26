@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { Fleet, kenneyVariant, semiVariant, type Variant } from './carSkins';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
  * Procedural highway: an 8 km divided motorway loop (three lanes each way)
@@ -599,6 +600,12 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 	const chunks: [number, number][] = [];
 	for (let c0 = 0; c0 < n; c0 += CH) chunks.push([c0, Math.min(n, c0 + CH)]);
 	const VC = [EDGE - 0.2, 21, 25, 30, 36, 42, BLEND + 2, BLEND + 2.01];
+	// pieces that share a material within a chunk are merged into one mesh (one draw call)
+	const batches = new Map<string, { mat: THREE.Material; geos: THREE.BufferGeometry[]; shadow: boolean; name: string }>();
+	const batch = (key: string, g: THREE.BufferGeometry, mat: THREE.Material, shadow: boolean, name = '') => {
+		let b = batches.get(key); if (!b) batches.set(key, (b = { mat, geos: [], shadow, name }));
+		b.geos.push(g);
+	};
 	for (const side of [-1, 1]) for (const [k0, k1] of chunks) {
 		const rp: number[] = [], ru: number[] = [], ri: number[] = [];
 		const vp: number[] = [], vd: number[] = [], vi: number[] = [];
@@ -627,11 +634,11 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 		const g = keep(new THREE.BufferGeometry());
 		g.setAttribute('position', new THREE.Float32BufferAttribute(rp, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(ru, 2));
 		g.setIndex(ri); g.computeVertexNormals();
-		const m = new THREE.Mesh(g, roadMat); m.receiveShadow = true; m.name = 'road'; root.add(m);
+		batch('road' + k0, g, roadMat, false, 'road');
 		const g2 = keep(new THREE.BufferGeometry());
 		g2.setAttribute('position', new THREE.Float32BufferAttribute(vp, 3)); g2.setAttribute('aRoadD', new THREE.Float32BufferAttribute(vd, 1));
 		g2.setIndex(vi); g2.computeVertexNormals();
-		const m2 = new THREE.Mesh(g2, vergeMat); m2.receiveShadow = true; root.add(m2);
+		batch('verge' + k0, g2, vergeMat, false);
 	}
 
 	// ---- extrusions along the road: median barrier, guardrails ----
@@ -667,7 +674,7 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 			const g = keep(new THREE.BufferGeometry());
 			g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
 			g.setIndex(idx); g.computeVertexNormals();
-			const m = new THREE.Mesh(g, mat); m.castShadow = true; m.receiveShadow = true; root.add(m);
+			batch(mat.uuid + k0, g, mat, true);
 		}
 	}
 	const concrete = keep(concreteTexture(aniso));
@@ -678,6 +685,12 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 	// W-beam: the corrugated rail facing the traffic
 	const wbeam = [[0.0, 0.48], [-0.07, 0.53], [-0.03, 0.6], [-0.07, 0.68], [0.0, 0.76], [0.06, 0.76], [0.06, 0.48], [0.0, 0.48]];
 	for (const side of [-1, 1]) extrude(wbeam, side, RAIL, steel, (s) => railGap(s, side));
+	for (const b of batches.values()) {
+		const g = keep(b.geos.length > 1 ? mergeGeometries(b.geos)! : b.geos[0]);
+		if (b.geos.length > 1) for (const x of b.geos) x.dispose();
+		g.computeBoundingSphere();
+		const m = new THREE.Mesh(g, b.mat); m.receiveShadow = true; m.castShadow = b.shadow; m.name = b.name; root.add(m);
+	}
 	// posts every 4 m, lamp posts in the median every 72 m
 	{
 		const postG = keep(new THREE.BoxGeometry(0.1, 0.8, 0.15)); postG.translate(0, 0.4, 0);
