@@ -305,7 +305,7 @@ async function init() {
 	if (vrOk) {
 		document.body.appendChild(VRButton.createButton(renderer, { optionalFeatures: ['hand-tracking'] }));
 	}
-	// AR Home: the house's furniture in your real room, through the headset's passthrough
+	// AR Home: edit your real room (the headset's room scan) through the passthrough
 	const arOk = 'xr' in navigator && await navigator.xr!.isSessionSupported('immersive-ar').catch(() => false);
 	if (arOk && homeHandle) {
 		const arRoot = document.createElement('div'); arRoot.id = 'ar-root'; document.body.appendChild(arRoot);
@@ -320,7 +320,10 @@ async function init() {
 			// ask for the session straight from the click (browsers require it), then load the house
 			let session: XRSession;
 			try {
-				session = await navigator.xr!.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'hand-tracking', 'dom-overlay'], domOverlay: { root: arRoot } } as XRSessionInit);
+				session = await navigator.xr!.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['plane-detection', 'mesh-detection', 'anchors', 'depth-sensing', 'hit-test', 'hand-tracking', 'dom-overlay'],
+					domOverlay: { root: arRoot },
+					// real things in front of virtual ones hide them (three.js uses the depth for occlusion)
+					depthSensing: { usagePreference: ['gpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32', 'unsigned-short'] } } as XRSessionInit);
 			} catch (e) { b.textContent = 'AR NOT ALLOWED'; log.warn(`AR: ${(e as Error).message}`); return; }
 			b.textContent = 'EXIT AR';
 			session.addEventListener('end', () => { b.textContent = 'AR HOME'; });

@@ -29,7 +29,7 @@ export interface Room {
 
 export interface Slot { meshes: THREE.Mesh[]; mat: THREE.MeshPhysicalMaterial }
 export interface Item {
-	id: string; name: string; kind: Kind | 'walls' | 'floor' | 'ceiling' | 'door';
+	id: string; name: string; kind: Kind | 'walls' | 'floor' | 'ceiling' | 'door' | 'real';
 	room: RoomId;
 	object: THREE.Object3D;
 	slots: Record<string, Slot>;
@@ -45,6 +45,8 @@ export interface Item {
 	boxes?: { c: THREE.Vector3; h: THREE.Vector3 }[];
 	/** doors: the leaf that swings, open or not */
 	door?: { leaf: THREE.Object3D; open: boolean; t: number; hinge: number; exit?: boolean };
+	/** AR: a painted layer over a real surface ("original" shows the real one) */
+	overlay?: boolean;
 }
 
 export interface House {

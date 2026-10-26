@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { Physics } from '../physics/physics';
 import type { ProjectFiles } from '../computer/projectFiles';
-import { buildHouse, type House, type Item, type RoomId } from './house';
+import { buildHouse, type House, type Item, type RoomId, kelvin } from './house';
+import { buildRealHouse, readXRScan, frameFromFloor, scanToFrame, tracedScan, type Scan } from './realRoom';
 import { Designer, STYLE_NAMES, styleOps, type Op, type StyleName } from './designer';
 import { KIND_LIST } from './catalog';
 import { PRESET_NAMES, finishOf, setAnisotropy } from './materials';
@@ -24,6 +25,7 @@ import { VRPanel } from './vrPanel';
 export const HOME_ORIGIN = new THREE.Vector3(8000, 0, 0);
 const EYE = 1.62;
 const SAVE_KEY = 'home.design.v1', SNAP_KEY = 'home.snapshots.v1';
+const REAL_SAVE_KEY = 'home.real.design.v1', REAL_SNAP_KEY = 'home.real.snapshots.v1', ANCHOR_KEY = 'home.real.anchor.v1';
 
 export interface Metric {
 	id: number; text: string; source: 'voice' | 'typed' | 'button';
@@ -71,14 +73,23 @@ export class Home {
 	private envTex: THREE.Texture | null = null;
 	onChange: () => void = () => {};
 	/**
-	 * AR (headset passthrough): the furniture of one room stands in your real
-	 * room. The house's walls, floor and ceiling are hidden, a shadow catcher
-	 * grounds the furniture on your real floor, and the XR rig is placed so
-	 * the room's centre sits where you point (hit test) or in front of you.
+	 * AR: your real home through the headset's passthrough. The room comes
+	 * from the headset's room scan (or corners you trace), becomes a house the
+	 * designer edits (paint the real walls and floor, add furniture around
+	 * your real furniture), and keeps its place through an anchor.
 	 */
-	ar: { session: XRSession; room: RoomId; placing: boolean; yaw: number | null; hit: XRHitTestSource | null; hitOk: boolean } | null = null;
-	private catcher: THREE.Mesh;
+	ar: {
+		session: XRSession; state: 'scanning' | 'tracing' | 'ready'; t0: number;
+		hit: XRHitTestSource | null; cursor: THREE.Vector3 | null; corners: THREE.Vector3[];
+		anchor: XRAnchor | null; restoring: boolean; origin: THREE.Vector3 | null; yaw: number; scanInfo: string;
+	} | null = null;
+	/** which house is being edited: the model house, or your real room (AR) */
+	mode: 'house' | 'real' = 'house';
+	private scan: Scan | null = null;
+	private stash: { house: House; designer: Designer } | null = null;
 	private reticle: THREE.Mesh;
+	private markers = new THREE.Group();
+	private tint: THREE.Mesh;
 
 	constructor(private d: Deps) {
 		setAnisotropy(Math.min(8, d.renderer.capabilities.getMaxAnisotropy()));
@@ -86,11 +97,19 @@ export class Home {
 		this.highlight.visible = false; (this.highlight.material as THREE.LineBasicMaterial).depthTest = false; this.highlight.renderOrder = 10;
 		this.highlight.userData.keepInHome = true; this.highlight.name = 'home-highlight';
 		d.scene.add(this.highlight);
-		this.catcher = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShadowMaterial({ opacity: 0.32 }));
-		this.catcher.rotation.x = -Math.PI / 2; this.catcher.receiveShadow = true; this.catcher.visible = false; this.catcher.userData.keepInHome = true; this.catcher.name = 'home-ar-shadows';
 		this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.2, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.85, depthTest: false }));
 		this.reticle.visible = false; this.reticle.renderOrder = 12; this.reticle.userData.keepInHome = true; this.reticle.name = 'home-ar-reticle';
-		d.scene.add(this.catcher, this.reticle);
+		this.markers.name = 'home-ar-corners';
+		d.scene.add(this.reticle);
+		// the light "mood" over your real room: drawn first, so it only tints what the passthrough shows
+		this.tint = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+			uniforms: { uColor: { value: new THREE.Color(0, 0, 0) }, uAlpha: { value: 0 } },
+			vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+			fragmentShader: 'uniform vec3 uColor; uniform float uAlpha; void main() { gl_FragColor = vec4(uColor * uAlpha, uAlpha); }',
+			depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+		}));
+		this.tint.frustumCulled = false; this.tint.renderOrder = -1000; this.tint.visible = false; this.tint.name = 'home-ar-tint'; this.tint.userData.keepInHome = true;
+		d.camera.add(this.tint);
 		this.build(this.readSave(SAVE_KEY));
 		this.voice.onFinal = (text, t) => this.submit(text, 'voice', t.speechEnd, t.final);
 		this.voice.onChange = () => this.changed();
@@ -111,26 +130,37 @@ export class Home {
 			this.house.root.removeFromParent();
 			this.house.root.traverse((o) => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mm = m.material as THREE.Material | THREE.Material[] | undefined; for (const x of mm ? (Array.isArray(mm) ? mm : [mm]) : []) x.dispose(); });
 		}
-		this.house = buildHouse();
-		this.house.root.position.copy(HOME_ORIGIN);
-		this.house.root.visible = this.active;
-		this.d.scene.add(this.house.root);
+		if (this.mode === 'real') {
+			this.house = buildRealHouse(this.scan ?? { floor: [], height: 2.5, walls: [], openings: [], objects: [], source: 'test' });
+			// the room frame lives in the XR reference space, i.e. under the rig
+			const parent: THREE.Object3D = this.d.xr?.rig ?? this.d.scene;
+			parent.add(this.house.root);
+			this.placeRealRoot();
+		} else {
+			this.house = buildHouse();
+			this.house.root.position.copy(HOME_ORIGIN);
+			this.house.root.visible = this.active;
+			this.d.scene.add(this.house.root);
+		}
 		this.designer = new Designer(this.house);
+		this.designer.onLight = (r) => { if (this.mode === 'real' && r === 'living') this.updateTint(); };
 		if (data?.ops) {
 			const r = this.designer.load(data);
 			if (r.skipped) this.status.text = `Restored your design (${r.skipped} change(s) no longer applied).`;
 		}
-		this.designer.onLayout = (it, gone) => { if (this.ar) this.arShow(); else if (this.active) { this.updateCollider(it, gone || !this.house.items.has(it.id)); this.updateBlockers(); } };
+		this.designer.onLayout = (it, gone) => { if (this.mode === 'house' && this.active) { this.updateCollider(it, gone || !this.house.items.has(it.id)); this.updateBlockers(); } };
 		this.designer.onChange = () => { this.autosave(); this.d.renderer.shadowMap.needsUpdate = true; this.changed(); };
-		if (this.active && !this.ar) { this.addColliders(); this.updateBlockers(); }
-		if (this.ar) this.arShow();
+		if (this.active && this.mode === 'house') { this.addColliders(); this.updateBlockers(); }
+		if (this.mode === 'real') this.updateTint();
 	}
+	private get saveKey() { return this.mode === 'real' ? REAL_SAVE_KEY : SAVE_KEY; }
+	private get snapKey() { return this.mode === 'real' ? REAL_SNAP_KEY : SNAP_KEY; }
 	private readSave(key: string) { try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : null; } catch { return null; } }
-	private autosave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.designer.serialize())); } catch { /* storage off: still works this session */ } }
-	snapshots(): Record<string, { at: number; data: any }> { return this.readSave(SNAP_KEY) ?? {}; }
+	private autosave() { try { localStorage.setItem(this.saveKey, JSON.stringify(this.designer.serialize())); } catch { /* storage off: still works this session */ } }
+	snapshots(): Record<string, { at: number; data: any }> { return this.readSave(this.snapKey) ?? {}; }
 	saveSnapshot(name: string) {
 		const all = this.snapshots(); all[name] = { at: Date.now(), data: this.designer.serialize() };
-		try { localStorage.setItem(SNAP_KEY, JSON.stringify(all)); localStorage.setItem(SAVE_KEY, JSON.stringify(all[name].data)); return true; } catch { return false; }
+		try { localStorage.setItem(this.snapKey, JSON.stringify(all)); localStorage.setItem(this.saveKey, JSON.stringify(all[name].data)); return true; } catch { return false; }
 	}
 	restoreSnapshot(name: string) {
 		const all = this.snapshots(), key = Object.keys(all).find((k) => k.toLowerCase() === name.toLowerCase()) ?? Object.keys(all).find((k) => k.toLowerCase().includes(name.toLowerCase()));
@@ -138,7 +168,7 @@ export class Home {
 		this.build(all[key].data); this.autosave(); this.changed();
 		return key;
 	}
-	deleteSnapshot(name: string) { const all = this.snapshots(); delete all[name]; try { localStorage.setItem(SNAP_KEY, JSON.stringify(all)); } catch { /* */ } this.changed(); }
+	deleteSnapshot(name: string) { const all = this.snapshots(); delete all[name]; try { localStorage.setItem(this.snapKey, JSON.stringify(all)); } catch { /* */ } this.changed(); }
 	resetHome() { this.build(null); this.autosave(); this.changed(); }
 
 	// ------------------------------------------------------------------ physics and walking
@@ -249,36 +279,56 @@ export class Home {
 		}
 	}
 
-	// ------------------------------------------------------------------ AR
+	// ------------------------------------------------------------------ AR: your real home
 	/** start AR with a session the page requested from a click (the request needs the click) */
 	async enterAR(session: XRSession) {
 		const { renderer, scene } = this.d;
-		const room = this.active ? this.room : 'living';
 		if (!this.active) this.enter();
 		this.removeColliders(); this.d.walk.blockers = [];
-		this.ar = { session, room, placing: true, yaw: null, hit: null, hitOk: false };
-		session.requestReferenceSpace('viewer').then((vs) => session.requestHitTestSource?.({ space: vs })).then((src) => { if (this.ar?.session === session && src) this.ar.hit = src; }).catch(() => { /* no hit test: place in front of you */ });
+		this.ar = { session, state: 'scanning', t0: performance.now(), hit: null, cursor: null, corners: [], anchor: null, restoring: false, origin: null, yaw: 0, scanInfo: '' };
+		const ar = this.ar;
+		session.requestReferenceSpace('viewer').then((vs) => session.requestHitTestSource?.({ space: vs })).then((src) => { if (src) ar.hit = src; }).catch(() => { /* no hit test: the controller ray meets the floor instead */ });
+		// the room keeps its place between visits through a persistent anchor (where the browser has them)
+		const uuid = this.readSave(ANCHOR_KEY) as string | null, restore = (session as any).restorePersistentAnchor;
+		if (uuid && restore) {
+			ar.restoring = true;
+			Promise.resolve(restore.call(session, uuid)).then((a: XRAnchor) => { ar.anchor = a; }, () => { try { localStorage.removeItem(ANCHOR_KEY); } catch { /* */ } }).finally(() => { ar.restoring = false; });
+		}
 		session.addEventListener('end', () => { if (this.ar?.session === session) this.exitAR(); });
-		// phones: tapping the screen puts the room down
+		// phones: tapping the screen is the trigger
 		session.addEventListener('select', (e: XRInputSourceEvent) => { if (e.inputSource.targetRayMode === 'screen') this.arTap(); });
 		scene.background = null;
 		this.saved.clear = renderer.getClearAlpha();
 		renderer.setClearColor(0x000000, 0);
 		if (this.d.xr) this.d.xr.seated = true; // you walk for real: no stick walking or snap turns
-		this.arShow();
+		// put the model house away and edit your room instead
+		this.house.root.visible = false;
+		this.stash = { house: this.house, designer: this.designer };
+		this.house = undefined as any;
+		this.mode = 'real'; this.scan = null; this.room = 'living';
+		this.build(null);
+		(this.d.xr?.rig ?? scene).add(this.markers);
 		renderer.xr.setReferenceSpaceType('local-floor');
 		await renderer.xr.setSession(session);
-		this.status.text = 'Look at your floor where the room should go, then pull the right trigger (right stick turns it).';
+		this.status.text = 'Reading your room from the headset’s room scan…';
 		this.changed();
 	}
 	private exitAR() {
 		if (!this.ar) return;
 		this.ar.hit?.cancel();
 		this.ar = null;
-		this.catcher.visible = false; this.reticle.visible = false;
-		this.house.root.traverse((o) => { if (o.userData.arHidden) { o.visible = true; delete o.userData.arHidden; } });
+		this.reticle.visible = false; this.tint.visible = false;
+		this.markers.clear(); this.markers.removeFromParent();
+		if (this.stash) {
+			this.removeColliders();
+			this.house.root.removeFromParent();
+			this.house.root.traverse((o) => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mm = m.material as THREE.Material | THREE.Material[] | undefined; for (const x of mm ? (Array.isArray(mm) ? mm : [mm]) : []) x.dispose(); });
+			this.house = this.stash.house; this.designer = this.stash.designer; this.stash = null;
+		}
+		this.mode = 'house'; this.scan = null;
 		if (this.d.xr) this.d.xr.seated = false;
 		if (this.active) {
+			this.house.root.visible = true;
 			this.d.scene.background = new THREE.Color(0xbcd3e6);
 			this.d.renderer.setClearColor(0x000000, this.saved?.clear ?? 1);
 			this.addColliders(); this.updateBlockers();
@@ -287,64 +337,120 @@ export class Home {
 		}
 		this.changed();
 	}
-	/** only the furniture of the AR room shows; walls, floors, doors, windows and the garden hide */
-	private arShow() {
-		if (!this.ar) return;
-		const keep = new Set<THREE.Object3D>();
-		for (const it of this.house.items.values()) if (!it.fixed && it.room === this.ar.room) keep.add(it.object);
-		for (const o of this.house.root.children) {
-			const on = keep.has(o) || (o as THREE.Light).isLight || o.type === 'Object3D' && !o.children.length; // lights and light targets stay
-			if (o.visible !== on) { o.visible = on; if (!on) o.userData.arHidden = true; else delete o.userData.arHidden; }
-		}
-		const r = this.house.rooms[this.ar.room];
-		this.catcher.scale.set(r.x1 - r.x0 + 2, r.z1 - r.z0 + 2, 1);
-		this.catcher.position.set(HOME_ORIGIN.x + (r.x0 + r.x1) / 2, 0.003, HOME_ORIGIN.z + (r.z0 + r.z1) / 2);
-		this.catcher.visible = true;
+	/** the room frame -> the real house's root (in the XR reference space) */
+	private placeRealRoot() {
+		const ar = this.ar; if (!ar?.origin || this.mode !== 'real') return;
+		this.house.root.position.copy(ar.origin); this.house.root.rotation.set(0, ar.yaw, 0);
+		this.house.root.updateMatrixWorld(true);
+	}
+	/** use a room (scanned or traced) and replay your saved design onto it */
+	useScan(scan: Scan, origin: THREE.Vector3, yaw: number) {
+		const ar = this.ar; if (!ar) return;
+		ar.origin = origin.clone(); ar.yaw = yaw; ar.state = 'ready'; ar.corners = []; this.markers.clear(); this.reticle.visible = false;
+		this.scan = scan;
+		this.build(this.readSave(this.saveKey));
+		const n = (l: string) => scan.objects.filter((o) => o.label === l).length;
+		const things = [...new Set(scan.objects.map((o) => o.label))].map((l) => (n(l) > 1 ? `${n(l)} ${l}s` : `a ${l}`));
+		const w = scan.walls.length || scan.floor.length, win = scan.openings.filter((o) => o.kind === 'window').length;
+		ar.scanInfo = `${scan.source === 'traced' ? 'Traced' : 'Scanned'}: ${w} walls${win ? `, ${win} window${win > 1 ? 's' : ''}` : ''}${things.length ? `, ${things.join(', ')}` : ''}.`;
+		this.status.text = `${ar.scanInfo} Try “paint the walls sage green”, “oak floor”, or “add a plant beside the ${scan.objects[0]?.label ?? 'window'}”.`;
 		this.d.renderer.shadowMap.needsUpdate = true;
+		this.changed();
 	}
-	/** AR tablet / trigger actions */
-	arPlace() { if (this.ar) { this.ar.placing = true; this.changed(); } }
-	arNextRoom() {
-		if (!this.ar) return;
-		const ids = Object.keys(this.house.rooms) as RoomId[];
-		this.ar.room = ids[(ids.indexOf(this.ar.room) + 1) % ids.length];
-		this.ar.placing = true; this.arShow();
-		this.status.text = `${this.house.rooms[this.ar.room].name}: look at the floor and pull the right trigger to put it down.`; this.changed();
+	/** keep the frame where it is next time: an anchor at the room origin, made persistent if the browser can */
+	private makeAnchor(frame: XRFrame, ref: XRReferenceSpace, origin: THREE.Vector3, yaw: number) {
+		const ar = this.ar; if (!ar || !(frame as any).createAnchor) return;
+		const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+		try {
+			Promise.resolve((frame as any).createAnchor(new XRRigidTransform({ x: origin.x, y: origin.y, z: origin.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), ref)).then((a: XRAnchor) => {
+				if (this.ar !== ar) return;
+				ar.anchor = a;
+				(a as any).requestPersistentHandle?.().then((id: string) => { try { localStorage.setItem(ANCHOR_KEY, JSON.stringify(id)); } catch { /* */ } }, () => {});
+			}, () => {});
+		} catch { /* anchors not available: the frame comes from the scan each time */ }
 	}
+	/** trigger / screen tap in AR: add a traced corner (or close the outline) */
 	arTap() {
-		if (!this.ar?.placing) return false;
-		this.ar.placing = false; this.reticle.visible = false;
-		this.status.text = `${this.house.rooms[this.ar.room].name} placed in your room. Say what to change, or point at a piece.`; this.changed();
+		const ar = this.ar; if (!ar || ar.state !== 'tracing' || !ar.cursor) return false;
+		if (ar.corners.length >= 3 && ar.cursor.distanceTo(ar.corners[0]) < 0.3) { this.arTraceDone(); return true; }
+		ar.corners.push(ar.cursor.clone());
+		const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.5, 8), new THREE.MeshBasicMaterial({ color: 0x7fd67f }));
+		pole.position.copy(ar.cursor).setY(ar.cursor.y + 0.25); this.markers.add(pole);
+		if (ar.corners.length > 1) {
+			const a = ar.corners[ar.corners.length - 2], b = ar.cursor;
+			const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a.clone().setY(a.y + 0.01), b.clone().setY(b.y + 0.01)]), new THREE.LineBasicMaterial({ color: 0x7fd67f }));
+			this.markers.add(line);
+		}
+		this.status.text = `${ar.corners.length} corner${ar.corners.length > 1 ? 's' : ''}. ${ar.corners.length >= 3 ? 'Next corner, or the first one again (or Done) to finish.' : 'Next corner.'}`;
+		this.changed();
 		return true;
 	}
+	arTraceDone() {
+		const ar = this.ar; if (!ar || ar.corners.length < 3) return;
+		const t = tracedScan(ar.corners);
+		this.useScan(t.scan, t.origin, t.yaw);
+		const frame = this.d.renderer.xr.getFrame(), ref = this.d.renderer.xr.getReferenceSpace();
+		if (frame && ref && !ar.anchor) this.makeAnchor(frame, ref, t.origin, t.yaw);
+	}
+	arUndoCorner() { const ar = this.ar; if (!ar || !ar.corners.length) return; ar.corners.pop(); this.markers.remove(...this.markers.children.slice(-2)); this.changed(); }
+	/** read the room again (the design is kept and replayed) */
+	arRescan() { const ar = this.ar; if (!ar) return; ar.state = 'scanning'; ar.t0 = performance.now(); ar.corners = []; this.markers.clear(); this.status.text = 'Reading your room again…'; this.changed(); }
+	arTrace() { const ar = this.ar; if (!ar) return; ar.state = 'tracing'; ar.corners = []; this.markers.clear(); this.status.text = 'Trace your floor: point at each corner and pull the trigger. Finish at the first corner, or press Done.'; this.changed(); }
 	private arUpdate() {
-		const ar = this.ar!, { renderer, camera } = this.d, rig: THREE.Object3D | undefined = this.d.xr?.rig;
-		if (!ar.placing || !rig || !renderer.xr.isPresenting) return;
-		// head pose in the reference space (the camera is a child of the rig)
-		const head = camera.position, headYaw = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ').y;
-		if (ar.yaw === null) ar.yaw = -headYaw; // the room faces the way you look
-		const right = (this.d.xr?.hands ?? []).find((h: any) => h.source?.handedness === 'right');
-		const sx = right?.source?.gamepad?.axes?.[2] ?? 0;
-		if (Math.abs(sx) > 0.2) ar.yaw -= sx * 0.03;
-		let p: THREE.Vector3 | null = null;
+		const ar = this.ar!, { renderer } = this.d;
 		const frame = renderer.xr.getFrame(), ref = renderer.xr.getReferenceSpace();
-		if (frame && ref && ar.hit) {
-			const pose = frame.getHitTestResults(ar.hit)[0]?.getPose(ref);
-			// floors only: horizontal and well below the eyes
-			if (pose) {
-				const q = pose.transform.orientation, up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
-				if (up.y > 0.9 && pose.transform.position.y < head.y - 0.8) p = new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+		if (!frame || !ref) return;
+		if (ar.state === 'scanning' && !ar.restoring) {
+			const raw = readXRScan(frame, ref);
+			if (raw) {
+				let origin: THREE.Vector3 | null = null, yaw = 0;
+				const pose = ar.anchor ? frame.getPose(ar.anchor.anchorSpace, ref) : null;
+				if (pose) { const p = pose.transform.position, o = pose.transform.orientation; origin = new THREE.Vector3(p.x, raw.floorY, p.z); yaw = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w), 'YXZ').y; }
+				if (!origin) { const f = frameFromFloor(raw.floor.map((q) => ({ x: q.x, z: q.z })), raw.floorY); origin = f.origin; yaw = f.yaw; }
+				this.useScan(scanToFrame(raw, origin, yaw), origin, yaw);
+				if (!ar.anchor) this.makeAnchor(frame, ref, origin, yaw);
+			} else if (performance.now() - ar.t0 > ((frame as any).detectedPlanes ? 6000 : 1500)) {
+				this.arTrace();
+				this.status.text = `${(frame as any).detectedPlanes ? 'The headset has no room scan yet (set one up in its Space Setup for walls and furniture), so' : 'This browser cannot share the room scan, so'} trace your floor: point at each corner and pull the trigger; finish at the first corner or press Done.`;
 			}
 		}
-		ar.hitOk = !!p;
-		if (!p) p = new THREE.Vector3(head.x - Math.sin(headYaw) * 1.8, 0, head.z - Math.cos(headYaw) * 1.8);
-		// rig so that local p lands on the room centre, turned by ar.yaw
-		const r = this.house.rooms[ar.room], c = new THREE.Vector3(HOME_ORIGIN.x + (r.x0 + r.x1) / 2, 0, HOME_ORIGIN.z + (r.z0 + r.z1) / 2);
-		rig.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ar.yaw);
-		rig.position.copy(c).sub(p.clone().applyQuaternion(rig.quaternion));
-		rig.updateMatrixWorld(true);
-		this.reticle.position.set(c.x, 0.01, c.z); this.reticle.visible = true;
-		(this.reticle.material as THREE.MeshBasicMaterial).color.set(ar.hitOk ? 0x7fd67f : 0xffd166);
+		if (ar.state === 'tracing') {
+			// where you point on the floor: hit test, else the controller ray meeting the floor
+			let p: THREE.Vector3 | null = null;
+			const hit = ar.hit ? frame.getHitTestResults(ar.hit)[0]?.getPose(ref) : null;
+			if (hit && hit.transform.position.y < 0.4) p = new THREE.Vector3(hit.transform.position.x, hit.transform.position.y, hit.transform.position.z);
+			const right = (this.d.xr?.hands ?? []).find((h: any) => h.source?.handedness === 'right');
+			if (right?.source) {
+				const rig: THREE.Object3D = this.d.xr.rig, inv = rig.matrixWorld.clone().invert();
+				const m = right.ray.matrixWorld.clone().premultiply(inv);
+				const o = new THREE.Vector3().setFromMatrixPosition(m), dir = new THREE.Vector3(0, 0, -1).transformDirection(m);
+				if (dir.y < -0.05) { const t = -o.y / dir.y; if (t < 12) p = o.addScaledVector(dir, t); }
+			}
+			ar.cursor = p;
+			if (p) {
+				const near = ar.corners.length >= 3 && p.distanceTo(ar.corners[0]) < 0.3;
+				this.reticle.position.copy(p).applyMatrix4(this.d.xr.rig.matrixWorld).setY(this.reticle.position.y + 0.005);
+				(this.reticle.material as THREE.MeshBasicMaterial).color.set(near ? 0x7fd67f : 0xffd166);
+			}
+			this.reticle.visible = !!p;
+		}
+		if (ar.state === 'ready' && ar.anchor) {
+			// the anchor may be refined as tracking improves: follow it
+			const pose = frame.getPose(ar.anchor.anchorSpace, ref);
+			if (pose && ar.origin) {
+				const p = pose.transform.position;
+				if (Math.hypot(p.x - ar.origin.x, p.z - ar.origin.z) > 0.002) { ar.origin.set(p.x, ar.origin.y, p.z); this.placeRealRoot(); }
+			}
+		}
+		this.tint.visible = ar.state === 'ready';
+	}
+	/** warmth and brightness of your real room: a tint over the passthrough (virtual furniture is lit for real) */
+	private updateTint() {
+		const l = this.designer.light.living, u = (this.tint.material as THREE.ShaderMaterial).uniforms;
+		const dark = THREE.MathUtils.clamp((1 - l.brightness) * 0.7, 0, 0.75), warm = THREE.MathUtils.clamp(Math.abs(l.warmth - 4500) / 2700 * 0.2, 0, 0.22);
+		const a = 1 - (1 - dark) * (1 - warm);
+		u.uAlpha.value = a;
+		(u.uColor.value as THREE.Color).copy(kelvin(l.warmth)).multiplyScalar(a > 0 ? warm * (1 - dark) / a : 0);
 	}
 
 	// ------------------------------------------------------------------ per frame
@@ -353,7 +459,7 @@ export class Home {
 		if (this.designer.update(dt)) this.d.renderer.shadowMap.needsUpdate = true;
 		const cam = new THREE.Vector3(); this.d.camera.getWorldPosition(cam);
 		const lx = cam.x - HOME_ORIGIN.x, lz = cam.z - HOME_ORIGIN.z;
-		if (this.ar) { this.arUpdate(); if (this.room !== this.ar.room) { this.room = this.ar.room; this.changed(); } }
+		if (this.ar) { this.arUpdate(); if (this.room !== 'living') { this.room = 'living'; this.changed(); } }
 		else for (const r of Object.values(this.house.rooms)) if (lx >= r.x0 && lx <= r.x1 && lz >= r.z0 && lz <= r.z1) { if (this.room !== r.id) { this.room = r.id; this.changed(); } }
 		// what you are looking (or pointing) at
 		const vrRay = this.vr.rightRay();

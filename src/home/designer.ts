@@ -48,6 +48,8 @@ export class Designer {
 	/** called when an item's footprint changed (collision, walking) or it came / went */
 	onLayout: (it: Item, gone?: boolean) => void = () => {};
 	onChange: () => void = () => {};
+	/** a room's light changed (AR: the mood tint over the passthrough) */
+	onLight: (room: RoomId) => void = () => {};
 	private seq = 1;
 
 	constructor(readonly house: House) {
@@ -72,6 +74,8 @@ export class Designer {
 			case 'finish': {
 				const e = needItem(o.target); if (e) return e;
 				const it = this.item(o.target)!;
+				if (it.kind === 'real') return `that is your real ${it.name}: I can put things around it, but not repaint it`;
+				if (o.preset === 'original' && !it.overlay) return '"original" only applies to your real walls, floor and ceiling';
 				if (o.slot !== undefined && o.slot !== '*' && !it.slots[o.slot]) return `${it.name} has no "${o.slot}" part (has ${Object.keys(it.slots).join(', ')})`;
 				if (o.preset !== undefined && !PRESET_NAMES.includes(o.preset)) return `unknown material "${o.preset}"`;
 				if (o.color !== undefined && !isHex(o.color)) return `bad colour "${o.color}"`;
@@ -240,6 +244,7 @@ export class Designer {
 		const soft = (this.light.living.soft + this.light.kitchen.soft + this.light.bedroom.soft) / 3;
 		this.house.sun.shadow.radius = 1 + soft * 9; this.house.sun.shadow.needsUpdate = true;
 		this.house.hemi.intensity = 0.45 + soft * 0.5;
+		this.onLight(room);
 	}
 
 	private execLight(o: Extract<Op, { op: 'light' }>): Change {
@@ -502,11 +507,13 @@ export function styleOps(d: Designer, o: { room: RoomId | 'all'; style: StyleNam
 	const r = RECIPES[o.style][((o.variant ?? 0) % 3 + 3) % 3];
 	const ops: Op[] = [];
 	for (const room of rooms) {
-		ops.push({ op: 'finish', target: `${room}.walls`, slot: 'main', ...r.walls });
+		// a scanned room may have no ceiling (or walls): only style what exists
+		if (!d.item(`${room}.walls`) && !d.item(`${room}.floor`)) continue;
+		if (d.item(`${room}.walls`)) ops.push({ op: 'finish', target: `${room}.walls`, slot: 'main', ...r.walls });
 		// kitchens keep a wipeable floor unless the style brings stone
 		const floor = room === 'kitchen' && PRESETS[r.floor.preset].category === 'wood' ? (r.stone ?? { preset: 'white tile' as PresetName }) : r.floor;
-		ops.push({ op: 'finish', target: `${room}.floor`, slot: 'main', ...floor });
-		if (r.ceiling) ops.push({ op: 'finish', target: `${room}.ceiling`, slot: 'main', ...r.ceiling });
+		if (d.item(`${room}.floor`)) ops.push({ op: 'finish', target: `${room}.floor`, slot: 'main', ...floor });
+		if (r.ceiling && d.item(`${room}.ceiling`)) ops.push({ op: 'finish', target: `${room}.ceiling`, slot: 'main', ...r.ceiling });
 		for (const it of d.items.values()) {
 			if (it.room !== room || it.fixed) continue;
 			for (const [slot] of Object.entries(it.slots)) {
@@ -518,7 +525,7 @@ export function styleOps(d: Designer, o: { room: RoomId | 'all'; style: StyleNam
 		for (const k of r.add ?? []) {
 			// only what the room lacks
 			if ([...d.items.values()].some((it) => it.room === room && it.kind === k)) continue;
-			ops.push({ op: 'add', kind: k, room, near: k === 'floor lamp' ? (room === 'living' ? 'living.sofa' : 'corner') : 'corner', side: 'beside' });
+			ops.push({ op: 'add', kind: k, room, near: k === 'floor lamp' ? (room === 'living' && d.item('living.sofa') ? 'living.sofa' : 'corner') : 'corner', side: 'beside' });
 		}
 	}
 	return ops;

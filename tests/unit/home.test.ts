@@ -5,6 +5,7 @@ import { Designer, STYLE_NAMES } from '../../src/home/designer';
 import { finishOf } from '../../src/home/materials';
 import { parse, parseColor, type IntentContext } from '../../src/home/intent';
 import { readLines, buildDesignPrompt } from '../../src/home/homePrompt';
+import { buildRealHouse, testScan, frameFromFloor } from '../../src/home/realRoom';
 
 function setup() {
 	const house = buildHouse();
@@ -161,5 +162,75 @@ describe('home Claude prompt', () => {
 	it('prompt carries the request and the lists', () => {
 		const p = buildDesignPrompt('cosy reading nook', 'ctx', { presets: ['oak'], kinds: ['sofa'], styles: ['modern'] }, []);
 		expect(p).toContain('cosy reading nook'); expect(p).toContain('oak'); expect(p).toContain('JSON Lines');
+	});
+});
+
+describe('AR: your real room', () => {
+	const real = () => {
+		const house = buildRealHouse(testScan());
+		const d = new Designer(house);
+		const ctx = (over: Partial<IntentContext> = {}): IntentContext => ({ room: 'living', aimed: null, last: [], items: [...house.items.values()].map((i) => ({ id: i.id, kind: i.kind, room: i.room, name: i.name })), light: d.light, ...over });
+		return { house, d, ctx };
+	};
+	it('the scan becomes walls / floor / ceiling overlays that start invisible, plus the real furniture', () => {
+		const { house } = real();
+		for (const id of ['living.walls', 'living.floor', 'living.ceiling']) {
+			const it = house.items.get(id)!;
+			expect(it.overlay).toBe(true);
+			expect(it.slots.main.mat.visible).toBe(false);
+		}
+		expect(house.items.get('real.couch-1')?.kind).toBe('real');
+		expect(house.items.get('real.table-1')?.fixed).toBe(true);
+		expect(house.rooms.living.windows.length).toBe(1);
+		// the window and door are holes in the wall overlay: 4 walls, one with a window hole, one with a door hole
+		const walls = house.items.get('living.walls')!.slots.main.meshes;
+		expect(walls.length).toBe(4);
+	});
+	it('painting the real walls shows the overlay; "original" shows the real wall again; undo works', () => {
+		const { d, house, ctx } = real();
+		const i = parse('paint the walls sage green', ctx());
+		expect(d.run(ops(i), 'paint').ok).toBe(true);
+		const mat = house.items.get('living.walls')!.slots.main.mat;
+		expect(mat.visible).toBe(true);
+		const back = parse('make the walls original again', ctx());
+		expect(ops(back)[0]).toMatchObject({ op: 'finish', target: 'living.walls', preset: 'original' });
+		d.run(ops(back), 'original'); expect(mat.visible).toBe(false);
+		d.undo(); expect(mat.visible).toBe(true);
+		d.undo(); expect(mat.visible).toBe(false);
+	});
+	it('real furniture cannot be repainted, moved or removed, but things go beside it, clear of it', () => {
+		const { d, house, ctx } = real();
+		expect(d.validate({ op: 'finish', target: 'real.couch-1', color: '#ff0000' } as any)).toMatch(/real couch/);
+		expect(d.validate({ op: 'move', target: 'real.couch-1', near: 'center' } as any)).toBeTruthy();
+		expect(d.validate({ op: 'remove', target: 'real.couch-1' } as any)).toBeTruthy();
+		const i = parse('add a plant beside the couch', ctx());
+		expect(ops(i)[0]).toMatchObject({ op: 'add', kind: 'plant', near: 'real.couch-1' });
+		const r = d.run(ops(i), 'plant'); expect(r.ok, r.error).toBe(true);
+		const plant = [...house.items.values()].find((x) => x.kind === 'plant')!;
+		const f = d.footprint(plant, plant.object.position.x, plant.object.position.z, plant.object.rotation.y);
+		for (const c of house.rooms.living.clear) expect(f[0] < c[2] - 0.01 && f[2] > c[0] + 0.01 && f[1] < c[3] - 0.01 && f[3] > c[1] + 0.01).toBe(false);
+		const room = house.rooms.living;
+		expect(plant.object.position.x).toBeGreaterThan(room.x0); expect(plant.object.position.x).toBeLessThan(room.x1);
+	});
+	it('a whole style works on the real room (walls, floor, light, a piece or two)', () => {
+		const { d, house } = real();
+		const r = d.run([{ op: 'style', room: 'living', style: 'scandinavian' } as any], 'scandi');
+		expect(r.ok, r.error).toBe(true);
+		expect(house.items.get('living.floor')!.slots.main.mat.visible).toBe(true);
+		expect([...house.items.values()].some((x) => x.kind === 'plant')).toBe(true);
+	});
+	it('a saved design replays onto a re-scan of the same room', () => {
+		const a = real();
+		a.d.run([{ op: 'finish', target: 'living.floor', preset: 'herringbone' } as any, { op: 'add', kind: 'floor lamp', room: 'living', near: 'window' } as any], 'x');
+		const save = JSON.parse(JSON.stringify(a.d.serialize()));
+		const b = real(); b.d.load(save);
+		expect(finishOf(b.house.items.get('living.floor')!.slots.main.mat)?.preset).toBe('herringbone');
+		expect([...b.house.items.values()].some((x) => x.kind === 'floor lamp')).toBe(true);
+	});
+	it('the room frame does not depend on which way the outline was walked', () => {
+		const pts = [{ x: 1, z: 1 }, { x: 5, z: 2 }, { x: 4.5, z: 5 }, { x: 0.6, z: 4 }];
+		const f1 = frameFromFloor(pts), f2 = frameFromFloor([...pts].reverse());
+		expect(Math.abs(f1.yaw - f2.yaw)).toBeLessThan(1e-9);
+		expect(f1.origin.distanceTo(f2.origin)).toBeLessThan(1e-9);
 	});
 });

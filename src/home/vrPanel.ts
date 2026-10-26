@@ -92,7 +92,7 @@ export class VRPanel {
 			const re = this.edges(right);
 			if (re.down(0)) {
 				if (hover >= 0) { right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.4, 20); this.btns[hover].run(); this.dirty = true; }
-				else if (this.home.arTap()) right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.6, 40); // AR: put the room down here
+				else if (this.home.arTap()) right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.6, 40); // AR: trace a floor corner
 			}
 		}
 		if (hover !== this.hover) { this.hover = hover; this.dirty = true; }
@@ -110,8 +110,14 @@ export class VRPanel {
 		btn(28, 28, 150, 150, !v.supported ? 'no mic' : listening ? 'listening' : 'talk', () => (listening ? v.stop() : v.start()), { big: true, on: listening, off: !v.supported });
 		btn(W - 196, 28, 168, 60, h.ar ? 'Exit AR' : 'Leave home', () => (h.ar ? h.ar.session.end() : h.leave()));
 		if (h.ar) {
-			btn(W - 196, 98, 168, 56, h.ar.placing ? 'Placing…' : 'Move room', () => h.arPlace(), { on: h.ar.placing });
-			btn(W - 196, 164, 168, 56, 'Next room', () => h.arNextRoom());
+			const ar = h.ar;
+			if (ar.state === 'tracing') {
+				btn(W - 196, 98, 168, 56, 'Done', () => h.arTraceDone(), { off: ar.corners.length < 3 });
+				btn(W - 196, 164, 168, 56, 'Undo corner', () => h.arUndoCorner(), { off: !ar.corners.length });
+			} else {
+				btn(W - 196, 98, 168, 56, ar.state === 'scanning' ? 'Scanning…' : 'Rescan', () => h.arRescan(), { on: ar.state === 'scanning' });
+				btn(W - 196, 164, 168, 56, 'Trace room', () => h.arTrace());
+			}
 		}
 		const row = 470;
 		btn(28, row, 150, 64, 'Undo', () => h.submit('undo', 'button'), { off: !h.designer.canUndo });

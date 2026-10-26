@@ -31,6 +31,8 @@ KINDS: ${lists.kinds.join(', ')}
 STYLES: ${lists.styles.join(', ')}
 ROOMS: living, kitchen, bedroom
 
+AR (when the room is "your room"): it is the person's real room seen through the headset. Its walls, floor and ceiling are paintable overlays (preset "original" removes the overlay and shows the real surface); items of kind "real" are their real furniture: they cannot be changed, moved or removed, but you can place things near them.
+
 Rules: walls, floors, ceilings and doors cannot move; only use ids listed below; prefer a "style" op plus a few finishing touches for whole-room redesigns; keep changes to the room the person means (default: the room they are in); if the request is impossible with these ops, reply only {"say":"why, in one sentence"}.
 
 HOME

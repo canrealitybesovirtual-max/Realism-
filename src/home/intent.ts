@@ -49,6 +49,7 @@ export const MATERIAL_WORDS: [RegExp, PresetName][] = [
 	[/\bherringbone|parquet\b/, 'herringbone'], [/\bwhitewashed|light wood|pale wood|ash\b/, 'whitewashed oak'], [/\bwalnut|dark wood|mahogany|ebony\b/, 'walnut'], [/\boak|wood(en)?|timber|hardwood\b/, 'oak'],
 	[/\bvelvet\b/, 'velvet'], [/\bleather\b/, 'leather'], [/\bwool|woolen|woollen|knit\b/, 'wool'], [/\blinen|fabric|cloth|cotton\b/, 'linen'],
 	[/\bbrushed steel|stainless( steel)?|steel|aluminium|aluminum\b/, 'brushed steel'], [/\bbrass|golden|bronze\b/, 'brass'], [/\bchrome|silver|mirror(ed)?\b/, 'chrome'], [/\bblack metal|iron|wrought iron\b/, 'black metal'],
+	[/\b(original|real (wall|floor|ceiling)s?|real again|as (it|they) (was|were)|no paint|unpainted)\b/, 'original'],
 	[/\bglass\b/, 'glass'], [/\blacquer(ed)?|gloss(y)?|shiny\b/, 'lacquer'], [/\bpaint(ed)?|matte\b/, 'paint'],
 ];
 const SURFACES: [RegExp, 'walls' | 'floor' | 'ceiling'][] = [[/\bwalls?\b|\bwallpaper\b/, 'walls'], [/\bfloors?\b|\bflooring\b/, 'floor'], [/\bceilings?\b/, 'ceiling']];
@@ -108,12 +109,14 @@ function targets(t: string, ctx: IntentContext, scope: RoomId[]): Found | null {
 		const wordKinds = KIND_LIST.filter((kk) => KINDS[kk].words.includes(w));
 		const here = ctx.items.filter((i) => wordKinds.includes(i.kind as Kind) && scope.includes(i.room));
 		const anywhere = ctx.items.filter((i) => wordKinds.includes(i.kind as Kind));
+		// AR: your real furniture goes by what the headset called it ("couch", "table")
+		here.push(...ctx.items.filter((i) => i.kind === 'real' && scope.includes(i.room) && new RegExp(`\\b${w}\\b`).test(i.name)));
 		const pool = here.length ? here : anywhere;
 		if (!pool.length) return { ids, noun: w, kind: k };
 		if (plural || pool.length === 1) ids.push(...pool.map((i) => i.id));
 		else if (ctx.aimed && pool.some((i) => i.id === ctx.aimed)) ids.push(ctx.aimed);
 		else if (ctx.last.length === 1 && pool.some((i) => i.id === ctx.last[0]) && /\b(it|that|same)\b/.test(t)) ids.push(ctx.last[0]);
-		else return { ids, noun: w, kind: k, ask: pool.map((i) => ({ label: i.name, id: i.id })) };
+		else return { ids, noun: w, kind: k, ask: pool.map((i) => ({ label: i.kind === 'real' ? `your real ${i.name}` : i.kind === 'real' || ctx.items.some((x) => x.kind === 'real') ? `the new ${i.name}` : i.name, id: i.id })) };
 		nouns.push(plural ? w + 's' : w);
 		break;
 	}
