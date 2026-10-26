@@ -1,5 +1,5 @@
-// Pack the highway traffic cars: one small GLB per car, from the downloaded
-// Sketchfab files (all CC-BY-4.0, credits in public/models/traffic/cars/CREDITS.md).
+// Pack the highway traffic cars: one small GLB per car (into one JSON), from the downloaded
+// Sketchfab files (all CC-BY-4.0, credits in public/models/traffic/CREDITS.md).
 //
 //   node scripts/pack-cars.mjs <car_pack_1.glb> <traffic_car_pack.glb> <celica/scene.gltf>
 //
@@ -9,7 +9,6 @@
 // separate nodes named "wheel*" so they can turn. Orientation and size are
 // fixed at load time (src/maps/trafficCars.ts).
 import fs from 'node:fs';
-import path from 'node:path';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { weld, prune, dedup, meshopt } from '@gltf-transform/functions';
@@ -21,8 +20,9 @@ if (!celica) { console.error('usage: node scripts/pack-cars.mjs <car_pack_1.glb>
 await MeshoptSimplifier.ready; await MeshoptEncoder.ready; await MeshoptDecoder.ready;
 const quiet = { debug() {}, info() {}, warn: console.warn, error: console.error };
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({ 'meshopt.decoder': MeshoptDecoder, 'meshopt.encoder': MeshoptEncoder });
-const OUT = 'public/models/traffic/cars';
-fs.mkdirSync(OUT, { recursive: true });
+const OUT = 'public/models/traffic/cars.json';
+// one JSON file of base64 GLBs: the artifact host serves .json but not .glb
+const pack = { credits: 'public/models/traffic/CREDITS.md', models: {} };
 
 /** cars to make: source file, the node that is the car, which of its nodes are wheels */
 const CARS = [
@@ -83,10 +83,12 @@ for (const car of CARS) {
 	}
 	await doc.transform(prune(), meshopt({ encoder: MeshoptEncoder, level: 'medium' }));
 	const tris = root.listMeshes().reduce((a, m) => a + m.listPrimitives().reduce((b, p) => b + (p.getIndices()?.getCount() ?? 0) / 3, 0), 0);
-	const file = path.join(OUT, car.id + '.glb');
-	await io.write(file, doc);
-	console.log(car.id.padEnd(16), String(Math.round(tris)).padStart(6), 'tris', String(fs.statSync(file).size).padStart(8), 'bytes', root.listNodes().filter((n) => /^wheel/.test(n.getName())).length, 'wheels');
+	const glb = await io.writeBinary(doc);
+	pack.models[car.id] = Buffer.from(glb).toString('base64');
+	console.log(car.id.padEnd(16), String(Math.round(tris)).padStart(6), 'tris', String(glb.byteLength).padStart(8), 'bytes', root.listNodes().filter((n) => /^wheel/.test(n.getName())).length, 'wheels');
 }
+fs.writeFileSync(OUT, JSON.stringify(pack));
+console.log(OUT, fs.statSync(OUT).size, 'bytes');
 
 function isUnder(n, top) { for (let q = n; q; q = q.getParentNode?.() ?? null) if (q === top) return true; return false; }
 function parentOf(root, n) { return root.listNodes().find((p) => p.listChildren().includes(n)) ?? null; }

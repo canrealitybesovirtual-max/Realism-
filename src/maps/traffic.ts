@@ -3,8 +3,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 /**
- * Highway traffic: real car models (public/models/traffic/cars, packed by
- * scripts/pack-cars.mjs; CC-BY-4.0, see CREDITS.md there), drawn with
+ * Highway traffic: real car models (public/models/traffic/cars.json, packed by
+ * scripts/pack-cars.mjs; CC-BY-4.0, see public/models/traffic/CREDITS.md), drawn with
  * instancing so the whole traffic costs a few dozen draw calls however many
  * cars are out.
  *
@@ -22,9 +22,9 @@ export interface Variant {
 	wheels: WheelSet[];
 }
 
-/** a car file and how to stand it on the road */
+/** a car in the pack and how to stand it on the road */
 export interface CarSpec {
-	id: string; file: string; name: string;
+	id: string; name: string;
 	/** real length in metres */
 	len: number;
 	/** which way the model's front points as it comes out of the file */
@@ -37,15 +37,15 @@ export interface CarSpec {
 }
 
 export const CARS: CarSpec[] = [
-	{ id: 'bmw-e30', file: 'bmw-e30.glb', name: 'BMW 3 Series (E30)', len: 4.32, front: '+z', weight: 1.4 },
-	{ id: 'renault-12', file: 'renault-12.glb', name: 'Renault 12', len: 4.35, front: '+z', weight: 1.2 },
-	{ id: 'mercedes-w123', file: 'mercedes-w123.glb', name: 'Mercedes-Benz W123', len: 4.73, front: '+z', weight: 1.4 },
-	{ id: 'traffic-1', file: 'traffic-1.glb', name: 'Traffic car 1', len: 4.4, front: '-x', weight: 1 },
-	{ id: 'traffic-2', file: 'traffic-2.glb', name: 'Traffic car 2', len: 4.5, front: '-x', weight: 1 },
-	{ id: 'traffic-3', file: 'traffic-3.glb', name: 'Traffic car 3', len: 4.6, front: '-x', weight: 1 },
-	{ id: 'traffic-4', file: 'traffic-4.glb', name: 'Traffic car 4', len: 4.3, front: '-x', weight: 1 },
-	{ id: 'traffic-5', file: 'traffic-5.glb', name: 'Traffic car 5', len: 4.4, front: '-x', weight: 1 },
-	{ id: 'toyota-celica', file: 'toyota-celica.glb', name: 'Toyota Celica (gen 7)', len: 4.42, front: '+x', weight: 1.2, cutWheels: true, paints: ['#b3121b', '#e9e8e4', '#1d2a44', '#c9ccd0', '#f0c419'] },
+	{ id: 'bmw-e30', name: 'BMW 3 Series (E30)', len: 4.32, front: '+z', weight: 1.4 },
+	{ id: 'renault-12', name: 'Renault 12', len: 4.35, front: '+z', weight: 1.2 },
+	{ id: 'mercedes-w123', name: 'Mercedes-Benz W123', len: 4.73, front: '+z', weight: 1.4 },
+	{ id: 'traffic-1', name: 'Traffic car 1', len: 4.4, front: '-x', weight: 1 },
+	{ id: 'traffic-2', name: 'Traffic car 2', len: 4.5, front: '-x', weight: 1 },
+	{ id: 'traffic-3', name: 'Traffic car 3', len: 4.6, front: '-x', weight: 1 },
+	{ id: 'traffic-4', name: 'Traffic car 4', len: 4.3, front: '-x', weight: 1 },
+	{ id: 'traffic-5', name: 'Traffic car 5', len: 4.4, front: '-x', weight: 1 },
+	{ id: 'toyota-celica', name: 'Toyota Celica (gen 7)', len: 4.42, front: '+x', weight: 1.2, cutWheels: true, paints: ['#b3121b', '#e9e8e4', '#1d2a44', '#c9ccd0', '#f0c419'] },
 ];
 
 /** float, non-indexed copy with position / normal / uv, transformed by m */
@@ -203,10 +203,15 @@ function paintOf(m: THREE.Material, color: string) {
 	return p;
 }
 
-/** load every car (in parallel) */
-export async function loadCars(base = 'models/traffic/cars/'): Promise<{ spec: CarSpec; scene: THREE.Group }[]> {
+/** load every car (one JSON of base64 GLBs: the artifact host serves .json but not .glb) */
+export async function loadCars(url = 'models/traffic/cars.json'): Promise<{ spec: CarSpec; scene: THREE.Group }[]> {
+	const pack: { models: Record<string, string> } = await (await fetch(url)).json();
 	const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
-	return Promise.all(CARS.map(async (spec) => ({ spec, scene: (await loader.loadAsync(base + spec.file)).scene })));
+	return Promise.all(CARS.filter((spec) => pack.models[spec.id]).map(async (spec) => {
+		const bin = atob(pack.models[spec.id]), u = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+		return { spec, scene: (await loader.parseAsync(u.buffer, '')).scene };
+	}));
 }
 
 /**
