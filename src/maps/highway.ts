@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import { Fleet, kenneyVariant, semiVariant, type Variant } from './carSkins';
 
 /**
  * Procedural highway: an 8 km divided motorway loop (three lanes each way)
@@ -44,7 +45,8 @@ export interface MapWorld {
 	dispose(): void;
 }
 export interface TrafficCar {
-	obj: THREE.Object3D; wheels: THREE.Object3D[]; wheelR: number; model: string;
+	/** index into the fleet's variants, and its name; the wheels' turn so far */
+	variant: number; model: string; spin: number;
 	side: number; lane: number; target: number; p: number; v: number; v0: number;
 	len: number; wid: number; truck: boolean; think: number; crash: number;
 	x: number; z: number; yaw: number; vx: number; vz: number;
@@ -301,7 +303,20 @@ async function loadModels(aniso: number) {
 		});
 		models[name] = gltf.scene;
 	}));
-	return { models, license: pack.license, images };
+	// photo skins for the traffic (tools/car-skins): which model each one dresses
+	// (optional: the sheets are third-party and stay out of the public repository; without them the traffic keeps Kenney's paint)
+	type Skins = { cars: Record<string, { model: string; wheelsA: number[] | null; wheelsB: number[] | null }>; semis: Record<string, { cab: string }> };
+	let skins: Skins = { cars: {}, semis: {} };
+	try { const r = await fetch('models/traffic/skins/skins.json'); if (r.ok) skins = await r.json(); } catch { /* no skins */ }
+	const atlases: Record<string, THREE.Texture> = {};
+	await Promise.all([...Object.keys(skins.cars), ...Object.keys(skins.semis)].map(async (name) => {
+		const blob = await (await fetch(`models/traffic/skins/${name}.webp`)).blob();
+		const bmp = await createImageBitmap(blob, { imageOrientation: 'none', premultiplyAlpha: 'none' } as ImageBitmapOptions);
+		const t = new THREE.Texture(bmp as unknown as HTMLImageElement);
+		t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = aniso; t.needsUpdate = true;
+		atlases[name] = t;
+	}));
+	return { models, license: pack.license, images, skins, atlases };
 }
 
 const FLEET: { name: string; len: number; w: number; truck?: boolean }[] = [
@@ -745,7 +760,7 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 	}
 
 	// ---- models: trees and traffic ----
-	const { models, license, images } = await modelsP;
+	const { models, license, images, skins, atlases } = await modelsP;
 	for (const t of Object.values(images)) disposables.push(t);
 	const treeCol: number[] = [];
 	const treeSets: { src: Float32Array; count: number; meshes: THREE.InstancedMesh[] }[] = [];
@@ -825,35 +840,34 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 
 	// ---- traffic ----
 	const cars: TrafficCar[] = [];
-	const fleetW = FLEET.reduce((a, f) => a + f.w, 0);
-	const pickModel = (r: number) => { let a = r * fleetW; for (const f of FLEET) { a -= f.w; if (a <= 0) return f; } return FLEET[0]; };
-	const paintMats = new Map<string, THREE.Material>();
-	for (const name of FLEET.map((f) => f.name)) {
-		models[name].traverse((o) => {
+	// variants: every skinned car, the lorries, and the plain Kenney cars less often
+	const variants: Variant[] = [];
+	for (const f of FLEET) {
+		models[f.name].traverse((o) => {
 			const m = o as THREE.Mesh;
 			if (!m.isMesh) return;
 			const mat = m.material as THREE.MeshStandardMaterial;
-			if (!paintMats.has(mat.uuid)) { mat.roughness = 0.42; mat.metalness = 0.12; mat.envMapIntensity = 1.2; paintMats.set(mat.uuid, mat); disposables.push(mat); }
-			disposables.push(m.geometry);
-			m.castShadow = true; m.receiveShadow = true;
+			mat.roughness = 0.42; mat.metalness = 0.12; mat.envMapIntensity = 1.2; disposables.push(mat, m.geometry);
 		});
+		variants.push(kenneyVariant(f.name, models[f.name], f.len, { truck: f.truck, weight: f.w * 0.45 }));
 	}
+	for (const [name, sk] of Object.entries(skins.cars)) {
+		const f = FLEET.find((q) => q.name === sk.model) ?? { len: 4.8, truck: false };
+		variants.push(kenneyVariant(name, models[sk.model], f.len, { atlas: atlases[name], truck: f.truck, weight: 1.6, wheelsU: { A: sk.wheelsA, B: sk.wheelsB } }));
+	}
+	const truckWheel = kenneyVariant('_wheel', models.truck, 6, { weight: 0 }).wheels[0];
+	for (const name of Object.keys(skins.semis)) variants.push(semiVariant(name, atlases[name], truckWheel, 1.3));
+	for (const v of variants) for (const b of v.body) disposables.push(b.mat);
+	for (const t of Object.values(atlases)) disposables.push(t);
+	const fleetW = variants.reduce((a, v) => a + v.weight, 0);
+	const pickVariant = () => { let a = Math.random() * fleetW; for (let i = 0; i < variants.length; i++) { a -= variants[i].weight; if (a <= 0) return i; } return 0; };
 	const TRAFFIC = 32;
+	const fleet = new Fleet(root, variants, TRAFFIC);
+	let camX = 0, camZ = 0;
 	function spawnCar(c: TrafficCar | null, side: number, p: number, lane: number): TrafficCar {
-		const model = c?.model, f = model ? FLEET.find((q) => q.name === model)! : pickModel(Math.random());
-		if (!c) {
-			const obj = models[f.name].clone(true);
-			const b = new THREE.Box3().setFromObject(obj), size = b.getSize(new THREE.Vector3());
-			const s = f.len / size.z;
-			const holder = new THREE.Group(); obj.scale.setScalar(s); obj.position.y = -b.min.y * s; holder.add(obj);
-			const wheels: THREE.Object3D[] = [];
-			obj.traverse((o) => { if (/^wheel/.test(o.name) && !/^wheel/.test(o.parent?.name || '')) wheels.push(o); });
-			c = {
-				obj: holder, wheels, wheelR: 0.3 * s, model: f.name, side, lane, target: lane, p, v: 0, v0: 0,
-				len: f.len, wid: size.x * s, truck: !!f.truck, think: Math.random() * 2, crash: 0, x: 0, z: 0, yaw: 0, vx: 0, vz: 0,
-			};
-			root.add(holder);
-		}
+		const vi = pickVariant(), v = variants[vi];
+		if (!c) c = { variant: vi, model: v.id, spin: 0, side, lane, target: lane, p, v: 0, v0: 0, len: v.len, wid: v.wid, truck: v.truck, think: Math.random() * 2, crash: 0, x: 0, z: 0, yaw: 0, vx: 0, vz: 0 };
+		else { c.variant = vi; c.model = v.id; c.len = v.len; c.wid = v.wid; c.truck = v.truck; }
 		if (c.truck) lane = Math.max(1, lane);
 		c.side = side; c.lane = c.target = lane; c.p = ((p % road.len) + road.len) % road.len;
 		c.v0 = c.truck ? 22 + Math.random() * 3 : [34, 30, 27][lane] + (Math.random() - 0.4) * 5;
@@ -907,7 +921,9 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 		const ss = s0 + Math.max(0, v * T + (v * (v - lv)) / (2 * Math.sqrt(a * b)));
 		return a * (1 - Math.pow(v / v0, 4) - (ss / gap) ** 2);
 	}
+	const pose = new THREE.Matrix4(), pq = new THREE.Quaternion(), pp = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1), UPV = new THREE.Vector3(0, 1, 0);
 	function updateTraffic(dt: number) {
+		fleet.begin();
 		for (const c of cars) {
 			if (c.crash > 0) {
 				c.crash -= dt; c.v = Math.max(0, c.v - 7 * dt);
@@ -948,12 +964,12 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 			c.x = a.x + L[0] * off; c.z = a.z + L[1] * off;
 			c.vx = dirx * c.v + L[0] * latV; c.vz = dirz * c.v + L[1] * latV;
 			c.yaw = c.v > 1 ? Math.atan2(c.vx, c.vz) : Math.atan2(dirx, dirz);
-			c.obj.position.set(c.x, a.y + 0.01, c.z);
-			c.obj.rotation.set(0, c.yaw, 0);
-			const far = Math.abs(rel) > 700;
-			c.obj.visible = !far;
-			for (const w of c.wheels) w.rotation.x += (c.v * dt) / Math.max(0.1, c.wheelR);
+			c.spin = (c.spin + (c.v * dt) / variants[c.variant].wheelR) % (Math.PI * 2);
+			if (Math.abs(rel) > 700) continue; // out in the haze: not drawn
+			pose.compose(pp.set(c.x, a.y + 0.01, c.z), pq.setFromAxisAngle(UPV, c.yaw), one);
+			fleet.add(c.variant, pose, c.spin, (c.x - camX) ** 2 + (c.z - camZ) ** 2 < 90 * 90);
 		}
+		fleet.end();
 	}
 	placeTraffic(PAD_S + 200);
 
@@ -1041,6 +1057,7 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 		credits: 'Car: “art of rally Latest Version 2027” by FarHandle5255 (Sketchfab, CC BY 4.0) · Traffic and trees: ' + license.split(',')[0] + ', CC0',
 		traffic: { cars },
 		update(dt, _t, pl) {
+			if (pl.cam) { camX = pl.cam.x - opts.offsetX; camZ = pl.cam.z; } else { camX = pl.x; camZ = pl.z; }
 			// trees: refill the visible set when the view has moved or turned
 			cullTimer -= dt;
 			const cam = pl.cam, fwd = pl.fwd;
@@ -1059,6 +1076,7 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 		setActive() {},
 		dispose() {
 			root.removeFromParent();
+			fleet.dispose();
 			root.traverse((o) => { const m = o as THREE.Mesh; if ((m as THREE.InstancedMesh).isInstancedMesh) (m as THREE.InstancedMesh).dispose(); });
 			for (const d of disposables) d.dispose();
 		},

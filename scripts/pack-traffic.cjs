@@ -9,7 +9,7 @@ const scen = ["tree_pine_tall","tree_pine","tree_oak","tree_fat","bush_large","r
 const out = { license: "Kenney Car Kit and Nature Kit (kenney.nl), CC0 1.0, via the @netforge/asset-library-files package", images: {}, models: {} };
 for (const n of [...cars, ...scen]) {
   const b = fs.readFileSync(D + '/' + n + '.glb');
-  const jl = b.readUInt32LE(12), j = JSON.parse(b.slice(20, 20 + jl)), bin = b.slice(20 + jl + 8);
+  const jl = b.readUInt32LE(12), j = JSON.parse(b.slice(20, 20 + jl)), bin = b.slice(20 + jl + 8, 20 + jl + 8 + b.readUInt32LE(20 + jl));
   const texImg = (j.textures || []).map((t) => {
     const im = j.images[t.source], bv = j.bufferViews[im.bufferView];
     const bytes = bin.slice(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength);
@@ -21,10 +21,27 @@ for (const n of [...cars, ...scen]) {
     const bt = m.pbrMetallicRoughness && m.pbrMetallicRoughness.baseColorTexture;
     if (bt) { m.extras = Object.assign(m.extras || {}, { map: texImg[bt.index] }); delete m.pbrMetallicRoughness.baseColorTexture; }
   }
+  // cut the (now shared) image bytes out of this model's binary chunk
+  const cuts = (j.images || []).map((im) => j.bufferViews[im.bufferView]).filter((bv) => (bv.buffer || 0) === 0)
+    .map((bv) => [bv.byteOffset || 0, Math.floor(bv.byteLength / 4) * 4, bv]).sort((a, b) => b[0] - a[0]);
+  let binBuf = bin;
+  for (const [off, len, ibv] of cuts) {
+    binBuf = Buffer.concat([binBuf.slice(0, off), binBuf.slice(off + len)]);
+    const shift = (o) => (o >= off + len ? o - len : o);
+    for (const bv of j.bufferViews) {
+      if (bv === ibv) { bv.byteOffset = off; bv.byteLength = 1; continue; }
+      if ((bv.buffer || 0) === 0) bv.byteOffset = shift(bv.byteOffset || 0);
+      const ext = bv.extensions && bv.extensions.EXT_meshopt_compression;
+      if (ext && (ext.buffer || 0) === 0) ext.byteOffset = shift(ext.byteOffset || 0);
+    }
+    j.buffers[0].byteLength -= len;
+  }
   delete j.textures; delete j.images; delete j.samplers;
   if (j.extensionsUsed) j.extensionsUsed = j.extensionsUsed.filter((e) => e !== 'KHR_texture_transform');
   let js = Buffer.from(JSON.stringify(j)); const pad = (4 - js.length % 4) % 4; js = Buffer.concat([js, Buffer.alloc(pad, 0x20)]);
-  const binChunk = b.slice(20 + jl);
+  const binPad = Buffer.concat([binBuf, Buffer.alloc((4 - binBuf.length % 4) % 4)]);
+  const binHead = Buffer.alloc(8); binHead.writeUInt32LE(binPad.length, 0); binHead.writeUInt32LE(0x004e4942, 4);
+  const binChunk = Buffer.concat([binHead, binPad]);
   const head = Buffer.alloc(20); head.writeUInt32LE(0x46546c67, 0); head.writeUInt32LE(2, 4); head.writeUInt32LE(20 + js.length + binChunk.length, 8); head.writeUInt32LE(js.length, 12); head.writeUInt32LE(0x4e4f534a, 16);
   out.models[n] = Buffer.concat([head, js, binChunk]).toString('base64');
 }
