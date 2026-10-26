@@ -65,7 +65,8 @@
       { id: "none", title: "Keep it shut", text: "The door stays locked." },
       { id: "rally", title: "Snowy Mountain Rally", text: "5.5 km of snowy mountain road: a long loop with a shortcut through the pass. A car is waiting at the service park." },
       { id: "range", title: "Shooting Range", text: "Clay trap and steel plates from 25 m out to 1000 m. The AWM and the Glock wait on the bench." },
-      { id: "highway", title: "Highway", text: "An 8 km motorway loop, three lanes each way, with traffic. Your car waits in the lay-by." }
+      { id: "highway", title: "Highway", text: "An 8 km motorway loop, three lanes each way, with traffic. Your car waits in the lay-by." },
+      { id: "home", title: "Home", text: "A house you redesign by talking: say \u201cmake this room look more modern\u201d and watch it change. Everything can be undone and saved." }
     ];
     var dest = os.storage.get("door.dest") || "none";
 
@@ -105,6 +106,21 @@
           c.fillStyle = q[2]; rr(c, cx - 18 * sc, cy - 14 * sc, 36 * sc, 14 * sc, 3 * sc); c.fill();
           c.fillStyle = "#1c2026"; c.fillRect(cx - 14 * sc, cy - 22 * sc, 28 * sc, 9 * sc);
         });
+        c.restore();
+        return;
+      }
+      if (id === "home") {
+        var hg = c.createLinearGradient(0, y, 0, y + h); hg.addColorStop(0, "#efe7dc"); hg.addColorStop(1, "#d9cbb8");
+        c.fillStyle = hg; c.fillRect(x, y, w, h);
+        c.fillStyle = "#a07a55"; c.fillRect(x, y + h * 0.72, w, h * 0.28);
+        c.fillStyle = "#cfe3f2"; c.fillRect(x + w * 0.58, y + h * 0.16, w * 0.3, h * 0.36);
+        c.strokeStyle = "#f6f2ea"; c.lineWidth = 4; c.strokeRect(x + w * 0.58, y + h * 0.16, w * 0.3, h * 0.36);
+        c.fillStyle = "#5b6f7c"; rr(c, x + w * 0.1, y + h * 0.56, w * 0.46, h * 0.16, 10); c.fill();
+        rr(c, x + w * 0.1, y + h * 0.46, w * 0.46, h * 0.13, 10); c.fill();
+        c.fillStyle = "#c9a26b"; c.fillRect(x + w * 0.62, y + h * 0.66, w * 0.22, h * 0.04);
+        c.fillStyle = "#3f7a4a"; c.beginPath(); c.arc(x + w * 0.9, y + h * 0.6, h * 0.08, 0, 7); c.fill();
+        c.fillStyle = "#2d6cdf"; c.beginPath(); c.arc(x + w * 0.2, y + h * 0.24, h * 0.1, 0, 7); c.fill();
+        c.fillStyle = "#fff"; rr(c, x + w * 0.2 - h * 0.025, y + h * 0.17, h * 0.05, h * 0.09, h * 0.025); c.fill();
         c.restore();
         return;
       }
@@ -383,7 +399,7 @@
     function act() {
       if (busy || !hintAction) return;
       var a = hintAction;
-      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else enterMap(dest === "highway" ? "highway" : "rally"); }
+      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else if (dest === "home" && S.home) { setHint(""); S.home.enter(); } else enterMap(dest === "highway" ? "highway" : "rally"); }
       else if (a === "door-back") leaveMap();
       else if (a === "car") enterCar();
     }
@@ -419,7 +435,7 @@
           placeHead(cx0, cz0, map.groundAt(cx0 - OFFX, cz0).h, desk.yaw);
         } else if (mode === "drive") { xr.seated = true; recenterSeat(); map.car.root.add(dash); dash.visible = true; }
       } else if (!xrOn) needPlace = 0;
-      if (mode === "room" && S.range && S.range.active) { hintAction = null; setHint(""); return; }
+      if (mode === "room" && ((S.range && S.range.active) || (S.home && S.home.active))) { hintAction = null; setHint(""); return; }
       if (mode === "room") {
         hintAction = null;
         if (xrOn) {

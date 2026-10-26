@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { hashText } from '../src/engine/codeTools';
 import { buildPrompt } from '../src/engine/agentPrompt';
+import { DESIGN_MAX_PROMPT } from '../src/home/homePrompt';
 
 /**
  * The code workstation's bridge to project files, for the local dev server
@@ -60,6 +61,22 @@ export function studioServer(): Plugin {
 		});
 		if (r.stop_reason === 'refusal') throw new Error('Claude declined this request');
 		const text = r.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
+		return { text, truncated: r.stop_reason === 'max_tokens', model: r.model };
+	}
+	/** the home designer: a quick model, low effort, a short reply */
+	async function askDesigner(prompt: string) {
+		const { default: Anthropic } = await import('@anthropic-ai/sdk');
+		const client = new Anthropic();
+		const r = await client.beta.messages.create({
+			model: 'claude-sonnet-5-5',
+			max_tokens: 3000,
+			output_config: { effort: 'low' },
+			betas: ['server-side-fallback-2026-07-01'],
+			fallbacks: 'default',
+			messages: [{ role: 'user', content: prompt }],
+		} as any);
+		if (r.stop_reason === 'refusal') throw new Error('Claude declined this request');
+		const text = r.content.map((c: any) => (c.type === 'text' ? c.text : '')).join('');
 		return { text, truncated: r.stop_reason === 'max_tokens', model: r.model };
 	}
 	const histDir = () => path.join(root, '.studio', 'history');
@@ -210,6 +227,13 @@ export function studioServer(): Plugin {
 			try { return send(res, 200, await askClaude(buildPrompt(b.request, b.context))); }
 			catch (e) { return send(res, 502, { error: (e as Error).message }); }
 			finally { agentBusy = false; }
+		}
+		if (route === 'design') {
+			// the home designer: a short, fast answer (the page builds the prompt from its live scene)
+			if (!hasKey()) return send(res, 503, { error: 'ANTHROPIC_API_KEY is not set in the dev server\'s environment' });
+			if (typeof b.prompt !== 'string' || !b.prompt.trim() || b.prompt.length > DESIGN_MAX_PROMPT) return send(res, 400, { error: 'prompt missing or too long' });
+			try { return send(res, 200, await askDesigner(b.prompt)); }
+			catch (e) { return send(res, 502, { error: (e as Error).message }); }
 		}
 		if (route === 'run') {
 			if (!TASKS[b.task]) return send(res, 400, { error: `only these can run: ${Object.keys(TASKS).join(', ')}` });

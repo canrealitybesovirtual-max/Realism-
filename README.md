@@ -34,6 +34,7 @@ Your controllers appear as animated hands. Fingers follow the trigger, grip and 
 | Walk | Left stick: smooth walking in the direction you look (walls and furniture stop you; edges dim slightly while moving, for comfort). Works while holding things |
 | Guns | Grip to pick one up; trigger fires. **A / X**: magazine release - the magazine drops out as a real object. **Reload by hand:** squeeze your other hand at your hip to draw a spare magazine, bring it up to the magwell (it seats when lined up). **Glock:** grab the back of the slide with the other hand and pull it to rack; **B / Y** is the slide stop when it is locked back (else the light). **AWM:** grab the bolt handle, lift it, pull it back (the case flies out), push it forward and down. Let a magazine go at your hip to put it back on the belt; point at an ammo can and pull the trigger to refill. The old service pistol keeps its simple **A** reload |
 | Snowy Mountain Rally / Highway | Pick one in the **Door** app on the computer, then walk to the office door and press **A** (or point at it and pull the trigger) |
+| Home | Pick **Home** in the Door app and go through the office door. A tablet sits above your left hand: point at it with the right controller and pull the trigger. Hold **X** to talk. Point the right controller at something to make it "this" |
 | Get in the car | Walk up to it and press **A** |
 | Drive | Right trigger: gas · Left trigger: brake, then reverse (both analog) · **Steer with your hands:** grip the steering wheel's rim (one or both hands) and turn it, or use either stick · **A**: handbrake · **B**: get out · **Y**: back on the road · **X**: re-centre the seat. The speedometer and rev counter in the dash work. The door back to the studio follows you around the map on foot and comes to where you get out |
 | Turn | Right stick: flick left/right to snap-turn 30°. Up/down scrolls when pointing at the monitor |
@@ -94,6 +95,18 @@ URL options:
 - **Each map loads on its own:** nothing behind the door is downloaded or built with the office. The highway is a separate code chunk plus `models/traffic/traffic.json`, fetched the first time you go; the rally map fetches only its own data. Both are built when you go through the door and freed (geometry, textures, audio) when you come back. The car is shared and kept. The shooting range is its own chunk too, built the first time you go there. On desktop: <kbd>E</kbd> at the door or the car, <kbd>W A S D</kbd> drive, <kbd>Space</kbd> handbrake, <kbd>C</kbd> camera, <kbd>R</kbd> back on the road. In VR, see the controls above. You sit in the driver's seat, calibrated to where your head is when you get in; tyre slip and landings rumble the controllers.
 - `node scripts/e2e-rally-vr.mjs` walks the whole thing in an emulated Quest 3; `node scripts/e2e-maps.mjs` checks the on-demand loading, the highway traffic, driving, barriers and crashes.
 
+## Home: redesign a house by talking to it
+
+Pick **Home** in the Door app and walk through the office door: a three-room house (living room, kitchen, dining, bedroom) with furniture, daylight and lamps. Say or type what you want and it changes while you keep walking.
+
+- **Talk:** hold <kbd>V</kbd> or the big microphone button (click to toggle), or turn on a wake word ("home, make the walls sage green") in Settings. While you speak you see the words being heard, then what was understood, then progress. <kbd>T</kbd> types instead; <kbd>Esc</kbd> or "cancel" stops a running change. <kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd> or "undo" / "redo". Replies can be spoken (Settings).
+- **Targeting:** what you look at (desktop) or point at with the right controller (VR) is outlined and is "this": "make this chair blue", "remove this", "make it darker". If a request could mean several things ("the chair" in the dining room) you get one short question with buttons.
+- **What it can do:** finishes and colours of any part (24 PBR material presets: woods, stone, marble, terrazzo, tiles, fabrics, leather, metals, glass, lacquer), lighting per room (warmth, brightness, softness), moving / turning / resizing / adding / duplicating / removing furniture (21 kinds), opening and closing doors, and whole-room styles (modern, minimal, luxury, scandinavian, industrial, rustic, cosy, japandi, coastal, cool), each with three variants ("show me three alternatives", "the second one"). Moves and new furniture land on the nearest free spot (no overlaps, clear of doors and walkways) and you cannot walk through furniture.
+- **Fast path:** everyday requests are understood on the page by a deterministic parser and applied in the same frame. Only open-ended requests go to Claude, which answers in JSON Lines that are applied line by line as they stream in. In dev that goes through the dev server (the API key stays on the server); on claude.ai it uses the page's own sample capability, which asks permission first. Without either, everyday requests still work and the page says Claude is not available.
+- **Safe changes:** Claude (and the parser) only produce operations from a fixed list, each validated before it touches the scene; no code is ever run. Each request is one transaction: applied a few steps per frame, checked afterwards, rolled back completely if a step fails or you cancel, and undoable as one step. The design autosaves and comes back next time; "save as ..." keeps named designs (Designs tab), "restore ..." brings one back, and "reset" returns to the original home (saving the current design as "Before reset" first).
+- **Speed:** every request is timed from the end of speech (or Enter) to the first visible change and to the verified end; the **Speed** tab lists them.
+- **Limits:** voice uses the browser's Web Speech API. Chrome and Edge support it (it needs a network connection and microphone permission); Firefox and many headset browsers do not, so the panel and the VR tablet fall back to typing and buttons. Inside the claude.ai artifact frame the microphone may be blocked; open the game in its own tab to talk.
+
 ## The computer
 
 A canvas-rendered desktop (menu bar, dock, draggable windows) with four apps:
@@ -116,9 +129,10 @@ It also carries the engine tools, which edit the running game you are standing i
 
 ```
 npm run typecheck
-npm test                         # 81 unit tests: engine ops/undo/save, components, graphs, scripts, agent proposals, asset checks, diff/highlighter, editor, calculator, window manager, physics (incl. hand sweeps), hands, grasps and skin attributes
+npm test                         # 98 unit tests: home intent parser and design engine (undo, rollback, collisions, save/replay), engine ops/undo/save, components, graphs, scripts, agent proposals, asset checks, diff/highlighter, editor, calculator, window manager, physics (incl. hand sweeps), hands, grasps and skin attributes
 npm run dev & node scripts/e2e.mjs        # 36 browser checks, desktop + emulated Quest 3 WebXR
 npm run dev & node scripts/e2e-maps.mjs   # 11 checks: maps load on demand and free on leaving; highway traffic, driving, rails, crashes; lazy range
+npm run dev & node scripts/e2e-home.mjs  # Home: voice pipeline, "make this room look more modern" timing, undo/redo, gaze targeting, moves with collisions, cancel, questions, alternatives, save / reload / restore, doors
 npm run dev & node scripts/e2e-hands-vr.mjs # 4 checks: hands stop at the desk; fingers close onto a held magazine
 npm run dev & node scripts/e2e-studio.mjs # 16 editor checks (world tools on desktop and in VR, runtime, save/load)
 npm run dev & node scripts/e2e-code.mjs   # code workstation through the computer's own input, incl. project files on the dev server

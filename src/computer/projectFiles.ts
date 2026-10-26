@@ -52,6 +52,8 @@ export class ProjectFiles {
 	search(q: string) { return this.call<{ hits: SearchHit[] }>('search?q=' + encodeURIComponent(q)).then((r) => r.hits); }
 	askClaude(request: string, context: string) { return this.call<{ text: string; truncated: boolean; model: string }>('agent', { method: 'POST', body: { request, context } }); }
 	run(task: string) { return this.call<TaskResult>('run', { method: 'POST', body: { task } }); }
+	/** the home designer's fast Claude route */
+	design(prompt: string) { return this.call<{ text: string; truncated: boolean; model: string }>('design', { method: 'POST', body: { prompt } }); }
 }
 
 /** `src/a.ts(12,5): error TS2322: ...` lines from tsc output */

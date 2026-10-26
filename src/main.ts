@@ -86,6 +86,8 @@ let gun: PistolSystem | undefined;
 const guns: Gun[] = [];
 let gunFx: GunEffects | undefined;
 let range: ShootingRange | undefined;
+let home: import('./home/home').Home | undefined;
+let homeHandle: { readonly active: boolean; readonly loaded: boolean; readonly home: typeof home; enter(): Promise<void>; leave(): void } | undefined;
 let rangeHandle: { readonly active: boolean; readonly loaded: boolean; enter(): Promise<void>; leave(): void } | undefined;
 let runtime: Runtime | undefined;
 let editor: Editor | undefined;
@@ -227,6 +229,23 @@ async function init() {
 			leave() { range?.leave(); },
 		};
 	}
+	// the home you redesign by talking (Door app -> Home): also its own chunk
+	{
+		let loading: Promise<NonNullable<typeof home>> | null = null;
+		homeHandle = {
+			get active() { return !!home?.active; },
+			get loaded() { return !!home; },
+			get home() { return home; },
+			async enter() {
+				if (!home) {
+					loading ??= import('./home/home').then((m) => new m.Home({ scene, camera, renderer, walk, desktop, xr, physics: physics.enabled ? physics : null, project: codeApp?.project ?? null }));
+					home = await loading;
+				}
+				home.enter();
+			},
+			leave() { home?.leave(); },
+		};
+	}
 	// the engine / editor layer over the running game (Studio app on the computer)
 	{
 		const world = new EntityWorld(scene, physics.enabled ? physics : null);
@@ -292,7 +311,7 @@ async function init() {
 	document.getElementById('loading')!.remove();
 	(window as any).__studio.ready = true;
 	// handles for the automated browser checks (scripts/e2e.mjs) and debugging
-	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range: rangeHandle, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets, mags });
+	Object.assign((window as any).__studio, { physics, computer, ws, desktop, xr, targets, gun, guns, range: rangeHandle, home: homeHandle, runtime, editor, viewport, gameplay, log, THREE, KEY_INDEX, code: codeApp, assistant: agentApp, diag, assets, mags });
 }
 
 /** Bake contact/ambient occlusion for the big planar surfaces. */
@@ -372,10 +391,11 @@ renderer.setAnimationLoop((t) => {
 			gunFx?.update(sdt);
 			gameplay?.update(sdt);
 		}
+		home?.update(dt);
 		range?.update(sdt); // with 0 while paused: clays freeze, the exit and hints still work
 		diag?.mark('sim');
 		editor?.update();
-		shadows.update();
+		if (!home?.active) shadows.update(); // the office's contact shadows stay hidden in the house
 		ws.updateClock();
 		ws.keyboard.update(dt);
 		computer.update(now);

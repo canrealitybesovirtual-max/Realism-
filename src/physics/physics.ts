@@ -73,8 +73,8 @@ export class Physics {
 		if ('numInternalPgsIterations' in ip) ip.numInternalPgsIterations = 2;
 	}
 
-	addStatic(c: StaticCollider) {
-		if (!this.enabled) return;
+	addStatic(c: StaticCollider): RAPIER.Collider | null {
+		if (!this.enabled) return null;
 		const desc = RAPIER.ColliderDesc.cuboid(c.half.x, c.half.y, c.half.z)
 			.setTranslation(c.center.x, c.center.y, c.center.z)
 			.setFriction(0.7)
@@ -83,7 +83,12 @@ export class Physics {
 			const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), c.rotationY);
 			desc.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w });
 		}
-		this.world.createCollider(desc);
+		return this.world.createCollider(desc);
+	}
+
+	/** take out a collider made by addStatic (moved or removed scenery) */
+	removeStatic(c: RAPIER.Collider | null) {
+		if (this.enabled && c && this.world.getCollider(c.handle)) this.world.removeCollider(c, false);
 	}
 
 	addProp(d: PropDesc): Prop {
