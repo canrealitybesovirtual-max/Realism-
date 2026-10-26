@@ -1,8 +1,10 @@
-// AR Home in an emulated Quest 3 (IWER): editing your real room through the
-// passthrough. The emulator has no room scan, so the test traces the floor
-// with the controller (the fallback a real headset without Space Setup also
-// uses), then also feeds a scanned room (walls, window, door, couch, table)
-// through the same path the headset's plane / mesh detection takes.
+// AR Home in an emulated Quest 3 (IWER): your room from the headset's room
+// scan, edited by voice through the passthrough.
+//
+// The emulator has no room scan of its own, so after checking what happens
+// without one, the test hands the page a scan through the same WebXR calls a
+// Quest uses (frame.detectedPlanes / detectedMeshes / getPose). That scan is
+// test data that lives only in this script.
 //   npm run dev & node scripts/e2e-home-ar.mjs [--url http://localhost:5173/]
 import { createRequire } from 'node:module';
 const { chromium } = createRequire(import.meta.url)('playwright');
@@ -18,123 +20,117 @@ await p.goto(url + '?emulate&noao');
 await p.waitForFunction(() => window.__studio?.ready, null, { timeout: 600000 });
 await p.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('home.')) localStorage.removeItem(k); const o = document.getElementById('overlay'); if (o) o.style.display = 'none'; });
 const frames = (n) => p.evaluate((n) => new Promise((r) => { let i = 0; const f = () => (++i >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); }), n);
-const H = () => 'window.__studio.home.home';
-
-async function startAR() {
-	await p.click('#ar-button', { force: true, timeout: 180000 });
-	await p.waitForFunction(() => window.__studio.renderer.xr.isPresenting && window.__studio.home.home?.ar, null, { timeout: 120000 });
-	await frames(4);
-}
-check('an AR HOME button is offered when the headset supports immersive-ar', !!(await p.$('#ar-button')));
-await startAR();
-const st = await p.evaluate(() => {
-	const S = window.__studio, h = S.home.home;
-	return { mode: h.mode, bg: S.scene.background, clearA: S.renderer.getClearAlpha(), modelHouse: h.stash?.house.root.visible, seated: S.xr.seated, state: h.ar.state };
-});
-check('AR starts on your room: passthrough background, the model house put away, stick walking off', st.mode === 'real' && st.bg === null && st.clearA === 0 && st.modelHouse === false && st.seated, JSON.stringify(st));
-
-// no room scan in the emulator: it falls back to tracing the floor
-await p.waitForFunction(() => window.__studio.home.home.ar.state === 'tracing', null, { timeout: 30000 }).catch(() => {});
-check('without a room scan it asks you to trace the floor', await p.evaluate(() => window.__studio.home.home.ar.state === 'tracing'), await p.evaluate(() => window.__studio.home.home.status.text));
-
-// point the right controller at four floor corners (rig space) and pull the trigger at each
-const corners = [[-1.5, -3.2], [1.6, -3.2], [1.6, -0.6], [-1.5, -0.6]];
-const aimAt = (x, z) => p.evaluate(([x, z]) => {
-	const S = window.__studio, T = S.THREE, d = window.__iwer, rig = S.xr.rig;
-	const from = new T.Vector3(0.2, 1.2, -0.2), to = new T.Vector3(x, 0, z);
-	// emulator poses are in the reference space = rig space
-	d.controllers.right.position.set(from.x, from.y, from.z);
-	const q = new T.Quaternion().setFromUnitVectors(new T.Vector3(0, 0, -1), to.clone().sub(from).normalize());
-	d.controllers.right.quaternion.set(q.x, q.y, q.z, q.w);
-}, [x, z]);
-const pull = async () => { await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 1)); await frames(3); await p.evaluate(() => window.__iwer.controllers.right.updateButtonValue('trigger', 0)); await frames(3); };
-for (const [x, z] of corners) { await aimAt(x, z); await frames(3); await pull(); }
-const traced = await p.evaluate(() => { const ar = window.__studio.home.home.ar; return { n: ar.corners.length, pts: ar.corners.map((c) => [+c.x.toFixed(2), +c.z.toFixed(2)]) }; });
-check('each trigger pull at a floor corner adds that corner', traced.n === 4 && traced.pts.every((q, i) => Math.hypot(q[0] - corners[i][0], q[1] - corners[i][1]) < 0.05), JSON.stringify(traced));
-await aimAt(...corners[0]); await frames(3); await pull(); // back at the first corner closes the outline
-const room = await p.evaluate(() => {
-	const h = window.__studio.home.home, it = (id) => h.house.items.get(id);
-	return { state: h.ar.state, walls: it('living.walls')?.slots.main.meshes.length, overlayVisible: it('living.walls')?.slots.main.mat.visible, w: +(h.house.rooms.living.x1 - h.house.rooms.living.x0).toFixed(2), d: +(h.house.rooms.living.z1 - h.house.rooms.living.z0).toFixed(2), info: h.ar.scanInfo };
-});
-check('closing the outline makes your room: 4 walls, a floor and a ceiling, all still showing the real surfaces', room.state === 'ready' && room.walls === 4 && room.overlayVisible === false && Math.abs(room.w - 3.1) < 0.1 && Math.abs(room.d - 2.6) < 0.1, JSON.stringify(room));
-
-// the traced walls sit where the corners were (in world space)
-const fit = await p.evaluate((corners) => {
-	const S = window.__studio, h = S.home.home, T = S.THREE, rig = S.xr.rig;
-	const floor = h.house.items.get('living.floor').object; floor.updateMatrixWorld(true);
-	const box = new T.Box3().setFromObject(floor);
-	const want = new T.Box3(); for (const [x, z] of corners) want.expandByPoint(rig.localToWorld(new T.Vector3(x, 0, z)));
-	return { d: box.min.distanceTo(want.min) + box.max.distanceTo(want.max) };
-}, corners);
-check('the room overlays line up with the traced corners', fit.d < 0.08, JSON.stringify(fit));
-
-// voice: paint your walls, floor; add furniture; mood light
 const say = async (text) => { await p.evaluate((t) => { const h = window.__studio.home.home, n = performance.now(); h.voice.onFinal(t, { speechEnd: n, final: n }); }, text); await p.waitForFunction(() => !window.__studio.home.home.status.busy, null, { timeout: 60000 }); await frames(2); };
+
+// ---- before any scan
+const noScan = await p.evaluate(async () => await window.__studio.home.enter());
+check('Home on the desktop refuses to show anything before your room is scanned', noScan === false);
+check('an AR HOME button is offered when the headset supports immersive-ar', !!(await p.$('#ar-button')));
+await p.click('#ar-button', { force: true, timeout: 180000 });
+await p.waitForFunction(() => window.__studio.renderer.xr.isPresenting && window.__studio.home.home?.ar, null, { timeout: 120000 });
+await p.waitForFunction(() => window.__studio.home.home.ar.state === 'noscan', null, { timeout: 30000 }).catch(() => {});
+const ns = await p.evaluate(() => { const h = window.__studio.home.home; return { state: h.ar.state, house: h.house, text: h.status.text, bg: window.__studio.scene.background }; });
+check('in AR with no room scan: no room is invented, it says how to scan one', ns.state === 'noscan' && ns.house === null && ns.bg === null && /scan/i.test(ns.text), JSON.stringify(ns));
+
+// ---- the headset's room scan (test data, in the shape a Quest reports it)
+await p.evaluate(() => {
+	const S = window.__studio, T = S.THREE, xr = S.renderer.xr;
+	const space = (m) => ({ __m: m });
+	const plane = (label, orientation, m, poly) => ({ semanticLabel: label, orientation, planeSpace: space(m), polygon: poly.map(([x, z]) => ({ x, y: 0, z, w: 1 })) });
+	const at = (x, y, z) => new T.Matrix4().makeTranslation(x, y, z);
+	// a vertical plane: local x along the wall, local y = normal into the room
+	const wall = (ax, az, bx, bz, nx, nz, y0, y1, label = 'wall') => {
+		const t = new T.Vector3(bx - ax, 0, bz - az), len = t.length(); t.normalize();
+		const n = new T.Vector3(nx, 0, nz), zz = new T.Vector3().crossVectors(t, n);
+		const m = new T.Matrix4().makeBasis(t, n, zz).setPosition((ax + bx) / 2, (y0 + y1) / 2, (az + bz) / 2);
+		const h = (y1 - y0) / 2;
+		return plane(label, 'vertical', m, [[-len / 2, -h], [len / 2, -h], [len / 2, h], [-len / 2, h]]);
+	};
+	const X0 = -2.3, X1 = 2.1, Z0 = -4.4, Z1 = -0.4;
+	const planes = new Set([
+		plane('floor', 'horizontal', at(0, 0, 0), [[X0, Z0], [X1, Z0], [X1, Z1], [X0, Z1]]),
+		plane('ceiling', 'horizontal', at(0, 2.55, 0), [[X0, Z0], [X1, Z0], [X1, Z1], [X0, Z1]]),
+		wall(X0, Z0, X1, Z0, 0, 1, 0, 2.55), wall(X1, Z0, X1, Z1, -1, 0, 0, 2.55), wall(X1, Z1, X0, Z1, 0, -1, 0, 2.55), wall(X0, Z1, X0, Z0, 1, 0, 0, 2.55),
+		wall(-0.5, Z0, 0.7, Z0, 0, 1, 0.9, 2.1, 'window frame'),
+		wall(X1, -1.6, X1, -0.7, -1, 0, 0, 2.05, 'door frame'),
+		plane('table', 'horizontal', at(0.1, 0.45, -2.0), [[-0.5, -0.3], [0.5, -0.3], [0.5, 0.3], [-0.5, 0.3]]),
+	]);
+	// the couch as a volume (a box mesh)
+	const v = []; for (const x of [-1, 1]) for (const y of [0, 0.85]) for (const z of [-0.45, 0.45]) v.push(x, y, z);
+	const meshes = new Set([{ semanticLabel: 'couch', meshSpace: space(at(0.1, 0, -0.95)), vertices: new Float32Array(v) }]);
+	const real = xr.getFrame.bind(xr);
+	xr.getFrame = () => {
+		const f = real(); if (!f) return f;
+		return new Proxy(f, { get(t, k) {
+			if (k === 'detectedPlanes') return planes;
+			if (k === 'detectedMeshes') return meshes;
+			if (k === 'getPose') return (s, ref) => (s && s.__m ? { transform: { matrix: s.__m.toArray() } } : t.getPose(s, ref));
+			const val = t[k]; return typeof val === 'function' ? val.bind(t) : val;
+		} });
+	};
+	window.__scanArea = { X0, X1, Z0, Z1 };
+});
+await p.evaluate(() => window.__studio.home.home.arRescan());
+await p.waitForFunction(() => window.__studio.home.home.ar.state === 'ready', null, { timeout: 30000 }).catch(() => {});
+const room = await p.evaluate(() => {
+	const S = window.__studio, h = S.home.home, it = (id) => h.house?.items.get(id), T = S.THREE;
+	if (!h.house) return { state: h.ar.state, text: h.status.text };
+	const floor = it('room.floor').object; floor.updateMatrixWorld(true);
+	const box = new T.Box3().setFromObject(floor), A = window.__scanArea, rig = S.xr.rig;
+	const want = new T.Box3().expandByPoint(rig.localToWorld(new T.Vector3(A.X0, 0, A.Z0))).expandByPoint(rig.localToWorld(new T.Vector3(A.X1, 0, A.Z1)));
+	return {
+		state: h.ar.state, info: h.ar.scanInfo, walls: it('room.walls')?.slots.main.meshes.length, overlay: it('room.walls')?.slots.main.mat.visible,
+		couch: it('real.couch-1')?.kind, table: it('real.table-1')?.kind, win: h.house.rooms.room.windows.length, door: h.house.rooms.room.doors.length,
+		added: [...h.house.items.values()].filter((i) => !i.fixed).length, fit: +(box.min.distanceTo(want.min) + box.max.distanceTo(want.max)).toFixed(3),
+		couchBoxDrawn: it('real.couch-1')?.object.children[0].material.colorWrite, saved: !!localStorage.getItem('home.room.scan.v1'),
+	};
+});
+check('your scanned room appears where it really is: 4 walls, window, door, couch, table, nothing invented', room.state === 'ready' && room.walls === 4 && room.win === 1 && room.door === 1 && room.couch === 'real' && room.table === 'real' && room.added === 0 && room.fit < 0.08, JSON.stringify(room));
+check('unpainted surfaces and your real furniture are not drawn over the passthrough', room.overlay === false && room.couchBoxDrawn === false);
+check('the scan is kept on this device', room.saved);
+
+// ---- talk to it
 await say('paint the walls sage green');
 await say('give me an oak floor');
-const painted = await p.evaluate(() => { const h = window.__studio.home.home; const w = h.house.items.get('living.walls').slots.main.mat, f = h.house.items.get('living.floor').slots.main.mat; return { walls: w.visible && w.userData.finish, floor: f.visible && f.userData.finish.preset, m: h.metrics.slice(0, 2).map((m) => Math.round(m.tFirstVisible - m.tTranscript)) }; });
+const painted = await p.evaluate(() => { const h = window.__studio.home.home; const w = h.house.items.get('room.walls').slots.main.mat, f = h.house.items.get('room.floor').slots.main.mat; return { walls: w.visible && w.userData.finish, floor: f.visible && f.userData.finish.preset, ms: h.metrics.slice(0, 2).map((m) => Math.round(m.tFirstVisible - m.tTranscript)) }; });
 check('“paint the walls sage green” / “oak floor” paint over your real walls and floor', painted.walls?.color && painted.floor === 'oak', JSON.stringify(painted));
 await say('add a sofa against the wall');
-await say('put a plant in the corner');
-const furn = await p.evaluate(() => { const h = window.__studio.home.home; return [...h.house.items.values()].filter((i) => !i.fixed).map((i) => i.kind); });
-check('virtual furniture goes into your room', furn.includes('sofa') && furn.includes('plant'), JSON.stringify(furn));
+await p.evaluate(() => { const T = window.__studio.THREE, q = new T.Quaternion().setFromEuler(new T.Euler(1.4, 0, 0)); window.__iwer.quaternion.set(q.x, q.y, q.z, q.w); window.__iwer.controllers.right.position.set(5, -5, 5); });
+await frames(4);
+await say('add a floor lamp beside the couch');
+const q = await p.evaluate(() => window.__studio.home.home.question?.choices.map((c) => c.label));
+if (q) { await p.evaluate((i) => window.__studio.home.home.choose(i), q.findIndex((l) => /real/.test(l))); await p.waitForFunction(() => !window.__studio.home.home.status.busy, null, { timeout: 60000 }); await frames(2); }
+const lamp = await p.evaluate(() => {
+	const h = window.__studio.home.home, l = [...h.house.items.values()].find((i) => i.kind === 'floor lamp'), c = h.house.items.get('real.couch-1');
+	return l ? { d: +Math.hypot(l.object.position.x - c.object.position.x, l.object.position.z - c.object.position.z).toFixed(2) } : null;
+});
+check('“the couch” asks: your real couch or the new sofa; the lamp goes beside your real couch', q?.length === 2 && lamp && lamp.d > 0.9 && lamp.d < 1.6, JSON.stringify({ q, lamp }));
+await say('make the couch blue');
+const q2 = await p.evaluate(() => window.__studio.home.home.question?.choices.map((c) => c.label));
+if (q2) { await p.evaluate((i) => window.__studio.home.home.choose(i), q2.findIndex((l) => /real/.test(l))); await p.waitForFunction(() => !window.__studio.home.home.status.busy, null, { timeout: 60000 }); await frames(2); }
+const refuse = await p.evaluate(() => window.__studio.home.home.status.text);
+check('your real couch is not repainted, and it says why', /real couch/.test(refuse), refuse);
 await say('dim the lights and make them warmer');
 const tint = await p.evaluate(() => { const t = window.__studio.camera.getObjectByName('home-ar-tint'); return { visible: t.visible, a: +t.material.uniforms.uAlpha.value.toFixed(2) }; });
 check('dimmer, warmer light tints the passthrough', tint.visible && tint.a > 0.1, JSON.stringify(tint));
 await say('undo');
 const undone = await p.evaluate(() => +window.__studio.camera.getObjectByName('home-ar-tint').material.uniforms.uAlpha.value.toFixed(2));
 check('undo takes the light back', undone < tint.a, `${undone}`);
-const saved = await p.evaluate(() => !!localStorage.getItem('home.real.design.v1') && !localStorage.getItem('home.design.v1')?.includes('sage'));
-check('your room’s design autosaves separately from the model house', saved);
-
-// a scanned room through the same path the headset's room scan takes
-await p.evaluate(async () => {
-	const h = window.__studio.home.home, m = await import('/src/home/realRoom.ts');
-	h.useScan(m.testScan(), new window.__studio.THREE.Vector3(0, 0, -2), 0.3);
-});
-await frames(3);
-const scanned = await p.evaluate(() => {
-	const h = window.__studio.home.home, it = (id) => h.house.items.get(id);
-	return { couch: it('real.couch-1')?.kind, table: it('real.table-1')?.kind, win: h.house.rooms.living.windows.length, walls: it('living.walls').slots.main.mat.userData.finish.color, sofa: [...h.house.items.values()].some((i) => i.kind === 'sofa'), info: h.ar.scanInfo };
-});
-check('a scanned room: real couch and table become things you can refer to, and your design is replayed onto it', scanned.couch === 'real' && scanned.table === 'real' && scanned.win === 1 && !!scanned.walls && scanned.sofa, JSON.stringify(scanned));
-const pickReal = async () => {
-	const q = await p.evaluate(() => { const h = window.__studio.home.home; return h.question ? h.question.choices.map((c) => c.label) : null; });
-	if (q) { await p.evaluate((i) => window.__studio.home.home.choose(i), q.findIndex((l) => /real/.test(l))); await p.waitForFunction(() => !window.__studio.home.home.status.busy, null, { timeout: 60000 }); await frames(2); }
-	return q;
-};
-// look up at the ceiling, so nothing is "this"
-await p.evaluate(() => { const T = window.__studio.THREE, q = new T.Quaternion().setFromEuler(new T.Euler(1.4, 0, 0)); window.__iwer.quaternion.set(q.x, q.y, q.z, q.w); });
-await p.evaluate(() => window.__iwer.controllers.right.position.set(5, -5, 5)); // and point the controller away
-await frames(4);
-await say('make the couch blue');
-const asked = await pickReal();
-check('with a new sofa and your real couch, “the couch” gets one short question', asked?.length === 2 && asked.some((l) => /real couch/.test(l)), JSON.stringify(asked));
-const refuse = await p.evaluate(() => window.__studio.home.home.status.text);
-check('your real couch is not repainted, and it says why', /real couch/.test(refuse), refuse);
-await say('add a floor lamp beside the couch');
-await pickReal();
-const lamp = await p.evaluate(() => {
-	const h = window.__studio.home.home, l = [...h.house.items.values()].reverse().find((i) => i.kind === 'floor lamp'), c = h.house.items.get('real.couch-1');
-	return l ? { d: +Math.hypot(l.object.position.x - c.object.position.x, l.object.position.z - c.object.position.z).toFixed(2), ok: h.metrics[0].verified } : null;
-});
-check('“add a floor lamp beside the couch” places it next to your real couch', lamp && lamp.ok && lamp.d < 1.6 && lamp.d > 0.9, JSON.stringify(lamp));
-
-// the tablet
 check('the control tablet shows above the left hand', await p.evaluate(() => window.__studio.scene.getObjectByName('home-vr-panel').visible));
 
-// exit and come back: the room design is still there
+// ---- out of AR: the same room, with its design, on screen
 await p.evaluate(() => window.__studio.renderer.xr.getSession().end());
 await p.waitForFunction(() => !window.__studio.renderer.xr.isPresenting, null, { timeout: 30000 });
 await frames(3);
-const out = await p.evaluate(() => { const S = window.__studio, h = S.home.home; return { mode: h.mode, ar: h.ar, house: h.house.items.has('living.sofa'), visible: h.house.root.visible, bg: !!S.scene.background, seated: S.xr.seated, real: !!S.xr.rig.getObjectByName('home-real') }; });
-check('leaving AR brings back the model house and removes your room from the scene', out.mode === 'house' && out.ar === null && out.house && out.visible && out.bg && !out.seated && !out.real, JSON.stringify(out));
-await startAR();
-await p.evaluate(async () => { const h = window.__studio.home.home, m = await import('/src/home/realRoom.ts'); h.useScan(m.testScan(), new window.__studio.THREE.Vector3(0, 0, -2), 0.3); });
-await frames(2);
-const back = await p.evaluate(() => { const h = window.__studio.home.home; return { walls: h.house.items.get('living.walls').slots.main.mat.userData.finish, lamp: [...h.house.items.values()].some((i) => i.kind === 'floor lamp') }; });
-check('next time in AR your room comes back with its design', back.walls.color && back.lamp, JSON.stringify(back));
-await p.evaluate(() => window.__studio.renderer.xr.getSession().end());
+const out = await p.evaluate(() => {
+	const S = window.__studio, h = S.home.home, it = (id) => h.house?.items.get(id);
+	return { active: h.active, ar: h.ar, walls: it('room.walls')?.slots.main.mat.userData.finish.color, wallsDrawn: it('room.walls')?.slots.main.mat.visible, ceilingDrawn: it('room.ceiling')?.slots.main.mat.visible, couchDrawn: it('real.couch-1')?.object.children[0].material.colorWrite, lamp: [...(h.house?.items.values() ?? [])].some((i) => i.kind === 'floor lamp'), bg: !!S.scene.background, seated: S.xr.seated };
+});
+check('after AR you are in the same room on screen, with your design, real surfaces drawn plain', out.active && out.ar === null && !!out.walls && out.wallsDrawn && out.ceilingDrawn && out.couchDrawn && out.lamp && out.bg && !out.seated, JSON.stringify(out));
+await p.evaluate(() => window.__studio.home.leave());
+const again = await p.evaluate(async () => { const ok = await window.__studio.home.enter(); const h = window.__studio.home.home; return { ok, lamp: [...(h.house?.items.values() ?? [])].some((i) => i.kind === 'floor lamp') }; });
+check('later, Home on the desktop opens your scanned room with its design', again.ok && again.lamp, JSON.stringify(again));
+await p.evaluate(() => window.__studio.home.leave());
 check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 await p.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('home.')) localStorage.removeItem(k); });
 await b.close();

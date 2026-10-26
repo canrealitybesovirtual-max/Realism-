@@ -102,18 +102,18 @@ export class ControlCenter {
 		if (t.dataset.c !== undefined) { h.choose(+t.dataset.c); return; }
 		if (t.dataset.r) { h.submit(`restore ${t.dataset.r}`, 'button'); return; }
 		if (t.dataset.del) { h.deleteSnapshot(t.dataset.del); return; }
-		if (t.dataset.style) { h.runOps([{ op: 'style', room: h.room, style: t.dataset.style as any }], `${t.dataset.style[0].toUpperCase() + t.dataset.style.slice(1)} ${h.house.rooms[h.room].name}`); return; }
+		if (t.dataset.style) { h.runOps([{ op: 'style', room: h.room, style: t.dataset.style as any }], `${t.dataset.style[0].toUpperCase() + t.dataset.style.slice(1)} room`); return; }
 		switch (t.dataset.a) {
 			case 'mic': if (!h.voice.supported) { this.focusInput(); } else if (h.voice.state !== 'off' && performance.now() > 0) h.voice.stop(); return;
 			case 'send': this.send(); return;
 			case 'undo': h.submit('undo', 'button'); return;
 			case 'redo': h.submit('redo', 'button'); return;
 			case 'cancel': h.submit('cancel', 'button'); return;
-			case 'save': { const n = prompt('Name this design', `My ${h.house.rooms[h.room].name}`); if (n) h.submit(`save as ${n}`, 'button'); return; }
+			case 'save': { const n = prompt('Name this design', 'My room'); if (n) h.submit(`save as ${n}`, 'button'); return; }
 			case 'leave': h.leave(); return;
 			case 'min': this.el.classList.toggle('min'); return;
 			case 'alts': h.submit('show me three alternatives', 'button'); return;
-			case 'reset': if (confirm('Go back to the original home? (Your current design is saved as "Before reset" first.)')) h.submit('reset', 'button'); return;
+			case 'reset': if (confirm('Take all paint and added furniture away, back to your room as scanned? (Your current design is saved as "Before reset" first.)')) h.submit('reset', 'button'); return;
 			case 'wake': h.voice.wake = !h.voice.wake; h.voice.abort(); if (h.voice.wake) h.voice.start(); this.invalidate(); return;
 			case 'speak': h.voice.speak = !h.voice.speak; this.invalidate(); return;
 		}
@@ -148,14 +148,14 @@ export class ControlCenter {
 		const mic = this.el.querySelector<HTMLButtonElement>('[data-a=mic]')!;
 		mic.className = `mic ${v.state}${v.supported ? '' : ' unsupported'}`;
 		mic.querySelector('span')!.textContent = !v.supported ? 'Type' : v.state === 'off' ? 'Talk' : v.state === 'waiting' ? '…' : 'Listening';
-		D.where.innerHTML = `In the <b>${esc(h.house.rooms[h.room].name)}</b>${h.aimed ? ` · looking at <b>${esc(h.aimed.name)}</b>` : ''}`;
-		D.hint.textContent = v.error || (!v.supported ? 'Voice is not available in this browser: type, or use the buttons.' : v.wake ? `Listening for “${v.wakePhrase}…”` : 'Hold V or the button to talk · T to type · E at the front door to leave');
+		D.where.innerHTML = `<b>${h.ar ? 'Your room (AR)' : h.house ? 'Your room' : 'No room yet'}</b>${h.aimed ? ` · looking at <b>${esc(h.aimed.name)}</b>` : ''}`;
+		D.hint.textContent = v.error || (!v.supported ? 'Voice is not available in this browser: type, or use the buttons.' : v.wake ? `Listening for “${v.wakePhrase}…”` : 'Hold V or the button to talk · T to type · E to leave');
 		D.lines.innerHTML = (v.interim ? `<div><span class="k">Hearing</span>${esc(v.interim)}</div>` : h.transcript ? `<div><span class="k">You said</span>${esc(h.transcript)}</div>` : '') + (h.understood ? `<div><span class="k">Understood</span>${esc(h.understood)}</div>` : '');
 		const p = h.status.progress;
 		D.status.innerHTML = `${esc(h.status.text)}${h.status.busy ? `<div class="bar${p === null ? ' ind' : ''}"><i style="width:${p === null ? 35 : Math.round(p * 100)}%"></i></div>` : ''}`;
 		this.el.querySelector<HTMLButtonElement>('[data-a=cancel]')!.disabled = !h.status.busy && !h.question;
-		this.el.querySelector<HTMLButtonElement>('[data-a=undo]')!.disabled = !h.designer.canUndo;
-		this.el.querySelector<HTMLButtonElement>('[data-a=redo]')!.disabled = !h.designer.canRedo;
+		this.el.querySelector<HTMLButtonElement>('[data-a=undo]')!.disabled = !h.designer?.canUndo;
+		this.el.querySelector<HTMLButtonElement>('[data-a=redo]')!.disabled = !h.designer?.canRedo;
 		D.choices.innerHTML = h.question?.choices.length
 			? h.question.choices.map((c, i) => `<button class="b" data-c="${i}">${i + 1}. ${esc(c.label)}</button>`).join('')
 			: h.alts ? h.alts.options.map((o, i) => `<button class="b${h.alts!.applied === i ? ' p' : ''}" data-c="${i}">${i + 1}. ${esc(o.label)}</button>`).join('') : '';
@@ -166,8 +166,9 @@ export class ControlCenter {
 	private pane(): string {
 		const h = this.home;
 		if (this.tab === 'quick') {
+			if (!h.house) return 'Your room has not been scanned yet. Put on your Quest, open this page in the Quest browser and press AR HOME.';
 			const l = h.designer.light[h.room];
-			let s = `<div style="margin-bottom:6px">Make the ${esc(h.house.rooms[h.room].name)}…</div><div class="row" style="padding:0">${STYLE_NAMES.map((st) => `<button class="b" data-style="${st}">${st}</button>`).join('')}<button class="b" data-a="alts">3 alternatives</button></div>`;
+			let s = `<div style="margin-bottom:6px">Make your room…</div><div class="row" style="padding:0">${STYLE_NAMES.map((st) => `<button class="b" data-style="${st}">${st}</button>`).join('')}<button class="b" data-a="alts">3 alternatives</button></div>`;
 			s += `<div style="margin-top:10px">Lighting</div>
 <label class="s">Warm<input type="range" min="1800" max="6500" step="50" value="${l.warmth}" data-l="warmth">Cool</label>
 <label class="s">Dim<input type="range" min="0" max="2.5" step="0.05" value="${l.brightness}" data-l="brightness">Bright</label>
@@ -182,13 +183,13 @@ export class ControlCenter {
 			return s;
 		}
 		if (this.tab === 'history') {
-			const list = h.designer.history.slice().reverse();
+			const list = (h.designer?.history ?? []).slice().reverse();
 			return list.length ? `<ol>${list.map((x, i) => `<li>${esc(x)}${i === 0 ? ' <span class="ok">(undo removes this)</span>' : ''}</li>`).join('')}</ol>` : 'No changes yet.';
 		}
 		if (this.tab === 'designs') {
 			const all = h.snapshots(), names = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
 			return `${names.length ? `<ul>${names.map((n) => `<li>${esc(n)} <span style="color:#8e99a5">${new Date(all[n].at).toLocaleString()}</span> <button class="b" data-r="${esc(n)}">Restore</button> <button class="b" data-del="${esc(n)}">Delete</button></li>`).join('')}</ul>` : 'Nothing saved yet. Press Save, or say “save as cosy evening”.'}
-<p style="color:#8e99a5">Your current design is also saved automatically, and comes back next time.</p><button class="b w" data-a="reset">Back to the original home</button>`;
+<p style="color:#8e99a5">Your current design is also saved automatically, and comes back next time.</p><button class="b w" data-a="reset">Back to your room as scanned</button>`;
 		}
 		if (this.tab === 'perf') {
 			const rows = h.metrics.slice(0, 12).map((m) => `<tr><td>${esc(m.text.slice(0, 34))}</td><td>${m.path}</td><td>${ms(m.tSpeechEnd, m.tTranscript)}</td><td>${ms(m.tTranscript, m.tPlanFirst)}</td><td>${ms(m.tSpeechEnd ?? m.tTranscript, m.tFirstVisible)}</td><td>${ms(m.tSpeechEnd ?? m.tTranscript, m.tDone)}</td><td class="${m.verified ? 'ok' : 'bad'}">${m.verified ? '✓' : m.tDone ? '✗' : '…'}</td></tr>`).join('');

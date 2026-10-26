@@ -130,7 +130,7 @@ export const PRESETS: Record<PresetName, Preset> = {
 	'black metal': { color: '#26272a', roughness: 0.45, metalness: 0.8, tile: 0.5, tex: T.brushed, bump: 0.1, tintable: true, category: 'metal' },
 	glass: { color: '#dfe8ee', roughness: 0.05, metalness: 0, tile: 1, transparent: true, tintable: true, category: 'other' },
 	lacquer: { color: '#f4f2ee', roughness: 0.25, metalness: 0, tile: 1, clearcoat: 0.8, tintable: true, category: 'other' },
-	original: { color: '#ffffff', roughness: 1, metalness: 0, tile: 1, tintable: false, category: 'other' },
+	original: { color: '#d9d6d0', roughness: 0.9, metalness: 0, tile: 1, tintable: false, category: 'other' },
 };
 export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 
@@ -138,6 +138,9 @@ export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 const S = 256;
 const cache = new Map<string, { map: THREE.Texture; normal?: THREE.Texture }>();
 let aniso = 4;
+let passthrough = false;
+/** AR on: "original" surfaces are not drawn (call before re-dressing) */
+export function setPassthroughMode(on: boolean) { passthrough = on; }
 export function setAnisotropy(a: number) { aniso = a; }
 
 function textures(name: PresetName) {
@@ -194,7 +197,8 @@ export function dress(finish: Finish, mat?: THREE.MeshPhysicalMaterial): THREE.M
 	m.normalMap = t?.normal ? tex(t.normal) : null;
 	m.normalScale.set(0.8, 0.8);
 	m.needsUpdate = true;
-	m.visible = finish.preset !== 'original';
+	// "original": in AR nothing is drawn (the passthrough shows the real surface); elsewhere a plain surface as scanned
+	m.visible = finish.preset !== 'original' || !passthrough;
 	m.userData.finish = { ...finish };
 	return m;
 }

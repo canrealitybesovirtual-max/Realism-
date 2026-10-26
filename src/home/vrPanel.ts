@@ -92,7 +92,6 @@ export class VRPanel {
 			const re = this.edges(right);
 			if (re.down(0)) {
 				if (hover >= 0) { right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.4, 20); this.btns[hover].run(); this.dirty = true; }
-				else if (this.home.arTap()) right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.6, 40); // AR: trace a floor corner
 			}
 		}
 		if (hover !== this.hover) { this.hover = hover; this.dirty = true; }
@@ -111,17 +110,12 @@ export class VRPanel {
 		btn(W - 196, 28, 168, 60, h.ar ? 'Exit AR' : 'Leave home', () => (h.ar ? h.ar.session.end() : h.leave()));
 		if (h.ar) {
 			const ar = h.ar;
-			if (ar.state === 'tracing') {
-				btn(W - 196, 98, 168, 56, 'Done', () => h.arTraceDone(), { off: ar.corners.length < 3 });
-				btn(W - 196, 164, 168, 56, 'Undo corner', () => h.arUndoCorner(), { off: !ar.corners.length });
-			} else {
-				btn(W - 196, 98, 168, 56, ar.state === 'scanning' ? 'Scanning…' : 'Rescan', () => h.arRescan(), { on: ar.state === 'scanning' });
-				btn(W - 196, 164, 168, 56, 'Trace room', () => h.arTrace());
-			}
+			btn(W - 196, 98, 168, 56, ar.state === 'scanning' ? 'Reading…' : 'Rescan', () => h.arRescan(), { on: ar.state === 'scanning' });
+			btn(W - 196, 164, 168, 56, 'Scan room', () => h.arRoomSetup(), { on: ar.state === 'noscan' });
 		}
 		const row = 470;
-		btn(28, row, 150, 64, 'Undo', () => h.submit('undo', 'button'), { off: !h.designer.canUndo });
-		btn(190, row, 150, 64, 'Redo', () => h.submit('redo', 'button'), { off: !h.designer.canRedo });
+		btn(28, row, 150, 64, 'Undo', () => h.submit('undo', 'button'), { off: !h.designer?.canUndo });
+		btn(190, row, 150, 64, 'Redo', () => h.submit('redo', 'button'), { off: !h.designer?.canRedo });
 		btn(352, row, 150, 64, 'Save', () => h.submit(`save as VR ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, 'button'));
 		btn(514, row, 150, 64, 'Cancel', () => h.submit('cancel', 'button'), { off: !h.status.busy && !h.question });
 		btn(676, row, 320, 64, '3 alternatives', () => h.submit('show me three alternatives', 'button'));
@@ -145,7 +139,7 @@ export class VRPanel {
 		});
 		c.textAlign = 'left'; c.textBaseline = 'alphabetic';
 		c.fillStyle = '#aab4bf'; c.font = '500 26px system-ui,sans-serif';
-		c.fillText(`${h.house.rooms[h.room].name}${h.aimed ? ` · ${h.aimed.name}` : ''}`, 206, 60);
+		c.fillText(`${h.ar ? 'Your room (AR)' : h.house ? 'Your room' : 'No room scanned yet'}${h.aimed ? ` · ${h.aimed.name}` : ''}`, 206, 60);
 		c.fillStyle = '#fff'; c.font = '500 30px system-ui,sans-serif';
 		let y = 112;
 		const said = v.interim || h.transcript;

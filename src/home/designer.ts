@@ -29,7 +29,6 @@ export type Op =
 	| { op: 'add'; kind: Kind; room: RoomId; id?: string; to?: [number, number]; rot?: number; y?: number; near?: string; side?: Side; finishes?: Record<string, Finish> }
 	| { op: 'remove'; target: string }
 	| { op: 'duplicate'; target: string; id?: string }
-	| { op: 'door'; target: string; open: boolean }
 	| { op: 'style'; room: RoomId | 'all'; style: StyleName; variant?: number };
 
 export const MAX_OPS = 40;
@@ -42,7 +41,7 @@ interface Change { label: string; undo(): void; redo(): void; verify(): boolean;
 export interface Txn { label: string; changes: Change[] }
 
 export class Designer {
-	readonly light: Record<RoomId, LightState> = { living: { warmth: 3200, brightness: 1, soft: 0.3 }, kitchen: { warmth: 3600, brightness: 1, soft: 0.3 }, bedroom: { warmth: 2900, brightness: 1, soft: 0.3 } };
+	readonly light: Record<RoomId, LightState> = { room: { warmth: 3600, brightness: 1, soft: 0.3 } };
 	private done: Txn[] = [];
 	private undone: Txn[] = [];
 	/** called when an item's footprint changed (collision, walking) or it came / went */
@@ -69,7 +68,7 @@ export class Designer {
 	validate(o: Op): string | null {
 		if (!o || typeof o !== 'object') return 'not an op';
 		const needItem = (id: unknown) => (typeof id === 'string' && this.item(id) ? null : `no such object "${String(id)}"`);
-		const room = (r: unknown, all = false) => (r === 'all' && all) || r === 'living' || r === 'kitchen' || r === 'bedroom' ? null : `no such room "${String(r)}"`;
+		const room = (r: unknown, all = false) => (r === 'all' && all) || r === 'room' ? null : `no such room "${String(r)}"`;
 		switch (o.op) {
 			case 'finish': {
 				const e = needItem(o.target); if (e) return e;
@@ -102,7 +101,6 @@ export class Designer {
 				return room(o.room);
 			case 'remove': { const e = needItem(o.target); if (e) return e; return this.item(o.target)!.fixed ? `${this.item(o.target)!.name} cannot be removed` : null; }
 			case 'duplicate': { const e = needItem(o.target); if (e) return e; const it = this.item(o.target)!; return it.fixed || !KIND_LIST.includes(it.kind as Kind) ? `${it.name} cannot be copied` : null; }
-			case 'door': { const e = needItem(o.target); if (e) return e; return this.item(o.target)!.door ? null : 'that is not a door'; }
 			case 'style': return room(o.room, true) ?? (STYLE_NAMES.includes(o.style) ? null : `unknown style "${o.style}" (know: ${STYLE_NAMES.join(', ')})`);
 		}
 		return `unknown op "${(o as any).op}"`;
@@ -197,7 +195,6 @@ export class Designer {
 				for (const [k, s] of Object.entries(src.slots)) { const f = finishOf(s.mat); if (f) finishes[k] = f; }
 				return this.execAdd({ op: 'add', kind: src.kind as Kind, room: src.room, id: o.id, near: src.id, side: 'beside', finishes, y: src.object.position.y > 0.2 ? src.object.position.y : undefined });
 			}
-			case 'door': return this.execDoor(o.target, o.open);
 		}
 		return null;
 	}
@@ -241,7 +238,7 @@ export class Designer {
 		r.fill.color.copy(warm); r.fill.intensity = 6 * st.brightness;
 		for (const it of this.items.values()) if (it.room === room && it.light) { it.light.color.copy(kelvin(st.warmth - 300)); it.light.intensity = (it.lightBase ?? 1) * st.brightness; }
 		// softness is shared (the sun): the average over the rooms
-		const soft = (this.light.living.soft + this.light.kitchen.soft + this.light.bedroom.soft) / 3;
+		const soft = this.light.room.soft;
 		this.house.sun.shadow.radius = 1 + soft * 9; this.house.sun.shadow.needsUpdate = true;
 		this.house.hemi.intensity = 0.45 + soft * 0.5;
 		this.onLight(room);
@@ -321,10 +318,10 @@ export class Designer {
 			return { x, z, rot };
 		}
 		if (near === 'door') {
-			const doors = [...this.items.values()].filter((o) => o.door && (o.room === it.room || (o.id === 'door.bedroom' && it.room === 'bedroom')));
-			const d = doors[0]; if (!d) return null;
-			const p = d.object.position;
-			return { x: p.x + 1.2, z: p.z + (it.room === 'bedroom' ? -1.2 : -1.2), rot: it.object.rotation.y };
+			// in front of the room's door, a step into the room (doors are kept clear)
+			const p = r.doors.reduce<THREE.Vector3 | null>((a, b) => (!a || b.distanceTo(cur) < a.distanceTo(cur) ? b : a), null);
+			if (!p) return null;
+			return { x: p.x, z: p.z, rot: it.object.rotation.y };
 		}
 		const o = this.item(near);
 		if (!o) return null;
@@ -351,7 +348,7 @@ export class Designer {
 		if (o.to) want = { x: o.to[0], z: o.to[1], rot: want.rot };
 		else if (o.near) {
 			const w = this.wish(it, o.near, o.side);
-			if (!w) throw new Error(`cannot find "${o.near}" in the ${this.house.rooms[it.room].name}`);
+			if (!w) throw new Error(`cannot find "${o.near}" in ${this.house.rooms[it.room].name}`);
 			want = { x: w.x, z: w.z, rot: o.rot !== undefined ? want.rot : w.rot };
 		}
 		const spot = it.mount === 'floor' ? this.findSpot(it, want.x, want.z, want.rot) : [want.x, want.z] as [number, number];
@@ -396,7 +393,7 @@ export class Designer {
 			else if (o.near) { const w = this.wish(it, o.near, o.side); if (w) want = { x: w.x, z: w.z, rot: o.rot !== undefined ? want.rot : w.rot }; }
 			else if (it.mount === 'wall') { const w = this.wish(it, 'wall', undefined); if (w) want = w; }
 			const spot = it.mount === 'floor' ? this.findSpot(it, want.x, want.z, want.rot) : [want.x, want.z] as [number, number];
-			if (!spot) throw new Error(`there is no free space for a ${o.kind} in the ${room.name}`);
+			if (!spot) throw new Error(`there is no free space for a ${o.kind} in ${room.name} (your furniture and the doorways are kept clear)`);
 			this.setPose(it, spot[0], spot[1], want.rot);
 		} catch (e) { this.items.delete(id); this.house.root.remove(it.object); throw e; }
 		if (it.light) this.applyLight(o.room);
@@ -419,24 +416,8 @@ export class Designer {
 		return { label: `Remove ${it.name}`, layout: it, undo: put, redo: take, verify: () => !this.items.has(id), resolved: { op: 'remove', target: id } };
 	}
 
-	private execDoor(id: string, open: boolean): Change {
-		const it = this.item(id)!, before = it.door!.open;
-		const set = (v: boolean) => { it.door!.open = v; };
-		set(open);
-		return { label: `${open ? 'Open' : 'Close'} ${it.name}`, layout: it, undo: () => set(before), redo: () => set(open), verify: () => it.door!.open === open, resolved: { op: 'door', target: id, open } };
-	}
-
-	/** animate doors (called every frame) */
-	/** animates doors; true while something moved */
-	update(dt: number) {
-		let moved = false;
-		for (const it of this.items.values()) {
-			const d = it.door; if (!d) continue;
-			const goal = d.open ? 1 : 0;
-			if (d.t !== goal) { moved = true; d.t += Math.sign(goal - d.t) * Math.min(Math.abs(goal - d.t), dt * 1.6); d.leaf.rotation.y = -d.t * 1.45 * (d.exit ? -1 : 1); }
-		}
-		return moved;
-	}
+	/** per-frame work (none at the moment); true while something moved */
+	update(_dt: number) { return false; }
 }
 
 // ------------------------------------------------------------------ styles
@@ -503,15 +484,14 @@ export const STYLE_NAMES = Object.keys(RECIPES) as StyleName[];
 
 /** a style for a room (or every room) as ordinary ops */
 export function styleOps(d: Designer, o: { room: RoomId | 'all'; style: StyleName; variant?: number }): Op[] {
-	const rooms = o.room === 'all' ? (['living', 'kitchen', 'bedroom'] as RoomId[]) : [o.room];
+	const rooms: RoomId[] = ['room'];
 	const r = RECIPES[o.style][((o.variant ?? 0) % 3 + 3) % 3];
 	const ops: Op[] = [];
 	for (const room of rooms) {
 		// a scanned room may have no ceiling (or walls): only style what exists
 		if (!d.item(`${room}.walls`) && !d.item(`${room}.floor`)) continue;
 		if (d.item(`${room}.walls`)) ops.push({ op: 'finish', target: `${room}.walls`, slot: 'main', ...r.walls });
-		// kitchens keep a wipeable floor unless the style brings stone
-		const floor = room === 'kitchen' && PRESETS[r.floor.preset].category === 'wood' ? (r.stone ?? { preset: 'white tile' as PresetName }) : r.floor;
+		const floor = r.floor;
 		if (d.item(`${room}.floor`)) ops.push({ op: 'finish', target: `${room}.floor`, slot: 'main', ...floor });
 		if (r.ceiling && d.item(`${room}.ceiling`)) ops.push({ op: 'finish', target: `${room}.ceiling`, slot: 'main', ...r.ceiling });
 		for (const it of d.items.values()) {
@@ -525,7 +505,7 @@ export function styleOps(d: Designer, o: { room: RoomId | 'all'; style: StyleNam
 		for (const k of r.add ?? []) {
 			// only what the room lacks
 			if ([...d.items.values()].some((it) => it.room === room && it.kind === k)) continue;
-			ops.push({ op: 'add', kind: k, room, near: k === 'floor lamp' ? (room === 'living' && d.item('living.sofa') ? 'living.sofa' : 'corner') : 'corner', side: 'beside' });
+			ops.push({ op: 'add', kind: k, room, near: k === 'floor lamp' ? ([...d.items.values()].find((x) => x.kind === 'sofa' || /couch|sofa/.test(x.name))?.id ?? 'corner') : 'corner', side: 'beside' });
 		}
 	}
 	return ops;

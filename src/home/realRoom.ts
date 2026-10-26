@@ -6,19 +6,20 @@ import type { House, Item, Room, RoomId, Win } from './house';
 /**
  * Your real room, from the headset's own room scan (WebXR plane and mesh
  * detection: the walls, floor, ceiling, windows, doors and furniture you
- * marked in the headset's Space Setup), or from corners you trace on the
- * floor when the scan is not available.
+ * marked in the headset's Space Setup). Nothing here is made up: no scan,
+ * no room.
  *
- * It becomes a House the designer can edit like the model house:
+ * It becomes the House the designer edits:
  * - the walls, floor and ceiling are overlays that start out invisible (the
  *   "original" finish shows your real surface through the passthrough) and
  *   can be painted, tiled, floored...;
  * - windows and doors are holes in the wall overlays, and anchors for
  *   "beside the window";
  * - real furniture is a fixed item (you can put things beside it, not
- *   repaint it) whose footprint keeps new furniture clear of it, and whose
- *   box hides the overlays behind it (depth only), so painted walls do not
- *   cover your real sofa;
+ *   repaint it) whose footprint keeps new furniture clear of it. In AR its
+ *   box only writes depth, so paint behind it does not cover your real
+ *   sofa; outside AR (desktop / VR) the box is drawn plain grey, which is
+ *   all the scan knows about it;
  * - added furniture is ordinary virtual furniture.
  *
  * Coordinates: the room frame. Origin on the floor, y up, x along the
@@ -31,7 +32,7 @@ export interface ScanWall { a: [number, number]; b: [number, number]; y0: number
 export interface ScanOpening { kind: 'window' | 'door'; a: [number, number]; b: [number, number]; y0: number; y1: number }
 export interface ScanObject { label: string; x: number; z: number; hx: number; hz: number; rot: number; h: number }
 /** a room in its own frame (metres) */
-export interface Scan { floor: [number, number][]; height: number; walls: ScanWall[]; openings: ScanOpening[]; objects: ScanObject[]; source: 'scan' | 'traced' | 'test' }
+export interface Scan { floor: [number, number][]; height: number; walls: ScanWall[]; openings: ScanOpening[]; objects: ScanObject[]; source: 'scan' }
 
 /** what each scene-understanding label is called when you talk about it */
 const LABEL_NAMES: Record<string, string> = {
@@ -141,14 +142,6 @@ export function scanToFrame(raw: NonNullable<ReturnType<typeof readXRScan>>, ori
 	return { floor, height, walls, openings, objects, source: 'scan' };
 }
 
-/** a traced outline (reference space) -> room-frame Scan with walls along the outline */
-export function tracedScan(points: THREE.Vector3[], height = 2.5): { scan: Scan; origin: THREE.Vector3; yaw: number } {
-	const f = frameFromFloor(points.map((p) => ({ x: p.x, z: p.z })), points.reduce((s, p) => s + p.y, 0) / points.length);
-	const inv = new THREE.Matrix4().makeRotationY(f.yaw).setPosition(f.origin).invert();
-	const floor = points.map((p) => { const q = p.clone().applyMatrix4(inv); return [q.x, q.z] as [number, number]; });
-	return { scan: { floor, height, walls: [], openings: [], objects: [], source: 'traced' }, ...f };
-}
-
 // ------------------------------------------------------------------ build
 const EPS = 0.006;
 
@@ -166,32 +159,27 @@ export function buildRealHouse(scan: Scan): House & { catcher: THREE.Mesh } {
 	const root = new THREE.Group(); root.name = 'home-real';
 	const items = new Map<string, Item>();
 	const add = (it: Item) => { items.set(it.id, it); root.add(it.object); return it; };
-	const poly = scan.floor.length >= 3 ? scan.floor : ([[-1.5, -1.5], [1.5, -1.5], [1.5, 1.5], [-1.5, 1.5]] as [number, number][]);
+	const poly = scan.floor;
 	const xs = poly.map((p) => p[0]), zs = poly.map((p) => p[1]);
 	const x0 = Math.min(...xs), x1 = Math.max(...xs), z0 = Math.min(...zs), z1 = Math.max(...zs);
 	const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, H = scan.height;
 	const mkRoom = (id: RoomId, name: string, rx0: number, rz0: number, rx1: number, rz1: number): Room => {
 		const fill = new THREE.PointLight(0xfff0dc, 6, 14, 1.6); fill.position.set((rx0 + rx1) / 2, H - 0.3, (rz0 + rz1) / 2); fill.name = id + '.fill'; root.add(fill);
-		return { id, name, x0: rx0, z0: rz0, x1: rx1, z1: rz1, fill, windows: [], clear: [] };
+		return { id, name, x0: rx0, z0: rz0, x1: rx1, z1: rz1, fill, windows: [], doors: [], clear: [] };
 	};
-	// one real room; the other two room ids exist (empty, far away) so every code path keeps working
-	const rooms: Record<RoomId, Room> = {
-		living: mkRoom('living', 'your room', x0, z0, x1, z1),
-		kitchen: mkRoom('kitchen', 'kitchen (not scanned)', 1000, 1000, 1000.1, 1000.1),
-		bedroom: mkRoom('bedroom', 'bedroom (not scanned)', 2000, 2000, 2000.1, 2000.1),
-	};
+	const rooms: Record<RoomId, Room> = { room: mkRoom('room', 'your room', x0, z0, x1, z1) };
 	const overlay = (): THREE.MeshPhysicalMaterial => dress({ preset: 'original' });
 
 	// floor and ceiling: the outline as a flat shape (shape space x, y = room x, -z)
 	const shape = new THREE.Shape(poly.map(([x, z]) => new THREE.Vector2(x, -z)));
 	const floorMat = overlay();
 	const floor = new THREE.Mesh(metreUV(new THREE.ShapeGeometry(shape)), floorMat);
-	floor.rotation.x = -Math.PI / 2; floor.position.y = EPS; floor.receiveShadow = true; floor.name = 'living.floor';
-	add({ id: 'living.floor', name: 'floor', kind: 'floor', room: 'living', object: floor, slots: { main: { meshes: [floor], mat: floorMat } }, fixed: true, mount: 'surface', half: [0, 0], height: 0, overlay: true });
+	floor.rotation.x = -Math.PI / 2; floor.position.y = EPS; floor.receiveShadow = true; floor.name = 'room.floor';
+	add({ id: 'room.floor', name: 'floor', kind: 'floor', room: 'room', object: floor, slots: { main: { meshes: [floor], mat: floorMat } }, fixed: true, mount: 'surface', half: [0, 0], height: 0, overlay: true });
 	const ceilMat = overlay();
 	const ceil = new THREE.Mesh(metreUV(new THREE.ShapeGeometry(new THREE.Shape(poly.map(([x, z]) => new THREE.Vector2(x, z))))), ceilMat);
-	ceil.rotation.x = Math.PI / 2; ceil.position.y = H - EPS; ceil.name = 'living.ceiling';
-	add({ id: 'living.ceiling', name: 'ceiling', kind: 'ceiling', room: 'living', object: ceil, slots: { main: { meshes: [ceil], mat: ceilMat } }, fixed: true, mount: 'surface', half: [0, 0], height: 0, overlay: true });
+	ceil.rotation.x = Math.PI / 2; ceil.position.y = H - EPS; ceil.name = 'room.ceiling';
+	add({ id: 'room.ceiling', name: 'ceiling', kind: 'ceiling', room: 'room', object: ceil, slots: { main: { meshes: [ceil], mat: ceilMat } }, fixed: true, mount: 'surface', half: [0, 0], height: 0, overlay: true });
 	// shadows of added furniture on your real floor
 	const catcher = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.ShadowMaterial({ opacity: 0.32 }));
 	catcher.rotation.x = -Math.PI / 2; catcher.position.y = EPS / 2; catcher.receiveShadow = true; catcher.name = 'home-real-shadows';
@@ -200,7 +188,7 @@ export function buildRealHouse(scan: Scan): House & { catcher: THREE.Mesh } {
 	// walls: one overlay per wall, with holes for its windows and doors
 	const walls: ScanWall[] = scan.walls.length ? scan.walls : poly.map((p, i) => ({ a: p, b: poly[(i + 1) % poly.length], y0: 0, y1: H }));
 	const wallMat = overlay();
-	const wallGroup = new THREE.Group(); wallGroup.name = 'living.walls';
+	const wallGroup = new THREE.Group(); wallGroup.name = 'room.walls';
 	const wallMeshes: THREE.Mesh[] = [];
 	for (const w of walls) {
 		let a = new THREE.Vector3(w.a[0], 0, w.a[1]), b = new THREE.Vector3(w.b[0], 0, w.b[1]);
@@ -229,7 +217,7 @@ export function buildRealHouse(scan: Scan): House & { catcher: THREE.Mesh } {
 		m.receiveShadow = true;
 		wallGroup.add(m); wallMeshes.push(m);
 	}
-	add({ id: 'living.walls', name: 'walls', kind: 'walls', room: 'living', object: wallGroup, slots: { main: { meshes: wallMeshes, mat: wallMat } }, fixed: true, mount: 'surface', half: [0, 0], height: H, overlay: true });
+	add({ id: 'room.walls', name: 'walls', kind: 'walls', room: 'room', object: wallGroup, slots: { main: { meshes: wallMeshes, mat: wallMat } }, fixed: true, mount: 'surface', half: [0, 0], height: H, overlay: true });
 
 	// windows (for "beside the window") and doors (kept clear)
 	for (const o of scan.openings) {
@@ -237,24 +225,26 @@ export function buildRealHouse(scan: Scan): House & { catcher: THREE.Mesh } {
 		const t = b.clone().sub(a).normalize(); const n = new THREE.Vector3(-t.z, 0, t.x);
 		if (n.dot(new THREE.Vector3(cx - c.x, 0, cz - c.z)) < 0) n.negate();
 		const width = a.distanceTo(b);
-		if (o.kind === 'window') rooms.living.windows.push({ room: 'living', centre: c.clone().setY((o.y0 + o.y1) / 2), normal: n, width } as Win);
+		if (o.kind === 'window') rooms.room.windows.push({ room: 'room', centre: c.clone().setY((o.y0 + o.y1) / 2), normal: n, width } as Win);
 		else {
 			const p = c.clone().addScaledVector(n, 0.55), hw = Math.max(width / 2, 0.45) + 0.1;
-			rooms.living.clear.push([p.x - hw, p.z - hw, p.x + hw, p.z + hw]);
+			rooms.room.doors.push(c.clone().addScaledVector(n, 1.0));
+			rooms.room.clear.push([p.x - hw, p.z - hw, p.x + hw, p.z + hw]);
 		}
 	}
 
 	// your real furniture: fixed, a footprint to keep clear, and a depth-only box so overlays do not paint over it
-	const occluder = new THREE.MeshBasicMaterial({ colorWrite: false });
+	const occluder = new THREE.MeshStandardMaterial({ color: 0xb9b6b0, roughness: 0.9 });
+	occluder.userData.realBox = true; // AR: depth only (see setPassthrough in home.ts)
 	const count = new Map<string, number>();
 	for (const o of scan.objects) {
 		const k = (count.get(o.label) ?? 0) + 1; count.set(o.label, k);
 		const id = `real.${o.label.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${k}`;
 		const g = new THREE.Group(); g.name = id; g.position.set(o.x, 0, o.z); g.rotation.y = o.rot;
 		const box = new THREE.Mesh(new THREE.BoxGeometry(o.hx * 2, o.h, o.hz * 2), occluder); box.position.y = o.h / 2; box.renderOrder = -10; g.add(box);
-		add({ id, name: k > 1 ? `${o.label} ${k}` : o.label, kind: 'real', room: 'living', object: g, slots: {}, fixed: true, mount: 'floor', half: [o.hx, o.hz], height: o.h });
+		add({ id, name: k > 1 ? `${o.label} ${k}` : o.label, kind: 'real', room: 'room', object: g, slots: {}, fixed: true, mount: 'floor', half: [o.hx, o.hz], height: o.h });
 		const c = Math.abs(Math.cos(o.rot)), s = Math.abs(Math.sin(o.rot)), hx = c * o.hx + s * o.hz, hz = s * o.hx + c * o.hz;
-		rooms.living.clear.push([o.x - hx - 0.05, o.z - hz - 0.05, o.x + hx + 0.05, o.z + hz + 0.05]);
+		rooms.room.clear.push([o.x - hx - 0.05, o.z - hz - 0.05, o.x + hx + 0.05, o.z + hz + 0.05]);
 	}
 
 	// light for the virtual furniture (it cannot light your real room)
@@ -265,21 +255,4 @@ export function buildRealHouse(scan: Scan): House & { catcher: THREE.Mesh } {
 	root.add(sun, sun.target);
 	const hemi = new THREE.HemisphereLight(0xeef2f8, 0x8a7c66, 0.7); root.add(hemi);
 	return { root, rooms, items, spawn: { x: cx, z: cz, yaw: 0 }, sun, hemi, catcher };
-}
-
-/** a plain test room: 4.2 x 3.6 m, a window, a door, a couch and a table */
-export function testScan(): Scan {
-	return {
-		source: 'test', height: 2.5,
-		floor: [[-2.1, -1.8], [2.1, -1.8], [2.1, 1.8], [-2.1, 1.8]],
-		walls: [],
-		openings: [
-			{ kind: 'window', a: [-0.6, -1.8], b: [0.6, -1.8], y0: 0.9, y1: 2.1 },
-			{ kind: 'door', a: [2.1, 0.8], b: [2.1, 1.7], y0: 0, y1: 2.05 },
-		],
-		objects: [
-			{ label: 'couch', x: -0.3, z: 1.3, hx: 1.0, hz: 0.45, rot: 0, h: 0.85 },
-			{ label: 'table', x: -0.3, z: 0.2, hx: 0.5, hz: 0.3, rot: 0, h: 0.45 },
-		],
-	};
 }

@@ -33,8 +33,8 @@ export type Intent =
 	| { kind: 'question'; say: string; choices: { label: string; id: string }[]; resume: (id: string) => Intent }
 	| { kind: 'claude'; say: string };
 
-const ROOM_WORDS: [RegExp, RoomId][] = [[/\b(living ?room|lounge|sitting room|family room)\b/, 'living'], [/\b(kitchen|dining( room| area)?)\b/, 'kitchen'], [/\b(bed ?room)\b/, 'bedroom']];
-const ALL_ROOMS = /\b(whole (house|home|place)|every ?where|all (the )?rooms|every room|entire (house|home)|the house|the home)\b/;
+// there is one room (yours): any room word, or "the house", means it
+const ROOM_WORDS = /\b(living ?room|lounge|sitting room|family room|kitchen|dining( room| area)?|bed ?room|office|study|room|house|home|place|everywhere)\b/;
 const NUM: Record<string, number> = { one: 1, first: 1, '1': 1, '1st': 1, two: 2, second: 2, '2': 2, '2nd': 2, three: 3, third: 3, '3': 3, '3rd': 3, four: 4, fourth: 4, '4': 4, five: 5, fifth: 5 };
 
 const STYLE_WORDS: [RegExp, StyleName][] = [
@@ -84,9 +84,7 @@ export function parseMaterial(t: string): PresetName | null {
 	return null;
 }
 function roomsIn(t: string, ctx: IntentContext): RoomId[] | null {
-	if (ALL_ROOMS.test(t)) return ['living', 'kitchen', 'bedroom'];
-	const out = ROOM_WORDS.filter(([re]) => re.test(t)).map(([, r]) => r);
-	return out.length ? out : /\b(this|the) room|here\b/.test(t) ? [ctx.room] : null;
+	return ROOM_WORDS.test(t) || /\bhere\b/.test(t) ? [ctx.room] : null;
 }
 
 interface Found { ids: string[]; noun: string; ask?: { label: string; id: string }[]; kind?: string }
@@ -128,7 +126,7 @@ function targets(t: string, ctx: IntentContext, scope: RoomId[]): Found | null {
 	return { ids, noun: nouns.join(' and ') };
 }
 
-function where(t: string, ctx: IntentContext, scope: RoomId[], self: string[]): { near: string; side?: Side; say: string } | null {
+function where(t: string, ctx: IntentContext, scope: RoomId[], self: string[]): { near: string; side?: Side; say: string; ask?: { label: string; id: string }[]; noun?: string } | null {
 	const m = /\b(beside|next to|near|by|close to|alongside|to the left of|left of|to the right of|right of|in front of|facing|behind|against|under(neath)?|in the corner|into the corner|to the corner|in the (center|centre|middle)|to the (center|centre|middle))\b(.*)$/.exec(t);
 	if (!m) return null;
 	const rel = m[1], rest = m[m.length - 1] ?? '';
@@ -139,6 +137,8 @@ function where(t: string, ctx: IntentContext, scope: RoomId[], self: string[]): 
 	if (/\bdoors?\b/.test(rest)) return { near: 'door', say: `${rel} the door` };
 	if (/\bwall\b/.test(rest) || rel === 'against') return { near: 'wall', say: 'against the wall' };
 	const f = targets(' ' + rest + ' ', { ...ctx, aimed: null, last: [] }, scope);
+	// "beside the couch" when there is more than one: ask
+	if (f?.ask) { const choices = f.ask.filter((c) => !self.includes(c.id)); if (choices.length > 1) return { near: '', side, say: `${rel} the ${f.noun}`, ask: choices, noun: f.noun }; if (choices[0]) return { near: choices[0].id, side, say: `${rel} the ${f.noun}` }; }
 	const id = f?.ids.find((x) => !self.includes(x));
 	if (id) return { near: id, side, say: `${rel} the ${ctx.items.find((i) => i.id === id)?.name ?? 'that'}` };
 	return null;
@@ -159,13 +159,13 @@ export function parse(input: string, ctx: IntentContext): Intent {
 	m = /\b(restore|load|go back to|bring back|open) (the )?(design |version |save )?(called )?([a-z0-9 ]{1,30})$/.exec(t.trim());
 	if (m && !/\b(window|door|light)/.test(t)) return { kind: 'control', action: 'restore', name: m[5].trim(), say: `Restoring "${m[5].trim()}"` };
 	if (/\b(list|show)( me)?( my)? (saves|saved designs|designs|snapshots)\b/.test(t)) return { kind: 'control', action: 'listSaves', say: 'Your saved designs' };
-	if (/\b(reset|start over|back to (the )?original)\b/.test(t)) return { kind: 'control', action: 'reset', say: 'Back to the original home' };
+	if (/\b(reset|start over|back to (the )?original)\b/.test(t)) return { kind: 'control', action: 'reset', say: 'Back to your room as scanned' };
 	// "option two", "the second one", "number 3"
 	m = /^ (?:(?:pick|choose|use|try|apply|go with|i like|show) )?(?:the )?(?:option |number |choice |alternative |variant )?(one|two|three|four|five|first|second|third|fourth|fifth|1st|2nd|3rd|[1-5])(?: one| option)?(?: please)? $/.exec(t);
 	if (m) return { kind: 'pick', index: NUM[m[1]] - 1, say: `Option ${NUM[m[1]]}` };
 
 	const scope = roomsIn(t, ctx) ?? [ctx.room];
-	const scopeName = scope.length === 3 ? 'the whole house' : scope.length === 1 ? `the ${scope[0] === 'living' ? 'living room' : scope[0]}` : 'those rooms';
+	const scopeName = 'your room';
 	const styles = STYLE_WORDS.filter(([re]) => re.test(t)).map(([, st]) => st);
 	// "modern luxury": the more specific one wins
 	const style = styles.includes('luxury') ? 'luxury' : styles[0];
@@ -175,7 +175,7 @@ export function parse(input: string, ctx: IntentContext): Intent {
 	// --------------------------------------------------- alternatives
 	if (/\b(alternatives?|options|variations?|other (ideas|versions|looks)|ideas|different versions)\b/.test(t)) {
 		const st = style ?? ctx.lastStyle ?? 'modern';
-		const room = scope.length === 3 ? 'all' : scope[0];
+		const room = scope[0];
 		return { kind: 'alternatives', options: alternatives(room, st), say: `Three ${st} options for ${scopeName}. Say "option one", two or three.`, style: st };
 	}
 
@@ -211,7 +211,7 @@ export function parse(input: string, ctx: IntentContext): Intent {
 		if (f?.ask) return ask(f.noun, f.ask, (id) => ({ kind: 'ops', ops: [{ op: 'duplicate', target: id }], say: 'Copying it', targets: [id] }));
 		if (f?.ids.length) return { kind: 'ops', ops: [{ op: 'duplicate', target: f.ids[0] }], say: `Copying the ${f.noun}`, targets: f.ids.slice(0, 1) };
 	}
-	m = /\b(add|put|place|bring( in)?|i want|i'd like|give me|we need|could use|get( me)?)\b( (a|an|another|some|one more|a few|two|three))?/.exec(t);
+	m = /\b(add|put|place|bring( in)?|i want|i'd like|give me|we need|could use|get( me)?)\b( (another|an|a|some|one more|a few|two|three)\b)?/.exec(t);
 	// "put / place / bring the chair..." moves it; only "put a ..." adds one
 	if (m && /^(put|place|bring|get)/.test(m[1]) && !m[4]) m = null;
 	if (m) {
@@ -223,7 +223,9 @@ export function parse(input: string, ctx: IntentContext): Intent {
 			const color = parseColor(rest), mat = parseMaterial(rest.replace(new RegExp(KINDS[kind].words.join('|')), ''));
 			const finishes = color || mat ? { [KINDS[kind].slots[0]]: { preset: mat ?? (kind === 'rug' ? 'wool' : kind === 'sofa' || kind === 'armchair' ? 'linen' : 'paint'), color: color ?? undefined } as any } : undefined;
 			const count = /\b(two|a couple)\b/.test(m[0] + rest.slice(0, 12)) ? 2 : /\bthree|a few\b/.test(m[0] + rest.slice(0, 12)) ? 3 : 1;
-			const ops: Op[] = Array.from({ length: count }, () => ({ op: 'add', kind, room, near: w?.near, side: w?.side, finishes } as Op));
+			const mkOps = (near?: string): Op[] => Array.from({ length: count }, () => ({ op: 'add', kind, room, near, side: w?.side, finishes } as Op));
+			if (w?.ask) return ask(w.noun!, w.ask, (id) => ({ kind: 'ops', ops: mkOps(id), say: `Adding ${count > 1 ? count + ' ' + kind + 's' : 'a ' + kind} ${w.say}`, targets: [] }));
+			const ops = mkOps(w?.near);
 			return { kind: 'ops', ops, say: `Adding ${count > 1 ? count + ' ' + kind + 's' : 'a ' + kind}${w ? ' ' + w.say : ''}`, targets: [] };
 		}
 	}
@@ -235,9 +237,11 @@ export function parse(input: string, ctx: IntentContext): Intent {
 		const w = where(t, ctx, scope, f?.ids ?? []);
 		const mk = (id: string): Intent => {
 			const ww = where(t, ctx, scope, [id]);
+			if (ww?.ask) return ask(ww.noun!, ww.ask, (nid) => ({ kind: 'ops', ops: [{ op: 'move', target: id, near: nid, side: ww.side }], say: `Moving it ${ww.say}`, targets: [id] }));
 			return ww ? { kind: 'ops', ops: [{ op: 'move', target: id, near: ww.near, side: ww.side }], say: `Moving it ${ww.say}`, targets: [id] } : { kind: 'claude', say: 'Not sure where to move it' };
 		};
 		if (f?.ask) return ask(f.noun, f.ask, mk);
+		if (f?.ids.length && w?.ask) return ask(w.noun!, w.ask, (nid) => ({ kind: 'ops', ops: f.ids.slice(0, 4).map((id) => ({ op: 'move', target: id, near: nid, side: w.side } as Op)), say: `Moving the ${f.noun} ${w.say}`, targets: f.ids.slice(0, 4) }));
 		if (f?.ids.length && w) return { kind: 'ops', ops: f.ids.slice(0, 4).map((id) => ({ op: 'move', target: id, near: w.near, side: w.side } as Op)), say: `Moving the ${f.noun} ${w.say}`, targets: f.ids.slice(0, 4) };
 		if (f?.ids.length) return { kind: 'claude', say: 'Not sure where' };
 		if (/\b(this|that|it)\b/.test(t)) return { kind: 'question', say: 'Which object? Look at it (or point at it) and say that again.', choices: [], resume: () => ({ kind: 'claude', say: '' }) };
@@ -258,18 +262,13 @@ export function parse(input: string, ctx: IntentContext): Intent {
 		if (f?.ask) return ask(f.noun, f.ask, mk);
 		if (f?.ids.length) return { kind: 'ops', ops: f.ids.slice(0, 6).map((id) => ({ op: 'scale', target: id, factor } as Op)), say: `${factor > 1 ? 'Enlarging' : 'Shrinking'} the ${f.noun}`, targets: f.ids };
 	}
-	if (/\b(open|close|shut)\b/.test(t) && /\bdoors?\b/.test(t)) {
-		const open = /\bopen\b/.test(t);
-		const id = ctx.room === 'bedroom' || /\bbed ?room\b/.test(t) ? 'door.bedroom' : ctx.aimed === 'door.front' ? 'door.front' : 'door.bedroom';
-		return { kind: 'ops', ops: [{ op: 'door', target: id, open }], say: `${open ? 'Opening' : 'Closing'} the door`, targets: [id] };
-	}
-
 	// --------------------------------------------------- finishes (material and colour)
 	const color = parseColor(t), mat = parseMaterial(t.replace(/\b(stone|slate|charcoal|sand|walnut|gold|silver|chocolate|caramel|rust|olive|cream|ivory) (gr[ae]y|white|blue|green|brown|black)\b/g, ''));
 	if ((color || mat) && !style) {
 		const f = targets(t, ctx, scope);
 		const preset = mat ?? undefined, c = color ?? undefined;
-		const desc = [mat, color && Object.keys(COLOR_WORDS).find((k) => t.includes(' ' + k + ' ')) || color].filter(Boolean).join(' ');
+		const cw = color && (Object.keys(COLOR_WORDS).sort((a, b) => b.length - a.length).find((k) => t.includes(' ' + k + ' ')) || color);
+		const desc = [mat === 'paint' && cw ? '' : mat, cw].filter(Boolean).join(' ');
 		const mk = (ids: string[]): Intent => ({ kind: 'ops', ops: ids.map((id) => ({ op: 'finish', target: id, preset, color: c } as Op)), say: `Making ${ids.length > 1 ? 'them' : 'it'} ${desc}`, targets: ids });
 		if (f?.ask) return ask(f.noun, f.ask, (id) => mk([id]));
 		if (f?.ids.length) { const r = mk(f.ids); (r as any).say = `Making the ${f.noun} ${desc}`; return r; }
@@ -279,7 +278,7 @@ export function parse(input: string, ctx: IntentContext): Intent {
 
 	// --------------------------------------------------- a style for a room
 	if (style && /\b(make|turn|give|redesign|redo|style|decorate|change|transform|feel|look|more|go|want|like|vibe|theme)\b/.test(t)) {
-		const room = scope.length === 3 ? 'all' : scope[0];
+		const room = scope[0];
 		const variant = /\bdifferent|another|other\b/.test(t) && ctx.lastStyle === style ? 1 : 0;
 		return { kind: 'ops', ops: [{ op: 'style', room, style, variant }], say: `Making ${scopeName} ${style === 'warm' ? 'warmer and cosier' : style === 'cool' ? 'cooler and fresher' : 'more ' + style}`, targets: [], style };
 	}

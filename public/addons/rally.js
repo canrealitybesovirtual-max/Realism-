@@ -66,7 +66,7 @@
       { id: "rally", title: "Snowy Mountain Rally", text: "5.5 km of snowy mountain road: a long loop with a shortcut through the pass. A car is waiting at the service park." },
       { id: "range", title: "Shooting Range", text: "Clay trap and steel plates from 25 m out to 1000 m. The AWM and the Glock wait on the bench." },
       { id: "highway", title: "Highway", text: "An 8 km motorway loop, three lanes each way, with traffic. Your car waits in the lay-by." },
-      { id: "home", title: "Home", text: "A house you redesign by talking: say \u201cmake this room look more modern\u201d and watch it change. Everything can be undone and saved." }
+      { id: "home", title: "Home", text: "Your own room, from your headset\u2019s room scan. Redesign it by talking. Scan it first: AR HOME in the Quest browser." }
     ];
     var dest = os.storage.get("door.dest") || "none";
 
@@ -110,17 +110,14 @@
         return;
       }
       if (id === "home") {
-        var hg = c.createLinearGradient(0, y, 0, y + h); hg.addColorStop(0, "#efe7dc"); hg.addColorStop(1, "#d9cbb8");
-        c.fillStyle = hg; c.fillRect(x, y, w, h);
-        c.fillStyle = "#a07a55"; c.fillRect(x, y + h * 0.72, w, h * 0.28);
-        c.fillStyle = "#cfe3f2"; c.fillRect(x + w * 0.58, y + h * 0.16, w * 0.3, h * 0.36);
-        c.strokeStyle = "#f6f2ea"; c.lineWidth = 4; c.strokeRect(x + w * 0.58, y + h * 0.16, w * 0.3, h * 0.36);
-        c.fillStyle = "#5b6f7c"; rr(c, x + w * 0.1, y + h * 0.56, w * 0.46, h * 0.16, 10); c.fill();
-        rr(c, x + w * 0.1, y + h * 0.46, w * 0.46, h * 0.13, 10); c.fill();
-        c.fillStyle = "#c9a26b"; c.fillRect(x + w * 0.62, y + h * 0.66, w * 0.22, h * 0.04);
-        c.fillStyle = "#3f7a4a"; c.beginPath(); c.arc(x + w * 0.9, y + h * 0.6, h * 0.08, 0, 7); c.fill();
-        c.fillStyle = "#2d6cdf"; c.beginPath(); c.arc(x + w * 0.2, y + h * 0.24, h * 0.1, 0, 7); c.fill();
-        c.fillStyle = "#fff"; rr(c, x + w * 0.2 - h * 0.025, y + h * 0.17, h * 0.05, h * 0.09, h * 0.025); c.fill();
+        // a floor plan being scanned: your room, not a picture of someone else's
+        c.fillStyle = "#1d2126"; c.fillRect(x, y, w, h);
+        var px = x + w * 0.18, py = y + h * 0.2, pw = w * 0.64, ph = h * 0.6;
+        c.strokeStyle = "#7fd6c8"; c.lineWidth = 3; c.setLineDash([]);
+        c.beginPath(); c.moveTo(px, py); c.lineTo(px + pw * 0.7, py); c.lineTo(px + pw * 0.7, py + ph * 0.35); c.lineTo(px + pw, py + ph * 0.35); c.lineTo(px + pw, py + ph); c.lineTo(px, py + ph); c.closePath(); c.stroke();
+        c.strokeStyle = "rgba(127,214,200,0.35)"; c.lineWidth = 1;
+        for (var gx = px + 12; gx < px + pw; gx += 14) { c.beginPath(); c.moveTo(gx, py); c.lineTo(gx, py + ph); c.stroke(); }
+        c.fillStyle = "#7fd6c8"; [[0, 0], [0.7, 0], [0.7, 0.35], [1, 0.35], [1, 1], [0, 1]].forEach(function (q) { c.beginPath(); c.arc(px + pw * q[0], py + ph * q[1], 4, 0, 7); c.fill(); });
         c.restore();
         return;
       }
@@ -399,7 +396,7 @@
     function act() {
       if (busy || !hintAction) return;
       var a = hintAction;
-      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else if (dest === "home" && S.home) { setHint(""); S.home.enter(); } else enterMap(dest === "highway" ? "highway" : "rally"); }
+      if (a === "door-open") { if (dest === "range" && S.range) { setHint(""); S.range.enter(); } else if (dest === "home" && S.home) { setHint(""); S.home.enter().then(function (ok) { if (!ok) setHint("Your room has not been scanned yet: put on your Quest, open this page in the Quest browser and press <b>AR HOME</b>."); }); } else enterMap(dest === "highway" ? "highway" : "rally"); }
       else if (a === "door-back") leaveMap();
       else if (a === "car") enterCar();
     }

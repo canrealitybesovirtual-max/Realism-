@@ -87,7 +87,7 @@ const guns: Gun[] = [];
 let gunFx: GunEffects | undefined;
 let range: ShootingRange | undefined;
 let home: import('./home/home').Home | undefined;
-let homeHandle: { readonly active: boolean; readonly loaded: boolean; readonly home: typeof home; enter(): Promise<void>; enterAR(s: XRSession): Promise<void>; leave(): void } | undefined;
+let homeHandle: { readonly active: boolean; readonly loaded: boolean; readonly home: typeof home; enter(): Promise<boolean>; enterAR(s: XRSession): Promise<void>; leave(): void } | undefined;
 let rangeHandle: { readonly active: boolean; readonly loaded: boolean; enter(): Promise<void>; leave(): void } | undefined;
 let runtime: Runtime | undefined;
 let editor: Editor | undefined;
@@ -241,7 +241,7 @@ async function init() {
 					loading ??= import('./home/home').then((m) => new m.Home({ scene, camera, renderer, walk, desktop, xr, physics: physics.enabled ? physics : null, project: codeApp?.project ?? null }));
 					home = await loading;
 				}
-				home.enter();
+				return home.enter();
 			},
 			async enterAR(session: XRSession) {
 				if (!home) {
