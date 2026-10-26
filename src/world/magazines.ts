@@ -83,12 +83,13 @@ export class MagazineManager {
 	}
 
 	/** would this loose magazine seat in that gun now? (close to the magwell and lined up) */
-	fits(prop: Prop, fs: FirearmSystem, posTol = 0.06, angTol = 0.6) {
+	fits(prop: Prop, fs: FirearmSystem, posTol = 0.06, angTol = 0.6, at?: { p: THREE.Vector3; q: THREE.Quaternion }) {
 		const m = this.loose.get(prop);
 		if (!m || m.gun !== fs.gun.spec.id || fs.gun.magIn) return false;
 		const want = this.seatedPose(fs), wp = new THREE.Vector3(), wq = new THREE.Quaternion();
 		want.decompose(wp, wq, new THREE.Vector3());
-		const o = prop.desc.object, p = o.getWorldPosition(new THREE.Vector3()), q = o.getWorldQuaternion(new THREE.Quaternion());
+		// `at`: where the hand is putting it (a held magazine can be knocked about by the gun on the way in)
+		const o = prop.desc.object, p = at?.p ?? o.getWorldPosition(new THREE.Vector3()), q = at?.q ?? o.getWorldQuaternion(new THREE.Quaternion());
 		return p.distanceTo(wp) < posTol && q.angleTo(wq) < angTol;
 	}
 

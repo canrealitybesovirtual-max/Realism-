@@ -328,7 +328,7 @@ export class XRControls {
 			if (mags?.info(h.held.prop)) {
 				const other = this.hands.find((o) => o !== h && o.held);
 				const ofs = other ? gunFor(this.targets.guns, other.held!.prop) : null;
-				if (ofs instanceof FirearmSystem && mags.fits(h.held.prop, ofs)) {
+				if (ofs instanceof FirearmSystem && (mags.fits(h.held.prop, ofs) || mags.fits(h.held.prop, ofs, 0.06, 0.6, { p: _v, q: _q }))) {
 					const prop = h.held.prop;
 					this.physics.release(prop); h.held = null;
 					mags.insert(prop, ofs);
