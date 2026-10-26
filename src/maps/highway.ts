@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
-import { Fleet, kenneyVariant, semiVariant, type Variant } from './carSkins';
+import { Fleet, carVariants, loadCars, type Variant } from './traffic';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /**
@@ -304,29 +304,11 @@ async function loadModels(aniso: number) {
 		});
 		models[name] = gltf.scene;
 	}));
-	// photo skins for the traffic (tools/car-skins): which model each one dresses
-	// (optional: the sheets are third-party and stay out of the public repository; without them the traffic keeps Kenney's paint)
-	type Skins = { cars: Record<string, { model: string; wheelsA: number[] | null; wheelsB: number[] | null }>; semis: Record<string, { cab: string }> };
-	let skins: Skins = { cars: {}, semis: {} };
-	try { const r = await fetch('models/traffic/skins/skins.json'); if (r.ok) skins = await r.json(); } catch { /* no skins */ }
-	const atlases: Record<string, THREE.Texture> = {};
-	await Promise.all([...Object.keys(skins.cars), ...Object.keys(skins.semis)].map(async (name) => {
-		const blob = await (await fetch(`models/traffic/skins/${name}.webp`)).blob();
-		const bmp = await createImageBitmap(blob, { imageOrientation: 'none', premultiplyAlpha: 'none' } as ImageBitmapOptions);
-		const t = new THREE.Texture(bmp as unknown as HTMLImageElement);
-		t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = aniso; t.needsUpdate = true;
-		atlases[name] = t;
-	}));
-	return { models, license: pack.license, images, skins, atlases };
+	// the traffic: real car models, one small file each
+	const cars = await loadCars();
+	return { models, license: pack.license, images, cars };
 }
 
-const FLEET: { name: string; len: number; w: number; truck?: boolean }[] = [
-	{ name: 'sedan', len: 4.8, w: 4 }, { name: 'suv', len: 4.9, w: 3 }, { name: 'taxi', len: 4.8, w: 0.8 },
-	{ name: 'police_car', len: 4.9, w: 0.3 }, { name: 'van', len: 5.3, w: 1.5 }, { name: 'truck', len: 7.5, w: 1.2, truck: true },
-	{ name: 'delivery_van', len: 5.8, w: 1.2 }, { name: 'ambulance', len: 6.2, w: 0.15 }, { name: 'hatchback_sports', len: 4.3, w: 2 },
-	{ name: 'sedan_sports', len: 4.6, w: 1 }, { name: 'suv_luxury', len: 5.0, w: 2 }, { name: 'truck_flat', len: 7.5, w: 1, truck: true },
-	{ name: 'garbage_truck', len: 8.5, w: 0.2, truck: true }, { name: 'race_car', len: 4.6, w: 0.15 },
-];
 
 /** merge one model's meshes (node transforms baked) into a geometry per material */
 function mergeByMaterial(root: THREE.Object3D) {
@@ -773,7 +755,7 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 	}
 
 	// ---- models: trees and traffic ----
-	const { models, license, images, skins, atlases } = await modelsP;
+	const { models, license, images, cars: carModels } = await modelsP;
 	for (const t of Object.values(images)) disposables.push(t);
 	const treeCol: number[] = [];
 	const treeSets: { src: Float32Array; count: number; meshes: THREE.InstancedMesh[] }[] = [];
@@ -853,25 +835,13 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 
 	// ---- traffic ----
 	const cars: TrafficCar[] = [];
-	// variants: every skinned car, the lorries, and the plain Kenney cars less often
-	const variants: Variant[] = [];
-	for (const f of FLEET) {
-		models[f.name].traverse((o) => {
-			const m = o as THREE.Mesh;
-			if (!m.isMesh) return;
-			const mat = m.material as THREE.MeshStandardMaterial;
-			mat.roughness = 0.42; mat.metalness = 0.12; mat.envMapIntensity = 1.2; disposables.push(mat, m.geometry);
-		});
-		variants.push(kenneyVariant(f.name, models[f.name], f.len, { truck: f.truck, weight: f.w * 0.45 }));
-	}
-	for (const [name, sk] of Object.entries(skins.cars)) {
-		const f = FLEET.find((q) => q.name === sk.model) ?? { len: 4.8, truck: false };
-		variants.push(kenneyVariant(name, models[sk.model], f.len, { atlas: atlases[name], truck: f.truck, weight: 1.6, wheelsU: { A: sk.wheelsA, B: sk.wheelsB } }));
-	}
-	const truckWheel = kenneyVariant('_wheel', models.truck, 6, { weight: 0 }).wheels[0];
-	for (const name of Object.keys(skins.semis)) variants.push(semiVariant(name, atlases[name], truckWheel, 1.3));
-	for (const v of variants) for (const b of v.body) disposables.push(b.mat);
-	for (const t of Object.values(atlases)) disposables.push(t);
+	// variants: every car model (the painted ones once per paint)
+	const variants: Variant[] = carModels.flatMap(({ spec, scene }) => {
+		scene.traverse((o) => { const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined; if (m?.isMeshStandardMaterial) m.envMapIntensity = 1.2; });
+		return carVariants(spec, scene);
+	});
+	// the variants hold their own merged copies: the loaded geometry can go
+	for (const { scene } of carModels) scene.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
 	const fleetW = variants.reduce((a, v) => a + v.weight, 0);
 	const pickVariant = () => { let a = Math.random() * fleetW; for (let i = 0; i < variants.length; i++) { a -= variants[i].weight; if (a <= 0) return i; } return 0; };
 	const TRAFFIC = 32;
@@ -1067,7 +1037,7 @@ export async function buildHighway(opts: { renderer: THREE.WebGLRenderer; offset
 		sky, fog, env, sun, sunDir, door, car, spawn,
 		bounds: { minX: X0 + 20, maxX: X1 - 20, minZ: Z0 + 20, maxZ: Z1 - 20 },
 		mu: [1.05, 0.62, 0.6], roll: [0.1, 0.55, 1.6], kick: [0, 0.35], sprayColor: 0x8d8a82,
-		credits: 'Car: “art of rally Latest Version 2027” by FarHandle5255 (Sketchfab, CC BY 4.0) · Traffic and trees: ' + license.split(',')[0] + ', CC0',
+		credits: 'Car: “art of rally Latest Version 2027” by FarHandle5255 (Sketchfab, CC BY 4.0) · Traffic: “Car Pack 1” by buh, “Traffic Car Pack” by JUSTGAME, “Toyota Celica Gen7” by fishermans garage (Sketchfab, CC BY 4.0) · Trees: ' + license.split(',')[0] + ', CC0',
 		traffic: { cars },
 		update(dt, _t, pl) {
 			if (pl.cam) { camX = pl.cam.x - opts.offsetX; camZ = pl.cam.z; } else { camX = pl.x; camZ = pl.z; }
