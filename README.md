@@ -116,8 +116,10 @@ It also carries the engine tools, which edit the running game you are standing i
 
 ```
 npm run typecheck
-npm test                         # 75 unit tests: engine ops/undo/save, components, graphs, scripts, agent proposals, asset checks, diff/highlighter, editor, calculator, window manager, physics, hands and grasps
+npm test                         # 81 unit tests: engine ops/undo/save, components, graphs, scripts, agent proposals, asset checks, diff/highlighter, editor, calculator, window manager, physics (incl. hand sweeps), hands, grasps and skin attributes
 npm run dev & node scripts/e2e.mjs        # 36 browser checks, desktop + emulated Quest 3 WebXR
+npm run dev & node scripts/e2e-maps.mjs   # 11 checks: maps load on demand and free on leaving; highway traffic, driving, rails, crashes; lazy range
+npm run dev & node scripts/e2e-hands-vr.mjs # 4 checks: hands stop at the desk; fingers close onto a held magazine
 npm run dev & node scripts/e2e-studio.mjs # 16 editor checks (world tools on desktop and in VR, runtime, save/load)
 npm run dev & node scripts/e2e-code.mjs   # code workstation through the computer's own input, incl. project files on the dev server
 npm run preview & node scripts/e2e-agent.mjs --url http://localhost:4173/  # assistant (with a sample() test double), profiler, assets
