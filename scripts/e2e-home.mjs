@@ -53,7 +53,7 @@ const w1 = await wallFinish();
 const st1 = await p.evaluate(() => { const h = window.__studio.home.home; return { text: h.status.text, understood: h.understood, undo: h.designer.canUndo, saved: !!localStorage.getItem('home.design.v1') }; });
 check('"Make this room look more modern" changes the room locally, verified, and autosaves', m1.path === 'local' && m1.verified && w1 !== w0 && st1.undo && st1.saved, JSON.stringify({ ...st1, ops: m1.ops }));
 check('first visible change within 2 s, finished within 5 s (software renderer)', m1.first > 0 && m1.first < 2000 && m1.done < 5000, `first ${Math.round(m1.first)} ms, done ${Math.round(m1.done)} ms`);
-await p.screenshot({ path: 'shots/home-modern.png' });
+await p.screenshot({ path: 'shots/home-modern.png', timeout: 120000 }).catch(() => console.log('(screenshot skipped: renderer too slow)'));
 
 // ---- undo / redo ----
 await say('undo'); await waitIdle();
@@ -132,7 +132,7 @@ await p.evaluate(() => { window.__studio.home.home.ui.openTab('perf'); window.__
 await p.waitForTimeout(400);
 const perf = await p.evaluate(() => document.querySelectorAll('#hc table tr').length);
 check('the speed view lists the timed requests', perf > 5, `${perf - 1} rows`);
-await p.screenshot({ path: 'shots/home-panel.png' });
+await p.screenshot({ path: 'shots/home-panel.png', timeout: 120000 }).catch(() => console.log('(screenshot skipped: renderer too slow)'));
 
 // ---- save, reload, restore across sessions ----
 await say('save as e2e look'); await waitIdle();

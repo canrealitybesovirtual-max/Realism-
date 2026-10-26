@@ -87,7 +87,7 @@ const guns: Gun[] = [];
 let gunFx: GunEffects | undefined;
 let range: ShootingRange | undefined;
 let home: import('./home/home').Home | undefined;
-let homeHandle: { readonly active: boolean; readonly loaded: boolean; readonly home: typeof home; enter(): Promise<void>; leave(): void } | undefined;
+let homeHandle: { readonly active: boolean; readonly loaded: boolean; readonly home: typeof home; enter(): Promise<void>; enterAR(s: XRSession): Promise<void>; leave(): void } | undefined;
 let rangeHandle: { readonly active: boolean; readonly loaded: boolean; enter(): Promise<void>; leave(): void } | undefined;
 let runtime: Runtime | undefined;
 let editor: Editor | undefined;
@@ -243,6 +243,13 @@ async function init() {
 				}
 				home.enter();
 			},
+			async enterAR(session: XRSession) {
+				if (!home) {
+					loading ??= import('./home/home').then((m) => new m.Home({ scene, camera, renderer, walk, desktop, xr, physics: physics.enabled ? physics : null, project: codeApp?.project ?? null }));
+					home = await loading;
+				}
+				await home.enterAR(session);
+			},
 			leave() { home?.leave(); },
 		};
 	}
@@ -297,7 +304,31 @@ async function init() {
 	const vrOk = 'xr' in navigator && await navigator.xr!.isSessionSupported('immersive-vr').catch(() => false);
 	if (vrOk) {
 		document.body.appendChild(VRButton.createButton(renderer, { optionalFeatures: ['hand-tracking'] }));
-	} else if ('xr' in navigator && window.self !== window.top) {
+	}
+	// AR Home: the house's furniture in your real room, through the headset's passthrough
+	const arOk = 'xr' in navigator && await navigator.xr!.isSessionSupported('immersive-ar').catch(() => false);
+	if (arOk && homeHandle) {
+		const arRoot = document.createElement('div'); arRoot.id = 'ar-root'; document.body.appendChild(arRoot);
+		const b = document.createElement('button');
+		b.id = 'ar-button'; b.textContent = 'AR HOME';
+		b.style.cssText = 'position:absolute;bottom:20px;left:calc(50% + 66px);width:110px;padding:12px 6px;border:1px solid #fff;border-radius:4px;background:rgba(0,0,0,.1);color:#fff;font:normal 13px sans-serif;text-align:center;opacity:.5;outline:none;z-index:999;cursor:pointer';
+		if (vrOk) b.style.left = 'calc(50% + 66px)'; else b.style.left = 'calc(50% - 55px)';
+		b.onmouseenter = () => { b.style.opacity = '1'; }; b.onmouseleave = () => { b.style.opacity = '.5'; };
+		const h = homeHandle;
+		b.onclick = async () => {
+			if (renderer.xr.isPresenting) { renderer.xr.getSession()?.end(); return; }
+			// ask for the session straight from the click (browsers require it), then load the house
+			let session: XRSession;
+			try {
+				session = await navigator.xr!.requestSession('immersive-ar', { requiredFeatures: ['local-floor'], optionalFeatures: ['hit-test', 'hand-tracking', 'dom-overlay'], domOverlay: { root: arRoot } } as XRSessionInit);
+			} catch (e) { b.textContent = 'AR NOT ALLOWED'; log.warn(`AR: ${(e as Error).message}`); return; }
+			b.textContent = 'EXIT AR';
+			session.addEventListener('end', () => { b.textContent = 'AR HOME'; });
+			await h.enterAR(session);
+		};
+		document.body.appendChild(b);
+	}
+	if (!vrOk && 'xr' in navigator && window.self !== window.top) {
 		// Embedded pages (e.g. a Claude artifact) only get the headset if the
 		// host frame grants xr-spatial-tracking. Offer the same page on its own.
 		const a = document.createElement('a');
@@ -305,7 +336,7 @@ async function init() {
 		a.href = location.href;
 		a.target = '_blank';
 		a.rel = 'noopener';
-		a.textContent = 'VR is blocked in this embedded view. Open the room in its own tab';
+		a.textContent = 'VR and AR are blocked in this embedded view. Open the room in its own tab';
 		document.body.appendChild(a);
 	}
 	document.getElementById('loading')!.remove();

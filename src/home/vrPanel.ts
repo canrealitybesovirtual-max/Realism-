@@ -90,7 +90,10 @@ export class VRPanel {
 				this.dot.position.copy(hit.point); this.dot.visible = true;
 			} else this.dot.visible = false;
 			const re = this.edges(right);
-			if (hover >= 0 && re.down(0)) { right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.4, 20); this.btns[hover].run(); this.dirty = true; }
+			if (re.down(0)) {
+				if (hover >= 0) { right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.4, 20); this.btns[hover].run(); this.dirty = true; }
+				else if (this.home.arTap()) right.source?.gamepad?.hapticActuators?.[0]?.pulse?.(0.6, 40); // AR: put the room down here
+			}
 		}
 		if (hover !== this.hover) { this.hover = hover; this.dirty = true; }
 		if (this.dirty) this.paint();
@@ -105,7 +108,11 @@ export class VRPanel {
 		const btn = (x: number, y: number, w: number, hh: number, label: string, run: () => void, o: Partial<Btn> = {}) => this.btns.push({ x, y, w, h: hh, label, run, ...o });
 		const listening = v.state !== 'off';
 		btn(28, 28, 150, 150, !v.supported ? 'no mic' : listening ? 'listening' : 'talk', () => (listening ? v.stop() : v.start()), { big: true, on: listening, off: !v.supported });
-		btn(W - 196, 28, 168, 60, 'Leave home', () => h.leave());
+		btn(W - 196, 28, 168, 60, h.ar ? 'Exit AR' : 'Leave home', () => (h.ar ? h.ar.session.end() : h.leave()));
+		if (h.ar) {
+			btn(W - 196, 98, 168, 56, h.ar.placing ? 'Placing…' : 'Move room', () => h.arPlace(), { on: h.ar.placing });
+			btn(W - 196, 164, 168, 56, 'Next room', () => h.arNextRoom());
+		}
 		const row = 470;
 		btn(28, row, 150, 64, 'Undo', () => h.submit('undo', 'button'), { off: !h.designer.canUndo });
 		btn(190, row, 150, 64, 'Redo', () => h.submit('redo', 'button'), { off: !h.designer.canRedo });
@@ -136,10 +143,11 @@ export class VRPanel {
 		c.fillStyle = '#fff'; c.font = '500 30px system-ui,sans-serif';
 		let y = 112;
 		const said = v.interim || h.transcript;
-		if (said) y = wrap(c, `“${said}”`, 206, y, W - 240, 36, 2);
-		c.fillStyle = '#9fc3ff'; if (h.understood) y = wrap(c, h.understood, 206, y + 4, W - 240, 34, 2);
+		const tw = h.ar ? W - 430 : W - 240;
+		if (said) y = wrap(c, `“${said}”`, 206, y, tw, 36, 2);
+		c.fillStyle = '#9fc3ff'; if (h.understood) y = wrap(c, h.understood, 206, y + 4, tw, 34, 2);
 		c.fillStyle = v.error ? '#f08080' : '#eef1f4'; c.font = '500 28px system-ui,sans-serif';
-		wrap(c, v.error || h.status.text, 28, 236, W - 56, 34, 3);
+		wrap(c, v.error || h.status.text, 28, h.ar ? 266 : 236, W - 56, 34, h.ar ? 2 : 3);
 		if (h.status.busy) {
 			c.fillStyle = '#333a44'; round(c, 28, 350, W - 56, 12, 6); c.fill();
 			const p = h.status.progress ?? ((performance.now() / 900) % 1);

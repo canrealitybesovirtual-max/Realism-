@@ -71,13 +71,14 @@ export class ControlCenter {
  <div class="tabs"><button data-t="quick">Quick</button><button data-t="history">History</button><button data-t="designs">Designs</button><button data-t="perf">Speed</button><button data-t="settings">Settings</button></div>
  <div class="pane" data-d="pane"></div>
 </div>`;
-		document.body.appendChild(el);
+		(document.getElementById('ar-root') ?? document.body).appendChild(el); // inside the AR DOM overlay on phones
 		el.querySelectorAll<HTMLElement>('[data-d]').forEach((n) => { this.dyn[n.dataset.d!] = n; });
 		this.input = el.querySelector('input[data-a=text]')!;
 		// typing must not walk the player around
 		for (const ev of ['keydown', 'keyup', 'keypress']) this.input.addEventListener(ev, (e) => e.stopPropagation());
 		this.input.addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') this.send(); if ((e as KeyboardEvent).key === 'Escape') this.input.blur(); });
 		el.addEventListener('click', (e) => this.click(e));
+		el.addEventListener('beforexrselect', (e) => e.preventDefault()); // AR on phones: a tap on the panel is not a tap on the floor
 		el.addEventListener('input', (e) => this.slide(e));
 		el.addEventListener('change', (e) => this.pick(e));
 		const mic = el.querySelector<HTMLButtonElement>('[data-a=mic]')!;

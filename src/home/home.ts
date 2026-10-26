@@ -38,6 +38,7 @@ export interface Deps {
 }
 type Sample = ((input: string, opts?: any) => Promise<{ text: string; truncated?: boolean }>) | null;
 
+const shown = (o: THREE.Object3D | null) => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 
 export class Home {
@@ -69,6 +70,15 @@ export class Home {
 	private sampleChecked = false;
 	private envTex: THREE.Texture | null = null;
 	onChange: () => void = () => {};
+	/**
+	 * AR (headset passthrough): the furniture of one room stands in your real
+	 * room. The house's walls, floor and ceiling are hidden, a shadow catcher
+	 * grounds the furniture on your real floor, and the XR rig is placed so
+	 * the room's centre sits where you point (hit test) or in front of you.
+	 */
+	ar: { session: XRSession; room: RoomId; placing: boolean; yaw: number | null; hit: XRHitTestSource | null; hitOk: boolean } | null = null;
+	private catcher: THREE.Mesh;
+	private reticle: THREE.Mesh;
 
 	constructor(private d: Deps) {
 		setAnisotropy(Math.min(8, d.renderer.capabilities.getMaxAnisotropy()));
@@ -76,6 +86,11 @@ export class Home {
 		this.highlight.visible = false; (this.highlight.material as THREE.LineBasicMaterial).depthTest = false; this.highlight.renderOrder = 10;
 		this.highlight.userData.keepInHome = true; this.highlight.name = 'home-highlight';
 		d.scene.add(this.highlight);
+		this.catcher = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShadowMaterial({ opacity: 0.32 }));
+		this.catcher.rotation.x = -Math.PI / 2; this.catcher.receiveShadow = true; this.catcher.visible = false; this.catcher.userData.keepInHome = true; this.catcher.name = 'home-ar-shadows';
+		this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.2, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.85, depthTest: false }));
+		this.reticle.visible = false; this.reticle.renderOrder = 12; this.reticle.userData.keepInHome = true; this.reticle.name = 'home-ar-reticle';
+		d.scene.add(this.catcher, this.reticle);
 		this.build(this.readSave(SAVE_KEY));
 		this.voice.onFinal = (text, t) => this.submit(text, 'voice', t.speechEnd, t.final);
 		this.voice.onChange = () => this.changed();
@@ -105,9 +120,10 @@ export class Home {
 			const r = this.designer.load(data);
 			if (r.skipped) this.status.text = `Restored your design (${r.skipped} change(s) no longer applied).`;
 		}
-		this.designer.onLayout = (it, gone) => { if (this.active) { this.updateCollider(it, gone || !this.house.items.has(it.id)); this.updateBlockers(); } };
+		this.designer.onLayout = (it, gone) => { if (this.ar) this.arShow(); else if (this.active) { this.updateCollider(it, gone || !this.house.items.has(it.id)); this.updateBlockers(); } };
 		this.designer.onChange = () => { this.autosave(); this.d.renderer.shadowMap.needsUpdate = true; this.changed(); };
-		if (this.active) { this.addColliders(); this.updateBlockers(); }
+		if (this.active && !this.ar) { this.addColliders(); this.updateBlockers(); }
+		if (this.ar) this.arShow();
 	}
 	private readSave(key: string) { try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : null; } catch { return null; } }
 	private autosave() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(this.designer.serialize())); } catch { /* storage off: still works this session */ } }
@@ -195,12 +211,13 @@ export class Home {
 		const sp = this.house.spawn;
 		this.placePlayer(new THREE.Vector3(HOME_ORIGIN.x + sp.x, 0, HOME_ORIGIN.z + sp.z), sp.yaw);
 		renderer.shadowMap.needsUpdate = true;
-		this.ui.show(true);
+		this.ui.show(true); this.vr.show(true);
 		this.status.text = this.voice.supported ? 'Hold V (or click the microphone) and say what to change.' : 'Type what to change (press T), or use the buttons.';
 		this.changed();
 	}
 	leave() {
 		if (!this.active || !this.saved) return;
+		if (this.ar) { const s = this.ar.session; this.exitAR(); s.end().catch(() => {}); }
 		const { scene, camera, renderer, walk } = this.d;
 		this.cancel();
 		this.voice.abort();
@@ -232,13 +249,112 @@ export class Home {
 		}
 	}
 
+	// ------------------------------------------------------------------ AR
+	/** start AR with a session the page requested from a click (the request needs the click) */
+	async enterAR(session: XRSession) {
+		const { renderer, scene } = this.d;
+		const room = this.active ? this.room : 'living';
+		if (!this.active) this.enter();
+		this.removeColliders(); this.d.walk.blockers = [];
+		this.ar = { session, room, placing: true, yaw: null, hit: null, hitOk: false };
+		session.requestReferenceSpace('viewer').then((vs) => session.requestHitTestSource?.({ space: vs })).then((src) => { if (this.ar?.session === session && src) this.ar.hit = src; }).catch(() => { /* no hit test: place in front of you */ });
+		session.addEventListener('end', () => { if (this.ar?.session === session) this.exitAR(); });
+		// phones: tapping the screen puts the room down
+		session.addEventListener('select', (e: XRInputSourceEvent) => { if (e.inputSource.targetRayMode === 'screen') this.arTap(); });
+		scene.background = null;
+		this.saved.clear = renderer.getClearAlpha();
+		renderer.setClearColor(0x000000, 0);
+		if (this.d.xr) this.d.xr.seated = true; // you walk for real: no stick walking or snap turns
+		this.arShow();
+		renderer.xr.setReferenceSpaceType('local-floor');
+		await renderer.xr.setSession(session);
+		this.status.text = 'Look at your floor where the room should go, then pull the right trigger (right stick turns it).';
+		this.changed();
+	}
+	private exitAR() {
+		if (!this.ar) return;
+		this.ar.hit?.cancel();
+		this.ar = null;
+		this.catcher.visible = false; this.reticle.visible = false;
+		this.house.root.traverse((o) => { if (o.userData.arHidden) { o.visible = true; delete o.userData.arHidden; } });
+		if (this.d.xr) this.d.xr.seated = false;
+		if (this.active) {
+			this.d.scene.background = new THREE.Color(0xbcd3e6);
+			this.d.renderer.setClearColor(0x000000, this.saved?.clear ?? 1);
+			this.addColliders(); this.updateBlockers();
+			const sp = this.house.spawn;
+			this.placePlayer(new THREE.Vector3(HOME_ORIGIN.x + sp.x, 0, HOME_ORIGIN.z + sp.z), sp.yaw);
+		}
+		this.changed();
+	}
+	/** only the furniture of the AR room shows; walls, floors, doors, windows and the garden hide */
+	private arShow() {
+		if (!this.ar) return;
+		const keep = new Set<THREE.Object3D>();
+		for (const it of this.house.items.values()) if (!it.fixed && it.room === this.ar.room) keep.add(it.object);
+		for (const o of this.house.root.children) {
+			const on = keep.has(o) || (o as THREE.Light).isLight || o.type === 'Object3D' && !o.children.length; // lights and light targets stay
+			if (o.visible !== on) { o.visible = on; if (!on) o.userData.arHidden = true; else delete o.userData.arHidden; }
+		}
+		const r = this.house.rooms[this.ar.room];
+		this.catcher.scale.set(r.x1 - r.x0 + 2, r.z1 - r.z0 + 2, 1);
+		this.catcher.position.set(HOME_ORIGIN.x + (r.x0 + r.x1) / 2, 0.003, HOME_ORIGIN.z + (r.z0 + r.z1) / 2);
+		this.catcher.visible = true;
+		this.d.renderer.shadowMap.needsUpdate = true;
+	}
+	/** AR tablet / trigger actions */
+	arPlace() { if (this.ar) { this.ar.placing = true; this.changed(); } }
+	arNextRoom() {
+		if (!this.ar) return;
+		const ids = Object.keys(this.house.rooms) as RoomId[];
+		this.ar.room = ids[(ids.indexOf(this.ar.room) + 1) % ids.length];
+		this.ar.placing = true; this.arShow();
+		this.status.text = `${this.house.rooms[this.ar.room].name}: look at the floor and pull the right trigger to put it down.`; this.changed();
+	}
+	arTap() {
+		if (!this.ar?.placing) return false;
+		this.ar.placing = false; this.reticle.visible = false;
+		this.status.text = `${this.house.rooms[this.ar.room].name} placed in your room. Say what to change, or point at a piece.`; this.changed();
+		return true;
+	}
+	private arUpdate() {
+		const ar = this.ar!, { renderer, camera } = this.d, rig: THREE.Object3D | undefined = this.d.xr?.rig;
+		if (!ar.placing || !rig || !renderer.xr.isPresenting) return;
+		// head pose in the reference space (the camera is a child of the rig)
+		const head = camera.position, headYaw = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ').y;
+		if (ar.yaw === null) ar.yaw = -headYaw; // the room faces the way you look
+		const right = (this.d.xr?.hands ?? []).find((h: any) => h.source?.handedness === 'right');
+		const sx = right?.source?.gamepad?.axes?.[2] ?? 0;
+		if (Math.abs(sx) > 0.2) ar.yaw -= sx * 0.03;
+		let p: THREE.Vector3 | null = null;
+		const frame = renderer.xr.getFrame(), ref = renderer.xr.getReferenceSpace();
+		if (frame && ref && ar.hit) {
+			const pose = frame.getHitTestResults(ar.hit)[0]?.getPose(ref);
+			// floors only: horizontal and well below the eyes
+			if (pose) {
+				const q = pose.transform.orientation, up = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+				if (up.y > 0.9 && pose.transform.position.y < head.y - 0.8) p = new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+			}
+		}
+		ar.hitOk = !!p;
+		if (!p) p = new THREE.Vector3(head.x - Math.sin(headYaw) * 1.8, 0, head.z - Math.cos(headYaw) * 1.8);
+		// rig so that local p lands on the room centre, turned by ar.yaw
+		const r = this.house.rooms[ar.room], c = new THREE.Vector3(HOME_ORIGIN.x + (r.x0 + r.x1) / 2, 0, HOME_ORIGIN.z + (r.z0 + r.z1) / 2);
+		rig.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ar.yaw);
+		rig.position.copy(c).sub(p.clone().applyQuaternion(rig.quaternion));
+		rig.updateMatrixWorld(true);
+		this.reticle.position.set(c.x, 0.01, c.z); this.reticle.visible = true;
+		(this.reticle.material as THREE.MeshBasicMaterial).color.set(ar.hitOk ? 0x7fd67f : 0xffd166);
+	}
+
 	// ------------------------------------------------------------------ per frame
 	update(dt: number) {
 		if (!this.active) return;
 		if (this.designer.update(dt)) this.d.renderer.shadowMap.needsUpdate = true;
 		const cam = new THREE.Vector3(); this.d.camera.getWorldPosition(cam);
 		const lx = cam.x - HOME_ORIGIN.x, lz = cam.z - HOME_ORIGIN.z;
-		for (const r of Object.values(this.house.rooms)) if (lx >= r.x0 && lx <= r.x1 && lz >= r.z0 && lz <= r.z1) { if (this.room !== r.id) { this.room = r.id; this.changed(); } }
+		if (this.ar) { this.arUpdate(); if (this.room !== this.ar.room) { this.room = this.ar.room; this.changed(); } }
+		else for (const r of Object.values(this.house.rooms)) if (lx >= r.x0 && lx <= r.x1 && lz >= r.z0 && lz <= r.z1) { if (this.room !== r.id) { this.room = r.id; this.changed(); } }
 		// what you are looking (or pointing) at
 		const vrRay = this.vr.rightRay();
 		if (vrRay) this.ray.set(vrRay.origin, vrRay.dir); else this.ray.setFromCamera(new THREE.Vector2(0, 0), this.d.camera);
@@ -246,7 +362,7 @@ export class Home {
 		const hits = this.ray.intersectObject(this.house.root, true);
 		let aimed: Item | null = null;
 		for (const h of hits) {
-			if (h.object === this.highlight) continue;
+			if (h.object === this.highlight || !shown(h.object)) continue;
 			for (let o: THREE.Object3D | null = h.object; o && o !== this.house.root; o = o.parent) { const it = this.house.items.get(o.name); if (it) { aimed = it; break; } }
 			if (aimed) break;
 		}
