@@ -19474,7 +19474,7 @@ function voxGrunt(e, k = 1, dying = false) {
   soundAt(at, () => {
     const c = audio.ctx, src = c.createBufferSource(), g = c.createGain();
     src.buffer = buf; src.playbackRate.value = (dying ? 0.86 : 0.95) + Math.random() * 0.1;
-    g.gain.value = 0.75 * k;
+    g.gain.value = 1.15 * k;                                       // step 87: was 0.75
     src.connect(g); g.connect(audio.dest || audio.out);
     src.start(c.currentTime + delay + (audio.delay || 0));
   });
@@ -19486,20 +19486,25 @@ function voxDyingStart(e) {
   const now = wnow(), dur = 9 + Math.random() * 9;
   e.moan = { t0: now, until: now + dur, next: now + 1.0 + Math.random() * 1.2 };
 }
+const VOX_DYING = { moan: 1.5, breath: 1.15, nearBoost: 0.9, nearFrom: 0.8, nearTo: 3.5 };   // step 87 (was 0.62 / 0.5, fading to 35%)
+const _vxH = new THREE.Vector3();
 function voxDyingTick(e, now) {
   const M = e.moan;
   if (!M || now < M.next) return;
   if (now > M.until || !e.rag || !e.room || !e.room.active) { e.moan = null; return; }
   const left = (M.until - now) / (M.until - M.t0), breath = Math.random() < 0.6;
   const names = VOX_FILES.filter((n) => (breath ? n.startsWith('dbreath') : n.startsWith('moan')) && VOX.bufs[n]);
-  M.next = now + (breath ? 2.2 : 1.4) + Math.random() * 1.6 + (1 - left) * 2.5;
-  if (!names.length || !audio.ctx) return;
   const nk = e.rag.find((r) => r.seg === 'neck'); if (!nk) return;
-  const t = nk.body.translation(), at = new THREE.Vector3(t.x, t.y, t.z), buf = VOX.bufs[names[(Math.random() * names.length) | 0]];
+  const t = nk.body.translation(), at = new THREE.Vector3(t.x, t.y, t.z);
+  // step 87: louder, and more often with you standing over him
+  headWorld(_vxH); const near = clamp(1 - (_vxH.distanceTo(at) - VOX_DYING.nearFrom) / (VOX_DYING.nearTo - VOX_DYING.nearFrom));
+  M.next = now + ((breath ? 2.2 : 1.4) + Math.random() * 1.6 + (1 - left) * 2.5) * (1 - 0.45 * near);
+  if (!names.length || !audio.ctx) return;
+  const buf = VOX.bufs[names[(Math.random() * names.length) | 0]];
   soundAt(at, () => {
     const c = audio.ctx, src = c.createBufferSource(), g = c.createGain();
     src.buffer = buf; src.playbackRate.value = 0.9 + Math.random() * 0.14;
-    g.gain.value = (breath ? 0.5 : 0.62) * (0.35 + 0.65 * left);
+    g.gain.value = (breath ? VOX_DYING.breath : VOX_DYING.moan) * (0.6 + 0.4 * left) * (1 + VOX_DYING.nearBoost * near);
     src.connect(g); g.connect(audio.dest || audio.out);
     src.start(c.currentTime + (audio.delay || 0));
   });
@@ -19672,8 +19677,41 @@ function ragSwingLimit(r) {
   if (ang <= r.lim) return;
   _ragSw.d.slerp(_ragSw.i.identity(), 1 - r.lim / ang);
   _ragSw.c.copy(_ragSw.p).multiply(r.rel0).multiply(_ragSw.d);
-  r.body.setRotation({ x: _ragSw.c.x, y: _ragSw.c.y, z: _ragSw.c.z, w: _ragSw.c.w }, true);
-  const pv = r.par.body.angvel(); r.body.setAngvel({ x: pv.x, y: pv.y, z: pv.z }, true);
+  ragSoftTo(r, _ragSw.c);
+}
+// Step 87: a limit is pushed back with angular velocity (soft), never by setting the rotation. Teleporting a
+// limb every step drove it into the joints and the other limbs, which shoved it back: the dead twitched and
+// crawled for ever and the arms ended up inside the chest.
+const _rsf = { q: new THREE.Quaternion(), e: new THREE.Quaternion(), v: new THREE.Vector3() };
+const RAG_SOFT = { k: 14, max: 9 };            // 1/s toward the limit, rad/s at most
+function ragSoftTo(r, qt) {
+  const cq = r.body.rotation();
+  _rsf.q.set(cq.x, cq.y, cq.z, cq.w);
+  _rsf.e.copy(qt).multiply(_rsf.q.invert());                        // error, world frame
+  if (_rsf.e.w < 0) { _rsf.e.x = -_rsf.e.x; _rsf.e.y = -_rsf.e.y; _rsf.e.z = -_rsf.e.z; _rsf.e.w = -_rsf.e.w; }
+  const ang = 2 * Math.acos(clamp(_rsf.e.w, -1, 1)), sn = Math.sqrt(Math.max(1e-9, 1 - _rsf.e.w * _rsf.e.w));
+  const w = Math.min(RAG_SOFT.max, ang * RAG_SOFT.k);
+  _rsf.v.set(_rsf.e.x / sn, _rsf.e.y / sn, _rsf.e.z / sn).multiplyScalar(w);
+  const pv = r.par.body.angvel();
+  r.body.setAngvel({ x: pv.x + _rsf.v.x, y: pv.y + _rsf.v.y, z: pv.z + _rsf.v.z }, true);
+}
+// Step 87: the upper arm never swings into the chest. The elbow (the forearm's origin) is kept outside an
+// ellipse round the torso, in the spine's frame (x right, z back, y up from the spine bone).
+const RAG_TORSO = { x: 0.16, z: 0.13, y0: 0.02, y1: 0.6, armR: 0.05 };
+const _rtq = { s: new THREE.Quaternion(), si: new THREE.Quaternion(), p: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3(), q: new THREE.Quaternion(), c: new THREE.Quaternion() };
+function ragArmOut(e, arm, fore, spine) {
+  const sq = spine.body.rotation(), st = spine.body.translation(), et = fore.body.translation(), at = arm.body.translation();
+  _rtq.s.set(sq.x, sq.y, sq.z, sq.w); _rtq.si.copy(_rtq.s).invert();
+  const p = _rtq.p.set(et.x - st.x, et.y - st.y, et.z - st.z).applyQuaternion(_rtq.si);
+  if (p.y < RAG_TORSO.y0 || p.y > RAG_TORSO.y1) return;
+  const ax = RAG_TORSO.x + RAG_TORSO.armR, az = RAG_TORSO.z + RAG_TORSO.armR, k = Math.hypot(p.x / ax, p.z / az);
+  if (k >= 1) return;
+  if (k < 1e-3) p.x = Math.sign(arm.seg.endsWith('L') ? -1 : 1) * ax; else { p.x /= k; p.z /= k; }   // out to the ellipse, straight away from the middle
+  p.applyQuaternion(_rtq.s).add(_rtq.b.set(st.x, st.y, st.z));      // the elbow where it may be (world)
+  const d0 = _rtq.a.set(et.x - at.x, et.y - at.y, et.z - at.z).normalize(), d1 = _rtq.b.copy(p).sub(_rtq.p.set(at.x, at.y, at.z)).normalize();
+  const aq = arm.body.rotation();
+  _rtq.c.setFromUnitVectors(d0, d1).multiply(_rtq.q.set(aq.x, aq.y, aq.z, aq.w));
+  ragSoftTo(arm, _rtq.c);
 }
 // Step 69.1: anatomical limits, in the parent part's frame (rest = all frames aligned, limbs down -Y,
 // forward -Z). The limb's direction may not go where a joint can't: a hip barely extends backwards, a knee
@@ -19705,11 +19743,11 @@ function ragAnatLimit(r) {
   _an.q.setFromUnitVectors(dd, _an.w);
   _an.r.premultiply(_an.q);
   _an.c.copy(_an.p).multiply(_an.r);
-  r.body.setRotation({ x: _an.c.x, y: _an.c.y, z: _an.c.z, w: _an.c.w }, true);
-  const pv = r.par.body.angvel(); r.body.setAngvel({ x: pv.x, y: pv.y, z: pv.z }, true);
+  ragSoftTo(r, _an.c);                                              // step 87: soft
 }
 // Ragdoll bodies drive the bones (after the physics step).
-function enemiesPostPhysics() {
+const RAG_SETTLE = { dampFrom: 2.5, dampTo: 4.5, lin: [0.35, 3.5], ang: [1.6, 9], stillV: 0.15, stillFor: 0.6, forceAt: 6, upNeck: 0.42, upPelvis: 0.27, toppleAt: 1.2, toppleV: 0.9 };   // step 87
+function enemiesPostPhysics(dt = 1 / 72) {
   for (const e of ENEMY.list) {
     if (!e.rag) continue;
     if (RAGSLEEP_ON && e.ragSynced) {                             // step 36: settled and already posed: nothing to do
@@ -19718,33 +19756,62 @@ function enemiesPostPhysics() {
       if (asleep) continue;
     }
     let awake = false;
-    // Step 80: a dead man comes to rest. The limit corrections below wake him every frame, so without this the
-    // joints and the corrections fight for ever and he creeps over the floor ("crawling"), worse after a second
-    // round. Once he has been slow for 0.7 s (and his fall is over) every part is put to sleep; a new hit wakes him.
+    // Step 87 (was step 80): a dead man comes to rest, but only once he is down. The old rule put him to sleep
+    // after 0.7 s under 0.28 m/s, which froze men half-way through a slow collapse (sitting, kneeling), and the
+    // limit corrections kept the others twitching for ever. Now: time since he died or was last hit (e.ragT);
+    // after the fall his joints go loose so gravity folds him; from 2.5 s the damping rises so he settles; he
+    // sleeps when still for 0.6 s, or at 6 s whatever. A man still up (neck high) is pushed over, up to 3 times.
     {
+      const R = RAG_SETTLE;
+      e.ragT = (e.ragT || 0) + dt;
       let vmax = 0;
       for (const r of e.rag) { const v = r.body.linvel(); vmax = Math.max(vmax, Math.hypot(v.x, v.y, v.z)); }
-      const dtR = 1 / 72;
-      if (!e.dying && vmax < 0.28) e.stillT = (e.stillT || 0) + dtR; else e.stillT = 0;
-      // still upright (kneeling, sitting against something) after the fall: a dead man doesn't hold a pose
-      if (!e.dying && !e.toppled && e.diedAt && wnow() - e.diedAt > 1.4) {
-        e.toppled = true;
-        const nk = e.rag.find((r) => r.seg === 'neck'), pv = e.rag.find((r) => r.seg === 'pelvis');
-        if (nk && pv) {
-          const t = nk.body.translation(), tp = pv.body.translation(), fl = e.room.origin.y;
-          if (t.y - fl > 0.5) {
-            let dx = t.x - tp.x, dz = t.z - tp.z; const l = Math.hypot(dx, dz);
-            if (l < 0.05) { const a = Math.random() * 6.283; dx = Math.cos(a); dz = Math.sin(a); } else { dx /= l; dz /= l; }
-            nk.body.applyImpulse({ x: dx * 3.2, y: 0, z: dz * 3.2 }, true);
-            const sp = e.rag.find((r) => r.seg === 'spine'); if (sp) sp.body.applyImpulse({ x: dx * 4, y: 0, z: dz * 4 }, true);
-            e.stillT = 0;
+      const nk = e.rag.find((r) => r.seg === 'neck'), pv = e.rag.find((r) => r.seg === 'pelvis');
+      const neckH = nk ? nk.body.translation().y - e.room.origin.y : 0, pelH = pv ? pv.body.translation().y - e.room.origin.y : 0;
+      const up = neckH > R.upNeck || pelH > R.upPelvis;            // sitting / kneeling, or folded on his knees with the hips up
+      if (!e.dying) {
+        const k = clamp((e.ragT - R.dampFrom) / (R.dampTo - R.dampFrom));
+        const lin = R.lin[0] + (R.lin[1] - R.lin[0]) * k, ang = R.ang[0] + (R.ang[1] - R.ang[0]) * k;
+        if (Math.abs((e.ragDamp || 0) - k) > 0.04 || e.ragDamp === undefined) {
+          e.ragDamp = k;
+          for (const r of e.rag) { r.body.setLinearDamping(lin); r.body.setAngularDamping(r.seg === 'neck' ? ang * 1.8 : ang); }
+        }
+        // still up after the fall (kneeling, sitting): a dead man doesn't hold a pose
+        if (nk && pv && up && (e.topples || 0) < 3 && e.ragT > R.toppleAt + (e.topples || 0) * 0.9 && vmax < 0.6) {
+          e.topples = (e.topples || 0) + 1;
+          const t = nk.body.translation(), tp = pv.body.translation();
+          let dx = t.x - tp.x, dz = t.z - tp.z; const l = Math.hypot(dx, dz);
+          if (l < 0.05) { const a = Math.random() * 6.283; dx = Math.cos(a); dz = Math.sin(a); } else { dx /= l; dz /= l; }
+          if (neckH > R.upNeck) {                                     // upright: over the way he leans
+            for (const r of e.rag) {
+              if (r.seg !== 'neck' && r.seg !== 'spine') continue;
+              const m = r.body.mass(), v = R.toppleV * (r.seg === 'neck' ? 1.3 : 1);
+              r.body.applyImpulse({ x: dx * v * m, y: 0, z: dz * v * m }, true);
+            }
+          } else {                                                    // on his knees, face down: roll him onto his side, legs out
+            const sx = -dz * (e.idx % 2 ? 1 : -1), sz = dx * (e.idx % 2 ? 1 : -1);
+            for (const r of e.rag) {
+              const m = r.body.mass(), hip = r.seg === 'pelvis' || r.seg.startsWith('thigh'), v = R.toppleV * (hip ? 1.1 : r.seg.startsWith('shin') ? 0.4 : 0.5);
+              r.body.applyImpulse({ x: (sx - dx * (hip ? 0.6 : 0)) * v * m, y: hip ? 0.6 * v * m : 0, z: (sz - dz * (hip ? 0.6 : 0)) * v * m }, true);
+            }
           }
+          for (const r of e.rag) r.body.wakeUp();
+          e.stillT = 0;
         }
       }
-      if (e.stillT > 0.7) { for (const r of e.rag) { r.body.setLinvel({ x: 0, y: 0, z: 0 }, false); r.body.setAngvel({ x: 0, y: 0, z: 0 }, false); r.body.sleep(); } e.stillT = -999; }
+      const down = !up || (e.topples || 0) >= 3;
+      if (!e.dying && vmax < R.stillV && down) e.stillT = (e.stillT || 0) + dt; else if (e.stillT > -1) e.stillT = 0;
+      if (e.stillT > R.stillFor || (!e.dying && e.ragT > R.forceAt && e.stillT > -1)) {
+        for (const r of e.rag) { r.body.setLinvel({ x: 0, y: 0, z: 0 }, false); r.body.setAngvel({ x: 0, y: 0, z: 0 }, false); r.body.sleep(); }
+        e.stillT = -999;
+      }
     }
     if (RAGDBG.lim) for (const r of e.rag) if (r.lim && !r.body.isSleeping()) ragSwingLimit(r);   // step 67
     if (RAGDBG.lim) for (const r of e.rag) if (r.anat && r.par && !r.body.isSleeping()) ragAnatLimit(r);   // step 69.1
+    if (RAGDBG.lim) {                                               // step 87: arms outside the chest
+      const sp = e.rag.find((r) => r.seg === 'spine');
+      for (const s of ['L', 'R']) { const a = e.rag.find((r) => r.seg === 'upperArm' + s), f = e.rag.find((r) => r.seg === 'foreArm' + s); if (sp && a && f && !a.body.isSleeping()) ragArmOut(e, a, f, sp); }
+    }
     for (const r of e.rag) {
       const t = r.body.translation(), q = r.body.rotation();
       if (!r.body.isSleeping()) awake = true;
@@ -19768,7 +19835,7 @@ function ragdollHit(rh, P, N, dir, d, E) {
   const k = d.impulse * E * 2;
   rh.r.body.applyImpulseAtPoint({ x: dir.x * k, y: dir.y * k, z: dir.z * k }, { x: P.x, y: P.y, z: P.z }, true);
   for (const r of rh.e.rag || []) r.body.wakeUp();               // step 80: the whole body takes it, then settles again
-  rh.e.stillT = 0;
+  rh.e.stillT = 0; rh.e.ragT = Math.min(rh.e.ragT || 0, RAG_SETTLE.dampFrom - 0.8); rh.e.ragDamp = undefined;   // step 87: a hit loosens him again
   if (rh.e.moan) { rh.e.moan = null; }                           // step 80: shot again: silent
   bloodFx(P, dir, 'body', 0.85);         // step 10 (step 19: heavier)
   addWound(rh.e, rh.r.bone, P, 'body');
@@ -27517,7 +27584,7 @@ function tick(timeMs) {
   thumbSelectorUpdate(dt);   // step 30: a tracked thumb flicks the fire selector
   profMark('weapons');
   stepPhysics(dtW);      // step 45: world time
-  enemiesPostPhysics();  // step 7: ragdolls drive the bones
+  enemiesPostPhysics(Math.min(dtW, 1 / 30));  // step 7: ragdolls drive the bones
   propsBreakTick();      // step 71: glass breaks on a hard knock
   wbUpdate();            // step 73: the gunsmith bench
   profMark('physics');
