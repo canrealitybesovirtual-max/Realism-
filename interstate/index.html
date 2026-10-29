@@ -1121,7 +1121,7 @@ const DEFAULTS = {
   interface: { units: 'kmh', uiScale: 1, showHud: true, showFps: false },
   traffic: { preset: 'commuter', ...structuredClone(TRAFFIC_PRESETS.commuter.values) },
   car: { finish: 'gloss', wheels: 'twin', wheelFinish: 'gloss', calipers: 'graphite', aero: 'lip', rideHeight: 0, suspension: 'sport', tyrePressure: 2.3, brakeBias: .64, drive: 'awd',
-         engine: 'stock', brakes: 'stock', tyres: 'road', weight: 'stock', upholstery: 'black', trim: 'walnut', ambient: 'ice', model: 'celsior', paintColor: 'black', tint: 'none', exhaust: 'stock' },
+         engine: 'stock', brakes: 'stock', tyres: 'road', weight: 'stock', upholstery: 'black', trim: 'walnut', ambient: 'ice', wheelStyle: 'galaxy', model: 'celsior', paintColor: 'black', tint: 'none', exhaust: 'stock' },
   world: { scenery: 'tunnel', time: 'afternoon', cycleMinutes: 45, weather: 'dynamic', crosswind: true, headlights: .35, garage: 'warehouse' },   // build 1.31: garage: warehouse | studio
   photo: { focal: 50, focus: 0, aperture: 2.8, exposure: 0, roll: 0 },   // section 11: the photo-mode lens, kept between sessions
   vr: { quality: 'performance', refresh: 72, bodyMotion: .35, seatHeight: 0, hud: true, ratio: 14, stickSteer: true, hands: 'gloves' },   // build 1.15: headset, comfort, steering
@@ -8467,13 +8467,37 @@ function nrgSpoke(ang, lower) {
   g.rotateY(-Math.atan(W.k)); g.translate(W.rh, 0, -W.D + .001); g.rotateZ(ang);
   return g;
 }
+/* Build 1.38: NRG finishes. spokes: map (galaxy) or flat colour; rim stitching, the 12 o'clock marker, the quick-release collar, the badge. */
+const NRG_STYLES = {
+  galaxy: { name: 'Galaxy blue', spoke: { galaxy: true, metalness: .75, roughness: .26 }, stitch: 0x2f6bff, marker: 0x1a45c8, collar: 0x1d4fd6, badge: ['#3d7bff', '#e8e8e8', '#3d7bff'] },
+  bw:     { name: 'Black and white', spoke: { color: 0xf1f1f1, metalness: 0, roughness: .32 }, stitch: 0xf2f2f2, marker: 0xeeeeee, collar: 0xf1f1f1, badge: ['#f4f4f4', '#9a9a9a', '#f4f4f4'] },
+  red:    { name: 'Black and red', spoke: { color: 0x101011, metalness: .7, roughness: .32 }, stitch: 0xc0141a, marker: 0x8c0a10, collar: 0xb3121a, badge: ['#d4161e', '#e8e8e8', '#d4161e'] },
+};
+/** Galaxy-blue metal flake: deep blue and violet nebula, a dense field of stars and a few bright glints. */
+function galaxyTexture() {
+  const S = 512, c = document.createElement('canvas'); c.width = c.height = S; const g = c.getContext('2d'), rnd = mulberry32(907);
+  g.fillStyle = '#060a26'; g.fillRect(0, 0, S, S);
+  const blob = (x, y, r, col) => { for (const dx of [-S, 0, S]) for (const dy of [-S, 0, S]) { const gr = g.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r); gr.addColorStop(0, col); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(x + dx - r, y + dy - r, r * 2, r * 2); } };
+  for (let i = 0; i < 26; i++) blob(rnd() * S, rnd() * S, 60 + rnd() * 160, ['rgba(30,70,210,.55)', 'rgba(70,40,190,.45)', 'rgba(10,120,255,.35)', 'rgba(140,60,220,.25)'][i % 4]);
+  for (let i = 0; i < 2600; i++) { const a = rnd() ** 3; g.fillStyle = `rgba(${200 + rnd() * 55 | 0},${210 + rnd() * 45 | 0},255,${.15 + a * .85})`; const r = rnd() < .03 ? 1.6 : .7; g.fillRect(rnd() * S, rnd() * S, r, r); }
+  for (let i = 0; i < 14; i++) { const x = rnd() * S, y = rnd() * S, L = 4 + rnd() * 6; g.strokeStyle = 'rgba(230,240,255,.8)'; g.lineWidth = .8; g.beginPath(); g.moveTo(x - L, y); g.lineTo(x + L, y); g.moveTo(x, y - L); g.lineTo(x, y + L); g.stroke(); }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(9, 9); t.anisotropy = 4; return t;
+}
+function nrgApplyStyle(M, tex, key) {
+  const st = NRG_STYLES[key] || NRG_STYLES.galaxy; if (!M.anod || M._nrgStyle === key) return; M._nrgStyle = key;
+  const sp = st.spoke, A = M.anod, hadMap = !!A.map;
+  if (sp.galaxy) { A.map = tex.galaxy ??= galaxyTexture(); A.color.setHex(0xffffff); } else { A.map = null; A.color.setHex(sp.color); }
+  A.metalness = sp.metalness; A.roughness = sp.roughness; if (hadMap !== !!A.map) A.needsUpdate = true;
+  M.stitchRed.color.setHex(st.stitch); M.redLeather.color.setHex(st.marker); M.nrgRed.color.setHex(st.collar);
+  const old = M.nrgBadge.map; M.nrgBadge.map = nrgBadgeTexture(st.badge); M.nrgBadge.needsUpdate = true; old?.dispose();
+}
 /** The horn button's face: NRG in red on black, ringed with small white print. */
-function nrgBadgeTexture() {
+function nrgBadgeTexture(cols = ['#d4161e', '#e8e8e8', '#d4161e']) {
   const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
   const gr = g.createRadialGradient(128, 110, 10, 128, 128, 128); gr.addColorStop(0, '#202022'); gr.addColorStop(1, '#070708'); g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
-  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#d4161e'; g.font = 'italic 900 92px Arial, sans-serif'; g.fillText('NRG', 128, 122);
-  g.fillStyle = '#e8e8e8'; g.font = '700 17px Arial, sans-serif'; g.fillText('INNOVATIONS', 128, 178);
-  g.strokeStyle = '#d4161e'; g.lineWidth = 3; g.beginPath(); g.moveTo(58, 158); g.lineTo(198, 158); g.stroke();
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = cols[0]; g.font = 'italic 900 92px Arial, sans-serif'; g.fillText('NRG', 128, 122);
+  g.fillStyle = cols[1]; g.font = '700 17px Arial, sans-serif'; g.fillText('INNOVATIONS', 128, 178);
+  g.strokeStyle = cols[2]; g.lineWidth = 3; g.beginPath(); g.moveTo(58, 158); g.lineTo(198, 158); g.stroke();
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
 }
 function mergeParts(parts) { const g = BufferGeometryUtils.mergeGeometries(parts.map(toNonIdx)); parts.forEach(p => p.dispose()); return g; }
@@ -8863,6 +8887,7 @@ class Car {
   /** Leather colour, trim and ambient colour from the garage. */
   #applyCabin(c) {
     const M = this.mats, up = UPHOLSTERY[c.upholstery] || UPHOLSTERY.black;
+    nrgApplyStyle(M, this.tex, c.wheelStyle);                          // build 1.38
     M.seat.color.setHex(up.hex); M.seatInsert.color.setHex(up.hex);
     const T = M.trim, tx = this.tex, was = T.clearcoat > 0;
     if (c.trim === 'carbon') Object.assign(T, { map: tx.carbon, metalness: 0, roughness: .32, clearcoat: 1, clearcoatRoughness: .05 }), T.color.setHex(0xffffff);
@@ -9291,7 +9316,7 @@ const CABIN_LAYOUT = {
       { id: 'trackNext', p: [-.0813, .7538, -.5889], n: [0, .439, .898], w: .019, h: .017 }, { id: 'trackPrev', p: [-.0825, .7312, -.5778], n: [0, .439, .898], w: .019, h: .017 },
     ],
     /* its POWER-VOL knob (poke: on / off; grab and twist: volume) and the live display over its frequency window */
-    radio: { knob: { p: [-.0839, .7889, -.5918], n: [0, .439, .898], r: .016 }, lcd: { p: [.0184, .767, -.5952], n: [0, .439, .898], w: .128, h: .019 } }, shifter: { p: [.008, .622, -.375], type: 'prnd', len: .1, knob: [.086, .04, .048] },
+    radio: { style: 'ls400', knob: { p: [-.0839, .7889, -.5918], n: [0, .439, .898], r: .016 }, lcd: { p: [.0184, .7672, -.5953], n: [0, .439, .898], w: .124, h: .0168 } }, shifter: { p: [.008, .622, -.375], type: 'prnd', len: .1, knob: [.086, .04, .048] },
     lamps: { front: [.7, .49, -2.37], rear: [.72, .73, 2.39], fw: .1, fh: .035, rw: .1, rh: .05 },
     dials: { tach: [-.455, .976, -.812], speed: [-.306, .978, -.808], temp: [-.497, .953, -.803], fuel: [-.35, .955, -.798], tell: [-.38, .995, -.806] },
   },
@@ -9302,6 +9327,16 @@ const WHEEL_PADS = [['lights', -.1395, 'lights', 'ringG'], ['hazard', -.0942, 'h
     const sx = Math.sign(x), a = Math.atan(NRG_WHEEL.k), n = [-sx * Math.sin(a), 0, Math.cos(a)];
     return { id, lit, ring, round: true, p: [x + n[0] * .005, 0, nrgSpokeZ(x) + n[2] * .005], n, w: .015, h: .015 };
   });
+/* build 1.38: the textured button caps (CabinControls #texCap): height, edge radius, shut-line, shadow blur and drop, travel (m) */
+/* build 1.38: the LS400 display's colours: unlit (sampled off the dash texture's window), backlit amber, segment ink */
+const LCD_LS400 = { unlit: [165, 146, 112], lit: [218, 168, 92], ink: '40,28,14' };
+const CAP = { h: .0026, r: .0011, gap: .0007, blur: .0024, drop: .0009, travel: .0019 };
+/** A soft rectangular shadow (alpha falls off over the outer `edge` of the plane). */
+function capShadowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  g.filter = 'blur(7px)'; g.fillStyle = '#000'; g.fillRect(12, 12, 40, 40);
+  const t = new THREE.CanvasTexture(c); return t;
+}
 class CabinControls {
   constructor(car) {
     this.car = car; this.rigs = {}; this.t = 0;
@@ -9311,7 +9346,10 @@ class CabinControls {
     this.M = { amberOn: em([1, .42, .04], 6),
       knob: new THREE.MeshStandardMaterial({ color: 0x101011, roughness: .45, metalness: .3 }), metal: new THREE.MeshStandardMaterial({ color: 0xc8c8cc, roughness: .2, metalness: 1 }),
       plastic: new THREE.MeshStandardMaterial({ color: 0x161617, roughness: .7, metalness: 0 }), red: new THREE.MeshStandardMaterial({ color: 0x8a0d10, roughness: .4, emissive: new THREE.Color(.25, .01, .01) }),
-      needle: em([1, .35, .08], 2.2), hub: new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: .5 }), mark: em([.9, .9, .85], 1) };
+      needle: em([1, .35, .08], 2.2), hub: new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: .5 }), mark: em([.9, .9, .85], 1),
+      capSide: new THREE.MeshStandardMaterial({ color: 0x141414, roughness: .55, metalness: 0 }),                                   // build 1.38
+      capShadow: new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: capShadowTexture(), transparent: true, opacity: .62, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }),
+      capGap: new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: .85, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }) };
     this.vrGrab = { left: null, right: null }; this.vrPoke = { left: false, right: false }; this._v3 = new THREE.Vector3();
     this.driver = new DriverBody(car);                                  // §14.12
     this._v = new THREE.Vector3(); this._v2 = new THREE.Vector3(); this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion();
@@ -9321,6 +9359,37 @@ class CabinControls {
     const S = this.st; S.ign = 0; S.blink = 0; S.hazard = false; S.wipers = 0; S.horn = false; S.lights = night > .35 ? 2 : 0; S.fuel = .78; S.temp = 18; S.crankT = 0;
   }
   #canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; return { c, g: c.getContext('2d'), t }; }
+  /** Build 1.38: a printed button made real. The cap's face is the dash texture itself, cut at exactly the button's UVs
+   *  (rays onto the model at its corners), so it shows the same label and wear; it stands CAP.h proud on dark plastic
+   *  sides, in a crisp shut-line with a soft drop shadow below it (light from above), and travels in when pressed. */
+  #texCap(c, t, shell) {
+    const g = c.obj, w = t.w, h = t.h, H = CAP.h, rc = this._rc ??= new THREE.Raycaster();
+    g.updateWorldMatrix(true, false);
+    const axisZ = new THREE.Vector3(0, 0, 1).transformDirection(g.matrixWorld).negate();
+    const uvAt = (x, y) => { rc.set(g.localToWorld(new THREE.Vector3(x, y, .02)), axisZ); rc.far = .05; const hit = rc.intersectObject(shell, true)[0]; return hit ? { uv: hit.uv.clone(), mat: [].concat(hit.object.material)[hit.face.materialIndex || 0], z: g.worldToLocal(hit.point.clone()).z } : null; };
+    const C = [uvAt(-w / 2, -h / 2), uvAt(w / 2, -h / 2), uvAt(w / 2, h / 2), uvAt(-w / 2, h / 2)];
+    if (C.some(q => !q)) return;
+    const z0 = Math.max(...C.map(q => q.z));                           // the panel's surface under the button
+    const cap = new THREE.Group(); cap.position.z = z0; g.add(cap); c.cap = cap;
+    /* face: the texture at the button, mapped corner to corner */
+    const face = new THREE.BufferGeometry(), r = CAP.r;
+    face.setAttribute('position', new THREE.Float32BufferAttribute([-w / 2 + r, -h / 2 + r, H, w / 2 - r, -h / 2 + r, H, w / 2 - r, h / 2 - r, H, -w / 2 + r, h / 2 - r, H], 3));
+    const ins = (i, j, k) => { const A = C[i].uv, B = C[j].uv, D = C[k].uv; return A.clone().add(B.clone().sub(A).multiplyScalar(r / w)).add(D.clone().sub(A).multiplyScalar(r / h)); };
+    const U = [ins(0, 1, 3), ins(1, 0, 2), ins(2, 3, 1), ins(3, 2, 0)];
+    face.setAttribute('uv', new THREE.Float32BufferAttribute(U.flatMap(u => [u.x, u.y]), 2));
+    face.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], 3)); face.setIndex([0, 1, 2, 0, 2, 3]);
+    const fm = new THREE.Mesh(face, C[0].mat); fm.receiveShadow = true; cap.add(fm);
+    /* body: rounded sides in the plastic of the panel (a little darker than the face) */
+    const body = new THREE.Mesh(new RoundedBoxGeometry(w, h, H, 2, r).translate(0, 0, H / 2 - .0002), this.M.capSide); cap.add(body);
+    /* shut-line and drop shadow on the panel */
+    const sh = new THREE.Mesh(new THREE.PlaneGeometry(w + CAP.blur * 2, h + CAP.blur * 2), this.M.capShadow); sh.position.set(0, -CAP.drop, z0 + .00025); sh.renderOrder = 2; g.add(sh);
+    const ring = new THREE.Shape(), gw = w / 2 + CAP.gap, gh = h / 2 + CAP.gap;
+    ring.moveTo(-gw, -gh); ring.lineTo(gw, -gh); ring.lineTo(gw, gh); ring.lineTo(-gw, gh); ring.lineTo(-gw, -gh);
+    const hole = new THREE.Path(); hole.moveTo(-w / 2, -h / 2); hole.lineTo(-w / 2, h / 2); hole.lineTo(w / 2, h / 2); hole.lineTo(w / 2, -h / 2); hole.lineTo(-w / 2, -h / 2); ring.holes.push(hole);
+    const gl = new THREE.Mesh(new THREE.ShapeGeometry(ring), this.M.capGap); gl.position.z = z0 + .0003; gl.renderOrder = 2; g.add(gl);
+    /* the glow rides on the cap face */
+    cap.add(c.glow); c.glow.position.z = H + .0004;
+  }
   /** Places a group at p facing n (body space). */
   #mount(parent, p, n) { const g = new THREE.Group(); g.position.set(...p); if (n) g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...n).normalize()); parent.add(g); return g; }
   #rig(key) {
@@ -9362,7 +9431,7 @@ class CabinControls {
       glow.position.z = .0009; glow.renderOrder = 4; glow.visible = false; g.add(glow);
       const c = { id: t.id, arg: t.arg, obj: g, r: Math.hypot(t.w, t.h) / 2 + .004, poke: true, box: [t.w, t.h], glow, flash: 0, lit: t.lit || null }; R.ctl.push(c); R.fx.push(c); return c; };
     for (const t of WHEEL_PADS) touch(car.wheelSpin, t);
-    for (const t of L.touch || []) touch(root, t);
+    for (const t of L.touch || []) { const c = touch(root, t); if (key === 'celsior' && car.cel) this.#texCap(c, t, car.cel.group); }
     R.parts.lights = R.ctl.find(c => c.id === 'lights').obj;
     R.parts.hazard = (R.ctl.find(c => c.id === 'hazard' && c.obj.parent === root) || R.ctl.find(c => c.id === 'hazard')).obj;
     const lcd = this.#canvas(512, 128); R.lcd = lcd;
@@ -9370,7 +9439,7 @@ class CabinControls {
       const K = L.radio.knob, k = this.#mount(root, K.p, K.n); R.parts.vol = k;
       R.ctl.push({ id: 'radioVol', obj: k, r: K.r + .012, grab: true, poke: true, box: [K.r * 2, K.r * 2] });
       const D = L.radio.lcd, scr = new THREE.Mesh(new THREE.PlaneGeometry(D.w, D.h), new THREE.MeshBasicMaterial({ map: lcd.t, toneMapped: false }));
-      const g = this.#mount(root, D.p, D.n); scr.position.z = .0007; g.add(scr); R.lcdMesh = scr;
+      const g = this.#mount(root, D.p, D.n); scr.position.z = .0007; g.add(scr); R.lcdMesh = scr; R.lcdStyle = L.radio.style || null;
     } else R.parts.vol = R.ctl.find(c => c.id === 'radioPower').obj;   // the BMW: no head unit, the radio reads on the glass (drawInfo)
     /* horn: the wheel's centre pad (it turns with the wheel) */
     { const hb = new THREE.Object3D(); hb.position.set(0, 0, -NRG_WHEEL.D + .0122); car.wheelSpin.add(hb);   // build 1.34: the NRG button, down in the dish
@@ -9461,6 +9530,7 @@ class CabinControls {
     P.stalkL.rotation.z = S.blink * .14; P.stalkR.rotation.z = -[0, .1, .2][S.wipers];
     for (const c of R.fx) {                                            // build 1.32: the switches' glow
       c.flash = Math.max(0, c.flash - dt * 5);
+      if (c.cap) { const pressed = this.vrPokeObj?.left === c || this.vrPokeObj?.right === c ? 1 : Math.min(1, c.flash * 2.5); c.cap.position.z = c.capZ0 ?? (c.capZ0 = c.cap.position.z); c.cap.position.z = c.capZ0 - CAP.travel * pressed; }   // build 1.38: it goes in
       const on = c.lit === 'lights' ? S.lights >= 1 : c.lit === 'hazard' ? S.hazard && S.blinkOn : c.lit === 'radio' ? S.radio.on && !!S.ign : false;
       const m = c.glow.material, op = Math.max(on ? (c.lit === 'hazard' ? .6 : .28) : 0, c.flash * .5);
       if (op !== m.opacity) { m.opacity = op; c.glow.visible = op > .01; m.color.set(c.flash > .3 || !on ? 0xffffff : c.lit === 'hazard' ? 0xff3a12 : c.lit === 'lights' ? 0x40ff70 : 0x60c8ff); }
@@ -9472,7 +9542,8 @@ class CabinControls {
     /* radio LCD */
     const inf = S.radio.info, scroll = Math.floor(this.t * 4);
     const lcdKey = S.ign && S.radio.on ? `${inf?.name}|${inf?.line}|${Math.round(S.radio.vol * 20)}|${back}|${(inf?.line?.length || 0) > 22 ? scroll : 0}` : 'off' + back + S.ign;
-    if (lcdKey !== R.lastLcd) { R.lastLcd = lcdKey; const g = R.lcd.g; g.fillStyle = S.ign ? '#06120f' : '#020302'; g.fillRect(0, 0, 512, 128);
+    if (lcdKey !== R.lastLcd && R.lcdStyle === 'ls400') { R.lastLcd = lcdKey; this.#ls400Lcd(R, S, inf, scroll, back); }
+    else if (lcdKey !== R.lastLcd) { R.lastLcd = lcdKey; const g = R.lcd.g; g.fillStyle = S.ign ? '#06120f' : '#020302'; g.fillRect(0, 0, 512, 128);
       if (S.ign && S.radio.on) { g.fillStyle = `rgba(120,255,200,${.6 + .4 * back})`; g.textAlign = 'left';
         g.font = '700 44px monospace'; g.fillText(inf?.name || '···', 16, 52);
         let line = inf?.line || ''; if (line.length > 22) { const L = line + '     ', k = scroll % L.length; line = (L + L).slice(k, k + 22); }
@@ -9493,6 +9564,31 @@ class CabinControls {
       const tellKey = [S.ign, running, lampOn && (S.hazard || S.blink < 0), lampOn && (S.hazard || S.blink > 0), S.lights, this.selector(sim)].join('|');
       if (tellKey !== R.lastTell) { R.lastTell = tellKey; this.#tellTales(R.tell.g, S, running, lampOn, this.selector(sim)); R.tell.t.needsUpdate = true; }
     }
+  }
+  /** Build 1.38: the Lexus head unit's own display: a passive amber LCD (its colour sampled off the dash texture, LCD_LS400),
+   *  dark segment characters with the unlit segments faintly visible, backlit amber with the ignition on, brighter at night,
+   *  and a soft glass sheen. Off it is the texture's own unlit window. */
+  #ls400Lcd(R, S, inf, scroll, back) {
+    const g = R.lcd.g, W = 512, H = 128, P = LCD_LS400, on = !!S.ign, lit = on ? (back >= 1 ? 1 : .7) : 0;
+    const bg = P.unlit.map((c, i) => Math.round(c + (P.lit[i] - c) * lit));
+    g.fillStyle = `rgb(${bg})`; g.fillRect(0, 0, W, H);
+    const vg = g.createLinearGradient(0, 0, 0, H); vg.addColorStop(0, 'rgba(0,0,0,.18)'); vg.addColorStop(.25, 'rgba(0,0,0,0)'); vg.addColorStop(.8, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.22)');
+    g.fillStyle = vg; g.fillRect(0, 0, W, H);                                                         // the window's inner shadow
+    const seg = (txt, x, y, sz, a) => { g.font = `700 ${sz}px "Courier New", monospace`; g.fillStyle = `rgba(${P.ink},${a})`; g.fillText(txt, x, y); };
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    if (on) {
+      if (S.radio.on) {
+        const st = ['FM1', 'FM2', 'AM'][S.radio.st % 3], name = (inf?.name || '---').toUpperCase();
+        let line = (inf?.line || '').toUpperCase(); if (line.length > 26) { const L2 = line + '     ', k = scroll % L2.length; line = (L2 + L2).slice(k, k + 26); }
+        seg(name.slice(0, 12), 28, 74, 52, .88);
+        g.font = '700 20px "Courier New", monospace'; g.fillStyle = `rgba(${P.ink},.78)`; g.fillText(st, 28, 108); g.fillText(line.slice(0, 24), 84, 108);
+        g.textAlign = 'right'; g.fillText('VOL ' + String(Math.round(S.radio.vol * 30)).padStart(2, '0'), 486, 108); g.textAlign = 'left';
+        if (S.radio.tuneT > 0) { g.fillText('ST', 470, 30); }
+      } else seg(new Date().toTimeString().slice(0, 5), 180, 84, 56, .88);
+    }
+    const sh = g.createLinearGradient(0, 0, W, H); sh.addColorStop(0, 'rgba(255,255,255,.10)'); sh.addColorStop(.35, 'rgba(255,255,255,0)'); sh.addColorStop(1, 'rgba(255,255,255,.04)');
+    g.fillStyle = sh; g.fillRect(0, 0, W, H);                                                         // glass
+    R.lcd.t.needsUpdate = true;
   }
   /** The automatic's selector letter: P with the engine off at a standstill, else R / N / D from the gear. */
   selector(sim) { if (!sim) return 'P'; if (!sim.running && Math.abs(sim.speed || 0) < .5) return 'P'; return sim.gear === -1 ? 'R' : sim.gear === 0 ? 'N' : 'D'; }
@@ -9558,6 +9654,7 @@ class CabinControls {
         return false; };
       let hit = null;
       for (const c of R.ctl) { if (c.poke && onFace(c)) { hit = c; break; } }
+      (this.vrPokeObj ??= {})[side] = hit || null;                     // build 1.38: which switch is held in
       if (hit && !this.vrPoke[side]) { this.vrPoke[side] = hit.id; onPulse?.(side, .2, 18);
         if (hit.id === 'horn') this.st.horn = true; else this.act(hit.id === 'radioVol' ? 'radioPower' : hit.id, hit.arg); if (hit.glow) hit.flash = 1; }
       else if (!hit && this.vrPoke[side]) { if (this.vrPoke[side] === 'horn') this.st.horn = false; this.vrPoke[side] = false; }
@@ -11825,6 +11922,7 @@ const GARAGE_SCHEMA = [
   { tab: 'Wheels', key: 'car.calipers', type: 'select', price: true, label: 'Calipers', options: Object.entries(CALIPERS).map(([k, c]) => [k, c.name]) },
   { tab: 'Interior', group: 'Cabin' },
   { tab: 'Interior', key: 'car.upholstery', type: 'select', label: 'Seats and door panels', desc: 'Nappa leather with quilted centre panels. The dashboard and the wheel stay black. Press C on the road for the cockpit camera, or drive in VR.', options: Object.entries(UPHOLSTERY).map(([k, v]) => [k, v.name]) },
+  { tab: 'Interior', key: 'car.wheelStyle', type: 'select', label: 'Steering wheel', desc: 'The NRG wheel: galaxy blue spokes with blue stitching, black and white, or black with red.', options: Object.entries(NRG_STYLES).map(([k, v]) => [k, v.name]) },
   { tab: 'Interior', key: 'car.trim', type: 'select', label: 'Trim', desc: 'The band across the dashboard that carries the vents, and the console and door inserts.', options: Object.entries(TRIMS).map(([k, v]) => [k, v.name]) },
   { tab: 'Interior', key: 'car.ambient', type: 'select', label: 'Ambient lighting', desc: 'Light lines along the dashboard, doors and console, brightest after dark. Also tints the displays.', options: Object.entries(AMBIENT_LIGHT).map(([k, v]) => [k, v.name]) },
   { tab: 'Stance', group: 'Suspension' },
