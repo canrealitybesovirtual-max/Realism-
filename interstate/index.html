@@ -9057,99 +9057,84 @@ const MIRROR_Q = {
   low:  { inner: 256, side: 176, rear: 170 },
   high: { inner: 384, side: 256, rear: 260 },
 };
-/* Build 1.28: every mirror is our own unit: a glass outline and a housing extruded from the same outline (a 5 mm rim
-   round the glass, the back tapering), so the glass sits exactly in its housing at any aim. The units are a little
-   larger than each model's own mirror and swallow it. Body-space centre c of the glass, glass w × h, outline; door
-   spots are the right-hand one (the left is its mirror image). wide: field widening over the glass outline (the
-   door glass is convex, the inner one a wide flat glass), so the picture always fills the glass and shows more. */
-const MIRROR_SPOTS = {
-  celsior: { inner: { c: [-.039, 1.322, -.368], w: .25, h: .064, shape: 'round', wide: 1.3 }, door: { c: [.925, 1.066, -.552], w: .2, h: .122, shape: 'door', wide: 1.75, depth: .12 } },   // a little behind the model's own glass, so its housing stays behind ours
-  e30:     { inner: { c: [0, 1.3, -.377], w: .246, h: .066, shape: 'round', wide: 1.3 }, door: { c: [.958, 1.052, -.632], w: .17, h: .104, shape: 'door', wide: 1.75, depth: .085 } },
+/* Build 1.36: the mirrors are the cars' own. Each live picture goes onto the model's own mirror glass, exactly its shape
+   and at exactly the angle the model has it: no added housings, nothing re-aimed. The glass is found in the model
+   near `at` (body space, the right door; the left is its mirror image): by its material where the model has a glass
+   material, else as the flat face that looks back into the cabin (normal `face`). wide: field widening over the glass
+   (door glass is convex; the inner one is flat, 1). */
+const MIRROR_GLASS = {
+  celsior: { root: 'cel', inner: { at: [-.039, 1.326, -.372], r: .14, mat: m => m.roughness < .1, face: [0, 0, 1], tol: .9, wide: 1 },
+             door: { at: [.912, 1.065, -.581], r: .09, mat: m => m.roughness < .1 && m.metalness < .5, wide: 1.3 } },
+  e30:     { root: 'model', inner: { at: [0, 1.3, -.3845], r: .14, root: 'cabin', mat: m => m.metalness === 1 && m.roughness < .06 && m.color?.getHex() === 0xcdd1d6, wide: 1 },
+             door: { at: [.875, 1.04, -.685], r: .1, face: [-.46, -.02, .89], tol: .94, wide: 1.3 } },
 };
 class CarMirrors {
   constructor(car) {
     this.car = car; this.rigs = {}; this.rt = {}; this.q = null; this.frame = 0;
     this.cam = new THREE.PerspectiveCamera(); this.cam.matrixAutoUpdate = false; this.cam.layers.enable(5);
     this.glassMat = {};                                                // one live material per mirror id
-    for (const id of ['inner', 'left', 'right']) this.glassMat[id] = new THREE.MeshBasicMaterial({ color: new THREE.Color(.82, .83, .85), fog: false });   // silvered glass returns ~80 %
-    this.baseMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, metalness: 1, roughness: .05 });
-    this.housingMat = new THREE.MeshStandardMaterial({ color: 0x0b0b0c, roughness: .4, metalness: .1 });
+    for (const id of ['inner', 'left', 'right']) this.glassMat[id] = new THREE.MeshBasicMaterial({ color: new THREE.Color(.82, .83, .85), fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });   // silvered glass returns ~80 %
     this._v = new THREE.Vector3(); this._e = new THREE.Vector3(); this._c = new THREE.Vector3(); this._n = new THREE.Vector3(); this._u = new THREE.Vector3(); this._w = new THREE.Vector3();
     this._m = new THREE.Matrix4(); this._cc = new THREE.Color();
   }
-  /** Outline: 'round' a rounded rectangle, 'door' the classic door-mirror shape (flat top, inboard edge upright, the
-   *  outboard lower corner swept round), in the xy plane, +x outboard for a right-hand door. */
-  static outline(w, h, shape, grow = 0) {
-    const S = new THREE.Shape(), x = w / 2 + grow, y = h / 2 + grow;
-    if (shape === 'door') {
-      const r1 = Math.min(w, h) * .2 + grow, r2 = Math.min(w, h) * .62 + grow;
-      S.moveTo(-x, -y + r1); S.lineTo(-x, y - r1); S.quadraticCurveTo(-x, y, -x + r1, y); S.lineTo(x - r1, y); S.quadraticCurveTo(x, y, x, y - r1);
-      S.lineTo(x, -y + r2); S.quadraticCurveTo(x, -y, x - r2, -y); S.lineTo(-x + r1, -y); S.quadraticCurveTo(-x, -y, -x, -y + r1);
-    } else {
-      const r = Math.min(w, h) * .38 + grow;
-      S.moveTo(-x + r, -y); S.lineTo(x - r, -y); S.quadraticCurveTo(x, -y, x, -y + r); S.lineTo(x, y - r); S.quadraticCurveTo(x, y, x - r, y);
-      S.lineTo(-x + r, y); S.quadraticCurveTo(-x, y, -x, y - r); S.lineTo(-x, -y + r); S.quadraticCurveTo(-x, -y, -x + r, -y);
-    }
-    return S;
+  /** The model's glass triangles (body space) for one mirror: sx -1 for the left door. */
+  #glassTris(key, G, sx) {
+    const car = this.car, body = car.body, inv = new THREE.Matrix4().copy(body.matrixWorld).invert();
+    const rootKey = G.root || MIRROR_GLASS[key].root;
+    const root = rootKey === 'cel' ? car.cel?.group : rootKey === 'model' ? car.models?.[key]?.group : body;
+    if (!root) return [];
+    const skip = new Set([car.cel?.group, ...Object.values(car.models || {}).map(m => m.group), ...Object.values(this.rigs).map(r => r?.group)].filter(Boolean));
+    const at = new THREE.Vector3(sx * G.at[0], G.at[1], G.at[2]), face = G.face ? new THREE.Vector3(sx * G.face[0], G.face[1], G.face[2]).normalize() : null;
+    const out = [], a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), m = new THREE.Vector3(), n = new THREE.Vector3();
+    body.updateWorldMatrix(true, true);
+    const visit = (o) => {
+      if (o !== root && skip.has(o)) return;
+      if (o.isMesh && !o.isSkinnedMesh && o.visible !== false) {
+        const P = o.geometry.attributes.position, I = o.geometry.index, N = I ? I.count : P.count, mats = [].concat(o.material), M = new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld);
+        const grp = o.geometry.groups;
+        for (let t = 0; t + 2 < N; t += 3) {
+          if (G.mat) { let mi = 0; if (grp.length) { const g = grp.find(q => t >= q.start && t < q.start + q.count); mi = g ? g.materialIndex : 0; } const mt = mats[mi] || mats[0]; if (!mt || !G.mat(mt)) continue; }
+          const i0 = I ? I.getX(t) : t, i1 = I ? I.getX(t + 1) : t + 1, i2 = I ? I.getX(t + 2) : t + 2;
+          a.fromBufferAttribute(P, i0).applyMatrix4(M); b.fromBufferAttribute(P, i1).applyMatrix4(M); c.fromBufferAttribute(P, i2).applyMatrix4(M);
+          m.copy(a).add(b).add(c).multiplyScalar(1 / 3); if (m.distanceTo(at) > G.r) continue;
+          if (face) { n.crossVectors(this._v.subVectors(b, a), this._w.subVectors(c, a)).normalize(); if (Math.abs(n.dot(face)) < G.tol) continue; }
+          out.push(a.clone(), b.clone(), c.clone());
+        }
+      }
+      for (const ch of o.children) visit(ch);
+    };
+    visit(root);
+    return out;
   }
-  /** Glass: the outline, uv over its bounding box (so the rendered picture covers it edge to edge). */
-  #glassGeo(spot, flip) {
-    const g = new THREE.ShapeGeometry(CarMirrors.outline(spot.w, spot.h, spot.shape), 10), p = g.attributes.position, uv = g.attributes.uv;
-    if (flip) { for (let i = 0; i < p.count; i++) p.setX(i, -p.getX(i)); const I = g.index.array; for (let i = 0; i < I.length; i += 3) { const t = I[i + 1]; I[i + 1] = I[i + 2]; I[i + 2] = t; } }
-    for (let i = 0; i < p.count; i++) uv.setXY(i, .5 - p.getX(i) / spot.w, .5 + p.getY(i) / spot.h);
-    return g;
-  }
-  /** Housing: the outline grown by the rim, extruded back, the back face drawn in and shifted inboard (a door mirror's
-   *  shell runs into its stalk). Its front rim stands 4 mm proud of the glass. */
-  #housingGeo(spot, flip, door) {
-    const d = spot.depth ?? .04, rim = .006;
-    const g = new THREE.ExtrudeGeometry(CarMirrors.outline(spot.w, spot.h, spot.shape, rim), { depth: d, bevelEnabled: true, bevelThickness: .004, bevelSize: .004, bevelSegments: 2, curveSegments: 10 });
-    g.translate(0, 0, -d - .0055);                                     // front cap (with its bevel) 1 mm behind the glass; the grown outline is the rim
-    const p = g.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      const z = p.getZ(i); if (z > -.014) continue;
-      const t = clamp(-z / d, 0, 1), k = 1 - .3 * t;                   // tapers toward the back
-      p.setXYZ(i, p.getX(i) * k - (door ? .25 * t * spot.w * .5 : 0), p.getY(i) * (1 - .18 * t), z);
-    }
-    if (flip) { for (let i = 0; i < p.count; i++) p.setX(i, -p.getX(i)); const I = g.index ? g.index.array : null; if (I) for (let i = 0; i < I.length; i += 3) { const t = I[i + 1]; I[i + 1] = I[i + 2]; I[i + 2] = t; } else { const a = p.array; for (let i = 0; i < a.length; i += 9) for (let k = 0; k < 3; k++) { const t = a[i + 3 + k]; a[i + 3 + k] = a[i + 6 + k]; a[i + 6 + k] = t; } } }
-    g.computeVertexNormals();
-    return g;
-  }
-  /** The glass normal a driver would set: halfway between the eye and the view wanted (straight back, the door ones a
-   *  touch outward and down). Returns the body-space frame { C, n, u, v }; u points outboard on a door. */
-  #aim(c, eye, side) {
-    const C = new THREE.Vector3(...c), te = new THREE.Vector3(...eye).sub(C).normalize();
-    const want = side ? new THREE.Vector3(side * .3, -.018, 1).normalize() : new THREE.Vector3(0, -.03, 1).normalize();
-    const n = te.add(want).normalize(), u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = n.clone().cross(u);
-    return { C, n, u, v };
-  }
-  /** Builds the units for one body, once. */
+  /** Builds the live glass for one body, once: frame { C, n, u, v, hw, hh } from the model's own glass, n toward the eye. */
   #rig(key) {
     if (this.rigs[key]) return this.rigs[key];
-    const S = MIRROR_SPOTS[key]; if (!S) return null;
-    const body = this.car.body, eye = (key === 'celsior' ? CABIN_CEL : CABIN_E30).eye;
+    const spec = MIRROR_GLASS[key]; if (!spec) return null;
+    const body = this.car.body, eye = new THREE.Vector3(...(key === 'celsior' ? CABIN_CEL : CABIN_E30).eye);
     const group = new THREE.Group(); group.name = 'mirrors-' + key; body.add(group);
     const rig = { group, glass: {}, frames: {} };
-    const place = (id, spot, side) => {
-      const c = side < 0 ? [-spot.c[0], spot.c[1], spot.c[2]] : spot.c, door = id !== 'inner';
-      const F = this.#aim(c, eye, door ? side : 0), q = new THREE.Quaternion().setFromRotationMatrix(this._m.makeBasis(F.u, F.v, F.n));
-      const at = (o, dz = 0) => { o.quaternion.copy(q); o.position.copy(F.C).addScaledVector(F.n, dz); group.add(o); return o; };
-      /* u = up × n is the car's +x (right) for a rear-facing glass: outboard on the right door, inboard on the left */
-      const flip = door && side < 0;
-      const live = at(new THREE.Mesh(this.#glassGeo(spot, flip), this.glassMat[id]), .001); live.renderOrder = 1;
-      at(new THREE.Mesh(this.#glassGeo(spot, flip), this.baseMat), 0);
-      const hs = at(new THREE.Mesh(this.#housingGeo(spot, flip, door), this.housingMat)); hs.castShadow = true;
-      if (door) {                                                       // stalk from the inboard back of the shell to the door
-        const st = at(new THREE.Mesh(new RoundedBoxGeometry(.07, .032, .045, 2, .012), this.housingMat), -(spot.depth ?? .04) * .7);
-        st.position.addScaledVector(F.u, -side * (spot.w / 2 + .01)); st.position.y -= spot.h * .22;
-      } else {                                                          // stem up to the roof
-        const st = new THREE.Mesh(new THREE.CylinderGeometry(.008, .008, .07, 8), this.housingMat); st.position.copy(F.C).addScaledVector(F.n, -.02); st.position.y += spot.h / 2 + .03; group.add(st);
+    const place = (id, G, sx) => {
+      const T = this.#glassTris(key, G, sx); if (T.length < 3) { Log.warn('mirror glass not found: ' + key + ' ' + id); return; }
+      const n = new THREE.Vector3(), C0 = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), x = new THREE.Vector3();
+      let A = 0;
+      for (let i = 0; i < T.length; i += 3) { x.crossVectors(e1.subVectors(T[i + 1], T[i]), e2.subVectors(T[i + 2], T[i])); const ar = x.length() / 2; if (x.dot(n) < 0 && n.lengthSq() > 0) x.negate(); n.add(x); C0.addScaledVector(T[i], ar / 3).addScaledVector(T[i + 1], ar / 3).addScaledVector(T[i + 2], ar / 3); A += ar; }
+      C0.multiplyScalar(1 / A); n.normalize(); if (n.dot(x.subVectors(eye, C0)) < 0) n.negate();   // faces the driver
+      const u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = n.clone().cross(u);
+      let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+      for (const p of T) { const du = x.subVectors(p, C0).dot(u), dv = x.dot(v); u0 = Math.min(u0, du); u1 = Math.max(u1, du); v0 = Math.min(v0, dv); v1 = Math.max(v1, dv); }
+      const C = C0.clone().addScaledVector(u, (u0 + u1) / 2).addScaledVector(v, (v0 + v1) / 2), hw = (u1 - u0) / 2, hh = (v1 - v0) / 2;
+      const pos = [], uv = [];
+      for (let i = 0; i < T.length; i += 3) {
+        const tri = [T[i], T[i + 1], T[i + 2]];
+        x.crossVectors(e1.subVectors(tri[1], tri[0]), e2.subVectors(tri[2], tri[0])); if (x.dot(n) < 0) tri.reverse();   // front faces toward the eye
+        for (const p of tri) { const q = x.copy(p).addScaledVector(n, .0012), du = this._v.subVectors(p, C).dot(u), dv = this._v.dot(v); pos.push(q.x, q.y, q.z); uv.push(.5 - du / (2 * hw), .5 + dv / (2 * hh)); }
       }
-      const wide = spot.wide || 1;
-      rig.glass[id] = live; rig.frames[id] = { C: F.C.clone().addScaledVector(F.n, .001), n: F.n, u: F.u, v: F.v, hw: spot.w / 2, hh: spot.h / 2, wide, asp: spot.w / spot.h };
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.computeVertexNormals();
+      const live = new THREE.Mesh(g, this.glassMat[id]); live.renderOrder = 1; group.add(live);
+      rig.glass[id] = live; rig.frames[id] = { C: C.clone().addScaledVector(n, .0012), n, u, v, hw, hh, wide: G.wide || 1, asp: hw / hh };
     };
-    place('inner', S.inner, 0);
-    if (S.door) { place('right', S.door, 1); place('left', S.door, -1); }
+    place('inner', spec.inner, 1);
+    if (spec.door) { place('right', spec.door, 1); place('left', spec.door, -1); }
     return (this.rigs[key] = rig);
   }
   #targets(q, rig) {
