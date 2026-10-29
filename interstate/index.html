@@ -8068,6 +8068,30 @@ function cabinOcclusion(mat) {
   return mat;
 }
 /** Garage version: decoded once, the first time it is chosen. */
+/** Build 1.37: the saloon's own airbag cover (its steering wheel was removed offline, the hub was not) sat in front of the
+ *  NRG wheel's dish. Its triangles (inside the hub's box in wheel space) are collapsed. */
+function celHubCut(group) {
+  const C = CABIN_CEL, W = new THREE.Matrix4().compose(new THREE.Vector3(...C.wheel), new THREE.Quaternion().setFromEuler(new THREE.Euler(C.tilt, 0, 0)), new THREE.Vector3(1, 1, 1).multiplyScalar(C.wheelR / .185));
+  const Wi = W.invert(), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), m = new THREE.Vector3();
+  group.updateMatrix(); group.updateMatrixWorld(true);
+  const Gi = new THREE.Matrix4().copy(group.matrixWorld).invert();
+  let n = 0;
+  group.traverse(o => {
+    if (!o.isMesh) return;
+    const M = new THREE.Matrix4().multiplyMatrices(Wi, new THREE.Matrix4().multiplyMatrices(group.matrix, new THREE.Matrix4().multiplyMatrices(Gi, o.matrixWorld)));
+    const g = o.geometry, P = g.attributes.position, I = g.index, N = I ? I.count : P.count;
+    for (let t = 0; t + 2 < N; t += 3) {
+      const i0 = I ? I.getX(t) : t, i1 = I ? I.getX(t + 1) : t + 1, i2 = I ? I.getX(t + 2) : t + 2;
+      a.fromBufferAttribute(P, i0).applyMatrix4(M); b.fromBufferAttribute(P, i1).applyMatrix4(M); c.fromBufferAttribute(P, i2).applyMatrix4(M);
+      m.copy(a).add(b).add(c).multiplyScalar(1 / 3);
+      if (Math.hypot(m.x, m.y) > .125 || m.z < -.13 || m.z > .05) continue;              // inside the rim, from the old hub back to the column
+      if (I) { I.setX(t + 1, i0); I.setX(t + 2, i0); } else { for (const k of [i1, i2]) P.setXYZ(k, P.getX(i0), P.getY(i0), P.getZ(i0)); }
+      n++;
+    }
+    if (I) I.needsUpdate = true; else P.needsUpdate = true;
+  });
+  return n;
+}
 function buildCelsior(car) {
   const D = SaloonData.player; if (!D) return null;
   const bin = b64bytes(D.bin), M = car.mats, group = new THREE.Group(); group.name = 'saloon97';
@@ -8776,7 +8800,7 @@ class Car {
   #applyModel(c) {
     const id = CAR_MODELS[c.model] ? c.model : DEFAULT_CAR, want = id === 'celsior';
     if (want && !this.cel && !SaloonData.player) SaloonData.load('player').then(d => { if (d && this.s.data.car.model === 'celsior') this.applySettings(); else if (!d) bus.emit('toast', 'The saloon could not be loaded'); });
-    if (want && !this.cel && SaloonData.player) { try { this.cel = buildCelsior(this); if (this.cel) this.body.add(this.cel.group); } catch (e) { Log.error('The saloon could not be built', e); this.cel = null; } }
+    if (want && !this.cel && SaloonData.player) { try { this.cel = buildCelsior(this); if (this.cel) { this.body.add(this.cel.group); celHubCut(this.cel.group); } } catch (e) { Log.error('The saloon could not be built', e); this.cel = null; } }
     this.models ??= {};
     if (!want && !this.models[id] && GLB_CARS[id]) {                 // build 1.31: a GLB body
       if (!GlbCars.get(id)) GlbCars.load(id).then(d => { if (d && this.s.data.car.model === id) this.applySettings(); else if (!d) bus.emit('toast', 'The car model could not be loaded'); });
@@ -9245,15 +9269,19 @@ class CarMirrors {
    ════════════════════════════════════════════════════════════════════════ */
 /* body-space layout per car. Parts on the steering column are in the tilt group (wheelBase) frame: +z toward the
    driver along the column, x to the right. */
+/* Build 1.37: the ignition lock sits in the right side of the column shroud (wheel-tilt frame; the shroud is a cone along
+   z from -.115, radius .042, to -.305, radius .052), its barrel facing out and back toward the driver. p: the barrel face. */
+const KEY_SPOT = (() => { const z = -.19, r = .042 + .01 * (-.115 - z) / .19, a = -.3, n = [.78, -.24, .58], L = Math.hypot(...n), nn = n.map(x => x / L);
+  return { p: [r * Math.cos(a) + nn[0] * .011, r * Math.sin(a) + nn[1] * .011, z + nn[2] * .011], n: nn, base: [r * Math.cos(a), r * Math.sin(a), z] }; })();
 const CABIN_LAYOUT = {
   e30: {
-    key: [.12, -.1, -.17], stalkL: [-.05, .005, -.085], stalkR: [.05, .005, -.085],
+    key: KEY_SPOT, stalkL: [-.043, .004, -.128], stalkR: [.043, .004, -.128],   // build 1.37: in the column shroud (it starts at z -.115)
     /* build 1.32: its dash has no switchgear of its own; lights, hazard and radio are the wheel's pads (WHEEL_PADS), the radio reads on the glass */
     shifter: { p: [0, .612, -.2], type: 'h' }, clutch: [-.62, .66, -.84],
     lamps: { front: [.62, .47, -2.4], rear: [.66, .76, 2.42], fw: .09, fh: .05, rw: .07, rh: .07 },
   },
   celsior: {
-    key: [.12, -.1, -.17], stalkL: [-.052, .006, -.09], stalkR: [.052, .006, -.09],
+    key: KEY_SPOT, stalkL: [-.043, .004, -.128], stalkR: [.043, .004, -.128],
     /* build 1.32: touch targets exactly on the dash texture's own buttons (picked off renders of the textured dash): the hazard
        switch between the vents, the head unit's AM / FM1-2 / TAPE / CD, presets 1-6, TUNE-SEEK up / down; w x h = the printed button */
     touch: [
@@ -9301,11 +9329,23 @@ class CabinControls {
     const car = this.car, body = car.body, M = this.M, root = new THREE.Group(); root.name = 'cabin-' + key; body.add(root);
     const R = { root, key, parts: {}, ctl: [] }, rb = (w, h, d, r = .004) => new RoundedBoxGeometry(w, h, d, 2, r);
     const wb = car.wheelBase, col = new THREE.Group(); col.name = 'column-' + key; wb.add(col); R.col = col;
-    /* ignition: barrel, key head that turns about the barrel axis */
-    { const g = this.#mount(col, L.key, [0, 0, 1]); const barrel = new THREE.Mesh(new THREE.CylinderGeometry(.016, .018, .02, 20).rotateX(Math.PI / 2), M.metal); g.add(barrel);
-      g.add(new THREE.Mesh(new THREE.TorusGeometry(.019, .003, 8, 24).translate(0, 0, .01), M.metal));
-      const kh = new THREE.Group(); kh.position.z = .012; g.add(kh);
-      kh.add(new THREE.Mesh(rb(.03, .036, .006, .006), M.knob).translateZ(.022), new THREE.Mesh(new THREE.BoxGeometry(.008, .002, .022), M.metal).translateZ(.008));
+    /* ignition (build 1.37): a lock boss moulded into the column shroud, chrome bezel with LOCK / ACC / ON / START marks,
+       the barrel face with its keyway; the key in it (blade, black head with its grip and ring hole) on a ring with a
+       second key hanging off it. The key turns about the barrel axis. */
+    { const K = L.key, g = this.#mount(col, K.p, K.n);
+      const boss = new THREE.Mesh(new THREE.CylinderGeometry(.0175, .021, .024, 28).rotateX(Math.PI / 2).translate(0, 0, -.0125), M.plastic); g.add(boss);
+      g.add(new THREE.Mesh(new THREE.TorusGeometry(.0128, .0021, 10, 32), M.metal));
+      g.add(new THREE.Mesh(new THREE.CylinderGeometry(.0115, .0115, .002, 28).rotateX(Math.PI / 2).translate(0, 0, -.0006), M.metal));
+      g.add(new THREE.Mesh(new THREE.BoxGeometry(.0026, .0095, .002).translate(0, 0, .0006), M.hub));                       // keyway
+      [-.5, 0, .9, 1.45].forEach((a) => { const t = new THREE.Mesh(new THREE.BoxGeometry(.0012, .0035, .0008), M.mark); t.position.set(Math.sin(a) * .0168, Math.cos(a) * .0168, .0004); t.rotation.z = -a; g.add(t); });
+      const kh = new THREE.Group(); g.add(kh);
+      kh.add(new THREE.Mesh(new THREE.BoxGeometry(.0022, .0072, .012).translate(0, 0, .005), M.metal));                      // blade, into the barrel
+      kh.add(new THREE.Mesh(new THREE.BoxGeometry(.003, .0105, .004).translate(0, 0, .0125), M.metal));                      // shoulder
+      const head = new THREE.Mesh(rb(.0072, .03, .03, .006).translate(0, 0, .029), M.knob); kh.add(head);                     // black head, edge on at LOCK
+      for (const zz of [.022, .026, .03]) kh.add(new THREE.Mesh(new THREE.BoxGeometry(.0076, .022, .0012).translate(0, 0, zz), M.plastic));   // grip ribs
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(.0095, .0011, 8, 28).rotateY(Math.PI / 2).translate(0, 0, .046), M.metal); kh.add(ring);
+      const spare = new THREE.Group(); spare.position.set(0, -.006, .052); spare.rotation.x = .5; kh.add(spare);            // a second key on the ring
+      spare.add(new THREE.Mesh(rb(.0045, .022, .02, .004).translate(0, -.012, 0), M.metal), new THREE.Mesh(new THREE.BoxGeometry(.0018, .0065, .03).translate(0, -.03, .004).rotateX(-.25), M.metal));
       R.parts.key = kh; R.ctl.push({ id: 'key', obj: g, r: .045, grab: true }); }
     /* stalks: left (indicators), right (wipers); pivot at the column */
     for (const [id, p, sg] of [['stalkL', L.stalkL, -1], ['stalkR', L.stalkR, 1]]) {
