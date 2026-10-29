@@ -6,6 +6,7 @@
 > - Target project: the user's existing **CQC game**, delivered as a zip ("office zip").
 > - Claude may run the game; the user will test after changes are made.
 > - Take in-game screenshots roughly every 10 minutes while working, as progress checkpoints.
+> - **Queued follow-up (needs user's OK first):** after the CQC game is done, apply the same realism upgrades to the user's racing game **Interstate**, adapted for racing. Do NOT start until CQC is finished AND the user explicitly approves.
 
 ## 1. YOUR ROLE
 
