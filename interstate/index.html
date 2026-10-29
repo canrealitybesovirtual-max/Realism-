@@ -8368,6 +8368,62 @@ function carPaintMaterial(tex, uniforms) {
    Built along +z (outboard) and turned so the axle runs along x.
    ════════════════════════════════════════════════════════════════════════ */
 const toNonIdx = g => (g.index ? g.toNonIndexed() : g);
+/* Build 1.33: steering-wheel parts (wheel space: x right, y up, z toward the driver). */
+function wheelRim(R) {
+  const NU = 192, NV = 22, pos = [], nrm = [], uv = [], idx = [], P = new THREE.Vector3(), N = new THREE.Vector3();
+  const sm = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  for (let i = 0; i <= NU; i++) {
+    const th = i / NU * Math.PI * 2, c = Math.cos(th), sn = Math.sin(th);
+    const up = Math.asin(Math.abs(sn)) * Math.sign(sn), side = Math.abs(c);      // angle above the horizontal; how far to the side
+    // thumb rests just above each horizontal spoke (10 to 40 degrees up), a touch thicker at quarter to three
+    const thumb = sm(.12, .3, up) * (1 - sm(.55, .75, up)) * sm(.6, .85, side);
+    const a = .0158 + .0016 * thumb, b = .0195 + .0042 * thumb;                    // half thickness across / toward you
+    for (let j = 0; j <= NV; j++) {
+      const ph = j / NV * Math.PI * 2, cp = Math.cos(ph), sp = Math.sin(ph);
+      // finger ridges on the back (z < 0), the inner half of the grip
+      const back = Math.max(0, -sp), inner = Math.max(0, -cp), ridge = .0007 * back * inner * (.5 + .5 * Math.cos(th * 64)) * (1 - thumb);
+      const rr = R + (a + ridge) * cp, zz = (b + ridge) * sp;
+      P.set(c * rr, sn * rr, zz); pos.push(P.x, P.y, P.z);
+      N.set(c * cp / a, sn * cp / a, sp / b).normalize(); nrm.push(N.x, N.y, N.z);
+      uv.push(i / NU * 26, j / NV * 1.6);
+    }
+  }
+  for (let i = 0; i < NU; i++) for (let j = 0; j < NV; j++) { const a = i * (NV + 1) + j, b = a + NV + 1; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); return g;
+}
+/** Baseball stitching on the rim's inner seam: two rows of slanted stitches. */
+function wheelStitches(R) {
+  const parts = [], n = 260, M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(), V = new THREE.Vector3(), S = new THREE.Vector3(1, 1, 1);
+  const base = new THREE.BoxGeometry(.0042, .0011, .0011);
+  for (let i = 0; i < n; i++) {
+    const th = (i + .5) / n * Math.PI * 2, rr = R - .0158 - .0002;
+    for (const sz of [-1, 1]) {
+      V.set(Math.cos(th) * rr, Math.sin(th) * rr, sz * .0028);
+      E.set(0, 0, th + Math.PI / 2 + sz * .5); Q.setFromEuler(E);
+      parts.push(base.clone().applyMatrix4(M.compose(V, Q, S)));
+    }
+  }
+  base.dispose(); return mergeParts(parts);
+}
+/** A horizontal spoke: leather-wrapped, deeper at the hub, swept up and thinner where it meets the rim. */
+function wheelSpoke(s, R) {
+  const sh = new THREE.Shape(), x0 = .045, x1 = R - .006, X = x => s * x;          // ExtrudeGeometry rewinds a mirrored (clockwise) outline itself
+  sh.moveTo(X(x0), -.03); sh.bezierCurveTo(X(.09), -.03, X(.13), -.022, X(x1), -.016); sh.lineTo(X(x1), .02);
+  sh.bezierCurveTo(X(.14), .024, X(.09), .028, X(x0), .03); sh.lineTo(X(x0), -.03);
+  const g = new THREE.ExtrudeGeometry(sh, { depth: .016, bevelEnabled: true, bevelThickness: .004, bevelSize: .004, bevelSegments: 3, curveSegments: 10 });
+  g.translate(0, -.004, -.012);
+  for (let k = 0, uv = g.attributes.uv; k < uv.count; k++) uv.setXY(k, uv.getX(k) * 30, uv.getY(k) * 30);
+  return g;
+}
+/** The lower spoke: broad at the hub, narrowing to the rim at six o'clock. */
+function wheelLowerSpoke(R) {
+  const sh = new THREE.Shape(), y0 = -.05, y1 = -(R - .006);
+  sh.moveTo(-.04, y0); sh.bezierCurveTo(-.034, -.09, -.024, -.13, -.019, y1); sh.lineTo(.019, y1);
+  sh.bezierCurveTo(.024, -.13, .034, -.09, .04, y0); sh.lineTo(-.04, y0);
+  const g = new THREE.ExtrudeGeometry(sh, { depth: .014, bevelEnabled: true, bevelThickness: .003, bevelSize: .003, bevelSegments: 2, curveSegments: 10 });
+  g.translate(0, 0, -.008); return g;
+}
 function mergeParts(parts) { const g = BufferGeometryUtils.mergeGeometries(parts.map(toNonIdx)); parts.forEach(p => p.dispose()); return g; }
 /** Lathe around the local z axis from (radius, z) pairs. */
 const latheZ = (pts, seg) => new THREE.LatheGeometry(pts.map(([r, zz]) => new THREE.Vector2(r, zz)), seg).rotateX(Math.PI / 2);
@@ -8508,6 +8564,7 @@ class Car {
     const std = o => new THREE.MeshStandardMaterial({ envMapIntensity: ENV, ...o }), v2 = k => new THREE.Vector2(k, k);
     /* Inside a cabin most of the sky is hidden, so the image-based light is turned well down */
     M.leather = std({ color: 0x111112, roughness: .6, normalMap: tex.leatherN, normalScale: v2(.5) });
+    M.stitch = std({ color: 0x2c2c2e, roughness: .85 });                // build 1.33: the wheel's seam thread
     M.seat = std({ color: 0x131313, roughness: .55, normalMap: tex.leatherN, normalScale: v2(.55) });
     M.seatInsert = std({ color: 0x131313, roughness: .6, normalMap: tex.pleatN, normalScale: v2(1) });
     M.fabric = std({ color: 0x1b1b1d, roughness: .97 });
@@ -8520,7 +8577,7 @@ class Car {
     M.ambient = new THREE.MeshBasicMaterial({ color: 0x5599ff, toneMapped: false });
     M.mirror = std({ color: 0xcdd1d6, metalness: 1, roughness: .04, envMapIntensity: 1 });
     for (const t of [tex.leatherN, tex.pleatN]) t.repeat.set(5, 5);
-    for (const k of ['leather', 'seat', 'seatInsert', 'fabric', 'liner', 'shell', 'carpet', 'chrome', 'alu', 'trim', 'satin', 'gloss', 'dark']) cabinOcclusion(M[k]);   // build 1.28
+    for (const k of ['leather', 'stitch', 'seat', 'seatInsert', 'fabric', 'liner', 'shell', 'carpet', 'chrome', 'alu', 'trim', 'satin', 'gloss', 'dark']) cabinOcclusion(M[k]);   // build 1.28
 
     const MX = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(), E = new THREE.Euler(), SC = new THREE.Vector3();
     const at = (g, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => g.applyMatrix4(MX.compose(V.set(x, y, z), Q.setFromEuler(E.set(rx, ry, rz, 'YXZ')), SC.set(1, 1, 1)));
@@ -8565,17 +8622,28 @@ class Car {
     { const wb = this.wheelBase = new THREE.Group(); wb.position.set(...C.wheel); wb.rotation.x = C.tilt; body.add(wb);
       const spin = this.wheelSpin = new THREE.Group(); wb.add(spin);
       const R = C.wheelR;
-      add(M.leather, new THREE.TorusGeometry(R, .0175, 14, 72));
-      add(M.leather, at(rb(.13, .105, .05, .024), 0, -.005, .012));                                 // airbag cushion
-      add(M.chrome, at(new THREE.CylinderGeometry(.024, .024, .004, 40), 0, 0, .039, Math.PI / 2)); // plain centre ring, no badge
-      add(M.gloss, at(new THREE.CylinderGeometry(.019, .019, .005, 40), 0, 0, .0405, Math.PI / 2));
+      /* Build 1.33: a real wheel. Leather rim with an oval section (deeper toward you than across), swelling into thumb
+         rests above the spokes and with finger ridges on its back; baseball stitching along the inside seam; sculpted
+         horizontal spokes wrapped in leather that blend into the rim, the button bezels set into them; one broad lower
+         spoke with a brushed insert; a domed airbag cover with its tear seam and a small badge. The pads (WHEEL_PADS)
+         and the rim radius are where they were, so the switches and the hands still fit. */
+      add(M.leather, wheelRim(R));
+      add(M.stitch, wheelStitches(R));
+      add(M.leather, at(rb(.136, .108, .036, .03), 0, -.004, .006));                               // airbag cover: soft, domed
+      add(M.leather, at(rb(.118, .09, .018, .022), 0, -.004, .024));
+      add(M.dark, at(BX(.1, .0012, .002), 0, -.012, .0336));                                       // its tear seam
+      add(M.chrome, at(new THREE.TorusGeometry(.0135, .0016, 8, 40), 0, .016, .0335));              // badge ring
+      add(M.gloss, at(new THREE.CylinderGeometry(.0128, .0128, .002, 40), 0, .016, .0335, Math.PI / 2));
+      add(M.satin, at(new THREE.CylinderGeometry(.05, .056, .03, 32), 0, -.004, -.018, Math.PI / 2));   // hub shroud behind the cover
       for (const s of [-1, 1]) {
-        add(M.gloss, at(rb(.1, .046, .016, .008), s * .118, -.004, .01));                           // touch-control spokes
+        add(M.leather, wheelSpoke(s, R));                                                            // leather-wrapped spoke into the rim
+        add(M.gloss, at(rb(.1, .046, .016, .008), s * .118, -.004, .01));                           // touch-control bezel set into it
         add(M.chrome, at(rb(.095, .004, .006, .002), s * .118, .021, .016));
         for (const dx of [.095, .14]) add(M.satin, at(rb(.024, .018, .006, .004), s * dx, -.004, .019));
-        add(M.alu, at(BX(.016, .13, .012), s * .03, -.115, .006, 0, 0, s * .32));                  // split lower spoke
         add(M.alu, at(rb(.045, .085, .005, .004), s * .152, .035, -.04, 0, 0, -s * .15));          // shift paddles
       }
+      add(M.satin, wheelLowerSpoke(R));                                                              // the broad lower spoke
+      add(M.alu, at(rb(.022, .07, .004, .002), 0, -.1, .0105));                                     // its brushed insert
       flush(spin);
       add(M.satin, at(new THREE.CylinderGeometry(.042, .052, .27, 24), 0, 0, -.17, Math.PI / 2));   // column shroud
       flush(wb); }
