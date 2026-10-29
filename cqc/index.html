@@ -727,6 +727,8 @@
     color: #c4f5e2; font: inherit; font-size: 15px; cursor: pointer; text-align: left; padding: 8px 12px; }
   #modWatch button[aria-pressed="true"] { border-color: #ffc46b; background: rgba(255,186,90,.17); color: #ffc46b; }
   #modWatch button b { display: block; font: 700 12px ui-monospace, Menlo, monospace; opacity: .8; }
+  #modWatch .mw-restart { text-align: center; }
+  #modWatch .mw-restart[aria-pressed="true"] { border-color: #ff8466; color: #ff8466; }
   #modWatch .mw-close { width: 100%; margin-top: 10px; text-align: center; min-height: 44px; }
   #actions {
     position: fixed; z-index: 14; display: none; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
@@ -21571,7 +21573,7 @@ function watchDrawPanel() {
   c.textBaseline = 'middle'; c.textAlign = 'left'; c.fillStyle = '#ffc46b'; c.font = '700 30px ui-monospace, Menlo, monospace'; c.fillText('MODS', 22, 34);
   c.textAlign = 'right'; c.fillStyle = modAny() ? '#ff8466' : '#5d8a7c'; c.font = '600 22px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
   c.fillText(modAny() ? 'Score off while mods are on' : 'Tap a switch', W - 22, 34);
-  const top = 66, gap = 10, cols = 2, rows = Math.ceil(MOD_LIST.length / cols), bw = (W - 22 * 2 - gap) / cols, bh = (H - top - 18 - gap * (rows - 1)) / rows;
+  const top = 66, gap = 10, cols = 2, rows = Math.ceil((MOD_LIST.length + 1) / cols), bw = (W - 22 * 2 - gap) / cols, bh = (H - top - 18 - gap * (rows - 1)) / rows;
   MOD_LIST.forEach(([k, label], i) => {
     const x = 22 + (i % cols) * (bw + gap), y = top + Math.floor(i / cols) * (bh + gap), on = MOD[k];
     const lit = WATCH.flashId === k && performance.now() / 1000 < WATCH.flashUntil, hov = WATCH.hover === k;
@@ -21584,6 +21586,14 @@ function watchDrawPanel() {
     c.fillText(on ? 'ON' : 'OFF', x + bw - 14, y + bh / 2);
     WATCH.hits.push({ id: k, x, y, w: bw, h: bh });
   });
+  { // step 86: restart in the safe room (tap twice)
+    const i = MOD_LIST.length, x = 22 + (i % cols) * (bw + gap), y = top + Math.floor(i / cols) * (bh + gap), arm = restartArmed(), hov = WATCH.hover === 'restart';
+    c.fillStyle = arm ? 'rgba(255,110,80,.3)' : hov ? 'rgba(140,255,215,.16)' : 'rgba(140,255,215,.05)'; c.fillRect(x, y, bw, bh);
+    c.strokeStyle = arm ? '#ff8466' : hov ? '#c4f5e2' : 'rgba(140,255,215,.3)'; c.lineWidth = 3; c.strokeRect(x + 1.5, y + 1.5, bw - 3, bh - 3);
+    c.textAlign = 'center'; c.fillStyle = arm ? '#ff8466' : '#c4f5e2'; c.font = '600 27px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
+    c.fillText(arm ? 'Tap again to restart' : 'Restart in safe room', x + bw / 2, y + bh / 2, bw - 20);
+    WATCH.hits.push({ id: 'restart', x, y, w: bw, h: bh });
+  }
   WATCH.panelTex.needsUpdate = true; WATCH.dirty = false;
 }
 function watchOpen(on) {
@@ -21634,8 +21644,12 @@ function watchUpdate() {
       const b = WATCH.hits.find((h) => u >= h.x && u <= h.x + h.w && v >= h.y && v <= h.y + h.h);
       hov = b ? b.id : null;
       if (b && _wt.z < T.touch && WATCH.pArmed) {
-        WATCH.pArmed = false; modSet(b.id, !MOD[b.id]); WATCH.flashId = b.id; WATCH.flashUntil = performance.now() / 1000 + 0.14;
-        pulse(right, 0.45, 18); sfxTick(MOD[b.id] ? 2600 : 1500);
+        WATCH.pArmed = false;
+        if (b.id === 'restart') { pulse(right, 0.45, 18); sfxTick(2000); restartTap(); }   // step 86
+        else {
+          modSet(b.id, !MOD[b.id]); WATCH.flashId = b.id; WATCH.flashUntil = performance.now() / 1000 + 0.14;
+          pulse(right, 0.45, 18); sfxTick(MOD[b.id] ? 2600 : 1500);
+        }
       }
     }
     if (!inside || _wt.z > T.rearm) WATCH.pArmed = true;
@@ -21667,11 +21681,45 @@ function modDomBuild() {
     b.addEventListener('click', (ev) => { ev.stopPropagation(); audioUnlock(); modSet(k, !MOD[k]); });
     grid.appendChild(b);
   }
+  const rb = document.createElement('button'); rb.type = 'button'; rb.id = 'mwRestart'; rb.className = 'mw-restart';   // step 86
+  rb.addEventListener('click', (ev) => { ev.stopPropagation(); audioUnlock(); restartTap(); });
+  grid.appendChild(rb);
   const cl = document.getElementById('mwClose'); if (cl) cl.addEventListener('click', (ev) => { ev.stopPropagation(); modPanelToggle(false); });
   modDomSync();
 }
+/* Step 86: RESTART IN THE SAFE ROOM, from anywhere: the watch menu (headset) or M (computer / phone).
+ * Tap twice within 3 s. Like going down without dying: you wake up in the newest safe room, the run
+ * ends (banked points count, at-risk ones are lost), the men lose track of you, pouches and health
+ * are full again. */
+const RESTART = { armUntil: 0, timer: 0 };
+const restartArmed = () => performance.now() / 1000 < RESTART.armUntil;
+function restartTap() {
+  if (!restartArmed()) {
+    RESTART.armUntil = performance.now() / 1000 + 3;
+    clearTimeout(RESTART.timer); RESTART.timer = setTimeout(() => { WATCH.dirty = true; modDomSync(); }, 3050);
+    WATCH.dirty = true; modDomSync();
+    return;
+  }
+  RESTART.armUntil = 0; WATCH.dirty = true;
+  restartToSafe();
+}
+function restartToSafe() {
+  let safe = null;
+  for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active) safe = r;
+  if (!safe) { toast('The safe room is still being built. Try again in a moment'); modDomSync(); return; }
+  if (playerState.dead) { modDomSync(); return; }                 // already on the way back
+  respawnPlayer();                                                 // newest safe room, run over, men reset
+  refillInventory(); panel.dirty = true;
+  playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0; hpUi();
+  deathFade = 1;                                                   // a short black fade over the move
+  if (WATCH.open) watchOpen(false);
+  modPanelToggle(false);
+  toast('Restarted in the safe room. Restocked', 2600);
+}
 function modDomSync() {
-  for (const b of document.querySelectorAll('#mwGrid button')) { const on = !!MOD[b.dataset.mod]; b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.querySelector('b').textContent = on ? 'ON' : 'OFF'; }
+  for (const b of document.querySelectorAll('#mwGrid button[data-mod]')) { const on = !!MOD[b.dataset.mod]; b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.querySelector('b').textContent = on ? 'ON' : 'OFF'; }
+  const rb = document.getElementById('mwRestart');
+  if (rb) { const a = restartArmed(); rb.textContent = a ? 'Click again to restart' : 'Restart in safe room'; rb.setAttribute('aria-pressed', a ? 'true' : 'false'); }
   const sub = document.getElementById('mwSub'); if (sub) sub.textContent = modAny() ? 'Mods on: this run scores nothing' : 'Tap a switch. Score stays on while all are off';
   if (WATCH.faceCv) watchDrawFace();
 }
