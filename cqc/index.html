@@ -16719,6 +16719,359 @@ function vmRender() {
 }
 const _vmS2 = new THREE.Vector2();
 
+/* ===========================================================================
+ *  STEP 85 — FITTED HANDS FROM THE VIEWMODELS (headset and computer)
+ *  The procedural hand clipped through the GLB guns (their grips were lined up on
+ *  the old spec guns). A gun held on its grip now shows the computer viewmodel's own
+ *  hands instead, in the pose the pack's artist made for that gun:
+ *    vmhBake    the viewmodel's first idle frame, hands only (cut at the wrist),
+ *               skinned once on the CPU into static meshes (rig space)
+ *    vmhSolve   each hand moved onto your gun: the VM hand's skin that touches the
+ *               VM gun must touch yours, nothing may sink in (surface samples with
+ *               normals, pattern search over 6 DOF). VMH_FIT keeps solved results.
+ *    vmhTake    per frame: the fitted hand drawn on the gun, your own hand hidden (its sleeve
+ *               stays) and its root put on the fitted wrist, so the arm meets the glove; your
+ *               other hand wears the gloves meanwhile
+ *  Firing hand on the grip, support hand on a long gun's handguard (slides with it),
+ *  pistol support cupped on the firing hand. A free hold, racking, a reload hand or a
+ *  foregrip keep your own hand. Left-handed holds mirror the fit. ?vmh=off: old hands.
+ * ========================================================================= */
+const VMH = {
+  on: !/[?&]vmh=off\b/.test(location.search),
+  // The AK and M1911 takes have life-size hands (the other packs' hands are ~1.5x their guns, which only works on a
+  // screen). Not fitted: the AWP (thumbhole stock: the AK hand lands on the receiver) and the Kar98k; they keep your hands.
+  byType: { akmn: 'ak', m4a4: 'ak', m4a1s: 'ak', g17: 'pistol2', m1911: 'pistol2' },
+  bakes: {}, fits: {}, gs: {}, meshes: new Set(), taken: new Set(), busy: false,
+  contactTol: 0.012,   // m: VM hand skin this close to the VM gun is the grip it makes
+  sample: 0.0025       // m between surface samples
+};
+// Solved offline with vmhSolveAll (same code, checked in renders): rig space -> gun root space, [16] column-major.
+// L: "R" = cupped on the firing hand, null = your own support hand (a one-handed take).
+const VMH_FIT = {
+  akmn: { R: [-0.99909, -0.01442, 0.04013, 0, -0.01208, 0.99825, 0.05789, 0, -0.04089, 0.05735, -0.99752, 0, 0.00043, -0.03616, 0.0056, 1], L: [-0.99544, 0.01272, 0.09454, 0, 0.01665, 0.99903, 0.04087, 0, -0.09393, 0.04226, -0.99468, 0, 0.02544, -0.0524, 0.01758, 1] },
+  m4a4: { R: [-0.99873, 0.02082, 0.04584, 0, 0.02092, 0.99978, 0.0016, 0, -0.0458, 0.00255, -0.99895, 0, -0.00122, -0.03484, 0.00624, 1], L: [-0.99864, -0.01836, -0.04882, 0, -0.01674, 0.9993, -0.03343, 0, 0.0494, -0.03256, -0.99825, 0, -0.0141, -0.0377, 0.04026, 1] },
+  m4a1s: { R: [-0.99994, -0.00727, 0.00772, 0, -0.00799, 0.99522, -0.09729, 0, -0.00698, -0.09734, -0.99523, 0, 0.00378, -0.01989, -0.00144, 1], L: [-0.98512, -0.05358, 0.16332, 0, -0.08073, 0.98309, -0.16439, 0, -0.15175, -0.17513, -0.97278, 0, 0.05821, 0.02293, 0.03952, 1] },
+  g17: { R: [-0.99947, -0.0285, 0.01591, 0, -0.03076, 0.98558, -0.1664, 0, -0.01094, -0.1668, -0.98593, 0, 0.00557, -0.04342, 0.16426, 1], L: null },
+  m1911: { R: [-0.99831, -0.04725, 0.03378, 0, -0.04689, 0.99883, 0.01145, 0, -0.03428, 0.00984, -0.99936, 0, 0.00864, -0.06692, 0.14489, 1], L: null }
+};
+function vmhRng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+// Area samples (points + outward normals) of meshes, in the space toM maps world into; grid for nearest queries.
+function vmhSurface(meshes, toM, step, cap = 60000) {
+  const rnd = vmhRng(77), pts = [], nrm = [], a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), n = new THREE.Vector3();
+  const tris = [];
+  let area = 0;
+  for (const o of meshes) {
+    const P = o.geometry.attributes.position, I = o.geometry.index, cnt = I ? I.count : P.count;
+    const M = new THREE.Matrix4().multiplyMatrices(toM, o.matrixWorld), W = [];
+    for (let i = 0; i < P.count; i++) { o.getVertexPosition(i, a); a.applyMatrix4(M); W.push(a.x, a.y, a.z); }
+    for (let t = 0; t + 2 < cnt; t += 3) {
+      const i0 = I ? I.getX(t) : t, i1 = I ? I.getX(t + 1) : t + 1, i2 = I ? I.getX(t + 2) : t + 2;
+      a.fromArray(W, i0 * 3); b.fromArray(W, i1 * 3); c.fromArray(W, i2 * 3);
+      n.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a));
+      const A = n.length() / 2;
+      if (A < 1e-10) continue;
+      tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, A); area += A;
+    }
+  }
+  const per = Math.max(step * step, area / cap);
+  for (let t = 0; t < tris.length; t += 10) {
+    a.fromArray(tris, t); b.fromArray(tris, t + 3); c.fromArray(tris, t + 6);
+    n.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a)).normalize();
+    let k = tris[t + 9] / per; const m = Math.floor(k) + (rnd() < k - Math.floor(k) ? 1 : 0);
+    for (let s = 0; s < m; s++) {
+      let u = rnd(), v = rnd(); if (u + v > 1) { u = 1 - u; v = 1 - v; }
+      pts.push(a.x + e1.x * u + e2.x * v, a.y + e1.y * u + e2.y * v, a.z + e1.z * u + e2.z * v); nrm.push(n.x, n.y, n.z);
+    }
+  }
+  const cs = 0.005, cells = new Map(), key = (x, y, z) => (x + 512) * 1048576 + (y + 512) * 1024 + (z + 512);
+  for (let i = 0; i < pts.length; i += 3) {
+    const k = key(Math.floor(pts[i] / cs), Math.floor(pts[i + 1] / cs), Math.floor(pts[i + 2] / cs));
+    let arr = cells.get(k); if (!arr) cells.set(k, arr = []); arr.push(i);
+  }
+  return { pts: Float32Array.from(pts), nrm: Float32Array.from(nrm), cells, cs, key };
+}
+// Signed distance (m) to the surface near (x, y, z): + outside, - inside; r if nothing within r.
+function vmhSd(S, x, y, z, r = 0.01) {
+  const { cs, cells, key, pts: P, nrm: N } = S;
+  const x0 = Math.floor((x - r) / cs), x1 = Math.floor((x + r) / cs), y0 = Math.floor((y - r) / cs), y1 = Math.floor((y + r) / cs), z0 = Math.floor((z - r) / cs), z1 = Math.floor((z + r) / cs);
+  let best = r * r, sd = r;
+  for (let i = x0; i <= x1; i++) for (let j = y0; j <= y1; j++) for (let k = z0; k <= z1; k++) {
+    const arr = cells.get(key(i, j, k)); if (!arr) continue;
+    for (const q of arr) {
+      const dx = x - P[q], dy = y - P[q + 1], dz = z - P[q + 2], d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) { best = d2; sd = dx * N[q] + dy * N[q + 1] + dz * N[q + 2]; if (sd > 0) sd = Math.sqrt(d2); }
+    }
+  }
+  return sd;
+}
+// The viewmodel's first idle frame, hands only: geometry in rig space (metres), wrist / elbow / palm per side.
+async function vmhBake(key) {
+  if (VMH.bakes[key]) return VMH.bakes[key];
+  const V = await vmLoad(key);
+  if (!V || !V.acts.idle) return (VMH.bakes[key] = null);
+  const root = SkeletonUtils.clone(V.root), base = new THREE.Group(); base.add(root);
+  const mx = new THREE.AnimationMixer(root); mx.clipAction(V.acts.idle.getClip()).play(); mx.update(0);
+  base.updateMatrixWorld(true);
+  const arms = [], gun = [];
+  root.traverse((o) => { if (o.isMesh && o.visible) (V.R.arms.includes(o.name) ? arms : gun).push(o); });
+  if (!arms.length || !gun.length) return (VMH.bakes[key] = null);
+  // rig units -> metres (the long takes are in cm)
+  const gb = new THREE.Box3(); for (const o of gun) gb.expandByObject(o);
+  const gs = gb.getSize(new THREE.Vector3()), unit = Math.max(gs.x, gs.y, gs.z) > 5 ? 0.01 : 1;
+  const U = new THREE.Matrix4().makeScale(unit, unit, unit);
+  const bones = []; for (const o of arms) for (const b of o.skeleton.bones) if (!bones.includes(b)) bones.push(b);
+  const wristOf = (side) => bones.find((b) => (side === 'R' ? /^(R_wrist|Hand_R)/i : /^(L_wrist|Hand_L)/i).test(b.name));
+  const out = { key, unit, sides: {}, gunMeshes: gun, U, root, base };
+  const v = new THREE.Vector3();
+  for (const side of ['R', 'L']) {
+    const wr = wristOf(side); if (!wr) continue;
+    const set = new Set(); wr.traverse((b) => { if (b.isBone) set.add(b); });
+    // palm frame: wrist, elbow (the forearm bone; an IK control above the hand is skipped), the knuckles:
+    // the first bone of each finger chain 3.5 cm or more out of the wrist; thumb = the nearest of them
+    const wp = (o) => o.getWorldPosition(new THREE.Vector3()).applyMatrix4(U), W = wp(wr);
+    let eb = bones.find((b) => (side === 'R' ? /^(R_elbow|Forearm_R)/i : /^(L_elbow|Forearm_L)/i).test(b.name)), E = eb ? wp(eb) : null;
+    if (!E || E.distanceTo(W) < 0.08) { E = null; for (let p = wr.parent; p && !E; p = p.parent) if (p.isBone && wp(p).distanceTo(W) > 0.12) E = wp(p); }
+    if (!E) E = W.clone().add(new THREE.Vector3(0, 0, -0.25));
+    const knu = [], walk = (b) => { for (const c of b.children) { if (!c.isBone) continue; const p = wp(c), kids = c.children.filter((x) => x.isBone).length; if (p.distanceTo(W) >= 0.035 && kids <= 1) knu.push({ p, th: /thumb/i.test(c.name) }); else walk(c); } };
+    walk(wr);
+    knu.sort((p, q) => (q.th - p.th) || (p.p.distanceTo(W) - q.p.distanceTo(W)));
+    const T0 = knu.length ? knu[0].p : W.clone(), fing = knu.slice(1).map((k) => k.p).sort((p, q) => p.distanceTo(T0) - q.distanceTo(T0));
+    const I = fing.length ? fing[0] : W.clone(), K = fing.length ? fing[fing.length - 1] : W.clone();
+    // skinned once on the CPU (positions and normals), kept vertices only, indexed
+    const pos = [], nrm = [], uv = [], idx = [], groups = [], bm = new THREE.Matrix4(), sm = new THREE.Matrix4(), nm = new THREE.Matrix3(), nv = new THREE.Vector3();
+    for (const o of arms) {
+      const G = o.geometry, P = G.attributes.position, NN = G.attributes.normal, UV = G.attributes.uv, SI = G.attributes.skinIndex, SW = G.attributes.skinWeight, Ix = G.index;
+      const sk = o.skeleton, map = new Int32Array(P.count).fill(-1);
+      const boneM = sk.bones.map((b, k) => new THREE.Matrix4().multiplyMatrices(b.matrixWorld, sk.boneInverses[k]));
+      const toW = new THREE.Matrix4().multiplyMatrices(U, new THREE.Matrix4().copy(o.matrixWorld).multiply(o.bindMatrixInverse));
+      for (let i = 0; i < P.count; i++) {
+        let w = 0; for (let c = 0; c < 4; c++) if (set.has(sk.bones[SI.getComponent(i, c)])) w += SW.getComponent(i, c);
+        if (w < 0.5) continue;
+        sm.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        for (let c = 0; c < 4; c++) { const ww = SW.getComponent(i, c); if (!ww) continue; const e = boneM[SI.getComponent(i, c)].elements, s = sm.elements; for (let q = 0; q < 16; q++) s[q] += e[q] * ww; }
+        bm.multiplyMatrices(toW, sm).multiply(o.bindMatrix);
+        v.fromBufferAttribute(P, i).applyMatrix4(bm);
+        map[i] = pos.length / 3; pos.push(v.x, v.y, v.z);
+        if (NN) { nv.fromBufferAttribute(NN, i).applyMatrix3(nm.getNormalMatrix(bm)).normalize(); nrm.push(nv.x, nv.y, nv.z); } else nrm.push(0, 1, 0);
+        if (UV) uv.push(UV.getX(i), UV.getY(i)); else uv.push(0, 0);
+      }
+      const mats = [].concat(o.material), grp = G.groups.length ? G.groups : [{ start: 0, count: Ix ? Ix.count : P.count, materialIndex: 0 }];
+      for (const gr of grp) {
+        const s0 = idx.length;
+        for (let t = gr.start; t + 2 < gr.start + gr.count; t += 3) {
+          const a0 = map[Ix ? Ix.getX(t) : t], a1 = map[Ix ? Ix.getX(t + 1) : t + 1], a2 = map[Ix ? Ix.getX(t + 2) : t + 2];
+          if (a0 < 0 || a1 < 0 || a2 < 0) continue;
+          idx.push(a0, a1, a2);
+        }
+        const m = mats[gr.materialIndex || 0] || mats[0];
+        if (idx.length > s0) groups.push({ start: s0, count: idx.length - s0, mat: m });
+      }
+    }
+    if (!idx.length) continue;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    const mats = [];
+    for (const gr of groups) { let k = mats.indexOf(gr.mat); if (k < 0) { k = mats.length; mats.push(gr.mat); } geo.addGroup(gr.start, gr.count, k); }
+    out.sides[side] = { geo, mats, W, E, I, K, T: T0 };
+  }
+  out.Sv = vmhSurface(gun, U, VMH.sample);                         // the VM gun's surface (rig space, metres)
+  return (VMH.bakes[key] = out);
+}
+// The gun's surface in its root space (cached per type).
+function vmhGunSurface(g) {
+  if (VMH.gs[g.type]) return VMH.gs[g.type];
+  const gm = []; g.model.updateMatrixWorld(true);
+  g.model.traverse((o) => { if (o.isMesh && o.visible && !o.isSkinnedMesh) gm.push(o); });
+  return (VMH.gs[g.type] = vmhSurface(gm, new THREE.Matrix4().copy(g.prop.root.matrixWorld).invert(), VMH.sample));
+}
+const _vmhE = new THREE.Euler(), _vmhQ = new THREE.Quaternion(), _vmhV = new THREE.Vector3(), _vmhS1 = new THREE.Vector3(1, 1, 1);
+function vmhDelta(p, out) { return out.compose(_vmhV.set(p[0], p[1], p[2]), _vmhQ.setFromEuler(_vmhE.set(p[3], p[4], p[5])), _vmhS1); }
+// Pattern search from each start; cost(p) over [tx, ty, tz, rx, ry, rz].
+function vmhSearch(cost, starts, st0, iters = 16, minStep = 0.0003) {
+  let best = null, bc = Infinity;
+  for (const s0 of starts) {
+    const p = s0.slice(); let c = cost(p), st = st0.slice();
+    for (let it = 0; it < iters; it++) {
+      let moved = false;
+      for (let k = 0; k < 6; k++) for (const sg of [1, -1]) {
+        p[k] += sg * st[k]; const cc = cost(p);
+        if (cc < c) { c = cc; moved = true; } else p[k] -= sg * st[k];
+      }
+      if (!moved) { st = st.map((s) => s * 0.5); if (st[0] < minStep) break; }
+    }
+    if (c < bc) { bc = c; best = p; }
+  }
+  return { p: best, c: bc };
+}
+// Points of a surface within r of c (subsampled to at most n).
+function vmhNear(S, c, r, n) {
+  const out = [], P = S.pts;
+  for (let i = 0; i < P.length; i += 3) if ((P[i] - c.x) ** 2 + (P[i + 1] - c.y) ** 2 + (P[i + 2] - c.z) ** 2 < r * r) out.push(P[i], P[i + 1], P[i + 2]);
+  const k = Math.max(1, Math.floor(out.length / 3 / n)), o2 = [];
+  for (let i = 0; i < out.length; i += 3 * k) o2.push(out[i], out[i + 1], out[i + 2]);
+  return o2;
+}
+const _vmhT = new THREE.Vector3();
+function vmhXf(e, a, i, o) { const x = a[i], y = a[i + 1], z = a[i + 2]; o.x = e[0] * x + e[4] * y + e[8] * z + e[12]; o.y = e[1] * x + e[5] * y + e[9] * z + e[13]; o.z = e[2] * x + e[6] * y + e[10] * z + e[14]; return o; }
+// Hand skin points (subsampled) and the ones touching the VM gun (the grip the artist made).
+function vmhContacts(B, side) {
+  const H = B.sides[side];
+  if (H.con) return H;
+  const P = H.geo.attributes.position, n = P.count, stride = Math.max(1, Math.floor(n / 900));
+  H.all = []; H.con = [];
+  for (let i = 0; i < n; i += stride) {
+    const x = P.getX(i), y = P.getY(i), z = P.getZ(i);
+    H.all.push(x, y, z);
+    if (Math.abs(vmhSd(B.Sv, x, y, z, VMH.contactTol)) < VMH.contactTol * 0.8) H.con.push(x, y, z);
+  }
+  H.cc = new THREE.Vector3(); for (let i = 0; i < H.con.length; i += 3) H.cc.x += H.con[i], H.cc.y += H.con[i + 1], H.cc.z += H.con[i + 2];
+  H.cc.multiplyScalar(3 / Math.max(3, H.con.length));
+  return H;
+}
+// VM gun -> your gun: bores and tops lined up, then the VM gun's grip area registered on yours (both ways).
+function vmhRegister(B, g) {
+  const S = B.sides.R, Sv = B.Sv, Sg = vmhGunSurface(g);
+  const bb = (P) => { const b = new THREE.Box3(); for (let i = 0; i < P.length; i += 3) b.expandByPoint(_vmhT.set(P[i], P[i + 1], P[i + 2])); return b; };
+  const vb = bb(Sv.pts), gb = bb(Sg.pts), sz = vb.getSize(new THREE.Vector3()), c = vb.getCenter(new THREE.Vector3());
+  const ax = ['x', 'y', 'z'].sort((p, q) => sz[q] - sz[p]);
+  const bore = new THREE.Vector3(); bore[ax[0]] = 1;
+  if (S.W[ax[0]] - c[ax[0]] > 0) bore.negate();                   // the muzzle is the end away from the firing wrist
+  const up = new THREE.Vector3(); up[ax[1]] = 1;
+  {                                                                // the barrel (front sixth) sits above most of the gun (stock, grip, magazine)
+    const P = Sv.pts, a = ax[0], b = ax[1], k = { x: 0, y: 1, z: 2 }, ia = k[a], ib = k[b], lo = vb.min[a], hi = vb.max[a], fr = bore[a] > 0;
+    let m = 0, n = 0, fm = 0, fn = 0;
+    for (let i = 0; i < P.length; i += 3) { m += P[i + ib]; n++; const u = (P[i + ia] - lo) / (hi - lo); if (fr ? u > 0.83 : u < 0.17) { fm += P[i + ib]; fn++; } }
+    if (fn && fm / fn < m / n) up.negate();
+  }
+  const back = bore.clone().negate(), x = new THREE.Vector3().crossVectors(up, back);
+  const R = new THREE.Matrix4().makeBasis(x, up, back).invert();  // rig -> (x, up, back) = root axes
+  vmhContacts(B, 'R');
+  const cc = S.cc.clone().applyMatrix4(R), cR = c.clone().applyMatrix4(R), topV = vb.clone().applyMatrix4(R).max.y;
+  const init = new THREE.Matrix4().makeTranslation(-cR.x, gb.max.y - topV, -cc.z).multiply(R);
+  // grip area: VM gun samples round the firing hand's contacts, and yours round the grip point
+  const ccI = S.cc.clone().applyMatrix4(init);
+  const A = vmhNear(Sv, S.cc, 0.075, 500), Bp = vmhNear(Sg, ccI.clone().setX(0), 0.075, 500);
+  const Aw = vmhNear(Sv, S.cc, 5, 400), Bw = vmhNear(Sg, ccI, 5, 400);   // the whole guns, lighter: keeps the bores in line
+  const M = new THREE.Matrix4(), Mi = new THREE.Matrix4(), D = new THREE.Matrix4(), q = _vmhT;
+  const cost = (p) => {
+    M.multiplyMatrices(vmhDelta(p, D), init); Mi.copy(M).invert();
+    const e = M.elements, ei = Mi.elements; let s = 0;
+    for (let i = 0; i < A.length; i += 3) { vmhXf(e, A, i, q); const d = Math.min(Math.abs(vmhSd(Sg, q.x, q.y, q.z, 0.01)), 0.01); s += d * d; }
+    for (let i = 0; i < Bp.length; i += 3) { vmhXf(ei, Bp, i, q); const d = Math.min(Math.abs(vmhSd(Sv, q.x, q.y, q.z, 0.01)), 0.01); s += d * d; }
+    let w = 0;
+    for (let i = 0; i < Aw.length; i += 3) { vmhXf(e, Aw, i, q); const d = Math.min(Math.abs(vmhSd(Sg, q.x, q.y, q.z, 0.01)), 0.01); w += d * d; }
+    for (let i = 0; i < Bw.length; i += 3) { vmhXf(ei, Bw, i, q); const d = Math.min(Math.abs(vmhSd(Sv, q.x, q.y, q.z, 0.01)), 0.01); w += d * d; }
+    return s / ((A.length + Bp.length) / 3) * 1e4 + 0.5 * w / ((Aw.length + Bw.length) / 3) * 1e4 + 2 * (p[4] * p[4] + p[5] * p[5]);
+  };
+  const starts = [];
+  for (const dz of [-0.03, 0, 0.03]) for (const dy of [-0.02, 0, 0.02]) starts.push([0, dy, dz, 0, 0, 0]);
+  const r = vmhSearch(cost, starts, [0.004, 0.006, 0.008, 0.06, 0.03, 0.03]);
+  return { m: new THREE.Matrix4().multiplyMatrices(vmhDelta(r.p, D), init), cost: r.c, init };
+}
+// One hand from the registered pose: out of the gun, its contacts on the surface (small moves only).
+function vmhSolve(B, side, g, start) {
+  const H = vmhContacts(B, side), Sg = vmhGunSurface(g), all = H.all, con = H.con;
+  const M = new THREE.Matrix4(), D = new THREE.Matrix4(), q = _vmhT, wc = (all.length / 3) / Math.max(1, con.length / 3) * 0.25;
+  // rotate about the contact centre, not the rig origin
+  const C = H.cc.clone().applyMatrix4(start), toC = new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z), fromC = new THREE.Matrix4().makeTranslation(C.x, C.y, C.z);
+  const mk = (p) => M.copy(fromC).multiply(vmhDelta(p, D)).multiply(toC).multiply(start);
+  const cost = (p) => {
+    const e = mk(p).elements; let c = 0;
+    for (let i = 0; i < all.length; i += 3) { vmhXf(e, all, i, q); const d = vmhSd(Sg, q.x, q.y, q.z, 0.01); if (d < -0.0005) { const k = (-d - 0.0005) / 0.001; c += 4 * k * k; } }
+    for (let i = 0; i < con.length; i += 3) { vmhXf(e, con, i, q); const d = vmhSd(Sg, q.x, q.y, q.z, 0.01), k = (Math.min(d, 0.01) - 0.001) / 0.002; c += k * k * wc; }
+    return c + 400 * (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) + 20 * (p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+  };
+  const starts = side === 'L' ? [-0.03, 0, 0.03].map((z) => [0, 0, z, 0, 0, 0]) : [[0, 0, 0, 0, 0, 0]];
+  const r = vmhSearch(cost, starts, [0.003, 0.003, 0.004, 0.04, 0.03, 0.03]);
+  return { m: mk(r.p).clone(), cost: r.c, contacts: con.length / 3, samples: all.length / 3, p: r.p };
+}
+// Your hand rig's wrist frame (root space) and the fitted hand's (gun root space): root = fitted * inv(ours).
+function vmhRootM(h, H, M) {
+  const s = h.left ? -1 : 1, Wr = HAND_DATA.rig.wrist, rp = h.rp;
+  const frame = (W, E, I, K, mirrorX) => {
+    const z = E.clone().sub(W).normalize();
+    const nrm = new THREE.Vector3().crossVectors(I.clone().sub(W), K.clone().sub(W));
+    if (mirrorX) nrm.negate();
+    const y = nrm.addScaledVector(z, -nrm.dot(z)).normalize(), x = new THREE.Vector3().crossVectors(y, z);
+    return new THREE.Matrix4().makeBasis(x, y, z).setPosition(W);
+  };
+  const ours = frame(new THREE.Vector3(s * Wr.cx, Wr.cy, Wr.z), new THREE.Vector3(s * Wr.cx, Wr.cy, Wr.z + 0.1), rp[4], rp[13], false);
+  const tw = (p) => p.clone().applyMatrix4(M);
+  const fit = frame(tw(H.W), tw(H.E), tw(H.I), tw(H.K), false);
+  return fit.multiply(ours.invert());
+}
+// Both hands' rig -> root matrices for gun g: VMH_FIT if solved, else registration + per-hand solve.
+function vmhSolveAll(B, g) {
+  const F = VMH_FIT[g.type];
+  if (F && F.R) { const R = new THREE.Matrix4().fromArray(F.R); return { R, L: F.L === 'R' ? R : F.L ? new THREE.Matrix4().fromArray(F.L) : null }; }
+  const reg = vmhRegister(B, g), R = vmhSolve(B, 'R', g, reg.m).m;
+  const pist = g.def.cls === 'pistol', oneHand = B.sides.L && B.sides.L.W.distanceTo(B.sides.R.W) > 0.2;   // a one-handed take: your own support hand
+  const L = !B.sides.L || (pist && oneHand) ? null : pist ? R : vmhSolve(B, 'L', g, reg.m).m;   // a pistol's support hand is cupped on the firing hand: it moves with it
+  return { R, L, reg };
+}
+// Fit for gun g (both hands), solved once (or taken from VMH_FIT), meshes ready to draw.
+function vmhFit(g) {
+  const t = g.type, F = VMH.fits[t];
+  if (F !== undefined) return F;
+  const key = VMH.byType[t];
+  if (!VMH.on || !key || !VM.rigs[key]) return (VMH.fits[t] = null);
+  VMH.fits[t] = false;                                             // loading
+  vmhBake(key).then((B) => {
+    if (!B || !B.sides.R) { VMH.fits[t] = null; return; }
+    const out = { sides: {} }, Ms = vmhSolveAll(B, g);
+    for (const side of ['R', 'L']) {
+      const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
+      const geo = H.geo.clone().applyMatrix4(M);
+      geo.computeBoundingSphere();
+      const mats = H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase); return c; });
+      const mesh = new THREE.Mesh(geo, mats);
+      mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false;
+      scene.add(mesh); VMH.meshes.add(mesh);
+      out.sides[side] = { mesh, H, M, roots: new Map() };
+    }
+    VMH.fits[t] = out;
+  }).catch((e) => { console.warn('Step 85: fitted hands for ' + t + ' failed', e); VMH.fits[t] = null; });
+  return false;
+}
+// Each frame before the hands are placed: nothing is taken yet.
+function vmhFrameStart() {
+  for (const h of HANDS.list) {
+    if (h.vmhOn) { h.vmhOn = false; h.mesh.visible = true; }
+    if (h.vmhMat) { h.mesh.material = h.vmhMat; h.vmhMat = null; }
+  }
+  for (const m of VMH.meshes) m.visible = false;
+}
+const _vmhM = new THREE.Matrix4(), _vmhM2 = new THREE.Matrix4(), _vmhMir = new THREE.Matrix4().makeScale(-1, 1, 1);
+// h on gun g in role (primary / support) at P, Q: draw the fitted hand instead; P, Q become the hidden root's pose.
+function vmhTake(h, g, role, dz, P, Q) {
+  if (!VMH.on || !HANDS.ready || (role !== 'primary' && role !== 'support')) return false;
+  if (!renderer.xr.isPresenting && VM.vis) return false;          // the computer viewmodel is drawn
+  const F = vmhFit(g); if (!F) return false;
+  const want = role === 'primary' ? 'R' : 'L', S = F.sides[want]; if (!S) return false;
+  const mirror = h.left === (want === 'R');                       // a left firing hand / a right support hand
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  _vmhM.copy(root.matrixWorld);
+  if (dz) _vmhM.multiply(_vmhM2.makeTranslation(0, 0, dz));
+  if (mirror) _vmhM.multiply(_vmhMir);
+  S.mesh.matrix.copy(_vmhM); S.mesh.matrixWorldNeedsUpdate = true; S.mesh.visible = true;
+  // the hidden hand root where its wrist meets the fitted glove (proper rotation: mirrored hands use their own rig)
+  let R = S.roots.get(h);
+  if (!R) {
+    if (!mirror) R = vmhRootM(h, S.H, S.M);
+    else { const o = HANDS.list.find((x) => x.left !== h.left), Ro = vmhRootM(o, S.H, S.M); R = mirrorM4(Ro.elements); }
+    S.roots.set(h, R);
+  }
+  _vmhM.copy(root.matrixWorld);
+  if (dz) _vmhM.multiply(_vmhM2.makeTranslation(0, 0, dz));
+  _vmhM.multiply(R).decompose(P, Q, _vmhV);
+  h.vmhOn = true; h.mesh.visible = false;                         // the sleeve stays: it covers the glove's cut
+  for (const o of HANDS.list) if (!o.vmhMat && o.gloveMat && o.mesh.material !== o.gloveMat) { o.vmhMat = o.mesh.material; o.mesh.material = o.gloveMat; }   // your other hand gloved too
+  return true;
+}
+
 function deskReload(smart = false) {
   const g = gunOf(deskHand);
   if (DNADE.active) return true;                                 // step 23: left hand is busy with a grenade
@@ -24102,6 +24455,7 @@ function driveHeldGun(h, g, role, trigT, dt) {
     pistolSupFrame(g, h, HD_hP, HD_hQ);
     poseFromGrip(h, PISTOL_SUP);
     gunContact(h, g, 'pistolSup', HD_hP, HD_hQ, GC_WRAP.pistolSup);  // step 26
+    vmhTake(h, g, 'support', 0, HD_hP, HD_hQ);                      // step 85: the viewmodel's fitted hand
     placeHand(h, 'support' + g.type, HD_hP, HD_hQ, dt);
     return true;
   }
@@ -24114,6 +24468,7 @@ function driveHeldGun(h, g, role, trigT, dt) {
   const onTrig = role === 'primary' && trigT && !(g.task || (g.lh && g.lh.active));      // step 26: a finger on the trigger keeps its fit
   gunContact(h, g, role, HD_hP, HD_hQ, GC_WRAP[role] || 0, onTrig ? 2 : 0, dz);
   if (role === 'primary' && performance.now() / 1000 < (g.thumbCatchUntil || 0)) thumbToCatch(h, g, HD_hP, HD_hQ);   // step 59.2
+  if (!g.task) vmhTake(h, g, role, dz, HD_hP, HD_hQ);               // step 85: the viewmodel's fitted hand (a reload / rack keeps yours)
   placeHand(h, role + g.type, HD_hP, HD_hQ, dt);
   return true;
 }
@@ -24356,6 +24711,7 @@ const _usedHands = new Set();   // step 34: reused every frame
 function handsUpdate(dt, now) {
   if (!HANDS.ready) return;
   CONTACT.frame++;                                   // step 26: contact limits are per frame
+  vmhFrameStart();                                   // step 85
   const vr = renderer.xr.isPresenting;
   const used = _usedHands; used.clear();
   if (vr) {
@@ -24419,6 +24775,7 @@ function handsUpdate(dt, now) {
       gunContact(R, g, 'deskPrimary', HD_hP, HD_hQ, GC_WRAP.primary & (thumbBusy ? ~1 : ~0), (g.task || (g.lh && g.lh.active)) ? 0 : 2);   // step 59.1: the pressing thumb is still kept out of the slide / frame
       if (thumbBusy || performance.now() / 1000 < (g.thumbCatchUntil || 0)) thumbToCatch(R, g, HD_hP, HD_hQ);   // step 59.2   // step 26
       deskArmRest(g, HD_hP, HD_hQ, restR);               // step 26.2: the eased remainder of the turn
+      if (!g.task && !thumbBusy) vmhTake(R, g, 'primary', 0, HD_hP, HD_hQ);   // step 85
       placeHand(R, 'desk' + g.type, HD_hP, HD_hQ, dt); applyFingers(R, dt); used.add(R);
       if (nadeL) { /* step 23: busy with the grenade */ }
       else if (g.lh && g.lh.active) {                    // step 16: the support hand reloading / racking
@@ -24434,6 +24791,7 @@ function handsUpdate(dt, now) {
         poseFromGrip(L, PISTOL_SUP);
         gunContact(L, g, 'deskPistolSup', HD_hP, HD_hQ, GC_WRAP.pistolSup);   // step 26
         deskArmRest(g, HD_hP, HD_hQ, restL);
+        vmhTake(L, g, 'support', 0, HD_hP, HD_hQ);       // step 85
         placeHand(L, 'desk' + g.type, HD_hP, HD_hQ, dt); applyFingers(L, dt); used.add(L);
       } else if (g.def.vfg) {                             // step 23: on the foregrip
         const L = HANDS.list[1];
@@ -24465,6 +24823,7 @@ function handsUpdate(dt, now) {
           poseFromGrip(L, G);
           gunContact(L, g, 'deskSupport', HD_hP, HD_hQ, GC_WRAP.support, 0, dzS);   // step 26
           if (rolled) deskArmRest(g, HD_hP, HD_hQ, restS, _af.C, _af.A);
+          if (!g.task) vmhTake(L, g, 'support', dzS, HD_hP, HD_hQ);   // step 85
         }
         placeHand(L, 'desk' + g.type, HD_hP, HD_hQ, dt); applyFingers(L, dt); used.add(L);
       }
