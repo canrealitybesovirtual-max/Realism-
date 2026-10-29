@@ -15573,9 +15573,14 @@ function deskLaserToggle() {
  *  other hand on it) switches it. Put the gun back in the vise and open MOD
  *  again to move or take attachments off. Let go of one near a free peg and it
  *  hangs back on the rack.
+ *  STEP 88: no rack. The lights, lasers and cans lie on the bench top (WB_TABLE),
+ *  and a VISE button sits by the vise: CLAMP puts the gun you hold (or one lying
+ *  by the vise) in it, RELEASE locks the parts on. Fingertip / trigger in VR,
+ *  E / click / Grab aimed at it on a computer. Computer: click a part to fit it
+ *  (your held gun goes in the vise for you), click it again: back on the table.
  * ========================================================================= */
 const WB = {
-  room: null, open: false, gun: null, rack: null, atts: [], hooks: [], btn: null, cap: null, lamp: null,
+  room: null, open: false, gun: null, rack: null, atts: [], hooks: [], btn: null, cap: null, lamp: null, lbl: null, btnAt: null, btnLocal: null, pressAnim: 0,
   benchX: 2.95, vise: new THREE.Vector3(2.6, 0.905 + 0.3, 2.62),
   awayR: 2.2, jawOpen: 0.047, jawW: 0.047, jaws: null, stickR: 0.03, hookR: 0.1, kit: null, inv: new THREE.Matrix4(), m: new THREE.Matrix4()
 };
@@ -15683,9 +15688,18 @@ function wbKit() {
   const sign = mesh(new THREE.PlaneGeometry(0.34, 0.34), new THREE.MeshStandardMaterial({ map: canvasTex(512, (ctx, S) => {
     ctx.fillStyle = '#16181a'; ctx.fillRect(0, 0, S, S); ctx.fillStyle = '#e8c21e'; ctx.font = 'bold 84px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('GUNSMITH', S / 2, 150); ctx.fillStyle = '#d8d8d8'; ctx.font = '34px sans-serif';
-    ['1. lay a gun in the vise', '2. put lights, lasers, cans on it', '3. take the gun: they lock on', '(walking away locks them too)'].forEach((t, i) => ctx.fillText(t, S / 2, 240 + i * 62));
+    ['1. gun by the vise: press CLAMP', '2. put parts on it (from the table)', '3. press RELEASE or take the gun:', '   the parts lock on'].forEach((t, i) => ctx.fillText(t, S / 2, 240 + i * 62));
   }), roughness: 0.7 }), false, false);
-  WB.kit = { light, laser, sup, rack, hookL, vise, jaw, sign };
+  // step 88: the VISE button on the bench top (clamp / release), and its label
+  const btnBase = merged([placed(rbox(0.09, 0.022, 0.09, 0.006), 0, 0.011, 0), placed(new THREE.CylinderGeometry(0.034, 0.036, 0.008, 28), 0, 0.026, 0)], black);
+  const btnCap = mesh(placed(new THREE.CylinderGeometry(0.027, 0.028, 0.016, 28), 0, 0.038, 0), new THREE.MeshStandardMaterial({ color: 0x1d7a32, emissive: new THREE.Color(0x0c4a1a), emissiveIntensity: 1, roughness: 0.45 }), false, false);
+  const btnLabel = (open) => new THREE.MeshStandardMaterial({ roughness: 0.75, map: canvasTex(256, (ctx, S) => {
+    ctx.fillStyle = '#16181a'; ctx.fillRect(0, 0, S, S / 2); ctx.textAlign = 'center';
+    ctx.fillStyle = open ? '#ffb347' : '#7dff9a'; ctx.font = 'bold 50px sans-serif'; ctx.fillText(open ? 'RELEASE' : 'CLAMP', S / 2, 58);
+    ctx.fillStyle = '#c8c8c8'; ctx.font = '24px sans-serif'; ctx.fillText(open ? 'press: lock parts on' : 'press: gun into vise', S / 2, 100);
+  }) });
+  const btnLbl = [btnLabel(false), btnLabel(true)];
+  WB.kit = { light, laser, sup, rack, hookL, vise, jaw, sign, btnBase, btnCap, btnLbl };
   return WB.kit;
 }
 function wbMakeAtt(sub, big = true) {
@@ -15715,15 +15729,77 @@ function wbSpawn(room) {
     WB.jawW = WB.jawOpen;
     const s = K.sign.clone(); s.position.set(WB.benchX + 0.2, 1.45, 2.985); s.rotation.y = Math.PI; room.group.add(s);
   }
-  if (WB.rack && WB.rack.inWorld) return;
-  const root = K.rack.clone(true);
-  for (const c of root.children) freezeStatic(c);
-  WB.rack = addProp(root, { name: 'attachment rack', mass: 3.2, half: [0.21, 0.15, 0.08], friction: 0.7, restitution: 0.04,
-    pos: [o.x + 3.42, o.y + 0.905 + 0.151, o.z + 2.8], rot: new THREE.Euler(0, Math.PI, 0) });
-  WB.rack.spawnRoom = room;
-  WB.hooks = K.hookL.map(([x, y, z, sub, ry, big]) => ({ at: new THREE.Vector3(x, y, z), sub, att: null, ry: ry || 0, big }));
-  WB.atts = [];
-  for (const h of WB.hooks) { const p = wbMakeAtt(h.sub, h.big); wbHook(p, h, room); WB.atts.push(p); }
+  // step 88: the VISE button (a new one with each safe room)
+  WB.btnAt = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
+  WB.btn = K.btnBase.clone(); WB.btn.position.copy(WB.btnAt); room.group.add(WB.btn);
+  WB.cap = K.btnCap.clone(); WB.cap.material = K.btnCap.material.clone(); WB.cap.position.copy(WB.btnAt); room.group.add(WB.cap);
+  WB.lbl = mesh(new THREE.PlaneGeometry(0.11, 0.055), K.btnLbl[WB.open ? 1 : 0], false, true);
+  WB.lbl.rotation.x = -Math.PI / 2; WB.lbl.rotation.z = Math.PI; WB.lbl.position.set(WB.btnAt.x, WB.btnAt.y + 0.001, WB.btnAt.z - 0.085); room.group.add(WB.lbl);
+  wbButtonLook();
+  // step 88: no rack. The parts lie on the table; one you left on a gun or are holding stays where it is.
+  WB.rack = null; WB.hooks = [];
+  const keep = WB.atts.filter((p) => p.item.gun || p.holders.length);
+  const left = WB_TABLE.filter((t) => !keep.some((p) => p.item.tableSpot === t));
+  for (const p of WB.atts) if (!keep.includes(p) && p.inWorld && !p.removing) removeProp(p);
+  WB.atts = keep;
+  for (const t of left) { const p = wbMakeAtt(t[0], t[1]); p.item.tableSpot = t; wbHome(p, room); WB.atts.push(p); }
+}
+// step 88: where each part lies on the bench (room space): [sub, big, x, z, yaw]; lights and lasers lens to the wall
+const WB_TABLE = [['light', true, 3.24, 2.5, Math.PI], ['light', true, 3.39, 2.5, Math.PI], ['light', true, 3.54, 2.5, Math.PI],
+  ['laser', true, 3.28, 2.69, Math.PI], ['laser', true, 3.46, 2.69, Math.PI],
+  ['sup', true, 3.36, 2.86, Math.PI / 2], ['sup', false, 3.62, 2.86, Math.PI / 2]];
+WB.btnLocal = new THREE.Vector3(2.84, 0.905, 2.44);
+// Back to its spot on the table, resting (kinematic until you pick it up).
+function wbHome(p, room = WB.room) {
+  const t = p.item.tableSpot, o = room.origin;
+  if (!t) return false;
+  const lift = t[0] === 'sup' ? (t[1] ? 0.0178 : 0.0155) : 0.0425;   // a can lies on its side; a light / laser stands on its body, mount up
+  _wbP.set(o.x + t[2], o.y + 0.905 + lift, o.z + t[3]);
+  _wbQ.setFromAxisAngle(Y_AXIS, t[4]);
+  p.item.stuck = null; p.item.hook = null;
+  itemToWorld(p, _wbP, _wbQ, room);
+  setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  return true;
+}
+function wbButtonLook() {
+  if (!WB.cap) return;
+  const K = wbKit(), on = WB.open;
+  WB.cap.material.color.set(on ? 0xc8501a : 0x1d7a32); WB.cap.material.emissive.set(on ? 0x6a2008 : 0x0c4a1a);
+  if (WB.lbl) WB.lbl.material = K.btnLbl[on ? 1 : 0];
+}
+function wbButtonPos(out) { const o = WB.room.origin; return out.set(o.x + WB.btnAt.x, o.y + WB.btnAt.y + 0.046, o.z + WB.btnAt.z); }
+// Press it: VR fingertip poke (or the trigger with a hand on it), computer E / click / Grab aimed at it.
+const _wbB = new THREE.Vector3(), _wbT = new THREE.Vector3(), _wbTq = new THREE.Quaternion();
+function wbButtonPress(hand) {
+  WB.pressAnim = 1; sfx('selector');
+  if (hand) pulse(hand, 0.5, 30);
+  if (WB.open) { wbClose('button'); return; }
+  const g = wbCandidate();
+  if (!g) { toast('Hold a gun by the vise, or lay one next to it, then press CLAMP'); return; }
+  wbToggle(hand, g);
+}
+function wbButtonVR() {
+  if (!WB.room || !WB.btnAt || !renderer.xr.isPresenting || !WB.room.active) return;
+  wbButtonPos(_wbB);
+  for (const h of vrHands) {
+    const gp = h.ctrl && h.ctrl.userData.gamepad;
+    if (!gp) continue;
+    handPose(h, _wbT, _wbTq);
+    _wbT.add(_wbV.set(0, -0.01, -0.075).applyQuaternion(_wbTq));   // about where your index fingertip is
+    const d = _wbT.distanceTo(_wbB), b = gp.buttons[0], trig = !!b && (b.pressed || b.value > 0.7);
+    const edge = trig && !h.wbTrig; h.wbTrig = trig;
+    if (!h.wbLatch && (d < 0.045 || (edge && d < 0.09 && !gunOf(h)))) { h.wbLatch = true; wbButtonPress(h); }
+    else if (h.wbLatch && d > 0.08 && !trig) h.wbLatch = false;
+  }
+}
+function wbDeskButton() {
+  if (renderer.xr.isPresenting || !WB.room || !WB.btnAt || !WB.room.active) return false;
+  wbButtonPos(_wbB); camera.getWorldPosition(_wbT);
+  const d = _wbB.distanceTo(_wbT); if (d > 2.2) return false;
+  camera.getWorldDirection(_wbV);
+  if (_wbD.copy(_wbB).sub(_wbT).normalize().dot(_wbV) < Math.cos(Math.atan2(0.07, d))) return false;   // aimed within 7 cm of it
+  wbButtonPress(null);
+  return true;
 }
 function wbHookPose(h, P, Q) {
   WB.rack.root.updateMatrixWorld(true);
@@ -15810,12 +15886,14 @@ function wbToggle(hand = null, gIn = null) {
   for (const p of g.atts || []) wbUnfreeze(g, p);
   g.atts = [];
   sfx('pMagIn', 0.8); if (hand) pulse(hand, 0.4, 30);
-  toast(`${g.def.label} in the vise. Put lights, lasers or a can on it; take it out to lock them on`);
+  wbButtonLook();                                                   // step 88
+  toast(renderer.xr.isPresenting ? `${g.def.label} in the vise. Put parts on it from the table; RELEASE locks them on` : `${g.def.label} in the vise. Click a part on the table to fit it; click it again to take it off; RELEASE (or B) locks them on`, 3200);
   return true;
 }
 function wbClose(why) {
   const g = WB.gun;
   WB.open = false; WB.gun = null;
+  wbButtonLook();                                                   // step 88
   if (!g) return;
   g.cradle = false;
   let n = 0;
@@ -15950,9 +16028,14 @@ function wbUnfreeze(g, p) {
 // Computer: no free hands to place it, so a click puts it on the clamped gun at a sensible spot
 // (light under the front of the gun, laser on its right side); clicking it there hangs it back up.
 function wbDeskAtt(p) {
-  const it = p.item, g = wbStuckGun();
-  if (it.stuck) { const h = WB.hooks.find((x) => !x.att && x.sub === it.sub) || WB.hooks.find((x) => !x.att); if (h) wbHook(p, h); return; }
-  if (!g) { toast('Open MOD mode at the gunsmith bench first: gun in the vise, then the MOD button'); return; }
+  const it = p.item;
+  if (it.stuck) { if (!wbHome(p)) { const h = WB.hooks.find((x) => !x.att && x.sub === it.sub) || WB.hooks.find((x) => !x.att); if (h) wbHook(p, h); } sfx('pMagOut', 0.4); return; }   // step 88: back on the table
+  let g = wbStuckGun();
+  if (!g) {                                                          // step 88: your gun goes in the vise for you
+    const held = gunOf(deskHand);
+    if (held) { wbToggle(null, held); g = wbStuckGun(); }
+    if (!g) { toast('Hold a gun (or lay it by the vise), then click a part, or press CLAMP'); return; }
+  }
   if (it.sub === 'sup') {                                           // step 78
     if (g.sup) { toast('This gun already has a suppressor'); return; }
     wbUnhook(it); wbSupSnap(g, p, 0); g.prop.root.updateMatrixWorld(true);
@@ -15979,6 +16062,11 @@ function wbDeskAtt(p) {
 }
 function wbUpdate() {
   if (!WB.room) return;
+  wbButtonVR();                                                     // step 88
+  if (WB.cap && WB.btnAt) {                                         // the cap goes down when pressed
+    WB.pressAnim = Math.max(0, WB.pressAnim - 0.08);
+    WB.cap.position.y = WB.btnAt.y - 0.007 * Math.sin(WB.pressAnim * Math.PI);
+  }
   if (WB.jaws) {
     const want = WB.open && WB.gun ? Math.min(WB.jawOpen, wbJawPoint(WB.gun).half + 0.008) : WB.jawOpen;
     if (Math.abs(want - WB.jawW) > 0.0002) {
@@ -21418,6 +21506,7 @@ function termPress(u, v, hand) {
 }
 // Desktop / phone: E, Grab or a click while the dot is on the screen. Returns true if it took the press.
 function termDeskPress(fromClick = false) {
+  if (wbDeskButton()) return true;                                  // step 88: the VISE button on the gunsmith bench
   if (renderer.xr.isPresenting || !TERM.deskHit || !TERM.awake) return false;
   termPress(TERM.deskHit.u, TERM.deskHit.v, null);
   return true;
