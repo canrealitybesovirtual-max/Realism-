@@ -251,3 +251,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
 - ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
 - Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
+
+## CQC step 86: door foley (not verified by ear or on Quest)
+- doorSfx(door, kind, k): positional at the latch edge (2 x leaf centre - hinge, lever height) through soundAt's voice pool, event-based, no persistent nodes. lever = leverK reaches 1 (VR: pulse 0.3); spring = leverK back to 0 after a full turn (a knock into the strike when the leaf is shut); rattle = a locked door (next room not built) pressed on the computer or gripped in VR (released as before, at most every 0.4 s); shut = a leaf that passed 0.05 rad settling inside 0.012 rad under 0.06 rad/s; stop = the leaf crossing maxOpen/maxBack - 0.03 above 0.9 rad/s (a kick or shove). The breach and kick paths keep kickSfx. AI hearing unchanged.
+- Shut gate is settling speed, not the 1.2 rad/s first planned: a headless Rapier run of the vendored build with this door (scratch doorsim/) showed a desktop shut press carries the leaf through 0 at ~0.42 rad/s to -0.24 rad, while the closer brings a leaf home at ~0.01 rad/s.
+- Same run: with Rapier's default sleep (under 0.5 rad/s for 2 s) a leaf on the closer alone fell asleep ajar (from 1.54 rad it slept at ~0.96; after a kick at ~1.1). Not changed here; worth a check in the game (doorOpen uses 0.012).
+- updateDoorsPost(dt) now takes the clamped physics dt. CONFIG.polish.audio.doors { on, gain }; ?doorsnd=off = silent doors. ?dev adds doorSfx, DOORSND.
