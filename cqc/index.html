@@ -2037,6 +2037,10 @@ const PROJECT_RULES = {
   step86: [
     'Body bumps (bodyBump from locomote, ?bump=off, CONFIG.polish.audio.bump): what resolveBody pushes the moving head back by is the contact. A fresh contact (free s clear before, cool s since the last) at more than min m/s into the surface is a self thump of shoulder, sleeve and kit (a door leaf you nudge also rings, kickSfx\'s two modes quieter); in the headset a 30 ms buzz, strongest in the hand on the wall\'s side, through pulseSoft (skipped while another pulse runs: pulse() stamps hand.hapEnd). Sliding along a wall is a sleeve scuff (brush) every ~0.45 s, no buzz. Not positional, no AI noise; skipped during a breach, a kick or death. Footfall haptics were left out (they would mask the heartbeat buzz).'
   ],
+  step106: [
+    'Gun finishes (?paint=off): the workshop\'s FINISH page (FINISH ▸ top right of a gun) sells a Cerakote-style finish per part group (GUN_PAINT_GROUPS: model part keys by geometry first, then material names; + ATTACHMENTS) from GUN_FINISHES (colour, roughness, metalness; wood stains on wood groups only). Factory free, a finish $50-150 per group. One material clone per gun type, group and factory material, shared by every gun of the type; same type, hooks and cache key, so no new program. Maps kept: a grey copy of the colour map (wear and grain kept, mean known) under the colour, an ORM copy (AO and roughness detail, metal 1) under the roughness and metalness.',
+    'Hooks only: createGun (paintGunInit before the magazine), wbFreeze / wbUnfreeze (paintAtt: the gun\'s attachment finish while fitted), enemyDropGun (his drop keeps the factory finish, PAINT.drops), vmMirSync (the viewmodel mirror follows the source\'s material), wsDraw (paintGunPage, paintLive: a touched finish is live on every gun of the type until applied or the page / screen is left), wsRoomUnloaded. Saved: cqc.paint.v1 { fin, grp }.'
+  ],
   workshop: [
     'Gunsmith workshop computer (CONFIG.workshop, ?workshop=off): one rugged touchscreen on a wall arm over the gunsmith bench, moved to the current safe room (wsRoomActivated), never rebuilt. Its glass is a clone of the terminal material (same program), the housing uses kit materials; it adds no light. It redraws only on a change (a press, a hover, the wallet or pouches, checked every CONFIG.workshop.check s while you are near): never per frame.',
     'Money: WALLET (cqc.wallet.v1) earns 1 $ per banked point (loopEnterRoom). Records and scores are unchanged. The terminal\'s free RESTOCK is replaced by the store\'s SUPPLIES (ammo, grenades, medical, each priced; it charges only when the restock adds something). The automatic refill on entering the safe room stays.',
@@ -17312,6 +17316,7 @@ function wbFreeze(g, p) {
   p.root.updateMatrixWorld(true);
   it.gun = g; (g.atts || (g.atts = [])).push(p);
   setCast(p.root, true);
+  paintAtt(p, g);                                                   // step 106: the gun's attachment finish
   const root = g.prop.root;
   root.updateMatrixWorld(true);
   if (muzIsDev(it)) { muzRefresh(g); return; }                     // step 103: cans, comps, extensions: the chain
@@ -17339,6 +17344,7 @@ function wbUnfreeze(g, p) {
   if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; it.lamp.material = WM.btnOff; }
   if (g.atts) g.atts = g.atts.filter((q) => q !== p);               // step 100: off the gun's list now (the vise empties it after anyway)
   it.gun = null;
+  paintAtt(p, null);                                                // step 106: its own finish again
   if (g.type === 'g17') g17Refresh(g);
   itemToWorld(p, _wbP, _wbQ, WB.room);
   setKinematic(p); p.collider.setCollisionGroups(COLL.item);
@@ -18697,6 +18703,7 @@ function vmMirSync(src, dst, top) {
     else { dst.matrixAutoUpdate = false; dst.matrix.copy(src.matrix); dst.matrixWorldNeedsUpdate = true; }
   }
   dst.visible = src.visible;
+  if (dst.isMesh && dst.material !== src.material) dst.material = src.material;   // step 106: a finish changed on the source
   const sc = src.children;
   let same = sc.length === dst.children.length;
   for (let i = 0; same && i < sc.length; i++) same = dst.children[i].userData.vmSrc === sc[i];
@@ -21946,6 +21953,7 @@ function enemyDropGun(e, dir) {
     p.body.setLinvel({ x: v.x + dir.x * 0.6, y: v.y + 0.3, z: v.z + dir.z * 0.6 }, true);
     p.body.setAngvel({ x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 3, z: (Math.random() - 0.5) * 4 }, true);
     p.enemyDrop = true; p.root.visible = !!e.room.visible;
+    if (!PAINT.drops) paintGun(g, false);                           // step 106: his gun, his finish
     DROP.list.push(p);
     e.dropType = t;
   } catch (err) { console.warn('step 72: gun not dropped', err); }
@@ -24597,7 +24605,7 @@ function wsRoomActivated(room) {
   room.colliderHandles.push(col.handle);
   dirtyShadows();
 }
-function wsRoomUnloaded(room) { if (WORKSHOP.room === room) { WORKSHOP.room = null; WORKSHOP.awake = false; } }
+function wsRoomUnloaded(room) { if (WORKSHOP.room === room) { WORKSHOP.room = null; WORKSHOP.awake = false; paintLive(); } }   // step 106: a live finish ends
 
 /* --- the store's actions ------------------------------------------------------ */
 function wsMsg(text) { const W = WORKSHOP; W.msg = text; W.msgT = performance.now() / 1000; W.msgLive = true; W.dirty = true; }
@@ -24801,6 +24809,7 @@ function wsAsTerm(on) {
 function wsDraw(now) {
   const W = WORKSHOP, ctx = W.ctx, LW = WS_LW, LH = WS_LH;
   W.hits.length = 0; W.lastDraw = now; W.dirty = false;
+  paintLive();                                                  // step 106: the finish touched on the FINISH page, on the guns
   wsAsTerm(true);
   try {
     ctx.save();
@@ -24817,7 +24826,7 @@ function wsDraw(now) {
       tText('WALLET', LW - 250, 33, 18, TC.dim, 'right', 600);
       tText(fmtMoney(WALLET.money), LW - 24, 33, 34, TC.ok, 'right', 700, TC.mono, 220);
       wsDrawList(now);
-      if (W.sel === 'supplies') wsDrawSupplies(now); else wsDrawGun(W.sel, now);
+      if (W.sel === 'supplies') wsDrawSupplies(now); else paintGunPage(W.sel, now);   // step 106: the parts or the FINISH page
       // footer: the last thing a press did, or how to press
       ctx.fillStyle = TC.line; ctx.fillRect(16, LH - 46, LW - 32, 1);
       const fresh = now - W.msgT < 6;
@@ -25063,6 +25072,368 @@ function wsUpdate(dt) {
     if (a !== W.sigA || b !== W.sigB || c !== W.sigC) { W.sigA = a; W.sigB = b; W.sigC = c; W.dirty = true; }
   }
   if (W.dirty) wsDraw(now);
+}
+
+/* ============================================================================
+ *  STEP 106 — GUN FINISHES (the workshop's FINISH page; ?paint=off)
+ *
+ *  A Cerakote-style finish per part group of each gun type, bought at the
+ *  GUNSMITH computer (FINISH ▸ at the top right of a gun's page). The factory
+ *  finish is free; a finish costs the group's price.
+ *  Groups (GUN_PAINT_GROUPS): a mesh of the gun's own model belongs to the
+ *  first group naming its model part (the M1911 / EXTG / X64 part keys, found
+ *  by geometry), else to the first naming its material (GLB material name or
+ *  WM key). Every gun with groups also has ATTACHMENTS: the fitted parts.
+ *  Finishes (GUN_FINISHES): colour, roughness, metalness; wood stains only on
+ *  wood groups (AKM handguard and stock).
+ *  Applied: one material clone per gun type, group and factory material,
+ *  shared by every gun of that type (hand, holster, locker, vise; the desktop
+ *  viewmodel mirror follows the source's material). Same material type and
+ *  hooks, so no new program. The maps stay: a textured material gets a
+ *  grey copy of its colour map (wear, edges and grain kept, mean known)
+ *  under the finish colour, and an ORM copy (AO and roughness detail kept,
+ *  metal 1) under the finish's roughness and metalness. Attachments take the gun's finish while fitted
+ *  (wbFreeze) and their own when off it (wbUnfreeze). His drops keep the
+ *  factory finish (PAINT.drops). Saved: cqc.paint.v1.
+ *  Live: a finish touched on the page shows on every gun of that type (the
+ *  one in the vise too) until it is applied or you leave the page / screen.
+ *  RULES: work only on store actions and gun creation; nothing per frame.
+ * ========================================================================== */
+// [id, name, hex (sRGB), roughness, metalness]; wood: a stain (wood groups only). 'orig' = the factory materials.
+const GUN_FINISHES = [
+  { id: 'orig', name: 'Original', hex: '#2e3032', r: 0, m: 0, orig: true },
+  { id: 'natural', name: 'Natural oil', hex: '#a86f3e', r: 0.5, m: 0, wood: true },
+  { id: 'walnut', name: 'Walnut stain', hex: '#5e3a22', r: 0.45, m: 0, wood: true },
+  { id: 'darkwood', name: 'Dark stain', hex: '#2c1c13', r: 0.42, m: 0, wood: true },
+  { id: 'graphite', name: 'Graphite Black', hex: '#2b2c2d', r: 0.55, m: 0.15 },
+  { id: 'armor', name: 'Armor Black', hex: '#181819', r: 0.62, m: 0.08 },
+  { id: 'fde', name: 'Flat Dark Earth', hex: '#8c7456', r: 0.62, m: 0.05 },
+  { id: 'odgreen', name: 'OD Green', hex: '#4c5233', r: 0.6, m: 0.05 },
+  { id: 'sniper', name: 'Sniper Grey', hex: '#5a5d5e', r: 0.58, m: 0.1 },
+  { id: 'tungsten', name: 'Tungsten', hex: '#6c6c6a', r: 0.45, m: 0.4 },
+  { id: 'bronze', name: 'Burnt Bronze', hex: '#8a6849', r: 0.42, m: 0.45 },
+  { id: 'mbronze', name: 'Midnight Bronze', hex: '#4b4033', r: 0.45, m: 0.4 },
+  { id: 'stealth', name: 'Magpul Stealth Grey', hex: '#6a6c6c', r: 0.6, m: 0.05 },
+  { id: 'coyote', name: 'Coyote Tan', hex: '#a68f6b', r: 0.62, m: 0.05 },
+  { id: 'olive', name: 'Olive Drab', hex: '#5b5a3b', r: 0.6, m: 0.05 },
+  { id: 'robin', name: "Robin's Egg Blue", hex: '#7ec2bd', r: 0.55, m: 0.05 },
+  { id: 'crimson', name: 'Crimson', hex: '#8c1c22', r: 0.5, m: 0.08 },
+  { id: 'white', name: 'Bright White', hex: '#e6e6e2', r: 0.55, m: 0.05 },
+  { id: 'stainless', name: 'Stainless (bare)', hex: '#b4b5b3', r: 0.32, m: 1 }
+];
+// Part groups per gun type (measured from the models): parts = model part keys, mats = material names; price $.
+const GUN_PAINT_GROUPS = {
+  g17: [{ id: 'frame', name: 'Frame and controls', price: 100, parts: ['frame'] },           // the controls are moulded into the frame mesh
+    { id: 'slide', name: 'Slide', price: 120, parts: ['slide'] }],
+  m1911: [{ id: 'frame', name: 'Frame and grips', price: 100, parts: ['Frame'] },             // one texture: the walnut grips are in the frame
+    { id: 'slide', name: 'Slide', price: 120, parts: ['Slide'] },
+    { id: 'controls', name: 'Controls', price: 60, parts: ['Hammer', 'Trigger', 'SlideStop', 'MagCatch'] },
+    { id: 'barrel', name: 'Barrel', price: 50, parts: ['Barrel'] }],
+  rifle: [{ id: 'receiver', name: 'Upper and lower', price: 140, mats: ['anodized'] },         // one material for both receivers
+    { id: 'furniture', name: 'Handguard, grip, stock', price: 110, mats: ['furniture', 'stipple'] },
+    { id: 'barrel', name: 'Barrel and muzzle', price: 90, mats: ['blued'] }],
+  akmn: [{ id: 'receiver', name: 'Receiver and cover', price: 140, mats: ['receiver', 'akmDc'] },
+    { id: 'handguard', name: 'Handguard', price: 80, mats: ['material'], wood: true },
+    { id: 'stock', name: 'Stock', price: 80, mats: ['wStock'], wood: true },
+    { id: 'barrel', name: 'Barrel and gas block', price: 90, mats: ['barrel'] }],
+  awp: [{ id: 'action', name: 'Stock and action', price: 150, mats: ['sniper'] },
+    { id: 'bolt', name: 'Bolt', price: 60, parts: ['bolt', 'shroud'] },
+    { id: 'scope', name: 'Scope', price: 90, mats: ['Scope'] }],
+  m4a1s: [{ id: 'rifle', name: 'Rifle (one texture)', price: 150, parts: ['body', 'ch'] }]
+};
+const PAINT_ATT = { id: 'att', name: 'Attachments', price: 80, att: true };
+const PAINT = {
+  on: !/[?&]paint=off\b/.test(location.search),
+  key: 'cqc.paint.v1',
+  drops: false,                                   // his drops keep the factory finish (true: they wear yours)
+  mapPx: IS_HEADSET ? 512 : 1024,                 // the copies of a drawn map, longest side
+  grey: 0.75, detail: 0.75,                       // its mean (sRGB) and contrast (exponent on luminance / mean)
+  attRough: [0.2, 0.82],                          // attachment materials painted: no glass, chrome or rubber
+  fin: {}, grp: {}, page: false, pick: null,      // saved finishes { type: { group: id } }, group shown per gun, the page, { t, gid, fid } touched
+  live: null, liveG: null, liveF: null, liveKey: '',      // what is live: type, group, finish
+  groups: {}, byId: new Map(GUN_FINISHES.map((f) => [f.id, f])),
+  parts: new Map(), wm: null, clones: new Map(), isClone: new WeakSet(), orig: new WeakMap(), neutral: new Map(), orm: new Map()
+};
+for (const t in GUN_PAINT_GROUPS) PAINT.groups[t] = GUN_PAINT_GROUPS[t].concat(PAINT_ATT);
+const paintGroups = (t) => (PAINT.on && PAINT.groups[t]) || null;
+const paintGroup = (t, gid) => (paintGroups(t) || []).find((G) => G.id === gid) || null;
+const paintFinishes = (G) => GUN_FINISHES.filter((f) => !f.wood || G.wood);
+const paintAllowed = (G, fid) => { const f = PAINT.byId.get(fid); return !!f && (!f.wood || !!G.wood); };
+try {
+  const o = JSON.parse(localStorage.getItem(PAINT.key) || 'null');
+  if (o && typeof o === 'object') {
+    for (const t of Object.keys(o.fin || {})) for (const gid of Object.keys(o.fin[t] || {})) {
+      const G = paintGroup(t, gid), fid = o.fin[t][gid];
+      if (G && paintAllowed(G, fid) && fid !== 'orig') (PAINT.fin[t] || (PAINT.fin[t] = {}))[gid] = fid;
+    }
+    for (const t of Object.keys(o.grp || {})) if (paintGroup(t, o.grp[t])) PAINT.grp[t] = o.grp[t];
+  }
+} catch (e) { /* factory finishes */ }
+function paintSave() { try { localStorage.setItem(PAINT.key, JSON.stringify({ v: 1, fin: PAINT.fin, grp: PAINT.grp })); } catch (e) { /* this visit only */ } }
+const paintSaved = (t, gid) => (PAINT.fin[t] && PAINT.fin[t][gid]) || 'orig';
+// What a group shows: the finish touched on the page while it is live, else the saved one.
+const paintShown = (t, gid) => (PAINT.live === t && PAINT.liveG === gid ? PAINT.liveF : paintSaved(t, gid));
+
+/* --- the maps: a grey copy of a colour map, an even-metal copy of an ORM map ---------------------------- */
+const PAINT_LIN = Float32Array.from({ length: 256 }, (_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+// RGBA bytes of a texture's image: a DataTexture's own array, a bitmap / canvas drawn at most px on a side;
+// null while not decoded, false when it can't be read (not RGBA bytes).
+function paintPixels(img, px) {
+  const w0 = img && img.width, h0 = img && img.height;
+  if (!w0 || !h0) return null;
+  if (img.data) return img.data instanceof Uint8Array && img.data.length === w0 * h0 * 4 ? { a: img.data, w: w0, h: h0 } : false;   // procedural sets
+  const s = Math.min(1, px / Math.max(w0, h0)), w = Math.max(1, Math.round(w0 * s)), h = Math.max(1, Math.round(h0 * s));
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h);
+  return { a: d.data, w, h, cv, ctx, d };
+}
+// Cached per texture: the value, or null for good when the image can't be read (the finish then tints the original map).
+function paintCached(cache, tex, make) {
+  if (cache.has(tex)) return cache.get(tex);
+  let v = null;
+  try { v = make(); if (v === undefined) return null; } catch (e) { console.warn('step 106: texture not read, tinting it', e); v = null; }
+  cache.set(tex, v);
+  return v;
+}
+// A copy of texture src with its pixels rewritten by fill(a, o) -> k (src's RGBA bytes in, the copy's out; o may be a):
+// same class, wrap, repeat, flip and colour space. { tex, k }, cached per source.
+function paintRewrite(cache, src, fill) {
+  return paintCached(cache, src, () => {
+    const P = paintPixels(src.image, PAINT.mapPx);
+    if (!P) return P === null ? undefined : null;
+    const o = P.cv ? P.a : new Uint8Array(P.a.length), k = fill(P.a, o);
+    if (P.cv) P.ctx.putImageData(P.d, 0, 0);
+    const tex = src.clone();
+    tex.source = new THREE.Source(P.cv || { data: o, width: P.w, height: P.h }); tex.needsUpdate = true;
+    return { tex, k };
+  });
+}
+const paintLum = (a, i) => 0.2126 * a[i] + 0.7152 * a[i + 1] + 0.0722 * a[i + 2];
+// Colour map -> grey = PAINT.grey x (luminance / mean)^detail: wear, edges and grain stay; k = its mean in linear light.
+function paintNeutral(src) {
+  return paintRewrite(PAINT.neutral, src, (a, o) => {
+    let sum = 0;
+    for (let i = 0; i < a.length; i += 4) sum += paintLum(a, i);
+    const n = a.length / 4, inv = n / Math.max(1, sum), g = PAINT.grey * 255, srgb = src.colorSpace === THREE.SRGBColorSpace;
+    let k = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const v = Math.min(255, Math.round(g * Math.pow(paintLum(a, i) * inv, PAINT.detail)));
+      o[i] = o[i + 1] = o[i + 2] = v; o[i + 3] = 255; k += srgb ? PAINT_LIN[v] : v / 255;
+    }
+    return Math.max(0.02, k / n);
+  });
+}
+// ORM / metallic-roughness map -> AO kept (R), roughness around 0.5 with its detail (G), metal 1 (B): the coat covers
+// bare spots evenly, the factors are then the finish's own numbers. k = mean roughness of the copy.
+function paintORM(src) {
+  return paintRewrite(PAINT.orm, src, (a, o) => {
+    let sum = 0;
+    for (let i = 0; i < a.length; i += 4) sum += a[i + 1];
+    const n = a.length / 4, s = 128 * n / Math.max(1, sum);
+    let k = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const g = Math.min(255, Math.round(a[i + 1] * s));
+      o[i] = a[i]; o[i + 1] = g; o[i + 2] = 255; o[i + 3] = 255; k += g;
+    }
+    return Math.max(0.05, k / n / 255);
+  });
+}
+
+/* --- materials -------------------------------------------------------------------------------------- */
+// The finish on a clone of src: its colour under the grey copy of the colour map, its roughness and metalness over
+// the ORM copy (a map that can't be read: the finish tints / scales the original one).
+function paintSet(c, src, f) {
+  const N = src.map && paintNeutral(src.map), R = src.roughnessMap && paintORM(src.roughnessMap), M = src.metalnessMap && paintORM(src.metalnessMap);
+  c.map = N ? N.tex : src.map;
+  c.color.set(f.hex);
+  if (N) c.color.multiplyScalar(1 / N.k);
+  c.roughnessMap = R ? R.tex : src.roughnessMap; c.roughness = R ? f.r / R.k : f.r;
+  c.metalnessMap = M ? M.tex : src.metalnessMap; c.metalness = f.m;
+}
+// One clone per gun type, group and factory material (shared by every gun of the type). Same type, hooks and
+// cache key as src: the renderer reuses its program.
+function paintFor(t, gid, src) {
+  const key = t + '|' + gid;
+  let by = PAINT.clones.get(key);
+  if (!by) PAINT.clones.set(key, by = new Map());
+  let c = by.get(src);
+  if (!c) {
+    c = src.clone();
+    c.onBeforeCompile = src.onBeforeCompile; c.customProgramCacheKey = src.customProgramCacheKey;
+    if (src.defaultAttributeValues) c.defaultAttributeValues = src.defaultAttributeValues;
+    PAINT.isClone.add(c); by.set(src, c);
+    const f = PAINT.byId.get(paintShown(t, gid));
+    if (!f.orig) paintSet(c, src, f);
+  }
+  return c;
+}
+// A mesh on its group's finish for gun type t (null = factory). A material the game swapped in itself (a lamp) is left alone.
+function paintMesh(o, t, gid) {
+  let src = PAINT.orig.get(o);
+  if (!src) PAINT.orig.set(o, src = o.material);
+  const fid = t ? paintShown(t, gid) : 'orig', want = fid === 'orig' ? src : paintFor(t, gid, src);
+  if (o.material !== want && (o.material === src || PAINT.isClone.has(o.material))) o.material = want;
+}
+// Name of a material for the groups: its GLB name, else its WM key.
+function paintMatName(m) {
+  if (m.name) return m.name;
+  if (!PAINT.wm) { PAINT.wm = new Map(); for (const k in WM) PAINT.wm.set(WM[k], k); }
+  return PAINT.wm.get(m) || '';
+}
+// geometry -> model part key, per gun type (the loaders' own tables).
+function paintPartMap(t) {
+  let map = PAINT.parts.get(t);
+  if (map) return map;
+  map = new Map();
+  if (t === 'm1911') for (const k in M1911.geo) map.set(M1911.geo[k], k);
+  if (EXTG[t]) for (const k in EXTG[t].geo) map.set(EXTG[t].geo[k], k);
+  if (X64[t]) for (const k in X64[t].parts) for (const o of X64[t].parts[k]) map.set(o.g, k);
+  PAINT.parts.set(t, map);
+  return map;
+}
+function paintMatch(groups, part, mat) {
+  return (part && groups.find((G) => G.parts && G.parts.includes(part))) || groups.find((G) => G.mats && G.mats.includes(mat)) || null;
+}
+const paintAttOk = (m) => !!m && m.isMeshStandardMaterial && !m.transparent && !m.emissiveMap && m.emissiveIntensity * Math.max(m.emissive.r, m.emissive.g, m.emissive.b) < 0.01
+  && m.roughness >= PAINT.attRough[0] && m.roughness <= PAINT.attRough[1] && !(m.metalness > 0.95 && m.roughness < 0.4);
+
+/* --- guns and attachments ------------------------------------------------------------------------- */
+// createGun (before the magazine goes in): the model's meshes by group, then the finishes.
+function paintGunInit(g) {
+  g.paintMeshes = [];
+  const groups = paintGroups(g.type);
+  if (!groups) return;
+  const parts = paintPartMap(g.type);
+  g.model.traverse((o) => {
+    if (!o.isMesh || !o.material) return;
+    const G = paintMatch(groups, parts.get(o.geometry), paintMatName(o.material));
+    if (G) g.paintMeshes.push([o, G.id]);
+  });
+  paintGun(g);
+}
+// on false: the factory finish for good (his drops).
+function paintGun(g, on = !g.paintOff) {
+  g.paintOff = !on;
+  for (const [o, gid] of g.paintMeshes || []) paintMesh(o, on ? g.type : null, gid);
+  for (const p of g.atts || []) paintAtt(p, g);
+}
+// wbFreeze (g: on it) / wbUnfreeze (null: off it): the part's paintable materials.
+function paintAtt(p, g) {
+  if (!PAINT.on || !p || !p.root) return;
+  const t = g && !g.paintOff && paintGroups(g.type) ? g.type : null;
+  p.root.traverse((o) => { if (o.isMesh && paintAttOk(PAINT.orig.get(o) || o.material)) paintMesh(o, t, 'att'); });
+}
+// Every clone of type t to what it shows now, every gun of the type onto it.
+function paintRefresh(t) {
+  for (const [key, by] of PAINT.clones) {
+    const i = key.indexOf('|');
+    if (key.slice(0, i) !== t) continue;
+    const f = PAINT.byId.get(paintShown(t, key.slice(i + 1)));
+    if (!f.orig) for (const [src, c] of by) paintSet(c, src, f);
+  }
+  for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === t && !q.removing) paintGun(q.item);
+}
+// The finish touched on the page is live while the page is open on an awake screen (wsDraw, wsRoomUnloaded).
+function paintLive() {
+  if (PAINT.pick && PAINT.pick.t !== WORKSHOP.sel) PAINT.pick = null;   // another gun on the screen: the touched finish is dropped
+  const W = WORKSHOP, P = PAINT, k = W.awake && W.room && P.page && P.pick && P.pick.t === W.sel ? W.sel : null;
+  const key = k ? `${k}|${P.pick.gid}|${P.pick.fid}` : '';
+  if (key === P.liveKey) return;
+  const old = P.live;
+  P.liveKey = key; P.live = k; P.liveG = k ? P.pick.gid : null; P.liveF = k ? P.pick.fid : null;
+  if (old && old !== k) paintRefresh(old);
+  if (k) paintRefresh(k);
+}
+
+/* --- the FINISH page (drawn with the terminal helpers inside wsDraw) ------------------------------- */
+const PAINT_UI = { x: WS_AX, w: WS_LW - 16 - WS_AX, tabY: 152, tabH: 50, gridY: 216, gridW: 560, cols: 5, cellH: 92, gap: 8, prevX: 896 };
+function paintPage(on) { PAINT.page = on; PAINT.pick = null; WORKSHOP.dirty = true; }
+function paintGroupOf(k) { const groups = paintGroups(k); return paintGroup(k, PAINT.grp[k]) || groups[0]; }
+function paintSelGroup(k, gid) { PAINT.grp[k] = gid; PAINT.pick = null; WORKSHOP.dirty = true; paintSave(); }
+function paintPick(k, fid) {
+  const G = paintGroupOf(k), f = PAINT.byId.get(fid);
+  PAINT.pick = fid === paintSaved(k, G.id) ? null : { t: k, gid: G.id, fid };
+  wsMsg(PAINT.pick ? `${f.name} on the ${G.name.toLowerCase()}: ${f.orig ? 'free' : fmtMoney(G.price)}. Shown on your ${wsGunName(k)} now; APPLY keeps it` : `${f.name}: the finish it has`);
+}
+function paintApply(k) {
+  const G = paintGroupOf(k), fid = PAINT.pick && PAINT.pick.gid === G.id ? PAINT.pick.fid : null, f = PAINT.byId.get(fid);
+  if (!f) { wsMsg('Touch a finish first'); return false; }
+  const price = f.orig ? 0 : G.price;
+  if (WALLET.money < price) { wsMsg(`Not enough money: ${f.name} costs ${fmtMoney(price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
+  if (price) { walletSpend(price); playBuy(); }
+  paintStore(k, G.id, fid);
+  wsMsg(`${G.name}: ${f.name} on every ${wsGunName(k)}${price ? ` for ${fmtMoney(price)}. ${fmtMoney(WALLET.money)} left` : ''}`);
+  return true;
+}
+function paintReset(k) {
+  const G = paintGroupOf(k);
+  paintStore(k, G.id, 'orig');
+  wsMsg(`${G.name}: factory finish again (free)`);
+}
+function paintStore(k, gid, fid) {
+  const fin = PAINT.fin[k] || (PAINT.fin[k] = {});
+  if (fid === 'orig') delete fin[gid]; else fin[gid] = fid;
+  PAINT.pick = null; PAINT.liveKey = ''; PAINT.live = PAINT.liveG = PAINT.liveF = null;
+  paintSave(); paintRefresh(k);
+  WORKSHOP.dirty = true;
+}
+// wsDraw's gun page: the parts (wsDrawGun) or the finishes, and the switch between them (top right).
+function paintGunPage(k, now) {
+  const groups = paintGroups(k), on = !!groups && PAINT.page;
+  if (on) paintDrawPage(k); else wsDrawGun(k, now);
+  if (groups) tBtn('pnt:page', WS_LW - 16 - 112, 80, 112, 32, on ? '◂ PARTS' : 'FINISH ▸', { size: 16, sel: on, fn: () => paintPage(!on) });
+}
+// A finish as a painted chip: its colour, a sheen from roughness and metalness, shade toward the bottom.
+function paintChip(ctx, x, y, w, h, f) {
+  ctx.fillStyle = f.hex; ctx.fillRect(x, y, w, h);
+  const g = ctx.createLinearGradient(x, y, x + w * 0.45, y + h), s = 0.06 + 0.12 * (1 - f.r) + 0.38 * f.m * (1 - f.r);
+  g.addColorStop(0, `rgba(255, 255, 255, ${s.toFixed(3)})`); g.addColorStop(0.5, 'rgba(255, 255, 255, 0)'); g.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  if (f.orig && h > 30) tText('FACTORY', x + w / 2, y + h / 2 + 1, Math.min(18, h * 0.4), 'rgba(196, 245, 226, 0.55)', 'center', 700, TC.mono, w - 8);
+}
+// A touch cell drawn like the terminal's buttons (pressed, selected, hovered); its content goes on top.
+function paintCell(id, x, y, w, h, sel, fn) {
+  const hov = WORKSHOP.hover === id;
+  tBox(x, y, w, h, tFlash(id) ? 'rgba(255, 214, 150, 0.42)' : sel ? TC.hiBg : hov ? 'rgba(140, 255, 215, 0.16)' : TC.faint, sel ? TC.hi : hov ? TC.text : TC.line);
+  WORKSHOP.hits.push({ id, x, y, w, h, fn });
+}
+function paintDrawPage(k) {
+  const W = WORKSHOP, U = PAINT_UI, ctx = W.ctx, groups = paintGroups(k), G = paintGroupOf(k);
+  tText(wsGunName(k), U.x, 96, 36, TC.text, 'left', 700, TC.sans, 560);
+  tText(`Finish per part, on every ${wsGunName(k)} you own. Factory finish is free.`, U.x, 134, 18, TC.dim, 'left', 600, TC.sans, U.w - 130);
+  // group tabs: name, the finish it has (a chip), the selected one lit
+  const tw = (U.w - U.gap * (groups.length - 1)) / groups.length;
+  groups.forEach((Q, i) => {
+    const x = U.x + i * (tw + U.gap), id = `pnt:g:${Q.id}`, sel = Q === G, f = PAINT.byId.get(paintSaved(k, Q.id));
+    paintCell(id, x, U.tabY, tw, U.tabH, sel, () => paintSelGroup(k, Q.id));
+    tText(Q.name.toUpperCase(), x + 12, U.tabY + 17, 15, sel ? TC.hi : TC.text, 'left', 700, TC.sans, tw - 24);
+    paintChip(ctx, x + 12, U.tabY + 30, 12, 12, f);
+    tText(f.name, x + 30, U.tabY + 37, 13, TC.dim, 'left', 600, TC.sans, tw - 42);
+  });
+  // swatches
+  const list = paintFinishes(G), cw = (U.gridW - U.gap * (U.cols - 1)) / U.cols, saved = paintSaved(k, G.id);
+  const pick = PAINT.pick && PAINT.pick.t === k && PAINT.pick.gid === G.id ? PAINT.pick.fid : saved;
+  list.forEach((f, i) => {
+    const x = U.x + (i % U.cols) * (cw + U.gap), y = U.gridY + Math.floor(i / U.cols) * (U.cellH + U.gap), id = `pnt:f:${f.id}`, sel = f.id === pick;
+    paintCell(id, x, y, cw, U.cellH, sel, () => paintPick(k, f.id));
+    paintChip(ctx, x + 8, y + 8, cw - 16, 52, f);
+    if (f.id === saved) { ctx.fillStyle = TC.ok; ctx.beginPath(); ctx.arc(x + cw - 14, y + 14, 4.5, 0, Math.PI * 2); ctx.fill(); }
+    tText(f.name, x + cw / 2, y + 76, 14, sel ? TC.hi : TC.text, 'center', 600, TC.sans, cw - 10);
+  });
+  // preview: the touched finish big, its numbers, the price, APPLY / RESET
+  const f = PAINT.byId.get(pick), px = U.prevX, pw = U.x + U.w - px, py = U.gridY, ph = 662 - py, changed = pick !== saved, price = f.orig ? 0 : G.price;
+  tBox(px, py, pw, ph, TC.faint, TC.line);
+  paintChip(ctx, px + 16, py + 16, pw - 32, 160, f);
+  tText(f.name, px + 16, py + 206, 30, TC.text, 'left', 700, TC.sans, pw - 32);
+  tText(f.orig ? 'The factory materials, as built' : `${f.wood ? 'Stain' : 'Cerakote-style'}  ·  roughness ${f.r.toFixed(2)}  ·  metal ${f.m.toFixed(2)}`, px + 16, py + 238, 16, TC.dim, 'left', 600, TC.mono, pw - 32);
+  tText(`${G.name}: now ${PAINT.byId.get(saved).name}`, px + 16, py + 268, 17, TC.text, 'left', 600, TC.sans, pw - 32);
+  tText(!changed ? 'ON THE GUN' : price ? fmtMoney(price) : 'FREE', px + pw - 16, py + 306, 26, !changed ? TC.ok : WALLET.money >= price ? TC.hi : TC.warn, 'right', 700, TC.mono, pw - 32);
+  const bw = (pw - 40) / 2, by = py + 334;
+  tBtn('pnt:apply', px + 16, by, bw, 60, 'APPLY', { size: 22, sel: changed, disabled: !changed, fn: () => paintApply(k) });
+  tBtn('pnt:reset', px + 24 + bw, by, bw, 60, 'RESET', { size: 22, disabled: saved === 'orig' && !changed, fn: () => paintReset(k) });
+  tText(changed ? 'Shown on your gun now (the vise too). APPLY keeps it' : 'Touch a finish to see it on the gun', px + 16, by + 86, 15, TC.dim, 'left', 600, TC.sans, pw - 32);
 }
 
 /* ============================================================================
@@ -33361,6 +33732,7 @@ function createGun(type) {
     task: null, taskWait: 0, lh: null, sgAnim: null, light: null, laserOn: false, aimD: 0, hinted: false, probe: null,
     anim: type === 'm1911' ? m1911Anim : X64[type] ? x64Anim : null   // step 64
   };
+  paintGunInit(item);                                              // step 106: the workshop's finishes (before the magazine goes in)
   if (GUNPHYS.contact || GUNPHYS.phys) contactCloud('gun:' + type, b.root, b.parts);   // before the magazine goes in
   const B0 = F.boxes[0];
   const p = makeItem(b.root, item, { mass: B0.m, half: B0.h, center: new THREE.Vector3(...B0.c), friction: B0.f, restitution: 0.22 });
