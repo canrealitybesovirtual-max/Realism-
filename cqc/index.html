@@ -2033,7 +2033,7 @@ const PROJECT_RULES = {
     'Gunsmith table restock (wbRestock): on every safe-room visit (wbSpawn at activation, weaponsEnterRoom, new run, terminal restock, respawn). A part keeps its spot in a hand, on the clamped gun or locked on a gun you carry (hand, holster, sling); a loose part goes back to its spot; one locked on a gun left behind keeps riding it and frees its spot; one whose gun was unloaded is dropped. Free spots get fresh parts. The bug: every part ever locked on a gun held its spot for good (item.gun stayed set after the gun was unloaded), so the table emptied.'
   ],
   step91: [
-    'Wounded men (CONFIG.enemy.downed, ?downed=off = the old instant deaths; DOWNED): a lethal round not to the head or neck puts him down alive (enemyDown). He is out of the fight at once (e.dead, plan.dead, loopEnemyDied: AI, squads, score and room clear count him), his gun falls, e.downed holds the rest. The fall (downedFallPose): knees then onto his front, or he sits and falls back, whichever way is clear floor (nav, downedFallPick) with the head away from the round; the first 0.26 s blends out of his last pose; the thud with the landing. On the floor (downedTargets, downedArm): postures prone / side / back / crawl with writhing noise, pain spasms and breathing, scaled by how much he has left; the nearest hand pressed on the wound (an arm hit: the other hand on it, the arm held across the belly), the other braced on the floor, pressing too, or reaching toward you; crawls of 2-4 pulls (arms alternate, a hand planted while the body is pulled past it, legs trailing, a streak behind him) along a clear way (downedPath), up to DOWNED.crawl m in all. Step 80 moans and breaths while he lasts (DOWNED.time x blood.bleedTime). Posed on the driver, so the hit capsules follow: any further hit (round, fragment, kick, blast) or the bleed-out ends him as a ragdoll from where he lies, limp and silent (enemyDie with e.downed). Only men down in the active, visible room are posed (offscreenPoseHz off screen); no per-frame allocation.',
+    'Wounded men (CONFIG.enemy.downed, ?downed=off = the old instant deaths; DOWNED): a lethal round not to the head or neck puts him down alive (enemyDown). He is out of the fight at once (e.dead, plan.dead, loopEnemyDied: AI, squads, score and room clear count him), his gun falls, e.downed holds the rest. The fall (downedFallPose): knees then onto his front, or he sits and falls back, whichever way is clear floor (nav, downedFallPick) with the head away from the round; the first 0.26 s blends out of his last pose; the thud with the landing. On the floor (downedTargets, downedArm): postures prone / side / back / crawl with writhing noise, pain spasms and breathing, scaled by how much he has left; the nearest hand pressed on the wound (an arm hit: the other hand on it, the arm held across the belly), the other braced on the floor, pressing too, or reaching toward you; crawls of 2-4 pulls (arms alternate, a hand planted while the body is pulled past it, legs trailing, a streak behind him) along a clear way (downedPath), up to DOWNED.crawl m in all. Step 80 moans and breaths while he lasts (DOWNED.time x blood.bleedTime). Step 111: he lasts DOWNED.life (60-120 s, x lifeK by the wound) and drags himself DOWNED.crawl (6-15 m) in bouts of 3-8 pulls at DOWNED.speed with short rests, along an A* path to cover hidden from you or away from you (downedGoal); a continuous smear (downedSmear) and bloody hand prints (hprintL / hprintR) behind him; out of view he carries on unposed (downedAway), and a room unloaded keeps him in its memory and catches him up when rebuilt (downedSave / downedRestore). Posed on the driver, so the hit capsules follow: any further hit (round, fragment, kick, blast) or the bleed-out ends him as a ragdoll from where he lies, limp and silent (enemyDie with e.downed). Only men down in the active, visible room are posed (offscreenPoseHz off screen); no per-frame allocation.',
     'Head / neck kills (with downed on): no muscle phase (limpStart): the hips and chest drop, the knees fold, RAG_SETTLE_LIMP puts him to sleep in ~1.5-3 s; no grunt, moan or breath; the body-fall thud stays.'
   ],
   step86: [
@@ -21450,10 +21450,11 @@ function enemiesRoomActivated(room) {
   const plan = loopPlan(room);                // step 9: the director's plan, made once per room
   room.enemies = [];
   const taken = [];
-  plan.list.forEach((spec, i) => { if (!plan.dead[i]) spawnEnemy(room, spec, i, taken); });   // the dead stay dead
+  const down = roomMem(room).down;                               // step 111: men left alive on the floor
+  plan.list.forEach((spec, i) => { if (!plan.dead[i]) spawnEnemy(room, spec, i, taken); else if (down && down[i]) downedRestore(room, spec, i, down[i]); });   // the dead stay dead
 }
 function enemiesRoomUnloaded(room) {
-  for (const e of [...ENEMY.list]) if (e.room === room) removeEnemy(e);
+  for (const e of [...ENEMY.list]) if (e.room === room) { if (e.downed && DOWNED.away) downedSave(e); removeEnemy(e); }   // step 111: a man down keeps going in memory
 }
 function enemiesShift(dx, dz, dy = 0) {
   for (const e of ENEMY.list) {
@@ -22948,15 +22949,28 @@ function enemiesDyingUpdate(dt) {
  *  moan or breath; the body-fall thud stays (that is the floor, not him).
  *  Cost: only downed men in the active, visible room are posed (offscreenPoseHz off screen); the state is
  *  made once, when he drops; nothing is allocated per frame.
+ *  Step 111: he lives 60-120 s (by the wound) and drags himself 6-15 m in determined bouts along an A* path
+ *  (findPath) to cover hidden from you, else away from you; a smear trail and bloody hand prints behind him.
+ *  Behind shut doors he carries on unposed (downedAway: root along the path, trail and prints, no skin); a
+ *  room unloaded keeps him in its memory (downedSave) and the rebuilt room catches him up (downedRestore).
  * ------------------------------------------------------------------------- */
 const DOWNED_URL_OFF = /[?&]downed=off/.test(location.search);
 function downedOn() { return !!CONFIG.enemy.downed && !DOWNED_URL_OFF; }
 const DOWNED = {
-  time: [0.5, 1.05],           // x CONFIG.polish.blood.bleedTime (22 s): he lasts 11-23 s on the floor
+  life: [60, 120],             // step 111: s he lasts on the floor (was 0.5-1.05 x blood.bleedTime = 11-23 s), x lifeK by the wound
+  lifeK: { chest: 0.7, spine: 1.15, pelvis: 1.15, leg: 1.3, arm: 1.2 },   // chest shorter, gut and legs longer
   knee: [0.38, 0.5], top: [0.5, 0.62], sit: [0.42, 0.55], back: [0.5, 0.62],   // s: knees buckle, topple onto his front; or sit, fall back
-  crawl: [1.0, 2.2],           // m he drags himself in all, in bouts of 2-4 pulls
-  stroke: 0.19, reach: 0.34,   // m the body moves per pull; m ahead of the shoulder a hand is planted
-  period: [2.8, 1.8],          // s per two-arm cycle, weak .. strong
+  start: [1, 2],               // step 111: s on the floor before the first pull
+  crawl: [6, 15],              // m he drags himself in all (step 111: was 1-2.2)
+  speed: [0.22, 0.38],         // m/s while pulling, weak .. strong (sets the arm cycle)
+  pulls: [3, 7],               // pulls a bout, weak .. strong (+0-1)
+  rest: [5, 1.2],              // s between bouts, weak .. strong
+  crawlVig: 0.25,              // too weak to crawl below this
+  turn: 0.9,                   // rad/s he pivots toward his way while pulling
+  stroke: 0.24, reach: 0.38,   // m the body moves per pull; m ahead of the shoulder a hand is planted
+  smearGap: [0.16, 0.3],       // m between trail decals, fresh .. nearly bled out (never under gore.smearStep)
+  prints: 30,                  // bloody hand prints a man
+  away: true,                  // he carries on behind shut doors and in a room you left (memory); false = frozen as before
   lieH: [0.135, 0.175],        // m pelvis height face down / up .. on his side
   kneeH: 0.075,                // m knee joint off the floor, kneeling
   drip: 5.5,                   // drops / s per wound at first (limbs 60%), fading with him
@@ -22977,22 +22991,13 @@ const downArm = (B, s) => ({ mode: 'hang', up: B['upperArm' + s], fore: B['foreA
 
 // He goes down: out of the fight now, dying on the floor until shot again or bled out.
 function enemyDown(e, h, dir, P) {
-  const now = wnow(), Bl = CONFIG.polish.blood, B = e.B, f = e.room.f || 1;
+  const now = wnow(), B = e.B, f = e.room.f || 1;
   e.dead = true; e.state = 'dead'; e.downAt = now;
   e.vel.set(0, 0); e.speed = 0; e.aim = 0; e.reloadT = 0;
   enemyOut(e);
   e.root.updateWorldMatrix(true, true);
   const wb = B[h.b] || B.spine;
-  const D = e.downed = {
-    t: 0, dur: rnd2(DOWNED.time[0], DOWNED.time[1]) * Bl.bleedTime, phase: 'fall', vig: 1, seed: Math.random() * 6.283,
-    wb, wl: wb.worldToLocal(new THREE.Vector3().copy(P)), c: 'R', sg: -1, wArm: null, wLeg: null,
-    s: downPoseObj(), tg: downPoseObj(), h: e.yaw, hT: e.yaw, hOff: 0, yawEnd: 0, fwd: true, Tk: 0.45, Tt: 0.55,
-    act: 'fall', post: 'prone', actT: 0, press: false, reachT: 0, pain: 0, spasmT: 1.5, legIK: false,
-    crawlLeft: rnd2(DOWNED.crawl[0], DOWNED.crawl[1]), crawlV: 0, cph: 0, strokes: 0,
-    arm: { L: downArm(B, 'L'), R: downArm(B, 'R') }, snap: DRIVE_ORDER.map((k) => B[k].quaternion.clone()), snapP: B.pelvis.position.clone(), y0: B.pelvis.position.y,
-    foot: { L: new THREE.Vector3(), R: new THREE.Vector3() }, footQ: { L: new THREE.Quaternion(), R: new THREE.Quaternion() },
-    hdW: new THREE.Vector3(), slide: new THREE.Vector3(), hipD: Math.max(0, -B.thighL.position.y), nav: navGrid(e.room), thud: false, dtP: 0, shT: 0, smA: new THREE.Vector3(), smOk: false, hist: []
-  };
+  const D = e.downed = downedMake(e, wb, wb.worldToLocal(new THREE.Vector3().copy(P)), downedLife(h.b));
   // which hand goes to it: for an arm the other hand, for a leg the same side, else the side it is on
   if (/^(upperArm|foreArm)/.test(h.b)) { D.wArm = h.b.slice(-1); D.c = D.wArm === 'L' ? 'R' : 'L'; }
   else if (/^(thigh|shin)/.test(h.b)) { D.wLeg = h.b.slice(-1); D.c = D.wLeg; }
@@ -23019,6 +23024,27 @@ function enemyDown(e, h, dir, P) {
   voxDyingStart(e);                                               // step 80 voices, as long as he lasts
   if (e.moan) { e.moan.until = now + D.dur; e.moan.next = now + D.Tk + D.Tt + 0.5 + Math.random(); }
   loopEnemyDied(e);                                               // score, squad reaction, room clear: he is down
+}
+// His state on the floor (made once: at the drop, or when a rebuilt room brings him back).
+function downedMake(e, wb, wl, dur) {
+  const B = e.B;
+  return {
+    t: 0, dur, phase: 'fall', vig: 1, seed: Math.random() * 6.283,
+    wb, wl, c: 'R', sg: -1, wArm: null, wLeg: null,
+    s: downPoseObj(), tg: downPoseObj(), h: e.yaw, hT: e.yaw, hOff: 0, yawEnd: 0, fwd: true, Tk: 0.45, Tt: 0.55,
+    act: 'fall', post: 'prone', actT: 0, press: false, reachT: 0, pain: 0, spasmT: 1.5, legIK: false,
+    crawlLeft: rnd2(DOWNED.crawl[0], DOWNED.crawl[1]), crawlV: 0, cph: 0, strokes: 0, pulls: 0,
+    path: null, pi: 0, stuck: 0, blockT: 0, away: false, fresh: false, catchUp: false, prints: 0,   // step 111
+    arm: { L: downArm(B, 'L'), R: downArm(B, 'R') }, snap: DRIVE_ORDER.map((k) => B[k].quaternion.clone()), snapP: B.pelvis.position.clone(), y0: B.pelvis.position.y,
+    foot: { L: new THREE.Vector3(), R: new THREE.Vector3() }, footQ: { L: new THREE.Quaternion(), R: new THREE.Quaternion() },
+    hdW: new THREE.Vector3(), slide: new THREE.Vector3(), hipD: Math.max(0, -B.thighL.position.y), nav: navGrid(e.room), thud: false, dtP: 0, shT: 0, smA: new THREE.Vector2(), smOk: false, hist: []
+  };
+}
+// Step 111: how long he lasts, by what was hit: the chest shorter, the gut and the legs longer.
+function downedLife(b) {
+  const K = DOWNED.lifeK, k = b === 'chest' ? K.chest : b === 'spine' ? K.spine : b === 'pelvis' ? K.pelvis
+    : /^(thigh|shin)/.test(b) ? K.leg : /^(upperArm|foreArm)/.test(b) ? K.arm : 1;
+  return rnd2(DOWNED.life[0], DOWNED.life[1]) * k;
 }
 // Which way he goes down: the floor his body will cover must be clear; the head away from the round, a
 // forward collapse a little preferred, a big twist not. |hOff| <= 1.6: knees then front; else sits, falls back.
@@ -23095,24 +23121,55 @@ function downedLand(e, D) {
   }
   D.legIK = false; D.phase = 'floor';
   for (const k of DOWN_KEYS) D.tg[k] = s[k];
-  D.act = 'clutch'; D.post = D.fwd ? 'prone' : D.backWound ? 'side' : 'back'; D.actT = D.fwd ? rnd2(1.4, 2.4) : rnd2(2.8, 4.2); D.press = Math.random() < 0.6;
+  D.act = 'clutch'; D.post = D.fwd ? 'prone' : D.backWound ? 'side' : 'back'; D.actT = rnd2(DOWNED.start[0], DOWNED.start[1]) + (D.fwd ? 0 : 0.6); D.press = Math.random() < 0.6;   // step 111: soon on the move
   D.hist.push(`${D.t.toFixed(1)} ${D.post}`);
   P10.pending.push({ at: P10.time + 0.8, fn: () => downedPool(e, 0.6) });
 }
-// What next on the floor: a crawl while he has the strength and a clear way, else clutching (front, side, back).
+// What next on the floor: a crawl while he has the strength and a way, else a rest (short ones on his
+// front, between bouts) or clutching (front, side, back).
 function downedNext(e, D) {
-  const left = 1 - D.t / D.dur, was = D.act;
-  if (was !== 'crawl' && D.crawlLeft > 0.25 && D.vig > 0.45 && left > 0.3 && downedPath(e, D)) {
-    D.act = 'crawl'; D.post = 'crawl'; D.strokes = 2 + (Math.random() * 3 | 0); D.cph = 0; D.actT = 30;
+  const was = D.act;
+  if (was !== 'crawl' && D.crawlLeft > 0.25 && D.vig > DOWNED.crawlVig && D.stuck < 4 && downedRoute(e, D)) {
+    D.act = 'crawl'; D.post = 'crawl'; D.strokes = Math.round(mix(DOWNED.pulls[0], DOWNED.pulls[1], D.vig) + Math.random()); D.cph = 0; D.pulls = 0; D.actT = 30; D.blockT = 0;
   } else {
+    const rest = was === 'crawl' ? rnd2(0.8, 1.25) * mix(DOWNED.rest[0], DOWNED.rest[1], D.vig) : 0, more = D.crawlLeft > 0.25 && D.vig > DOWNED.crawlVig;
     let p = Math.random() < (D.post === 'back' ? 0.45 : 0.3) ? 'back' : was === 'crawl' && Math.random() < 0.4 ? 'prone' : 'side';
-    if (D.wArm) p = 'back';                                       // a hit arm is held on the belly
+    if (was === 'crawl' && more && rest < 2.6 && !D.frontWound && !D.wArm) p = 'prone';   // a breath between pulls: he stays on his front
+    else if (D.wArm) p = 'back';                                  // a hit arm is held on the belly
     else if (p === 'back' && D.backWound) p = 'side';
     else if (p === 'prone' && D.frontWound) p = 'side';
-    D.act = 'clutch'; D.post = p; D.press = Math.random() < 0.6; D.actT = rnd2(2.6, 5) * mix(1.5, 1, D.vig);
-    if (was === 'crawl') P10.pending.push({ at: P10.time + 0.6, fn: () => downedPool(e, 0.4) });
+    D.act = 'clutch'; D.post = p; D.press = Math.random() < 0.6;
+    D.actT = was === 'crawl' && more ? rest : rnd2(2.6, 5) * mix(1.5, 1, D.vig);
+    if (was === 'crawl' && (!more || D.actT > 3)) downedPoolSoon(e, D, more ? 0.35 : 0.55);   // a long rest, or where he stops for good
   }
-  D.hist.push(`${D.t.toFixed(1)} ${D.post}`);
+  D.hist.push(`${D.t.toFixed(1)} ${D.post}`); if (D.hist.length > 48) D.hist.shift();
+}
+// Step 111: where he drags himself: on along his A* path (findPath) if one is left, else a new one to a cover
+// spot hidden from you, or just away from you, within what he has left; else the old way (straight on).
+function downedRoute(e, D) {
+  if (!D.path || D.pi >= D.path.length) { D.path = downedGoal(e, D); D.pi = 0; }
+  return !!D.path || downedPath(e, D);
+}
+function downedGoal(e, D) {
+  const room = e.room, G = D.nav, x = e.pos.x, z = e.pos.y, reach = Math.min(D.crawlLeft, 6) + 0.5;
+  headWorld(_d91.w);
+  const px = rLX(room, _d91.w.x), pz = rLZ(room, _d91.w.z), d0 = Math.hypot(x - px, z - pz);
+  let bs = -1e9, bx = 0, bz = 0;
+  const score = (gx, gz, bonus) => {
+    const d = Math.hypot(gx - x, gz - z);
+    if (d < 1 || d > reach || !navFree(G, gx, gz)) return;
+    const sc = Math.hypot(gx - px, gz - pz) - d0 + bonus - 0.12 * d + Math.random() * 0.6;
+    if (sc > bs) { bs = sc; bx = gx; bz = gz; }
+  };
+  for (const c of coverPoints(room)) {                             // the cover is between that spot and you: better
+    const cx = rLX(room, c.x), cz = rLZ(room, c.z);
+    score(cx, cz, c.nx * (px - cx) + c.nz * (pz - cz) < 0 ? 2 : 0.4);
+  }
+  const a0 = Math.random() * 6.283;
+  for (let i = 0; i < 12; i++) { const a = a0 + i * Math.PI / 6, r = rnd2(1.2, reach); score(x - Math.sin(a) * r, z - Math.cos(a) * r, 0); }
+  if (bs < -1e8) return null;
+  const P = findPath(room, x, z, bx, bz);
+  return P && P.length ? P : null;
 }
 // A clear way to drag himself: on along his body, or turned up to ~1 rad (he pivots as he pulls).
 function downedPath(e, D) {
@@ -23124,29 +23181,59 @@ function downedPath(e, D) {
   }
   return false;
 }
+// Step 111: one step along his way (room-local, shared by the posed crawl and downedAway). He heads for the
+// furthest waypoint in a straight clear line (so he never cuts a corner), goes slower in a sharp turn and
+// pivots while his head would go into something; the last waypoint is where his head gets to. false = this
+// bout is over (end of the path, blocked).
+function downedStep(e, D, sp, dt) {
+  let hd = 0.6;                                                  // m to his head (checked for room)
+  if (D.path) {
+    if (D.pi < D.path.length - 1 && navLine(D.nav, e.pos.x, e.pos.y, D.path[D.pi + 1].x, D.path[D.pi + 1].y)) D.pi++;
+    const W = D.path[D.pi], dx = W.x - e.pos.x, dz = W.y - e.pos.y, d = Math.hypot(dx, dz), last = D.pi >= D.path.length - 1;
+    if (d < (last ? 0.6 : 0.25)) { if (last) { D.path = null; return false; } D.pi++; return true; }
+    D.hT = Math.atan2(-dx, -dz); hd = Math.min(hd, d);
+  }
+  const err = wrapAngle(D.hT - D.h), tr = DOWNED.turn * dt;
+  D.h += clamp(err, -tr, tr);
+  const fx = -Math.sin(D.h), fz = -Math.cos(D.h);
+  if (!navFree(D.nav, e.pos.x + fx * hd, e.pos.y + fz * hd)) {     // head into a wall / crate: pivot (faster), then give up
+    D.h += clamp(wrapAngle(D.hT - D.h), -tr, tr);
+    if ((D.blockT += dt) > 2.5) { D.stuck++; D.path = null; return false; }
+    return true;
+  }
+  const st = sp * dt * clamp(1.2 - Math.abs(err), 0.25, 1);
+  let nx = e.pos.x + fx * st, nz = e.pos.y + fz * st;
+  if (!navFree(D.nav, nx, nz)) {                                 // grazing an edge: slide along it, else this way is shut
+    if (navFree(D.nav, nx, e.pos.y)) nz = e.pos.y; else if (navFree(D.nav, e.pos.x, nz)) nx = e.pos.x;
+    else { D.stuck++; D.path = null; return false; }
+  }
+  e.pos.set(nx, nz); D.crawlLeft -= st; D.blockT = 0; D.stuck = Math.max(0, D.stuck - dt);   // going again: the failures fade
+  return true;
+}
+// Seconds per arm cycle at his strength (two arms: two strokes a cycle; one arm: a longer stroke).
+const downedPeriod = (D) => (D.wArm ? 1.25 : 2) * DOWNED.stroke / mix(DOWNED.speed[0], DOWNED.speed[1], D.vig);
+// Hands planted so far this bout (arm L plants at cycle 0.36, R at 0.86; one arm at 0.36).
+const downedPlants = (D) => D.wArm ? Math.floor(D.cph + 0.64) : Math.floor(2 * D.cph + 0.28);
 // The crawl: arms alternate (reach 36% of a cycle, then planted while the body is pulled past the hand).
 function downedCrawl(e, D, dt) {
-  const s = D.s, arms = D.wArm ? 1 : 2;
+  const s = D.s, arms = D.wArm ? 1 : 2, P = downedPeriod(D);
   let v = 0;
   if (Math.abs(s.rho - D.sg * 0.14) < 0.4) {                      // rolled onto his front: go
-    const P = mix(DOWNED.period[0], DOWNED.period[1], D.vig) * (D.wArm ? 0.6 : 1);
     D.cph += dt / P;
     for (let i = 0; i < arms; i++) {
       const ph = (D.cph + i * 0.5) % 1;
       if (ph >= 0.36) v += DOWNED.stroke * (D.wArm ? 1.25 : 1) * 1.5708 * Math.sin(Math.PI * (ph - 0.36) / 0.64) / (0.64 * P);
     }
   }
+  D.pulls = downedPlants(D);                                     // (the posed hands print in downedArm)
   D.crawlV += (v - D.crawlV) * (1 - Math.exp(-dt * 10));
   const sp = D.crawlV;
+  let go = true;
   if (sp > 0.01) {
-    D.h += clamp(wrapAngle(D.hT - D.h), -0.45 * dt, 0.45 * dt);  // pivots toward the clear way as he pulls
-    const fx = -Math.sin(D.h), fz = -Math.cos(D.h), nx = e.pos.x + fx * sp * dt, nz = e.pos.y + fz * sp * dt;
-    if (navFree(D.nav, nx, nz) && navFree(D.nav, nx + fx * 0.8, nz + fz * 0.8)) {
-      e.pos.set(nx, nz); D.crawlLeft -= sp * dt;
-      downedSmear(e, D);
-    } else { D.crawlLeft = 0; D.crawlV = 0; }                     // a wall, a crate: that is as far as he gets
+    go = downedStep(e, D, sp, dt);
+    if (go) { e.B.spine.getWorldPosition(_d91.b); downedSmear(e, D, rLX(e.room, _d91.b.x), rLZ(e.room, _d91.b.z)); }
   }
-  if (D.cph * arms >= D.strokes || D.crawlLeft <= 0 || D.vig < 0.3) { D.smOk = false; downedNext(e, D); }
+  if (!go || D.cph * arms >= D.strokes || D.crawlLeft <= 0 || D.vig < DOWNED.crawlVig) downedNext(e, D);   // the trail picks up where it stopped
 }
 // Targets for the floor loop: a base pose per posture, noise (writhing, rocking), pain spasms (he curls up),
 // breathing; all of it scaled by how much he has left.
@@ -23233,11 +23320,15 @@ function downedArm(e, D, side) {
       if (a.mode === 'crawl') {
         const ph = D.wArm ? D.cph % 1 : (D.cph + (side === 'L' ? 0 : 0.5)) % 1;
         const R = V.b.copy(sh).addScaledVector(D.hdW, DOWNED.reach).addScaledVector(V.cR, sS * 0.12); R.y = fy + 0.035;
+        if (D.fresh) a.from.copy(R);                              // step 111: posed again after downedAway: no reach from where he was
         if (ph < 0.36) {                                          // reach: up off the floor and forward
           if (a.planted) { a.planted = false; a.from.copy(a.w); }
           const x = smoothstep(0, 1, ph / 0.36);
           wd.lerpVectors(a.from, R, x); wd.y += 0.09 * Math.sin(Math.PI * x);
-        } else { if (!a.planted) { a.planted = true; a.plant.copy(R); } wd.copy(a.plant); }   // planted: the body is pulled past it
+        } else {                                                  // planted: the body is pulled past it
+          if (!a.planted) { a.planted = true; a.plant.copy(R); if (!D.fresh) downedPrint(e, D, side, rLX(e.room, R.x), rLZ(e.room, R.z)); }   // step 111: a bloody hand print
+          wd.copy(a.plant);
+        }
         g.copy(D.hdW);
         pole.copy(V.cR).multiplyScalar(sS * 0.8).addScaledVector(V.cB, 0.6).addScaledVector(V.cU, -0.15);
       } else if (a.mode === 'catch') {                            // falling: a hand out to the floor
@@ -23309,7 +23400,7 @@ function downedApply(e, D) {
 // Bleeding on the floor: drips from every wound with the heartbeat, weaker as he runs dry.
 function downedBleed(e, D, dt, left) {
   const o = DOWN_DROP || (DOWN_DROP = Object.assign({}, BLOOD_DROP, { sp: [0.05, 0.35], land: 1 }));
-  const beat = 0.55 + 0.45 * Math.max(0, Math.sin(D.t * 7.5)), r = DOWNED.drip * (0.3 + 0.7 * left) * beat;
+  const beat = 0.55 + 0.45 * Math.max(0, Math.sin(D.t * 7.5)), r = DOWNED.drip * (0.15 + 0.85 * left * left) * beat;   // step 111: a long life, so it slows sooner
   for (const w of e.wounds) {
     if (Math.random() >= dt * r * (w.part === 'limb' ? 0.6 : 1)) continue;
     _dy.o.copy(w.lp).applyMatrix4(w.bone.matrixWorld);
@@ -23317,6 +23408,12 @@ function downedBleed(e, D, dt, left) {
   }
 }
 // A pool where he lies (merges with one already there, step 70).
+function downedPoolSoon(e, D, s1) {                              // step 111: unposed (downedAway, catch-up), a pool right now where he is
+  if (!D.away) { P10.pending.push({ at: P10.time + 0.6, fn: () => { if (e.downed && !e.downed.away) downedPool(e, s1); } }); return; }
+  if (!CONFIG.polish.blood.on || !e.wounds || !e.wounds.length) return;
+  const d = downedMark(e.room, 'pool', e.pos.x - Math.sin(D.h) * 0.2, e.pos.y - Math.cos(D.h) * 0.2, 1, 0, s1 * rnd2(0.85, 1.1), Math.random() * 6.283);
+  if (d) goreFreshPool(Object.assign(d, { room: e.room, s1, T: 0 }));   // fresh, drying from now
+}
 function downedPool(e, s1) {
   if (!e.room.active || !CONFIG.polish.blood.on) return;
   let wb = null, wy = Infinity;
@@ -23325,24 +23422,132 @@ function downedPool(e, s1) {
   p.y = Math.max(p.y, e.room.origin.y + 0.2);
   poolAt(p, s1, 1.3);
 }
-// Dragging himself, he leaves a streak (as goreSmear for a body).
-function downedSmear(e, D) {
-  if ((e.smears || 0) >= CONFIG.gore.smearMax || !e.wounds || !e.wounds.length) return;
-  const p = e.B.spine.getWorldPosition(_d91.b), fy = e.room.origin.y;
-  if (!D.smOk) { D.smA.set(p.x, fy, p.z); D.smOk = true; return; }
-  const dx = p.x - D.smA.x, dz = p.z - D.smA.z;
-  if (dx * dx + dz * dz < 0.14 * 0.14) return;
-  GORE.d.set(dx, 0, dz).normalize(); GORE.v.set((p.x + D.smA.x) / 2, fy, (p.z + D.smA.z) / 2);
-  const n = e.smears || 0;
-  addBloodDecal(e.room, n < 8 ? 'smear1' : 'smear2', GORE.v, _p10.up, rollAlong(_p10.up, GORE.d) + rnd2(-0.2, 0.2), rnd2(0.7, 0.95));
-  D.smA.set(p.x, fy, p.z); e.smears = n + 1;
+// Step 111: a decal on his room's floor from room-local x / z and a room-local direction (its +x), saved in
+// room memory like addBloodDecal (restoreRoomHoles puts it back). No world conversion, so it also works
+// unposed; the floor at the room origin.
+const _d111 = new THREE.Vector3();
+function downedMark(room, kind, lx, lz, dx, dz, s, ra = 0) {
+  if (!room.active || !WEAPON.decalMat[kind]) return null;
+  const roll = rollAlong(_p10.up, _d111.set(dx, 0, dz)) + ra, L = decalLayer(room, room.group, kind);
+  const idx = L.n % L.im.instanceMatrix.count, n0 = L.n;
+  putDecal(L, kind, lx, 0, lz, 0, 1, 0, roll, s);
+  const m = roomMem(room), cap = CONFIG.weapons.decalsPerRoom * 4;
+  m.holes.push([kind, lx, 0, lz, 0, 1, 0, roll, s]);
+  if (m.holes.length > cap) m.holes.splice(0, m.holes.length - cap);
+  return { L, idx, n0, lx, ly: 0, lz, roll };
+}
+// Dragging himself, he leaves a continuous streak (as goreSmear for a body): heavy while the wounds are
+// fresh, thinner and patchier as he runs dry. lx / lz = his trunk on the floor (room-local).
+function downedSmear(e, D, lx, lz) {
+  const C = CONFIG.gore, n = e.smears || 0;
+  if (n >= C.smearMax || !e.wounds || !e.wounds.length) return;
+  if (!D.smOk) { D.smA.set(lx, lz); D.smOk = true; return; }
+  const dx = lx - D.smA.x, dz = lz - D.smA.y, d = Math.hypot(dx, dz), left = 1 - D.t / D.dur;
+  if (d < Math.max(C.smearStep, mix(DOWNED.smearGap[1], DOWNED.smearGap[0], left))) return;
+  const now = wnow();
+  let fresh = 0;
+  for (const w of e.wounds) fresh = Math.max(fresh, Math.exp(-(now - (w.at || 0)) / 60));
+  const wet = left * (0.75 + 0.25 * fresh);
+  downedMark(e.room, wet > 0.6 && n < C.smearMax * 0.7 ? 'smear1' : 'smear2', (lx + D.smA.x) / 2, (lz + D.smA.y) / 2, dx / d, dz / d,
+    rnd2(0.8, 1) * (0.7 + 0.3 * wet), rnd2(-0.2, 0.2) + (n & 1 ? Math.PI : 0));
+  D.smA.set(lx, lz); e.smears = n + 1;
+}
+// A bloody hand print where a hand was planted to pull (the hand that held the wound nearly always).
+function downedPrint(e, D, side, lx, lz) {
+  if (D.prints >= DOWNED.prints || !e.wounds || !e.wounds.length || !WEAPON.decalMat.hprintL) return;
+  if (Math.random() >= (side === D.c ? 0.9 : 0.4) * (0.3 + 0.7 * (1 - D.t / D.dur))) return;
+  D.prints++;
+  downedMark(e.room, side === 'L' ? 'hprintL' : 'hprintR', lx, lz, -Math.sin(D.h), -Math.cos(D.h), rnd2(0.9, 1.05), rnd2(-0.25, 0.25));
+}
+// Step 111: away (his room out of view, or caught up after a rebuild): the same clock, decisions, path and
+// trail, but no pose, no skin, no drips, no voice. His root moves at his average pull speed.
+function downedAway(e, D, dt) {
+  D.away = true;
+  D.t += dt;
+  if (D.t >= D.dur) { downedEnd(e, D); return; }
+  D.vig = smoothstep(0.03, 0.45, 1 - D.t / D.dur);
+  if (e.moan) { e.moan.until = wnow() + D.dur - D.t; e.moan.t0 = e.moan.until - D.dur; }   // his clock goes on; the moans wait for you
+  D.actT -= dt; D.reachT = 0;
+  if (D.act !== 'crawl') { if (D.actT <= 0) downedNext(e, D); return; }
+  const arms = D.wArm ? 1 : 2;
+  D.cph += dt / downedPeriod(D);
+  const go = downedStep(e, D, mix(DOWNED.speed[0], DOWNED.speed[1], D.vig), dt);
+  if (go) {
+    const fx = -Math.sin(D.h), fz = -Math.cos(D.h);               // his forward (room-local); his right is (-fz, fx)
+    downedSmear(e, D, e.pos.x + fx * 0.2, e.pos.y + fz * 0.2);
+    for (const n = downedPlants(D); D.pulls < n; D.pulls++) {      // the hands he planted, ahead of his shoulders
+      const side = arms === 1 ? (D.wArm === 'L' ? 'R' : 'L') : D.pulls & 1 ? 'R' : 'L', o = (side === 'R' ? 0.17 : -0.17), k = 0.48 + DOWNED.reach;
+      downedPrint(e, D, side, e.pos.x + fx * k - fz * o, e.pos.y + fz * k + fx * o);
+    }
+  }
+  if (!go || D.cph * arms >= D.strokes || D.crawlLeft <= 0 || D.vig < DOWNED.crawlVig) downedNext(e, D);
+}
+// Posed at once where he is now (after downedAway, or brought back): the targets taken as they are, hands down.
+function downedSnap(e, D) {
+  const f = e.room.f || 1, s = D.s;
+  D.hdW.set(-Math.sin(D.h) * f, 0, -Math.cos(D.h) * f);
+  D.away = false; D.reachT = 0; D.crawlV = 0; D.smOk = false;
+  downedModes(D); downedTargets(e, D, 0);
+  for (const k of DOWN_KEYS) s[k] = D.tg[k];
+  s.py = mix(DOWNED.lieH[0], DOWNED.lieH[1], Math.abs(Math.sin(s.rho)));
+  D.arm.L.planted = D.arm.R.planted = false;
+  D.fresh = true; D.dtP = 2; downedApply(e, D); D.fresh = false; D.dtP = 0;
+}
+// Bled out: limp where he lies, a pool. Caught up after a rebuild, that pool is there already (finished).
+function downedEnd(e, D) {
+  if (D.away) downedSnap(e, D);
+  const room = e.room, done = D.catchUp;
+  e.B.pelvis.getWorldPosition(_d91.b); enemyDie(e, 'spine', _d91.v.set(0, -1, 0), _d91.b, 0);
+  if (done) P10.pending.push({ at: P10.time + 2.8, fn: () => { for (const g of P10.pools) if (g.room === room && g.t < 3.2) g.t = g.T; } });
+}
+// A room unloaded with him alive on the floor: his progress goes into its memory (room-local, bones by name).
+function downedSave(e) {
+  const D = e.downed, m = roomMem(e.room), key = (b) => Object.keys(e.B).find((k) => e.B[k] === b) || 'spine';
+  const fall = D.phase === 'fall', v3 = (v) => v ? [v.x, v.y, v.z] : null;
+  (m.down || (m.down = {}))[e.idx] = {
+    at: wnow(), x: e.pos.x, z: e.pos.y, h: fall ? D.h + D.hOff : D.h, t: D.t, dur: D.dur, crawlLeft: D.crawlLeft, act: fall ? 'clutch' : D.act, actT: fall ? 1 : D.actT,
+    cph: D.cph, strokes: D.strokes, pulls: D.pulls, stuck: D.stuck, prints: D.prints, smears: e.smears || 0, path: D.path ? D.path.map((p) => [p.x, p.y]) : null, pi: D.pi,
+    wb: key(D.wb), wl: v3(D.wl), c: D.c, sg: D.sg, wArm: D.wArm, wLeg: D.wLeg, bw: D.backWound, fw: D.frontWound,
+    wounds: (e.wounds || []).map((w) => ({ b: key(w.bone), lp: v3(w.lp), part: w.part, at: w.at, exit: w.exit, hole: w.hole || 0, hits: w.hits, la: v3(w.la), lt: v3(w.lt) }))
+  };
+}
+// The rebuilt room: he is back where he was, caught up on the time you were away (decisions, path, trail),
+// then posed; bled out meanwhile = limp at the end of his trail. The record is used up.
+function downedRestore(room, spec, i, R) {
+  delete roomMem(room).down[i];
+  if (!downedOn()) return;
+  const e = spawnEnemy(room, spec, i, []);
+  if (!e) return;
+  try { e.root.remove(e.gun.root); } catch (err) { /* no gun */ }  // it fell when he went down
+  e.dead = true; e.state = 'dead'; e.vel.set(0, 0); e.speed = 0; e.aim = 0; e.reloadT = 0; e.smears = R.smears;
+  e.pos.set(R.x, R.z); e.yaw = R.h;
+  const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+  e.wounds = [];
+  for (const w of R.wounds) if (e.B[w.b]) e.wounds.push(Object.assign({ bone: e.B[w.b], lp: V(w.lp), part: w.part, t: 0, at: w.at, exit: w.exit }, w.hole && w.la && w.lt ? { hole: w.hole, hits: w.hits, la: V(w.la), lt: V(w.lt) } : {}));
+  const D = e.downed = downedMake(e, e.B[R.wb] || e.B.spine, V(R.wl), R.dur);
+  Object.assign(D, { t: R.t, h: R.h, hT: R.h, crawlLeft: R.crawlLeft, act: R.act, actT: R.actT, cph: R.cph, strokes: R.strokes, pulls: R.pulls, stuck: R.stuck, prints: R.prints,
+    path: R.path && R.path.map((p) => new THREE.Vector2(p[0], p[1])), pi: R.pi, c: R.c, sg: R.sg, wArm: R.wArm, wLeg: R.wLeg, backWound: R.bw, frontWound: R.fw,
+    phase: 'floor', post: R.act === 'crawl' ? 'crawl' : R.fw ? 'side' : 'prone', vig: smoothstep(0.03, 0.45, 1 - R.t / R.dur) });
+  enemyCurl(e, 0.55);
+  const now = wnow();
+  e.moan = { t0: now - D.t, until: now + D.dur - D.t, next: now + 1 + Math.random() * 2 };
+  D.catchUp = true;
+  for (let T = DOWNED.away ? Math.max(0, now - R.at) : 0; T > 0 && e.downed; T -= 0.2) downedAway(e, D, Math.min(0.2, T));
+  if (!e.downed) return;                                          // bled out while you were away
+  D.catchUp = false;
+  downedSnap(e, D);
+  D.away = !(room.visible || room === stream.current);            // still behind a shut door: he carries on unposed
 }
 // Per frame, for a man down in the active room (from enemiesDyingUpdate).
 function downedUpdate(e, dt) {
   const D = e.downed;
-  if (!(e.room.visible || e.room === stream.current)) return;     // behind a shut door: frozen
+  if (!(e.room.visible || e.room === stream.current)) {           // behind a shut door: frozen (step 111: he carries on, unposed)
+    if (D.phase === 'floor' && DOWNED.away) downedAway(e, D, dt);
+    return;
+  }
+  if (D.away) downedSnap(e, D);                                   // step 111: back in view, posed where he got to
   D.t += dt;
-  if (D.t >= D.dur) { e.B.pelvis.getWorldPosition(_d91.b); enemyDie(e, 'spine', _d91.v.set(0, -1, 0), _d91.b, 0); return; }   // bled out: still, limp, silent
+  if (D.t >= D.dur) { downedEnd(e, D); return; }                  // bled out: still, limp, silent
   const left = 1 - D.t / D.dur;
   D.vig = smoothstep(0.03, 0.45, left);
   if (e.moan) { const now = wnow(); e.moan.until = now + D.dur - D.t; e.moan.t0 = e.moan.until - D.dur; voxDyingTick(e, now); }   // step 80, on his clock (world dt)
@@ -23371,7 +23576,7 @@ function downedUpdate(e, dt) {
 }
 function downedShift(D, dx, dy, dz) {
   for (const a of [D.arm.L, D.arm.R]) for (const v of [a.w, a.wd, a.plant, a.from]) { v.x += dx; v.y += dy; v.z += dz; }
-  for (const v of [D.foot.L, D.foot.R, D.smA]) { v.x += dx; v.y += dy; v.z += dz; }
+  for (const v of [D.foot.L, D.foot.R]) { v.x += dx; v.y += dy; v.z += dz; }   // (step 111: smA is room-local)
 }
 // Step 91: limp. A man already down goes still where he lies (pumping only if he still has blood); a head
 // shot drops where he stood: the hips and chest straight down, the knees folding, nothing else.
@@ -28109,6 +28314,24 @@ function printCanvas(alpha, seed, wet = false) {   // step 94: wet = a water pri
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8;
   return t;
 }
+// Step 111: a bloody palm, fingers toward +x, dragged back a little as the body was pulled past it
+// (heel smear toward -x); thumb on +y (left = false) or -y. Gaps where the skin did not print.
+function handPrintCanvas(alpha, seed, left) {
+  const S = 128, cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d'), R = mulberry32(seed), ty = left ? -1 : 1;
+  const col = (a) => `rgba(${(60 + R() * 24) | 0}, ${(3 + R() * 5) | 0}, ${(2 + R() * 4) | 0}, ${(alpha * a * (0.7 + R() * 0.3)).toFixed(3)})`;
+  const blob = (x, y, rx, ry, a, rot = 0) => { g.fillStyle = col(a); g.beginPath(); g.ellipse(x * S, y * S, rx * S, ry * S, rot, 0, Math.PI * 2); g.fill(); };
+  for (let i = 0; i < 7; i++) blob(0.3 - i * 0.03, 0.5 + (R() - 0.5) * 0.06, 0.13, 0.1, 0.12);   // the drag behind the heel
+  for (let i = 0; i < 26; i++) { const a = R() * 6.283, r = Math.sqrt(R()); blob(0.42 + Math.cos(a) * r * 0.13, 0.5 + Math.sin(a) * r * 0.12, 0.035, 0.03, 0.75); }   // palm
+  [[-0.11, 0.17], [-0.04, 0.2], [0.035, 0.19], [0.1, 0.15]].forEach(([y, L]) => {   // four fingers: pads with gaps at the creases
+    for (let k = 0; k < 3; k++) if (R() > 0.12) blob(0.57 + L * (k + 0.6) / 3.2, 0.5 + y * ty, L / 7.5, 0.024, 0.85, 0);
+  });
+  for (let k = 0; k < 2; k++) if (R() > 0.15) blob(0.5 + k * 0.07, 0.5 + (0.17 + k * 0.05) * ty, 0.04, 0.026, 0.8, 0.6 * ty);   // thumb
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8;
+  return t;
+}
 function goreInitPool(im) {                                     // every pool in a layer starts dry; a new one is set fresh
   for (let i = 0; i < im.instanceMatrix.count; i++) im.setColorAt(i, GORE.cDry);
   im.instanceColor.needsUpdate = true;
@@ -28286,6 +28509,12 @@ function polishKit() {
     WEAPON.decalMat[k] = new THREE.MeshStandardMaterial({ map: printCanvas(a, (9100 + a * 100) | 0), transparent: true, depthWrite: false, roughness: 0.45, metalness: 0,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
   }
+  // Step 111: bloody hand prints from a man dragging himself (the prints' shader: nothing new compiles)
+  for (const [k, l] of [['hprintL', true], ['hprintR', false]]) {
+    DECAL_SIZE[k] = 0.24;
+    WEAPON.decalMat[k] = new THREE.MeshStandardMaterial({ map: handPrintCanvas(0.85, l ? 11101 : 11102, l), transparent: true, depthWrite: false, roughness: 0.45, metalness: 0,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  }
   // Step 92: broken glass on the floor; the pool's features (map + normalMap + transparent), so no new program
   if (GLASS_Q && CONFIG.polish.glass && CONFIG.polish.glass.on) {
     DECAL_SIZE.glass = CONFIG.polish.glass.size;
@@ -28301,7 +28530,7 @@ function polishKit() {
     wm.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', '#ifdef USE_COLOR\n\tdiffuseColor.a *= vColor.g;\n#endif'); };
     wm.customProgramCacheKey = () => 'wprint94';
   }
-  for (const kind of ['blood', 'pool', 'print1', 'print2', 'print3', 'smear1', 'smear2', 'run', ...(WEAPON.decalMat.glass ? ['glass'] : []), ...(WEAPON.decalMat.wprint ? ['wprint'] : [])]) {
+  for (const kind of ['blood', 'pool', 'print1', 'print2', 'print3', 'hprintL', 'hprintR', 'smear1', 'smear2', 'run', ...(WEAPON.decalMat.glass ? ['glass'] : []), ...(WEAPON.decalMat.wprint ? ['wprint'] : [])]) {
     const im = new THREE.InstancedMesh(WEAPON.decalGeo, WEAPON.decalMat[kind], 1);
     if (kind === 'pool' && GORE_ON) im.setColorAt(0, GORE.cDry);   // step 41: pools dry by instance colour, compiled now
     if (kind === 'wprint') im.setColorAt(0, SPLASH.c.setScalar(1));   // step 94: the instance-colour variant
@@ -36661,7 +36890,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
