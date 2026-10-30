@@ -1823,7 +1823,8 @@ const PROJECT_RULES = {
     'A new rate is on trial for trial s, while quality changes wait: fps under rate - trialDrop for 2 s sends it back. Passing the trial remembers it for the next session.',
     'At a raised rate the rate gives way before any quality: fps under rate - dropBelow for dropAfter s steps down one rung before foveation, shadows or detail react; the remembered rate goes down with it and that rung waits cooldown s, doubled each time it fails. At the bottom rung the step 10 / step 25 quality system works as before, with one change: if foveation has to go back up within 30 s of easing off, the next ease-off waits twice as long (up to 8x raiseAfter), back to normal after 120 s settled. A scene on the edge no longer pumps the foveation every few seconds.',
     'CONFIG.xr.targetFps is the live rate while in the headset, so the quality system, the profiler budget and detail struggle mode all follow it; it returns to the base on leaving VR. cqcXR() shows the rate, the ladder, changes, the frame work and the next start rate. Boundary and room untouched: no new session features.',
-    'Step 104: gloved hands all the time (GLOVE104, ?glove104=off). Each hand draws the viewmodel pack glove (vm-ak arms cut at the wrist, the gun hands\' material, HANDLOOK.vmhScale) as a skinned child of the procedural hand, whose bones drive it (pack finger bone = procedural bone rotation x a fixed rest swing, pack lengths kept); the procedural mesh draws nothing but keeps posing, contact and grips. Saved choice moved to gloves104 so old gloves: false saves start gloved; the locker still takes them off (bare hands everywhere, guns too).'
+    'Step 104: gloved hands all the time (GLOVE104, ?glove104=off). Each hand draws the viewmodel pack glove (vm-ak arms cut at the wrist, the gun hands\' material, HANDLOOK.vmhScale) as a skinned child of the procedural hand, whose bones drive it (pack finger bone = procedural bone rotation x a fixed rest swing, pack lengths kept); the procedural mesh draws nothing but keeps posing, contact and grips. Saved choice moved to gloves104 so old gloves: false saves start gloved; the locker still takes them off (bare hands everywhere, guns too).',
+    'Step 109: viewmodel sleeves in VR (CONFIG.body.vmSleeves, ?vmsleeves=off = the procedural sleeves). Your arms wear the computer view\'s tactical top: vm-ak\'s arm mesh above the glove\'s wrist cut (plus the triangles across the cut, so cuff and glove meet with no gap), fitted by the glove\'s own wrist frame, its bent bind arm straightened (the elbow\'s bend plane turned onto the body\'s hinge, spread up the forearm), each segment stretched to the body\'s arm so the elbow lands on the IK elbow, its own girth x CONFIG.body.vmSleeveGirth (1.05, faded in above the cuff), the open top carried on to a deltoid cap inside the torso (fabric UVs run on, mirrored). Skinned to the body\'s own arm bones with the old sleeve\'s knots (forearm twist, elbow and shoulder helpers); the shirt draws its torso only. Tinted by the locker uniform like the computer sleeves, the pack\'s normal map kept, the torso\'s near fade (0.045 m), both faces. ARMFIT / ARM_STOCK clearances scale with the new girth. Bare hands keep the same sleeve. One draw per arm, nothing per frame.'
   ],
   step34: [
     'Hitch hunter (HITCH, ?hitch=off): a hitch is a frame interval over 1.5 frames at the live rate (profBudget). Each frame hitchEnd (from profEnd) keeps, in one reused record, the game work time, the slowest profiler section, events noted during the frame (hitchNote) and how many shader programs, geometries and textures the renderer gained; the next profBegin (hitchFrame) knows the interval and, only for a hitch, stores a small object: time, ms, game work, main cause and every reason.',
@@ -2281,6 +2282,8 @@ const CONFIG = {
     near: 0.045,               // m: only what would cut the lens fades (was 0.12: you saw into your own body)
     armNearDesk: 0.09,         // step 22.1, desktop only: sleeves closer than this to the camera fade (the ready carry folds the arm near your face)
     armStretch: 1.18,          // how far the arm bones may give before the hand leaves the sleeve (step 16.1: 1.1 -> 1.18)
+    vmSleeves: true,           // step 109: your arms wear the computer view's tactical top (vm-ak's sleeves; ?vmsleeves=off = the procedural sleeves)
+    vmSleeveGirth: 1.05,       // step 109: x the pack's own girth (1..1.08), faded in over the first 6 cm above the cuff (it meets the glove as cut)
     pouchReach: 0.16,           // m around the thigh pouch (and 80% of it around the shell caddy) that stows / takes ammo
     feet: {                    // step 31: feet read better from your head and hands (?feet=off: step 30)
       on: true,
@@ -17806,6 +17809,7 @@ function wearApply() {
     }
   }
   if (HANDS.sleeveMat) HANDS.sleeveMat.color.setHex(U.sleeve);
+  if (VMSLV.mat) VMSLV.mat.color.copy(VMSLV.base).multiply(vmArmColor(VMSLV.tint));   // step 109: the pack sleeves, as on the computer
   for (const h of HANDS.list || []) if (h.mesh && h.skinMat) {
     const G = GLOVE104.ready ? GLOVE104.sides[h.left ? 'L' : 'R'] : null;   // step 104: the pack glove drawn, your hand only drives it
     h.mesh.material = WEAR.gloves ? (G ? GLOVE104.hide : h.gloveMat || h.skinMat) : h.skinMat;
@@ -18511,8 +18515,14 @@ function vmTint(V) {
   const U = UNIFORMS[WEAR.uniform] || UNIFORMS.black, hex = WEAR.uniform === 'fsb' ? 0x6f7a5c : U.sleeve;
   if (VM.armHex === hex && V.tinted) return;
   VM.armHex = hex; V.tinted = true;
-  const c = new THREE.Color(hex).lerp(new THREE.Color(0xffffff), 0.35);
+  const c = vmArmColor(new THREE.Color());
   for (const m of V.armMats) m.color.copy(m.userData.vmBase).multiply(c);
+}
+// The pack sleeves' tint for the uniform you wear (the camouflage as its olive); step 109: the VR sleeves share it.
+const _vmWhite = new THREE.Color(0xffffff);
+function vmArmColor(out) {
+  const U = UNIFORMS[WEAR.uniform] || UNIFORMS.black;
+  return out.setHex(WEAR.uniform === 'fsb' ? 0x6f7a5c : U.sleeve).lerp(_vmWhite, 0.35);
 }
 // Which gun would show as a viewmodel now (null: the real gun and your own hands)
 // Step 89: any gun in your hand on a computer, aimed, scoped, with parts or mid-throw. Your own hands only with ?vm=off,
@@ -19211,6 +19221,18 @@ function vmhTake(h, g, role, dz, P, Q) {
 const GLOVE104 = { on: HANDLOOK.on && VMH.on && VM.on && !/[?&]glove104=off\b/.test(location.search), rig: 'ak', ready: false, hide: null, sides: null };
 const G104_MAP = { thumb1: 1, thumb2: 2, thumb3: 3, point1: 4, point2: 5, point3: 6, middle1: 7, middle2: 8, middle3: 9, ring1: 10, ring2: 11, ring3: 12, pink1: 13, pink2: 14, pink3: 15 };
 const _g4q = new THREE.Quaternion(), _g4M = new THREE.Matrix4(), _g4S = new THREE.Vector3(1, 1, 1);
+// Pack bind space (cm) -> your hand's mesh space at the glove hands' size, by the wrist frame: wrist W, elbow E (the
+// forearm, +z), index / pinky knuckles I, K. Shared by the glove (step 104) and the sleeves (step 109), so they meet.
+function vmPackWrist(h, W, E, I, K) {
+  const V3 = THREE.Vector3, frame = (w, e, a, b) => {
+    const z = e.clone().sub(w).normalize(), nr = new V3().crossVectors(a.clone().sub(w), b.clone().sub(w));
+    const y = nr.addScaledVector(z, -nr.dot(z)).normalize(), x = new V3().crossVectors(y, z);
+    return new THREE.Matrix4().makeBasis(x, y, z).setPosition(w);
+  };
+  const s = h.left ? -1 : 1, Wr = HAND_DATA.rig.wrist, Wo = new V3(s * Wr.cx, Wr.cy, Wr.z);
+  const sg = 0.01 * HANDLOOK.vmhScale * HANDLOOK.extra;                              // cm rig (vmhBake's unit), the gun hands' size
+  return frame(Wo, Wo.clone().setZ(Wr.z + 0.1), h.rp[4], h.rp[13]).multiply(new THREE.Matrix4().makeScale(sg, sg, sg)).multiply(frame(W, E, I, K).invert());
+}
 function glove104Start() {
   if (!GLOVE104.on || GLOVE104.sides) return;
   GLOVE104.sides = {};
@@ -19244,17 +19266,8 @@ function glove104Hand(h, arms, mat) {
   if (!ibm(wr) || !ibm(el)) return null;
   const at = (s) => list.findIndex((b) => nm(b) === pre + s), kI = at('point1'), kK = at('pink1');
   if (kI < 0 || kK < 0) return null;
-  const bp = bind.map((m) => new V3().setFromMatrixPosition(m));
-  const frame = (W, E, A, B) => {
-    const z = E.clone().sub(W).normalize(), nr = new V3().crossVectors(A.clone().sub(W), B.clone().sub(W));
-    const y = nr.addScaledVector(z, -nr.dot(z)).normalize(), x = new V3().crossVectors(y, z);
-    return new THREE.Matrix4().makeBasis(x, y, z).setPosition(W);
-  };
-  const s = h.left ? -1 : 1, Wr = HAND_DATA.rig.wrist, Wo = new V3(s * Wr.cx, Wr.cy, Wr.z);
-  const ours = frame(Wo, Wo.clone().setZ(Wr.z + 0.1), h.rp[4], h.rp[13]);
-  const fit = frame(bp[0], new V3().setFromMatrixPosition(new THREE.Matrix4().copy(ibm(el)).invert()), bp[kI], bp[kK]);
-  const sg = 0.01 * HANDLOOK.vmhScale * HANDLOOK.extra;                              // cm rig (vmhBake's unit), the gun hands' size
-  const G = ours.multiply(new THREE.Matrix4().makeScale(sg, sg, sg)).multiply(fit.invert());
+  const bp = bind.map((m) => new V3().setFromMatrixPosition(m)), s = h.left ? -1 : 1;
+  const G = vmPackWrist(h, bp[0], new V3().setFromMatrixPosition(new THREE.Matrix4().copy(ibm(el)).invert()), bp[kI], bp[kK]);
   const Gq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(G));
   const P0 = bp.map((p) => p.clone().applyMatrix4(G));
   const Q0 = bind.map((m) => Gq.clone().multiply(new THREE.Quaternion().setFromRotationMatrix(_g4M.extractRotation(m))));
@@ -30930,6 +30943,11 @@ function bodyRestMatrices() {
  *  BUILD — every piece, into one mesh per material.
  * ------------------------------------------------------------------------- */
 const SLOT_HOLSTER = { pos: [0.205, 0.98, 0.02] };   // where the pistol rides (body rest space, gun root)
+// Sleeve skinning by height up the arm (arm space z): the forearm twist over f2 / f1 / f0, elbow and shoulder helpers.
+function sleeveKnots(s) {
+  return [[0.066, BB['f2' + s]], [0.177, BB['f1' + s]], [0.262, BB['f0' + s]], [0.304, BB['elbH' + s]], [0.348, BB['up' + s]], [0.545, BB['up' + s]], [0.600, BB['shH' + s]]];
+}
+// Returns the torso's index count: the sleeves follow it in the index buffer (step 109 draws the torso only).
 function bodyBuildShirt(M) {
   // Torso: rings from inside the trousers up to a ribbed crew neck. Seam at the back centre.
   const rows = [];
@@ -30948,14 +30966,14 @@ function bodyBuildShirt(M) {
     const p = torsoPt(Math.min(y, 1.56), th, ex); p.y = y;
     return { p, u: (i / nu) * per(Math.min(y, 1.56)), v: y, w: tw(p), c: 1 };
   }, (i, j) => new THREE.Vector3(0, Math.min(rows[j][0], 1.545) - (j === rows.length - 1 ? 0.05 : 0), 0.02));
+  const torso = M.I.length;
   // Sleeves.
   for (const side of [1, -1]) {
     const s = SD(side), W = HAND_DATA.rig.wrist, zS = W.z + BARM.fore + BARM.up;
     const zs = [];
     for (let z = 0.032; z < zS; z += 0.0075) zs.push(z);
     zs.push(zS);
-    const dome = 9;
-    const K = [[0.066, BB['f2' + s]], [0.177, BB['f1' + s]], [0.262, BB['f0' + s]], [0.304, BB['elbH' + s]], [0.348, BB['up' + s]], [0.545, BB['up' + s]], [0.600, BB['shH' + s]]];
+    const dome = 9, K = sleeveKnots(s);
     const nu2 = 40, nv = zs.length + dome;
     const local = (i, j) => {
       const psi = (i / nu2) * Math.PI * 2;
@@ -30975,6 +30993,7 @@ function bodyBuildShirt(M) {
       return { p: armToBody(p, side), u: (i / nu2) * 0.3, v: z, w: bknots(z, K), c: 0 };   // step 16.1: arms never dissolve (only the torso does)
     }, (i, j) => { const z = local(0, j).z; const c = armJoint(side, Math.min(z, zS)); return armToBody(c, side); });
   }
+  return torso;
 }
 function bodyBuildPants(M) {
   // Seat: waistband down to where it splits into the legs. Seam at the back centre.
@@ -31319,7 +31338,7 @@ function bodyBuild() {
   if (!HANDS.ready) return;
   BODY.mats = bodyMaterials();
   const SH = new BodyMesh(), PA = new BodyMesh(), LE = new BodyMesh(), NY = new BodyMesh(), PO = new BodyMesh(), RU = new BodyMesh();
-  bodyBuildShirt(SH);
+  const torsoN = bodyBuildShirt(SH);
   bodyBuildPants(PA);
   const shells = bodyBuildBelt(NY, PO);
   bodyBuildHolster(PO, NY);
@@ -31339,7 +31358,7 @@ function bodyBuild() {
     root.add(m); BODY.meshes.push(m);
     return m;
   };
-  mk(SH, BODY.mats.shirt, true); mk(PA, BODY.mats.pants, true); mk(LE, BODY.mats.leather); mk(NY, BODY.mats.nylon); mk(PO, BODY.mats.poly); mk(RU, BODY.mats.rubber);
+  BODY.shirt = mk(SH, BODY.mats.shirt, true); BODY.shirtTorso = torsoN; mk(PA, BODY.mats.pants, true); mk(LE, BODY.mats.leather); mk(NY, BODY.mats.nylon); mk(PO, BODY.mats.poly); mk(RU, BODY.mats.rubber);
   BODY.root = root; BODY.bones = bones; BODY.skel = skel;
   BODY.M = BODY_BONES.map(() => new THREE.Matrix4());
   // Holster socket (pelvis space) and the pouch centres.
@@ -31366,11 +31385,246 @@ function bodyBuild() {
   scene.add(root);
   for (const h of HANDS.list) if (h.root.children[1]) h.root.children[1].visible = false;   // the body's sleeves replace the step 13 cuffs
   BODY.ready = true;
+  vmSleeveStart();                                                  // step 109: the pack's sleeves on these bones, once vm-ak loads
 }
 function bodyPrecompile(on) {
   if (!BODY.ready) return;
   if (on) { BODY.init = false; bodyPre(0); bodyArms(0); }
   BODY.root.visible = on || CONFIG.body.on;
+}
+
+/* ===========================================================================
+ *  STEP 109 — VIEWMODEL SLEEVES IN VR (CONFIG.body.vmSleeves, ?vmsleeves=off)
+ *  Your arms wear the computer view's tactical top: vm-ak's arm mesh above
+ *  the step 104 wrist cut (the vertices the glove leaves), one per side, in
+ *  place of the procedural sleeves (the shirt then draws its torso only).
+ *  Built once, in the body's rest space:
+ *    fit    pack bind -> your hand's mesh space by the glove's own wrist
+ *           frame (vmPackWrist), so the cuff meets the glove with no gap
+ *    pose   the pack's bent bind arm straightened onto the rest arm (LBS on
+ *           its arm / elbow / wrist weights): its elbow's bend plane turned
+ *           onto the body's hinge (the turn spread up the forearm from 0 at
+ *           the cuff), each segment stretched to BARM, so the elbow lands on
+ *           the IK elbow; girth = the pack's x vmSleeveGirth, faded in above
+ *           the cuff
+ *    top    the open top ring carried on to the shoulder and closed in a
+ *           flattened cap inside the torso, as the old sleeve's (vmSleeveTop)
+ *    skin   the old sleeve's knots by height up the arm (forearm twist over
+ *           f2 / f1 / f0, elbow and shoulder helpers): bound to the body's
+ *           own skeleton, each pack bone is a body bone x the fixed swing the
+ *           fit and pose bake into the rest geometry
+ *  Pack material (normal map, folds), tinted by the locker uniform like the
+ *  computer sleeves (vmArmColor); the torso's dithered near fade (body.near;
+ *  armNearDesk on a computer); both faces, the inside shaded as cloth. The
+ *  forearm / stock clearances (ARMFIT, ARM_STOCK) follow the new girth.
+ *  Bare hands keep the same sleeve. One draw per arm, nothing per frame.
+ * ========================================================================= */
+const VMSLV = {
+  on: CONFIG.body.vmSleeves !== false && !/[?&]vmsleeves=off\b/.test(location.search),
+  rig: 'ak', ready: false, meshes: [], mat: null, base: null, tint: new THREE.Color(),
+  girth: clamp(CONFIG.body.vmSleeveGirth || 1, 1, 1.08), girthIn: 0.06,   // x the pack's girth, m above the cuff it fades in over
+  ringC: 6, ringD: 5, cap: 0.62                                          // top: rings on to the shoulder, over the cap; cap height x radius
+};
+function vmSleeveStart() {
+  if (!VMSLV.on || VMSLV.meshes.length || !BODY.ready || !HANDS.ready) return;
+  vmLoad(VMSLV.rig).then((V) => {                                   // the glove's load (cached)
+    let arms = null;
+    if (V) V.root.traverse((o) => { if (o.isSkinnedMesh && V.R.arms.includes(o.name)) arms = o; });
+    if (!arms || VMSLV.meshes.length) return;
+    const geos = HANDS.list.map((h) => vmSleeveGeo(arms, h));
+    if (!geos[0] || !geos[1]) return;
+    const m0 = [].concat(arms.material)[0], mat = m0.clone();
+    VMSLV.base = (m0.userData.vmBase || m0.color).clone();          // untinted (vmTint tints the shared arm material)
+    mat.side = THREE.DoubleSide; vmSleeveShader(mat);
+    if (arms.geometry.attributes.tangent && mat.normalScale) mat.normalScale.y *= -1;   // no vertex tangents here: GLTFLoader's own rule for derivative ones
+    for (const g of geos) {
+      const m = new THREE.SkinnedMesh(g, mat);
+      m.bind(BODY.skel, new THREE.Matrix4());
+      m.frustumCulled = false; m.castShadow = false; m.receiveShadow = true;
+      BODY.root.add(m); VMSLV.meshes.push(m);
+    }
+    VMSLV.mat = mat; VMSLV.ready = true;
+    BODY.shirt.geometry.setDrawRange(0, BODY.shirtTorso);          // the shirt keeps its torso; these are the arms
+    const k = (i) => (geos[0].userData.rk[i] + geos[1].userData.rk[i]) / 2;
+    ARMFIT.foreR[0] *= k(0); ARMFIT.foreR[1] *= k(2); ARM_STOCK.foreR *= k(1); ARM_STOCK.upR *= k(3);
+    wearApply();
+    if (renderer.compileAsync) for (const m of VMSLV.meshes) renderer.compileAsync(m, camera, scene).catch(() => {});
+  }).catch((e) => console.warn('Step 109: viewmodel sleeves not built', e));
+}
+// The pack's arm above the glove's cut for hand h: body rest space, skinned to the body's arm bones.
+// userData.rk: its mean radius over the old sleeve's at the wrist, mid forearm, elbow, upper arm.
+function vmSleeveGeo(arms, h) {
+  const V3 = THREE.Vector3, sk = arms.skeleton, side = h.left ? -1 : 1, pre = h.left ? 'L_' : 'R_';
+  const nm = (b) => b.name.replace(/_\d+$/, ''), bi = (n) => sk.bones.findIndex((b) => nm(b) === pre + n);
+  const iA = bi('arm'), iE = bi('elbow'), iW = bi('wrist'), iI = bi('point1'), iK = bi('pink1');
+  if (Math.min(iA, iE, iW, iI, iK) < 0) return null;
+  const bp = (i) => new V3().setFromMatrixPosition(new THREE.Matrix4().copy(sk.boneInverses[i]).invert());
+  const G = vmPackWrist(h, bp(iW), bp(iE), bp(iI), bp(iK)), Gq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(G));
+  // arm space (= your hand's mesh space): axis x cx, y cy, wrist at z0, +z to the shoulder; the fit put the pack elbow on it
+  const Wr = HAND_DATA.rig.wrist, cx = side * Wr.cx, cy = Wr.cy, z0 = Wr.z, zE = z0 + BARM.fore, zS = zE + BARM.up;
+  const E0 = bp(iE).applyMatrix4(G), A0 = bp(iA).applyMatrix4(G), Lf = E0.z - z0, kf = BARM.fore / Lf, ku = BARM.up / A0.distanceTo(E0);
+  // the bind's bend onto the body's hinge: seen down the forearm the upper arm leans to the front (-x right, +x left)
+  const Z = new V3(0, 0, 1), phi = bwrap((side > 0 ? Math.PI : 0) - Math.atan2(A0.y - E0.y, A0.x - E0.x));
+  const qT = new THREE.Quaternion().setFromAxisAngle(Z, phi);
+  const qU = new THREE.Quaternion().setFromUnitVectors(A0.clone().sub(E0).applyQuaternion(qT).normalize(), Z).multiply(qT);
+  const hand = new Set(); sk.bones[iW].traverse((b) => { const i = sk.bones.indexOf(b); if (i >= 0) hand.add(i); });
+  const g = arms.geometry, P = g.attributes.position, N = g.attributes.normal, UV = g.attributes.uv, SI = g.attributes.skinIndex, SW = g.attributes.skinWeight, Ix = g.index;
+  const B = arms.bindMatrix, map = new Int32Array(P.count).fill(-1), pos = [], nrm = [], uv = [], tri = [];
+  const v = new V3(), n = new V3(), a = new V3(), an = new V3(), o = new V3(), on = new V3(), q = new THREE.Quaternion();
+  // kept: under half on the hand (the glove has the rest), plus the glove's side of the triangles across the cut (in neither half)
+  const W3 = new Float32Array(P.count * 3), sel = new Uint8Array(P.count), cnt = Ix ? Ix.count : P.count, at = (t) => (Ix ? Ix.getX(t) : t);
+  for (let i = 0; i < P.count; i++) {
+    for (let c = 0; c < 4; c++) { const j = SI.getComponent(i, c), w = SW.getComponent(i, c), k = j === iA ? 2 : j === iE ? 1 : hand.has(j) ? 0 : -1; if (k >= 0) W3[i * 3 + k] += w; }
+    if (W3[i * 3 + 1] + W3[i * 3 + 2] > 0 && W3[i * 3] < 0.5) sel[i] = 2;
+  }
+  for (let t = 0; t + 2 < cnt; t += 3) {
+    const i0 = at(t), i1 = at(t + 1), i2 = at(t + 2);
+    if (sel[i0] === 2 || sel[i1] === 2 || sel[i2] === 2) for (const i of [i0, i1, i2]) if (!sel[i]) sel[i] = 1;
+  }
+  for (let i = 0; i < P.count; i++) {
+    if (!sel[i]) continue;
+    const wH = W3[i * 3], wF = W3[i * 3 + 1], wU = W3[i * 3 + 2], wt = 1 / Math.max(1e-6, wH + wF + wU);
+    v.fromBufferAttribute(P, i).applyMatrix4(B).applyMatrix4(G);
+    if (N) n.fromBufferAttribute(N, i).transformDirection(B).applyQuaternion(Gq); else n.set(0, 1, 0);
+    if (sel[i] === 1) { o.copy(v); on.copy(n); }                   // a glove vertex: exactly where the glove has it
+    else {
+      o.copy(v).multiplyScalar(wH * wt); on.copy(n).multiplyScalar(wH * wt);   // the hand's share stays: the cuff meets the glove as cut
+      if (wF > 0) {                                                // forearm: the turn spread from the cuff, stretched to BARM.fore
+        q.setFromAxisAngle(Z, phi * clamp((v.z - z0) / Lf, 0, 1));
+        a.set(v.x - cx, v.y - cy, 0).applyQuaternion(q);
+        o.addScaledVector(a.set(cx + a.x, cy + a.y, z0 + (v.z - z0) * kf), wF * wt);
+        an.copy(n).applyQuaternion(q); an.z /= kf; on.addScaledVector(an.normalize(), wF * wt);
+      }
+      if (wU > 0) {                                                // upper arm: turned, swung onto the axis about the elbow, stretched to BARM.up
+        a.copy(v).sub(E0).applyQuaternion(qU);
+        o.addScaledVector(a.set(cx + a.x, cy + a.y, zE + a.z * ku), wU * wt);
+        an.copy(n).applyQuaternion(qU); an.z /= ku; on.addScaledVector(an.normalize(), wU * wt);
+      }
+    }
+    const gk = sel[i] === 1 ? 1 : 1 + (VMSLV.girth - 1) * bsmooth(z0, z0 + VMSLV.girthIn, o.z);
+    map[i] = pos.length / 3;
+    pos.push(cx + (o.x - cx) * gk, cy + (o.y - cy) * gk, o.z); on.normalize(); nrm.push(on.x, on.y, on.z);
+    uv.push(UV ? UV.getX(i) : 0, UV ? UV.getY(i) : 0);
+  }
+  for (let t = 0; t + 2 < cnt; t += 3) {                           // not the glove's own triangles
+    const i0 = at(t), i1 = at(t + 1), i2 = at(t + 2);
+    if (sel[i0] === 2 || sel[i1] === 2 || sel[i2] === 2) tri.push(map[i0], map[i1], map[i2]);
+  }
+  if (!tri.length) return null;
+  // its girth against the old sleeve's (ARM_T) at the same heights
+  const band = [[z0 + 0.005, z0 + 0.035], [z0 + 0.1, z0 + 0.16], [zE - 0.04, zE], [zE + 0.06, zE + 0.18]], rs = band.map(() => [0, 0]);
+  for (let k = 0; k < pos.length; k += 3) {
+    const z = pos[k + 2], r = Math.hypot(pos[k] - cx, pos[k + 1] - cy), r0 = (btab(ARM_T, z, 1) + btab(ARM_T, z, 2)) / 2;
+    band.forEach(([lo, hi], b) => { if (z >= lo && z < hi) { rs[b][0] += r; rs[b][1] += r0; } });
+  }
+  vmSleeveTop(pos, nrm, uv, tri, cx, cy, zS);
+  // body rest space, skinned by height up the arm as the old sleeve
+  const K = sleeveKnots(SD(side)), qB = BA['q' + SD(side)], nV = pos.length / 3, si = new Uint16Array(nV * 4), sw = new Float32Array(nV * 4);
+  for (let k = 0; k < nV; k++) {
+    v.fromArray(pos, k * 3);
+    bweights(bknots(v.z, K)).forEach(([b, w], c) => { si[k * 4 + c] = b; sw[k * 4 + c] = w; });
+    armToBody(v, side).toArray(pos, k * 3);
+    n.fromArray(nrm, k * 3).applyQuaternion(qB).toArray(nrm, k * 3);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
+  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+  geo.setIndex(nV > 65535 ? new THREE.Uint32BufferAttribute(tri, 1) : new THREE.Uint16BufferAttribute(tri, 1));
+  geo.computeBoundingSphere();
+  geo.userData.rk = rs.map(([r, r0]) => (r0 > 0 ? r / r0 : 1));
+  return geo;
+}
+// The pack sleeve stops ~6 cm short of the shoulder. Its open top ring (welded edges with one triangle above the upper
+// arm's lower 40 %; UV seams have two) is carried on up the arm and closed in a flattened cap, like the old sleeve's,
+// inside the torso. Each column keeps its ring point's offset and UV island; its UVs walk back down the sleeve through
+// index neighbours (never across a seam), so the fabric runs on mirrored instead of smearing. Arm space, in place.
+function vmSleeveTop(pos, nrm, uv, tri, cx, cy, zS) {
+  const C = VMSLV, n0 = pos.length / 3, wid = new Int32Array(n0), ids = new Map(), adj = Array.from({ length: n0 }, () => []);
+  for (let i = 0; i < n0; i++) {
+    const k = `${Math.round(pos[i * 3] * 2e4)},${Math.round(pos[i * 3 + 1] * 2e4)},${Math.round(pos[i * 3 + 2] * 2e4)}`;
+    if (!ids.has(k)) ids.set(k, ids.size);
+    wid[i] = ids.get(k);
+  }
+  const cnt = new Map(), dir = new Map();
+  for (let t = 0; t < tri.length; t += 3) for (let e = 0; e < 3; e++) {
+    const a = tri[t + e], b = tri[t + (e + 1) % 3], k = Math.min(wid[a], wid[b]) * n0 + Math.max(wid[a], wid[b]);
+    cnt.set(k, (cnt.get(k) || 0) + 1); dir.set(k, a * n0 + b); adj[a].push(b); adj[b].push(a);
+  }
+  const zTop = zS - BARM.up * 0.6, top = [], cols = new Map();
+  for (const [k, c] of cnt) {
+    if (c !== 1) continue;
+    const ab = dir.get(k), a = Math.floor(ab / n0), b = ab % n0;    // a -> b as its triangle winds
+    if (pos[a * 3 + 2] > zTop && pos[b * 3 + 2] > zTop) { top.push(a, b); cols.set(a, null); cols.set(b, null); }
+  }
+  if (!top.length) return;
+  let Rm = 0;
+  for (const i of cols.keys()) Rm += Math.hypot(pos[i * 3] - cx, pos[i * 3 + 1] - cy);
+  Rm /= cols.size;
+  // per column the fabric's UV gradient down the sleeve (a walk through index neighbours, end to end), smoothed along
+  // the ring within its island, so the columns run on parallel
+  const nb = new Map(), gr = new Map();
+  for (let t = 0; t < top.length; t += 2) for (const [a, b] of [[top[t], top[t + 1]], [top[t + 1], top[t]]]) { if (!nb.has(a)) nb.set(a, []); nb.get(a).push(b); }
+  for (const i of cols.keys()) {
+    const need = zS - pos[i * 3 + 2] + 0.03;
+    let cur = i, d = 0;
+    for (let s = 0; s < 64 && d < need; s++) {
+      let best = -1, bc = 0.5, bl = 0;
+      for (const m of adj[cur]) {
+        const dx = pos[m * 3] - pos[cur * 3], dy = pos[m * 3 + 1] - pos[cur * 3 + 1], dz = pos[m * 3 + 2] - pos[cur * 3 + 2], l = Math.hypot(dx, dy, dz);
+        if (l > 1e-6 && -dz / l > bc) { bc = -dz / l; best = m; bl = l; }
+      }
+      if (best < 0) break;
+      d += bl; cur = best;
+    }
+    gr.set(i, d > 0.01 ? [(uv[cur * 2] - uv[i * 2]) / d, (uv[cur * 2 + 1] - uv[i * 2 + 1]) / d, need] : [0, 0, need]);
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    const sm = new Map();
+    for (const [i, g] of gr) { let u = g[0], w = g[1], c = 1; for (const j of nb.get(i) || []) { u += gr.get(j)[0]; w += gr.get(j)[1]; c++; } sm.set(i, [u / c, w / c, g[2]]); }
+    for (const [i, g] of sm) gr.set(i, g);
+  }
+  const nR = C.ringC + C.ringD;
+  for (const i of cols.keys()) {
+    const z0 = pos[i * 3 + 2], ox = pos[i * 3] - cx, oy = pos[i * 3 + 1] - cy, r = Math.hypot(ox, oy) || 1, g = gr.get(i), u0 = uv[i * 2], v0 = uv[i * 2 + 1];
+    const col = [i];
+    let px = pos[i * 3], py = pos[i * 3 + 1], pz = z0, d = 0;
+    for (let k = 1; k <= nR; k++) {
+      const ph = k <= C.ringC ? 0 : (k - C.ringC) / C.ringD * Math.PI / 2, sc = Math.max(0.03, Math.cos(ph));
+      const x = cx + ox * sc, y = cy + oy * sc, z = k <= C.ringC ? z0 + (zS - z0) * k / C.ringC : zS + Rm * C.cap * Math.sin(ph);
+      d += Math.hypot(x - px, y - py, z - pz); px = x; py = y; pz = z;
+      let nx = ox / r * Math.cos(ph), ny = oy / r * Math.cos(ph), nz = Math.sin(ph) / C.cap;   // tube, then the cap's ellipse
+      if (k === 1) { nx += nrm[i * 3]; ny += nrm[i * 3 + 1]; nz += nrm[i * 3 + 2]; }            // halfway from the pack's own
+      const l = Math.hypot(nx, ny, nz) || 1, dm = Math.min(d, g[2]);                               // the cap's top (in the torso) holds its UV
+      col.push(pos.length / 3); pos.push(x, y, z); nrm.push(nx / l, ny / l, nz / l); uv.push(u0 + g[0] * dm, v0 + g[1] * dm);
+    }
+    cols.set(i, col);
+  }
+  for (let t = 0; t < top.length; t += 2) {                         // b -> a against the open edge's a -> b: same winding
+    const A = cols.get(top[t]), Bc = cols.get(top[t + 1]);
+    for (let k = 0; k < nR; k++) tri.push(Bc[k], A[k], A[k + 1], Bc[k], A[k + 1], Bc[k + 1]);
+  }
+}
+// The torso's near fade (dithered, opaque pass) and cloth-shaded inside on the pack material.
+function vmSleeveShader(mat) {
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.uCutNear = BODY.cut.near; sh.uniforms.uArmNear = BODY.cut.armNear;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSlvW;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSlvW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uCutNear, uArmNear;\nvarying vec3 vSlvW;')
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+{
+  float f = max(uCutNear, uArmNear), n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  if (1.0 - smoothstep(f, f + 0.04, length(vSlvW - cameraPosition)) > n) discard;
+}`)
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nif (!gl_FrontFacing) normal = normalize(vViewPosition);')
+      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif (!gl_FrontFacing) gl_FragColor.rgb *= 0.8;');
+  };
+  mat.customProgramCacheKey = () => 'vmsleeve109';
 }
 
 /* ---------------------------------------------------------------------------
