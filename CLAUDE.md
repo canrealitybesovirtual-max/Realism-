@@ -605,3 +605,5 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Muzzle point (g.wr.muzzle, flash position, muzzle light, smoke, wisp, gun touch) = chain tip (g.muzEnd); the round still starts in the chamber. Clip: gunFreeAt also tests g.muzClip, a box as long and wide as the chain.
 - Saved per gun type in cqc.muzzle.v1 at RELEASE (muzSaveGun); createGun / G17A ready / g17SyncGun run muzSync. Glock store muzzle rows set the chain to that device (removing cuts the chain there); old saves migrate from the fitted row.
 - Checked: syntax parse only (no browser, no Node maths run, per the user's time limit).
+## CQC: glove hands 8 % smaller (CONFIG.handLook.extra 0.92)
+- HANDLOOK.extra: vmhFit scales each fitted gun hand by it about its grip contact centre (vmhContacts cc) after the stored 0.9 fit, no new solve; the step 104 glove (glove104Hand sg) by the same factor about the wrist. 1 = as before. Not checked in the headset (fingertip reach on grips).

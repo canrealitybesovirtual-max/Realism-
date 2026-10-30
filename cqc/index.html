@@ -2157,6 +2157,7 @@ const CONFIG = {
   handLook: {
     on: true,
     vmhScale: 0.9,             // the viewmodel gun hands' size (wrist to middle fingertip 22.5 cm in the packs -> 20.3 cm)
+    extra: 0.92,               // both glove hands (gun hands and your own) 8 % smaller again, about the grip contact / wrist (no re-solve)
     procScale: 1.0             // your own hand (20.2 cm wrist joint to middle fingertip: already the size of the scaled gun hands)
   },
   light: {
@@ -17637,6 +17638,7 @@ function safeRestock(room) {
 // everyone who never opened the locker, so the step 98 choice is kept apart (gloves98) and starts on.
 const HANDLOOK = { on: !!(CONFIG.handLook && CONFIG.handLook.on) && !/[?&]handlook=off\b/.test(location.search) };
 HANDLOOK.vmhScale = HANDLOOK.on ? clamp(CONFIG.handLook.vmhScale || 1, 0.7, 1.2) : 1;
+HANDLOOK.extra = HANDLOOK.on ? clamp(CONFIG.handLook.extra || 1, 0.8, 1.1) : 1;
 HANDLOOK.procScale = HANDLOOK.on ? clamp(CONFIG.handLook.procScale || 1, 0.8, 1.2) : 1;
 const WEAR = { gloves: HANDLOOK.on, uniform: 'black', key: 'cqc.wear.v1', room: null, items: [], camo: null, built: false };
 try { const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null'); if (o) { WEAR.gloves = HANDLOOK.on ? o.gloves104 !== false : !!o.gloves;   /* step 104: a new key, so an old gloves98: false starts gloved */ if (['black', 'fsb', 'ranger'].includes(o.uniform)) WEAR.uniform = o.uniform; } } catch (e) { /* defaults */ }
@@ -19107,7 +19109,13 @@ function vmhFit(g) {
   vmhBake(key).then((B) => {
     if (!B || !B.sides.R) { VMH.fits[t] = null; return; }
     const s98 = HANDLOOK.vmhScale, T98 = VMH_FIT98[t];
-    const out = { sides: {} }, Ms = s98 === 1 ? vmhSolveAll(B, g) : T98 && T98.s === s98 ? vmhShrink(B, g, null, s98) : vmhShrink(B, g, vmhSolveAll(B, g), s98);   // step 98
+    const out = { sides: {} }; let Ms = s98 === 1 ? vmhSolveAll(B, g) : T98 && T98.s === s98 ? vmhShrink(B, g, null, s98) : vmhShrink(B, g, vmhSolveAll(B, g), s98);   // step 98
+    if (HANDLOOK.extra !== 1) {                                     // smaller again about each grip contact, kept seated there (no new solve)
+      const k = HANDLOOK.extra, sh = (side, M) => { const C = vmhContacts(B, side).cc.clone().applyMatrix4(M);
+        return new THREE.Matrix4().makeTranslation(C.x, C.y, C.z).multiply(new THREE.Matrix4().makeScale(k, k, k)).multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z)).multiply(M); };
+      const R = Ms.R ? sh('R', Ms.R) : null;
+      Ms = { R, L: !Ms.L ? null : Ms.L === Ms.R ? R : sh('L', Ms.L) };
+    }
     for (const side of ['R', 'L']) {
       const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
       const geo = H.geo.clone().applyMatrix4(M);
@@ -19220,7 +19228,7 @@ function glove104Hand(h, arms, mat) {
   const s = h.left ? -1 : 1, Wr = HAND_DATA.rig.wrist, Wo = new V3(s * Wr.cx, Wr.cy, Wr.z);
   const ours = frame(Wo, Wo.clone().setZ(Wr.z + 0.1), h.rp[4], h.rp[13]);
   const fit = frame(bp[0], new V3().setFromMatrixPosition(new THREE.Matrix4().copy(ibm(el)).invert()), bp[kI], bp[kK]);
-  const sg = 0.01 * HANDLOOK.vmhScale;                              // cm rig (vmhBake's unit), the gun hands' size
+  const sg = 0.01 * HANDLOOK.vmhScale * HANDLOOK.extra;                              // cm rig (vmhBake's unit), the gun hands' size
   const G = ours.multiply(new THREE.Matrix4().makeScale(sg, sg, sg)).multiply(fit.invert());
   const Gq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(G));
   const P0 = bp.map((p) => p.clone().applyMatrix4(G));
