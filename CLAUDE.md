@@ -251,3 +251,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
 - ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
 - Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
+
+## CQC step 86: barrel heat smoke (GUN_WISP, gunWisp; CONFIG.polish.wisp, ?wisp=off; headset check needed)
+- fireGun adds g.heat per shot (impulse x pellets / 2.2, so a 9 mm = 1; x1.8 with a can), decaying over GUN_WISP.tau 9 s. updateGun calls gunWisp while heat > 0.02: past GUN_WISP.from 5, 0.35 s after the last shot, one rising grey particle (impact pool via fxEmit, lit by P10U, grav < 0) every 1/5..1/16 s from the muzzle or the can end, the ejection port 30 % (60 % slide locked); a moving gun emits more often so the trail stays continuous. Skipped holstered (g.slot), hidden, or behind the desktop viewmodel. No new draw, material or allocation (wispL cloned once per gun). Tune S.from (onset), S.tau (duration), S.a (density).
