@@ -2041,7 +2041,8 @@ const PROJECT_RULES = {
     'Gunsmith workshop computer (CONFIG.workshop, ?workshop=off): one rugged touchscreen on a wall arm over the gunsmith bench, moved to the current safe room (wsRoomActivated), never rebuilt. Its glass is a clone of the terminal material (same program), the housing uses kit materials; it adds no light. It redraws only on a change (a press, a hover, the wallet or pouches, checked every CONFIG.workshop.check s while you are near): never per frame.',
     'Money: WALLET (cqc.wallet.v1) earns 1 $ per banked point (loopEnterRoom). Records and scores are unchanged. The terminal\'s free RESTOCK is replaced by the store\'s SUPPLIES (ammo, grenades, medical, each priced; it charges only when the restock adds something). The automatic refill on entering the safe room stays.',
     'Attachments (docs/ATTACHMENTS.md) live in one table, WS_ITEMS { id, gun, cat (one of the gun\'s WS_GUNS slots or hardware), name, price, desc, owned, requires, hw, addon, cosmetic, model, fx }. A part is locked until its requires are owned; cosmetic parts never change a stat; a part without a model can be bought, not fitted. The 12 stats (WS_STATS) start from WEAPON_DEFS and add the fx of owned hardware and owned + fitted parts. Store only: nothing here changes the guns yet; each gun\'s attachment step wires it.',
-    'Step 100 (?g17att=off): the Glock 17\'s rows are real parts (models/att/g17-att.glb from tools/pack_glock_att.py + built plate, threaded barrel, protector, tall sights, cover). One build for every Glock: the store\'s fitted set (g17SyncGun); a RELEASE at the vise writes the gun\'s parts back (g17FromGun). GLOCK_FX is the one table of effects: g.afx feeds fireGun (recoil, flash, report, zero), deskGunPose (aim time, sway), deskHeft (weight), the VR pose (g17VrHeft, a few ms of lag) and the reload tasks; the Glock\'s store bars are g17Stats on the same numbers. The red dot is a shader on its lens (view space, per eye): a 3 MOA dot parallel to the slide, at infinity, only through the window, brightness from the room.'
+    'Step 100 (?g17att=off): the Glock 17\'s rows are real parts (models/att/g17-att.glb from tools/pack_glock_att.py + built plate, threaded barrel, protector, tall sights, cover). One build for every Glock: the store\'s fitted set (g17SyncGun); a RELEASE at the vise writes the gun\'s parts back (g17FromGun). GLOCK_FX is the one table of effects: g.afx feeds fireGun (recoil, flash, report, zero), deskGunPose (aim time, sway), deskHeft (weight), the VR pose (g17VrHeft, a few ms of lag) and the reload tasks; the Glock\'s store bars are g17Stats on the same numbers. The red dot is a shader on its lens (view space, per eye): a 3 MOA dot parallel to the slide, at infinity, only through the window, brightness from the room.',
+    'Step 102 (?akmatt=off): the AKM\'s rows are real parts (models/att/akm-att.glb from tools/pack_akm_att.py: ATS5 can, 3-prong flash hider, compensator, reflex dot, EXPS3-class holo, 2x prism; built: the Modernization kit = railed handguard + side-rail optic mount, the 5/8x24 collar on the split-off brake\'s thread, stock adapter + adjustable stock, vertical / angled grip, hand stop, rail covers, sling). Standard AKM until the kit is owned and fitted. One build for every AKM (akmSyncGun); a RELEASE at the vise writes it back (akmFromGun). AKM_FX is the one table of effects (g.afx); the store\'s bars are akmStats on the same numbers (WS_REAL). Dot / holo: reticle shaders on the window glass; 2x: a picture in picture drawn only while an eye is behind its eyepiece.'
   ],
   currentStep: 70
 };
@@ -4676,6 +4677,7 @@ async function buildKit() {
   for (const t of ['g17', 'm4a1s']) { try { await extLoad(t); } catch (e) { console.warn('step 60: ' + t + ' not loaded', e); } }   // step 60
   try { await g17AttLoad(); } catch (e) { console.warn('step 100: Glock attachments not loaded', e); }   // step 100
   for (const t of ['akmn', 'awp']) { try { await x64Load(t); } catch (e) { console.warn('step 64: ' + t + ' not loaded', e); } }   // step 64
+  try { await akmAttLoad(); } catch (e) { console.warn('step 102: AKM attachments not loaded', e); }   // step 102
   buildCoverKit();                 // step 6: table, debris (shares every material above)
   setLoad('Building the enemy', 0.945);
   await yieldFrame();
@@ -15892,6 +15894,7 @@ function weaponsUpdate(dt, now) {
   updateLightMount();
   updateLasers();                                   // step 16
   g17Tick(dt);                                      // step 100: the red dot's auto brightness
+  akmTick(dt);                                      // step 102: the AKM's reticles; the 2x view while you look through it
   const g = gunOf(deskHand);
   const txt = g ? ammoText(g) : 'none';
   if (txt !== lastAmmoText) { lastAmmoText = txt; if (ui.ammo) ui.ammo.textContent = txt; }
@@ -16959,6 +16962,7 @@ function wbKit() {
 }
 function wbMakeAtt(sub, big = true, variant = null) {
   if (sub === 'ext') return muzMakeExt();                           // step 103
+  if (AKM_ITEM[variant] || AKM_ITEM[sub]) return akmMakeAtt(AKM_ITEM[variant] ? variant : sub);   // step 102: the AKM's parts
   const K = wbKit();
   // step 100: the pistol cans are the packed MD3 / SB100 (every pistol), the dot, its cover and the comp the Glock's parts
   if ((sub === 'sup' && !big) || sub === 'dot' || sub === 'cover' || sub === 'comp') { const q = g17MakeAtt(sub, variant); if (q || sub !== 'sup') return q; }
@@ -17030,7 +17034,7 @@ function wbRestock(room = WB.room) {
   for (const t of wbTable()) {
     if (keep.some((p) => p.item.tableSpot === t)) continue;
     let i = loose.findIndex((p) => p.item.tableSpot === t);
-    if (i < 0) i = loose.findIndex((p) => !p.item.tableSpot && p.item.sub === t[0] && (t[0] !== 'sup' || (!!p.item.big === t[1] && (p.item.can === 'sb100') === (t[5] === 'sb100'))));
+    if (i < 0) i = loose.findIndex((p) => !p.item.tableSpot && wbSpotFits(p.item, t));
     const p = i >= 0 ? loose.splice(i, 1)[0] : wbMakeAtt(t[0], t[1], t[5] || null);
     if (!p) continue;
     const home = i >= 0 && p.kinematic && p.root.position.distanceTo(_wbV.set(rWX(room, t[2]), p.root.position.y, rWZ(room, t[3]))) < 0.01;
@@ -17048,10 +17052,15 @@ const WB_TABLE = [['light', true, 3.24, 2.5, Math.PI], ['light', true, 3.39, 2.5
 const WB_G17 = [['dot', false, 3.69, 2.5, Math.PI / 2, null, 'g17.dot'], ['cover', false, 3.69, 2.6, Math.PI / 2, null, 'g17.cover'],
   ['comp', false, 3.67, 2.71, Math.PI / 2, null, 'g17.comp'], ['sup', false, 2.3, 2.9, Math.PI / 2, 'sb100', 'g17.sup2']];
 function wbTable() {
-  if (!G17A.ready) return WB_TABLE;
   const L = WB_TABLE.slice();
-  for (const t of WB_G17) { const it = WORKSHOP.byId.get(t[6]); if (it && it.owned) L.push(t); }
+  for (const t of G17A.ready ? WB_G17 : []) { const it = WORKSHOP.byId.get(t[6]); if (it && it.owned) L.push(t); }
+  for (const t of AKMA.ready ? WB_AKM : []) { const it = WORKSHOP.byId.get(t[6]); if (it && it.owned) L.push(t); }   // step 102
   return L;
+}
+// A table spot t ([sub, big, x, z, yaw, variant, ...]) takes part it: the same sub; a can of the same size and model.
+function wbSpotFits(it, t) {
+  if (it.sub !== t[0]) return false;
+  return t[0] !== 'sup' || (!!it.big === t[1] && (it.can === 'sb100') === (t[5] === 'sb100') && (it.can === 'ats5') === (t[5] === 'ats5'));   // step 102: the AKM's ATS5
 }
 WB.btnLocal = new THREE.Vector3(2.84, 0.905, 2.44);
 // Back to its spot on the table, resting (kinematic until you pick it up).
@@ -17211,6 +17220,7 @@ function wbClose(why) {
   for (const p of WB.atts.slice()) if (p.item.stuck && p.item.stuck.g === g) { wbFreeze(g, p); n++; }
   muzSaveGun(g);                                                    // step 103: the muzzle chain is this gun type's build
   if (g.type === 'g17') g17FromGun(g);                             // step 100: the Glock's parts are the build now (store + every Glock)
+  if (g.type === 'akmn') akmFromGun(g);                            // step 102: so are the AKM's
   if (!g.primary && !g.prop.removing) { setDynamic(g.prop); g.prop.collider.setCollisionGroups(COLL.prop); g.prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
   updateLightMount();
   sfx('pMagOut', 0.8);
@@ -17222,6 +17232,8 @@ function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
   if (g && muzIsDev(it)) { if (muzBenchFit(g, p, 0.09)) return true; }   // step 103: onto the chain's front end
+  else if (g && g.type === 'akmn' && AKMA.ready) { const r = akmBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 102: its rail on the AKM
+  else if (g && it.akKey) { toast('Made for the AKM: its rails and its mount', 2200); return false; }   // step 102
   else if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 100: its own place on the Glock
   else if (g && (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp')) { toast('Made for the Glock 17: its plate and its 1/2x28 thread', 2200); return false; }
   if (g && muzIsDev(it)) {                                          // step 103: muzBenchFit above (out of reach: it stays where it was let go)
@@ -17314,6 +17326,7 @@ function wbFreeze(g, p) {
   const root = g.prop.root;
   root.updateMatrixWorld(true);
   if (muzIsDev(it)) { muzRefresh(g); return; }                     // step 103: cans, comps, extensions: the chain
+  if (it.akKey) { akmRefresh(g); return; }                          // step 102: the AKM's optics and grips
   if (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp') { if (g.type === 'g17') g17Refresh(g); return; }   // step 100
   if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); if (g.type === 'g17') g17Refresh(g); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
   if (it.sub === 'light') {
@@ -17328,6 +17341,7 @@ function wbFreeze(g, p) {
     g.laserLamp = it.lamp; g.laserAtt = it;
   }
   if (g.type === 'g17') g17Refresh(g);                              // step 100
+  if (g.type === 'akmn') akmRefresh(g);                             // step 102: a light / laser on its rail
 }
 function wbUnfreeze(g, p) {
   const it = p.item;
@@ -17362,6 +17376,12 @@ function wbDeskAtt(p) {
     if (muzBenchFit(g, p, 0)) toast(`${it.label} threaded on (${muzChain(g).length} of ${MUZ.max}). Click it again to take it off, B to lock`);
     return;
   }
+  if (g.type === 'akmn' && AKMA.ready) {                            // step 102: each part to its rail on the AKM
+    wbUnhook(it);
+    const r = akmBenchFit(g, p, 0);
+    if (r === true) { toast(`${it.label} on. Click it again to take it off, B to lock`); return; }
+    if (r === false) return;
+  } else if (it.akKey) { toast('Made for the AKM: its rails and its mount', 2200); return; }
   if (g.type === 'g17') {                                           // step 100: each part to its own place on the Glock
     wbUnhook(it);
     const r = g17BenchFit(g, p, 0);
@@ -17920,6 +17940,7 @@ function extToggle(p) {
       wsSave(); WORKSHOP.dirty = true;
       for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'g17' && !q.removing) g17Refresh(q.item);
     }
+    if (it.sub === 'akmn') akmMagChanged();                         // step 102: the store's 40-round row follows the bench card
     toast(EXT.mag[it.sub] ? `Extended magazines: ${EXT_CAP[it.sub]} rounds (pouches restocked)` : `Standard magazines (${MAG_DEFS[it.sub].capacity} rounds)`);
   }
   sfx('pouch'); extSave(); extTags();
@@ -22850,6 +22871,7 @@ function weaponsPrecompile(on) {
   WEAPON.fx.points.visible = on;
   nadePrecompile(on);                               // step 23
   g17Precompile(on);                                // step 100: the Glock's parts and the red dot's glass
+  akmPrecompile(on);                                // step 102: the AKM's parts, its reticles, the 2x view
 }
 
 /* ============================================================================
@@ -24437,25 +24459,24 @@ const WS_ITEMS = [
   { id: 'm1911.g10', gun: 'm1911', cat: 'grip', cosmetic: true, name: 'G10 grip panels', price: 90, desc: 'Cosmetic: textured G10, fits the factory frame', requires: [], fx: {} },
   { id: 'm1911.coco', gun: 'm1911', cat: 'grip', cosmetic: true, name: 'Cocobolo grip panels', price: 120, desc: 'Cosmetic: checkered hardwood', requires: [], fx: {} },
   // --- AKM: Standard -> Modernized (the kit) ---
-  { id: 'akmn.kit', gun: 'akmn', cat: 'handguard', hw: true, name: 'Modernization kit', price: 700, desc: 'Railed handguard, optic mount, rail sections, modern stock adapter',
-    requires: [], fx: { wt: 0.45, move: -2, ads: -2 } },
-  { id: 'akmn.muzzle', gun: 'akmn', cat: 'hardware', hw: true, name: 'Muzzle interface', price: 40, desc: '24x1.5 LH thread adapter for muzzle devices', requires: [], fx: { wt: 0.02 }, owned: true },
-  { id: 'akmn.dot', gun: 'akmn', cat: 'optic', name: 'Red dot (T-2 class)', price: 480, desc: 'Fast acquisition, no magnification', requires: ['akmn.kit'], fx: { acc: 8, ads: -1, move: -0.5, wt: 0.1 } },
-  { id: 'akmn.holo', gun: 'akmn', cat: 'optic', name: 'Holographic sight', price: 650, desc: 'Clear CQB reticle, fast transitions', requires: ['akmn.kit'], fx: { acc: 7, hip: 2, ads: -2, move: -1, wt: 0.32 } },
-  { id: 'akmn.2x', gun: 'akmn', cat: 'optic', name: '2x prism optic', price: 520, desc: 'Better medium-range identification; slower to aim', requires: ['akmn.kit'], fx: { acc: 14, ads: -8, hip: -2, move: -1, wt: 0.4 } },
-  { id: 'akmn.sup', gun: 'akmn', cat: 'muzzle', name: 'Rifle suppressor', price: 950, desc: 'Quieter, never silent; less flash; longer, heavier', requires: ['akmn.muzzle'], model: 'sup-rifle',
-    fx: { snd: -32, flash: -40, rec: -6, ads: -6, sway: 4, move: -2, wt: 0.55 }, owned: true },
-  { id: 'akmn.comp', gun: 'akmn', cat: 'muzzle', name: 'Compensator', price: 130, desc: 'Less muzzle climb; more visible flash', requires: ['akmn.muzzle'], fx: { rec: -14, flash: 12, snd: 6, wt: 0.12 } },
-  { id: 'akmn.fh', gun: 'akmn', cat: 'muzzle', name: 'Flash hider', price: 55, desc: 'Much less visible flash; no recoil change', requires: ['akmn.muzzle'], fx: { flash: -40, ads: -1, wt: 0.06 } },
-  { id: 'akmn.covers', gun: 'akmn', cat: 'handguard', addon: true, cosmetic: true, name: 'Rail covers', price: 30, desc: 'Cosmetic: rubber covers on the kit rails', requires: ['akmn.kit'], fx: {} },
-  { id: 'akmn.vg', gun: 'akmn', cat: 'underbarrel', name: 'Vertical grip', price: 55, desc: 'Steadier on the move; heavier', requires: ['akmn.kit'], fx: { sway: -8, rec: -4, ads: -2, wt: 0.1 } },
-  { id: 'akmn.ag', gun: 'akmn', cat: 'underbarrel', name: 'Angled grip', price: 50, desc: 'Quicker transitions; smaller movement penalty', requires: ['akmn.kit'], fx: { ads: 3, rec: -2, sway: -2, wt: 0.08 } },
-  { id: 'akmn.hs', gun: 'akmn', cat: 'underbarrel', name: 'Hand stop', price: 30, desc: 'Small handling gain, light', requires: ['akmn.kit'], fx: { sway: -3, rec: -1, wt: 0.03 } },
-  { id: 'akmn.light', gun: 'akmn', cat: 'tactical', name: 'Weapon light', price: 320, desc: 'On a kit rail; lights dark rooms, shows you when on', requires: ['akmn.kit'], model: 'light', fx: { acc: 2, vis: 12, ads: -1, move: -0.5, wt: 0.15 } },
-  { id: 'akmn.laser', gun: 'akmn', cat: 'tactical', name: 'Laser module', price: 350, desc: 'On a kit rail; hip-fire reference, shows you when on', requires: ['akmn.kit'], model: 'laser', fx: { hip: 12, vis: 8, ads: -1, move: -0.3, wt: 0.12 } },
-  { id: 'akmn.mag40', gun: 'akmn', cat: 'mag', name: '40-round magazine', price: 40, desc: '+10 rounds (RPK length); heavier, slower to seat', requires: [], model: 'ext-akmn', fx: { rel: -7, ads: -1, move: -1, wt: 0.2 }, owned: true },
-  { id: 'akmn.stock', gun: 'akmn', cat: 'stock', name: 'Adjustable stock', price: 140, desc: 'More stable, less aim movement; on the kit adapter', requires: ['akmn.kit'], fx: { rec: -8, sway: -8, move: -1, wt: 0.25 } },
-  { id: 'akmn.sling', gun: 'akmn', cat: 'sling', cosmetic: true, name: 'Two-point sling', price: 50, desc: 'Cosmetic: carry only, no accuracy effect', requires: [], fx: {} },
+  // Step 102: every AKM row has its real part (AKM_FX holds what each one does; fx below is derived from it at load)
+  { id: 'akmn.kit', gun: 'akmn', cat: 'handguard', name: 'Modernization kit', price: 700, desc: 'Railed handguard (side and bottom rails), side-rail optic mount: opens the rest', requires: [], model: 'kit', fx: {} },
+  { id: 'akmn.muzzle', gun: 'akmn', cat: 'hardware', hw: true, name: 'Muzzle interface', price: 40, desc: '14x1 LH thread to a 5/8x24 adapter collar (the slant brake comes off)', requires: [], model: 'collar', fx: {}, owned: true },
+  { id: 'akmn.dot', gun: 'akmn', cat: 'optic', name: 'Red dot (reflex on a riser)', price: 480, desc: '3 MOA dot: fast acquisition, no magnification', requires: ['akmn.kit'], model: 'akdot', fx: {} },
+  { id: 'akmn.holo', gun: 'akmn', cat: 'optic', name: 'Holographic sight (EXPS3 class)', price: 650, desc: '65 MOA ring and 1 MOA dot: clear CQB picture, fast transitions', requires: ['akmn.kit'], model: 'akholo', fx: {} },
+  { id: 'akmn.2x', gun: 'akmn', cat: 'optic', name: '2x prism optic', price: 520, desc: 'Better medium-range identification; slower to aim', requires: ['akmn.kit'], model: 'akx2', fx: {} },
+  { id: 'akmn.sup', gun: 'akmn', cat: 'muzzle', name: 'Rifle suppressor (ATS5)', price: 950, desc: '42 x 197 mm; quieter, never silent; no flash; longer, heavier', requires: ['akmn.muzzle'], model: 'ats5', fx: {}, owned: true },
+  { id: 'akmn.comp', gun: 'akmn', cat: 'muzzle', name: 'Compensator', price: 130, desc: 'Round ports: less muzzle climb; more visible flash', requires: ['akmn.muzzle'], model: 'akcomp', fx: {} },
+  { id: 'akmn.fh', gun: 'akmn', cat: 'muzzle', name: 'Flash hider (3-prong)', price: 55, desc: 'Much less visible flash; no recoil change', requires: ['akmn.muzzle'], model: 'akfh', fx: {} },
+  { id: 'akmn.covers', gun: 'akmn', cat: 'handguard', addon: true, cosmetic: true, name: 'Rail covers', price: 30, desc: 'Cosmetic: rubber covers on the kit rails', requires: ['akmn.kit'], model: 'covers', fx: {} },
+  { id: 'akmn.vg', gun: 'akmn', cat: 'underbarrel', name: 'Vertical grip', price: 55, desc: 'Steadier on the move, less climb; heavier', requires: ['akmn.kit'], model: 'akvg', fx: {} },
+  { id: 'akmn.ag', gun: 'akmn', cat: 'underbarrel', name: 'Angled grip', price: 50, desc: 'Quicker transitions; smaller movement penalty', requires: ['akmn.kit'], model: 'akag', fx: {} },
+  { id: 'akmn.hs', gun: 'akmn', cat: 'underbarrel', name: 'Hand stop', price: 30, desc: 'Small handling gain, light', requires: ['akmn.kit'], model: 'akhs', fx: {} },
+  { id: 'akmn.light', gun: 'akmn', cat: 'tactical', name: 'Weapon light', price: 320, desc: 'On the right rail; lights dark rooms, shows you when on', requires: ['akmn.kit'], model: 'light', fx: {} },
+  { id: 'akmn.laser', gun: 'akmn', cat: 'tactical', name: 'Laser module', price: 350, desc: 'On the left rail; hip-fire reference, shows you when on', requires: ['akmn.kit'], model: 'laser', fx: {} },
+  { id: 'akmn.mag40', gun: 'akmn', cat: 'mag', name: '40-round magazine', price: 40, desc: '+10 rounds (RPK length); heavier, slower to seat', requires: [], model: 'ext-akmn', fx: {}, owned: true },
+  { id: 'akmn.stock', gun: 'akmn', cat: 'stock', name: 'Adjustable stock', price: 140, desc: 'Stock adapter, buffer tube, adjustable stock: steadier, less aim movement', requires: ['akmn.kit'], model: 'stock', fx: {} },
+  { id: 'akmn.sling', gun: 'akmn', cat: 'sling', cosmetic: true, name: 'Two-point sling', price: 50, desc: 'Cosmetic: carry only, no accuracy effect', requires: [], model: 'sling', fx: {} },
   // --- AWM (the scope is on it today) ---
   { id: 'rifle.sup', gun: 'rifle', cat: 'muzzle', name: 'Rifle suppressor', price: 950, desc: 'Threads over the flash hider; quieter, never silent; less flash; longer', requires: [], model: 'sup-rifle',
     fx: { snd: -32, flash: -40, rec: -5, ads: -6, sway: 4, move: -2, wt: 0.55 }, owned: true },
@@ -24710,6 +24731,7 @@ function wsAddFx(out, it, sign) {
 }
 function wsStats(k, out) {
   if (k === 'g17' && G17A.on) return g17Stats(g17StoreIds(), out);   // step 100: the Glock's bars are what the gun really does (GLOCK_FX)
+  const RB = wsReal(k); if (RB) return RB.stats(RB.ids(), out);     // step 102: so are the AKM's (AKM_FX)
   wsBaseStats(k, out);
   for (const it of WS_ITEMS) if (it.gun === k && wsActive(it)) wsAddFx(out, it, 1);
   return out;
@@ -24732,6 +24754,7 @@ function wsBuyItem(id) {
   if (it.model && !it.hw) wsFit(id, true);
   wsSave();
   if (it.gun === 'g17') g17StoreChanged(it, true);                 // step 100: on every Glock (and on the bench table)
+  if (wsReal(it.gun)) wsReal(it.gun).changed(it, true);            // step 102: on every AKM (and on the bench table)
   wsMsg(`${it.name} bought for ${fmtMoney(it.price)}${it.hw ? (it.gun === 'g17' && G17A.ready ? ': on your Glock 17 now' : '') : it.model ? (it.gun === 'g17' && G17A.ready ? ' and fitted on your Glock 17' : ' and fitted') : '. Model coming: it fits in a later update'}`);
   return true;
 }
@@ -24771,10 +24794,11 @@ function wsFit(id, quiet = false) {
     const multi = (WS_GUNS[it.gun] && WS_GUNS[it.gun].multi) || [];
     if (!it.addon && !multi.includes(it.cat)) for (const q of WS_ITEMS) if (q !== it && q.gun === it.gun && q.cat === it.cat && !q.addon && W.fitted.has(q.id)) wsFit(q.id, true);   // one per slot
     W.fitted.add(id);
-    if (!quiet) wsMsg(it.gun === 'g17' && G17A.ready ? `${it.name} fitted on your Glock 17` : `${it.name} fitted. Effects apply when fitted on the gun (with this gun's attachment step)`);
+    if (!quiet) wsMsg(wsReal(it.gun) ? `${it.name} fitted on your ${wsGunName(it.gun)}` : it.gun === 'g17' && G17A.ready ? `${it.name} fitted on your Glock 17` : `${it.name} fitted. Effects apply when fitted on the gun (with this gun's attachment step)`);
   }
   wsSave(); W.dirty = true;
   if (it.gun === 'g17' && !quiet) g17StoreChanged(it);              // step 100 (a quiet fit is part of a buy or a swap: the caller syncs)
+  if (!quiet && wsReal(it.gun)) wsReal(it.gun).changed(it);         // step 102
   return true;
 }
 
@@ -24846,7 +24870,7 @@ function wsDrawGun(k, now) {
   if (!def) return;
   tText(wsGunName(k), x0, 96, 36, TC.text, 'left', 700, TC.sans, 330);
   tText(wsGunCal(k), x0 + pw, 98, 21, TC.hi, 'right', 600, TC.mono, 240);
-  const modern = k !== 'akmn' || (W.byId.get('akmn.kit') || {}).owned;
+  const modern = k !== 'akmn' || W.fitted.has('akmn.kit');            // step 102: the kit fitted
   tText(G ? (modern ? G.identity : G.identity0) : `${def.capacity}-round magazine`, x0, 134, 18, TC.dim, 'left', 600, TC.sans, pw);
   const tabs = wsTabs(k), cat = wsCatOf(k);
   if (!tabs) {
@@ -24900,6 +24924,7 @@ function wsDrawStats(k) {
     WS_PRE.set(WS_NOW);
     on = wsActive(pv);
     if (k === 'g17' && G17A.on) g17Stats(g17StoreIds(pv), WS_PRE);   // step 100: the build with this part toggled (one per slot)
+    else if (wsReal(k)) wsReal(k).stats(wsReal(k).ids(pv), WS_PRE);   // step 102
     else if (on) wsAddFx(WS_PRE, pv, -1);                      // fitted: what taking it off does
     else wsAddFx(WS_PRE, pv, 1);                              // what fitting it does
   }
@@ -24926,7 +24951,7 @@ function wsDrawStats(k) {
   });
   const fy = 114 + WS_NS * rh + 8;
   tText(pv ? `${on ? 'Remove' : 'Fit'}: ${pv.name}${pv.cosmetic ? ' (cosmetic: no effect)' : ''}` : 'Touch a part to preview it', lx, fy, 17, pv ? TC.hi : TC.dim, 'left', 600, TC.sans, w - 28);
-  tText(k === 'g17' && G17A.ready ? 'Effects apply when fitted: these are your Glock\'s numbers' : 'Effects apply when fitted on the gun (coming with each gun\'s step)', lx, fy + 24, 15, TC.dim, 'left', 600, TC.sans, w - 28);
+  tText(wsReal(k) ? wsReal(k).note : k === 'g17' && G17A.ready ? 'Effects apply when fitted: these are your Glock\'s numbers' : 'Effects apply when fitted on the gun (coming with each gun\'s step)', lx, fy + 24, 15, TC.dim, 'left', 600, TC.sans, w - 28);
 }
 // SUPPLIES: the restocks, each with a price.
 function wsDrawSupplies(now) {
@@ -29851,7 +29876,7 @@ function driveHeldGun(h, g, role, trigT, dt) {
   }
   const G = gripFor(h, g, role);
   if (!G || (g.blend || 0) > 0.05) return false;                     // still flying into your hand: keep the hand where it is
-  const dz = (role === 'support' && g.def.action === 'pump' ? g.pump : role === 'rack' ? g.slideOff : 0) + (role === 'support' ? (g.supZ || 0) : 0);   // studio: where along the handguard
+  const dz = (role === 'support' && g.def.action === 'pump' ? g.pump : role === 'rack' ? g.slideOff : 0) + (role === 'support' ? (g.supFix ?? (g.supZ || 0)) : 0);   // studio: where along the handguard (step 102: g.supFix)
   gunFrame(g, G, h, HD_hP, HD_hQ, dz, g.wr.gshift[role], role === 'primary' ? primaryRot(g) : 0);
   poseFromGrip(h, G);
   if (role === 'primary') primaryIndex(h, g, trigT);
@@ -33372,6 +33397,7 @@ function createGun(type) {
   if (type === 'g17' && EXT.sw) gunSwitch(item, true);              // step 78
   if (type === 'g17') g17StockLight(item);                         // step 98: its own light, switchable
   if (type === 'g17') { try { g17SyncGun(item); } catch (e) { console.warn('step 100: Glock parts not fitted', e); } }   // step 100: the workshop's build
+  if (type === 'akmn') { try { akmSyncGun(item); } catch (e) { console.warn('step 102: AKM parts not fitted', e); } }   // step 102: the workshop's build
   try { muzSync(item); } catch (e) { console.warn('step 103: muzzle chain not fitted', e); }   // step 103: the saved muzzle chain
   return p;
 }
@@ -34951,7 +34977,7 @@ function supportZone(vh, g) {
   if (sh) F.makeTranslation(sh.x, sh.y, sh.z);
   F.multiply(G.m);
   F.decompose(_szB, _szQb, _szS);
-  const dz = clamp(_szA.z - _szB.z, -0.07, 0.05);
+  const dz = g.supFix ?? clamp(_szA.z - _szB.z, -0.07, 0.05);     // step 102: an angled grip / hand stop pins it
   _szB.z += dz;
   if (_szA.distanceTo(_szB) > GRIP_SETTLE.supDist || _szQa.angleTo(_szQb) > GRIP_SETTLE.supAng) return null;
   return { M: F.premultiply(_szM2.makeTranslation(0, 0, dz)), dz };
@@ -35182,8 +35208,8 @@ try {
 } catch (e) { /* none */ }
 if (!MUZ.saved.g17) for (const id of Object.keys(G17_MUZ)) if (WORKSHOP.fitted.has(id)) { MUZ.saved.g17 = [G17_MUZ[id]]; break; }   // a step 100 save: its one device
 function muzSave() { try { localStorage.setItem(MUZ.key, JSON.stringify(MUZ.saved)); } catch (e) { /* this visit only */ } }
-function muzIsDev(it) { return MUZ.on && !!it && it.kind === 'att' && (it.sub === 'sup' || it.sub === 'comp' || it.sub === 'ext'); }
-function muzKind(it) { return it.sub === 'ext' ? 'ext' : it.sub === 'comp' ? 'comp' : it.big ? 'rifle' : it.can === 'sb100' ? 'sb100' : it.can === 'md3' ? 'md3' : 'pcan'; }
+function muzIsDev(it) { return MUZ.on && !!it && it.kind === 'att' && (it.sub === 'sup' || it.sub === 'comp' || it.sub === 'ext' || !!it.muz); }   // step 102: it.muz = an AKM device
+function muzKind(it) { return it.muz ? it.muz : it.sub === 'ext' ? 'ext' : it.sub === 'comp' ? 'comp' : it.big ? 'rifle' : it.can === 'sb100' ? 'sb100' : it.can === 'md3' ? 'md3' : 'pcan'; }
 // The devices on this gun, nearest the barrel first.
 function muzChain(g) {
   const out = [];
@@ -35226,6 +35252,7 @@ function muzFace(p) {
 // Root space: where the first device's rear face goes (the Glock's barrel shoulder, else the drawn muzzle end).
 function muzBase(g, out) {
   if (g.type === 'g17' && G17A.ready) { g.model.updateMatrix(); return out.set(0, 0, G17A.M.front).applyMatrix4(g.model.matrix); }
+  if (g.type === 'akmn' && AKMA.ready) { g.model.updateMatrix(); return out.set(0, 0, AKMA.M.seat).applyMatrix4(g.model.matrix); }   // step 102: the AKM's collar
   return out.copy(supTip(g));
 }
 function muzAt(g, chain, out, tip) {
@@ -35252,7 +35279,7 @@ function muzBenchFit(g, p, reach) {
   if (reach && p.root.position.distanceTo(_mzW) > reach) return false;
   const why = chain.length >= MUZ.max ? `${MUZ.max} devices is the limit: take the front one off first`
     : g.type === 'g17' && G17A.ready && !g17Owned('g17.thread') ? 'Needs the threaded barrel (gunsmith store)'
-    : g.type === 'g17' && !chain.length && it.sub === 'sup' && it.big ? 'A rifle can: wrong thread for the barrel (it goes on a device in front)' : null;
+    : g.type === 'g17' && !chain.length && it.sub === 'sup' && it.big ? 'A rifle can: wrong thread for the barrel (it goes on a device in front)' : akmMuzRefuse(g, it, chain);   // step 102
   if (why) { toast(why, 2600); wsClick(420, 300); return false; }
   muzPlace(g, p, chain);
   it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
@@ -35277,8 +35304,7 @@ function muzStow(p) {
   const it = p.item;
   it.stuck = null;
   if (it.tableSpot && WB.room && wbHome(p)) return;
-  const t = WB.room && wbTable().find((t) => t[0] === it.sub && !WB.atts.some((q) => q !== p && !q.removing && q.item.tableSpot === t)
-    && (t[0] !== 'sup' || (!!it.big === t[1] && (it.can === 'sb100') === (t[5] === 'sb100'))));
+  const t = WB.room && wbTable().find((t) => wbSpotFits(it, t) && !WB.atts.some((q) => q !== p && !q.removing && q.item.tableSpot === t));
   if (t) { it.tableSpot = t; wbHome(p); return; }
   WB.atts = WB.atts.filter((q) => q !== p);
   removeProp(p);
@@ -35294,12 +35320,12 @@ function muzState(g) {
 }
 // Effects of the chain on out (g.afx). On the Glock the first device is GLOCK_FX already (g17GunIds).
 function muzFx(g, chain, out) {
-  const d = g.def, glock = g.type === 'g17' && G17A.ready, root = g.prop.root;
+  const d = g.def, glock = g.type === 'g17' && G17A.ready, akm = g.type === 'akmn' && AKMA.ready, root = g.prop.root;
   let M = (d.mass || 1) + out.mass, I = 0, gas = false, cans = 0;
   const Lm = Math.max(0.08, -muzBase(g, _mzB).z), Ig = (d.mass || 1) * Lm * Lm / 4;   // the gun's own inertia about the grip, roughly
   root.updateMatrixWorld(true);
   chain.forEach((p, i) => {
-    const it = p.item, D = MUZ_DEV[muzKind(it)], F = muzFace(p), can = it.sub === 'sup', counted = glock && i === 0 && !!g17PartId(it);
+    const it = p.item, D = MUZ_DEV[muzKind(it)], F = muzFace(p), can = it.sub === 'sup', counted = i === 0 && ((glock && !!g17PartId(it)) || (akm && !!akmPartId(it)));   // step 102: AKM_FX has the AKM's first
     if (can) { if (cans > 0) out.snd *= Math.pow(10, MUZ.db1 * MUZ.w[Math.min(cans, MUZ.w.length - 1)] / 20); cans++; }
     if (!counted) {
       p.root.updateMatrixWorld(true); _mzI.copy(root.matrixWorld).invert();
@@ -35307,13 +35333,14 @@ function muzFx(g, chain, out) {
       out.mass += D.m; I += Ii;
       out.ads *= 1 + 0.07 * r; out.sway *= 1 + 0.09 * r; out.aim *= 1 + 0.05 * r;
       out.kick *= M / (M + D.m); out.climb *= 1 / (1 + 0.1 * r); M += D.m;
-      if (it.sub === 'comp') {                                      // vents only with nothing gassy behind it
+      if (it.sub === 'comp' || D.vent) {                            // vents only with nothing gassy behind it (step 102: the AKM's comp too)
         const k = gas ? 0.2 : 1;
         out.climb *= 1 - 0.3 * k; out.kick *= 1 - 0.07 * k; out.dkick *= 1 - 0.25 * k;
         if (!gas) { out.flash *= 1.35; out.light *= 1.25; out.snd *= 1.08; }
       }
+      if (D.flash) out.flash *= D.flash;                            // step 102: a flash hider
     }
-    if (can || it.sub === 'comp') gas = true;
+    if (can || it.sub === 'comp' || D.vent) gas = true;
   });
   if (g.muzCompLast) out.flash *= 0.5;                              // a comp after a can: little gas left to burn
   out.lag = Math.min(MUZ.lagMax, (out.lag || 0) + GLOCK_FX_VR.k * I);
@@ -35333,6 +35360,7 @@ function muzClipSet(g, chain) {
 function muzRefresh(g) {
   if (!g || !g.prop || g.kind !== 'gun') return;
   if (g.type === 'g17' && G17A.ready) { g17Refresh(g); return; }   // the Glock builds its own g.wr (calls muzFx / muzClipSet)
+  if (g.type === 'akmn' && AKMA.ready) { akmRefresh(g); return; }   // step 102: so does the AKM
   const chain = muzState(g), base = WR[g.type];
   if (g.parts.flash && !g.muzFlash0) g.muzFlash0 = g.parts.flash.position.clone();
   if (chain.length) {
@@ -35357,6 +35385,7 @@ function muzSaveGun(g) {
 }
 function muzMake(k) {
   if (k === 'ext') return muzMakeExt();
+  if (AKM_ITEM[k]) return akmMakeAtt(k);                            // step 102
   if (k === 'rifle') return wbMakeAtt('sup', true);
   if (k === 'comp') return wbMakeAtt('comp');
   return wbMakeAtt('sup', false, k === 'sb100' ? 'sb100' : 'md3');
@@ -35366,6 +35395,7 @@ function muzSync(g) {
   if (!MUZ.on || !g || !g.prop || g.prop.removing || g.kind !== 'gun' || (WB.open && WB.gun === g)) return;
   const want = MUZ.saved[g.type] || [];
   if (G17A.on && !G17A.ready && want.some((k) => k === 'md3' || k === 'sb100' || k === 'comp')) return;   // the models arrive with the kit (G17A ready runs this again)
+  if (AKMA.on && !AKMA.ready && want.some((k) => AKM_ITEM[k])) return;   // step 102: the AKM's devices arrive with its kit
   const have = (g.atts || []).filter((p) => muzIsDev(p.item) && !p.removing);
   const sorted = muzChain(g).filter((p) => have.includes(p));
   if (sorted.length === want.length && sorted.every((p, i) => muzKind(p.item) === want[i] || (want[i] === 'md3' && muzKind(p.item) === 'pcan'))) return;
@@ -35403,6 +35433,726 @@ function muzMakeExt() {
   return p;
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MUZ, MUZ_DEV, MUZ_EXT, G17_MUZ, muzChain, muzFace, muzBase, muzEnd, muzTip, muzPlace, muzBenchFit, muzOff, muzStow, muzState, muzFx, muzClipSet, muzRefresh, muzSaveGun, muzSync, muzMakeExt });   // step 103
+/* ===========================================================================
+ *  STEP 102 — AKM ATTACHMENTS, MADE REAL (?akmatt=off = the step 101 AKM)
+ *  Models: cqc/models/att/akm-att.glb (tools/pack_akm_att.py, from the user's packs): ats5 (+ ats5Sleeve) rifle can
+ *  42 x 197 mm, fh 3-prong flash hider 22 x 56 mm, comp round-port compensator 24 x 76 mm, dot reflex sight on its
+ *  riser, holo EXPS3 class (97 mm), x2 compact 2x prism. The optics carry their window / eyepiece in node extras.
+ *  Built here (AKMA.kit, geometry and materials once, shared by every AKM):
+ *    Modernization kit  two-piece aluminium handguard in place of the wood: the lower with side and bottom Picatinny
+ *                       rails, a smooth upper over the gas tube (a top rail would stand in the iron sight line); an
+ *                       RS Regulate style side mount: clamps the receiver's side rail, bridges the dust cover with
+ *                       2.5 mm to spare, a Picatinny top rail for the optics
+ *    stock              adapter on the receiver's rear face, buffer tube, castle nut, adjustable stock, butt pad
+ *    collar             5/8x24 adapter on the 14x1 LH barrel thread: the slant brake is split off the barrel mesh at load
+ *                       (akmPrepare) and comes back when no muzzle device is on
+ *    grips              vertical grip (the step 23 foregrip lathe), angled grip, hand stop; rubber rail covers;
+ *                       a two-point sling from the band loop to the stock
+ *  Fit (akmMeasure: the AKM's own meshes, design space): the handguard spans the wood's z range; the mount's clamp
+ *  face lies on the side rail's flat; the collar's rear face on the front sight block, devices seat on its front
+ *  face (MUZ base); the adapter's front face on the receiver's rear. Parts clamp the rails with jaws cut to the rail
+ *  section (MIL-STD-1913): light right, laser left, grips under, optics on the mount's rail.
+ *  Progression: Standard AKM until the kit is owned and FITTED; the kit opens the rest. One build for every AKM: the
+ *  store's fitted set (akmSyncGun); a RELEASE at the vise writes the gun's parts back (akmFromGun). Kit, stock, covers
+ *  and sling are store-only (built on the gun); the rest also fits at the bench (snap + refusals, akmBenchFit).
+ *  Muzzle devices are step 103 chains (kinds ats5 / akcomp / akfh); a store muzzle row is the chain's first device.
+ *  Effects: AKM_FX, one table -> g.afx; the store's bars are akmStats on the same numbers (WS_REAL registry).
+ *  Optics: dot (3 MOA) and holo (65 MOA ring + 1 MOA dot) are shaders on their window (per eye, view space: only
+ *  through the window, at infinity); the 2x is a picture in picture like SCOPE, drawn only while an eye is behind
+ *  its eyepiece (256 px in the headset, 384 on a computer). Desktop ADS puts the eye on each optic's line (g.sightY).
+ *  Holds: a vertical grip takes the support hand as the step 23 foregrip (the gun's own def with vfg); the angled grip
+ *  and the hand stop pin the support grip's slide along the handguard (g.supFix).
+ *  RULES: programs compile at load (akmPrecompile); per frame only the reticle brightness and, while you look
+ *  through it, the 2x view. No light added.
+ * ========================================================================= */
+const AKMA = {
+  on: !/[?&]akmatt=off\b/.test(location.search), ready: false, url: './models/att/akm-att.glb',
+  geo: {}, mat: {}, ex: {}, M: null, kit: null, defVfg: null, pre: null,
+  v: new THREE.Vector3(), v2: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4()
+};
+const AKM_NODES = ['ats5', 'ats5Sleeve', 'fh', 'comp', 'dot', 'holo', 'x2'];
+// Design choices (metres, AKM design space: bore on y = 0, -z to the muzzle). What is measured lives in AKMA.M.
+const AKM_DIM = {
+  rail: { nW: 0.0078, hW: 0.0106, neck: 0.0028, mid: 0.0056, top: 0.0084, pitch: 0.01, tooth: 0.0048, inset: 0.003 },   // MIL-STD-1913; v out of the surface
+  hg: { side: 0.0232, bottom: -0.0300, split: 0.0120, top: 0.0450, wall: 0.004, railY: -0.004 },   // the wood's outline: +-23.2 mm, top 44.7
+  mount: { clear: 0.0025, plate: 0.005, jaw: 0.0065, z0: -0.150, z1: 0.020, xR: 0.013 },            // over the dust cover; its rail's z range
+  collar: { len: 0.016, r: 0.0105, bore: 0.0079 },                                                 // 5/8x24 in front: fits the 22 mm hider
+  stock: { adapter: 0.024, tubeY: -0.006, tubeR: 0.0148, tubeEnd: 0.215, front: 0.115, butt: 0.268, pad: 0.014, w: 0.040 },
+  relief: 0.065                                                                                    // the 2x's eye relief
+};
+/* The parts (one table): store row, slot, label, place along its rail (z; the 2x from its eyepiece), mass, hold,
+   supZ (the support grip's slide it pins), muzzle radius / vent / flash for the step 103 chain (MUZ_DEV). */
+const AKM_ITEM = {
+  akdot: { id: 'akmn.dot', slot: 'optic', label: 'reflex sight', z: -0.030, mass: 0.12, hold: 'pinch' },
+  akholo: { id: 'akmn.holo', slot: 'optic', label: 'holographic sight', z: -0.070, mass: 0.32, hold: 'fist' },
+  akx2: { id: 'akmn.2x', slot: 'optic', label: '2x prism sight', z: null, mass: 0.40, hold: 'fist' },
+  akvg: { id: 'akmn.vg', slot: 'grip', label: 'vertical grip', z: -0.335, mass: 0.10, hold: 'fist' },
+  akag: { id: 'akmn.ag', slot: 'grip', label: 'angled grip', z: -0.330, mass: 0.08, hold: 'pinch', supZ: -0.030 },
+  akhs: { id: 'akmn.hs', slot: 'grip', label: 'hand stop', z: -0.362, mass: 0.03, hold: 'pinch', supZ: -0.025 },
+  ats5: { id: 'akmn.sup', slot: 'muzzle', label: 'AKM suppressor (ATS5)', mass: 0.55, r: 0.021 },
+  akcomp: { id: 'akmn.comp', slot: 'muzzle', label: 'AKM compensator', mass: 0.12, r: 0.012, vent: true },
+  akfh: { id: 'akmn.fh', slot: 'muzzle', label: 'AKM flash hider', mass: 0.06, r: 0.011, flash: 0.3 }
+};
+const AKM_RAIL_PART = { light: ['right', -0.300], laser: ['left', -0.330] };   // the bench light / laser on the kit's side rails
+const AKM_HW = { kit: 'akmn.kit', stock: 'akmn.stock', covers: 'akmn.covers', sling: 'akmn.sling' };   // store rows built on the gun
+const AKM_MUZ = {}, AKM_KEY = {};                                   // store row -> chain kind; store row -> part key
+for (const [k, I] of Object.entries(AKM_ITEM)) { AKM_KEY[I.id] = k; if (I.slot === 'muzzle') { AKM_MUZ[I.id] = k; MUZ_DEV[k] = { m: I.mass, r: I.r, vent: !!I.vent, flash: I.flash || 0 }; } }
+const AKM_BENCH = [...Object.keys(AKM_KEY), 'akmn.light', 'akmn.laser'];   // rows a RELEASE at the vise writes back
+// Step 102: where the AKM's parts lie on the bench once the store says you own them: [sub, big, x, z, yaw, part key, store id]
+const WB_AKM = [['akdot', false, 2.22, 2.47, Math.PI, 'akdot', 'akmn.dot'], ['akholo', false, 2.22, 2.62, Math.PI, 'akholo', 'akmn.holo'],
+  ['akx2', false, 2.37, 2.47, Math.PI, 'akx2', 'akmn.2x'], ['akvg', false, 3.0, 2.48, Math.PI / 2, 'akvg', 'akmn.vg'],
+  ['akag', false, 3.0, 2.62, Math.PI / 2, 'akag', 'akmn.ag'], ['akhs', false, 3.12, 2.48, Math.PI / 2, 'akhs', 'akmn.hs'],
+  ['akfh', false, 3.12, 2.62, Math.PI / 2, 'akfh', 'akmn.fh'], ['akcomp', false, 3.0, 2.76, Math.PI / 2, 'akcomp', 'akmn.comp'],
+  ['sup', true, 3.1, 2.9, Math.PI / 2, 'ats5', 'akmn.sup']];
+/* AKM_FX: what each part does on the AKM (multipliers unless noted; fields as GLOCK_FX). Hardware mostly adds weight;
+   every upgrade carries a cost (docs/ATTACHMENTS.md sections 8-9): optics trade aim-in time against the picture,
+   muzzle devices weight out front against recoil / flash, grips weight against sway and climb. The can's report and
+   flash are g.sup's (supShot, the flash hidden); the collar counts only with a device on it. */
+const AKM_FX = {
+  'akmn.kit': { m: 0.42, ads: 1.03, sway: 1.02, lever: 0.24 },
+  'akmn.muzzle': { m: 0.03, lever: 0.6 },
+  'akmn.dot': { m: 0.12, ads: 0.88, aim: 0.65, lever: 0.05, stat: { acc: 8 } },
+  'akmn.holo': { m: 0.32, ads: 0.9, aim: 0.6, sway: 1.03, lever: 0.07, stat: { acc: 7, hip: 2 } },
+  'akmn.2x': { m: 0.40, ads: 1.18, aim: 0.8, sway: 1.04, lever: 0.05, stat: { acc: 14, hip: -2 } },
+  'akmn.sup': { m: 0.55, kick: 0.9, climb: 0.85, dkick: 0.85, ads: 1.12, sway: 1.12, aim: 1.08, lever: 0.7, stat: { vis: -4 } },
+  'akmn.comp': { m: 0.12, kick: 0.95, climb: 0.7, dkick: 0.75, flash: 1.35, light: 1.25, snd: 1.08, ads: 1.02, lever: 0.64 },
+  'akmn.fh': { m: 0.06, flash: 0.3, light: 0.45, ads: 1.01, lever: 0.63 },
+  'akmn.vg': { m: 0.10, climb: 0.94, sway: 0.88, aim: 0.9, ads: 1.03, lever: 0.34 },
+  'akmn.ag': { m: 0.08, climb: 0.97, sway: 0.95, ads: 0.96, lever: 0.33 },
+  'akmn.hs': { m: 0.03, climb: 0.98, sway: 0.96, lever: 0.36 },
+  'akmn.light': { m: 0.13, ads: 1.03, sway: 1.03, lever: 0.3, stat: { acc: 2, vis: 12 } },
+  'akmn.laser': { m: 0.10, ads: 1.02, sway: 1.02, lever: 0.33, stat: { hip: 12, vis: 8 } },
+  'akmn.mag40': { m: 0.20, rel: 1.12, sway: 1.03, lever: 0.14 },
+  'akmn.stock': { m: 0.15, kick: 0.94, climb: 0.9, dkick: 0.9, sway: 0.92, aim: 0.85, lever: 0.2 }
+};
+const AKM_FX_VR = { k: 0.12, max: 0.045 };                         // s per kg m^2 (a rifle's own inertia dwarfs a pistol's)
+const AFX_MUL = ['kick', 'climb', 'dkick', 'flash', 'light', 'snd', 'ads', 'sway', 'aim', 'rel'];
+
+/* --- effects and the store's bars (generic: any table shaped like GLOCK_FX) --- */
+function afxFrom(T, VR, ids, out = {}) {
+  Object.assign(out, AFX0);
+  let I = 0;
+  for (const id of ids) {
+    const F = T[id]; if (!F) continue;
+    out.mass += F.m || 0; I += (F.m || 0) * (F.lever || 0) ** 2;
+    for (const k of AFX_MUL) if (F[k] !== undefined) out[k] *= F[k];
+    if (F.stat) for (const k in F.stat) out[k] += F.stat[k];
+  }
+  out.lag = Math.min(VR.max, VR.k * I);
+  return out;
+}
+// The 12 bars for gun type k with effects F (wsBaseStats on the gun with the parts' weight and recoil, then the multipliers).
+function afxStats(k, F, sup, out) {
+  const d = WEAPON_DEFS[k], R = d.recoil;
+  wsBaseStats(k, out, Object.assign({}, d, { mass: d.mass + F.mass, recoil: { kick: R.kick * F.kick, climb: R.climb * F.climb } }));
+  out[1] += F.acc; out[2] += F.rec; out[3] = clamp(out[3] * F.sway * Math.sqrt(F.aim), 5, 98);
+  out[4] = clamp(out[4] / F.ads, 5, 98); out[5] += F.hip; out[6] = clamp(out[6] / F.rel, 5, 98);
+  out[9] = clamp(out[9] * F.snd * (sup ? 0.28 : 1), 5, 98);
+  out[10] = clamp(out[10] * (sup ? 0.12 : F.flash), 3, 98); out[11] += F.vis;
+  return out;
+}
+// The build the store holds for gun k (active rows), optionally with one row toggled (one per slot).
+function wsStoreIds(k, toggle = null) {
+  const S = new Set();
+  for (const it of WS_ITEMS) if (it.gun === k && wsActive(it)) S.add(it.id);
+  if (toggle && toggle.gun === k) {
+    if (S.has(toggle.id)) { S.delete(toggle.id); for (const q of WS_ITEMS) if (q.requires.includes(toggle.id)) S.delete(q.id); }
+    else if (!toggle.cosmetic) {
+      S.add(toggle.id);
+      for (const q of WS_ITEMS) if (q !== toggle && q.gun === k && q.cat === toggle.cat && !q.addon && !q.hw && !toggle.addon) S.delete(q.id);
+    }
+  }
+  return S;
+}
+// A store row that should be on the gun: owned, fitted, and what it needs owned (hardware) or fitted (a part).
+function wsWanted(id) {
+  const W = WORKSHOP, it = W.byId.get(id);
+  return !!it && it.owned && W.fitted.has(id) && it.requires.every((r) => { const q = W.byId.get(r); return q && q.owned && (q.hw || W.fitted.has(r)); });
+}
+const _akSt = {};
+function akmStats(ids, out) {
+  if (!Object.keys(AKM_MUZ).some((id) => ids.has(id))) ids.delete('akmn.muzzle');   // the collar goes on with a device
+  return afxStats('akmn', afxFrom(AKM_FX, AKM_FX_VR, ids, _akSt), ids.has('akmn.sup'), out);
+}
+// Guns whose store rows are real parts: the bars are what the gun does, buys and fits go on every gun of the type.
+const WS_REAL = {
+  akmn: { ready: () => AKMA.ready, ids: (pv) => wsStoreIds('akmn', pv), stats: akmStats, changed: (it, bought) => akmStoreChanged(it, bought), note: 'Effects apply when fitted: these are your AKM\'s numbers' }
+};
+function wsReal(k) { const R = WS_REAL[k]; return R && R.ready() ? R : null; }
+
+/* --- the AKM's own meshes: the brake split off, the wood tagged (before any AKM is built) --- */
+function akmPrepare() {
+  const parts = X64.akmn.parts.body || [];
+  if (parts.some((o) => o.g.userData.akm === 'brake')) return;
+  const fsFace = akmScanMin('barrel', (x, y, z) => (y > 0.012 && z > -0.6 ? z : Infinity));   // the front sight block's face
+  for (const o of parts) {
+    if (o.m.name === 'material') o.g.userData.akm = 'wood';
+    if (o.m.name === 'wStock') o.g.userData.akm = 'woodStock';
+  }
+  const o = parts.find((q) => q.m.name === 'barrel');
+  if (!o || !Number.isFinite(fsFace)) return;
+  const g = o.g, P = g.attributes.position, n = g.index ? g.index.count : P.count, at = (i) => (g.index ? g.index.getX(i) : i);
+  const keep = [], brake = [], cut = fsFace - 0.0003;
+  for (let i = 0; i < n; i += 3) {
+    const a = at(i), b = at(i + 1), c = at(i + 2);
+    ((P.getZ(a) + P.getZ(b) + P.getZ(c)) / 3 < cut ? brake : keep).push(a, b, c);
+  }
+  const part = (idx) => { const s = new THREE.BufferGeometry(); for (const k in g.attributes) s.setAttribute(k, g.attributes[k]); s.setIndex(idx); return compactGeo(s); };
+  o.g = part(keep);
+  const bg = part(brake); bg.userData.akm = 'brake';
+  parts.push({ g: bg, m: o.m });
+}
+function akmScanMin(mat, fn) {                                      // min of fn over a material's vertices (Infinity = skip)
+  let v = Infinity;
+  for (const o of X64.akmn.parts.body || []) if (o.m.name === mat) { const P = o.g.attributes.position; for (let i = 0; i < P.count; i++) v = Math.min(v, fn(P.getX(i), P.getY(i), P.getZ(i))); }
+  return v;
+}
+const akmScanMax = (mat, fn) => -akmScanMin(mat, (x, y, z) => -fn(x, y, z));
+
+/* --- the measured AKM (design space, metres) --- */
+function akmMeasure() {
+  if (AKMA.M) return AKMA.M;
+  const D = AKM_DIM, M = {};
+  M.hgRear = akmScanMax('material', (x, y, z) => z);                                     // the wood: -211.5 mm
+  M.hgFront = akmScanMin('material', (x, y, z) => (y < 0 ? z : Infinity));                // the lower's front, on the band: -376.2
+  M.fsFace = akmScanMin('barrel', (x, y, z) => (y > 0.012 && z > -0.6 ? z : Infinity));   // front sight block face: -587.2
+  M.seat = M.fsFace - D.collar.len;                                                       // the collar's front face: devices sit here
+  const sx = akmScanMin('barrel', (x, y, z) => (z > -0.2 ? x : Infinity)), flat = (f) => (x, y, z) => (z > -0.2 && x < sx + 0.0003 ? f(x, y, z) : -Infinity);
+  M.sr = { x: sx, y0: -akmScanMax('barrel', flat((x, y) => -y)), y1: akmScanMax('barrel', flat((x, y) => y)),   // the side rail's flat: -30.0, y -17.2..-3.0
+    z0: -akmScanMax('barrel', flat((x, y, z) => -z)), z1: akmScanMax('barrel', flat((x, y, z) => z)) };      // z -90.0..11.1
+  M.dcTop = akmScanMax('akmDc', (x, y) => y);                                             // dust cover top: 38.0
+  const wall = (f) => (x, y, z) => (Math.abs(x) > 0.012 && y > -0.045 ? f(x, y, z) : -Infinity);
+  M.recRear = akmScanMax('receiver', wall((x, y, z) => z));                               // receiver's rear face: 38.8
+  const rim = (f) => wall((x, y, z) => (z > M.recRear - 0.004 ? f(x, y, z) : -Infinity));
+  M.recY0 = -akmScanMax('receiver', rim((x, y) => -y)); M.recY1 = akmScanMax('receiver', rim((x, y) => y)); M.recX = akmScanMax('receiver', rim((x) => Math.abs(x)));
+  const loop = (f) => (x, y, z) => (x < -0.02 && z < -0.35 ? f(x, y, z) : -Infinity);       // the band's sling loop
+  M.loop = new THREE.Vector3(-akmScanMax('barrel', loop((x) => -x)), (akmScanMax('barrel', loop((x, y) => y)) - akmScanMax('barrel', loop((x, y) => -y))) / 2,
+    (akmScanMax('barrel', loop((x, y, z) => z)) - akmScanMax('barrel', loop((x, y, z) => -z))) / 2);
+  M.stockX = akmScanMax('wStock', (x) => -x);                                             // the wood stock's left side
+  M.mountY = M.dcTop + D.mount.clear + D.mount.plate;                                     // the mount's rail sits here
+  M.optY = M.mountY + D.rail.top;                                                         // optics: their clamp's ceiling on the rail top (53.9)
+  return (AKMA.M = M);
+}
+
+/* --- geometry helpers --- */
+// A section (polygon in x, y) along z from z0 back to z1 (z0 > z1).
+function akmPrism(pts, z0, z1) {
+  return new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([x, y]) => new THREE.Vector2(x, y))), { depth: z0 - z1, bevelEnabled: false, curveSegments: 6 }).translate(0, 0, z1);
+}
+// A side profile (polygon in z, y) w wide, centred on x = 0, edges rounded by b.
+function akmSide(pts, w, b) {
+  return new THREE.ExtrudeGeometry(new THREE.Shape(pts.map(([z, y]) => new THREE.Vector2(z, y))), { depth: w - 2 * b, bevelEnabled: b > 0, bevelThickness: b, bevelSize: b, bevelSegments: 2, curveSegments: 8 })
+    .rotateY(-Math.PI / 2).translate((w - 2 * b) / 2, 0, 0);
+}
+function akmMerge(parts) {                                          // one geometry: positions and normals only
+  const flat = parts.map((p) => { const n = p.index ? p.toNonIndexed() : p; for (const k of Object.keys(n.attributes)) if (k !== 'position' && k !== 'normal') n.deleteAttribute(k); return n; });
+  const g = mergeGeometries(flat);
+  if (!g) throw new Error('step 102: merge failed');
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  return g;
+}
+// A Picatinny section from z0 back to z1 in rail space (x across, y out of the surface it stands on): neck + teeth.
+function akmRailGeo(z0, z1, out = []) {
+  const R = AKM_DIM.rail;
+  out.push(akmPrism([[-R.nW, 0], [R.nW, 0], [R.nW, R.neck], [-R.nW, R.neck]], z0, z1));
+  const head = [[-R.nW, R.neck], [R.nW, R.neck], [R.hW, R.mid], [R.nW, R.top], [-R.nW, R.top], [-R.hW, R.mid]];
+  for (let z = z0 - (R.pitch - R.tooth) / 2; z - R.tooth >= z1 - 1e-6; z -= R.pitch) out.push(akmPrism(head, z, z - R.tooth));
+  return out;
+}
+// The jaw that clamps such a rail (item frame: origin on the rail's top flat, +y into the gun, body out at y < 0).
+function akmJaw(len, w = 0.0145) {
+  const R = AKM_DIM.rail, n = R.nW, h = R.hW, a = R.top - R.mid, b = R.top - R.neck, s = b + 0.0004;
+  return akmPrism([[-w, -0.006], [w, -0.006], [w, s], [n, s], [n, b], [h, a], [n, 0], [-n, 0], [-h, a], [-n, b], [-n, s], [-w, s]], len / 2, -len / 2);
+}
+// The kit's rails: rail space -> the handguard's sides (turn about z, then the surface).
+const AKM_SIDE = { right: -Math.PI / 2, left: Math.PI / 2, bottom: Math.PI };
+function akmSideM(side, out) {
+  const H = AKM_DIM.hg;
+  return out.makeRotationZ(AKM_SIDE[side]).setPosition(side === 'bottom' ? 0 : side === 'right' ? H.side : -H.side, side === 'bottom' ? H.bottom : H.railY, 0);
+}
+// A rail part's pose (model space) on a side: origin on the rail's outer face at z, +y into the gun.
+function akmRailPose(side, z, P, Q) {
+  akmSideM(side, AKMA.m);
+  P.set(0, AKM_DIM.rail.top, z).applyMatrix4(AKMA.m);
+  Q.setFromAxisAngle(_wbZ, AKM_SIDE[side] + Math.PI);
+  return P;
+}
+
+/* --- the kit --- */
+async function akmAttLoad() {
+  if (!AKMA.on || AKMA.ready || !X64.akmn.ready) return;
+  akmPrepare();
+  const r = await fetch(AKMA.url);
+  if (!r.ok) throw new Error('step 102: ' + AKMA.url + ' HTTP ' + r.status);
+  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+  const gltf = await gltfParse(GLTFLoader, await r.arrayBuffer());
+  for (const name of AKM_NODES) {
+    const o = gltf.scene.getObjectByName(name);
+    if (!o || !o.isMesh) throw new Error('step 102: no ' + name + ' in ' + AKMA.url);
+    o.geometry.computeBoundingBox();
+    AKMA.geo[name] = o.geometry; AKMA.mat[name] = o.material; AKMA.ex[name] = o.userData || {};
+    for (const t of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) if (o.material[t]) { o.material[t].anisotropy = maxAniso; o.material[t].needsUpdate = true; }
+    o.material.side = THREE.FrontSide;
+  }
+  akmMeasure(); akmKit();
+  AKM_ITEM.akx2.z = WEAPON_DEFS.akmn.eye[2] - AKM_DIM.relief - AKMA.ex.x2.eyeZ;   // the eyepiece at the relief from the eye
+  AKMA.ready = true;
+  akmForEach(akmSyncGun);                                            // guns made before the kit
+}
+function akmForEach(fn) { for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'akmn' && !q.removing) fn(q.item); }
+// The reticle on a reflex / holographic window: the line from the eye (each eye) parallel to the optic's axis, at infinity.
+function akmReticleMat(dotMoa, ringMoa) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uLvl: { value: 1 }, uR: { value: dotMoa / 2 * G17_MOA }, uRing: { value: ringMoa / 2 * G17_MOA }, uRingW: { value: 1.3 * G17_MOA },
+      uTint: { value: new THREE.Color(0.08, 0.16, 0.2) }, uA: { value: 0.07 } },
+    vertexShader: `varying vec3 vP; varying vec3 vF; varying vec3 vN;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vP = mv.xyz; vF = (modelViewMatrix * vec4(0.0, 0.0, -1.0, 0.0)).xyz; vN = normalMatrix * normal;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `uniform float uLvl, uR, uRing, uRingW, uA; uniform vec3 uTint; varying vec3 vP; varying vec3 vF; varying vec3 vN;
+      void main() {
+        vec3 v = normalize(vP), f = normalize(vF);
+        float c = dot(v, f);
+        float a = length(cross(v, f)) / max(c, 1e-4);              // angle off the optic's axis
+        float px = max(length(fwidth(v)), 1e-6);
+        float r = max(uR, px * 0.75), w = max(uRingW, px * 1.2) * 0.5;
+        float on = step(0.0, c) * uLvl;
+        float core = 1.0 - smoothstep(r - px * 0.6, r + px * 0.6, a);
+        float ring = uRing > 0.0 ? 1.0 - smoothstep(w - px * 0.6, w + px * 0.6, abs(a - uRing)) : 0.0;
+        float halo = exp(-a / (r * 1.8)) * 0.14;
+        float fr = pow(1.0 - abs(dot(normalize(vN), v)), 4.0);
+        float al = clamp(uA + 0.35 * fr, 0.0, 0.55);
+        gl_FragColor = vec4(uTint * al + vec3(1.0, 0.05, 0.025) * (core + 0.85 * ring + halo) * on, al);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, premultipliedAlpha: true, toneMapped: true, side: THREE.DoubleSide
+  });
+}
+// The 2x's eyepiece: the view from its objective (AKMA.kit.pip.rt), an exit pupil, a red ring-and-dot reticle.
+function akmPipMat(rt) {
+  return new THREE.ShaderMaterial({
+    uniforms: { tScene: { value: rt.texture }, uEye: { value: new THREE.Vector3(0, 0, AKM_DIM.relief) }, uRelief: { value: AKM_DIM.relief }, uBox: { value: 0.012 }, uLit: { value: 0 }, uLvl: { value: 1 } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `uniform sampler2D tScene; uniform vec3 uEye; uniform float uRelief, uBox, uLit, uLvl; varying vec2 vUv;
+      void main() {
+        vec2 p = (vUv - 0.5) * 2.0;
+        vec2 off = uEye.xy / uBox;                                    // eye off the axis, in eye-box units
+        float dz = (uEye.z - uRelief) / 0.05;
+        float R = clamp(1.04 - 0.1 * dot(off, off) - 0.12 * dz * dz, 0.45, 1.04);
+        float vis = 1.0 - smoothstep(R - 0.12, R, length(p + off * 0.3));
+        vec3 col = texture2D(tScene, clamp(0.5 + (p + off * 0.06) * 0.5, 0.0, 1.0)).rgb * vis * uLit;
+        float d = length(p);
+        float ret = (1.0 - smoothstep(0.018, 0.03, d)) + (1.0 - smoothstep(0.008, 0.016, abs(d - 0.34)));
+        col += vec3(1.0, 0.05, 0.025) * ret * uLvl * uLit * 0.9;
+        col += vec3(0.012, 0.016, 0.02) * (1.0 - uLit) * (0.6 + 0.4 * p.y);
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    toneMapped: true
+  });
+}
+function akmKit() {
+  if (AKMA.kit) return AKMA.kit;
+  const M = akmMeasure(), D = AKM_DIM, R = D.rail, H = D.hg, MD = D.mount, ST = D.stock, ex = AKMA.ex;
+  const std = (color, roughness, metalness) => new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  const K = { alu: std(0x141516, 0.55, 0.35), poly: std(0x17181a, 0.72, 0), rubber: std(0x0e0e0f, 0.9, 0), steel: std(0x1b1c1e, 0.42, 0.85), strap: std(0x2a2b27, 0.95, 0),
+    objMat: std(0x0b0e12, 0.05, 0.6) };
+  const zR = M.hgRear - R.inset, zF = M.hgFront + R.inset;
+  // handguard: the lower (rails on the sides and underneath) and the smooth upper over the gas tube, the wood's span
+  const S = H.side, B = H.bottom, Y = H.split, T = H.top, w = H.wall, c = 0.008;
+  const lower = [[-S, Y], [-S, B + c], [-S + c, B], [S - c, B], [S, B + c], [S, Y], [S - w, Y], [S - w, B + w + c], [S - w - c, B + w], [-S + w + c, B + w], [-S + w, B + w + c], [-S + w, Y]];
+  const upper = [[-S, Y], [-S + w, Y], [-S + w, T - w - c], [-S + w + c, T - w], [S - w - c, T - w], [S - w, T - w - c], [S - w, Y], [S, Y], [S, T - 0.009], [S - 0.009, T], [-S + 0.009, T], [-S, T - 0.009]];
+  const hg = [akmPrism(lower, M.hgRear, M.hgFront), akmPrism(upper, akmScanMax('material', (x, y, z) => (y > 0.03 ? z : -Infinity)), M.hgFront),
+    placed(new THREE.CylinderGeometry(0.0045, 0.0045, 0.004, 14), -S + 0.0035, B + 0.0035, M.hgFront + 0.012, 0, 0, -Math.PI / 4)];   // the sling's QD socket
+  for (const side of Object.keys(AKM_SIDE)) { const m = akmSideM(side, new THREE.Matrix4()); for (const q of akmRailGeo(zR, zF)) hg.push(q.applyMatrix4(m)); }
+  K.hgGeo = akmMerge(hg);
+  // side mount: the clamp's face on the side rail's flat, lips over its chamfers, a lever; the arm up the side; the
+  // bridge over the dust cover (MD.clear above it); the optics rail on top
+  const sr = M.sr, jx = sr.x - MD.jaw, cz0 = sr.z1 - 0.008, cz1 = sr.z0 + 0.008, yb = M.mountY - MD.plate;
+  const mount = [akmPrism([[jx, sr.y0 - 0.0045], [sr.x, sr.y0 - 0.0045], [sr.x, sr.y1 + 0.0055], [jx, sr.y1 + 0.0055]], cz0, cz1),
+    akmPrism([[sr.x, sr.y1], [sr.x + 0.0028, sr.y1 + 0.0028], [sr.x + 0.0028, sr.y1 + 0.0055], [sr.x, sr.y1 + 0.0055]], cz0, cz1),
+    akmPrism([[sr.x, sr.y0], [sr.x, sr.y0 - 0.0045], [sr.x + 0.0028, sr.y0 - 0.0045], [sr.x + 0.0028, sr.y0 - 0.0028]], cz0, cz1),
+    akmPrism([[jx, sr.y1 + 0.0055], [sr.x + 0.0035, sr.y1 + 0.0055], [sr.x + 0.0035, M.mountY], [jx, M.mountY]], cz0, cz1),
+    placed(rbox(MD.xR - jx, MD.plate, MD.z1 - MD.z0, 0.0015), (MD.xR + jx) / 2, yb + MD.plate / 2, (MD.z0 + MD.z1) / 2),
+    placed(new THREE.CylinderGeometry(0.0042, 0.0042, 0.004, 16), jx - 0.002, (sr.y0 + sr.y1) / 2, (cz0 + cz1) / 2, 0, 0, Math.PI / 2),
+    placed(rbox(0.004, 0.009, 0.05, 0.0015), jx - 0.004, (sr.y0 + sr.y1) / 2 - 0.004, (cz0 + cz1) / 2 + 0.012)];
+  for (const z of [cz0 - 0.012, cz1 + 0.012]) mount.push(placed(new THREE.CylinderGeometry(0.0028, 0.0028, 0.0012, 12), jx - 0.0006, sr.y1 - 0.001, z, 0, 0, Math.PI / 2));   // cross-bolt heads
+  for (const q of akmRailGeo(MD.z1 - 0.003, MD.z0 + 0.003)) mount.push(q.translate(0, M.mountY, 0));
+  K.mountGeo = akmMerge(mount);
+  // the collar: rear face on the front sight block, knurled, 5/8x24 bore in front
+  const C = D.collar, cp = [[C.bore, 0], [C.r - 0.0006, 0], [C.r, 0.0006]];
+  for (let i = 0; i < 4; i++) { const a = 0.003 + i * 0.0025; cp.push([C.r, a], [C.r - 0.0003, a + 0.0007], [C.r - 0.0003, a + 0.0013], [C.r, a + 0.002]); }
+  cp.push([C.r, C.len - 0.0007], [C.r - 0.0007, C.len], [C.bore, C.len]);
+  K.collarGeo = new THREE.LatheGeometry(cp.map(([r, a]) => new THREE.Vector2(r, a)), 32).rotateX(-Math.PI / 2).translate(0, 0, M.fsFace);
+  // stock: the adapter's front face on the receiver's rear (its outline), buffer tube, castle nut, the stock, its pad
+  const a0 = M.recRear, a1 = a0 + ST.adapter, top = ST.tubeY + 0.0175;
+  K.adapterGeo = akmMerge([placed(rbox(2 * M.recX, M.recY1 - M.recY0, ST.adapter, 0.003), 0, (M.recY0 + M.recY1) / 2, (a0 + a1) / 2)]);
+  K.tubeGeo = akmMerge([placed(new THREE.CylinderGeometry(ST.tubeR, ST.tubeR, ST.tubeEnd - a1, 28), 0, ST.tubeY, (a1 + ST.tubeEnd) / 2, Math.PI / 2),
+    placed(new THREE.CylinderGeometry(ST.tubeR + 0.0024, ST.tubeR + 0.0024, 0.007, 8), 0, ST.tubeY, a1 + 0.0035, Math.PI / 2)]);
+  K.stockGeo = akmMerge([akmSide([[ST.front, top], [ST.butt, top], [ST.butt, -0.084], [ST.butt - 0.045, -0.06], [ST.butt - 0.105, -0.03], [ST.front + 0.012, -0.022], [ST.front, -0.017]], ST.w, 0.003),
+    placed(rbox(0.012, 0.006, 0.02, 0.002), 0, -0.022, ST.front + 0.016),                                   // the adjustment lever
+    placed(new THREE.CylinderGeometry(0.0045, 0.0045, 0.004, 14), -ST.w / 2 - 0.0015, ST.tubeY - 0.004, 0.245, 0, 0, Math.PI / 2)]);   // QD sling socket
+  K.padGeo = akmMerge([placed(rbox(ST.w + 0.002, top + 0.088, ST.pad, 0.004), 0, (top - 0.088) / 2, ST.butt + ST.pad / 2)]);
+  // rubber covers on the rails behind the light, the laser and the grips
+  const cov = [], seg = { left: -0.312, right: -0.302, bottom: -0.282 };
+  for (const side of Object.keys(seg)) {
+    const m = akmSideM(side, new THREE.Matrix4()), z0 = zR, z1 = seg[side], L = z0 - z1;
+    cov.push(placed(rbox(0.0256, 0.0083, L, 0.0015), 0, 0.0015 + 0.00415, (z0 + z1) / 2).applyMatrix4(m));
+    for (let z = z0 - 0.005; z > z1 + 0.003; z -= R.pitch) cov.push(placed(rbox(0.022, 0.0012, 0.0035, 0.0005), 0, 0.0098 + 0.0005, z).applyMatrix4(m));
+  }
+  K.coverGeo = akmMerge(cov);
+  // the sling, a strap 25 mm wide: front on the band's loop (with the kit: a QD socket under the handguard's front, below
+  // the left rail and whatever is on it), rear on the wood stock's left (or the new stock's QD socket); keyed kit + stock
+  const strap = (F, rear) => {
+    const Cv = new THREE.Vector3((F.x + rear.x) / 2 - 0.008, -0.085, (F.z + rear.z) / 2);
+    const curve = new THREE.QuadraticBezierCurve3(F, Cv, rear), n = 40, rs = 6, geo = new THREE.TubeGeometry(curve, n, 0.0125, rs, false), P = geo.attributes.position;
+    for (let i = 0; i < P.count; i++) { const cx = curve.getPointAt(Math.floor(i / (rs + 1)) / n).x; P.setX(i, cx + (P.getX(i) - cx) * 0.12); }   // flat: a strap lying on its side
+    geo.deleteAttribute('normal'); geo.computeVertexNormals();
+    return akmMerge([geo]);
+  };
+  const fronts = [new THREE.Vector3(M.loop.x - 0.003, M.loop.y, M.loop.z), new THREE.Vector3(-S + 0.002, B - 0.002, M.hgFront + 0.012)];
+  const rears = [new THREE.Vector3(-M.stockX - 0.002, -0.055, 0.225), new THREE.Vector3(-ST.w / 2 - 0.004, ST.tubeY - 0.004, 0.245)];
+  K.sling = {};
+  for (const k of [0, 1]) for (const s of [0, 1]) K.sling[`${k}${s}`] = strap(fronts[k], rears[s]);
+  // grips (item frame: the jaw on the rail, the body under it)
+  const vfg = vfgProfile();
+  K.vgGeo = akmMerge([akmJaw(0.034), new THREE.LatheGeometry(vfg.map(([r, y]) => new THREE.Vector2(r, y)), 28).translate(0, -0.006 - 0.047, 0),
+    placed(new THREE.CylinderGeometry(0.0018, 0.0018, 0.032, 10), 0, -0.002, 0.008, 0, 0, Math.PI / 2), placed(new THREE.CylinderGeometry(0.0032, 0.0032, 0.003, 6), 0.0155, -0.002, 0.008, 0, 0, Math.PI / 2)]);
+  K.vgCenter = -0.006 - 0.047;                                      // the foregrip's middle (step 23's vfg point)
+  K.agGeo = akmMerge([akmJaw(0.085), akmSide([[-0.0425, -0.004], [0.0425, -0.004], [0.0425, -0.009], [0.012, -0.017], [-0.034, -0.036], [-0.0425, -0.033]], 0.026, 0.0012)]);
+  K.hsGeo = akmMerge([akmJaw(0.024), akmSide([[-0.012, -0.004], [0.012, -0.004], [0.012, -0.008], [-0.004, -0.026], [-0.012, -0.026]], 0.022, 0.001)]);
+  // optic glass: the dot's oval and the holo's rounded window (sizes from the pack's measured hood), the 2x's eyepiece and objective
+  const win = (k) => ex[k].win, half = (k) => ex[k].half, rr = (hx, hy, r) => { const s = new THREE.Shape(); s.moveTo(-hx + r, -hy); s.lineTo(hx - r, -hy); s.quadraticCurveTo(hx, -hy, hx, -hy + r); s.lineTo(hx, hy - r); s.quadraticCurveTo(hx, hy, hx - r, hy); s.lineTo(-hx + r, hy); s.quadraticCurveTo(-hx, hy, -hx, hy - r); s.lineTo(-hx, -hy + r); s.quadraticCurveTo(-hx, -hy, -hx + r, -hy); return s; };
+  K.glass = {
+    akdot: { geo: new THREE.CircleGeometry(1, 40).scale(half('dot')[0], half('dot')[1], 1).translate(...win('dot')), mat: akmReticleMat(3, 0) },
+    akholo: { geo: new THREE.ShapeGeometry(rr(half('holo')[0], half('holo')[1], 0.003), 6).translate(...win('holo')), mat: akmReticleMat(1, 65) }
+  };
+  const X = ex.x2, px = IS_HEADSET ? 256 : 384, rt = new THREE.WebGLRenderTarget(px, px, { type: THREE.HalfFloatType, depthBuffer: true });
+  K.pip = { rt, cam: new THREE.PerspectiveCamera(13, 1, 0.3, 80), mat: akmPipMat(rt), eyeL: new THREE.Vector3() };   // 2x: a 26 deg eyepiece / 2
+  K.pipGeo = new THREE.CircleGeometry(X.eyeR * 0.97, 40).translate(0, X.axisY, X.eyeZ + 0.0015);
+  K.objGeo = new THREE.CircleGeometry(X.objR * 0.97, 32).rotateY(Math.PI).translate(0, X.axisY, X.objZ - 0.0003);
+  return (AKMA.kit = K);
+}
+// The kit on one AKM (made once per gun, shared geometry and materials, hidden until the store says so), and the
+// gun's own wood / stock / brake meshes it swaps.
+function akmHw(g) {
+  if (g.akm) return g.akm;
+  const K = akmKit(), H = { kit: false, stock: false, covers: false, sling: false, wood: [], woodStock: [], brake: [] };
+  g.model.traverse((o) => { const t = o.isMesh && o.geometry.userData.akm; if (t && H[t]) H[t].push(o); });
+  const grp = (...pairs) => {
+    const G = new THREE.Group(); G.visible = false;
+    for (const [geo, mat] of pairs) { const o = new THREE.Mesh(geo, mat); o.castShadow = false; o.receiveShadow = true; G.add(o); }
+    g.model.add(G); return G;
+  };
+  H.rails = grp([K.hgGeo, K.alu], [K.mountGeo, K.alu]);
+  H.collar = grp([K.collarGeo, K.steel]);
+  H.newStock = grp([K.adapterGeo, K.alu], [K.tubeGeo, K.steel], [K.stockGeo, K.poly], [K.padGeo, K.rubber]);
+  H.coverMesh = grp([K.coverGeo, K.rubber]);
+  H.slings = {};
+  for (const k of Object.keys(K.sling)) H.slings[k] = grp([K.sling[k], K.strap]);
+  return (g.akm = H);
+}
+// Precompile (weaponsPrecompile): every material here once, in view.
+function akmPrecompile(on) {
+  if (!AKMA.ready) return;
+  if (!on) { if (AKMA.pre) { scene.remove(AKMA.pre); AKMA.pre = null; } return; }
+  const K = AKMA.kit, g = new THREE.Group();
+  for (const n of AKM_NODES) g.add(new THREE.Mesh(AKMA.geo[n], AKMA.mat[n]));
+  for (const [geo, mat] of [[K.hgGeo, K.alu], [K.vgGeo, K.poly], [K.coverGeo, K.rubber], [K.tubeGeo, K.steel], [K.sling['00'], K.strap], [K.objGeo, K.objMat],
+    [K.glass.akdot.geo, K.glass.akdot.mat], [K.glass.akholo.geo, K.glass.akholo.mat], [K.pipGeo, K.pip.mat]]) g.add(new THREE.Mesh(geo, mat));
+  camera.updateMatrixWorld(true);
+  g.position.set(0, 0, -0.8).applyMatrix4(camera.matrixWorld); g.scale.setScalar(0.5);
+  scene.add(g); AKMA.pre = g;
+}
+
+/* --- the parts as bench items (wbMakeAtt) --- */
+function akmModel(key) {                                            // [geometry, material, role?] of a part, its own frame
+  const K = AKMA.kit, G = AKMA.geo, Mt = AKMA.mat;
+  switch (key) {
+    case 'ats5': return [[G.ats5, Mt.ats5], [G.ats5Sleeve, Mt.ats5Sleeve]];
+    case 'akfh': return [[G.fh, Mt.fh]];
+    case 'akcomp': return [[G.comp, Mt.comp]];
+    case 'akdot': return [[G.dot, Mt.dot], [K.glass.akdot.geo, K.glass.akdot.mat, 'reticle']];
+    case 'akholo': return [[G.holo, Mt.holo], [K.glass.akholo.geo, K.glass.akholo.mat, 'reticle']];
+    case 'akx2': return [[G.x2, Mt.x2], [K.pipGeo, K.pip.mat, 'pip'], [K.objGeo, K.objMat]];
+    case 'akvg': return [[K.vgGeo, K.poly]];
+    case 'akag': return [[K.agGeo, K.poly]];
+    case 'akhs': return [[K.hsGeo, K.poly]];
+  }
+  return null;
+}
+function akmMakeAtt(key) {
+  const I = AKM_ITEM[key], parts = AKMA.ready && I ? akmModel(key) : null;
+  if (!parts) return null;
+  const g = new THREE.Group(), box = new THREE.Box3(), item = { kind: 'att', type: key, akKey: key, label: I.label, hook: null, stuck: null, gun: null };
+  for (const [geo, mat, role] of parts) {
+    const o = new THREE.Mesh(geo, mat); o.castShadow = !role; o.receiveShadow = true; g.add(o);
+    if (role) { o.renderOrder = 2; item[role] = o; } else { geo.computeBoundingBox(); box.union(geo.boundingBox); }
+  }
+  const c = box.getCenter(new THREE.Vector3()), h = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  if (I.slot === 'muzzle') {                                        // a step 103 chain device: lies on its side, held round its body
+    Object.assign(item, { sub: key === 'ats5' ? 'sup' : key, muz: key, big: key === 'ats5', can: key === 'ats5' ? 'ats5' : undefined, lamp: null, len: -box.min.z, rest: I.r, flat: true, hold: g17Hold('fist', c, true) });
+  } else Object.assign(item, { sub: key, rest: 0.0004 - box.min.y, hold: g17Hold(I.hold, c) });   // stands on its base
+  const p = makeItem(g, item, { mass: I.mass, half: [h.x, h.y, h.z], center: c, restitution: 0.1 });
+  g.userData.att = true;
+  return p;
+}
+
+/* --- where each part goes on an AKM --- */
+// Model space: its origin and turn (optics upright on the mount's rail, grips under the handguard, light / laser on the
+// side rails). null = not a rail part.
+function akmLocal(it, P, Q) {
+  const I = AKM_ITEM[it.akKey], M = AKMA.M;
+  if (I && I.slot === 'optic') { Q.identity(); return P.set(0, M.optY, I.z); }
+  if (I && I.slot === 'grip') { Q.identity(); return P.set(0, AKM_DIM.hg.bottom - AKM_DIM.rail.top, I.z); }
+  const S = !I && AKM_RAIL_PART[it.sub];
+  return S ? akmRailPose(S[0], S[1], P, Q) : null;
+}
+function akmPose(g, it, P, Q) {
+  if (!akmLocal(it, P, Q)) return false;
+  g.model.updateWorldMatrix(true, false);
+  P.applyMatrix4(g.model.matrixWorld); Q.premultiply(g.model.getWorldQuaternion(AKMA.q));
+  return true;
+}
+const akmSlot = (it) => (AKM_ITEM[it.akKey] ? AKM_ITEM[it.akKey].slot : it.sub);   // optic, grip, muzzle, light, laser
+const akmOwned = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
+// Can this rail part go on this AKM now? null = yes, else why not.
+function akmRefuse(g, it) {
+  if (!akmHw(g).kit) return 'No rail for it: fit the Modernization kit first (gunsmith store)';
+  const s = akmSlot(it), on = g17On(g, (q) => q !== it && akmSlot(q) === s);
+  if (!on) return null;
+  return s === 'optic' ? `One optic on the mount: take the ${on.item.label} off first` : s === 'grip' ? `One part under the handguard: take the ${on.item.label} off first`
+    : `That rail is taken: the ${on.item.label} is on it`;
+}
+// Step 103's chain, first device: the AKM's collar takes 5/8x24 rifle devices; AKM devices are for the AKM.
+function akmMuzRefuse(g, it, chain) {
+  if (chain.length) return null;                                    // in front of another device: the adapters
+  if (g.type !== 'akmn') return it.akKey ? 'Made for the AKM: 5/8x24, on its adapter collar' : null;
+  if (!AKMA.ready) return null;
+  if (!akmOwned('akmn.muzzle')) return 'Needs the muzzle interface: the adapter collar (gunsmith store)';
+  if (!it.akKey && !it.big) return 'Wrong thread: the AKM\'s adapter takes 5/8x24 rifle devices';
+  return null;
+}
+const _akP = new THREE.Vector3(), _akQ = new THREE.Quaternion();
+// Bench: a part let go of (VR, reach) or clicked (computer, 0) by the clamped AKM. null = not a rail part, true = on, false = not.
+function akmBenchFit(g, p, reach) {
+  if (!AKMA.ready || g.type !== 'akmn') return null;
+  const it = p.item;
+  if (it.sub === 'dot' || it.sub === 'cover') { toast('Made for the Glock 17: its slide plate', 2200); return false; }
+  if (!akmPose(g, it, _akP, _akQ)) return null;
+  if (reach && p.root.position.distanceTo(_akP) > reach) return false;
+  const why = akmRefuse(g, it);
+  if (why) { toast(why, 2600); wsDeny(); return false; }
+  p.root.position.copy(_akP); p.root.quaternion.copy(_akQ); p.root.updateMatrixWorld(true);
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
+  setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  g17Sfx(akmSound(akmSlot(it)), p.root.position);
+  return true;
+}
+const akmSound = (slot) => (slot === 'muzzle' ? 'thread' : slot === 'optic' ? 'dot' : slot === 'covers' || slot === 'sling' ? 'cover' : 'rail');
+
+/* --- keeping every AKM's build (store <-> guns) --- */
+function akmPartId(it) { return AKM_ITEM[it.akKey] ? AKM_ITEM[it.akKey].id : it.sub === 'light' ? 'akmn.light' : it.sub === 'laser' ? 'akmn.laser' : null; }
+// What is on this AKM now (kit and stock as built, the collar with a device on it, the 40-round kit, its parts).
+function akmGunIds(g, out) {
+  out.clear();
+  const H = akmHw(g), chain = muzChain(g);
+  if (H.kit) out.add('akmn.kit');
+  if (H.stock) out.add('akmn.stock');
+  if (chain.length) out.add('akmn.muzzle');
+  if (EXT.mag.akmn) out.add('akmn.mag40');
+  for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== chain[0]) continue; const id = akmPartId(p.item); if (id) out.add(id); }   // the rest of a chain: muzFx
+  return out;
+}
+// After anything changed on this AKM: the kit's parts shown, the sight line, the support hold, the muzzle, the effects.
+function akmRefresh(g) {
+  if (!AKMA.ready || !g || g.type !== 'akmn' || !g.prop) return;
+  const H = akmHw(g), d = WEAPON_DEFS.akmn, chain = muzState(g), dev = chain.length > 0, show = (list, v) => { for (const o of list) o.visible = v; };
+  show(H.wood, !H.kit); H.rails.visible = H.kit; H.coverMesh.visible = H.kit && H.covers;
+  show(H.woodStock, !H.stock); H.newStock.visible = H.stock;
+  for (const k of Object.keys(H.slings)) H.slings[k].visible = H.sling && k === `${+H.kit}${+H.stock}`;
+  show(H.brake, !dev); H.collar.visible = dev;                     // a device on: the brake off, the collar on
+  let optic = null, grip = null;
+  for (const p of g.atts || []) { const s = akmSlot(p.item); if (s === 'optic') optic = p.item; else if (s === 'grip') grip = p.item; }
+  const glass = optic && (optic.reticle || optic.pip);
+  if (glass) glass.castShadow = false;                              // (wbFreeze's setCast turned every mesh on)
+  g.akLens = optic && optic.pip ? optic.pip : null;
+  // sight line: the optic's window (or the 2x's axis), else the irons (the 2x sits so its eyepiece is the relief from the eye)
+  const X = AKMA.ex, M = AKMA.M;
+  g.sightY = !optic ? d.eye[1] : M.optY + (optic.akKey === 'akx2' ? X.x2.axisY : X[optic.akKey === 'akdot' ? 'dot' : 'holo'].win[1]);
+  // support hand: a vertical grip is the step 23 foregrip (this gun's own def), the angled grip / hand stop pin the slide
+  g.def = grip && grip.akKey === 'akvg' ? akmDefVfg() : d;
+  g.supFix = grip && AKM_ITEM[grip.akKey].supZ !== undefined ? AKM_ITEM[grip.akKey].supZ : undefined;
+  const pm = d.palm, mz = dev ? muzTip(g, chain, _mzT).z - g.model.position.z : d.muzzle[2];
+  if (g.parts.flash) g.parts.flash.position.z = mz;
+  g.wr = Object.assign({}, WR.akmn, g.laserAtt && g.wr.laser ? { laser: g.wr.laser } : {}, {
+    muzzle: new THREE.Vector3(d.muzzle[0] - pm[0], d.muzzle[1] - pm[1], mz - pm[2]),
+    eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]),
+    vfg: g.def.vfg ? new THREE.Vector3(g.def.vfg[0] - pm[0], g.def.vfg[1] - pm[1], g.def.vfg[2] - pm[2]) : null });
+  g.afx = afxFrom(AKM_FX, AKM_FX_VR, akmGunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {});
+  muzFx(g, chain, g.afx); muzClipSet(g, chain);                     // step 103: the chain beyond its first device
+  g.muzEnd = dev ? g.wr.muzzle : null;
+  updateLightMount();
+}
+function akmDefVfg() {                                              // the AKM with the vertical grip: the step 23 foregrip at its middle
+  if (!AKMA.defVfg) { AKMA.defVfg = Object.create(WEAPON_DEFS.akmn); AKMA.defVfg.vfg = [0, AKM_DIM.hg.bottom - AKM_DIM.rail.top + AKMA.kit.vgCenter, AKM_ITEM.akvg.z]; }
+  return AKMA.defVfg;
+}
+// Make one AKM match the store's build (skipped while it is in the vise: the bench owns it until RELEASE).
+function akmSyncGun(g) {
+  if (!AKMA.ready || !g || g.type !== 'akmn' || !g.prop || g.prop.removing || (WB.open && WB.gun === g)) return;
+  const H = akmHw(g);
+  for (const k of Object.keys(AKM_HW)) H[k] = wsWanted(AKM_HW[k]);
+  for (const id of AKM_BENCH) {
+    if (AKM_MUZ[id]) continue;                                      // the muzzle is the chain (muzSync)
+    const have = (g.atts || []).find((p) => akmPartId(p.item) === id), want = wsWanted(id);
+    if (have && !want) g17Detach(g, have);
+    if (want && !have) akmAttach(g, id);
+  }
+  muzSync(g);
+  akmRefresh(g);
+}
+function akmAttach(g, id) {
+  const key = AKM_KEY[id], p = key ? akmMakeAtt(key) : wbMakeAtt(id === 'akmn.light' ? 'light' : 'laser');
+  if (!p || !akmPose(g, p.item, p.root.position, p.root.quaternion)) return null;
+  p.root.updateMatrixWorld(true);
+  wbFreeze(g, p);
+  if (!WB.atts.includes(p)) WB.atts.push(p);
+  return p;
+}
+function akmApplyStore() { akmForEach(akmSyncGun); }
+// The vise let an AKM go: its rail parts and first muzzle device are the build now (the store's fitted set), for every AKM.
+function akmFromGun(g) {
+  if (!AKMA.ready || !g || g.type !== 'akmn') return;
+  const have = new Set(akmGunIds(g, new Set()));
+  for (const id of AKM_BENCH) {
+    const it = WORKSHOP.byId.get(id); if (!it) continue;
+    if (have.has(id)) { it.owned = true; WORKSHOP.fitted.add(id); } else WORKSHOP.fitted.delete(id);
+  }
+  wsSave(); WORKSHOP.dirty = true;
+  akmRefresh(g);
+  akmForEach((q) => { if (q !== g) akmSyncGun(q); });
+}
+// A store row changed (bought, fitted, removed): the bench kits' state, the muzzle chain, every AKM, new parts on the table.
+function akmStoreChanged(it, bought = false) {
+  const W = WORKSHOP;
+  if (it.id === 'akmn.mag40' && EXT.mag.akmn !== W.fitted.has(it.id)) { EXT.mag.akmn = W.fitted.has(it.id); extApplyCaps(true); extSave(); extTags(); }
+  const k = AKM_MUZ[it.id];
+  if (k) {                                                          // the store's muzzle row is the chain's first device
+    const C = MUZ.saved.akmn || [], i = C.indexOf(k);
+    MUZ.saved.akmn = W.fitted.has(it.id) ? [k] : i < 0 ? C : C.slice(0, i);
+    muzSave();
+  }
+  akmApplyStore();
+  if (bought) wbTableFill();
+  g17Sfx(it.hw ? 'dot' : akmSound(AKM_ITEM[AKM_KEY[it.id]] ? AKM_ITEM[AKM_KEY[it.id]].slot : it.cat), W.screen ? W.screen.getWorldPosition(AKMA.v) : null);
+}
+// The bench card for the 40-round magazines changed (extToggle): the store's row follows, the AKMs' handling too.
+function akmMagChanged() {
+  const r = WORKSHOP.byId.get('akmn.mag40');
+  if (EXT.mag.akmn) { if (r) r.owned = true; WORKSHOP.fitted.add('akmn.mag40'); } else WORKSHOP.fitted.delete('akmn.mag40');
+  wsSave(); WORKSHOP.dirty = true;
+  akmForEach(akmRefresh);
+}
+// Parts the store says you own and the table has no part for yet (a buy): onto their spots.
+function wbTableFill() {
+  if (!WB.room || !WB.room.active) return;
+  for (const t of wbTable()) {
+    if (WB.atts.some((p) => p.item.tableSpot === t && !p.removing)) continue;
+    const p = wbMakeAtt(t[0], t[1], t[5] || null);
+    if (p) { p.item.tableSpot = t; WB.atts.push(p); wbHome(p, WB.room); }
+  }
+}
+
+/* --- per frame: the reticles' brightness (the Glock's auto-brightness sensor), the 2x view while you look through it --- */
+function akmTick(dt) {
+  if (!AKMA.ready) return;
+  const K = AKMA.kit, lvl = G17A.ready ? G17A.lvl : 1;
+  K.glass.akdot.mat.uniforms.uLvl.value = lvl; K.glass.akholo.mat.uniforms.uLvl.value = lvl; K.pip.mat.uniforms.uLvl.value = lvl;
+  akmPipTick();
+}
+function akmPipGun() {
+  for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.type === 'akmn' && g.akLens && !g.prop.removing) return g; }
+  return null;
+}
+function akmPipTick() {
+  const P = AKMA.kit.pip, U = P.mat.uniforms, g = akmPipGun();
+  U.uLit.value = 0;
+  if (!g) return;
+  const lens = g.akLens, X = AKMA.ex.x2;
+  lens.updateMatrixWorld(true);
+  lens.worldToLocal(headWorld(P.eyeL));                             // the eye in the eyepiece's frame (its glass faces +z)
+  P.eyeL.y -= X.axisY; P.eyeL.z -= X.eyeZ;
+  if (!(P.eyeL.z > 0.015 && P.eyeL.z < 0.25 && Math.hypot(P.eyeL.x, P.eyeL.y) < 0.04)) return;
+  U.uLit.value = 1; U.uEye.value.copy(P.eyeL);
+  P.cam.position.set(0, X.axisY, X.objZ).applyMatrix4(lens.matrixWorld);   // on the axis at the objective, looking down the gun
+  lens.getWorldQuaternion(P.cam.quaternion); P.cam.updateMatrixWorld(true);
+  const prevRT = renderer.getRenderTarget(), xrOn = renderer.xr.enabled;
+  lens.visible = false;
+  try { renderer.xr.enabled = false; renderer.setRenderTarget(P.rt); renderer.clear(); renderer.render(scene, P.cam); }
+  catch (e) { console.warn('step 102: 2x view failed', e); }
+  finally { renderer.setRenderTarget(prevRT); renderer.xr.enabled = xrOn; lens.visible = true; }
+}
+
+/* --- fit gaps (dev, mm): rays from each measured surface of the AKM (or a part's contact face) to what sits on it --- */
+function akmGaps(g) {
+  if (!AKMA.ready || !g || g.type !== 'akmn') return null;
+  const H = akmHw(g), M = AKMA.M, out = {}, RC = new THREE.Raycaster(), mm = (x) => (x === null ? null : Math.round(x * 1e5) / 100);
+  g.prop.root.updateMatrixWorld(true);
+  const W = g.model.matrixWorld, mine = new Set([H.rails, H.collar, H.newStock]), own = [], kit = [];
+  g.model.traverse((o) => {
+    if (!o.isMesh || !o.visible) return;
+    let q = o; while (q.parent && q.parent !== g.model) q = q.parent;
+    if (!q.userData.att) (mine.has(q) ? kit : own).push(o);       // the parts are measured from their own origin
+  });
+  // from p (a measured surface, model space) along d to the first surface in list: the gap
+  const ray = (list, p, d) => {
+    const D = new THREE.Vector3(...d);
+    RC.set(new THREE.Vector3(...p).addScaledVector(D, -0.002).applyMatrix4(W), D.clone().transformDirection(W)); RC.far = 0.03;
+    const h = RC.intersectObjects(list, false)[0];
+    return h ? h.distance - 0.002 : null;
+  };
+  if (H.kit) Object.assign(out, {
+    handguardRear: mm(ray(own, [0.0205, -0.012, M.hgRear], [0, 0, 1])),                  // to the receiver (the wood had the same)
+    handguardFront: mm(ray(own, [-0.021, -0.005, M.hgFront], [0, 0, -1])),               // to the band
+    mountClamp: mm(ray(kit, [M.sr.x, (M.sr.y0 + M.sr.y1) / 2, (M.sr.z0 + M.sr.z1) / 2], [-1, 0, 0])),   // the side rail's flat to the clamp
+    mountOverCover: mm(ray(kit, [0, M.dcTop, -0.05], [0, 1, 0])) });                     // 2.5 mm by design
+  if (H.collar.visible) out.collar = mm(ray(kit, [0, 0.0095, M.fsFace], [0, 0, -1]));    // the front sight block to the collar
+  if (H.stock) out.stockAdapter = mm(ray(kit, [0, (M.recY0 + M.recY1) / 2, M.recRear], [0, 0, -1]));   // the receiver's rear to the adapter
+  const chain = muzChain(g);
+  if (chain.length) out.firstDevice = mm(muzBase(g, new THREE.Vector3()).distanceTo(_mzV.setFromMatrixPosition(chain[0].root.matrixWorld).applyMatrix4(_mzI.copy(g.prop.root.matrixWorld).invert())));
+  const inv = new THREE.Matrix4().copy(W).invert();
+  for (const p of g.atts || []) {                                    // a rail part's origin is its contact face: to the rail under it
+    const s = akmSlot(p.item);
+    if (s === 'muzzle') continue;
+    p.root.updateMatrixWorld(true);
+    const o = new THREE.Vector3().setFromMatrixPosition(p.root.matrixWorld).applyMatrix4(inv);
+    const into = new THREE.Vector3(0, s === 'optic' ? -1 : 1, 0).applyQuaternion(p.root.quaternion);
+    out[p.item.akKey || p.item.sub] = mm(ray(kit, o.toArray(), into.toArray()));
+  }
+  return out;
+}
+// The store rows' fx (shown where the store cannot ask AKM_FX) derived from it: each row alone on a Standard AKM.
+function akmDeriveFx() {
+  const b = new Float64Array(WS_NS), s = new Float64Array(WS_NS);
+  akmStats(new Set(), b);
+  for (const it of WS_ITEMS) {
+    if (it.gun !== 'akmn' || it.cosmetic) continue;
+    akmStats(new Set([it.id]), s);
+    it.fx = {};
+    WS_STATS.forEach(([key], i) => { const dv = s[i] - b[i]; if (Math.abs(dv) > 0.05) it.fx[key] = i === WS_WT ? Math.round(dv / WS_KG * 1000) / 1000 : Math.round(dv * 10) / 10; });
+  }
+}
+akmDeriveFx();
+if (EXT.mag.akmn) WORKSHOP.fitted.add('akmn.mag40'); else WORKSHOP.fitted.delete('akmn.mag40');   // the bench card's state is the store's
+if (!MUZ.saved.akmn) for (const id of Object.keys(AKM_MUZ)) if (WORKSHOP.fitted.has(id)) { MUZ.saved.akmn = [AKM_MUZ[id]]; break; }
+if (window.__cqcDev) Object.assign(window.__cqcDev, { AKMA, AKM_DIM, AKM_ITEM, AKM_FX, AKM_MUZ, WB_AKM, WS_REAL, afxFrom, afxStats, wsStoreIds, wsWanted, akmStats, akmMeasure, akmKit, akmHw,
+  akmMakeAtt, akmLocal, akmPose, akmRefuse, akmMuzRefuse, akmBenchFit, akmGunIds, akmRefresh, akmSyncGun, akmFromGun, akmStoreChanged, akmTick, akmGaps, akmDeriveFx });   // step 102
 </script>
 </body>
 </html>
