@@ -7759,12 +7759,32 @@ flashlight.shadow.mapSize.set(1024, 1024);   // step 17 (25.1: one size, cinemat
 flashlight.shadow.camera.near = 0.05;
 flashlight.shadow.bias = -0.0003; flashlight.shadow.normalBias = 0.02;
 flashlight.shadow.autoUpdate = false;           // flushShadows() redraws it alone, every frame it is on
+// Step 85: the beam of a real weapon light: a hot centre inside a wider, dimmer corona, a faint
+// spill out to the reflector's edge and soft rings. The cone widens to hold the spill; a spot
+// light map (needs castShadow, which this light has) shapes it. Set before anything compiles.
+// ?beam=off keeps the old flat cone. FLASH_BEAM.hot is the old cone (haze and motes still use it).
+const FLASH_BEAM = { on: !/[?&]beam=off\b/.test(location.search), angle: 0.62, penumbra: 0.12, hot: 0.38, gain: 1.6 };   // gain: the map peaks at 1, so the light runs brighter (centre 1.6x, corona about the old cone)
+if (FLASH_BEAM.on) {
+  const N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
+  const cx = cv.getContext('2d'), img = cx.createImageData(N, N), T = Math.tan(FLASH_BEAM.angle);
+  const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const th = Math.atan(Math.hypot(x + 0.5 - N / 2, y + 0.5 - N / 2) / (N / 2) * T);   // angle off the axis
+    let v = 0.15 * (1 - ss(0.45, 0.6, th)) + 0.45 * (1 - ss(0.22, 0.42, th)) + 0.4 * (1 - ss(0.0, 0.13, th));   // spill, corona, hotspot
+    v *= 1 + 0.05 * Math.cos(th * 64) * (1 - ss(0.08, 0.42, th));   // reflector rings
+    const i = (y * N + x) * 4, b = Math.round(Math.min(1, v) * 255);
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = b; img.data[i + 3] = 255;
+  }
+  cx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cv); tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;
+  flashlight.map = tex; flashlight.angle = FLASH_BEAM.angle; flashlight.penumbra = FLASH_BEAM.penumbra;
+}
 const flashTarget = new THREE.Object3D();
 flashTarget.position.set(0, 0, -1);
 flashlight.target = flashTarget;
 let flashlightOn = false;
 // Intensity toggle (not visibility) avoids a shader recompile hitch in the headset.
-function setFlashlight(on) { flashlightOn = on; flashlight.intensity = on ? CONFIG.light.flashlight : 0; }
+function setFlashlight(on) { flashlightOn = on; flashlight.intensity = on ? CONFIG.light.flashlight * (FLASH_BEAM.on ? FLASH_BEAM.gain : 1) : 0; }
 function mountFlashlight(parent, offset, dir = null) {
   parent.add(flashlight, flashTarget);
   flashlight.position.copy(offset);
@@ -23300,7 +23320,7 @@ function updateParticleLight(t) {
     flashlight.getWorldPosition(U.uLP.value);
     flashTarget.getWorldPosition(_p10.a);
     U.uLD.value.subVectors(_p10.a, U.uLP.value).normalize();
-    U.uLCos.value = Math.cos(flashlight.angle);
+    U.uLCos.value = Math.cos(FLASH_BEAM.on ? FLASH_BEAM.hot : flashlight.angle);   // step 85: the beam's bright part, not its spill
   }
   U.uFlash.value = pool.muzzle ? pool.muzzle.intensity / 24 : 0;
   if (pool.muzzle) U.uFP.value.copy(pool.muzzle.position);
@@ -29098,7 +29118,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
 </script>
 </body>
 </html>
