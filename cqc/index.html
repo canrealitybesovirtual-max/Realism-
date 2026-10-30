@@ -2095,7 +2095,14 @@ const CONFIG = {
     smearAfterDeath: 240,      // s a body still smears when dragged or sliding (step 67: was 90)
     smearSpeed: 0.12, smearHeight: 0.24, smearStep: 0.09, smearMax: 120,   // m/s, m above the floor, m apart, per body (step 67: was 0.3/0.3/0.12/40)
     smearSize: 0.42,           // step 67: m, the drag-streak decal square (streaks along its middle)
-    bleed: 0.55, bleedEvery: [0.7, 1.6]   // under this share of your health you drip, every this many s
+    bleed: 0.55, bleedEvery: [0.7, 1.6],  // under this share of your health you drip, every this many s
+    // step 90: extreme wounds (?gore=mild = the step 67 look). Deep holes with a torn rim in his own blood shader,
+    // blood pouring from fresh wounds (heartbeat spurts after a torso / neck hit), the exit side sprayed with
+    // blood and tissue, bits that stick. x bodyCam with Body cam realism on.
+    extreme: true,
+    x: { bodyCam: 1.35, streams: 6, drops: 460, dropsHeadset: 300, chunks: 48,   // streams at once; streak drops (fixed pool), of them tissue bits
+      pour: 55, spurt: 150, pourAlive: 0.3, pourDead: 0.9, spurtTorso: 3.5, spurtNeck: 6,   // drops/s at full pour / at a beat's peak; pour share alive / just dead; s of spurting after the hit
+      spray: 0.95, gib: 0.075, gibBudget: 14 }   // m: exit spray decal square, tissue bit decal; bit decals per burst (refills 6/s)
   },
   stress: {                   // step 41: your body under stress (?stress=off)
     on: true,
@@ -18825,42 +18832,112 @@ function enemyCalibrate(def, gscene) {
 const BODY_BLOOD_MAX = 8;
 const BODY_BLOOD = { head: [0.022, 0.05], neck: [0.03, 0.075], torso: [0.035, 0.11], pelvis: [0.035, 0.1], limb: [0.03, 0.075] };   // r0, rMax (m)
 const BB_GLSL_NOISE = `
-  varying vec3 vBloodW; varying vec3 vBloodO;
+  varying vec3 vBloodW; varying vec3 vBloodO; varying vec3 vBloodN;
   uniform vec4 uBloodW[${BODY_BLOOD_MAX}]; uniform int uBloodN; uniform float uBloodWet;
+  uniform vec4 uBloodA[${BODY_BLOOD_MAX}]; uniform vec4 uBloodT[${BODY_BLOOD_MAX}]; uniform float uGoreX;   // step 90: the round's line into him + hole radius (< 0 exit), a tangent on him + freshness
   float bHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
   float bNoise(vec3 x) {
     vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
     return mix(mix(mix(bHash(i), bHash(i + vec3(1, 0, 0)), f.x), mix(bHash(i + vec3(0, 1, 0)), bHash(i + vec3(1, 1, 0)), f.x), f.y),
                mix(mix(bHash(i + vec3(0, 0, 1)), bHash(i + vec3(1, 0, 1)), f.x), mix(bHash(i + vec3(0, 1, 1)), bHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
   }`;
+// Step 90: a deep wound, per wound inside the blood loop (uGoreX > 0 and the wound has a line). Every noise is
+// taken in the wound's own frame (T, B along the skin, a into him), so nothing swims as he turns or falls.
+//   runs   rivulets from the wound down his clothes (world down), longer as the stain grows
+//   hole   a tube along the round's line, ragged edge; the view ray carries on inside it and meets the wall
+//          (parallax: red flesh near the rim, darker deeper, black where it reaches the bottom); exits wider,
+//          shallower, paler torn tissue in the wall
+//   rim    entry: the cloth dips into it, frayed threads; exit: torn flesh pushed out over the cloth
+const G90_GLSL = `
+      vec3 a = A.xyz;
+      float rho = length(q), ex = step(A.w, 0.0), fr = uBloodT[i].w, L = w.w * 2.6;
+      if (ds.y < 0.0 && ds.y > -L && dot(ds.xz, ds.xz) < w.w * w.w * 1.7) {
+        vec3 tH = cross(vec3(0.0, 1.0, 0.0), gN); float tl = length(tH);
+        float u = dot(ds, tH) / max(tl, 1e-3) + 0.005 * sin(ds.y * 55.0 + float(i) * 1.7);
+        float lane = u * 48.0 + float(i) * 0.37, fx = abs(fract(lane) - 0.5) * 2.0;
+        float len = L * (0.3 + 0.7 * bHash(vec3(floor(lane), float(i) * 7.0, 3.0)));
+        float tp = clamp(1.0 + ds.y / len, 0.0, 1.0);
+        float run = (1.0 - smoothstep(0.12 + 0.3 * tp, 0.22 + 0.36 * tp, fx)) * step(-len, ds.y) * step(0.2, tl) * (1.0 - smoothstep(w.w * 0.5, w.w * 0.95, abs(u)));
+        bloodK = max(bloodK, run * 0.97); gWet = max(gWet, run * (0.5 + 0.5 * fr)); gFresh = max(gFresh, run * fr);
+      }
+      if (rho < h * 2.6 && abs(al) < 0.07 + h && dot(gN, a) < 0.2) {
+        vec3 T = uBloodT[i].xyz, Bt = cross(a, T), ql = vec3(dot(q, T), dot(q, Bt), al);
+        vec3 qn = q / max(rho, 1e-5), qs = vec3(dot(qn, T), dot(qn, Bt), 0.0);
+        float nA = bNoise(qs * 2.6 + vec3(float(i) * 3.1)), nB = bNoise(ql * 290.0);
+        float edge = h * (0.7 + (0.5 + 0.4 * ex) * nA + 0.2 * (nB - 0.5));
+        if (rho < edge) {
+          vec3 vp = gV - a * dot(gV, a);
+          float va = max(dot(gV, a), 0.03), A2 = max(dot(vp, vp), 1e-5), Bq = dot(q, vp), Cq = rho * rho - edge * edge;
+          float t = (-Bq + sqrt(max(Bq * Bq - A2 * Cq, 0.0))) / A2, z = t * va;
+          float D = mix(0.075, 0.04, ex) * (0.8 + 0.4 * nA), zz = clamp(z / D, 0.0, 1.0);
+          vec3 wq = q + vp * t;
+          float nW = bNoise(vec3(dot(wq, T), dot(wq, Bt), al + z) * 520.0);
+          vec3 c = mix(vec3(0.36, 0.04, 0.03), vec3(0.045, 0.003, 0.002), zz) * (0.65 + 0.7 * nW) * (0.7 + 0.3 * fr);
+          c = mix(c, vec3(0.5, 0.17, 0.13), ex * smoothstep(0.72, 0.9, nW) * (1.0 - zz));
+          c = z > D ? vec3(0.035, 0.002, 0.0015) : c;
+          c = mix(c, vec3(0.42, 0.05, 0.035) * (0.7 + 0.3 * fr), smoothstep(edge * 0.62, edge * 0.95, rho) * 0.75);   // the torn margin, wet muscle
+          float k = 1.0 - smoothstep(edge * 0.82, edge, rho);
+          if (k > gHole) { gHole = k; gCol = c; gBump = z > D ? vec3(0.0) : (-normalize(wq) - gN) * 0.9; }
+          gWet = max(gWet, k);
+        } else {
+          float rim = 1.0 - smoothstep(edge, edge * (1.5 + 0.4 * ex), rho);
+          gRim = max(gRim, rim * (1.0 - ex * 0.4)); gFresh = max(gFresh, rim * fr);
+          float thr = smoothstep(0.62, 0.86, bNoise(vec3(qs.xy * 34.0, rho * 70.0 + float(i)))) * rim * (1.0 - ex);
+          gThr = max(gThr, thr);
+          float nT = bNoise(ql * 230.0);
+          float fl = ex * (1.0 - smoothstep(edge, edge * 1.6, rho)) * smoothstep(0.32, 0.55, bNoise(ql * 170.0 + 5.0) + 0.35 * rim);
+          vec3 tissue = mix(vec3(0.3, 0.03, 0.022), vec3(0.46, 0.13, 0.1), smoothstep(0.55, 0.85, nT));
+          tissue = mix(tissue, vec3(0.05, 0.003, 0.002), (1.0 - smoothstep(0.2, 0.45, nT)) * 0.75) * (0.75 + 0.25 * fr);
+          if (fl > gHole) { gHole = fl; gCol = tissue; }
+          gBump += qn * rim * (ex > 0.5 ? 0.55 : -0.45);
+          gWet = max(gWet, max(rim, fl) * (0.5 + 0.5 * fr));
+        }
+      }`;
+const G90U = { uGoreX: { value: 0 } };   // step 90: shared by every man (one uniform object), 1 = extreme wounds
 function enemyBloodMat(m, U) {
   const c = m.clone();
   c.onBeforeCompile = (sh) => {
     sh.uniforms.uBloodW = U.uBloodW; sh.uniforms.uBloodN = U.uBloodN; sh.uniforms.uBloodWet = U.uBloodWet;
-    sh.vertexShader = 'varying vec3 vBloodW; varying vec3 vBloodO;\n' + sh.vertexShader.replace('#include <skinning_vertex>',
-      '#include <skinning_vertex>\n  vBloodO = position; vBloodW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.uniforms.uBloodA = U.uBloodA; sh.uniforms.uBloodT = U.uBloodT; sh.uniforms.uGoreX = G90U.uGoreX;   // step 90
+    sh.vertexShader = 'varying vec3 vBloodW; varying vec3 vBloodO; varying vec3 vBloodN;\n' + sh.vertexShader.replace('#include <skinning_vertex>',
+      '#include <skinning_vertex>\n  vBloodO = position; vBloodW = (modelMatrix * vec4(transformed, 1.0)).xyz; vBloodN = normalize(mat3(modelMatrix) * objectNormal);');
     sh.fragmentShader = BB_GLSL_NOISE + '\n' + sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-  float bloodK = 0.0, bloodCore = 0.0;
+  float bloodK = 0.0, bloodCore = 0.0, gWet = 0.0, gHole = 0.0, gRim = 0.0, gThr = 0.0, gFresh = 0.0;   // step 90: g*
+  vec3 gCol = vec3(0.0), gBump = vec3(0.0), gCloth = diffuseColor.rgb;
   if (uBloodN > 0) {
     float n1 = bNoise(vBloodO * 42.0), n2 = bNoise(vBloodO * 130.0);
+    vec3 gN = normalize(vBloodN), gV = normalize(vBloodW - cameraPosition);
     for (int i = 0; i < ${BODY_BLOOD_MAX}; i++) {
       if (i >= uBloodN) break;
-      vec4 w = uBloodW[i];
+      vec4 w = uBloodW[i], A = uBloodA[i];
       vec3 d = vBloodW - w.xyz;
-      float dy = d.y < 0.0 ? d.y * 0.42 : d.y * 1.7;               // it runs down
-      float r = length(vec3(d.x, dy, d.z)) + (n1 - 0.5) * w.w * 0.55 + (n2 - 0.5) * w.w * 0.18;
+      float h = abs(A.w);
+      bool deep = uGoreX > 0.0 && h > 0.0;
+      // step 90: measured from the round's line, so the stain sits on the skin wherever the hit capsule put the centre
+      float al = deep ? dot(d, A.xyz) : 0.0;
+      vec3 q = d - A.xyz * al, ds = deep ? q + A.xyz * (al - clamp(al, -0.035, 0.035)) : d;
+      float dy = ds.y < 0.0 ? ds.y * 0.42 : ds.y * 1.7;               // it runs down
+      float r = length(vec3(ds.x, dy, ds.z)) + (n1 - 0.5) * w.w * 0.55 + (n2 - 0.5) * w.w * 0.18;
       bloodK = max(bloodK, smoothstep(w.w, w.w * 0.45, r));
-      bloodCore = max(bloodCore, smoothstep(0.011, 0.004, length(d)));
+      if (!deep) { bloodCore = max(bloodCore, smoothstep(0.011, 0.004, length(d))); continue; }
+      ${G90_GLSL}
     }
     // blood soaked into cloth: dark maroon, nearly black on dark fabric; a light fabric shows more red
     float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
     vec3 soaked = vec3(0.115, 0.01, 0.008) * (0.45 + lum * 1.2);
     diffuseColor.rgb = mix(diffuseColor.rgb, soaked, bloodK * 0.92);
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.025, 0.0, 0.0), bloodCore);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.15, 0.006, 0.004), gFresh * 0.6);        // step 90: fresh blood still red,
+    diffuseColor.rgb *= 1.0 - 0.55 * gRim;                                                   // the torn rim,
+    diffuseColor.rgb = mix(diffuseColor.rgb, mix(gCloth * 0.8, soaked * 1.6, 0.55), gThr);   // its frayed threads,
+    diffuseColor.rgb = mix(diffuseColor.rgb, gCol, gHole);                                   // the hole and torn flesh
   }`).replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-  roughnessFactor = mix(roughnessFactor, 0.42, bloodK * uBloodWet);`);
+  roughnessFactor = mix(roughnessFactor, 0.42, bloodK * uBloodWet);
+  roughnessFactor = mix(roughnessFactor, 0.2, gWet * max(uBloodWet, 0.45));   // step 90: an open wound glistens`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+  if (uGoreX > 0.0) normal = normalize(normal + mat3(viewMatrix) * gBump);   // step 90: the rim dips (entry) or bulges (exit); inside, the wall`);
   };
-  c.customProgramCacheKey = () => 'enemyBlood1';
+  c.customProgramCacheKey = () => 'enemyBlood90';   // step 90 (was enemyBlood1): still one program per variant for every man
   return c;
 }
 // Per frame: his wounds into his uniforms.
@@ -18881,7 +18958,14 @@ function enemyBloodUpdate() {
       let r = R[0] + (R[1] - R[0]) * (1 - Math.exp(-age / 12));
       if (dead) r *= 1 + 0.25 * (1 - Math.exp(-sinceDeath / 30));   // it keeps soaking after he's down
       if (w.exit) r *= 1.3;
+      if (w.hole) r = Math.max(r * 1.2, w.hole * 2.4);                 // step 90: a big hole soaks a big patch
       U.uBloodW.value[i].set(_bb.x, _bb.y, _bb.z, r);
+      if (w.hole) {                                                    // step 90: the line into him, a tangent, freshness
+        _bb.copy(w.la).transformDirection(w.bone.matrixWorld);
+        U.uBloodA.value[i].set(_bb.x, _bb.y, _bb.z, w.exit ? -w.hole : w.hole);
+        _bb.copy(w.lt).transformDirection(w.bone.matrixWorld);
+        U.uBloodT.value[i].set(_bb.x, _bb.y, _bb.z, Math.exp(-age / 40));
+      } else U.uBloodA.value[i].w = 0;
     }
     U.uBloodN.value = W.length;
     U.uBloodWet.value = dead ? 1 - Math.min(0.75, sinceDeath / 240) : 1;
@@ -18893,7 +18977,8 @@ function enemyDress(e, model) {
   const holder = SkeletonUtils.clone(model.holder);
   e.root.add(holder);
   const bones = {};
-  const U = e.bloodU = { uBloodW: { value: Array.from({ length: BODY_BLOOD_MAX }, () => new THREE.Vector4(0, -99, 0, 0)) }, uBloodN: { value: 0 }, uBloodWet: { value: 1 } };
+  const U = e.bloodU = { uBloodW: { value: Array.from({ length: BODY_BLOOD_MAX }, () => new THREE.Vector4(0, -99, 0, 0)) }, uBloodN: { value: 0 }, uBloodWet: { value: 1 },
+    uBloodA: { value: Array.from({ length: BODY_BLOOD_MAX }, () => new THREE.Vector4(0, 0, 1, 0)) }, uBloodT: { value: Array.from({ length: BODY_BLOOD_MAX }, () => new THREE.Vector4(1, 0, 0, 0)) } };   // step 90
   const mats = new Map();                                        // his own materials: they carry his wounds (step 67)
   holder.traverse((o) => {
     if (o.isBone) bones[stripIdx(o.name)] = o;
@@ -19997,7 +20082,11 @@ function enemyShot(hit, dir, d, E) {
   // Step 10: a plate sparks and thumps; flesh bleeds (bloodFx: mist, droplets, spatter behind him).
   P10.muteImpact = true;
   if (plate) impactFx('metal', hit.p, _hc.l);
-  else { bloodFx(hit.p, dir, h.part, clamp(E, 0.4, 1.2)); addWound(e, e.B[h.b] || e.B.spine, hit.p, h.part); addExitWound(e, h, hit.p, dir, E); }
+  else {
+    bloodFx(hit.p, dir, h.part, clamp(E, 0.4, 1.2));
+    const wIn = addWound(e, e.B[h.b] || e.B.spine, hit.p, h.part), wOut = addExitWound(e, h, hit.p, dir, E, GORE_X && g90Through(d, h.part, E));
+    if (GORE_X) g90Hit(e, h.part, wIn, wOut, hit.p, dir, d, E);   // step 90: the hole, it pours, the far side
+  }
   P10.muteImpact = false;
   e.hp -= MOD.oneShot ? 1e4 : dmg * clamp(E, 0.2, 1.2);         // step 57: one-shot kills
   e.hitT = now;
@@ -20407,24 +20496,28 @@ function ragdollHit(rh, P, N, dir, d, E) {
   rh.e.stillT = 0; rh.e.ragT = Math.min(rh.e.ragT || 0, RAG_SETTLE.dampFrom - 0.8); rh.e.ragDamp = undefined;   // step 87: a hit loosens him again
   if (rh.e.moan) { rh.e.moan = null; }                           // step 80: shot again: silent
   bloodFx(P, dir, 'body', 0.85);         // step 10 (step 19: heavier)
-  addWound(rh.e, rh.r.bone, P, 'body');
+  const wIn = addWound(rh.e, rh.r.bone, P, 'body');
+  if (GORE_X) g90RagHit(rh, P, dir, d, E, wIn);                  // step 90
   return STOP;
 }
 
 // Step 19: wounds. Each round that bleeds leaves a wound on the bone it hit; it drips while he lives,
 // pumps (weaker each beat) for a few seconds after he dies, and a pool spreads under it.
 function addWound(e, bone, P, part, exit = false) {
-  if (!bone) return;
+  if (!bone) return null;
   const W = e.wounds || (e.wounds = []);
   bone.updateWorldMatrix(true, false);
-  W.push({ bone, lp: bone.worldToLocal(new THREE.Vector3().copy(P)), part, t: 0, at: wnow(), exit });   // step 67: at, exit (body blood)
+  if (GORE_X) { const m = g90Merge(W, bone, P, exit); if (m) return m; }   // step 90: pellets / a burst landing together open one crater
+  const w = { bone, lp: bone.worldToLocal(new THREE.Vector3().copy(P)), part, t: 0, at: wnow(), exit };   // step 67: at, exit (body blood)
+  W.push(w);
   if (W.length > BODY_BLOOD_MAX) W.shift();
+  return w;                                                     // step 90
 }
 // Step 67: a round that goes through leaves a bigger exit wound on the far side of what it hit.
-function addExitWound(e, h, P, dir, E) {
-  if (E < 0.45 || Math.random() > 0.8) return;
+function addExitWound(e, h, P, dir, E, through = false) {      // step 90: through = it goes through regardless (g90Through)
+  if (!through && (E < 0.45 || Math.random() > 0.8)) return null;
   const depth = 2 * h.r * (h.part === 'head' ? 0.8 : 0.85);
-  addWound(e, e.B[h.b] || e.B.spine, _dy.o.copy(P).addScaledVector(dir, depth), h.part, true);
+  return addWound(e, e.B[h.b] || e.B.spine, _dy.o.copy(P).addScaledVector(dir, depth), h.part, true);
 }
 const _dy = { q: new THREE.Quaternion(), qt: new THREE.Quaternion(), qa: new THREE.Quaternion(), qb: new THREE.Quaternion(),
   v: new THREE.Vector3(), w: new THREE.Vector3(), o: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) };
@@ -20610,6 +20703,7 @@ function weaponsShift(dx, dz, dy = 0) {
   nadeShift(dx, dz, dy);               // step 23
   const F = WEAPON.fx;
   for (let j = 0; j < F.n; j++) { F.pos[j * 3] += dx; F.pos[j * 3 + 1] += dy; F.pos[j * 3 + 2] += dz; }
+  g90Shift(dx, dz, dy);                // step 90
   for (const P of Object.values(WEAPON.debris)) for (const e of P.list) {
     if (!e.active) continue;
     const t = e.body.translation();
@@ -23664,6 +23758,7 @@ function polishKit() {
   P10.haze = makeHaze(CONFIG.polish.haze.count);
   P10.motes = makeMotes(CONFIG.polish.motes.count);
   P10.contact = makeContact(CONFIG.polish.contact.cap);
+  g90Kit();                                // step 90: pouring streams, exit spray and tissue bit decals
 }
 function polishPrecompile(on) {
   if (P10.haze) P10.haze.points.visible = on;
@@ -23871,6 +23966,418 @@ function updateBloodPools(dt) {
     if (x >= 1) P10.pools.splice(i, 1);
   }
 }
+
+/* ---------------------------------------------------------------------------
+ *  STEP 90 — EXTREME WOUNDS (CONFIG.gore.extreme; ?gore=mild = the step 67 look)
+ *  A round that bleeds opens a hole you can see into (his own blood shader,
+ *  G90_GLSL: a tube along the round's line, parallax depth, torn rim), and
+ *  from every fresh wound blood POURS:
+ *    STREAMS  up to x.streams at once (G90.S), one wound each. A steady pour
+ *             while he lives, heavier once he is down, weakening over the
+ *             bleed time; for the first seconds after a torso / neck hit it
+ *             spurts with his heartbeat. Drops are streaks in one instanced
+ *             draw (G90.mesh, fixed pool, no allocation per frame); landing
+ *             ones mark the floor (drop budget) and feed the pool he lies in.
+ *    EXIT     the far side: a cone of mist and droplets (impact pool), tissue
+ *             bits (streaks that fall and stick to the floor, or to the wall
+ *             they were thrown at, and slide a little; each leaves a 'gib'
+ *             decal), a big 'spray' decal on what is behind him (runs under
+ *             it on a wall) and a second on the floor. Rifles and the AWP
+ *             blow out more; buckshot together opens one crater (g90Merge).
+ *    HEAD     always through: the biggest spray ('sprayH'), bits, it pours,
+ *             and a pool under it once he is down. No sound (step 90 adds none).
+ *  x CONFIG.gore.x.bodyCam with Body cam realism on. No light, no shadow. The
+ *  streak and spray programs compile at load (g90Precompile, decal dummies).
+ * ------------------------------------------------------------------------- */
+const GORE_X = GORE_ON && CONFIG.gore.extreme && !/[?&]gore=mild/.test(location.search);
+const G90 = { mesh: null, n: 0, nc: 0, next: 0, nextC: 0, S: [], gibBudget: 0, sprayAt: new WeakMap() };
+const _g90 = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), d: new THREE.Vector3(), n: new THREE.Vector3(), t: new THREE.Vector3(),
+  m: new THREE.Vector3(), e: new THREE.Vector3(), q: new THREE.Quaternion(), up: new THREE.Vector3(0, 1, 0), dn: new THREE.Vector3(0, -1, 0) };
+const G90_MIST = { c: [0.32, 0.02, 0.014], a: 0.55, sp: [1.2, 4.5], life: [0.35, 0.8], size: [0.014, 0.03], grow: 0.32, drag: 6, grav: 0.35 };
+const G90_DROP = { c: [0.17, 0.008, 0.006], a: 0.95, sp: [2.2, 6.5], life: [0.6, 1.3], size: [0.004, 0.009], grow: 0, drag: 0.35, grav: 9.8, land: 6 };
+const g90K = () => (GORE_X && CONFIG.polish.blood.on ? (MENU.bodyCamRealism ? CONFIG.gore.x.bodyCam : 1) : 0);
+function g90Tex(cv) {
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8;
+  return t;
+}
+// What the exit side leaves on a wall: a dense wet core, high-velocity streaks flung outward (longer and
+// denser along the shot, +x), torn clumps of tissue with smeared tails (head: a few bone flecks), fine mist.
+function g90SprayCanvas(seed, head) {
+  const S = 512, cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d'), R = mulberry32(seed);
+  const col = (a) => `rgba(${(30 + R() * 18) | 0}, ${(1 + R() * 2) | 0}, ${(1 + R() * 2) | 0}, ${a.toFixed(3)})`;
+  const cx = S * 0.42, cy = S * 0.5, inside = (x, y, m) => x > m && y > m && x < S - m && y < S - m;
+  const blob = (x, y, r, n, jag) => {
+    g.beginPath();
+    for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2, rr = r * (1 - jag + jag * 2 * R()); if (i) g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); else g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+    g.closePath(); g.fill();
+  };
+  for (let i = 0; i < 26; i++) { const a = R() * Math.PI * 2, d = Math.pow(R(), 1.6) * S * 0.08; g.fillStyle = col(0.9 + R() * 0.1); blob(cx + Math.cos(a) * d + S * 0.015, cy + Math.sin(a) * d, S * (0.018 + R() * 0.04), 9, 0.25); }
+  for (let i = 0; i < 300; i++) {
+    const fwd = R() < 0.7, a = fwd ? (R() - 0.5) * 1.5 : R() * Math.PI * 2;
+    const d = S * (0.06 + Math.pow(R(), 0.75) * (fwd ? 0.46 : 0.26)), r = S * (0.0022 + R() * R() * 0.011), st = 1.4 + (d / S) * 10;
+    const x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
+    if (!inside(x, y, r * st + 4)) continue;
+    g.fillStyle = col(0.75 + R() * 0.25);
+    g.beginPath(); g.ellipse(x - Math.cos(a) * r * st * 0.5, y - Math.sin(a) * r * st * 0.5, r * st, r * 0.8, a, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(x + Math.cos(a) * r * st * 0.4, y + Math.sin(a) * r * st * 0.4, r * 1.15, 0, Math.PI * 2); g.fill();
+  }
+  for (let i = 0; i < (head ? 22 : 13); i++) {
+    const a = (R() - 0.5) * 1.9, d = S * (0.03 + Math.pow(R(), 0.9) * 0.34), x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d, r = S * (0.005 + R() * 0.014);
+    if (!inside(x, y, r * 5)) continue;
+    g.fillStyle = col(0.6); g.beginPath(); g.ellipse(x + Math.cos(a) * r * 1.8, y + Math.sin(a) * r * 1.8, r * 2.2, r * 0.55, a, 0, Math.PI * 2); g.fill();   // it slid
+    g.fillStyle = `rgba(${(22 + R() * 14) | 0}, 1, 1, 1)`; blob(x, y, r, 8, 0.4);                                                                           // clotted mass
+    if (R() < 0.65) { g.fillStyle = `rgba(${(105 + R() * 40) | 0}, ${(28 + R() * 20) | 0}, ${(22 + R() * 14) | 0}, 0.9)`; blob(x - r * 0.2, y - r * 0.25, r * 0.5, 7, 0.35); }   // torn tissue, paler
+    if (head && R() < 0.35) { g.fillStyle = `rgba(${(178 + R() * 30) | 0}, ${(160 + R() * 25) | 0}, ${(128 + R() * 20) | 0}, 0.92)`; blob(x + r * 0.4, y + r * 0.3, r * 0.3, 5, 0.5); }   // bone
+  }
+  for (let i = 0; i < 1600; i++) {
+    const a = (R() - 0.5) * (R() < 0.75 ? 2.0 : 6.28), d = S * Math.pow(R(), 0.55) * 0.47, x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
+    if (!inside(x, y, 3)) continue;
+    g.fillStyle = col(0.18 + R() * 0.4); g.fillRect(x, y, 1 + R() * 1.6, 1 + R() * 1.6);
+  }
+  return cv;
+}
+// A bit that stuck: a clotted clump, paler torn tissue in it, a wet smear round it.
+function g90GibCanvas(seed) {
+  const S = 128, cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const g = cv.getContext('2d'), R = mulberry32(seed), c = S / 2;
+  const blob = (x, y, r, n, jag) => { g.beginPath(); for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2, rr = r * (1 - jag + jag * 2 * R()); if (i) g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); else g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); } g.closePath(); g.fill(); };
+  g.fillStyle = 'rgba(40, 2, 2, 0.55)'; g.beginPath(); g.ellipse(c + S * 0.06, c, S * 0.36, S * 0.22, 0.2, 0, Math.PI * 2); g.fill();
+  for (let i = 0; i < 9; i++) { g.fillStyle = 'rgba(36, 1, 1, 0.8)'; g.beginPath(); g.arc(c + (R() - 0.3) * S * 0.8, c + (R() - 0.5) * S * 0.6, S * (0.01 + R() * 0.025), 0, Math.PI * 2); g.fill(); }
+  g.fillStyle = 'rgba(24, 1, 1, 1)'; blob(c, c, S * 0.17, 11, 0.35);
+  g.fillStyle = 'rgba(120, 36, 28, 0.92)'; blob(c - S * 0.03, c - S * 0.03, S * 0.08, 8, 0.4);
+  g.fillStyle = 'rgba(70, 8, 6, 0.9)'; blob(c + S * 0.05, c + S * 0.04, S * 0.05, 7, 0.4);
+  return cv;
+}
+// Built once at load (from polishKit): the streak pool and its draw, the spray / bit decal materials, the streams.
+function g90Kit() {
+  if (!GORE_X) return;
+  G90U.uGoreX.value = 1;
+  const X = CONFIG.gore.x, n = G90.n = IS_HEADSET ? X.dropsHeadset : X.drops, nc = G90.nc = Math.min(X.chunks, n >> 2);
+  Object.assign(G90, { p: new Float32Array(n * 3), v: new Float32Array(n * 3), life: new Float32Array(n), max: new Float32Array(n), w: new Float32Array(n), len: new Float32Array(n),
+    fy: new Float32Array(n), kind: new Uint8Array(n), sid: new Int8Array(n), room: new Array(n).fill(null), wall: new Float32Array(nc * 6), hasWall: new Uint8Array(nc), next: nc });
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, 0, 0, 1, 0, 0, -1, 1, 0, 1, 1, 0], 3));
+  geo.setIndex([0, 2, 1, 2, 3, 1]);
+  G90.iPos = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  G90.iVel = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  G90.iP = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4).setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('iPos', G90.iPos); geo.setAttribute('iVel', G90.iVel); geo.setAttribute('iP', G90.iP);
+  geo.instanceCount = 0;
+  // A drop is a streak along its velocity (its path over ~1/30 s), turned to face you, a wet highlight down the
+  // middle; iP = width, base length, alpha, tissue (0 blood .. 1 a paler torn bit). Lit like every particle (P10U).
+  const mat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uStretch: { value: 0.032 } }, P10U),
+    vertexShader: `
+      attribute vec3 iPos; attribute vec3 iVel; attribute vec4 iP; uniform float uStretch; varying vec2 vQ; varying vec4 vC;
+      ${P10_LIGHT_GLSL}
+      void main() {
+        float sp = length(iVel);
+        vec3 dv = sp > 1e-3 ? iVel / sp : vec3(0.0, -1.0, 0.0);
+        vec3 toC = cameraPosition - iPos; float dc = max(length(toC), 1e-3); toC /= dc;
+        vec3 sd = cross(dv, toC); float sl = length(sd);
+        sd = sl > 1e-3 ? sd / sl : vec3(1.0, 0.0, 0.0);
+        float wd = max(iP.x, dc * 0.0011);
+        vec3 wp = iPos - dv * (iP.y + sp * uStretch) * position.y + sd * wd * position.x;
+        vQ = position.xy;
+        vC = vec4(mix(vec3(0.16, 0.008, 0.006), vec3(0.34, 0.075, 0.058), iP.w) * p10Light(wp), iP.z * min(1.0, iP.x / wd * 1.4));
+        gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec2 vQ; varying vec4 vC;
+      void main() {
+        float x = abs(vQ.x), a = (1.0 - x * x) * (1.0 - 0.6 * vQ.y) * vC.a;
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(vC.rgb * (1.0 + 1.7 * pow(1.0 - x, 6.0) * (1.0 - vQ.y)), a);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide
+  });
+  const mesh = G90.mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false; mesh.renderOrder = 2; mesh.visible = false; mesh.castShadow = mesh.receiveShadow = false;
+  scene.add(mesh);
+  // Spray and bit decals: wet (a normal map from their thickness). Same per-room decal layers; compiled now.
+  DECAL_SIZE.spray = DECAL_SIZE.sprayH = X.spray; DECAL_SIZE.gib = X.gib;
+  DECAL_SIZE.drip = DECAL_SIZE.blood; WEAPON.decalMat.drip = WEAPON.decalMat.blood;   // drip marks: the spatter, its own layer
+  for (const [k, cv] of [['spray', g90SprayCanvas(90901, false)], ['sprayH', g90SprayCanvas(90902, true)], ['gib', g90GibCanvas(90903)]]) {
+    WEAPON.decalMat[k] = new THREE.MeshStandardMaterial({ map: g90Tex(cv), normalMap: bloodNormalTex(cv, k === 'gib' ? 2.4 : 1.3), normalScale: new THREE.Vector2(1, 1),
+      transparent: true, depthWrite: false, roughness: 0.36, metalness: 0, envMapIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+    const im = new THREE.InstancedMesh(WEAPON.decalGeo, WEAPON.decalMat[k], 1);
+    im.setMatrixAt(0, new THREE.Matrix4().makeTranslation(0, 1.5, 0).scale(new THREE.Vector3(0.001, 0.001, 0.001)));
+    im.frustumCulled = false;
+    WEAPON.precompileDummies.push(im);
+  }
+  for (let i = 0; i < X.streams; i++) G90.S.push({ i, on: false, e: null, w: null, t0: 0, ph: 0, acc: 0, k: 1, spurt: 0, fy: 0, fyAt: -1, feed: 0, feedAt: 0, fx: 1e9, fz: 1e9, mx: 1e9, mz: 1e9, markAt: 0 });
+}
+function g90Precompile(on) {
+  if (!G90.mesh) return;
+  G90.mesh.visible = on;
+  if (on) {                                                       // one invisible streak in front of you, so the program compiles now
+    camera.updateMatrixWorld(true);
+    _g90.a.set(0, 0, -1).applyMatrix4(camera.matrixWorld);
+    G90.iPos.array.set([_g90.a.x, _g90.a.y, _g90.a.z]); G90.iVel.array.set([0, -1, 0]); G90.iP.array.set([0.004, 0.01, 0, 0]);
+    G90.iPos.needsUpdate = G90.iVel.needsUpdate = G90.iP.needsUpdate = true;
+  }
+  G90.mesh.geometry.instanceCount = on ? 1 : 0;
+}
+function g90Shift(dx, dz, dy) {
+  if (!G90.mesh) return;
+  for (let j = 0; j < G90.n; j++) { G90.p[j * 3] += dx; G90.p[j * 3 + 1] += dy; G90.p[j * 3 + 2] += dz; G90.fy[j] += dy; }
+  for (let j = 0; j < G90.nc; j++) { G90.wall[j * 6] += dx; G90.wall[j * 6 + 1] += dy; G90.wall[j * 6 + 2] += dz; }
+  for (const s of G90.S) { s.fy += dy; s.fx += dx; s.fz += dz; s.mx += dx; s.mz += dz; }
+}
+// Pellets or a burst landing together on one bone open one crater: the wound they hit grows instead (addWound).
+function g90Merge(W, bone, P, exit) {
+  const now = wnow();
+  for (let i = W.length - 1; i >= 0; i--) {
+    const w = W[i];
+    if (w.bone !== bone || !!w.exit !== !!exit || !w.hole || now - w.at > 0.25) continue;
+    _g90.m.copy(w.lp).applyMatrix4(bone.matrixWorld);
+    if (_g90.m.distanceToSquared(P) > (0.05 + w.hole) * (0.05 + w.hole)) continue;
+    w.hits = (w.hits || 1) + 1;
+    w.lp.lerp(bone.worldToLocal(_g90.m.copy(P)), 1 / w.hits);    // the crater centres on them all
+    return w;
+  }
+  return null;
+}
+// A wound's hole: its line into him (entry: along the round; exit: back against it) and a tangent, in its bone's frame.
+function g90Hole(w, dir, h0, cap) {
+  if (w.hole && (w.hits || 1) > 1) { w.hole = Math.min(w.hole + h0 * 0.5, cap); return; }   // merged: the crater grows
+  if (w.hole) return;
+  w.hole = h0;
+  w.bone.getWorldQuaternion(_g90.q).invert();
+  w.la = new THREE.Vector3().copy(dir).multiplyScalar(w.exit ? -1 : 1).applyQuaternion(_g90.q);
+  _g90.t.crossVectors(dir, _g90.up); if (_g90.t.lengthSq() < 1e-4) _g90.t.set(1, 0, 0);
+  w.lt = new THREE.Vector3().copy(_g90.t).normalize().applyQuaternion(_g90.q);
+}
+// Through-shots: rifles, the AWP and every head shot go through (pistol rounds as before, 80 %).
+const g90Through = (d, part, E) => E >= 0.3 && (part === 'head' || ((d.impulse || 0) >= 2.9 && (d.pellets || 1) === 1));
+// A hit that bled (enemyShot, ragdollHit). wIn / wOut: the wounds it left (wOut may be null).
+function g90Hit(e, part, wIn, wOut, P, dir, d, E) {
+  const K = g90K();
+  if (!K || !wIn || !e.room || !e.room.active) return;
+  const X = CONFIG.gore.x, pel = d.pellets || 1, head = part === 'head', now = wnow();
+  const heavy = pel > 1 ? 0.5 : clamp(((d.impulse || 2.2) - 1.6) / 4.4);   // 9 mm 0.14, 5.56 0.32, 7.62 0.55, AWP 1; buckshot (a blast) 0.5
+  const per = pel > 1 ? 1.8 / pel : 1;                                     // a pellet's share of a blast's spray
+  const cap = (head ? 0.085 : 0.07) * K;
+  g90Hole(wIn, dir, (0.0105 + 0.006 * heavy) * (pel > 1 ? 0.8 : 1) * K, cap);
+  if (wOut) g90Hole(wOut, dir, (0.022 + 0.034 * heavy) * (head ? 1.4 : 1) * (pel > 1 ? 0.7 : 1) * K, cap);
+  // It pours; a torso / neck hit spurts with his heartbeat for the first seconds.
+  const spurt = part === 'neck' ? X.spurtNeck : part === 'torso' || part === 'pelvis' ? X.spurtTorso : 0;
+  const pk = (head ? 1.25 : part === 'limb' ? 0.6 : 1) * (0.8 + 0.5 * heavy);
+  g90StreamOn(e, wIn, spurt, pk);
+  if (wOut) g90StreamOn(e, wOut, spurt * 0.6, pk * 1.35);
+  // The far side.
+  const ex = wOut ? _g90.c.copy(wOut.lp).applyMatrix4(wOut.bone.matrixWorld) : _g90.c.copy(P).addScaledVector(dir, 0.2);
+  const big = (head ? 1.6 : part === 'limb' ? 0.6 : 1) * (wOut ? 0.55 + heavy : 0.35) * K * per;
+  fxEmit(ex, dir, 0.3, Math.round(14 * big), G90_MIST);
+  fxEmit(ex, dir, 0.26, Math.round(18 * big), G90_DROP);
+  g90Chunks(e.room, ex, dir, Math.round((wOut ? 2 + 7 * heavy : 0.6) * (head ? 1.7 : 1) * K * Math.sqrt(per)), heavy);
+  if (now - (G90.sprayAt.get(e) || -9) > 0.06 && (wOut || pel > 1)) { G90.sprayAt.set(e, now); g90Spray(ex, dir, head, heavy, K, pel); }
+  if (head) {                                                      // a head shot: a pool under his head once he is down
+    const w = wOut || wIn;
+    P10.pending.push({ at: P10.time + 1.4, fn: () => { if (e.dead && e.room.active && w.bone) poolAt(_g90.a.copy(w.lp).applyMatrix4(w.bone.matrixWorld), rnd2(0.6, 0.8) * K, 0.55); } });
+  }
+}
+// A body on the floor shot again: the round's exit through that part, from his own ragdoll collider.
+function g90RagHit(rh, P, dir, d, E, wIn) {
+  if (!g90K() || !wIn) return;
+  const seg = rh.r.seg, part = seg === 'neck' ? 'head' : seg === 'spine' ? 'torso' : seg === 'pelvis' ? 'pelvis' : 'limb';
+  let wOut = null;
+  if (E >= 0.45 || g90Through(d, part, E)) {
+    _g90.e.copy(P).addScaledVector(dir, 0.6);
+    const ray = new RAPIER.Ray({ x: _g90.e.x, y: _g90.e.y, z: _g90.e.z }, { x: -dir.x, y: -dir.y, z: -dir.z });
+    const t = rh.r.col.castRay(ray, 0.6, true);
+    if (typeof t === 'number' && t > 0) wOut = addWound(rh.e, rh.r.bone, _g90.e.addScaledVector(dir, -t), 'body', true);
+  }
+  g90Hit(rh.e, part, wIn, wOut, P, dir, d, E);
+}
+// A stream on a wound (a wound that already pours pours harder). Full: the oldest one goes.
+function g90StreamOn(e, w, spurt, k) {
+  if (!G90.mesh || !w.la) return;
+  const now = wnow();
+  let s = null, old = null;
+  for (const x of G90.S) {
+    if (x.on && x.w === w) { x.k = Math.min(2, x.k + 0.15); x.spurt = Math.max(x.spurt, now + spurt * 0.5); return; }
+    if (!x.on && !s) s = x;
+    if (!old || x.t0 < old.t0) old = x;
+  }
+  s = s || old;
+  Object.assign(s, { on: true, e, w, t0: now, ph: Math.random(), acc: 0, k, spurt: spurt ? now + spurt * rnd2(0.8, 1.2) : 0, fyAt: -1, feed: 0, feedAt: 0, fx: 1e9, fz: 1e9, mx: 1e9, mz: 1e9, markAt: 0 });
+}
+// Ring slots: tissue bits in [0, nc), drops after them.
+function g90Slot(chunk) {
+  if (chunk) { const j = G90.nextC; G90.nextC = (j + 1) % G90.nc; return j; }
+  const j = G90.next; G90.next = j + 1 >= G90.n ? G90.nc : j + 1; return j;
+}
+function g90StreamTick(s, dt, now, K) {
+  const e = s.e, w = s.w, X = CONFIG.gore.x;
+  if (!K || !e.room || !e.room.active || !e.wounds || e.wounds.indexOf(w) < 0) { s.on = false; return; }
+  const dead = e.dead && e.diedAt !== undefined, sd = dead ? now - e.diedAt : 0, T = CONFIG.polish.blood.bleedTime * (0.8 + 0.2 * K);
+  if (sd > T) { s.on = false; return; }
+  // his heart: fast while he fights, slowing as he bleeds out; each beat a sharp rise and a quick fall
+  s.ph += dt * (dead ? mix(1.6, 0.7, clamp(sd / 8)) : 2.1);
+  const f = s.ph - Math.floor(s.ph), beat = Math.exp(-f * 7) * (1 - Math.exp(-f * 60));
+  const pour = (dead ? X.pourDead * Math.pow(1 - sd / T, 1.5) : X.pourAlive) * s.k;
+  const spurting = now < s.spurt && sd < 6;
+  let rate = X.pour * pour * (0.55 + 0.45 * beat) * K;
+  if (spurting) rate += X.spurt * beat * s.k * K * (dead ? clamp(1 - sd / 6) : 1);
+  s.acc = Math.min(s.acc + rate * dt, 24);                         // a long frame emits 24 at most
+  if (s.acc < 1) return;
+  // From the wound, pulled 1.5 cm in (the hit capsule sits a little outside his skin), out along its line.
+  w.bone.updateWorldMatrix(true, false);
+  const Pw = _g90.a.copy(w.lp).applyMatrix4(w.bone.matrixWorld), out = _g90.b.copy(w.la).transformDirection(w.bone.matrixWorld).negate();
+  if (w.part !== 'limb' && w.part !== 'body') Pw.addScaledVector(out, -0.015);
+  if (now >= s.fyAt) { s.fy = floorAt(Pw.x, Pw.z); s.fyAt = now + 0.3; }
+  const hw = Math.min(2, w.hole / 0.02), jit = w.hole * 0.4, f2 = rF(e.room), mvx = dead ? 0 : f2 * e.vel.x, mvz = dead ? 0 : f2 * e.vel.y;   // a walking man's blood keeps his speed
+  while (s.acc >= 1) {
+    s.acc -= 1;
+    const j = g90Slot(false), j3 = j * 3, sp = spurting && beat > 0.25, ts = Math.random() * dt;   // ts: spread over the frame, so a stream is not clumps
+    const v = sp ? rnd2(1.0, 2.3) * (0.6 + 0.4 * beat) : rnd2(0.04, 0.24), r = sp ? 0.18 : 0.06;
+    G90.v[j3] = out.x * v + (Math.random() - 0.5) * r + mvx; G90.v[j3 + 1] = out.y * v + (sp ? rnd2(0.1, 0.5) : 0) + (Math.random() - 0.5) * r - 9.8 * ts; G90.v[j3 + 2] = out.z * v + (Math.random() - 0.5) * r + mvz;
+    G90.p[j3] = Pw.x + (Math.random() - 0.5) * jit + G90.v[j3] * ts; G90.p[j3 + 1] = Pw.y + (Math.random() - 0.5) * jit + G90.v[j3 + 1] * ts; G90.p[j3 + 2] = Pw.z + (Math.random() - 0.5) * jit + G90.v[j3 + 2] * ts;
+    G90.life[j] = G90.max[j] = 2.5; G90.kind[j] = 0; G90.sid[j] = s.i; G90.fy[j] = s.fy; G90.room[j] = e.room;
+    G90.w[j] = sp ? rnd2(0.0025, 0.0045) : rnd2(0.003, 0.0062) * (0.75 + 0.25 * hw); G90.len[j] = rnd2(0.004, 0.009);
+  }
+}
+// Tissue bits thrown out of the exit: each knows the wall it was thrown at (one ray now) and sticks where it
+// crosses it, else it lands on the floor and stays.
+function g90Chunks(room, p, dir, n, heavy) {
+  if (!G90.mesh || n <= 0) return;
+  const fy = floorAt(p.x, p.z);
+  for (let i = 0; i < n; i++) {
+    const j = g90Slot(true), j3 = j * 3;
+    _g90.d.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.7).add(dir).normalize();
+    const s = rnd2(2, 4.5 + 3 * heavy);
+    G90.p[j3] = p.x; G90.p[j3 + 1] = p.y; G90.p[j3 + 2] = p.z;
+    G90.v[j3] = _g90.d.x * s; G90.v[j3 + 1] = _g90.d.y * s + rnd2(0, 0.8); G90.v[j3 + 2] = _g90.d.z * s;
+    G90.life[j] = G90.max[j] = 3; G90.kind[j] = 1; G90.sid[j] = -1; G90.fy[j] = fy; G90.room[j] = room;
+    G90.w[j] = rnd2(0.004, 0.009) * (1 + 0.5 * heavy); G90.len[j] = G90.w[j] * 1.3;
+    G90.hasWall[j] = 0;
+    const hit = p10Ray(p, _g90.d, 3.2, P10_STATIC_RAY);
+    if (!hit || Math.abs(hit.normal.y) > 0.7) continue;
+    const info = colliderInfo.get(hit.collider.handle), rec = coverByCollider.get(hit.collider.handle);
+    if (!info || (rec && (rec.type === 'crate' || rec.type === 'part'))) continue;
+    const t = p10Toi(hit), sg = hit.normal.x * _g90.d.x + hit.normal.y * _g90.d.y + hit.normal.z * _g90.d.z > 0 ? -1 : 1, W = G90.wall, k = j * 6;
+    W[k] = p.x + _g90.d.x * t; W[k + 1] = p.y + _g90.d.y * t; W[k + 2] = p.z + _g90.d.z * t;
+    W[k + 3] = hit.normal.x * sg; W[k + 4] = hit.normal.y * sg; W[k + 5] = hit.normal.z * sg;
+    G90.hasWall[j] = 1; G90.room[j] = info.room;
+  }
+}
+// The big decal on what is behind him (a run or two under it on a wall), and a second on the floor behind.
+function g90Spray(p, dir, head, heavy, K, pel) {
+  const range = CONFIG.polish.blood.spatterRange * 1.3, kind = head ? 'sprayH' : 'spray', s0 = (head ? 1.25 : 1) * (0.6 + 0.6 * heavy) * (pel > 1 ? 0.9 : 1) * K;
+  const o = _g90.t.copy(p).addScaledVector(dir, 0.05);
+  const hit = p10Ray(o, dir, range, P10_STATIC_RAY);
+  if (hit) g90SprayAt(hit, o, dir, kind, s0, range, true);
+  _g90.d.set(dir.x, 0, dir.z);
+  if (_g90.d.lengthSq() < 1e-4) return;
+  _g90.d.normalize().multiplyScalar(0.8); _g90.d.y = -1; _g90.d.normalize();
+  const h2 = p10Ray(o, _g90.d, 3, P10_STATIC_RAY);
+  if (h2 && h2.normal.y > 0.7) g90SprayAt(h2, o, _g90.d, kind, 0.6 * s0, 3, false);
+}
+function g90SprayAt(hit, o, dir, kind, s, range, wall) {
+  const info = colliderInfo.get(hit.collider.handle), rec = coverByCollider.get(hit.collider.handle);
+  if (!info || (rec && (rec.type === 'crate' || rec.type === 'part'))) return;   // it can be shot apart: nothing left floating
+  const toi = p10Toi(hit);
+  _g90.b.copy(o).addScaledVector(dir, toi);
+  _g90.n.set(hit.normal.x, hit.normal.y, hit.normal.z);
+  if (_g90.n.dot(dir) > 0) _g90.n.negate();
+  s = Math.min(1.6, s * mix(1.25, 0.65, clamp(toi / range)) * rnd2(0.9, 1.1));
+  addBloodDecal(info.room, kind, _g90.b, _g90.n, rollAlong(_g90.n, dir), s);
+  if (!wall || Math.abs(_g90.n.y) > 0.35) return;
+  const nr = 1 + (Math.random() < 0.6 ? 1 : 0) + (s > 1 ? 1 : 0);
+  _g90.d.crossVectors(_g90.n, _g90.up).normalize();              // along the wall
+  for (let i = 0; i < nr; i++) {
+    const rs = s * rnd2(0.7, 1.15);
+    _g90.a.copy(_g90.b).addScaledVector(_g90.d, (Math.random() - 0.5) * DECAL_SIZE[kind] * s * 0.4);
+    _g90.a.y -= DECAL_SIZE.run * rs * 0.3 + Math.random() * 0.05;
+    addBloodDecal(info.room, 'run', _g90.a, _g90.n, rollAlong(_g90.n, _g90.dn), rs);
+  }
+}
+function g90Mark(room, kind, x, y, z, nx, ny, nz, s) {
+  if (kind === 'gib') { if (G90.gibBudget < 1) return; G90.gibBudget -= 1; }
+  else { if (P10.dropBudget < 1) return; P10.dropBudget -= 1; }
+  _g90.n.set(nx, ny, nz);
+  addBloodDecal(room, kind, _g90.a.set(x, y, z), _g90.n, Math.random() * Math.PI * 2, s, kind !== 'drip');   // drips: own layer, not remembered
+}
+// A drop from a stream reached the floor. Somewhere new (he walks on), at most every 0.3 s: a drip mark ('drip': the spatter's
+// look in its own layer, so it never pushes a wall spatter out). Where it keeps landing (he stands, or lies,
+// still) it runs into the pool there, or starts one.
+function g90Land(j, now) {
+  const j3 = j * 3, x = G90.p[j3], y = G90.fy[j], z = G90.p[j3 + 2], room = G90.room[j], s = G90.sid[j] >= 0 ? G90.S[G90.sid[j]] : null;
+  G90.life[j] = 0;
+  if (!s || !s.on || s.e.room !== room) return;
+  if ((x - s.mx) * (x - s.mx) + (z - s.mz) * (z - s.mz) > 0.025 && now - s.markAt > 0.3) { s.mx = x; s.mz = z; s.markAt = now; g90Mark(room, 'drip', x, y, z, 0, 1, 0, rnd2(0.1, 0.22)); }
+  const dx0 = x - s.fx, dz0 = z - s.fz;                            // where it lands, on average (a spurt's arc lands further out)
+  if (dx0 * dx0 + dz0 * dz0 > 0.09) { s.fx += dx0 * (s.fx > 1e8 ? 1 : 0.1); s.fz += dz0 * (s.fz > 1e8 ? 1 : 0.1); return; }
+  if (++s.feed < 14 || now - s.feedAt < 0.9) return;
+  s.feed = 0; s.feedAt = now;
+  for (const g of P10.pools) {
+    if (g.room !== room) continue;
+    const dx = g.lx - rLX(room, x), dz = g.lz - rLZ(room, z), R0 = DECAL_SIZE.pool * g.s1 * 0.5;
+    if (dx * dx + dz * dz < R0 * R0) { g.s1 = Math.min(g.s1 + 0.035 * s.k, 1.6); return; }   // it runs into the pool there
+  }
+  if ((s.e.dead || s.e.speed < 0.3) && P10.pools.length < 24) poolAt(_g90.d.set(x, y + 0.3, z), rnd2(0.22, 0.32) * s.k, 0.45);
+}
+// A bit stops: on the wall it slides a few mm a second, on the floor it stays; either leaves a 'gib' decal.
+function g90Stick(j, nx, ny, nz) {
+  const j3 = j * 3;
+  G90.kind[j] = 2; G90.life[j] = G90.max[j] = rnd2(6, 11);
+  G90.v[j3] = 0; G90.v[j3 + 1] = ny > 0.7 ? 0 : -rnd2(0.003, 0.012); G90.v[j3 + 2] = 0;
+  if (G90.room[j]) g90Mark(G90.room[j], 'gib', G90.p[j3], G90.p[j3 + 1], G90.p[j3 + 2], nx, ny, nz, rnd2(0.7, 1.3));
+}
+// Per frame (after physics: the bones are where the ragdoll put them).
+function g90Update(dt) {
+  if (!G90.mesh) return;
+  const now = wnow(), K = g90K(), P = G90.p, V = G90.v, W = G90.wall;
+  G90.gibBudget = Math.min(CONFIG.gore.x.gibBudget, G90.gibBudget + dt * 6);
+  if (dt > 0) for (const s of G90.S) if (s.on) g90StreamTick(s, dt, now, K);
+  const ip = G90.iPos.array, iv = G90.iVel.array, iq = G90.iP.array;
+  let m = 0;
+  for (let j = 0; j < G90.n; j++) {
+    if (G90.life[j] <= 0) continue;
+    const room = G90.room[j], j3 = j * 3, k = G90.kind[j];
+    if (room && !room.active) { G90.life[j] = 0; continue; }
+    G90.life[j] -= dt;
+    if (k !== 2) {
+      const px = P[j3], py = P[j3 + 1], pz = P[j3 + 2];
+      V[j3 + 1] -= 9.8 * dt;
+      P[j3] += V[j3] * dt; P[j3 + 1] += V[j3 + 1] * dt; P[j3 + 2] += V[j3 + 2] * dt;
+      if (k === 1 && G90.hasWall[j]) {
+        const w = j * 6, dn = (P[j3] - W[w]) * W[w + 3] + (P[j3 + 1] - W[w + 1]) * W[w + 4] + (P[j3 + 2] - W[w + 2]) * W[w + 5];
+        if (dn < 0.004) {
+          G90.hasWall[j] = 0;
+          // really there? (it may have gone over a half wall or through a doorway)
+          _g90.a.set(px, py, pz); _g90.d.set(P[j3] - px, P[j3 + 1] - py, P[j3 + 2] - pz);
+          const l = _g90.d.length(), h = l > 1e-5 ? p10Ray(_g90.a, _g90.d.multiplyScalar(1 / l), l + 0.05, P10_STATIC_RAY) : null;
+          if (h) { P[j3] -= W[w + 3] * (dn - 0.004); P[j3 + 1] -= W[w + 4] * (dn - 0.004); P[j3 + 2] -= W[w + 5] * (dn - 0.004); g90Stick(j, W[w + 3], W[w + 4], W[w + 5]); }
+        }
+      }
+      if (G90.kind[j] !== 2 && P[j3 + 1] < G90.fy[j] && V[j3 + 1] < 0) {
+        P[j3 + 1] = G90.fy[j] + 0.003;
+        if (k === 1) g90Stick(j, 0, 1, 0); else { g90Land(j, now); continue; }
+      }
+    } else if (V[j3 + 1] < 0) P[j3 + 1] = Math.max(G90.fy[j] + 0.003, P[j3 + 1] + V[j3 + 1] * dt);
+    if (G90.life[j] <= 0 || (room && !room.group.visible)) continue;   // behind a shut door: not drawn
+    const m3 = m * 3, m4 = m * 4, stuck = G90.kind[j] === 2;
+    ip[m3] = P[j3]; ip[m3 + 1] = P[j3 + 1]; ip[m3 + 2] = P[j3 + 2];
+    iv[m3] = stuck ? 0 : V[j3]; iv[m3 + 1] = stuck ? 0 : V[j3 + 1]; iv[m3 + 2] = stuck ? 0 : V[j3 + 2];
+    iq[m4] = G90.w[j]; iq[m4 + 1] = G90.len[j]; iq[m4 + 2] = (k === 0 ? 0.95 : 1) * Math.min(1, G90.life[j] / Math.min(2, G90.max[j] * 0.3)); iq[m4 + 3] = k === 0 ? 0 : 0.55;
+    m++;
+  }
+  G90.mesh.geometry.instanceCount = m;
+  G90.mesh.visible = m > 0;
+  if (!m) return;
+  G90.iPos.clearUpdateRanges(); G90.iPos.addUpdateRange(0, m * 3); G90.iPos.needsUpdate = true;
+  G90.iVel.clearUpdateRanges(); G90.iVel.addUpdateRange(0, m * 3); G90.iVel.needsUpdate = true;
+  G90.iP.clearUpdateRanges(); G90.iP.addUpdateRange(0, m * 4); G90.iP.needsUpdate = true;
+}
+// END STEP 90
 
 /* ---------------------------------------------------------------------------
  *  PARTICLES — per frame
@@ -28750,6 +29257,7 @@ function tick(timeMs) {
   profMark('physics');
   updateCasings();       // step 5: brass and hulls
   updateImpactFx(dtW);
+  g90Update(dtW);        // step 90: blood pouring from his wounds, tissue bits
   updateFlicker(t);
   fixJoltTick();         // step 87: shot-at tubes stutter (after the flicker, absolute writes)
   polishUpdate(dtW, t);  // step 10: haze, blood pools, contact shadows, particle light, listener, ears, boots
@@ -30049,6 +30557,7 @@ function freeItemHand(h, it, p, P, Q) {
     enemyPrecompile(true);                       // step 7: his one shader + shadow
     genPrecompile(true);                         // step 8: every furniture/fixture material and finish
     polishPrecompile(true);                      // step 10
+    g90Precompile(true);                         // step 90: the blood streaks
     termPrecompile(true);                        // step 11: the touch cursor (the screen is in the safe room)
     watchPrecompile(true);                       // step 57
     nightPrecompile(true);
@@ -30072,6 +30581,7 @@ function freeItemHand(h, it, p, P, Q) {
     enemyPrecompile(false);
     genPrecompile(false);
     polishPrecompile(false);
+    g90Precompile(false);
     termPrecompile(false);
     watchPrecompile(false);
     nightPrecompile(false);
@@ -30098,7 +30608,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } } };
 </script>
 </body>
 </html>
