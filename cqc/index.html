@@ -1466,7 +1466,8 @@ const PROJECT_RULES = {
     'Profiling: every frame is split into input, stream, enemies, weapons, physics, fx, shadows and render (CPU ms). Frame interval, p95, dropped frames, draw calls and triangles per second. A frame over budget with low CPU time is reported GPU-bound. Desktop: O. Headset: fps on the terminal (GRAPHICS). Each VR session logs a summary and keeps the last one (window.cqcProfile()).',
     'Optimize only from profiler numbers on the device: Quest first lowers CONFIG.polish.haze.count / haze.maxPx (overdraw), then audio.hrtf (CPU), then the step 4 knobs (shadow size, foveation).',
     'Nothing in step 10 compiles mid-game or adds a light: blood, haze, mote and contact materials are built in polishKit() and compiled at load; every pool is fixed size.',
-    'Step 86: his body is heard, not just his boots (enemyBodyFoley): knee down behind cover or to reload (knee pad, carrier, mags, 0.2 s after the drop), coming up (cloth and a boot scuff before his head clears the wall), pivoting on the spot (soles on grit). Synth only, through soundAt. CONFIG.polish.audio.bodyFoley (gain, 0 = off).'
+    'Step 86: his body is heard, not just his boots (enemyBodyFoley): knee down behind cover or to reload (knee pad, carrier, mags, 0.2 s after the drop), coming up (cloth and a boot scuff before his head clears the wall), pivoting on the spot (soles on grit). Synth only, through soundAt. CONFIG.polish.audio.bodyFoley (gain, 0 = off).',
+    'Step 87: the mechanism is felt (mechPulse, headset only). The rack hand knocks when a slide, charging handle or bolt hits its rear stop and the gun hand when it goes home (softer if the slide stop catches it; a bolt is pushed home, so the bolt hand takes more); the slide release slamming home, both ends of the pump (forend hand, the gun hand on the lock-up), the selector detent and the magazine catch tick. After a self-loading semi shot a small tick 55 ms on marks the slide back in battery (after the 45 ms shot pulse); on lock-back only a faint one; none in full auto. A knock cuts only a weaker running pulse (pulse() stamps hapK), a tick goes through pulseSoft, so neither shortens the recoil or a hit buzz. No setTimeout, no sound. CONFIG.polish.haptics.mech (0 = all off) / .cycle, ?mechhap=off.'
   ],
   // STEP 11: the opposition. Everything after this keeps these.
   ai: [
@@ -2385,6 +2386,7 @@ const CONFIG = {
   // --- STEP 10: polish and the scary-realism pass ---
   polish: {
     lightAmb: 0.9,             // particle brightness in room light (x the failing tube's flicker)
+    haptics: { mech: 1, cycle: 1 },   // step 87: the mechanism knocks in your hands (mechPulse; 0 = off, also the cycle tick); cycle = the slide / bolt back in battery after a semi shot (0 = off). ?mechhap=off
     contact: {
       on: true, cap: 128,      // quads per frame (one draw call)
       range: 10,               // m from your head
@@ -9664,10 +9666,20 @@ const vrHands = [];
 function pulse(hand, strength, ms) {
   const gp = hand.ctrl && hand.ctrl.userData.gamepad;
   const act = gp && gp.hapticActuators && gp.hapticActuators[0];
-  if (act && act.pulse) { hand.hapEnd = performance.now() + ms; try { act.pulse(clamp(strength), ms); } catch (e) { /* no haptics: fine */ } }
+  if (act && act.pulse) { hand.hapEnd = performance.now() + ms; hand.hapK = strength; try { act.pulse(clamp(strength), ms); } catch (e) { /* no haptics: fine */ } }   // step 87: hapK (mechPulse)
 }
 // Step 86: a soft buzz never cuts short one still running (the Quest replaces a running pulse).
 function pulseSoft(hand, strength, ms) { if (performance.now() < (hand.hapEnd || 0)) return; pulse(hand, strength, ms); }
+// Step 87: the mechanism in your hands (CONFIG.polish.haptics.mech, ?mechhap=off). A knock (k >= 0.4: a stop, a slam home)
+// cuts only a weaker running pulse (pulse() stamps hapK); a tick (catch, selector, back in battery) goes through pulseSoft.
+const MECH_HAP = { on: !/[?&]mechhap=off\b/.test(location.search) };
+function mechPulse(hand, k, ms) {
+  const H = CONFIG.polish.haptics, m = MECH_HAP.on && H ? H.mech : 0;
+  if (!hand || !hand.ctrl || !m) return;
+  const s = k * m;
+  if (k < 0.4) pulseSoft(hand, s, ms);
+  else if (!(performance.now() < (hand.hapEnd || 0) && (hand.hapK || 0) > s)) pulse(hand, s, ms);
+}
 
 const _hs = new THREE.Vector3(), _hm = new THREE.Matrix4();
 function handTarget(hand) {
@@ -14250,41 +14262,47 @@ function ejectChambered(g) {
   } else if (g.chambered) { g.chambered = false; spawnCasing(g, 'c9'); }
 }
 function rackBackEvent(g) { g.racked = true; ejectChambered(g); if (g.spent) { g.spent = false; spawnCasing(g, g.def.casing); }   // step 64
-  sfx(g.def.cls === 'pistol' ? 'pRackBack' : 'rackBack'); }
+  sfx(g.def.cls === 'pistol' ? 'pRackBack' : 'rackBack');
+  mechPulse(g.rack, 0.55, 22); mechPulse(g.primary, 0.25, 14); }   // step 87: slide / handle / bolt hits its rear stop
 function finishRack(g) {
   g.racked = false; g.slideLocked = false;
   if (!chamberFromMag(g) && g.def.cls === 'pistol' && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;   // empty magazine: slide stop catches it
   sfx(g.def.cls === 'pistol' ? (g.slideLocked ? 'pLockBack' : 'pRackFwd') : 'rackFwd');
+  mechPulse(g.primary, g.def.manual ? 0.4 : g.slideLocked ? 0.45 : 0.75, 26); mechPulse(g.rack, g.def.manual ? 0.5 : 0.35, 16);   // step 87: home (a bolt is pushed, not slammed); g.rack is null once let go
 }
 function rackEnd(g) { if (g.racked) finishRack(g); }
 function slideRelease(g) {
   if (!g.slideLocked) return;
   g.slideLocked = false;
   if (!chamberFromMag(g) && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;
+  if (!g.slideLocked) mechPulse(g.primary, 0.7, 26);   // step 87: only when it really slams home
   sfx(g.def.cls === 'pistol' ? 'pRackFwd' : 'rackFwd');
 }
 function pumpBackEvent(g) {
   g.pumpBack = true;
   ejectChambered(g);
   if (g.tube > 0) { if (!MOD.ammo) g.tube--; g.lifted = true; }
+  mechPulse(g.support, 0.6, 24);   // step 87: the forend hits its rear stop
   sfx('pumpBack');
 }
 function pumpForwardEvent(g) {
   g.pumpBack = false;
   if (g.lifted) { g.chamber = 'live'; g.lifted = false; }
+  mechPulse(g.support, 0.8, 30); mechPulse(g.primary, 0.4, 18);   // step 87: the bolt locks
   sfx('pumpFwd');
 }
 function cycleSelector(g) {
   if (g.def.cls !== 'smg') return;
   const modes = g.def.modes || ['safe', 'semi', 'auto'];         // step 23: the AKM goes safe - auto - semi
   g.mode = modes[(modes.indexOf(g.mode) + 1) % 3];
+  mechPulse(g.primary, 0.18, 9);   // step 87: selector detent
   sfx('selector');
   if (!renderer.xr.isPresenting) toast(`Fire mode: ${g.mode}`);
 }
 // Step 11: the gun a hand is on, as its grip, its handguard / forend or its slide. Face buttons
 // on either hand work it, so your support hand's X / Y drop the magazine like the gun hand's A / B.
 function gunTouched(hand) { const p = hand && hand.prop; return p && p.item && p.item.kind === 'gun' ? p.item : null; }
-function gunButtonA(g) { if (g.def.magType && g.mag) { g.thumbCatchUntil = performance.now() / 1000 + 0.3; ejectMag(g, 1.1); } }   // magazine release (step 59.2: thumb shown on the catch)
+function gunButtonA(g) { if (g.def.magType && g.mag) { g.thumbCatchUntil = performance.now() / 1000 + 0.3; mechPulse(g.primary, 0.28, 12); ejectMag(g, 1.1); } }   // magazine release (step 59.2: thumb shown on the catch)
 function gunButtonB(g) { if (g.def.cls === 'pistol') slideRelease(g); else if (g.def.cls === 'smg') cycleSelector(g); }
 function canFire(g) {
   if (g.free && g.free.primary && !g.free.onGrip) return false;   // step 65: your finger is not at the trigger
@@ -14364,6 +14382,7 @@ function fireGun(g, now) {
     g.cycleT = 0;
     spawnCasing(g, d.casing);
     if (!chamberFromMag(g) && g.def.cls === 'pistol' && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;
+    if (MECH_HAP.on && CONFIG.polish.haptics && CONFIG.polish.haptics.cycle && g.primary && g.primary.ctrl && !((d.auto || g.sw) && g.mode === 'auto')) { g.batAt = now + 0.055; g.batK = g.slideLocked ? 0.12 : 0.3; }   // step 87: back in battery after the 45 ms shot pulse; locked open = no slam, just the stop
   }
   panel.dirty = true;
 }
@@ -14992,6 +15011,7 @@ function updateGun(g, dt, now) {
   }
   // --- Flash ---
   if (g.flashT > 0) { g.flashT -= dt; if (g.flashT <= 0) g.parts.flash.visible = false; else setFlashFrame(g, g.flashT / FLASH_TIME); }
+  if (g.batAt && now >= g.batAt) { g.batAt = 0; mechPulse(g.primary, g.batK * CONFIG.polish.haptics.cycle, 14); } else if (g.batAt > now + 1) g.batAt = 0;   // step 87: the back-in-battery tick (a clock jump drops it)
   if (g.lh) lhTick(g, dt);                      // step 16: the support hand's reload / rack motion
   if (g.parts.dot) opticDot(g);                  // step 23: red dot
   if (g.anim) { try { g.anim(g, dt); } catch (e) { console.warn('step 59: M1911 animation off', e); g.anim = null; } }   // step 59
@@ -28538,7 +28558,7 @@ function createGun(type) {
   const item = {
     kind: 'gun', type, label: d.label, def: d, wr: WR[type], model: b.model, parts: b.parts,
     primary: null, support: null, rack: null, slot: null, mag: null, magAnim: 0, chambered: false, chamber: null,
-    slideOff: 0, slideLocked: false, slideHold: -1, rackAuto: -1, racked: false, cycleT: 1,
+    slideOff: 0, slideLocked: false, slideHold: -1, rackAuto: -1, racked: false, cycleT: 1, batAt: 0, batK: 0,
     pump: 0, pumpAuto: -1, pumpBack: false, tube: 0, lifted: false,
     trigger: 0, triggerReset: true, dry: false, nextShot: 0, mode: 'semi', flashT: 0, ads: 0,
     rec: { z: 0, vz: 0, p: 0, vp: 0, y: 0, vy: 0 }, hasBase: false, basePos: new THREE.Vector3(), baseQuat: new THREE.Quaternion(),
@@ -29479,7 +29499,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse };
 </script>
 </body>
 </html>

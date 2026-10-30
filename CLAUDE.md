@@ -288,3 +288,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC step 86: merged sensory pass (headset check needed)
 - Seven additive branches merged into cqc-realism: body bumps, cloth foley, door foley, prop knocks, building ambience, enemy body foley, barrel heat smoke (each section above has its flag). Smoke-tested in headless Chromium: loads with no errors, every new sound function runs. Not verified: how they sound, the wisp on screen, Quest frame time.
 - Not built, waiting for the user's OK (they change what exists): gun foley + brass back on, VR mechanism haptics, desktop view weight, enemy gun handling sounds, muffled life behind doors, shoot-out ceiling tubes, exit-sign green spill.
+
+## CQC step 87: VR mechanism haptics (headset check needed)
+- mechPulse(hand, k, ms) (beside pulse/pulseSoft): k >= 0.4 is a knock that cuts only a weaker running pulse (pulse() now stamps hand.hapK beside hapEnd); smaller k is a tick through pulseSoft. Desktop hands (no ctrl) skip it.
+- rackBackEvent: rack hand 0.55, gun hand 0.25 (rear stop). finishRack: gun hand 0.75 (0.45 caught by the slide stop, 0.4 a bolt pushed home), rack hand 0.35 (0.5 bolt) while it still rides the slide. slideRelease: 0.7 only when it goes home. Pump: back 0.6 forend hand, forward 0.8 forend + 0.4 gun hand. Selector 0.18, magazine catch (gunButtonA) 0.28.
+- Back in battery: fireGun (self-loading, not full auto, VR hand) sets g.batAt = now + 0.055, g.batK 0.3 (0.12 locked open); updateGun ticks it after the 45 ms shot pulse. No setTimeout, no sound, no allocations.
+- CONFIG.polish.haptics { mech, cycle } (mech 0 = all off), ?mechhap=off = exactly the old haptics. ?dev: MECH_HAP, mechPulse, pulse.
