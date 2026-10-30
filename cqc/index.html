@@ -1143,7 +1143,7 @@
     <tr><td>Move</td><td>W A S D, Shift to walk faster</td></tr>
     <tr><td>Pick up or drop</td><td>Aim at an object, press E</td></tr>
     <tr><td>Use</td><td>Click. With the dot on a door, screen or pickup in reach, the click uses it</td></tr>
-    <tr><td>Grenades</td><td>3 frag, 4 flashbang. Hold the key: your left hand draws it and pulls the pin. Let go to throw it overhand; hold right mouse (aim) for an underhand lob. E or click on a live one at your feet throws it back</td></tr>
+    <tr><td>Grenades</td><td>3 frag, 4 flashbang. Hold the key: your left hand draws it and pulls the pin. Let go to throw it overhand; hold Space or right mouse (aim) for an underhand lob. E or click on a live one at your feet throws it back</td></tr>
     <tr><td>Open or close a door</td><td>Aim at it, press E. Or just walk into it</td></tr>
     <tr><td>Doors</td><td>Aim at a door: click or E turns the handle and pushes it slowly away from you. Hold the click or E to turn the handle and pull it slowly toward you. Run into a shut door to breach it: with a gun you shove it with the gun, with an object with the object, empty-handed you kick it</td></tr>
     <tr><td>Use / throw</td><td>Click: opens or shuts the door the dot is on, presses screens, picks up what the dot is on. Click while holding an object throws it</td></tr>
@@ -1155,7 +1155,8 @@
     <tr><td>Shadows</td><td>K switches standard / soft (in VR: terminal, GRAPHICS). Takes effect next time the game loads</td></tr>
     <tr><td>Light flicker</td><td>L (in VR: terminal, GRAPHICS)</td></tr>
     <tr><td>Lean</td><td>Hold Z (left) or C (right). Stops short of walls</td></tr>
-    <tr><td>Crouch</td><td>Space (toggle)</td></tr>
+    <tr><td>Aim down the sights</td><td>Hold Space (or right mouse). Click fires; while you aim, a click always fires</td></tr>
+    <tr><td>Crouch</td><td>Caps Lock (toggle)</td></tr>
     <tr><td>Gunsmith bench</td><td>Safe room. Stand at the vise with a gun in your hand and press B (or drop it there with E) to clamp it. Click or E a part on the table to fit it, again to take it off. B locks them on and frees the gun</td></tr>
     <tr><td>Shove</td><td>G at a table or loose object. Shove a table at its top edge to tip it over</td></tr>
     <tr><td>Kick</td><td>N. Your right leg, where you look: kick a door open, a man off balance, a box across the room</td></tr>
@@ -8454,11 +8455,11 @@ document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas) return;
   if (e.button === 0) DOORUSE.mouse = true;   // step 54: a held click pulls a door
   if (e.button === 0) { if (deskClickInteract()) return; if (gunOf(deskHand)) deskInput.fire = true; else deskThrow(); }   // step 22.5: a click uses what the dot is on first
-  if (e.button === 2) deskInput.ads = true;
+  if (e.button === 2) { DESK_ADS.mouse = true; deskAdsSync(); }   // step 89: right mouse or Space (deskAdsSync)
 });
 document.addEventListener('mouseup', (e) => {
   if (e.button === 0) { deskInput.fire = false; DOORUSE.mouse = false; }
-  if (e.button === 2) deskInput.ads = false;
+  if (e.button === 2) { DESK_ADS.mouse = false; deskAdsSync(); }
 });
 document.addEventListener('contextmenu', (e) => { if (document.pointerLockElement === canvas) e.preventDefault(); });
 document.addEventListener('mousemove', (e) => {
@@ -8944,7 +8945,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit2' && !e.repeat && !renderer.xr.isPresenting) deskSlot('chest');
   if (e.code === 'KeyQ' && !e.repeat) cycleQuality();
   if (e.code === 'KeyB' && !e.repeat && !bBench) cyclePerfMode();   // off -> boost -> extreme   // step 12: performance boost
-  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn; }
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat && !renderer.xr.isPresenting) { DESK_ADS.key = true; deskAdsSync(); } }   // step 89: hold Space = aim down the sights (was crouch)
+  if (e.code === 'CapsLock' && !e.repeat && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn;   // step 89: crouch (toggle) moved here from Space
   if (e.code === 'KeyG' && !e.repeat) deskShove();
   if (e.code === 'KeyN' && !e.repeat) kickStart();             // step 24: kick (right leg, where you look)
   if (e.code === 'KeyJ' && !e.repeat) deskJump();              // step 24: hop
@@ -8956,7 +8958,12 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'BracketRight') setExposure(renderer.toneMappingExposure + 0.05);
   syncButtons();
 });
-window.addEventListener('keyup', (e) => { keys.delete(e.code); if ((e.code === 'Digit3' || e.code === 'Digit4') && DNADE.active) DNADE.release = true; });
+window.addEventListener('keyup', (e) => {
+  keys.delete(e.code); if ((e.code === 'Digit3' || e.code === 'Digit4') && DNADE.active) DNADE.release = true;
+  if (e.code === 'Space') { DESK_ADS.key = false; deskAdsSync(); }   // step 89
+  if (e.code === 'CapsLock' && IS_MAC_KB && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn;   // step 89: macOS sends Caps Lock off as a keyup only
+});
+window.addEventListener('blur', () => { DESK_ADS.key = DESK_ADS.mouse = false; deskAdsSync(); });   // step 89: a missed keyup never leaves you stuck aiming
 function setExposure(v) { renderer.toneMappingExposure = clamp(v, 0.3, 2.5); ui.exp.textContent = renderer.toneMappingExposure.toFixed(2); }
 
 /* ============================================================================
@@ -9981,6 +9988,7 @@ function deskClickInteract() {
   if (termDeskPress(true)) return true;                    // terminal or replay wall (safe room: nobody to shoot)
   const gun = gunOf(deskHand);
   if (deskHand.prop && !gun) return false;                 // holding a box or a plank: the click throws it
+  if (gun && deskInput.ads) return false;                  // step 89: aimed down the sights, the click is the trigger (a door or a mag in reach used to take it)
   const p = gun ? aimedProp(true, true) : aimedProp(), d = aimedDoor();
   camera.getWorldPosition(_eye);
   const pd = p ? p.root.position.distanceTo(_eye) : Infinity;
@@ -14992,6 +15000,10 @@ function applyRecoil(g, dt, P, Q) {
  *  PER-FRAME UPDATE (before physics)
  * ------------------------------------------------------------------------- */
 const deskInput = { fire: false, ads: false };
+// Step 89: computer aim = right mouse OR hold Space; either one held keeps you aimed (touch and the demo set deskInput.ads directly).
+const DESK_ADS = { mouse: false, key: false };
+function deskAdsSync() { deskInput.ads = DESK_ADS.mouse || DESK_ADS.key; }
+const IS_MAC_KB = /Mac/.test(navigator.platform || navigator.userAgent || '');
 let lastAmmoText = '';
 const _bq = new THREE.Quaternion();
 function weaponsUpdate(dt, now) {
@@ -29729,7 +29741,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance };
 </script>
 </body>
 </html>
