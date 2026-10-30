@@ -1466,7 +1466,8 @@ const PROJECT_RULES = {
     'Profiling: every frame is split into input, stream, enemies, weapons, physics, fx, shadows and render (CPU ms). Frame interval, p95, dropped frames, draw calls and triangles per second. A frame over budget with low CPU time is reported GPU-bound. Desktop: O. Headset: fps on the terminal (GRAPHICS). Each VR session logs a summary and keeps the last one (window.cqcProfile()).',
     'Optimize only from profiler numbers on the device: Quest first lowers CONFIG.polish.haze.count / haze.maxPx (overdraw), then audio.hrtf (CPU), then the step 4 knobs (shadow size, foveation).',
     'Nothing in step 10 compiles mid-game or adds a light: blood, haze, mote and contact materials are built in polishKit() and compiled at load; every pool is fixed size.',
-    'Step 86: his body is heard, not just his boots (enemyBodyFoley): knee down behind cover or to reload (knee pad, carrier, mags, 0.2 s after the drop), coming up (cloth and a boot scuff before his head clears the wall), pivoting on the spot (soles on grit). Synth only, through soundAt. CONFIG.polish.audio.bodyFoley (gain, 0 = off).'
+    'Step 86: his body is heard, not just his boots (enemyBodyFoley): knee down behind cover or to reload (knee pad, carrier, mags, 0.2 s after the drop), coming up (cloth and a boot scuff before his head clears the wall), pivoting on the spot (soles on grit). Synth only, through soundAt. CONFIG.polish.audio.bodyFoley (gain, 0 = off).',
+    'Step 87: shoot-out tubes (CONFIG.polish.fixtures, ?fixtures=off). A round meeting the ceiling (bulletHit, normal down, rising at least 0.05) is traced back to the diffuser plane (fixtureShot). Through a diffuser: the fitting dies for the rest of the run (tr.out, room memory tOut, fixturesRestore on reactivation): emissive 0, a metal hole, metal sparks + glass glitter, 6 bouncing diffuser shards, 6 blue-white sparks, phosphor powder (haze), a pop + dying ballast + arc crackle + the diffuser tinkling, again on the floor 0.6 s later (fixSfxLive / fixSfxDead through one soundAt voice, 0.05 s gate); 0.06 s later (and half the time again at 0.18 s) an arc on the muzzle-pool light (fixArc: never over a muzzle flash, its reach unchanged). No power at night: no arc, no ballast. The housing rim: a metal hole and a stutter. Within nearR of a housing: a stutter, the plaster takes the hole. Frags / bangs in the room you are in (fixturesBlast): tubes within blastR stutter (jolt 0.18 to 0.45 s) and every fitting sheds dust (FIX_FLAKE, sifts, never lands). Only troffers[0..1] carry pool light: assignLights zeroes a dead one\'s spot and area light, the portal spot picks the nearest live tube, the failing-tube flicker leaves a dead troffers[1]; other fittings only lose their glow. Room fill (scene.environmentIntensity, the flat fill, the body cam\'s low-light gain) eases toward fixtures.amb by the share of the two still lit (fixShare); particles follow it and any stutter (FIXJ.amb). Safe room tubes do not die (fixtures.safe). Reflection probes / env bakes are not redone: a probe baked earlier still shows a lit tube. No light, material or shader added; shards, sparks and dust use the impact pool, powder the haze pool.'
   ],
   // STEP 11: the opposition. Everything after this keeps these.
   ai: [
@@ -2385,6 +2386,7 @@ const CONFIG = {
   // --- STEP 10: polish and the scary-realism pass ---
   polish: {
     lightAmb: 0.9,             // particle brightness in room light (x the failing tube's flicker)
+    fixtures: { on: true, safe: false, nearR: 0.45, jolt: [0.18, 0.45], blastR: 7, amb: 0.35 },   // step 87: shoot-out tubes (?fixtures=off). nearR m round a housing = a near miss; jolt s of stutter (near miss .. frag at the fitting); amb = room fill left with both lit tubes dead
     contact: {
       on: true, cap: 128,      // quads per frame (one draw call)
       range: 10,               // m from your head
@@ -7171,7 +7173,7 @@ function assignLights(cur, portal) {
   const dark = nightDark(cur);
   for (let i = 0; i < 2; i++) {
     const tr = cur.troffers[i], x = rWX(cur, tr.x), z = rWZ(cur, tr.z);
-    if (dark) { pool.rects[i].intensity = 0; if (!pool.main[i].userData.torch) pool.main[i].intensity = 0; continue; }   // step 11: the power is out
+    if (dark || tr.out) { pool.rects[i].intensity = 0; if (!pool.main[i].userData.torch) pool.main[i].intensity = 0; continue; }   // step 11: the power is out; step 87: or the tube is shot out
     const ty = cur.origin.y + (tr.y !== undefined ? tr.y : cur.h);   // step 12: stairwell fittings have their own height
     placeSpot(pool.main[i], x, ty, z);
     pool.rects[i].position.set(x, ty - 0.04, z);
@@ -7181,16 +7183,18 @@ function assignLights(cur, portal) {
   else if (portal) {
     // Light the neighbour's fixture nearest the doorway you're looking through.
     const A = anchor(Math.min(cur.slot, portal.slot));
-    let tr = portal.troffers[0], bd = Infinity;
+    let tr = null, bd = Infinity;
     for (const q of portal.troffers) {
+      if (q.out) continue;                                         // step 87: shot out
       const dd = Math.hypot(rWX(portal, q.x) - A.x, rWZ(portal, q.z) - A.y);
       if (dd < bd) { bd = dd; tr = q; }
     }
-    placeSpot(pool.portal, rWX(portal, tr.x), portal.origin.y + (tr.y !== undefined ? tr.y : portal.h), rWZ(portal, tr.z));
+    if (tr) placeSpot(pool.portal, rWX(portal, tr.x), portal.origin.y + (tr.y !== undefined ? tr.y : portal.h), rWZ(portal, tr.z));
+    else if (!pool.portal.userData.torch) pool.portal.intensity = 0;
   } else if (!pool.portal.userData.torch) pool.portal.intensity = 0;
   // The failing tube lives in combat rooms. The safe room's lights are steady.
   if (flicker.fixture) flicker.fixture.diffMat.emissiveIntensity = nightDark(flicker.fixture.room) ? 0 : CONFIG.light.panelEmissive;
-  flicker.fixture = cur.kind === 'safe' || dark ? null : { room: cur, diffMat: cur.troffers[1].diffMat, rect: pool.rects[1], spot: pool.main[1] };
+  flicker.fixture = cur.kind === 'safe' || dark || cur.troffers[1].out ? null : { room: cur, diffMat: cur.troffers[1].diffMat, rect: pool.rects[1], spot: pool.main[1] };   // step 87: not a dead tube
   dirtyShadows();
 }
 
@@ -12444,6 +12448,7 @@ function fragBlast(P, inHand) {
   blastSparks(P, 46);
   nadeSound('frag', P);
   enemiesHear(P);
+  fixturesBlast(P, 1);                     // step 87: the tubes stutter, the fittings shed dust
   // Dust and smoke that hang in the room, a scorch on the floor.
   const H = CONFIG.polish.haze;
   _nd.d.set(0, 1, 0);
@@ -12523,6 +12528,7 @@ function flashBlast(P, inHand) {
   hazeEmit(P, _nd.d, { n: 12, c: [0.74, 0.74, 0.72], a: 0.38, sp: [0.3, 1.4], life: [4, 8], size: [0.06, 0.11], grow: 0.35, drag: 2.2, buoy: 0.05 });
   nadeSound('bang', P);
   enemiesHear(P);
+  fixturesBlast(P, 0.6);                   // step 87
   // You: blinded by how directly you were looking and how close; deafened even through a wall.
   camera.getWorldPosition(_nd.o); camera.getWorldDirection(_nd.d);
   const r = _nd.o.distanceTo(P), los = clearLine(P, _nd.o, 0.05);
@@ -14372,6 +14378,16 @@ function surfaceOfProp(p) {
   if (p.item) return 'metal';
   return { 'ammo can': 'metal', 'steel pipe': 'metal', 'concrete block': 'concrete', 'two-by-four': 'wood', 'small crate': 'wood', board: 'wood', 'drywall chunk': 'plaster', table: 'wood', 'cardboard box': 'wood', 'office chair': 'wood', 'glass bottle': 'glass', 'jerry can': 'metal', 'paint tin': 'metal', 'cardboard flap': 'wood' }[p.name] || 'metal';
 }
+// Step 87: shoot-out tubes. A round through a diffuser kills that fitting for the rest of the run (room memory tOut): dark
+// diffuser, an arc on the muzzle-pool light (no new light), sparks, shards, phosphor powder, a pop. assignLights skips a dead
+// tube (its pool spot / area light go dark, the failing-tube flicker leaves it), the room's fill falls toward fixtures.amb.
+// Near misses, housing hits and grenades make the live tubes stutter (fixJolt) and shake dust out of the fittings.
+const FIX_ON = !/[?&]fixtures=off\b/.test(location.search) && CONFIG.polish.fixtures.on;
+const FIXJ = { amb: 1, sfxAt: 0, room: null }, _fxP = new THREE.Vector3(), _fxQ = new THREE.Vector3(), _fxDN = new THREE.Vector3(0, -1, 0), FIX_ARC = [0.7, 0.82, 1];
+const FIX_FLAKE = { c: [0.55, 0.54, 0.5], a: 0.5, sp: [0.05, 0.3], life: [1.2, 2.4], size: [0.003, 0.007], grow: 0, drag: 4, grav: 1.2 };   // sifts, never reaches the floor
+const FIX_PUFF = { n: 6, c: [0.9, 0.9, 0.88], a: 0.3, sp: [0.1, 0.5], life: [2, 4], size: [0.04, 0.08], grow: 0.25, drag: 2.4, buoy: -0.01 };   // phosphor powder
+const FIX_SHARD = { c: [0.92, 0.92, 0.9], a: 0.85, sp: [0.3, 1.3], life: [1.8, 2.8], size: [0.005, 0.011], grow: 0, drag: 0.4, grav: 9.8 };   // diffuser pieces, they bounce
+const FIX_SPARK = { c: [5, 5.6, 7], a: 1, sp: [1, 4], life: [0.2, 0.5], size: [0.003, 0.004], grow: 0, drag: 0.6, grav: 9.8 };   // blue-white, self-lit (over 1.5)
 function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover (step 6)
   const toi = hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi;
   _fp.set(_rapRay.origin.x + dir.x * toi, _rapRay.origin.y + dir.y * toi, _rapRay.origin.z + dir.z * toi);
@@ -14396,9 +14412,132 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   }
   const info = colliderInfo.get(h);
   if (info) {
+    if (FIX_ON && _hn.y < -0.7 && fixtureShot(info.room, _fp, dir)) return;   // step 87: a round into a troffer
     addRoomHole(info.room, info.kind, _fp, _hn, true);
     impactFx(info.kind, _fp, _hn);
   }
+}
+// Step 87: P = where the round met the ceiling. True when a fitting took it (no plaster hole); a near miss only jolts.
+function fixtureShot(room, P, dir) {
+  const F = CONFIG.polish.fixtures;
+  if (!room.active || !room.troffers || dir.y < 0.05 || (room.kind === 'safe' && !F.safe)) return false;
+  _fxP.copy(P).addScaledVector(dir, -0.0385 / dir.y);              // back down to the diffuser plane
+  const lx = rLX(room, _fxP.x), lz = rLZ(room, _fxP.z), ly = _fxP.y - room.origin.y;
+  for (let i = 0; i < room.troffers.length; i++) {
+    const tr = room.troffers[i];
+    if (Math.abs(ly - ((tr.y !== undefined ? tr.y : room.h) - 0.0385)) > 0.08) continue;   // a pendant below: the round passed it
+    const dx = Math.abs(lx - tr.x), dz = Math.abs(lz - tr.z);
+    if (dx < 0.28 && dz < 0.58) {                                  // the diffuser
+      if (tr.out) { addRoomHole(room, 'metal', _fxP, _fxDN, true); impactFx('metal', _fxP, _fxDN); }
+      else fixtureKill(room, i, tr);
+      return true;
+    }
+    if (dx < 0.31 && dz < 0.61) {                                  // the housing rim
+      addRoomHole(room, 'metal', _fxP, _fxDN, true); impactFx('metal', _fxP, _fxDN);
+      fixJolt(room, tr, F.jolt[0]); fixDust(room, tr, 2);
+      return true;
+    }
+    if (dx < 0.31 + F.nearR && dz < 0.61 + F.nearR) { fixJolt(room, tr, F.jolt[0] * 0.7); fixDust(room, tr, 1); }   // near miss: the plaster still takes the hole
+  }
+  return false;
+}
+function fixtureKill(room, i, tr) {
+  tr.out = true; tr.jt = 0;
+  const m = roomMem(room); (m.tOut || (m.tOut = [])).push(i);
+  if (flicker.fixture && flicker.fixture.diffMat === tr.diffMat) flicker.fixture = null;   // before pool.key: assignLights relights the old flicker tube
+  tr.diffMat.emissiveIntensity = 0;
+  addRoomHole(room, 'metal', _fxP, _fxDN, true);
+  impactFx('metal', _fxP, _fxDN); impactFx('glass', _fxP, _fxDN);   // metal first: impactSound's 0.035 s gate lets one voice through
+  hazeEmit(_fxP, _fxDN, FIX_PUFF);
+  fixShards(_fxP, 6, FIX_SHARD);
+  const live = !nightDark(room);                                   // no power: no arc, no ballast
+  if (live) fixShards(_fxP, 6, FIX_SPARK);
+  if (audio.ctx && audio.noise && audio.ctx.currentTime - FIXJ.sfxAt > 0.05) { FIXJ.sfxAt = audio.ctx.currentTime; soundAt(_fxP, live ? fixSfxLive : fixSfxDead); }
+  if (live) {
+    const at = _fxP.clone();
+    P10.pending.push({ at: P10.time + 0.06, fn: () => fixArc(at) });
+    if (Math.random() < 0.5) P10.pending.push({ at: P10.time + 0.18, fn: () => fixArc(at) });   // it sputters once more
+  }
+  if (room === stream.current || room === pool.portalRoom) pool.key = '';
+}
+function fixArc(at) { if (pool.muzzleT <= 0) blastLight(at, FIX_ARC, 8, 0.035, pool.muzzle.distance); }   // never cuts a muzzle flash; keeps its reach
+// Into the step 5 impact pool, then marked to bounce on the floor (like sparks).
+function fixShards(p, n, o) { const F = WEAPON.fx; fxEmit(p, _fxDN, 0.6, n, o); for (let i = 1; i <= n; i++) F.bounce[(F.next - i + F.n) % F.n] = 1; }
+function fixDust(room, tr, n) {                                    // shaken out along a housing edge (dead fittings too)
+  _fxQ.set(rWX(room, tr.x) + rF(room) * (Math.random() < 0.5 ? -0.31 : 0.31), room.origin.y + (tr.y !== undefined ? tr.y : room.h) - 0.04, rWZ(room, tr.z) + (Math.random() - 0.5) * 1.1);
+  fxEmit(_fxQ, _fxDN, 0.25, n, FIX_FLAKE);
+}
+// Sounds at module scope (soundAt gets no new closure). Never glassSfx in here: a nested soundAt clears audio.dest.
+function fixTinkle(t, g) {                                         // glassSfx's bursts, scaled
+  nBurst(t, 0.05, 'highpass', 5200, 0.9, 0.32 * g, 0.04, 0.25); nBurst(t + 0.01, 0.18, 'bandpass', 3400, 2.2, 0.22 * g, 0.15, 0.3);
+  for (let i = 0; i < 5; i++) nBurst(t + 0.04 + Math.random() * 0.25, 0.03, 'bandpass', 4000 + Math.random() * 3000, 4, 0.07 * g, 0.03, 0.2);
+}
+function fixSfxLive() {
+  const t = audio.ctx.currentTime + 0.003;
+  nBurst(t, 0.04, 'bandpass', 900, 1.4, 0.45, 0.03, 0.4);          // the pop
+  tone(t + 0.005, 120, 55, 0.3, 0.07, 'sawtooth', 0.25);            // the ballast dying
+  nBurst(t + 0.06, 0.03, 'highpass', 2500, 0.7, 0.16, 0.025, 0.2);  // the arc
+  fixTinkle(t + 0.01, 0.8); fixTinkle(t + 0.6, 0.55);               // the diffuser, then its pieces on the floor
+}
+function fixSfxDead() { const t = audio.ctx.currentTime + 0.003; fixTinkle(t + 0.01, 0.8); fixTinkle(t + 0.6, 0.55); }
+// A stutter on a live tube in the room you are in (fixJoltTick plays it).
+function fixJolt(room, tr, dur) {
+  if (tr.out || nightDark(room) || room !== stream.current) return;
+  tr.jt = Math.max(tr.jt || 0, P10.time + dur * (0.8 + Math.random() * 0.5));
+}
+// After updateFlicker: absolute writes (x the flicker when it is that tube). FIXJ.amb = share of the pool light still lit.
+function fixJoltTick() {
+  FIXJ.amb = 1;
+  if (!FIX_ON) return;
+  const cur = stream.current, L = CONFIG.light;
+  if (FIXJ.room && FIXJ.room !== cur) for (const tr of FIXJ.room.troffers || []) if (tr.jt) {   // left mid-stutter: put it back
+    tr.jt = 0; if (!tr.out) tr.diffMat.emissiveIntensity = nightDark(FIXJ.room) ? 0 : L.panelEmissive;
+  }
+  FIXJ.room = cur;
+  if (!cur || !cur.troffers || nightDark(cur)) return;
+  let live = 0, jk = 0;
+  for (let i = 0; i < cur.troffers.length; i++) {
+    const tr = cur.troffers[i];
+    if (i < 2 && !tr.out) live++;
+    if (!tr.jt || tr.out) continue;
+    const fl = flicker.fixture && flicker.fixture.diffMat === tr.diffMat ? flicker.k : 1;
+    const k = P10.time < tr.jt ? (Math.random() < 0.5 ? 0.12 + Math.random() * 0.28 : 0.85 + Math.random() * 0.15) : (tr.jt = 0, 1);
+    tr.diffMat.emissiveIntensity = L.panelEmissive * fl * k;
+    if (i < 2 && !pool.main[i].userData.torch) { pool.main[i].intensity = L.spot * fl * k; pool.rects[i].intensity = L.rect * fl * k; }
+    if (i < 2) jk += 1 - k;
+  }
+  const q = Math.max(0, live - jk) / 2;
+  FIXJ.amb = q < 1 ? mix(CONFIG.polish.fixtures.amb, 1, q) : 1;
+}
+// Share of a room's two pool-lit tubes still alive (nightUpdate's fill, the body cam's gain).
+function fixShare(r) {
+  if (!FIX_ON || !r || !r.troffers || (r.kind === 'safe' && !CONFIG.polish.fixtures.safe)) return 1;
+  return ((r.troffers[0] && r.troffers[0].out ? 0 : 1) + (r.troffers[1] && r.troffers[1].out ? 0 : 1)) / 2;
+}
+// A grenade in the room you are in: tubes near it stutter (s: 1 frag, 0.6 bang), every fitting in reach sheds dust.
+function fixturesBlast(P, s) {
+  const F = CONFIG.polish.fixtures, cur = stream.current;
+  if (!FIX_ON || !cur || !cur.troffers || (cur.kind === 'safe' && !F.safe) || !insideRoom(cur, P.x, P.z, 0, P.y)) return;
+  for (const tr of cur.troffers) {
+    _fxP.set(rWX(cur, tr.x), cur.origin.y + (tr.y !== undefined ? tr.y : cur.h) - 0.04, rWZ(cur, tr.z));
+    const r = _fxP.distanceTo(P);
+    if (r > F.blastR) continue;
+    const k = s * (1 - r / F.blastR);
+    fixJolt(cur, tr, mix(F.jolt[0], F.jolt[1], k));
+    fixDust(cur, tr, 1 + Math.round(5 * k));
+  }
+}
+// weaponsRoomActivated: tubes shot out last visit stay dead (nightApplyRoom runs after and keeps them dark).
+function fixturesRestore(room) {
+  const m = roomMemory.get(memKey(room));
+  if (!m || !m.tOut || !room.troffers) return;
+  for (const i of m.tOut) {
+    const tr = room.troffers[i];
+    if (!tr) continue;
+    tr.out = true; tr.diffMat.emissiveIntensity = 0;
+    if (flicker.fixture && flicker.fixture.diffMat === tr.diffMat) flicker.fixture = null;
+  }
+  pool.key = '';
 }
 
 /* ---------------------------------------------------------------------------
@@ -20216,6 +20355,7 @@ function spawnSafeItems(room) {
 }
 function weaponsRoomActivated(room) {
   restoreRoomHoles(room);
+  fixturesRestore(room);               // step 87: tubes shot out last visit
   if (room.kind === 'safe') {
     spawnSafeItems(room);
     try { wbSpawn(room); } catch (e) { console.warn('step 73: gunsmith bench not built', e); }
@@ -22058,7 +22198,7 @@ function nightPrecompile(on) {
 function nightApplyRoom(room) {
   if (!room || !room.troffers) return;
   const k = nightDark(room) ? 0 : CONFIG.light.panelEmissive;
-  for (const tr of room.troffers) tr.diffMat.emissiveIntensity = k;
+  for (const tr of room.troffers) tr.diffMat.emissiveIntensity = tr.out ? 0 : k;   // step 87: shot-out tubes stay dark
 }
 function nightApplyAll() {
   for (const r of stream.rooms.values()) nightApplyRoom(r);
@@ -22091,7 +22231,8 @@ function nightTorchOf(e, outP, outD) {
 function nightUpdate(dt) {
   const N = CONFIG.night, cur = stream.current;
   // Fill light: your eyes get the dark room's ambient (eased, like adjusting to it).
-  const envT = !MENU.night ? 1 : nightDark(cur) ? N.ambient : N.safeEnv;
+  const fs = nightDark(cur) ? 1 : fixShare(cur);   // step 87: shot-out tubes take the room's fill with them
+  const envT = (!MENU.night ? 1 : nightDark(cur) ? N.ambient : N.safeEnv) * (fs < 1 ? mix(CONFIG.polish.fixtures.amb, 1, fs) : 1);
   NIGHT.env += (envT - NIGHT.env) * (1 - Math.exp(-dt * 2.5));
   scene.environmentIntensity = NIGHT.env;
   if (pool.fill) pool.fill.intensity = CONFIG.light.flatFill * NIGHT.env;   // step 58: the flat fill dims at night too
@@ -23416,7 +23557,7 @@ function updateParticleLight(t) {
   U.uTime.value = t % 3600;
   U.uHalfH.value = renderer.xr.isPresenting ? 900 * perf.xr.scale : (window.innerHeight * renderer.getPixelRatio()) / 2;
   headWorld(U.uCam.value);
-  U.uAmb.value = A.lightAmb * (flicker.fixture ? flicker.k : 1) * NIGHT.ambK;   // step 11: dark rooms light nothing
+  U.uAmb.value = A.lightAmb * (flicker.fixture ? flicker.k : 1) * NIGHT.ambK * FIXJ.amb;   // step 11: dark rooms light nothing; step 87: nor dead tubes
   const on = flashlight.intensity > 0;
   U.uLOn.value = on ? 1 : 0;
   if (on) {
@@ -28133,6 +28274,7 @@ function tick(timeMs) {
   updateCasings();       // step 5: brass and hulls
   updateImpactFx(dtW);
   updateFlicker(t);
+  fixJoltTick();         // step 87: shot-at tubes stutter (after the flicker, absolute writes)
   polishUpdate(dtW, t);  // step 10: haze, blood pools, contact shadows, particle light, listener, ears, boots
   handsUpdate(dt, t);    // step 13: hands follow the controllers / tracked joints / the gun they hold
   bodyArms(dt);          // step 14: shoulders and arms reach the hands (empty hands hang)
@@ -29479,7 +29621,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore };
 </script>
 </body>
 </html>
