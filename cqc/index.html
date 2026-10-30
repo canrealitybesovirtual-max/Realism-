@@ -8074,10 +8074,11 @@ function updateDoorsPost(dt = 0) {
     door.angle = a;
     if (dt > 0) {                                                // step 86: the latch drops in; the leaf hits its stop
       const ws = Math.abs(a - door.prevAngle) / dt, aa = Math.abs(a), lim = (a > 0 ? CONFIG.doorPhys.maxOpen : CONFIG.doorPhys.maxBack) - 0.03;
+      if (aa > 0.05 && !door.shutArm && ws > 0.05) doorSfx(door, 'open', ws);   // the leaf leaves the frame: the recorded creak
       if (aa > 0.05) door.shutArm = true;
       else if (door.shutArm && aa <= 0.012 && ws < 0.06) { door.shutArm = false; doorSfx(door, 'shut', ws); if (door.holder) pulse(door.holder, 0.3 + 0.3 * clamp(ws / 0.06), 24); }   // settling home, not swinging through 0
       if (aa > lim && Math.abs(door.prevAngle) <= lim && ws > 0.9) { doorSfx(door, 'stop', ws); if (door.holder) pulse(door.holder, 0.6, 40); }
-      if (door.creak && ck) {                                    // step 88: a dry hinge creaks as the leaf swings (not a fling, not near shut)
+      if (door.creak && ck && !(DOOR_REC.open.length && performance.now() / 1000 < (door.recUntil || 0))) {                                    // step 88: a dry hinge creaks as the leaf swings (not a fling, not near shut)
         door.crT += dt;
         if (ws < 0.08) door.crA = Math.max(door.crA, CREAK.start);   // still: it breaks away with a creak once it moves again
         else {
@@ -25763,6 +25764,7 @@ function bakeSounds(ctx) {
   loadShotRecordings(ctx);                                         // step 81
   loadHandlingRecordings(ctx);                                     // step 99
   ambBedLoad(ctx);                                                 // step 101
+  doorRecLoad(ctx);                                                // user's metal door recording
   for (const type of ['pistol', 'smg', 'shotgun', 'akm', 'fn509', 'frag', 'bang', 'awp']) for (let v = 0; v < ((type === 'frag' || type === 'bang') ? 2 : 3); v++) {   // step 23
     const sd = seed++;
     if (type === 'smg' && smgRecorded) continue;
@@ -28221,6 +28223,21 @@ const AMB_BED = {
   hvac: { k: 0.22, lp: 1100 }
 };
 const _abP = new THREE.Vector3();
+// The user's metal door recording (freesound 528808, garuda1982): opening creaks and shut slams, cut by hand from sounds/src.
+const DOOR_REC = { open: [], shut: [], one: [null], g: 0, rate: 1, last: { open: -1, shut: -1 } };
+function doorRecLoad(ctx) {
+  if (/[?&]doorrec=off\b/.test(location.search)) return;
+  for (const [k, n] of [['open', 3], ['shut', 3]]) for (let i = 1; i <= n; i++)
+    fetch(`./sounds/door${k[0].toUpperCase() + k.slice(1)}${i}.mp3`).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b))
+      .then((buf) => { if (buf) DOOR_REC[k].push(buf); }).catch(() => { /* synth stays */ });
+}
+function doorRecPick(kind, g, rate) {                              // a variant never twice running
+  const L = DOOR_REC[kind], R = DOOR_REC; if (!L.length) return false;
+  let i = (Math.random() * L.length) | 0; if (L.length > 1 && i === R.last[kind]) i = (i + 1) % L.length;
+  R.last[kind] = i; R.one[0] = L[i]; R.g = g; R.rate = rate;
+  return true;
+}
+function doorRecPlay() { const R = DOOR_REC; if (R.one[0]) playBaked(R.one, R.g, 0.35, R.rate); }
 function ambBedLoad(ctx) {
   const B = AMB_BED;
   if (B.off || B.loading) return; B.loading = true;
@@ -32421,6 +32438,16 @@ function doorSfx(door, kind, k = 0) {
     doorHinge(door, _h2);
     _dsP.set(_h2.x, w.top - 0.35, _h2.y);
     soundAt(_dsP, creakPlay);
+    return;
+  }
+  if (kind === 'open' || (kind === 'shut' && DOOR_REC.shut.length)) {   // the user's recording: creak at the hinge, slam at the latch
+    const o = kind === 'open', sp = o ? clamp(k / 0.8) : clamp(k / 0.06);
+    if (!doorRecPick(kind, G * (o ? 0.45 + 0.4 * sp : 0.3 + 0.5 * sp), (door.crP || 1) * (0.95 + 0.1 * Math.random()))) return;
+    if (o) door.recUntil = performance.now() / 1000 + DOOR_REC.one[0].duration;
+    doorHinge(door, _h2);
+    if (o) _dsP.set(_h2.x, w.top - 0.35, _h2.y);
+    else _dsP.set(2 * w.x - _h2.x, w.top - CONFIG.door.height + 1.0, 2 * w.z - _h2.y);
+    soundAt(_dsP, doorRecPlay);
     return;
   }
   doorHinge(door, _h2);                                          // latch edge = 2 x leaf centre - hinge, at lever height
