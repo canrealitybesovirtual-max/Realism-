@@ -9604,7 +9604,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyU' && !e.repeat) detailToggle();        // step 25: smart detail
   if (e.code === 'KeyI' && !e.repeat) deskMed();   // step 79: an auto-injector (I)
   let bBench = false;                                       // step 89: B at the bench is the bench only (it also cycled the graphics mode)
-  if (e.code === 'KeyB' && !e.repeat && WB.room && WB.room.active) { headWorld(_wbV); const o = WB.room.origin; if (WB.open || Math.hypot(_wbV.x - o.x - WB.vise.x, _wbV.z - o.z - WB.vise.z) < 2) { wbToggle(); bBench = true; } }   // step 73
+  if (e.code === 'KeyB' && !e.repeat && WB.room && WB.room.active) { headWorld(_wbV); if (WB.open || Math.hypot(_wbV.x - rWX(WB.room, WB.vise.x), _wbV.z - rWZ(WB.room, WB.vise.z)) < 2) { wbToggle(); bBench = true; } }   // step 73 (sweep 2: rWX / rWZ, right in a turned safe room)
   if (e.code === 'KeyE' && !e.repeat) { if (!termDeskPress()) deskToggleGrab(); }   // step 11: E presses the terminal when aimed at it
   if (e.code === 'KeyR' && !e.repeat) { if (!deskReload()) props.forEach(resetProp); }
   if (e.code === 'KeyV' && !e.repeat) deskRack();
@@ -16161,11 +16161,15 @@ function heatList(o) { if (!o.hOn) { o.hOn = true; HEAT.list.push(o); } }
 // The gun's muzzle devices, nearest the barrel first; rebuilt only when its parts change.
 function heatChain(g) {
   const key = (g.atts ? g.atts.length : 0) * 64 + (g.muzN || 0) * 2 + (g.sup ? 1 : 0);
-  if (g.hc && g.hcKey === key) return g.hc;
+  if (g.hc && g.hcKey === key && heatChainOn(g, g.hc)) return g.hc;   // sweep 2: a swap keeps the counts (MD3 for SB100): check each is still on g
   const c = g.hc || (g.hc = []);
   g.hcKey = key; c.length = 0;
   if (MUZ.on) { for (const p of muzChain(g)) c.push(p); } else if (g.sup && g.sup.prop) c.push(g.sup.prop);
   return c;
+}
+function heatChainOn(g, c) {
+  for (let i = 0; i < c.length; i++) { const p = c[i], it = p.item; if (p.removing || (it.gun !== g && !(it.stuck && it.stuck.g === g))) return false; }
+  return true;
 }
 // fireGun: this round's heat into the barrel and down the chain.
 function heatShot(g, now) {
@@ -18005,6 +18009,7 @@ function safeRestock(room) {
   let n = 0;
   try { n += wbRestock(room); } catch (e) { console.warn('step 98: bench not restocked', e); }
   try { n += gunLockerRestock(room); } catch (e) { console.warn('step 98: gun locker not restocked', e); }
+  try { wearSpawn(room, true); extKitSpawn(room, true); } catch (e) { console.warn('restart coat rack fix: locker / kit cards not placed', e); }   // the set comes to the safe room you are in
   return n;
 }
 
@@ -18185,9 +18190,22 @@ function wearTake(p) {
   sfx('pouch');
   wearSave(); wearApply();
 }
+// Restart coat rack fix: the gloves and uniforms (like the bench kit cards) are one set that belongs to one safe room. A new
+// safe room is built while the old one is still live, and the set (still in the old room) made it skip its own: lockers
+// came up empty, and a set left in another room stood where that room had put it. Now the set is taken out of the room
+// it was in and made again in this one (activation, entering, respawn / restart, new run), unless you stand in the old one.
+function safeSetHere(list, owner, room, entered) {
+  if (owner === room && list.length && list.every((p) => p.inWorld && !p.removing)) return true;            // already here
+  return !entered && owner && owner !== room && owner.active && owner === stream.current && list.some((p) => p.inWorld && !p.removing);   // you are in the old one: it moves when you enter this one
+}
+function safeSetClear(list, free) { for (const p of list) { if (!p.removing) removeProp(p); if (!p.freed) { p.freed = true; free(p); } } list.length = 0; }   // free: its own GPU buffers (made per set; also a set its room took away)
+function wearFree(p) {                                             // all its geometry and materials are its own but the hanger steel
+  p.root.traverse((o) => { if (!o.isMesh) return; DISPOSE_Q.push(o.geometry); if (o.material !== KIT.mat.steel) { DISPOSE_Q.push(o.material); if (o.material.map) DISPOSE_Q.push(o.material.map); } });
+}
+function extFree(p) { const it = p.item; DISPOSE_Q.push(it.tag.geometry, it.tagOn, it.tagOn.map, it.tagOff, it.tagOff.map); }   // the card; the magazine / sear models are shared
 // The locker and what is in it (room-local: back to the left wall, open toward +x).
-function wearSpawn(room) {
-  WEAR.room = room;
+function wearSpawn(room, entered = false) {
+  if (!room || !room.active || room.kind !== 'safe') return;
   const o = room.origin, X = -room.w / 2, Z = -0.5, Wd = 0.84, D = 0.5, Ht = 1.92;
   if (!room.wearBuilt) {
     room.wearBuilt = true;
@@ -18201,6 +18219,7 @@ function wearSpawn(room) {
     const rail = mesh(placed(new THREE.CylinderGeometry(0.008, 0.008, Wd - 0.03, 12), D * 0.5, 1.5, 0, Math.PI / 2), KIT.mat.steel);
     const plate = mesh(new THREE.PlaneGeometry(0.2, 0.05), new THREE.MeshStandardMaterial({ map: canvasTex(256, (c, S) => { c.fillStyle = '#d8d6cc'; c.fillRect(0, 0, S, S); c.fillStyle = '#1a1a1a'; c.font = 'bold 54px sans-serif'; c.textAlign = 'center'; c.fillText('PERSONAL', S / 2, S / 2 + 18); }), roughness: 0.6 }));
     plate.scale.y = 1; plate.position.set(D + 0.002, Ht - 0.05, 0); plate.rotation.y = Math.PI / 2;
+    room.ownGeo.push(cab.geometry, rail.geometry, plate.geometry); room.ownMat.push(plate.material, plate.material.map);   // sweep 2: freed with the room (were kept for good)
     const g = new THREE.Group(); g.add(cab, rail, plate);
     g.position.set(X, 0, Z); room.group.add(g);
     // a solid body: you can't walk into it (the things inside are reached with your hands, they don't collide)
@@ -18209,8 +18228,9 @@ function wearSpawn(room) {
     room.wearBody = body;
     if (room.walkLocal) { room.walkLocal.push({ x: X + D / 2, z: Z, a: 0, hx: D / 2, hz: Wd / 2, top: Ht }); rebuildWalk(); }   // you walk round it, not through it
   }
-  if (WEAR.items.some((p) => p.inWorld)) { wearApply(); return; }
-  WEAR.items = [];
+  if (safeSetHere(WEAR.items, WEAR.room, room, entered)) { wearApply(); return; }
+  safeSetClear(WEAR.items, wearFree);
+  WEAR.room = room;
   const put = (root, sub, label, lx, ly, lz, ry, half, center) => {
     const p = makeItem(root, { kind: 'wear', type: sub, sub, label }, { mass: 0.3, half, center: center || new THREE.Vector3() });
     _wbQ.setFromAxisAngle(Y_AXIS, ry + rYaw(room));
@@ -18255,7 +18275,7 @@ function wearSpawn(room) {
  *  stay as they are); take it again to go back. The auto sear fits every Glock 17:
  *  full auto at ~1200 rounds a minute (the back plate shows it). Kept between visits.
  * ========================================================================= */
-const EXT = { mag: { g17: false, m4: false, akmn: false }, sw: false, key: 'cqc.ext.v1', items: [], base: {} };
+const EXT = { mag: { g17: false, m4: false, akmn: false }, sw: false, key: 'cqc.ext.v1', items: [], room: null, base: {} };
 const EXT_CAP = { g17: 33, m4: 60, akmn: 40 }, EXT_K = { g17: 1.75, m4: 1.55, akmn: 1.3 };
 try { const o = JSON.parse(localStorage.getItem(EXT.key) || 'null'); if (o) { for (const k of Object.keys(EXT.mag)) EXT.mag[k] = !!(o.mag && o.mag[k]); EXT.sw = !!o.sw; } } catch (e) { /* defaults */ }
 function extSave() { try { localStorage.setItem(EXT.key, JSON.stringify({ mag: EXT.mag, sw: EXT.sw })); } catch (e) { /* */ } }
@@ -18319,10 +18339,11 @@ function extTags() {
     if (it.tag) it.tag.material = on ? it.tagOn : it.tagOff;
   }
 }
-function extKitSpawn(room) {
-  if (EXT.items.some((p) => p.inWorld)) return;
-  EXT.items = [];
-  const o = room.origin;
+function extKitSpawn(room, entered = false) {
+  if (!room || !room.active || room.kind !== 'safe') return;
+  if (safeSetHere(EXT.items, EXT.room, room, entered)) return;      // restart coat rack fix: one set, in this safe room
+  safeSetClear(EXT.items, extFree);
+  EXT.room = room;
   const card = (txt, on) => new THREE.MeshStandardMaterial({ roughness: 0.7, map: canvasTex(256, (c, S) => {
     c.fillStyle = on ? '#1d5a2c' : '#e4e0d4'; c.fillRect(0, 0, S, S); c.fillStyle = on ? '#e8ffe8' : '#1a1a1a'; c.textAlign = 'center';
     c.font = 'bold 40px sans-serif'; c.fillText(txt, S / 2, S / 2 - 6); c.font = '28px sans-serif'; c.fillText(on ? 'FITTED · tap to remove' : 'tap to fit', S / 2, S / 2 + 40);
@@ -19915,14 +19936,17 @@ function emittingGun() {
 const LMNT = { hid: null };
 function shownInScene(o) { for (; o; o = o.parent) { if (!o.visible) return false; if (o === scene) return true; } return false; }
 function lightMountCheck() {
-  if (flashlight.parent === camera ? LMNT.hid !== null : !shownInScene(flashlight)) updateLightMount();
+  if (flashlight.parent !== camera) { if (!shownInScene(flashlight)) updateLightMount(); return; }
+  const g = LMNT.hid;                                              // sweep 2: parked: re-mount only when something changed (was every frame, two arrays and a closure)
+  if (g && (!g.light || !g.light.on || g.prop.removing || shownInScene(g.model) || flashlightOn !== lmInHand(g))) updateLightMount();
 }
+function lmInHand(g) { for (let i = 0; i < vrHands.length; i++) if (gunOf(vrHands[i]) === g) return true; return gunOf(deskHand) === g; }
 function updateLightMount() {
   const g = emittingGun();
   LMNT.hid = null;
   if (g && !shownInScene(g.model)) {
     LMNT.hid = g;
-    const inHand = vrHands.some((h) => gunOf(h) === g) || gunOf(deskHand) === g;
+    const inHand = lmInHand(g);
     if (flashlight.parent !== camera) mountFlashlight(camera, _lmo.set(0.18, -0.16, -0.05));
     if (flashlightOn !== inHand) setFlashlight(inHand);
     return;
@@ -26499,7 +26523,8 @@ function watchUpdate() {
   }
   WATCH.group.visible = LH ? LH.root.visible : true; WATCH.hand = left;
   if (WATCH.open) watchPlacePanel();
-  if (new Date().getMinutes() !== WATCH.minute) watchDrawFace();
+  const nowMs = performance.now();                                   // sweep 2: the clock read once a second, not a Date every frame
+  if (!(nowMs < WATCH.minChk)) { WATCH.minChk = nowMs + 1000; if (new Date().getMinutes() !== WATCH.minute) watchDrawFace(); }
   watchHands();                                                      // step 76
   if (!right || !right.ctrl || right.prop) { if (WATCH.open && WATCH.dirty) watchDrawPanel(); return; }
   const C = CONFIG.mods.watch, [pw, ph] = C.panel;
