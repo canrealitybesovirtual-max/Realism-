@@ -2,7 +2,7 @@
 // Grabs every CQC gun in many ways with emulated Quest controllers and reports roles, grip state, jumps, jitter, firing.
 const {chromium}=require('playwright');const fs=require('fs');
 const IWER=fs.readFileSync('cqcdeps/node_modules/iwer/build/iwer.min.js','utf8');
-const OUT=process.argv[2]||'lab', GUNS=(process.argv[3]||'g17,m1911,m4a1s,akmn,m4a4,awp').split(','), ONLY=process.argv[4]?process.argv[4].split(','):null, SHOTS=process.env.SHOTS==='1';
+const OUT=process.argv[2]||'lab', GUNS=(process.argv[3]||'g17,m1911,m4a1s,akmn,awp').split(','), ONLY=process.argv[4]?process.argv[4].split(','):null, SHOTS=process.env.SHOTS==='1';
 fs.mkdirSync(OUT,{recursive:true});
 (async()=>{const b=await chromium.launch({args:['--use-gl=swiftshader','--enable-webgl','--ignore-gpu-blocklist']});const p=await b.newPage({viewport:{width:900,height:700}});
 const errs=[];p.on('pageerror',e=>errs.push('PE '+e.message));p.on('console',m=>{if(m.type()==='error'||/step 6[0-9]|off/.test(m.text()))errs.push(m.type()+' '+m.text().slice(0,160))});
