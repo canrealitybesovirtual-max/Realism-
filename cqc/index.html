@@ -7283,12 +7283,20 @@ function activateRoom(room) {
     for (let i = 0; i + 1 < xs.length; i++) {
       const x0 = Math.max(L0, xs[i]), x1 = Math.min(R0, xs[i + 1]), xm = (x0 + x1) / 2;
       if (x1 - x0 < 0.005) continue;
-      const op = ops.find(([x]) => xm > x - D.width / 2 && xm < x + D.width / 2);
-      if (!op) { box((x1 - x0) / 2, h / 2, T / 2, xm, h / 2, zc); walk(xm, zc, (x1 - x0) / 2, T / 2); continue; }
-      const y0 = op[1], y1 = y0 + D.height;
-      box((x1 - x0) / 2, (h - y1) / 2, T / 2, xm, (h + y1) / 2, zc);
-      if (y0 > 0.01) { box((x1 - x0) / 2, y0 / 2, T / 2, xm, y0 / 2, zc, 0.6, 0, 'concrete'); walk(xm, zc, (x1 - x0) / 2, T / 2, h, 0, { lvTop: y0 - 0.3 }); }
-      else walk(xm, zc, (x1 - x0) / 2, T / 2, h, 0, { bot: y1 + 0.2 });   // the wall over the low doorway, for anyone on the floor above
+      // Stair door fix: the two doorways often overlap in x (both are rolled anywhere along the wall); a column inside
+      // both keeps both openings. Before, only the first (the entry) counted, so going down the overlap was solid wall
+      // (collider + walk box) across the lower doorway, and going up across the upper one.
+      const sills = ops.filter(([x]) => xm > x - D.width / 2 && xm < x + D.width / 2).map(([, y]) => y).sort((a, b) => a - b);
+      if (!sills.length) { box((x1 - x0) / 2, h / 2, T / 2, xm, h / 2, zc); walk(xm, zc, (x1 - x0) / 2, T / 2); continue; }
+      let yb = 0;                                                  // solid from yb up to the next sill, then above the last doorway
+      for (const y0 of sills) {
+        if (y0 - yb > 0.01) box((x1 - x0) / 2, (y0 - yb) / 2, T / 2, xm, (yb + y0) / 2, zc, yb < 0.01 ? 0.6 : 0.5, 0, yb < 0.01 ? 'concrete' : 'plaster');
+        yb = y0 + D.height;
+      }
+      box((x1 - x0) / 2, (h - yb) / 2, T / 2, xm, (h + yb) / 2, zc);
+      const lowOpen = sills[0] <= 0.01, highOpen = sills[sills.length - 1] > 0.01;
+      if (!lowOpen) walk(xm, zc, (x1 - x0) / 2, T / 2, h, 0, { lvTop: sills[0] - 0.3 });                   // under the raised doorway, for the floor below
+      else if (!highOpen) walk(xm, zc, (x1 - x0) / 2, T / 2, h, 0, { bot: sills[0] + D.height + 0.2 });  // the wall over the low doorway, for anyone on the floor above
     }
   } else {
     endWall(-d / 2 - T / 2, room.exitX, room.exitY);
@@ -7366,7 +7374,7 @@ function activateRoom(room) {
     const pz = d / 2 + 0.03;
     room.plugCollider = box(D.width / 2, D.height / 2, 0.0225, room.entryX, room.entryY + D.height / 2, pz, 0.5, 0, 'metal');
     room.plugCollider.setEnabled(false);
-    room.plugWalk = { x: room.entryX, z: pz, a: 0, hx: D.width / 2, hz: 0.033, top: room.entryY + D.height };
+    room.plugWalk = { x: room.entryX, z: pz, a: 0, hx: D.width / 2, hz: 0.033, top: room.entryY + D.height, bot: room.entryY };   // bot: a stair's raised entry plug never walls the floor below
   }
   activateDoor(room);
   doorByCollider.set(room.door.colHandle, room.door);
@@ -9627,15 +9635,16 @@ function pushOutOf(col, p, radius) {
   p.z = col.z - lx * col.s + lz * col.c;
   return depth;
 }
+// Does a walk box hold for someone standing on floor fy? One rule for your body, your head and the men.
+function colOnFloor(col, fy) {
+  if (col.bot !== undefined && fy + 1.2 < col.bot) return false;      // step 83: a rail or a room on the floor above you
+  if (col.lvTop !== undefined && fy > col.lvTop) return false;        // ...or a wall of the floor below
+  return col.top > fy + 0.02;                                          // step 89: all of it under your feet (the room below a U well's upper door blocked that doorway)
+}
 function resolveBody(p) {
   const r = CONFIG.player.radius, fy = level.floor;
   for (let pass = 0; pass < 3; pass++) {     // several passes settle corners between furniture, walls and a door
-    for (const col of colliders) {
-      if (col.bot !== undefined && fy + 1.2 < col.bot) continue;       // step 83: a rail on the floor above you
-      if (col.lvTop !== undefined && fy > col.lvTop) continue;         // ...or a wall of the floor below
-      if (col.top <= fy + 0.02) continue;                              // step 89: all of it under your feet (the room below a U well's upper door blocked that doorway)
-      pushOutOf(col, p, r);
-    }
+    for (const col of colliders) if (colOnFloor(col, fy)) pushOutOf(col, p, r);
   }
 }
 const _probe = new THREE.Vector3(), _probe2 = new THREE.Vector3();
@@ -9645,7 +9654,7 @@ function headPenetration(head) {
   const cr = stream.current;                 // step 12: the ceiling of the room you're in (stairwells are tall)
   let depth = Math.max(0, r - ((cr ? cr.origin.y + cr.h : CONFIG.room.h) - head.y));
   for (const col of colliders) {
-    if (head.y > col.top + r) continue;
+    if (head.y > col.top + r || !colOnFloor(col, level.floor)) continue;   // stair door fix: the floor rule too (the box over a U well's low doorway, the room above, blacked out the doorframe)
     _probe2.copy(head);
     depth = Math.max(depth, pushOutOf(col, _probe2, r));
   }
@@ -21258,7 +21267,7 @@ function enemyMove(e, dt) {
   const er = e.room, r = C.radius;
   _mp.x = rWX(er, e.pos.x); _mp.z = rWZ(er, e.pos.y);
   for (let pass = 0; pass < 2; pass++) {
-    for (const col of colliders) pushOutOf(col, _mp, r);
+    for (const col of colliders) if (colOnFloor(col, er.origin.y)) pushOutOf(col, _mp, r);   // not the walls of a wing over or under his room
     for (const b of tableBoxes(e.room)) pushOutOf({ x: rWX(er, b.x), z: rWZ(er, b.z), c: 1, s: 0, hx: b.hx, hz: b.hz }, _mp, r);
   }
   // Step 9: teammates don't walk through each other.
@@ -21672,9 +21681,15 @@ function updatePlayerVitals(dt, now) {
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
 function respawnPlayer() {
-  // Step 54.1: the newest live safe room; the plan is pulled back to it so it stays the safe room.
+  // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
+  // pulled back to it so it stays the safe room.
+  const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
   let safe = null;
-  for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active && (!safe || r.slot > safe.slot)) safe = r;
+  for (const r of stream.rooms.values()) {
+    if (r.kind !== 'safe' || !r.active) continue;
+    if (r.slot === planSafe) { safe = r; break; }
+    if (!safe || r.slot > safe.slot) safe = r;
+  }
   const nowR = performance.now() / 1000;
   if (!safe && !playerState.waitFrom) playerState.waitFrom = nowR;
   if (!safe && nowR - playerState.waitFrom < 8) { playerState.deadT = 2.2; return; }   // still building: stay down (screen dark) and try next frame, 8 s at most
@@ -21682,6 +21697,15 @@ function respawnPlayer() {
   if (safe) stream.frontier = Math.min(stream.frontier, safe.slot + CONFIG.stream.safeBehind);
   if (safe) {
     for (const h of [deskHand, ...vrHands]) if (h && h.prop && !gunOf(h)) release(h, new THREE.Vector3());
+    // Respawn fix: only x and z were moved, so dying on another floor (a U-turn wing runs over / under the last; the
+    // live safe room can be the one a stairwell back) left you at your old height, in the room above or below it.
+    // Stand on its floor, standing up, facing into it (local -z, toward its exit), then put your head on the spot.
+    stance.crouchOn = false; xrState.crouchOn = false; xrState.crouchCur = 0;
+    level.floor = safe.origin.y; level.flat = true;
+    applyHeight();
+    rig.updateMatrixWorld(true);
+    if (renderer.xr.isPresenting) rotateRigAroundHead(rYaw(safe) - yawOf(camera));
+    else { look.yaw = rYaw(safe); look.pitch = 0; applyLook(); }
     rig.updateMatrixWorld(true);
     headWorld(_pr.h);
     const s = CONFIG.player.start;
