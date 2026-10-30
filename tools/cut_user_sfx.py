@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """CQC step 99: cut the user's gun handling / purchase recordings (cqc/sounds/src/) into short game sounds.
 
-Also cuts the pick-up takes (pickup1-9) and the coat strides (cloth1-7) added later in step 99.
+Also cuts the pick-up takes (pickup1-9) and the coat strides (cloth1-7) added later in step 99, and
+(step 101) the second batch: two Glock 17 reloads (glk*), pistol dry fire clicks and trigger reset ticks
+(dry*, dryReset*), an M4 magazine dropped on a table (magDrop*), button clicks (btn*) and the server room
+bed (ambServer: one seamless loop, see LOOPS).
 
 Run from the repository root:  python3 tools/cut_user_sfx.py
 Needs ffmpeg and numpy. Writes cqc/sounds/<name>.mp3 (mono, 44.1 kHz, 128 kbit/s).
@@ -31,6 +34,12 @@ SUP = 'pistol_suppressed_855656.wav'    # serutonin-deprivd: suppressed handgun,
 BUY = 'cash_register_184438.wav'        # capslok: cash register
 PICK = 'pickup_762911.wav'              # ienba: game pick-up (9 takes of a hand taking something; noisy, not a tonal blip)
 COAT = 'coat_sprint_369604.wav'         # evanboyerman: heavy coat sprinting foley (one rustle lump per stride)
+GLK1 = 'glock17_reload_121766.wav'      # kno-sfx: Glock 17 reload (mag out, in, slide release, rack)
+GLK2 = 'glock17_reload2_121765.wav'     # kno-sfx: Glock 17 reload 2 (mag out, in, a palm tap, rack)
+DRY = 'pistol_dry_fire_486226.wav'      # ruben_uitenweerde: pistols dry-fired (clicks, trigger / slide resets)
+MDROP = 'm4_mag_table_drop_174058.mp3'  # pjkasinski3: M4 magazine dropped on a table (hit + bounces)
+BTN = 'button_click_395541.wav'         # alayan: one button press and its release
+SRV = 'amb_server_room_712564.wav'      # newlocknew: server room / data centre machine and vent noise (wide)
 
 # name, source, a, b, group[, floor dB under the peak, fade-in s]
 EVENTS = [
@@ -49,7 +58,7 @@ EVENTS = [
     # cocking knob back to the stop, knob forward.
     ('smgMagOut', UZI, 0.000, 0.560, 'uzi'), ('smgMagIn', UZI, 1.835, 2.330, 'uzi'),
     ('smgBoltBack', UZI, 3.040, 3.340, 'uzi'), ('smgBoltFwd', UZI, 3.380, 3.900, 'uzi'),
-    # The same two, shorter, for pistols (played ~1.15x): the drop / the catch and the first of the slap.
+    # The same two, shorter, for pistols (step 101: no longer loaded; the Glock takes replaced them).
     ('pstMagOut', UZI, 0.060, 0.260, 'uzi'), ('pstMagIn', UZI, 1.860, 2.110, 'uzi'),
     ('supPistol1', SUP, 0.000, 0.600, 'sup'),
     ('buy', BUY, 0.040, 1.700, 'buy'),
@@ -64,6 +73,39 @@ EVENTS = [
     ('cloth3', COAT, 0.710, 1.000, 'coat', -60, 0.012), ('cloth4', COAT, 1.010, 1.300, 'coat', -60, 0.012),
     ('cloth5', COAT, 1.300, 1.620, 'coat', -60, 0.012), ('cloth6', COAT, 1.630, 1.950, 'coat', -60, 0.012),
     ('cloth7', COAT, 1.960, 2.320, 'coat', -60, 0.012),
+    # --- step 101 ---
+    # Glock 17, two reloads. Magazine out = the release press and the slide out of the well (a bright rattle,
+    # centroid 6-6.5 kHz). In = the last of the push (40-75 ms lead) and the catch (the click at 3.296 / 2.29 s).
+    # glkMagTap = the palm tap on the baseplate (low onset, 2.98 s). Slide release = the single slam with a
+    # 1.3 kHz ring (3.49 s). Rack = two lumps: back (rear stop), then forward 0.2 s later (the louder slam).
+    ('glkMagOut1', GLK1, 0.655, 0.920, 'glk'), ('glkMagOut2', GLK2, 0.175, 0.450, 'glk'),
+    ('glkMagIn1', GLK1, 3.255, 3.470, 'glk'), ('glkMagIn2', GLK2, 2.255, 2.490, 'glk'),
+    ('glkMagTap', GLK2, 2.965, 3.200, 'glk'), ('glkSlideRel', GLK1, 3.485, 3.850, 'glk'),
+    ('glkRackBack1', GLK1, 4.895, 5.125, 'glk'), ('glkRackFwd1', GLK1, 5.130, 5.450, 'glk'),
+    ('glkRackBack2', GLK2, 4.525, 4.700, 'glk'), ('glkRackFwd2', GLK2, 4.700, 4.980, 'glk'),
+    # Dry fire: eight striker / hammer falls across the take (several pistols, centroids 8.5-10.5 kHz), room tail
+    # cut 45 dB down; the faint take-up tick before some is kept. Reset ticks = the small events 0.3-0.9 s after
+    # a click (25 dB under it): trigger / slide reset.
+    ('dry1', DRY, 0.630, 0.930, 'dry', -45), ('dry2', DRY, 2.445, 2.740, 'dry', -45),
+    ('dry3', DRY, 6.270, 6.560, 'dry', -45), ('dry4', DRY, 7.665, 7.980, 'dry', -45),
+    ('dry5', DRY, 10.830, 11.140, 'dry', -45), ('dry6', DRY, 13.995, 14.230, 'dry', -45),
+    ('dry7', DRY, 22.150, 22.440, 'dry', -45), ('dry8', DRY, 35.380, 35.660, 'dry', -45),
+    ('dryReset1', DRY, 8.570, 8.740, 'dry', -40), ('dryReset2', DRY, 19.800, 19.980, 'dry', -40),
+    ('dryReset3', DRY, 23.010, 23.180, 'dry', -40), ('dryReset4', DRY, 27.690, 27.840, 'dry', -40),
+    # M4 magazine on a table: the first hit with its bounces; the first hit and one bounce (lands flatter); the
+    # double hit at 0.43 / 0.455 s on (the table rings under it).
+    ('magDrop1', MDROP, 0.000, 0.620, 'mdrop', -45), ('magDrop2', MDROP, 0.000, 0.330, 'mdrop', -45),
+    ('magDrop3', MDROP, 0.420, 0.980, 'mdrop', -45),
+    # Button: the press (two contacts, then the click 0.13 s) and the release (0.31 s); the electronic hum after
+    # 0.4 s left out. btnClick3 / 4 = the main click of each alone.
+    ('btnClick1', BTN, 0.085, 0.255, 'btn', -40), ('btnClick2', BTN, 0.258, 0.420, 'btn', -40),
+    ('btnClick3', BTN, 0.124, 0.250, 'btn', -40), ('btnClick4', BTN, 0.302, 0.420, 'btn', -40),
+]
+# name, source, a, b, crossfade s, pad s, RMS dBFS. A seamless loop: [a, b] with its last xf s faded (equal power,
+# uncorrelated noise) into its first, then padded both sides with its own wrap (pad s) so the game can loop from
+# pad to pad + period: an MP3 decoder's start delay (< 30 ms) only shifts the loop inside periodic material.
+LOOPS = [
+    ('ambServer', SRV, 0.300, 17.900, 1.500, 0.300, -20.0),
 ]
 
 
@@ -106,8 +148,28 @@ def write(name, s):
     return out
 
 
+def make_loop(x, a, b, xf, pad):
+    s = x[int(a * SR):int(b * SR)].copy()
+    s -= s.mean()
+    nx = int(xf * SR)
+    n = len(s) - nx                                 # the period
+    t = np.linspace(0, 1, nx)
+    L = s[:n].copy()
+    L[:nx] = s[:nx] * np.sin(0.5 * np.pi * t) + s[n:n + nx] * np.cos(0.5 * np.pi * t)
+    npd = int(pad * SR)
+    return np.concatenate([L[-npd:], L, L[:npd]]), n
+
+
 def main():
     srcs, cuts = {}, {}
+    for name, src, a, b, xf, pad, rms in LOOPS:
+        if src not in srcs:
+            srcs[src] = load(src)
+        s, n = make_loop(srcs[src], a, b, xf, pad)
+        g = 10 ** (rms / 20) / np.sqrt((s ** 2).mean())
+        s = s * g
+        write(name, s)
+        print('%-12s loop %.6f s from %.3f s (pad), peak %6.1f dBFS, RMS %.1f dBFS' % (name, n / SR, pad, 20 * np.log10(np.abs(s).max()), rms))
     for name, src, a, b, grp, *opt in EVENTS:
         if src not in srcs:
             srcs[src] = load(src)
