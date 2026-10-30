@@ -2043,6 +2043,10 @@ const PROJECT_RULES = {
     'Attachments (docs/ATTACHMENTS.md) live in one table, WS_ITEMS { id, gun, cat (one of the gun\'s WS_GUNS slots or hardware), name, price, desc, owned, requires, hw, addon, cosmetic, model, fx }. A part is locked until its requires are owned; cosmetic parts never change a stat; a part without a model can be bought, not fitted. The 12 stats (WS_STATS) start from WEAPON_DEFS and add the fx of owned hardware and owned + fitted parts. Store only: nothing here changes the guns yet; each gun\'s attachment step wires it.',
     'Step 100 (?g17att=off): the Glock 17\'s rows are real parts (models/att/g17-att.glb from tools/pack_glock_att.py + built plate, threaded barrel, protector, tall sights, cover). One build for every Glock: the store\'s fitted set (g17SyncGun); a RELEASE at the vise writes the gun\'s parts back (g17FromGun). GLOCK_FX is the one table of effects: g.afx feeds fireGun (recoil, flash, report, zero), deskGunPose (aim time, sway), deskHeft (weight), the VR pose (g17VrHeft, a few ms of lag) and the reload tasks; the Glock\'s store bars are g17Stats on the same numbers. The red dot is a shader on its lens (view space, per eye): a 3 MOA dot parallel to the slide, at infinity, only through the window, brightness from the room.'
   ],
+  vrTips: [
+    'VR buttons by fingertip and thumb tip (VRTIP, CONFIG.vrInput, ?tiponly=off = the old controller-tip points and trigger presses): the terminal and workshop glass (glassFinger), the watch face and its menu (watchTips), the VISE button (viseTips) and every gun light / laser switch incl. the Glock stock light (switchTips) are pressed only by the drawn hand\'s index tip or thumb tip (handTip: the step 104 glove\'s end joints when drawn, else the procedural distal bones). The trigger presses nothing (the auto-injector keeps its trigger: medTrigger).',
+    'A tip counts on an empty hand while its finger is straight (fingerBend: index < idxExt, thumb\'s two outer joints < thumbExt); a hand on a gun presses only that gun\'s switches, with its thumb (no straightness test) or, as the support hand, a straight index (tipMask). A press = the skin (tip joint - pad) crossing the surface from in front, over its face (tipCross): fires once, re-arms only in front by rearm, never from behind, off the face, deeper than deep, or where a grab puts the fitted hand. Glass: the cursor follows the nearest tip within glass.hover. Haptic ticks and btnSfx as before.'
+  ],
   currentStep: 70
 };
 
@@ -2612,6 +2616,17 @@ const CONFIG = {
     tip: 0.012,                // m in front of the controller's ray origin that counts as your fingertip
     touch: 0.006, hover: 0.08, rearm: 0.025,   // m from the glass: press, show the ring, re-arm after a press
     refresh: 0.5               // s between live redraws (clock, run timer)
+  },
+  // --- VR buttons by fingertip and thumb tip (VRTIP): glass screens, the watch, the VISE button, gun light / laser switches ---
+  vrInput: {
+    tipOnly: !/[?&]tiponly=off\b/.test(location.search),   // false (or ?tiponly=off): the old controller-tip points and trigger presses
+    pad: 0.006,                // m from the drawn tip joint to the skin of the pad
+    idxExt: 1.35,              // rad: index straight when its three joints bend less than this in all (off the trigger: 0.14, or 1.2 with the grip squeezed; on it 1.68)
+    thumbExt: 0.55,            // rad: thumb straight when its two outer joints bend less than this (up off the controller 0.07; on the stick 0.73)
+    deep: 0.03,                // m: a tip found deeper than this behind a surface never presses (came from behind, or jumped)
+    glass: { hover: 0.03, press: 0.0, rearm: 0.012 },        // m over the glass: cursor follows, touch, lift to re-arm
+    button: { r: 0.01, press: 0.0, rearm: 0.012, cull: 0.5 }, // gun switches: m radius about each switch, touch, re-arm, guns further than cull skipped
+    vise: { r: 0.03, press: -0.003, rearm: 0.015 }           // the VISE cap: m radius, pushed in 3 mm, re-arm
   },
   // --- Gunsmith workshop computer (the store): a rugged touchscreen on a wall arm over the gunsmith bench; ?workshop=off ---
   workshop: {
@@ -17087,6 +17102,7 @@ function wbButtonPress(hand) {
 function wbButtonVR() {
   if (!WB.room || !WB.btnAt || !renderer.xr.isPresenting || !WB.room.active) return;
   wbButtonPos(_wbB);
+  if (VRTIP.on) { viseTips(_wbB); return; }                         // a fingertip / thumb tip pushes the cap (VRTIP)
   for (const h of vrHands) {
     const gp = h.ctrl && h.ctrl.userData.gamepad;
     if (!gp) continue;
@@ -19276,7 +19292,8 @@ function glove104Hand(h, arms, mat) {
   mesh.bindMode = 'detached';                                        // bone matrices are written in this mesh's space
   mesh.bind(new THREE.Skeleton(list.map(() => new THREE.Bone()), inv), new THREE.Matrix4());
   mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false;
-  const Gd = { h, mesh, n, par, proc, off, qrel, qa, inv, P0, Q0, P: P0.map(() => new V3()), Q: Q0.map(() => new THREE.Quaternion()), D: Array.from({ length: 16 }, () => new THREE.Quaternion()) };
+  const tipK = [0, 1, 2, 3, 4].map((f) => { const d = proc.indexOf(3 + 3 * f); return d < 0 ? -1 : list.findIndex((b) => b.parent === list[d]); });   // each finger's end joint (VRTIP)
+  const Gd = { h, mesh, n, par, proc, off, qrel, qa, inv, P0, Q0, tipK, posed: false, P: P0.map(() => new V3()), Q: Q0.map(() => new THREE.Quaternion()), D: Array.from({ length: 16 }, () => new THREE.Quaternion()) };
   mesh.skeleton.update = () => glove104Pose(Gd);
   h.mesh.add(mesh);
   return Gd;
@@ -19298,6 +19315,166 @@ function glove104Pose(G) {
     _g4M.compose(P, Q, _g4S).multiply(G.inv[k]).toArray(out, k * 16);
   }
   if (sk.boneTexture) sk.boneTexture.needsUpdate = true;
+  G.posed = true;                                                    // G.P holds the drawn joints (VRTIP reads the fingertips)
+}
+
+/* ===========================================================================
+ *  VR BUTTONS BY FINGERTIP AND THUMB TIP (CONFIG.vrInput, ?tiponly=off)
+ *  Every VR press (terminal and workshop glass, the watch face and its menu,
+ *  the VISE button, gun light / laser switches incl. the Glock's stock light)
+ *  is a contact of the drawn hand's index tip or thumb tip: the step 104
+ *  glove's end joints while the glove is drawn, else the procedural hand's
+ *  bones (also on a gun, where the fitted pack hand is drawn over them).
+ *  A tip counts only while its finger is straight (index pointing, thumb up
+ *  off the controller), on an empty hand. A hand on a gun presses that gun's
+ *  own switches with its thumb (always) or, as the support hand, a straight
+ *  index. A press = the skin crossing the surface from in front, inside its
+ *  face (tipCross: press depth, re-arm in front; off the face, from behind
+ *  or deeper than vrInput.deep it never fires). The trigger presses nothing.
+ *  Haptics and btnSfx unchanged. tipOnly false = the old controller-tip
+ *  points and trigger presses.
+ * ========================================================================= */
+const VRTIP = { on: CONFIG.vrInput.tipOnly, sw: { z: 0, g: null, laser: false } };
+const _vtV = new THREE.Vector3(), _vtW = new THREE.Vector3(), _tipQ = new THREE.Quaternion();
+// Finger f's tip in world space, from whichever hand is drawn.
+function handTip(h, f, out) {
+  const G = GLOVE104.ready && GLOVE104.sides[h.left ? 'L' : 'R'], k = G ? G.tipK[f] : -1;
+  if (G && k >= 0 && G.posed && G.mesh.visible && h.mesh.visible) {
+    h.mesh.updateWorldMatrix(true, false);
+    return out.copy(G.P[k]).applyMatrix4(h.mesh.matrixWorld);
+  }
+  const d = 3 + 3 * f, B = h.bones[d];
+  if (!h.tipOff) h.tipOff = gcTips(h).map((t, i) => t.clone().sub(h.rp[3 + 3 * i]));   // tip in its distal bone's frame (rest = mesh axes)
+  B.updateWorldMatrix(true, false);
+  return out.copy(h.tipOff[f]).applyMatrix4(B.matrixWorld);
+}
+// How bent finger f is now (rad, summed over its joints; the thumb's two outer joints only).
+function fingerBend(h, f) {
+  let a = 0;
+  for (let i = f ? 1 + 3 * f : 2; i <= 3 + 3 * f; i++) a += 2 * Math.acos(Math.min(1, Math.abs(h.bones[i].quaternion.w)));
+  return a;
+}
+// This frame's tips of VR hand vh (null: no drawn hand, or on a door): i index, t thumb, ix / tx straight.
+function vrTips(vh) {
+  const h = fgRig(vh);
+  if (!h || !h.root.visible || vh.door) return null;
+  const T = vh.tips || (vh.tips = { f: -1, i: new THREE.Vector3(), t: new THREE.Vector3(), ix: false, tx: false });
+  if (T.f !== CONTACT.frame) {
+    const C = CONFIG.vrInput;
+    T.f = CONTACT.frame;
+    handTip(h, 1, T.i); handTip(h, 0, T.t);
+    T.ix = fingerBend(h, 1) < C.idxExt; T.tx = fingerBend(h, 0) < C.thumbExt;
+  }
+  return T;
+}
+// Which tips may press (bit 0 index, bit 1 thumb): an empty hand its straight ones; a hand on gun g (g's own
+// switches only) its thumb, and a straight index unless it is the firing hand.
+function tipMask(vh, T, g) {
+  if (!vh.prop) return (T.ix ? 1 : 0) | (T.tx ? 2 : 0);
+  if (!g || vh.prop !== g.prop) return 0;
+  return 2 | (g.primary !== vh && T.ix ? 1 : 0);
+}
+const tipStates = () => [{ armed: false }, { armed: false }];    // per tip: index, thumb
+const glassState = () => ({ armed: true, id: null, s: tipStates() });   // per hand on a glass (armed: the old controller tip)
+// One tip on one surface: z = the skin's height over it (m, + in front), inside = over its face. Fires once when it
+// crosses in from in front; it re-arms only in front by rearm, so it never fires from behind, off the face or from a jump.
+function tipCross(st, z, inside, press, rearm) {
+  if (z > rearm) { st.armed = true; return false; }
+  if (z > press) return false;
+  const go = st.armed && inside && z > -CONFIG.vrInput.deep;
+  st.armed = false;
+  return go;
+}
+// A touchscreen s (w x h m, local +z out of the glass) under vh's fingertips. Returns 0 away, 1 hovering, 2 touched;
+// out = the local point (the touching tip, else the nearest within glass.hover). st = glassState().
+// tipOnly false: the old point CONFIG.terminal.tip in front of the controller (touch / hover / rearm as before).
+function glassFinger(s, w, h, vh, st, out) {
+  if (!VRTIP.on) return glassCtrl(s, w, h, vh, st, out);
+  const C = CONFIG.vrInput, T = vrTips(vh), m = T ? tipMask(vh, T, null) : 0;
+  let r = 0, bz = Infinity;
+  for (let k = 0; k < 2; k++) {
+    if (!(m & (1 << k))) { st.s[k].armed = false; continue; }
+    s.worldToLocal(_vtV.copy(k ? T.t : T.i));
+    const z = _vtV.z - C.pad, inside = Math.abs(_vtV.x) < w / 2 && Math.abs(_vtV.y) < h / 2;
+    if (tipCross(st.s[k], z, inside, C.glass.press, C.glass.rearm)) { r = 2; out.copy(_vtV); }
+    else if (r < 2 && inside && z < C.glass.hover && z > -C.deep && z < bz) { r = 1; bz = z; out.copy(_vtV); }
+  }
+  return r;
+}
+function glassCtrl(s, w, h, vh, st, out) {
+  const ctrl = vh.ctrl, T = CONFIG.terminal;
+  if (!ctrl || !ctrl.userData.gamepad || vh.door) return 0;
+  ctrl.getWorldPosition(out); ctrl.getWorldQuaternion(_tipQ);
+  out.addScaledVector(_vtW.set(0, 0, -1).applyQuaternion(_tipQ), T.tip);
+  s.worldToLocal(out);
+  const inside = Math.abs(out.x) < w / 2 && Math.abs(out.y) < h / 2 && out.z > -0.06;
+  let r = 0;
+  if (inside && out.z < T.hover) { r = 1; if (out.z < T.touch && st.armed) { st.armed = false; r = 2; } }
+  if (!inside || out.z > T.rearm) st.armed = true;
+  return r;
+}
+// Gun switches: the nearest light button / laser switch to tip k of vh that this tip may press (VRTIP.sw: z skin
+// height over its sphere, g, laser).
+function switchNear(vh, T, k, tip) {
+  const B = CONFIG.vrInput.button, S = VRTIP.sw;
+  S.z = Infinity; S.g = null;
+  for (const q of props) {
+    const g = q.item;
+    if (!g || g.kind !== 'gun' || q.removing || !(tipMask(vh, T, g) & (1 << k))) continue;
+    q.root.updateWorldMatrix(true, false);
+    if (_vtW.setFromMatrixPosition(q.root.matrixWorld).distanceTo(tip) > B.cull) continue;
+    if (g.light) {
+      const r = g.light.prop.root; r.updateWorldMatrix(true, false);
+      for (const b of LIGHT_BUTTONS) switchTry(g, false, _vtW.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip));
+    }
+    if (g.wr && g.wr.laser) switchTry(g, true, _vtW.copy(g.wr.laser.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip));
+  }
+  return S;
+}
+function switchTry(g, laser, d) {
+  const S = VRTIP.sw, z = d - CONFIG.vrInput.button.r - CONFIG.vrInput.pad;
+  if (z < S.z) { S.z = z; S.g = g; S.laser = laser; }
+}
+function switchTips() {
+  const B = CONFIG.vrInput.button;
+  for (const vh of vrHands) {
+    const T = vrTips(vh);
+    if (!T) continue;
+    const st = vh.swTip || (vh.swTip = tipStates());
+    if (st.prop !== vh.prop) { st.prop = vh.prop; st[0].armed = st[1].armed = false; }   // a grab never presses what the fitted hand lands on
+    for (let k = 0; k < 2; k++) {
+      const S = switchNear(vh, T, k, k ? T.t : T.i);
+      if (!S.g) { st[k].armed = false; continue; }
+      if (!tipCross(st[k], S.z, true, B.press, B.rearm)) continue;
+      if (S.laser) toggleGunLaser(S.g); else toggleGunLight(S.g);
+      pulse(vh, 0.3, 20);
+    }
+  }
+}
+// The VISE button: a cap pressed straight down (room groups only turn about y), top centre at top.
+function viseTips(top) {
+  const C = CONFIG.vrInput, V = C.vise;
+  for (const vh of vrHands) {
+    const T = vrTips(vh), m = T ? tipMask(vh, T, null) : 0;
+    const st = vh.wbTip || (vh.wbTip = tipStates());
+    for (let k = 0; k < 2; k++) {
+      if (!(m & (1 << k))) { st[k].armed = false; continue; }
+      const p = k ? T.t : T.i, inside = Math.hypot(p.x - top.x, p.z - top.z) < V.r;
+      if (tipCross(st[k], p.y - top.y - C.pad, inside, V.press, V.rearm)) { wbButtonPress(vh); return; }
+    }
+  }
+}
+// The watch face (local z out of it): a disk of tapR under the tapping hand's tips. Returns true on a tap.
+function watchTips(vh, face, tapR) {
+  const C = CONFIG.vrInput, T = vrTips(vh), m = T ? tipMask(vh, T, null) : 0;
+  const st = WATCH.tipSt || (WATCH.tipSt = tipStates());
+  let tap = false;
+  for (let k = 0; k < 2; k++) {
+    if (!(m & (1 << k))) { st[k].armed = false; continue; }
+    face.worldToLocal(_vtV.copy(k ? T.t : T.i));
+    if (tipCross(st[k], _vtV.z - C.pad, Math.hypot(_vtV.x, _vtV.y) < tapR, C.glass.press, C.glass.rearm)) tap = true;
+  }
+  return tap;
 }
 
 function deskReload(smart = false) {
@@ -19372,7 +19549,7 @@ function updateLightMount() {
 }
 // VR: press a light's switch. The trigger of a hand that isn't firing that gun (your support
 // hand on the handguard or forend, or a free hand) presses it when your fingers are on it;
-// an empty hand can also just poke it.
+// an empty hand can also just poke it. (VRTIP on: fingertip / thumb tip contacts only, switchTips.)
 const _lb = new THREE.Vector3(), _lb2 = new THREE.Vector3(), _lbq = new THREE.Quaternion();
 function nearLightSwitch(tip, reach) {
   for (const q of props) {
@@ -19384,6 +19561,7 @@ function nearLightSwitch(tip, reach) {
   return null;
 }
 function updateLightSwitches() {
+  if (VRTIP.on) { medTrigger(); switchTips(); return; }             // switches by fingertip / thumb tip only (VRTIP)
   for (const h of vrHands) {
     const gp = h.ctrl && h.ctrl.userData.gamepad;
     if (!gp) continue;
@@ -19404,6 +19582,16 @@ function updateLightSwitches() {
       if (gl && !h.laserLatch) { h.laserLatch = true; toggleGunLaser(gl); pulse(h, 0.3, 20); }
       else if (!gl && h.laserLatch && !nearLaserSwitch(_lb, 0.05)) h.laserLatch = false;
     }
+  }
+}
+// The auto-injector in a hand: its trigger injects (an item's own trigger, not a switch, so VRTIP keeps it).
+function medTrigger() {
+  for (const h of vrHands) {
+    const gp = h.ctrl && h.ctrl.userData.gamepad;
+    if (!gp) continue;
+    const b = gp.buttons[0], pressed = !!b && (b.pressed || b.value > 0.7);
+    const edge = pressed && !h.trigWas; h.trigWas = pressed;
+    if (edge && h.prop && h.prop.item && h.prop.item.kind === 'med') medUse(h, h.prop);   // step 79
   }
 }
 
@@ -24279,25 +24467,17 @@ function termUpdate(dt) {
   let hover = null, show = false, cx = 0, cy = 0;
   if (awake) {
     if (renderer.xr.isPresenting) {
-      // A real touchscreen: the tip of the controller has to reach the glass.
+      // A real touchscreen: a fingertip (or thumb tip) has to reach the glass (VRTIP; tipOnly off: the controller's tip).
       for (const h of vrHands) {
-        const ctrl = h.ctrl;
-        if (!ctrl || !ctrl.userData.gamepad || h.door) continue;
         let st = TERM.hands.get(h);
-        if (!st) TERM.hands.set(h, st = { armed: true, id: null });
-        ctrl.getWorldPosition(_tm.p); ctrl.getWorldQuaternion(_tm.q);
-        _tm.d.set(0, 0, -1).applyQuaternion(_tm.q);
-        _tm.l.copy(_tm.p).addScaledVector(_tm.d, C.tip);
-        s.worldToLocal(_tm.l);
-        const inside = Math.abs(_tm.l.x) < C.w / 2 && Math.abs(_tm.l.y) < C.h / 2 && _tm.l.z > -0.06;
-        if (inside && _tm.l.z < C.hover) {
-          const u = (_tm.l.x / C.w + 0.5) * TERM_LW, v = (0.5 - _tm.l.y / C.h) * TERM_LH;
-          const id = termHitAt(u, v);
-          if (id !== st.id) { st.id = id; if (id) pulse(h, 0.1, 8); }
-          if (!show) { hover = id; show = true; cx = _tm.l.x; cy = _tm.l.y; }
-          if (_tm.l.z < C.touch && st.armed) { st.armed = false; termPress(u, v, h); }
-        } else st.id = null;
-        if (!inside || _tm.l.z > C.rearm) st.armed = true;
+        if (!st) TERM.hands.set(h, st = glassState());
+        const r = glassFinger(s, C.w, C.h, h, st, _tm.l);
+        if (!r) { st.id = null; continue; }
+        const u = (_tm.l.x / C.w + 0.5) * TERM_LW, v = (0.5 - _tm.l.y / C.h) * TERM_LH;
+        const id = termHitAt(u, v);
+        if (id !== st.id) { st.id = id; if (id) pulse(h, 0.1, 8); }
+        if (!show) { hover = id; show = true; cx = _tm.l.x; cy = _tm.l.y; }
+        if (r === 2) termPress(u, v, h);
       }
     } else {
       // The dot in the middle of the view, within reach.
@@ -25004,7 +25184,7 @@ function wsUpdate(dt) {
   const W = WORKSHOP;
   W.deskHit = null;
   if (!W.on) return;
-  const s = W.screen, C = CONFIG.workshop, T = CONFIG.terminal;
+  const s = W.screen, C = CONFIG.workshop;
   if (!s || !W.room || !W.room.active || W.base.parent !== W.room.group) return;
   const now = performance.now() / 1000;
   headWorld(_wsv.h); s.getWorldPosition(_wsv.c);
@@ -25013,25 +25193,17 @@ function wsUpdate(dt) {
   let hover = null, show = false, cx = 0, cy = 0;
   if (awake) {
     if (renderer.xr.isPresenting) {
-      // A real touchscreen: the tip of the controller has to reach the glass.
+      // A real touchscreen: a fingertip (or thumb tip) has to reach the glass, as on the terminal (glassFinger).
       for (const h of vrHands) {
-        const ctrl = h.ctrl;
-        if (!ctrl || !ctrl.userData.gamepad || h.door) continue;
         let st = W.hands.get(h);
-        if (!st) W.hands.set(h, st = { armed: true, id: null });
-        ctrl.getWorldPosition(_wsv.p); ctrl.getWorldQuaternion(_wsv.q);
-        _wsv.d.set(0, 0, -1).applyQuaternion(_wsv.q);
-        _wsv.l.copy(_wsv.p).addScaledVector(_wsv.d, T.tip);
-        s.worldToLocal(_wsv.l);
-        const inside = Math.abs(_wsv.l.x) < C.w / 2 && Math.abs(_wsv.l.y) < C.h / 2 && _wsv.l.z > -0.06;
-        if (inside && _wsv.l.z < T.hover) {
-          const u = (_wsv.l.x / C.w + 0.5) * WS_LW, v = (0.5 - _wsv.l.y / C.h) * WS_LH;
-          const id = wsHitAt(u, v);
-          if (id !== st.id) { st.id = id; if (id) pulse(h, 0.1, 8); }
-          if (!show) { hover = id; show = true; cx = _wsv.l.x; cy = _wsv.l.y; }
-          if (_wsv.l.z < T.touch && st.armed) { st.armed = false; wsPress(u, v, h); }
-        } else st.id = null;
-        if (!inside || _wsv.l.z > T.rearm) st.armed = true;
+        if (!st) W.hands.set(h, st = glassState());
+        const r = glassFinger(s, C.w, C.h, h, st, _wsv.l);
+        if (!r) { st.id = null; continue; }
+        const u = (_wsv.l.x / C.w + 0.5) * WS_LW, v = (0.5 - _wsv.l.y / C.h) * WS_LH;
+        const id = wsHitAt(u, v);
+        if (id !== st.id) { st.id = id; if (id) pulse(h, 0.1, 8); }
+        if (!show) { hover = id; show = true; cx = _wsv.l.x; cy = _wsv.l.y; }
+        if (r === 2) wsPress(u, v, h);
       }
     } else {
       // The dot in the middle of the view, within reach.
@@ -25277,7 +25449,18 @@ function watchUpdate() {
   if (new Date().getMinutes() !== WATCH.minute) watchDrawFace();
   watchHands();                                                      // step 76
   if (!right || !right.ctrl || right.prop) { if (WATCH.open && WATCH.dirty) watchDrawPanel(); return; }
-  const C = CONFIG.mods.watch, ctrl = right.ctrl;
+  const C = CONFIG.mods.watch, [pw, ph] = C.panel;
+  if (VRTIP.on) {                                                    // fingertip / thumb tip (VRTIP)
+    if (watchTips(right, WATCH.face, C.tapR)) { watchOpen(!WATCH.open); pulse(right, 0.5, 25); pulse(left, 0.3, 20); }
+    if (WATCH.open) {
+      const r = glassFinger(WATCH.panel, pw, ph, right, WATCH.pSt || (WATCH.pSt = glassState()), _wt);
+      const b = r ? watchHitAt(_wt, pw, ph) : null;
+      if (b && r === 2) watchPanelPress(b.id, right);
+      watchPanelHover(b ? b.id : null);
+    }
+    return;
+  }
+  const ctrl = right.ctrl;
   ctrl.getWorldPosition(WATCH.p); ctrl.getWorldQuaternion(WATCH.q);
   WATCH.d.set(0, 0, -1).applyQuaternion(WATCH.q);
   const tip = WATCH.p.addScaledVector(WATCH.d, CONFIG.terminal.tip);
@@ -25288,26 +25471,31 @@ function watchUpdate() {
   else if (!onFace && (Math.hypot(_wt.x, _wt.y) > C.tapR + 0.01 || _wt.z > C.rearm)) WATCH.armed = true;
   if (WATCH.open) {
     _wt.copy(tip); WATCH.panel.worldToLocal(_wt);
-    const [pw, ph] = C.panel, T = CONFIG.terminal, inside = Math.abs(_wt.x) < pw / 2 && Math.abs(_wt.y) < ph / 2 && _wt.z > -0.05;
+    const T = CONFIG.terminal, inside = Math.abs(_wt.x) < pw / 2 && Math.abs(_wt.y) < ph / 2 && _wt.z > -0.05;
     let hov = null;
     if (inside && _wt.z < T.hover) {
-      const u = (_wt.x / pw + 0.5) * WATCH.panelCv.width, v = (0.5 - _wt.y / ph) * WATCH.panelCv.height;
-      const b = WATCH.hits.find((h) => u >= h.x && u <= h.x + h.w && v >= h.y && v <= h.y + h.h);
+      const b = watchHitAt(_wt, pw, ph);
       hov = b ? b.id : null;
-      if (b && _wt.z < T.touch && WATCH.pArmed) {
-        WATCH.pArmed = false;
-        if (b.id === 'restart') { pulse(right, 0.45, 18); sfxTick(2000); restartTap(); }   // step 86
-        else {
-          modSet(b.id, !MOD[b.id]); WATCH.flashId = b.id; WATCH.flashUntil = performance.now() / 1000 + 0.14;
-          pulse(right, 0.45, 18); sfxTick(MOD[b.id] ? 2600 : 1500);
-        }
-      }
+      if (b && _wt.z < T.touch && WATCH.pArmed) { WATCH.pArmed = false; watchPanelPress(b.id, right); }
     }
     if (!inside || _wt.z > T.rearm) WATCH.pArmed = true;
-    if (hov !== WATCH.hover) { WATCH.hover = hov; WATCH.dirty = true; }
-    if (WATCH.flashId && performance.now() / 1000 > WATCH.flashUntil) { WATCH.flashId = null; WATCH.dirty = true; }
-    if (WATCH.dirty) watchDrawPanel();
+    watchPanelHover(hov);
   }
+}
+// The menu button under panel-local point l (pw x ph m), or null.
+function watchHitAt(l, pw, ph) {
+  const u = (l.x / pw + 0.5) * WATCH.panelCv.width, v = (0.5 - l.y / ph) * WATCH.panelCv.height;
+  return WATCH.hits.find((h) => u >= h.x && u <= h.x + h.w && v >= h.y && v <= h.y + h.h) || null;
+}
+function watchPanelPress(id, hand) {
+  if (id === 'restart') { pulse(hand, 0.45, 18); sfxTick(2000); restartTap(); return; }   // step 86
+  modSet(id, !MOD[id]); WATCH.flashId = id; WATCH.flashUntil = performance.now() / 1000 + 0.14;
+  pulse(hand, 0.45, 18); sfxTick(MOD[id] ? 2600 : 1500);
+}
+function watchPanelHover(hov) {
+  if (hov !== WATCH.hover) { WATCH.hover = hov; WATCH.dirty = true; }
+  if (WATCH.flashId && performance.now() / 1000 > WATCH.flashUntil) { WATCH.flashId = null; WATCH.dirty = true; }
+  if (WATCH.dirty) watchDrawPanel();
 }
 const _wt = new THREE.Vector3();
 // Step 59.1: the left sleeve's cross-section at the watch (hand space: forearm +z, back of the hand +y).
@@ -35411,6 +35599,7 @@ function muzMakeExt() {
   return p;
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MUZ, MUZ_DEV, MUZ_EXT, G17_MUZ, muzChain, muzFace, muzBase, muzEnd, muzTip, muzPlace, muzBenchFit, muzOff, muzStow, muzState, muzFx, muzClipSet, muzRefresh, muzSaveGun, muzSync, muzMakeExt });   // step 103
+if (window.__cqcDev) Object.assign(window.__cqcDev, { VRTIP, handTip, fingerBend, vrTips, tipMask, tipCross, glassFinger, switchNear, switchTips, viseTips, watchTips });   // VR buttons by fingertip
 </script>
 </body>
 </html>
