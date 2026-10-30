@@ -284,3 +284,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - ?dev adds enemyBodyFoley. Not verified: how it sounds, Quest frame time.
 ## CQC step 86: barrel heat smoke (GUN_WISP, gunWisp; CONFIG.polish.wisp, ?wisp=off; headset check needed)
 - fireGun adds g.heat per shot (impulse x pellets / 2.2, so a 9 mm = 1; x1.8 with a can), decaying over GUN_WISP.tau 9 s. updateGun calls gunWisp while heat > 0.02: past GUN_WISP.from 5, 0.35 s after the last shot, one rising grey particle (impact pool via fxEmit, lit by P10U, grav < 0) every 1/5..1/16 s from the muzzle or the can end, the ejection port 30 % (60 % slide locked); a moving gun emits more often so the trail stays continuous. Skipped holstered (g.slot), hidden, or behind the desktop viewmodel. No new draw, material or allocation (wispL cloned once per gun). Tune S.from (onset), S.tau (duration), S.a (density).
+
+## CQC step 86: merged sensory pass (headset check needed)
+- Seven additive branches merged into cqc-realism: body bumps, cloth foley, door foley, prop knocks, building ambience, enemy body foley, barrel heat smoke (each section above has its flag). Smoke-tested in headless Chromium: loads with no errors, every new sound function runs. Not verified: how they sound, the wisp on screen, Quest frame time.
+- Not built, waiting for the user's OK (they change what exists): gun foley + brass back on, VR mechanism haptics, desktop view weight, enemy gun handling sounds, muffled life behind doors, shoot-out ceiling tubes, exit-sign green spill.
