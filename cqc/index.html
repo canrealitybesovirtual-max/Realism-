@@ -2016,6 +2016,10 @@ const PROJECT_RULES = {
   step70: [
     'Embedded GLB textures (gltfParse + gltfBytesPlugin, ?gltfblob=on for the old path): every image stored in a GLB bufferView is decoded with createImageBitmap from a Blob (no blob: URL, nothing fetched), then flipY false, name, sampler filters and wrapping and the parser association set as GLTFLoader does. All GLB loads (M1911, Glock / M4A1-S, AKM / M4A4 / AWP) go through gltfParse. A texture that fails to decode returns null (that slot is left empty) with a console warning.'
   ],
+  step91: [
+    'Wounded men (CONFIG.enemy.downed, ?downed=off = the old instant deaths; DOWNED): a lethal round not to the head or neck puts him down alive (enemyDown). He is out of the fight at once (e.dead, plan.dead, loopEnemyDied: AI, squads, score and room clear count him), his gun falls, e.downed holds the rest. The fall (downedFallPose): knees then onto his front, or he sits and falls back, whichever way is clear floor (nav, downedFallPick) with the head away from the round; the first 0.26 s blends out of his last pose; the thud with the landing. On the floor (downedTargets, downedArm): postures prone / side / back / crawl with writhing noise, pain spasms and breathing, scaled by how much he has left; the nearest hand pressed on the wound (an arm hit: the other hand on it, the arm held across the belly), the other braced on the floor, pressing too, or reaching toward you; crawls of 2-4 pulls (arms alternate, a hand planted while the body is pulled past it, legs trailing, a streak behind him) along a clear way (downedPath), up to DOWNED.crawl m in all. Step 80 moans and breaths while he lasts (DOWNED.time x blood.bleedTime). Posed on the driver, so the hit capsules follow: any further hit (round, fragment, kick, blast) or the bleed-out ends him as a ragdoll from where he lies, limp and silent (enemyDie with e.downed). Only men down in the active, visible room are posed (offscreenPoseHz off screen); no per-frame allocation.',
+    'Head / neck kills (with downed on): no muscle phase (limpStart): the hips and chest drop, the knees fold, RAG_SETTLE_LIMP puts him to sleep in ~1.5-3 s; no grunt, moan or breath; the body-fall thud stays.'
+  ],
   step86: [
     'Body bumps (bodyBump from locomote, ?bump=off, CONFIG.polish.audio.bump): what resolveBody pushes the moving head back by is the contact. A fresh contact (free s clear before, cool s since the last) at more than min m/s into the surface is a self thump of shoulder, sleeve and kit (a door leaf you nudge also rings, kickSfx\'s two modes quieter); in the headset a 30 ms buzz, strongest in the hand on the wall\'s side, through pulseSoft (skipped while another pulse runs: pulse() stamps hand.hapEnd). Sliding along a wall is a sleeve scuff (brush) every ~0.45 s, no buzz. Not positional, no AI noise; skipped during a breach, a kick or death. Footfall haptics were left out (they would mask the heartbeat buzz).'
   ],
@@ -2363,6 +2367,7 @@ const CONFIG = {
     reload: 2.6,               // s
     peekTime: [1.2, 2.4], coverTime: [1.0, 2.4], peekCrouch: 0.15,
     castShadow: true,          // first thing to switch off if the Quest drops frames in fights
+    downed: true,              // step 91: a lethal round not to the head / neck puts him down alive (falls, clutches, crawls, bleeds out; DOWNED); head shots drop limp and silent. false or ?downed=off = the old instant deaths
     playerHealth: 100, playerDmg: { body: 30, head: 70 }, regenDelay: 6, regen: 9
   },
 
@@ -12539,7 +12544,7 @@ function fragBlast(P, inHand) {
   } finally { P10.muteImpact = false; }
   // Overpressure: falls off fast and needs a clear line (or the same small room).
   for (const e of ENEMY.list) {
-    if (e.dead || !e.room.active) continue;
+    if ((e.dead && !e.downed) || !e.room.active) continue;         // step 91: a blast finishes a man down
     e.B.chest.getWorldPosition(_nd.c);
     const r = _nd.c.distanceTo(P);
     if (r > 7) continue;
@@ -19358,7 +19363,7 @@ function enemySpawnSpot(room, taken = []) {
 }
 function removeEnemy(e) {
   if (e.rag) for (const r of e.rag) { ragByCollider.delete(r.col.handle); world.removeRigidBody(r.body); }
-  e.rag = null; e.dying = null; e.wounds = null; e.bleedT = undefined;   // step 19
+  e.rag = null; e.dying = null; e.wounds = null; e.bleedT = undefined; e.downed = null;   // step 19 (step 91)
   if (e.root.parent) e.root.parent.remove(e.root);
   const i = ENEMY.list.indexOf(e); if (i >= 0) ENEMY.list.splice(i, 1);
   if (e.room.enemies) { const j = e.room.enemies.indexOf(e); if (j >= 0) e.room.enemies.splice(j, 1); }
@@ -19380,6 +19385,7 @@ function enemiesShift(dx, dz, dy = 0) {
       r.body.setTranslation({ x: t.x + dx, y: t.y + dy, z: t.z + dz }, true);
     }
     if (dy) { e.lastKnown.y += dy; e.aimPoint.y += dy; e.lookW.y += dy; }   // step 12: heights he remembers are world heights
+    if (e.downed) downedShift(e.downed, dx, dy, dz);              // step 91: his hands on the floor are world points
   }
   if (dy) for (const r of stream.rooms.values()) if (r.ai && r.ai.pos) r.ai.pos.y += dy;
   playerState.hasPrev = false;
@@ -20239,9 +20245,10 @@ const _hc = { a: new THREE.Vector3(), c: new THREE.Vector3(), p: new THREE.Vecto
 function enemyRayTest(o, dir, maxT) {
   let best = null;
   for (const e of ENEMY.list) {
-    if (e.dead || !e.room.active || !e.root.visible || !e.room.group.visible) continue;
-    // quick reject: ray far from his centre
-    _hc.p.set(rWX(e.room, e.pos.x), 1.0, rWZ(e.room, e.pos.y)).sub(o);
+    if ((e.dead && !e.downed) || !e.room.active || !e.root.visible || !e.room.group.visible) continue;   // step 91: a man down is still there to hit
+    // quick reject: ray far from his centre (step 91: a man on the floor, his pelvis)
+    if (e.downed) _hc.p.setFromMatrixPosition(e.B.pelvis.matrixWorld).sub(o);
+    else _hc.p.set(rWX(e.room, e.pos.x), 1.0, rWZ(e.room, e.pos.y)).sub(o);
     const tc = _hc.p.dot(dir);
     if (tc < -1.2 || tc > maxT + 1.2) continue;
     if (_hc.p.addScaledVector(dir, -tc).length() > 1.3) continue;
@@ -20275,6 +20282,7 @@ function enemyShot(hit, dir, d, E) {
     if (GORE_X) g90Hit(e, h.part, wIn, wOut, hit.p, dir, d, E);   // step 90: the hole, it pours, the far side
   }
   P10.muteImpact = false;
+  if (e.downed) { enemyDie(e, h.seg, dir, hit.p, d.impulse * E); return; }   // step 91: any further round ends him where he lies (silent)
   e.hp -= MOD.oneShot ? 1e4 : dmg * clamp(E, 0.2, 1.2);         // step 57: one-shot kills
   e.hitT = now;
   e.suppress = Math.min(3, e.suppress + 1);
@@ -20291,7 +20299,11 @@ function enemyShot(hit, dir, d, E) {
   e.lastKnown.set(rLX(e.room, _ev.h.x), _ev.h.y - 0.35, rLZ(e.room, _ev.h.z)); e.hasKnown = true;
   if (!e.engaged) { e.engaged = true; e.state = 'react'; e.stateT = rnd2(0.3, 0.6); e.acquire = now + rnd2(0.5, 0.9); }
   // Step 81: no bullet-hit sound on a man (it sounded like a game); you hear the shot, his voice and his fall.
-  if (e.hp <= 0) { e.killPart = h.part; if (h.part !== 'head' && Math.random() < 0.6) voxGrunt(e, 0.85, true); enemyDie(e, h.seg, dir, hit.p, d.impulse * E); }
+  if (e.hp <= 0) {
+    const dn = downedOn(), hd = h.part === 'head' || h.part === 'neck';   // step 91: head / neck = dead and silent; anything else = down alive
+    e.killPart = h.part; if (h.part !== 'head' && !(dn && hd) && Math.random() < 0.6) voxGrunt(e, 0.85, true);
+    if (dn && !hd) enemyDown(e, h, dir, hit.p); else enemyDie(e, h.seg, dir, hit.p, d.impulse * E);
+  }
   else if (!plate || Math.random() < 0.35) voxGrunt(e, plate ? 0.6 : 1);   // step 69: hit (a plate knocks the wind out of him sometimes)
 }
 
@@ -20300,7 +20312,7 @@ function enemyShot(hit, dir, d, E) {
  *  grunt1-7: a man hit (and some dying), placed at his head; breaths: your own
  *  heavy breathing, a loop that fades in with stress (hurt, out of breath).
  * ------------------------------------------------------------------------- */
-const VOX = { bufs: {}, loading: false, breath: null, lastGrunt: new WeakMap() };
+const VOX = { bufs: {}, loading: false, breath: null, lastGrunt: new WeakMap(), n: { grunt: 0, dying: 0, moan: 0, fall: 0 } };   // step 91: n = sounds started (tests)
 const VOX_FILES = ['grunt1', 'grunt2', 'grunt3', 'grunt4', 'grunt5', 'grunt6', 'grunt7', 'breaths',
   'moan1', 'moan2', 'moan3', 'moan4', 'moan5', 'dbreath1', 'dbreath2', 'dbreath3', 'dbreath4'];   // step 80: a man dying on the floor
 function voxLoad(ctx) {
@@ -20313,7 +20325,7 @@ function voxGrunt(e, k = 1, dying = false) {
   if (now - (VOX.lastGrunt.get(e) || -9) < 0.7) return;          // one at a time
   const list = VOX_FILES.filter((n) => n.startsWith('grunt') && VOX.bufs[n]);
   if (!list.length || !e.B || !e.B.head) return;
-  VOX.lastGrunt.set(e, now);
+  VOX.lastGrunt.set(e, now); VOX.n.grunt++;
   const buf = VOX.bufs[list[(Math.random() * list.length) | 0]], at = e.B.head.getWorldPosition(new THREE.Vector3());
   const delay = 0.08 + Math.random() * 0.18;                       // the breath knocked out of him, a beat after the hit
   soundAt(at, () => {
@@ -20329,23 +20341,23 @@ function voxGrunt(e, k = 1, dying = false) {
 function voxDyingStart(e) {
   if (e.killPart === 'head' || e.killPart === 'neck') return;
   const now = wnow(), dur = 9 + Math.random() * 9;
-  e.moan = { t0: now, until: now + dur, next: now + 1.0 + Math.random() * 1.2 };
+  e.moan = { t0: now, until: now + dur, next: now + 1.0 + Math.random() * 1.2 }; VOX.n.moan++;
 }
 const VOX_DYING = { moan: 1.5, breath: 1.15, nearBoost: 0.9, nearFrom: 0.8, nearTo: 3.5 };   // step 87 (was 0.62 / 0.5, fading to 35%)
 const _vxH = new THREE.Vector3();
 function voxDyingTick(e, now) {
   const M = e.moan;
   if (!M || now < M.next) return;
-  if (now > M.until || !e.rag || !e.room || !e.room.active) { e.moan = null; return; }
+  if (now > M.until || !(e.rag || e.downed) || !e.room || !e.room.active) { e.moan = null; return; }   // step 91: or still alive on the floor
   const left = (M.until - now) / (M.until - M.t0), breath = Math.random() < 0.6;
   const names = VOX_FILES.filter((n) => (breath ? n.startsWith('dbreath') : n.startsWith('moan')) && VOX.bufs[n]);
-  const nk = e.rag.find((r) => r.seg === 'neck'); if (!nk) return;
-  const t = nk.body.translation(), at = new THREE.Vector3(t.x, t.y, t.z);
+  const nk = e.rag ? e.rag.find((r) => r.seg === 'neck') : null; if (e.rag && !nk) return;
+  const t = nk && nk.body.translation(), at = nk ? new THREE.Vector3(t.x, t.y, t.z) : e.B.neck.getWorldPosition(new THREE.Vector3());
   // step 87: louder, and more often with you standing over him
   headWorld(_vxH); const near = clamp(1 - (_vxH.distanceTo(at) - VOX_DYING.nearFrom) / (VOX_DYING.nearTo - VOX_DYING.nearFrom));
   M.next = now + ((breath ? 2.2 : 1.4) + Math.random() * 1.6 + (1 - left) * 2.5) * (1 - 0.45 * near);
   if (!names.length || !audio.ctx) return;
-  const buf = VOX.bufs[names[(Math.random() * names.length) | 0]];
+  const buf = VOX.bufs[names[(Math.random() * names.length) | 0]]; VOX.n.dying++;
   soundAt(at, () => {
     const c = audio.ctx, src = c.createBufferSource(), g = c.createGain();
     src.buffer = buf; src.playbackRate.value = 0.9 + Math.random() * 0.14;
@@ -20372,10 +20384,17 @@ function voxBreath(v) {
  * ------------------------------------------------------------------------- */
 const _rgPQ = new THREE.Quaternion();
 const _rg = { p: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), a: new THREE.Vector3(), v: new THREE.Vector3() };
-function enemyDie(e, hitSeg, dir, P, impulse) {
-  e.dead = true; e.state = 'dead'; e.diedAt = wnow();   // step 41: fresh bodies smear
+function enemyOut(e) {                  // step 91: he is out of the fight (dead, or down and dying)
   if (STILLS_ON && e.room && !STILLS.shot.has(e.room)) { STILLS.shot.add(e.room); stillsAsk(`${stillsWhere(e.room)} · contact`, 'contact', 0.45); }   // step 42: the first man down in a room
   { const pl = roomMem(e.room).plan; if (pl) pl.dead[e.idx] = true; }   // step 9: per man, not per room
+}
+function enemyDie(e, hitSeg, dir, P, impulse) {
+  // Step 91: a man already down (shot again, or bled out) dies where he lies: no fall, no voice, no second score.
+  // A head / neck kill (CONFIG.enemy.downed) is limp at once: no muscle phase.
+  const down = e.downed, limp = !!down || (downedOn() && (e.killPart === 'head' || e.killPart === 'neck'));
+  if (down) { e.downed = null; e.moan = null; }
+  e.dead = true; e.state = 'dead'; e.diedAt = wnow(); e.limp = limp;   // step 41: fresh bodies smear
+  if (!down) enemyOut(e);
   e.root.updateWorldMatrix(true, true);
   const rag = e.rag = [], bySeg = {};
   const ragGroups = groups(GROUP.ENEMY, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | (RAGDBG.self ? GROUP.ENEMY : 0));   // step 69: his own limbs collide (no arm through the chest)
@@ -20423,13 +20442,14 @@ function enemyDie(e, hitSeg, dir, P, impulse) {
     r.lim = lim;
     r.rel0 = r.par.q0.clone().invert().multiply(r.q0);
   }
-  deathPlan(e, hitSeg, dir);                                       // step 19: the fall
-  const hr = bySeg[hitSeg] || bySeg.spine;
-  hr.body.applyImpulseAtPoint({ x: dir.x * impulse * 6, y: dir.y * impulse * 6, z: dir.z * impulse * 6 }, { x: P.x, y: P.y, z: P.z }, true);
+  if (limp) limpStart(e, down); else deathPlan(e, hitSeg, dir);   // step 19: the fall (step 91: or none)
+  const hr = bySeg[hitSeg] || bySeg.spine, ik = impulse * 6 * (limp && !down ? DOWNED.limp.push : 1);
+  hr.body.applyImpulseAtPoint({ x: dir.x * ik, y: dir.y * ik, z: dir.z * ik }, { x: P.x, y: P.y, z: P.z }, true);
   // Step 58: he lets go of the gun and it is gone (no gun of yours exists until the new guns are built).
-  enemyDropGun(e, dir);                                           // step 72: it falls with him and stays a real gun
+  if (!down) enemyDropGun(e, dir);                                // step 72: it falls with him and stays a real gun (step 91: a man down dropped it then)
   e.loot = (e.w && e.w.spares) || 2;                              // step 72: spare magazines still on his vest
   e.ragAwake = true;
+  if (down) { P10.pending.push({ at: P10.time + 0.3, fn: () => startBloodPool(e) }); return; }   // step 91: already on the floor and counted
   polishEnemyDied(e);                   // step 10: the fall, then a pool under him
   voxDyingStart(e);                     // step 80: he moans on the floor until shot again
   loopEnemyDied(e);                     // step 9: score, loot, squad reaction, room clear
@@ -20592,6 +20612,7 @@ function ragAnatLimit(r) {
 }
 // Ragdoll bodies drive the bones (after the physics step).
 const RAG_SETTLE = { dampFrom: 2.5, dampTo: 4.5, lin: [0.35, 3.5], ang: [1.6, 9], stillV: 0.15, stillFor: 0.6, forceAt: 6, upNeck: 0.42, upPelvis: 0.27, toppleAt: 1.2, toppleV: 0.9 };   // step 87
+const RAG_SETTLE_LIMP = Object.assign({}, RAG_SETTLE, { dampFrom: 0.5, dampTo: 1.5, stillFor: 0.35, forceAt: 3.2, toppleAt: 0.9 });   // step 91
 function enemiesPostPhysics(dt = 1 / 72) {
   for (const e of ENEMY.list) {
     if (!e.rag) continue;
@@ -20607,7 +20628,7 @@ function enemiesPostPhysics(dt = 1 / 72) {
     // after the fall his joints go loose so gravity folds him; from 2.5 s the damping rises so he settles; he
     // sleeps when still for 0.6 s, or at 6 s whatever. A man still up (neck high) is pushed over, up to 3 times.
     {
-      const R = RAG_SETTLE;
+      const R = e.limp ? RAG_SETTLE_LIMP : RAG_SETTLE;             // step 91: limp (head shot, or a man down) settles quicker
       e.ragT = (e.ragT || 0) + dt;
       let vmax = 0;
       for (const r of e.rag) { const v = r.body.linvel(); vmax = Math.max(vmax, Math.hypot(v.x, v.y, v.z)); }
@@ -20753,6 +20774,7 @@ function enemiesDyingUpdate(dt) {
   enemyBloodUpdate();                                            // step 67: wounds on his clothes
   for (const e of ENEMY.list) {
     if (!e.room || !e.room.active) continue;
+    if (e.downed) { downedUpdate(e, dt); continue; }              // step 91: alive on the floor
     // Drips from open wounds while he lives.
     if (!e.dead) {
       if (e.wounds && B.on) for (const w of e.wounds) if (Math.random() < dt * B.drip * (w.part === 'limb' ? 0.7 : 1)) {
@@ -20807,6 +20829,463 @@ function enemiesDyingUpdate(dt) {
         fxEmit(_dy.o, _dy.v, 0.35, 2, Object.assign({}, BLOOD_DROP, { sp: [0.3, 1.1 * k + 0.2], land: 1 }));
       }
     }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ *  STEP 91 — WOUNDED MEN (CONFIG.enemy.downed; ?downed=off = the old instant deaths)
+ *  A lethal round that is not to the head or neck puts him down alive. He collapses: knees, then onto his
+ *  front; or he sits and falls back (whichever way is clear floor, the head away from the round). On the
+ *  floor he loops, weaker as he bleeds: the nearest hand pressed on the wound (the other braced on the
+ *  floor, pressing too, or reaching), writhing, rocking and rolling (front / side / back), and short crawls,
+ *  both arms dragging him (one if an arm is hit), legs trailing, away from the shot, inside the nav grid.
+ *  He moans (step 80 voices) and bleeds out over DOWNED.time x blood.bleedTime. From the drop he is out of
+ *  the fight: e.dead (AI, squads, room clear and score see a man down), e.downed holds the rest; his gun
+ *  falls at once. Posed on the driver, so his hit capsules follow him: any further hit (round, fragment,
+ *  kick, blast) ends him as a ragdoll from where he lies, silent; so does the bleed-out (limp, asleep fast).
+ *  Head / neck kills: a limp ragdoll at once (no muscle phase: the hips drop and the knees fold), no grunt,
+ *  moan or breath; the body-fall thud stays (that is the floor, not him).
+ *  Cost: only downed men in the active, visible room are posed (offscreenPoseHz off screen); the state is
+ *  made once, when he drops; nothing is allocated per frame.
+ * ------------------------------------------------------------------------- */
+const DOWNED_URL_OFF = /[?&]downed=off/.test(location.search);
+function downedOn() { return !!CONFIG.enemy.downed && !DOWNED_URL_OFF; }
+const DOWNED = {
+  time: [0.5, 1.05],           // x CONFIG.polish.blood.bleedTime (22 s): he lasts 11-23 s on the floor
+  knee: [0.38, 0.5], top: [0.5, 0.62], sit: [0.42, 0.55], back: [0.5, 0.62],   // s: knees buckle, topple onto his front; or sit, fall back
+  crawl: [1.0, 2.2],           // m he drags himself in all, in bouts of 2-4 pulls
+  stroke: 0.19, reach: 0.34,   // m the body moves per pull; m ahead of the shoulder a hand is planted
+  period: [2.8, 1.8],          // s per two-arm cycle, weak .. strong
+  lieH: [0.135, 0.175],        // m pelvis height face down / up .. on his side
+  kneeH: 0.075,                // m knee joint off the floor, kneeling
+  drip: 5.5,                   // drops / s per wound at first (limbs 60%), fading with him
+  limp: { push: 0.35, drop: 1.4, knee: 6 }   // head shot: share of the round's shove; m/s the hips and chest drop; rad/s the knees start to fold
+};
+const DOWN_KEYS = ['px', 'py', 'pz', 'yawP', 'th', 'rho', 'wig', 'sp', 'cp', 'tw', 'np', 'hp', 'hy', 'hr', 'xL', 'yL', 'zL', 'kL', 'fL', 'xR', 'yR', 'zR', 'kR', 'fR'];
+const DOWN_RK = DOWN_KEYS.map((k) => ({ rho: 1.8, wig: 6, py: 6 })[k] || 3.2);   // 1/s toward the target
+const DOWN_FALL = [-0.4, 0.35, 0.8, 1.25];   // m along the way his head will lie that must be clear floor (nav)
+const DOWN_TURN = [0, 0.45, -0.45, 0.9, -0.9];   // rad off his heading he may turn to crawl
+const _d91 = { q: new THREE.Quaternion(), cq: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3(),
+  n: new THREE.Vector3(), f: new THREE.Vector3(), g: new THREE.Vector3(), x: new THREE.Vector3(), pole: new THREE.Vector3(), cR: new THREE.Vector3(), cU: new THREE.Vector3(),
+  cB: new THREE.Vector3(), cF: new THREE.Vector3(), e: new THREE.Euler(), X: new THREE.Vector3(1, 0, 0), Y: new THREE.Vector3(0, 1, 0), Z: new THREE.Vector3(0, 0, 1) };
+let DOWN_DROP = null;                        // BLOOD_DROP, slow (made on first use)
+const downPoseObj = () => { const o = {}; for (const k of DOWN_KEYS) o[k] = 0; return o; };
+const DOWN_SIDES = ['L', 'R'];
+const downArm = (B, s) => ({ mode: 'hang', up: B['upperArm' + s], fore: B['foreArm' + s], hand: B['hand' + s], clav: B['clav' + s], thigh: B['thigh' + s], shin: B['shin' + s], foot: B['foot' + s],
+  w: new THREE.Vector3(), q: new THREE.Quaternion(), wd: new THREE.Vector3(), qd: new THREE.Quaternion(), plant: new THREE.Vector3(), from: new THREE.Vector3(), planted: false });
+
+// He goes down: out of the fight now, dying on the floor until shot again or bled out.
+function enemyDown(e, h, dir, P) {
+  const now = wnow(), Bl = CONFIG.polish.blood, B = e.B, f = e.room.f || 1;
+  e.dead = true; e.state = 'dead'; e.downAt = now;
+  e.vel.set(0, 0); e.speed = 0; e.aim = 0; e.reloadT = 0;
+  enemyOut(e);
+  e.root.updateWorldMatrix(true, true);
+  const wb = B[h.b] || B.spine;
+  const D = e.downed = {
+    t: 0, dur: rnd2(DOWNED.time[0], DOWNED.time[1]) * Bl.bleedTime, phase: 'fall', vig: 1, seed: Math.random() * 6.283,
+    wb, wl: wb.worldToLocal(new THREE.Vector3().copy(P)), c: 'R', sg: -1, wArm: null, wLeg: null,
+    s: downPoseObj(), tg: downPoseObj(), h: e.yaw, hT: e.yaw, hOff: 0, yawEnd: 0, fwd: true, Tk: 0.45, Tt: 0.55,
+    act: 'fall', post: 'prone', actT: 0, press: false, reachT: 0, pain: 0, spasmT: 1.5, legIK: false,
+    crawlLeft: rnd2(DOWNED.crawl[0], DOWNED.crawl[1]), crawlV: 0, cph: 0, strokes: 0,
+    arm: { L: downArm(B, 'L'), R: downArm(B, 'R') }, snap: DRIVE_ORDER.map((k) => B[k].quaternion.clone()), snapP: B.pelvis.position.clone(), y0: B.pelvis.position.y,
+    foot: { L: new THREE.Vector3(), R: new THREE.Vector3() }, footQ: { L: new THREE.Quaternion(), R: new THREE.Quaternion() },
+    hdW: new THREE.Vector3(), slide: new THREE.Vector3(), hipD: Math.max(0, -B.thighL.position.y), nav: navGrid(e.room), thud: false, dtP: 0, shT: 0, smA: new THREE.Vector3(), smOk: false, hist: []
+  };
+  // which hand goes to it: for an arm the other hand, for a leg the same side, else the side it is on
+  if (/^(upperArm|foreArm)/.test(h.b)) { D.wArm = h.b.slice(-1); D.c = D.wArm === 'L' ? 'R' : 'L'; }
+  else if (/^(thigh|shin)/.test(h.b)) { D.wLeg = h.b.slice(-1); D.c = D.wLeg; }
+  else D.c = Math.abs(D.wl.x) < 0.02 ? (Math.random() < 0.5 ? 'L' : 'R') : D.wl.x > 0 ? 'R' : 'L';
+  D.sg = D.c === 'R' ? -1 : 1;                                   // he rolls onto his other side: that hand stays on top
+  const torso = !D.wArm && !D.wLeg;
+  D.backWound = torso && D.wl.z > 0.04; D.frontWound = torso && D.wl.z < -0.04;   // no lying on the hand
+  for (const s of ['L', 'R']) {
+    const a = D.arm[s];
+    B['hand' + s].getWorldPosition(a.w); B['hand' + s].getWorldQuaternion(a.q);
+    a.mode = s === D.c ? 'wound' : s === D.wArm ? 'tuck' : 'hang';
+    B['foot' + s].getWorldPosition(D.foot[s]); B['foot' + s].getWorldQuaternion(D.footQ[s]);
+  }
+  downedFallPick(e, D, dir);
+  const hy = e.yaw + D.hOff;
+  D.hdW.set(-Math.sin(hy) * f, 0, -Math.cos(hy) * f);              // the way his head will lie (world)
+  D.slide.copy(D.hdW).multiplyScalar(-0.18);                       // sitting back, the feet slide out forward
+  D.legIK = !D.fwd;
+  for (const k of DOWN_KEYS) D.s[k] = 0;
+  D.s.py = D.y0;
+  D.hist.push(`fall ${D.fwd ? 'front' : 'back'} ${D.hOff.toFixed(2)}`);
+  enemyDropGun(e, dir);                                           // he lets go as he drops
+  enemyCurl(e, 0.55);
+  voxDyingStart(e);                                               // step 80 voices, as long as he lasts
+  if (e.moan) { e.moan.until = now + D.dur; e.moan.next = now + D.Tk + D.Tt + 0.5 + Math.random(); }
+  loopEnemyDied(e);                                               // score, squad reaction, room clear: he is down
+}
+// Which way he goes down: the floor his body will cover must be clear; the head away from the round, a
+// forward collapse a little preferred, a big twist not. |hOff| <= 1.6: knees then front; else sits, falls back.
+function downedFallPick(e, D, dir) {
+  const G = D.nav, f = e.room.f || 1, ax = dir.x * f, az = dir.z * f;
+  const away = Math.hypot(ax, az) > 1e-3 ? Math.atan2(-ax, -az) : e.yaw + Math.PI;
+  let best = -1e9;
+  for (let i = 0; i < 12; i++) {
+    const off = wrapAngle(i * Math.PI / 6), fwd = Math.abs(off) <= 1.6, tw = fwd ? Math.abs(off) : Math.PI - Math.abs(off);
+    if (!fwd && tw > 1.1) continue;
+    const Y = e.yaw + off, fx = -Math.sin(Y), fz = -Math.cos(Y);
+    let free = 0;
+    for (const d of DOWN_FALL) if (navFree(G, e.pos.x + fx * d, e.pos.y + fz * d)) free++;
+    const sc = free * 2 + Math.cos(Y - away) + (fwd ? 0.35 : 0) - tw * 0.3 + Math.random() * 0.35;
+    if (sc > best) { best = sc; D.hOff = off; D.fwd = fwd; }
+  }
+  D.yawEnd = D.fwd ? D.hOff : wrapAngle(D.hOff - Math.PI);
+  const K = D.fwd ? [DOWNED.knee, DOWNED.top] : [DOWNED.sit, DOWNED.back];
+  D.Tk = rnd2(K[0][0], K[0][1]); D.Tt = rnd2(K[1][0], K[1][1]);
+}
+// The fall, by time. Pelvis = Ryaw(yawP) Rx(-th) Ry(rho) in his root; positions in the fall frame (root
+// turned by hOff, -z the way his head goes). Front: knees drop (feet slide back), then he pivots over the
+// knees onto his front. Back: he sits (feet planted, IK) and falls back.
+function downedFallPose(e, D) {
+  const s = D.s, sk = e.sk, t = D.t, Tk = D.Tk, Tt = D.Tt, kH = DOWNED.kneeH, lie = DOWNED.lieH[0];
+  let zF;
+  if (D.fwd) {
+    const d = D.hipD, yK = kH + sk.thigh + d * Math.cos(0.22), k0 = -Math.acos(clamp((kH - sk.ankle) / sk.shin, -1, 1));
+    if (t < Tk) {
+      const k = Math.pow(t / Tk, 1.6);                              // gathering speed
+      s.py = mix(D.y0, yK, k); s.th = 0.22 * k; zF = 0.03 * k - d * Math.sin(s.th);
+      s.xL = s.xR = s.th;                                           // thighs plumb
+      s.kL = s.kR = -Math.acos(clamp((s.py - d * Math.cos(s.th) - sk.thigh - sk.ankle) / sk.shin, -1, 1));   // the shins swing back, feet on the floor
+      s.fL = s.fR = s.kL * 0.85;
+      s.sp = -0.35 * k; s.cp = -0.25 * k; s.np = -0.3 * k; s.hp = -0.1 * k; s.hy = 0; s.rho = 0;
+    } else {
+      const u = clamp((t - Tk) / Tt), g = u * u, ph = g * Math.PI / 2;   // toppling over the knees: slow, then fast
+      s.th = mix(0.22, Math.PI / 2, g);
+      zF = 0.03 - sk.thigh * Math.sin(ph) - d * Math.sin(s.th);
+      s.py = kH + sk.thigh * Math.cos(ph) + d * Math.cos(s.th) + (lie - kH) * g;
+      s.xL = s.xR = s.th - ph;
+      s.kL = s.kR = k0 * (1 - ph / (Math.PI / 2)); s.fL = s.fR = mix(k0 * 0.85, -1.25, g);
+      s.rho = D.sg * 0.4 * g;
+      s.sp = mix(-0.35, 0.03, g); s.cp = mix(-0.25, 0.06, g); s.np = mix(-0.3, 0.16, g); s.hp = mix(-0.1, 0.2, g); s.hy = -D.sg * 0.9 * g;
+      if (t > Tk + Tt) { const x = clamp((t - Tk - Tt) / 0.3); s.np -= 0.28 * Math.sin(Math.PI * x) * (1 - x); }   // the head knocks down and comes up
+    }
+    s.yawP = D.hOff * smoothstep(0, Tk + Tt * 0.6, t);
+  } else {
+    if (t < Tk) {
+      const k = Math.pow(t / Tk, 1.4);
+      s.py = mix(D.y0, 0.19, k); zF = -0.2 * k; s.th = 0.3 * k;
+      s.sp = -0.25 * k; s.cp = -0.15 * k; s.np = -0.2 * k; s.hp = 0; s.hy = 0;
+    } else {
+      const u = clamp((t - Tk) / Tt), g = u * u;
+      s.th = mix(0.3, -Math.PI / 2, g); s.py = mix(0.19, lie, g); zF = mix(-0.2, -0.28, g);
+      s.sp = mix(-0.25, -0.1, g); s.cp = mix(-0.15, -0.05, g); s.np = mix(-0.2, -0.38, g); s.hp = -0.1 * g; s.hy = D.sg * 0.4 * g;
+      if (t > Tk + Tt) { const x = clamp((t - Tk - Tt) / 0.3); s.np += 0.2 * Math.sin(Math.PI * x) * (1 - x); }
+    }
+    s.rho = 0; s.yawP = D.yawEnd * smoothstep(0, Tk + Tt * 0.5, t);
+  }
+  s.px = zF * Math.sin(D.hOff); s.pz = zF * Math.cos(D.hOff);
+}
+// Landed: the root moves under his pelvis and turns to the way his head lies (the pose is unchanged), and
+// the floor loop takes over from where the fall left every joint.
+function downedLand(e, D) {
+  const s = D.s, B = e.B, sn = Math.sin(D.h), cs = Math.cos(D.h);
+  e.pos.x += s.px * cs + s.pz * sn; e.pos.y += -s.px * sn + s.pz * cs;
+  D.h += D.hOff; D.hT = D.h; s.px = s.pz = 0; s.yawP = 0;
+  if (!D.fwd) { s.th = Math.PI / 2; s.rho = D.sg * Math.PI + s.rho; }   // Ryaw(hOff - pi) Rx(pi/2) = Ryaw(hOff) Rx(-pi/2) Ry(pi)
+  for (const sd of DOWN_SIDES) {                                  // the sit-back solved the legs by IK: read them back
+    _d91.e.setFromQuaternion(B['thigh' + sd].quaternion, 'XYZ'); s['x' + sd] = _d91.e.x; s['y' + sd] = _d91.e.y; s['z' + sd] = _d91.e.z;
+    _d91.e.setFromQuaternion(B['shin' + sd].quaternion, 'XYZ'); s['k' + sd] = _d91.e.x;
+    _d91.e.setFromQuaternion(B['foot' + sd].quaternion, 'XYZ'); s['f' + sd] = _d91.e.x;
+  }
+  D.legIK = false; D.phase = 'floor';
+  for (const k of DOWN_KEYS) D.tg[k] = s[k];
+  D.act = 'clutch'; D.post = D.fwd ? 'prone' : D.backWound ? 'side' : 'back'; D.actT = D.fwd ? rnd2(1.4, 2.4) : rnd2(2.8, 4.2); D.press = Math.random() < 0.6;
+  D.hist.push(`${D.t.toFixed(1)} ${D.post}`);
+  P10.pending.push({ at: P10.time + 0.8, fn: () => downedPool(e, 0.6) });
+}
+// What next on the floor: a crawl while he has the strength and a clear way, else clutching (front, side, back).
+function downedNext(e, D) {
+  const left = 1 - D.t / D.dur, was = D.act;
+  if (was !== 'crawl' && D.crawlLeft > 0.25 && D.vig > 0.45 && left > 0.3 && downedPath(e, D)) {
+    D.act = 'crawl'; D.post = 'crawl'; D.strokes = 2 + (Math.random() * 3 | 0); D.cph = 0; D.actT = 30;
+  } else {
+    let p = Math.random() < (D.post === 'back' ? 0.45 : 0.3) ? 'back' : was === 'crawl' && Math.random() < 0.4 ? 'prone' : 'side';
+    if (D.wArm) p = 'back';                                       // a hit arm is held on the belly
+    else if (p === 'back' && D.backWound) p = 'side';
+    else if (p === 'prone' && D.frontWound) p = 'side';
+    D.act = 'clutch'; D.post = p; D.press = Math.random() < 0.6; D.actT = rnd2(2.6, 5) * mix(1.5, 1, D.vig);
+    if (was === 'crawl') P10.pending.push({ at: P10.time + 0.6, fn: () => downedPool(e, 0.4) });
+  }
+  D.hist.push(`${D.t.toFixed(1)} ${D.post}`);
+}
+// A clear way to drag himself: on along his body, or turned up to ~1 rad (he pivots as he pulls).
+function downedPath(e, D) {
+  for (const o of DOWN_TURN) {
+    const Y = D.h + o, fx = -Math.sin(Y), fz = -Math.cos(Y);
+    let ok = true;
+    for (let d = 0.3; d <= 1.45; d += 0.23) if (!navFree(D.nav, e.pos.x + fx * d, e.pos.y + fz * d)) { ok = false; break; }
+    if (ok) { D.hT = Y; return true; }
+  }
+  return false;
+}
+// The crawl: arms alternate (reach 36% of a cycle, then planted while the body is pulled past the hand).
+function downedCrawl(e, D, dt) {
+  const s = D.s, arms = D.wArm ? 1 : 2;
+  let v = 0;
+  if (Math.abs(s.rho - D.sg * 0.14) < 0.4) {                      // rolled onto his front: go
+    const P = mix(DOWNED.period[0], DOWNED.period[1], D.vig) * (D.wArm ? 0.6 : 1);
+    D.cph += dt / P;
+    for (let i = 0; i < arms; i++) {
+      const ph = (D.cph + i * 0.5) % 1;
+      if (ph >= 0.36) v += DOWNED.stroke * (D.wArm ? 1.25 : 1) * 1.5708 * Math.sin(Math.PI * (ph - 0.36) / 0.64) / (0.64 * P);
+    }
+  }
+  D.crawlV += (v - D.crawlV) * (1 - Math.exp(-dt * 10));
+  const sp = D.crawlV;
+  if (sp > 0.01) {
+    D.h += clamp(wrapAngle(D.hT - D.h), -0.45 * dt, 0.45 * dt);  // pivots toward the clear way as he pulls
+    const fx = -Math.sin(D.h), fz = -Math.cos(D.h), nx = e.pos.x + fx * sp * dt, nz = e.pos.y + fz * sp * dt;
+    if (navFree(D.nav, nx, nz) && navFree(D.nav, nx + fx * 0.8, nz + fz * 0.8)) {
+      e.pos.set(nx, nz); D.crawlLeft -= sp * dt;
+      downedSmear(e, D);
+    } else { D.crawlLeft = 0; D.crawlV = 0; }                     // a wall, a crate: that is as far as he gets
+  }
+  if (D.cph * arms >= D.strokes || D.crawlLeft <= 0 || D.vig < 0.3) { D.smOk = false; downedNext(e, D); }
+}
+// Targets for the floor loop: a base pose per posture, noise (writhing, rocking), pain spasms (he curls up),
+// breathing; all of it scaled by how much he has left.
+function downedTargets(e, D, dt) {
+  const g = D.tg, s = D.s, sk = e.sk, t = D.t, o = D.seed, V = D.vig, sg = D.sg;
+  const n1 = Math.sin(t * 1.9 + o) * 0.6 + Math.sin(t * 3.3 + o * 1.7) * 0.4;
+  const n2 = Math.sin(t * 1.4 + o * 2.3) * 0.6 + Math.sin(t * 2.7 + o * 0.6) * 0.4;
+  const n3 = Math.sin(t * 2.3 + o * 3.1) * 0.5 + Math.sin(t * 4.1 + o * 1.3) * 0.5;
+  if ((D.spasmT -= dt) <= 0) { D.pain = Math.max(D.pain, (0.55 + 0.45 * Math.random()) * V); D.spasmT = rnd2(1.8, 4.5) / Math.max(0.35, V); }
+  D.pain = Math.max(0, D.pain - dt * 1.3);
+  const P = D.pain, W = V * 0.8 + P * 0.6, br = Math.sin(t * 6.283 / mix(3.4, 1.5, V)) * 0.035 * (0.3 + 0.7 * V);
+  g.px = 0; g.pz = 0; g.yawP = 0; g.th = Math.PI / 2; g.wig = 0; g.tw = n2 * 0.1 * W; g.hr = 0; g.yL = 0; g.yR = 0;
+  let xt, kt, zt, xl, kl, zl, ft = -0.5, fl = -0.5;               // top / lower leg: flex, knee, spread out; feet
+  if (D.post === 'crawl') {
+    const c = D.cph * 6.283, sc = Math.sin(c);
+    g.rho = sg * 0.14 + sc * 0.1; g.wig = sc * 0.08;
+    g.sp = 0.1 + br; g.cp = 0.14; g.np = 0.28 * (0.5 + 0.5 * V); g.hp = 0.3 * (0.4 + 0.6 * V); g.hy = sc * 0.12;
+    xt = xl = 0.04; zt = 0.1; zl = 0.08; kt = -0.12 - 0.3 * Math.max(0, sc); kl = -0.12 - 0.3 * Math.max(0, -sc); ft = fl = -1.25;
+  } else if (D.post === 'prone') {
+    g.rho = sg * (0.42 + n1 * 0.12 * W);
+    g.sp = 0.04 + br - P * 0.12; g.cp = 0.05 + n3 * 0.05 * W;
+    g.np = 0.08 + Math.max(0, n2) * 0.3 * W; g.hp = 0.12 * V; g.hy = -sg * 0.9 * (1 - 0.4 * V);
+    xt = 0.45 + n2 * 0.22 * W + P * 0.25; kt = -0.95 - n2 * 0.25 * W; zt = 0.35;   // the top knee drawn up and out
+    xl = 0.04; kl = -0.15 - 0.15 * Math.max(0, n1) * W; zl = 0.06; ft = fl = -1.2;
+  } else if (D.post === 'side') {
+    g.rho = sg * (1.47 + n1 * 0.17 * W);
+    g.sp = -0.36 + n2 * 0.1 * W - P * 0.22 + br; g.cp = -0.24 - P * 0.12;
+    g.np = -0.2 + n3 * 0.22 * W; g.hp = -0.1; g.hy = n1 * 0.22 * W;
+    xt = 1.05 + n2 * 0.3 * W + P * 0.3; kt = -1.35 - n3 * 0.22 * W; zt = 0.06;   // curled up, the top leg pushing
+    xl = 0.7 - n2 * 0.18 * W + P * 0.2; kl = -1.05; zl = 0; ft = fl = -0.35;
+  } else {                                                        // on his back, knees up, feet on the floor
+    g.rho = sg * (Math.PI - 0.1 + n1 * 0.2 * W);
+    g.sp = -0.08 - Math.max(0, n2) * 0.14 * W - P * 0.22 + br; g.cp = -0.06;
+    g.np = -(0.04 + 0.32 * V + Math.max(0, n3) * 0.15 * W); g.hp = -0.1; g.hy = n1 * 0.45 * W; g.hr = n2 * 0.12 * W;
+    xt = 0.72 + n2 * 0.22 * W + P * 0.2; xl = 0.72 - n2 * 0.22 * W + P * 0.2;
+    kt = downKneeFlat(sk, s.py, xt); kl = downKneeFlat(sk, s.py, xl); ft = fl = -0.4;
+    const sw = n1 * 0.32 * W;                                     // both knees fall to one side, then the other
+    zt = 0.1 + sw * (D.c === 'R' ? 1 : -1); zl = 0.1 - sw * (D.c === 'R' ? 1 : -1);
+  }
+  if (D.c === 'R') { g.xR = xt; g.kR = kt; g.zR = zt; g.fR = ft; g.xL = xl; g.kL = kl; g.zL = -zl; g.fL = fl; }
+  else { g.xL = xt; g.kL = kt; g.zL = -zt; g.fL = ft; g.xR = xl; g.kR = kl; g.zR = zl; g.fR = fl; }
+  g.py = mix(DOWNED.lieH[0], DOWNED.lieH[1], Math.abs(Math.sin(s.rho)));
+  for (let i = 0; i < DOWN_KEYS.length; i++) { const k = DOWN_KEYS[i]; s[k] += (g[k] - s[k]) * (1 - Math.exp(-dt * DOWN_RK[i])); }
+}
+// On his back with the thigh up x rad: the knee that puts the foot on the floor.
+const downKneeFlat = (sk, py, x) => Math.asin(clamp((sk.ankle + 0.01 - py - sk.thigh * Math.sin(x)) / sk.shin, -1, 1)) - x;
+function downedModes(D) {
+  const c = D.c, o = c === 'R' ? 'L' : 'R', A = D.arm;
+  if (D.act === 'crawl') { A.L.mode = A.R.mode = 'crawl'; if (D.wArm) A[D.wArm].mode = 'tuck'; return; }
+  A[c].mode = 'wound';
+  if (D.wArm) { A[D.wArm].mode = 'tuck'; return; }
+  A[o].mode = D.post === 'back' ? (D.press ? 'press' : 'side') : D.reachT > 0 ? 'reach' : 'floor';
+}
+// One arm: where its wrist and hand want to be (world), smoothed, then two-bone IK.
+function downedArm(e, D, side) {
+  const B = e.B, a = D.arm[side], sS = side === 'R' ? 1 : -1, V = _d91, fy = e.room.origin.y, wd = a.wd, pole = V.pole;
+  const sh = a.up.getWorldPosition(V.a);
+  if (a.mode !== 'crawl') a.planted = false;
+  switch (a.mode) {
+    case 'wound': case 'press': {                                 // palm on the wound, fingers on from the shoulder
+      const P = V.v.copy(D.wl).applyMatrix4(D.wb.matrixWorld), n = V.n.set(0, D.wl.y, 0).applyMatrix4(D.wb.matrixWorld);
+      n.subVectors(P, n); if (n.lengthSq() < 1e-6) n.copy(V.cB); n.normalize();
+      const f = V.f.subVectors(P, sh); f.addScaledVector(n, -f.dot(n)); if (f.lengthSq() < 1e-6) f.copy(V.cU).negate(); f.normalize();
+      const rub = a.mode === 'wound' ? 0.012 * Math.sin(D.t * 3.1 + D.seed) * D.vig : -0.03;
+      wd.copy(P).addScaledVector(n, a.mode === 'press' ? 0.065 : 0.028).addScaledVector(f, rub - 0.07);
+      frameQ(V.x.copy(n).multiplyScalar(sS), V.g.copy(f).negate(), a.qd);
+      pole.copy(V.cR).multiplyScalar(sS * 0.8).addScaledVector(V.cU, -0.6).addScaledVector(V.cB, 0.25);
+      break;
+    }
+    case 'tuck': {                                                // a hit arm held across the belly
+      B.spine.getWorldPosition(wd).addScaledVector(V.cF, 0.17).addScaledVector(V.cU, 0.08).addScaledVector(V.cR, -sS * 0.04);
+      frameQ(V.x.copy(V.cF).multiplyScalar(sS), V.g.copy(V.cR).multiplyScalar(sS), a.qd);
+      pole.copy(V.cR).multiplyScalar(sS * 0.6).addScaledVector(V.cU, -0.8);
+      break;
+    }
+    case 'hang': {                                                // the first moment of the fall: let go
+      wd.copy(sh).addScaledVector(V.Y, -0.46).addScaledVector(V.cF, 0.06);
+      frameQ(V.cR, V.Y, a.qd);
+      pole.copy(V.cB).multiplyScalar(0.6).addScaledVector(V.cR, sS * 0.3);
+      break;
+    }
+    default: {                                                    // a hand on the floor (palm down)
+      const g = V.g;
+      if (a.mode === 'crawl') {
+        const ph = D.wArm ? D.cph % 1 : (D.cph + (side === 'L' ? 0 : 0.5)) % 1;
+        const R = V.b.copy(sh).addScaledVector(D.hdW, DOWNED.reach).addScaledVector(V.cR, sS * 0.12); R.y = fy + 0.035;
+        if (ph < 0.36) {                                          // reach: up off the floor and forward
+          if (a.planted) { a.planted = false; a.from.copy(a.w); }
+          const x = smoothstep(0, 1, ph / 0.36);
+          wd.lerpVectors(a.from, R, x); wd.y += 0.09 * Math.sin(Math.PI * x);
+        } else { if (!a.planted) { a.planted = true; a.plant.copy(R); } wd.copy(a.plant); }   // planted: the body is pulled past it
+        g.copy(D.hdW);
+        pole.copy(V.cR).multiplyScalar(sS * 0.8).addScaledVector(V.cB, 0.6).addScaledVector(V.cU, -0.15);
+      } else if (a.mode === 'catch') {                            // falling: a hand out to the floor
+        B.pelvis.getWorldPosition(wd).addScaledVector(D.hdW, D.fwd ? 0.75 : 0.08).addScaledVector(V.cR, sS * 0.32); wd.y = fy + 0.04;
+        g.copy(D.hdW);
+        pole.copy(V.cR).multiplyScalar(sS * 0.7).addScaledVector(V.cB, 0.5).addScaledVector(V.cU, -0.3);
+      } else if (a.mode === 'reach') {                            // toward you
+        headWorld(V.w); g.subVectors(V.w, sh).setY(0); if (g.lengthSq() < 1e-6) g.copy(D.hdW); g.normalize();
+        wd.copy(sh).addScaledVector(g, 0.42); wd.y = Math.max(fy + 0.06, sh.y + 0.04);
+        pole.copy(V.cU).multiplyScalar(-0.6).addScaledVector(V.cR, sS * 0.6); pole.y -= 0.3;
+      } else if (a.mode === 'side') {                             // on his back: the arm by his side
+        wd.copy(sh).addScaledVector(V.cR, sS * 0.28).addScaledVector(V.cU, -0.22); wd.y = fy + 0.035;
+        g.copy(V.cU).negate();
+        pole.copy(V.cR).multiplyScalar(sS * 0.8).addScaledVector(V.cU, -0.4).addScaledVector(V.cB, -0.2);
+      } else {                                                    // 'floor': braced by his head
+        B.head.getWorldPosition(wd).addScaledVector(V.cU, 0.12).addScaledVector(V.cF, 0.16).addScaledVector(V.cR, sS * 0.12); wd.y = fy + 0.035;
+        g.copy(V.cU);
+        pole.copy(V.cR).multiplyScalar(sS * 0.6).addScaledVector(V.cU, -0.6).addScaledVector(V.cB, 0.3);
+      }
+      g.y = 0; if (g.lengthSq() < 1e-6) g.copy(D.hdW); g.normalize();
+      frameQ(V.x.set(0, sS, 0), g.negate(), a.qd);
+    }
+  }
+  const k = a.planted ? 1 : 1 - Math.exp(-D.dtP * (a.mode === 'crawl' ? 25 : D.phase === 'fall' ? 9 : 5));
+  a.w.lerp(wd, k); a.q.slerp(a.qd, k);
+  if (a.w.y < fy + 0.03) a.w.y = fy + 0.03;                      // never through the floor
+  solveIK(a.up, a.fore, e.sk.upper, e.sk.fore, a.w, pole, V.cF, a.hand, a.q);
+  a.clav.updateWorldMatrix(false, true);
+}
+// Sitting back, the feet stay on the floor (sliding out a little): legs by IK.
+function downedLegIK(e, D) {
+  const B = e.B, sk = e.sk, k = clamp(D.t / (D.Tk + D.Tt));   // (the arm records carry each side's leg bones too)
+  B.pelvis.getWorldQuaternion(_d91.cq);
+  _d91.cF.set(0, 0, -1).applyQuaternion(_d91.cq);
+  _d91.pole.copy(_d91.cF).addScaledVector(_d91.Y, 0.6);
+  for (const sd of DOWN_SIDES) {
+    const a = D.arm[sd];
+    _d91.v.copy(D.foot[sd]).addScaledVector(D.slide, k);
+    solveIK(a.thigh, a.shin, sk.thigh, sk.shin, _d91.v, _d91.pole, _d91.cF, a.foot, D.footQ[sd]);
+  }
+  B.pelvis.updateWorldMatrix(false, true);
+}
+// The pose on the driver (so the skin and the hit capsules follow).
+function downedApply(e, D) {
+  const B = e.B, s = D.s, V = _d91;
+  e.root.position.set(e.pos.x, 0, e.pos.y); e.root.rotation.set(0, D.h, 0);
+  B.pelvis.position.set(s.px, s.py, s.pz);
+  B.pelvis.quaternion.setFromAxisAngle(V.Y, s.yawP).multiply(V.q.setFromAxisAngle(V.X, -s.th)).multiply(V.q.setFromAxisAngle(V.Y, s.rho)).multiply(V.q.setFromAxisAngle(V.Z, s.wig));
+  B.spine.rotation.set(s.sp, s.tw, 0, 'YXZ'); B.chest.rotation.set(s.cp, s.tw * 0.6, 0, 'YXZ');
+  B.neck.rotation.set(s.np, s.hy * 0.4, s.hr * 0.5, 'YXZ'); B.head.rotation.set(s.hp, s.hy * 0.6, s.hr * 0.5, 'YXZ');
+  B.clavL.rotation.set(0, 0, 0, 'YXZ'); B.clavR.rotation.set(0, 0, 0, 'YXZ');
+  B.thighL.rotation.set(s.xL, s.yL, s.zL, 'XYZ'); B.shinL.rotation.set(s.kL, 0, 0, 'XYZ'); B.footL.rotation.set(s.fL, 0, 0, 'XYZ');
+  B.thighR.rotation.set(s.xR, s.yR, s.zR, 'XYZ'); B.shinR.rotation.set(s.kR, 0, 0, 'XYZ'); B.footR.rotation.set(s.fR, 0, 0, 'XYZ');
+  e.root.updateWorldMatrix(true, true);
+  if (D.legIK) downedLegIK(e, D);
+  B.chest.getWorldQuaternion(V.cq);                               // his body axes (world)
+  V.cR.set(1, 0, 0).applyQuaternion(V.cq); V.cU.set(0, 1, 0).applyQuaternion(V.cq); V.cB.set(0, 0, 1).applyQuaternion(V.cq); V.cF.copy(V.cB).negate();
+  if (D.wArm) downedArm(e, D, D.wArm);                            // a held arm first, then the hand on it
+  if (D.wArm !== 'L') downedArm(e, D, 'L');
+  if (D.wArm !== 'R') downedArm(e, D, 'R');
+  const w = D.phase === 'fall' ? smoothstep(0, 0.26, D.t) : 1;   // the first moment blends out of the pose he was in
+  if (w < 1) {
+    for (let i = 0; i < DRIVE_ORDER.length; i++) { const b = B[DRIVE_ORDER[i]]; V.q.copy(D.snap[i]).slerp(b.quaternion, w); b.quaternion.copy(V.q); }
+    B.pelvis.position.lerpVectors(D.snapP, B.pelvis.position, w);
+  }
+  e.root.updateWorldMatrix(false, true);
+  enemySkinSync(e);
+}
+// Bleeding on the floor: drips from every wound with the heartbeat, weaker as he runs dry.
+function downedBleed(e, D, dt, left) {
+  const o = DOWN_DROP || (DOWN_DROP = Object.assign({}, BLOOD_DROP, { sp: [0.05, 0.35], land: 1 }));
+  const beat = 0.55 + 0.45 * Math.max(0, Math.sin(D.t * 7.5)), r = DOWNED.drip * (0.3 + 0.7 * left) * beat;
+  for (const w of e.wounds) {
+    if (Math.random() >= dt * r * (w.part === 'limb' ? 0.6 : 1)) continue;
+    _dy.o.copy(w.lp).applyMatrix4(w.bone.matrixWorld);
+    fxEmit(_dy.o, _dy.v.set(0, -1, 0), 0.25, 1, o);
+  }
+}
+// A pool where he lies (merges with one already there, step 70).
+function downedPool(e, s1) {
+  if (!e.room.active || !CONFIG.polish.blood.on) return;
+  let wb = null, wy = Infinity;
+  for (const w of e.wounds || []) { const pt = _d91.w.copy(w.lp).applyMatrix4(w.bone.matrixWorld), y = pt.y + (w.part === 'limb' ? 1 : 0); if (y < wy) { wy = y; wb = w; } }
+  const p = wb ? _d91.w.copy(wb.lp).applyMatrix4(wb.bone.matrixWorld) : e.B.spine.getWorldPosition(_d91.w);
+  p.y = Math.max(p.y, e.room.origin.y + 0.2);
+  poolAt(p, s1, 1.3);
+}
+// Dragging himself, he leaves a streak (as goreSmear for a body).
+function downedSmear(e, D) {
+  if ((e.smears || 0) >= CONFIG.gore.smearMax || !e.wounds || !e.wounds.length) return;
+  const p = e.B.spine.getWorldPosition(_d91.b), fy = e.room.origin.y;
+  if (!D.smOk) { D.smA.set(p.x, fy, p.z); D.smOk = true; return; }
+  const dx = p.x - D.smA.x, dz = p.z - D.smA.z;
+  if (dx * dx + dz * dz < 0.14 * 0.14) return;
+  GORE.d.set(dx, 0, dz).normalize(); GORE.v.set((p.x + D.smA.x) / 2, fy, (p.z + D.smA.z) / 2);
+  const n = e.smears || 0;
+  addBloodDecal(e.room, n < 8 ? 'smear1' : 'smear2', GORE.v, _p10.up, rollAlong(_p10.up, GORE.d) + rnd2(-0.2, 0.2), rnd2(0.7, 0.95));
+  D.smA.set(p.x, fy, p.z); e.smears = n + 1;
+}
+// Per frame, for a man down in the active room (from enemiesDyingUpdate).
+function downedUpdate(e, dt) {
+  const D = e.downed;
+  if (!(e.room.visible || e.room === stream.current)) return;     // behind a shut door: frozen
+  D.t += dt;
+  if (D.t >= D.dur) { e.B.pelvis.getWorldPosition(_d91.b); enemyDie(e, 'spine', _d91.v.set(0, -1, 0), _d91.b, 0); return; }   // bled out: still, limp, silent
+  const left = 1 - D.t / D.dur;
+  D.vig = smoothstep(0.03, 0.45, left);
+  if (e.moan) { const now = wnow(); e.moan.until = now + D.dur - D.t; e.moan.t0 = e.moan.until - D.dur; voxDyingTick(e, now); }   // step 80, on his clock (world dt)
+  if (CONFIG.polish.blood.on && e.wounds) downedBleed(e, D, dt, left);
+  if (D.phase === 'fall') {
+    downedFallPose(e, D);
+    if (!D.wArm) D.arm[D.c === 'R' ? 'L' : 'R'].mode = D.t < D.Tk * 0.7 ? 'hang' : 'catch';
+    if (!D.thud && D.t >= D.Tk + D.Tt - 0.47) { D.thud = true; bodyFallSound(e); }   // lands with the thud (it plays ~0.45 s on)
+    if (D.t >= D.Tk + D.Tt + 0.3) downedLand(e, D);
+  } else {
+    const f = e.room.f || 1;
+    D.hdW.set(-Math.sin(D.h) * f, 0, -Math.cos(D.h) * f);
+    D.actT -= dt; if (D.reachT > 0) D.reachT -= dt;
+    if (D.act === 'crawl') downedCrawl(e, D, dt);
+    else {
+      D.crawlV = 0;
+      if (D.actT <= 0) downedNext(e, D);
+      else if (D.vig > 0.4 && D.post !== 'back' && D.reachT <= 0 && Math.random() < dt * 0.1) D.reachT = rnd2(1.0, 1.8);   // a hand out toward you
+    }
+    downedModes(D);
+    downedTargets(e, D, dt);
+  }
+  D.dtP += dt;                                                    // posed every frame on screen, offscreenPoseHz off it
+  if (D.phase === 'fall' || !enemyOffscreen(e) || D.dtP >= 1 / CONFIG.enemy.offscreenPoseHz) { downedApply(e, D); D.dtP = 0; }
+  if (CONFIG.enemy.castShadow && e.room.visible && ((D.shT -= dt) <= 0 || D.phase === 'fall' || D.crawlV > 0.02)) { motionShadows(); D.shT = 0.2; }
+}
+function downedShift(D, dx, dy, dz) {
+  for (const a of [D.arm.L, D.arm.R]) for (const v of [a.w, a.wd, a.plant, a.from]) { v.x += dx; v.y += dy; v.z += dz; }
+  for (const v of [D.foot.L, D.foot.R, D.smA]) { v.x += dx; v.y += dy; v.z += dz; }
+}
+// Step 91: limp. A man already down goes still where he lies (pumping only if he still has blood); a head
+// shot drops where he stood: the hips and chest straight down, the knees folding, nothing else.
+function limpStart(e, down) {
+  const Bl = CONFIG.polish.blood, L = DOWNED.limp;
+  e.dying = null;
+  e.bleedT = !down ? 0 : down.t >= down.dur ? Bl.bleedTime : Math.min(Bl.bleedTime * 0.8, down.t);
+  if (down) return;
+  e.root.getWorldQuaternion(_dy.q); _dy.w.set(1, 0, 0).applyQuaternion(_dy.q);   // his right
+  for (const r of e.rag) {
+    const sg = r.seg, v = r.body.linvel();
+    const dn = sg === 'pelvis' || sg === 'spine' || sg === 'neck' ? L.drop : sg.startsWith('thigh') ? L.drop * 0.5 : 0;
+    if (dn) r.body.setLinvel({ x: v.x, y: v.y - dn, z: v.z }, true);
+    const w = sg.startsWith('shin') ? -L.knee : sg.startsWith('thigh') ? L.knee * 0.45 : 0;
+    if (w) r.body.setAngvel({ x: _dy.w.x * w, y: _dy.w.y * w, z: _dy.w.z * w }, true);
   }
 }
 
@@ -24704,7 +25183,7 @@ function updateContact() {
       }
       e.B.pelvis.getWorldPosition(_p10.b);
       add(_p10.b.x, e.room.origin.y, _p10.b.z, 0.7, 0.7, 0, C.body);
-    } else if (e.rag) {
+    } else if (e.rag || e.downed) {                                // step 91: a man down too
       for (const [seg, w] of [['pelvis', 0.5], ['chest', 0.55], ['head', 0.32], ['shinL', 0.26], ['shinR', 0.26]]) {
         const b = e.B[seg];
         if (!b) continue;
@@ -25123,6 +25602,7 @@ function knockTick(p, now) {
 }
 // A body going down: the weight, then the kit and the gun on the floor.
 function bodyFallSound(e) {
+  VOX.n.fall++;                                                    // step 91 (tests)
   e.B.pelvis.getWorldPosition(_p10.a);
   _p10.a.y = 0.15;
   const at = _p10.a.clone();
@@ -30795,7 +31275,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP };
 </script>
 </body>
 </html>
