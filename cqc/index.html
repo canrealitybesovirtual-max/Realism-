@@ -2037,7 +2037,8 @@ const PROJECT_RULES = {
   workshop: [
     'Gunsmith workshop computer (CONFIG.workshop, ?workshop=off): one rugged touchscreen on a wall arm over the gunsmith bench, moved to the current safe room (wsRoomActivated), never rebuilt. Its glass is a clone of the terminal material (same program), the housing uses kit materials; it adds no light. It redraws only on a change (a press, a hover, the wallet or pouches, checked every CONFIG.workshop.check s while you are near): never per frame.',
     'Money: WALLET (cqc.wallet.v1) earns 1 $ per banked point (loopEnterRoom). Records and scores are unchanged. The terminal\'s free RESTOCK is replaced by the store\'s SUPPLIES (ammo, grenades, medical, each priced; it charges only when the restock adds something). The automatic refill on entering the safe room stays.',
-    'Attachments (docs/ATTACHMENTS.md) live in one table, WS_ITEMS { id, gun, cat (one of the gun\'s WS_GUNS slots or hardware), name, price, desc, owned, requires, hw, addon, cosmetic, model, fx }. A part is locked until its requires are owned; cosmetic parts never change a stat; a part without a model can be bought, not fitted. The 12 stats (WS_STATS) start from WEAPON_DEFS and add the fx of owned hardware and owned + fitted parts. Store only: nothing here changes the guns yet; each gun\'s attachment step wires it.'
+    'Attachments (docs/ATTACHMENTS.md) live in one table, WS_ITEMS { id, gun, cat (one of the gun\'s WS_GUNS slots or hardware), name, price, desc, owned, requires, hw, addon, cosmetic, model, fx }. A part is locked until its requires are owned; cosmetic parts never change a stat; a part without a model can be bought, not fitted. The 12 stats (WS_STATS) start from WEAPON_DEFS and add the fx of owned hardware and owned + fitted parts. Store only: nothing here changes the guns yet; each gun\'s attachment step wires it.',
+    'Step 100 (?g17att=off): the Glock 17\'s rows are real parts (models/att/g17-att.glb from tools/pack_glock_att.py + built plate, threaded barrel, protector, tall sights, cover). One build for every Glock: the store\'s fitted set (g17SyncGun); a RELEASE at the vise writes the gun\'s parts back (g17FromGun). GLOCK_FX is the one table of effects: g.afx feeds fireGun (recoil, flash, report, zero), deskGunPose (aim time, sway), deskHeft (weight), the VR pose (g17VrHeft, a few ms of lag) and the reload tasks; the Glock\'s store bars are g17Stats on the same numbers. The red dot is a shader on its lens (view space, per eye): a 3 MOA dot parallel to the slide, at infinity, only through the window, brightness from the room.'
   ],
   currentStep: 70
 };
@@ -4653,6 +4654,7 @@ async function buildKit() {
   setLoad('Loading the M1911', 0.942);
   try { await m1911Load(); } catch (e) { console.warn('step 59: M1911 not loaded', e); }   // step 59
   for (const t of ['g17', 'm4a1s']) { try { await extLoad(t); } catch (e) { console.warn('step 60: ' + t + ' not loaded', e); } }   // step 60
+  try { await g17AttLoad(); } catch (e) { console.warn('step 100: Glock attachments not loaded', e); }   // step 100
   for (const t of ['akmn', 'awp']) { try { await x64Load(t); } catch (e) { console.warn('step 64: ' + t + ' not loaded', e); } }   // step 64
   buildCoverKit();                 // step 6: table, debris (shares every material above)
   setLoad('Building the enemy', 0.945);
@@ -13529,6 +13531,7 @@ function nadeShift(dx, dz, dy) {
 // posed around it from HAND_DATA.grips.pistol / .shell), so what you hold sits in the palm you see.
 const HOLD = {};
 function holdPose(it) {
+  if (it.hold) return it.hold;                                     // step 100: a part's own hold (a can round its body, a dot by its sides)
   const key = it.kind === 'mag' ? (MAG_DEFS[it.type].hold || it.type) : it.kind;
   if (!HOLD[key]) {
     const q = new THREE.Quaternion();
@@ -15047,7 +15050,8 @@ function fireGun(g, now) {
   _fo.copy(g.wr.chamber).applyMatrix4(root.matrixWorld);
   // Step 8.1: zeroed. The sights sit above the bore, so the bore is angled up a hair
   // and the bullet crosses the sight line at d.zero metres (CQC: a few cm low up close).
-  _fd.set(0, d.zero ? d.eye[1] / d.zero : 0, -1).normalize().applyQuaternion(_wq);
+  _fd.set(0, d.zero ? (g.sightY ?? d.eye[1]) / d.zero : 0, -1).normalize().applyQuaternion(_wq);   // step 100: a red dot / tall sights move the sight line
+  const AF = g.afx || AFX0;                                        // step 100: the fitted parts (GLOCK_FX)
   _fx.set(1, 0, 0).applyQuaternion(_wq); _fy.set(0, 1, 0).applyQuaternion(_wq);
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
   for (let i = 0; i < d.pellets; i++) {
@@ -15063,26 +15067,26 @@ function fireGun(g, now) {
   // Recoil: an impulse on the gun's spring. A second hand soaks up about half.
   const two = g.support ? d.recoil.twoHand : 1;
   const j = 0.9 + Math.random() * 0.2;
-  g.rec.vz += d.recoil.kick * two * j;
-  g.rec.vp += d.recoil.climb * two * j;
+  g.rec.vz += d.recoil.kick * AF.kick * two * j;
+  g.rec.vp += d.recoil.climb * AF.climb * two * j;
   g.rec.vy += (Math.random() - 0.5) * 2 * d.recoil.yaw * two;
   if (!renderer.xr.isPresenting) {
-    look.pitch = clamp(look.pitch + d.deskKick * (0.8 + Math.random() * 0.4), -1.45, 1.45);
-    look.yaw += (Math.random() - 0.5) * d.deskKick * 0.5;
+    look.pitch = clamp(look.pitch + d.deskKick * AF.dkick * (0.8 + Math.random() * 0.4), -1.45, 1.45);
+    look.yaw += (Math.random() - 0.5) * d.deskKick * AF.dkick * 0.5;
     applyLook();
   }
   // Flash, light, sound, haptics (step 78: a suppressor eats the flash and most of the report)
-  if (!g.sup) flashBurst(g, d);
+  if (!g.sup) { flashBurst(g, d); if (AF.flash !== 1) g.parts.flash.scale.multiplyScalar(AF.flash); }   // step 100: a comp's blast shows more
   if (g.primary === deskHand) vmShot(g);   // step 82: the viewmodel fires with it
   if (d.flashLight > 0 && !g.sup) {
     _fp.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
     pool.muzzle.position.copy(_fp).addScaledVector(_fd, 0.06);
     pool.muzzle.color.setRGB(1, 0.4 + Math.random() * 0.1, 0.11 + Math.random() * 0.06);   // linear; a little hotter or cooler each shot
-    pool.muzzleI = d.flashLight * (0.85 + Math.random() * 0.3);
+    pool.muzzleI = d.flashLight * AF.light * (0.85 + Math.random() * 0.3);
     pool.muzzle.intensity = pool.muzzleI;
     pool.muzzleT = pool.muzzleT0 = 0.045;
   }
-  if (!supShot(g, d)) sfx(d.sound, g.sup ? 0.28 : 1);              // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
+  if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.28 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
   if (g.sup) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
   muzzleSmoke(_wv, _fd, g.type);           // step 10
@@ -15656,7 +15660,7 @@ function deskHeft(g, dt, aimT, Q) {
   if (!HEFT.on) return;
   const h = g.heft || (g.heft = { yaw: look.yaw, pitch: look.pitch, y: 0, p: 0, vy: 0, vp: 0 });
   if (!(dt > 0) || dt > 0.1) { h.yaw = look.yaw; h.pitch = look.pitch; return; }
-  const m = g.def.mass, k = HEFT.lag * m, w0 = HEFT.rate / Math.sqrt(m), c = 2 * HEFT.damp * w0;
+  const m = g.def.mass + (g.afx ? g.afx.mass : 0), k = HEFT.lag * m, w0 = HEFT.rate / Math.sqrt(m), c = 2 * HEFT.damp * w0;
   const ty = clamp((look.yaw - h.yaw) / dt * -k, -HEFT.max, HEFT.max), tp = clamp((look.pitch - h.pitch) / dt * -k, -HEFT.max, HEFT.max);
   h.yaw = look.yaw; h.pitch = look.pitch;
   const steps = Math.max(1, Math.ceil(dt / 0.005)), s = dt / steps;   // studio fix: small steps, stable at any frame rate
@@ -15670,7 +15674,8 @@ function deskHeft(g, dt, aimT, Q) {
 function deskGunPose(g, dt, P, Q) {
   const d = g.def, wr = g.wr, A = CONFIG.weapons.deskAim;
   const busy = !!(g.lh && g.lh.active) || DNADE.active || !!(g.task && g.task.vm);   // step 16: no aiming mid-reload (step 23: or mid-throw; step 89: or a viewmodel reload)
-  g.ads = clamp(g.ads + (deskInput.ads && !busy ? dt : -dt) / CONFIG.weapons.adsTime);
+  const AF = g.afx || AFX0;                                        // step 100: a red dot aims in faster, weight slower (GLOCK_FX)
+  g.ads = clamp(g.ads + (deskInput.ads && !busy ? dt : -dt) / (CONFIG.weapons.adsTime * AF.ads));
   const t = smoothstep(0, 1, g.ads);
   // Step 18: compressed ready, not the hip. The gun's eye point sits just under and right of your
   // eye; looking down it pitches about your shoulder line (out ahead of the chest, so the arms
@@ -15680,7 +15685,7 @@ function deskGunPose(g, dt, P, Q) {
   const down = Math.min(0, look.pitch);
   if (down < 0) { _rdyS.set(S[0], S[1], S[2]); _rdyP.add(_rdyV.copy(_rdyS).applyAxisAngle(_XAXIS, -down).sub(_rdyS)); }
   // Breathing sway at ready, nearly none aimed.
-  const s = performance.now() / 1000, sw = (1 - t * 0.85) * 0.004;
+  const s = performance.now() / 1000, sw = ((1 - t) * 0.004 + t * 0.0006 * AF.aim) * AF.sway;   // step 100: weight sways more, a dot steadies the aimed picture
   _rdyP.x += Math.sin(s * 1.1) * sw; _rdyP.y += Math.sin(s * 2.2) * sw * 0.6;
   _rdyT.set(0, 0, -deskAimDist(g, dt));
   _lookM.lookAt(_rdyP, _rdyT, _UP);
@@ -15812,6 +15817,7 @@ function weaponsUpdate(dt, now) {
   updateDeskGunInput(now);
   updateLightMount();
   updateLasers();                                   // step 16
+  g17Tick(dt);                                      // step 100: the red dot's auto brightness
   const g = gunOf(deskHand);
   const txt = g ? ammoText(g) : 'none';
   if (txt !== lastAmmoText) { lastAmmoText = txt; if (ui.ammo) ui.ammo.textContent = txt; }
@@ -15829,7 +15835,7 @@ function updateGun(g, dt, now) {
   let held = false;
   if (g.primary) {
     held = true;
-    if (g.primary.ctrl) { vrGunPose(g, dt, _gp, _gq); gunClipWorld(g, dt, _gp, _gq); }   // step 30: never through a wall
+    if (g.primary.ctrl) { vrGunPose(g, dt, _gp, _gq); if (g.afx) g17VrHeft(g, dt, _gq); gunClipWorld(g, dt, _gp, _gq); }   // step 30: never through a wall (step 100: the parts' heft)
     else { deskGunPose(g, dt, _gp, _gq); gunClipWorld(g, dt, _gp, _gq, CLIP.deskBack); }   // step 59.1: computer / phone too
   } else if (g.cradle && WB.room) {                  // step 73: clamped in the gunsmith vise
     held = true;
@@ -16060,7 +16066,7 @@ function consumeHeldShell(p, hand) {
  * ------------------------------------------------------------------------- */
 function runTask(g, dt) {
   if (!g.task) return;
-  g.taskWait -= dt;
+  g.taskWait -= dt / (g.task.k || 1);                            // step 100: a heavier magazine (GLOCK_FX rel) takes longer
   while (g.task && g.taskWait <= 0) {
     const r = g.task.next();
     if (r.done) { g.task = null; break; }
@@ -16775,19 +16781,25 @@ function wbKit() {
   WB.kit = { light, laser, sup, rack, hookL, vise, jaw, sign, btnBase, btnCap, btnLbl };
   return WB.kit;
 }
-function wbMakeAtt(sub, big = true) {
+function wbMakeAtt(sub, big = true, variant = null) {
   const K = wbKit();
+  // step 100: the pistol cans are the packed MD3 / SB100 (every pistol), the dot, its cover and the comp the Glock's parts
+  if ((sub === 'sup' && !big) || sub === 'dot' || sub === 'cover' || sub === 'comp') { const q = g17MakeAtt(sub, variant); if (q || sub !== 'sup') return q; }
   if (sub === 'sup') {                                                // step 78
     const m = K.sup(big);
-    const item = { kind: 'att', type: 'sup', sub, big, label: big ? 'rifle suppressor' : 'pistol suppressor', hook: null, stuck: null, gun: null, lamp: null, len: m.L };
-    const p = makeItem(m.g, item, { mass: big ? 0.5 : 0.3, half: [m.R, m.R, m.L / 2], center: new THREE.Vector3(0, 0, -m.L / 2), restitution: 0.1 });
+    const c = new THREE.Vector3(0, 0, -m.L / 2);
+    const item = { kind: 'att', type: 'sup', sub, big, label: big ? 'rifle suppressor' : 'pistol suppressor', hook: null, stuck: null, gun: null, lamp: null, len: m.L,
+      rest: m.R, flat: true, hold: g17Hold('fist', c, true) };      // step 100: held round its body
+    const p = makeItem(m.g, item, { mass: big ? 0.5 : 0.3, half: [m.R, m.R, m.L / 2], center: c, restitution: 0.1 });
     m.g.userData.att = true;
     return p;
   }
   const m = sub === 'light' ? K.light() : K.laser();
-  const item = { kind: 'att', type: sub, sub, label: sub === 'light' ? 'weapon light' : 'laser module', on: false, lens: m.lens || null, lamp: m.lamp, hook: null, stuck: null, gun: null };
+  const center = new THREE.Vector3(0, -0.02, sub === 'light' ? -0.04 : -0.01);
+  const item = { kind: 'att', type: sub, sub, label: sub === 'light' ? 'weapon light' : 'laser module', on: false, lens: m.lens || null, lamp: m.lamp, hook: null, stuck: null, gun: null,
+    rest: 0.0425, hold: g17Hold('fist', new THREE.Vector3(0, -0.025, sub === 'light' ? -0.04 : -0.012), true) };   // step 100: round its body, lens up out of the fist
   const half = sub === 'light' ? [0.016, 0.02, 0.044] : [0.018, 0.02, 0.036];
-  const p = makeItem(m.g, item, { mass: sub === 'light' ? 0.13 : 0.1, half, center: new THREE.Vector3(0, -0.02, sub === 'light' ? -0.04 : -0.01), restitution: 0.1 });
+  const p = makeItem(m.g, item, { mass: sub === 'light' ? 0.13 : 0.1, half, center, restitution: 0.1 });
   m.g.userData.att = true;
   return p;
 }
@@ -16836,11 +16848,12 @@ function wbRestock(room = WB.room) {
   }
   WB.atts = keep;
   let n = 0;
-  for (const t of WB_TABLE) {
+  for (const t of wbTable()) {
     if (keep.some((p) => p.item.tableSpot === t)) continue;
     let i = loose.findIndex((p) => p.item.tableSpot === t);
-    if (i < 0) i = loose.findIndex((p) => !p.item.tableSpot && p.item.sub === t[0] && (t[0] !== 'sup' || !!p.item.big === t[1]));
-    const p = i >= 0 ? loose.splice(i, 1)[0] : wbMakeAtt(t[0], t[1]);
+    if (i < 0) i = loose.findIndex((p) => !p.item.tableSpot && p.item.sub === t[0] && (t[0] !== 'sup' || (!!p.item.big === t[1] && (p.item.can === 'sb100') === (t[5] === 'sb100'))));
+    const p = i >= 0 ? loose.splice(i, 1)[0] : wbMakeAtt(t[0], t[1], t[5] || null);
+    if (!p) continue;
     const home = i >= 0 && p.kinematic && p.root.position.distanceTo(_wbV.set(o.x + t[2], p.root.position.y, o.z + t[3])) < 0.01;
     p.item.tableSpot = t; WB.atts.push(p);
     if (!home) { wbHome(p, room); n++; }
@@ -16852,12 +16865,21 @@ function wbRestock(room = WB.room) {
 const WB_TABLE = [['light', true, 3.24, 2.5, Math.PI], ['light', true, 3.39, 2.5, Math.PI], ['light', true, 3.54, 2.5, Math.PI],
   ['laser', true, 3.28, 2.69, Math.PI], ['laser', true, 3.46, 2.69, Math.PI],
   ['sup', true, 3.36, 2.86, Math.PI / 2], ['sup', false, 3.62, 2.86, Math.PI / 2]];
+// Step 100: the Glock's own parts, each on the table once the workshop store says you own it: [sub, big, x, z, yaw, can, store id]
+const WB_G17 = [['dot', false, 3.69, 2.5, Math.PI / 2, null, 'g17.dot'], ['cover', false, 3.69, 2.6, Math.PI / 2, null, 'g17.cover'],
+  ['comp', false, 3.67, 2.71, Math.PI / 2, null, 'g17.comp'], ['sup', false, 2.3, 2.9, Math.PI / 2, 'sb100', 'g17.sup2']];
+function wbTable() {
+  if (!G17A.ready) return WB_TABLE;
+  const L = WB_TABLE.slice();
+  for (const t of WB_G17) { const it = WORKSHOP.byId.get(t[6]); if (it && it.owned) L.push(t); }
+  return L;
+}
 WB.btnLocal = new THREE.Vector3(2.84, 0.905, 2.44);
 // Back to its spot on the table, resting (kinematic until you pick it up).
 function wbHome(p, room = WB.room) {
   const t = p.item.tableSpot, o = room.origin;
   if (!t) return false;
-  const lift = t[0] === 'sup' ? (t[1] ? 0.0178 : 0.0155) : 0.0425;   // a can lies on its side; a light / laser stands on its body, mount up
+  const lift = p.item.rest ?? (t[0] === 'sup' ? (t[1] ? 0.0178 : 0.0155) : 0.0425);   // a can lies on its side; a light / laser stands on its body, mount up (step 100: each part's own)
   _wbP.set(o.x + t[2], o.y + 0.905 + lift, o.z + t[3]);
   _wbQ.setFromAxisAngle(Y_AXIS, t[4]);
   p.item.stuck = null; p.item.hook = null;
@@ -17007,7 +17029,8 @@ function wbClose(why) {
   if (!g) return;
   g.cradle = false;
   let n = 0;
-  for (const p of WB.atts) if (p.item.stuck && p.item.stuck.g === g) { wbFreeze(g, p); n++; }
+  for (const p of WB.atts.slice()) if (p.item.stuck && p.item.stuck.g === g) { wbFreeze(g, p); n++; }
+  if (g.type === 'g17') g17FromGun(g);                             // step 100: the Glock's parts are the build now (store + every Glock)
   if (!g.primary && !g.prop.removing) { setDynamic(g.prop); g.prop.collider.setCollisionGroups(COLL.prop); g.prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
   updateLightMount();
   sfx('pMagOut', 0.8);
@@ -17018,6 +17041,8 @@ function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
 function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
+  if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 100: its own place on the Glock
+  else if (g && (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp')) { toast('Made for the Glock 17: its plate and its 1/2x28 thread', 2200); return false; }
   if (g && it.sub === 'sup') {                                      // step 78: a can threads onto the muzzle, nowhere else
     if (wbSupSnap(g, p, 0.09)) {
       g.prop.root.updateMatrixWorld(true);
@@ -17060,7 +17085,8 @@ function wbSnap(g, p) {
   dirM.normalize();
   const dirW = dirM.clone().transformDirection(model.matrixWorld);
   const meshes = [];
-  model.traverse((o) => { if (o.userData.att) return; if (o.isMesh && o.visible && o !== g.parts.scopeLens && o.material !== WM.flash) meshes.push(o); });
+  const shown = (o) => { for (let q = o; q && q !== model; q = q.parent) if (!q.visible) return false; return true; };   // step 100: not the stepped-aside stock light
+  model.traverse((o) => { if (o.userData.att) return; if (o.isMesh && shown(o) && o !== g.parts.scopeLens && o.material !== WM.flash) meshes.push(o); });
   // attachments already on the gun are skipped (their roots carry userData.att)
   const skip = new Set(); model.traverse((o) => { if (o.userData.att) o.traverse((c) => skip.add(c)); });
   WB_RC.set(C.clone().addScaledVector(dirW, -0.06), dirW); WB_RC.far = 0.2;
@@ -17094,7 +17120,7 @@ function wbSupSnap(g, p, reach) {
 }
 // Lock it on: a part of the gun from now on (no body, no grab), wired as its light or laser.
 function wbFreeze(g, p) {
-  const it = p.item, model = g.model;
+  const it = p.item, model = (it.sub === 'dot' || it.sub === 'cover') && g.parts.slide ? g.parts.slide : g.model;   // step 100: the dot rides the slide
   it.stuck = null;
   itemFromWorld(p);
   p.root.updateMatrixWorld(true);
@@ -17109,7 +17135,8 @@ function wbFreeze(g, p) {
   setCast(p.root, true);
   const root = g.prop.root;
   root.updateMatrixWorld(true);
-  if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
+  if (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp') { if (g.type === 'g17') g17Refresh(g); return; }   // step 100
+  if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); if (g.type === 'g17') g17Refresh(g); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
   if (it.sub === 'light') {
     if (g.light && g.light !== it) { g.light.on = false; setLens(g.light); }
     g.light = it; it.free = true;
@@ -17121,6 +17148,7 @@ function wbFreeze(g, p) {
     g.wr = Object.assign({}, WR[g.type], g.wr, { laser: { emit, dir, sw } });
     g.laserLamp = it.lamp; g.laserAtt = it;
   }
+  if (g.type === 'g17') g17Refresh(g);                              // step 100
 }
 function wbUnfreeze(g, p) {
   const it = p.item;
@@ -17129,7 +17157,9 @@ function wbUnfreeze(g, p) {
   if (it.sub === 'sup' && g.sup === it) g.sup = null;               // step 78
   if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }   // step 98: back to the Glock's own light
   if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; it.lamp.material = WM.btnOff; }
+  if (g.atts) g.atts = g.atts.filter((q) => q !== p);               // step 100: off the gun's list now (the vise empties it after anyway)
   it.gun = null;
+  if (g.type === 'g17') g17Refresh(g);
   itemToWorld(p, _wbP, _wbQ, WB.room);
   setKinematic(p); p.collider.setCollisionGroups(COLL.item);
   g.prop.root.updateMatrixWorld(true);
@@ -17146,6 +17176,12 @@ function wbDeskAtt(p) {
     if (held) { wbToggle(null, held); g = wbStuckGun(); }
     if (!g) { toast('Hold a gun (or lay it by the vise), then click a part, or press CLAMP'); return; }
   }
+  if (g.type === 'g17') {                                           // step 100: each part to its own place on the Glock
+    wbUnhook(it);
+    const r = g17BenchFit(g, p, 0);
+    if (r === true) { toast(`${it.label} on. Click it again to take it off, B to lock`); return; }
+    if (r === false) return;
+  } else if (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp') { toast('Made for the Glock 17: its plate and its 1/2x28 thread', 2200); return; }
   if (it.sub === 'sup') {                                           // step 78
     if (g.sup) { toast('This gun already has a suppressor'); return; }
     wbUnhook(it); wbSupSnap(g, p, 0); g.prop.root.updateMatrixWorld(true);
@@ -17629,6 +17665,12 @@ function extToggle(p) {
   } else {
     EXT.mag[it.sub] = !EXT.mag[it.sub];
     extApplyCaps(true);
+    if (it.sub === 'g17' && typeof WORKSHOP !== 'undefined') {     // step 100: the store's magazine row follows the bench card (and the Glock's handling)
+      const r = WORKSHOP.byId.get('g17.mag33');
+      if (EXT.mag.g17) { if (r) r.owned = true; WORKSHOP.fitted.add('g17.mag33'); } else WORKSHOP.fitted.delete('g17.mag33');
+      wsSave(); WORKSHOP.dirty = true;
+      for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'g17' && !q.removing) g17Refresh(q.item);
+    }
     toast(EXT.mag[it.sub] ? `Extended magazines: ${EXT_CAP[it.sub]} rounds (pouches restocked)` : `Standard magazines (${MAG_DEFS[it.sub].capacity} rounds)`);
   }
   sfx('pouch'); extSave(); extTags();
@@ -18184,7 +18226,7 @@ function vmPlace(V, dt) {
 function vmPlay(V, n, fade = 0.12) {
   const a = V.acts[n]; if (!a) return 0;
   const was = V.acts[V.cur];
-  a.reset(); a.setEffectiveWeight(1); a.play();
+  a.reset(); a.timeScale = 1; a.setEffectiveWeight(1); a.play();   // step 100: timeScale back to 1 (a reload may slow it)
   if (was && was !== a) was.crossFadeTo(a, fade, false);
   V.cur = n;
   return a.getClip().duration;
@@ -18297,7 +18339,8 @@ function vmShot(g) {
 function* vmReloadTask(g) {
   const type = g.def.magType, V = VM.cur;
   if (!inv[type].length && !MOD.ammo) { toast('No spare magazines. Resupply in the safe room'); return; }
-  const full = !g.chambered || g.slideLocked, dur = vmPlay(V, full && V.acts.reloadFull ? 'reloadFull' : 'reloadFast', 0.1) || 1.6;
+  const full = !g.chambered || g.slideLocked, rn = full && V.acts.reloadFull ? 'reloadFull' : 'reloadFast', dur = vmPlay(V, rn, 0.1) || 1.6;
+  if (g.afx && g.afx.rel !== 1 && V.acts[rn]) V.acts[rn].timeScale = 1 / g.afx.rel;   // step 100: the take slows with the task (runTask x k)
   yield dur * VM.marks.out;
   if (!deskHeld(g)) return;
   if (g.mag) ejectMag(g, 0.6);
@@ -18839,12 +18882,12 @@ function deskReload(smart = false) {
     if (g.def.action === 'pump' && g.chamber !== 'live' && (g.tube > 0 || g.chamber)) { deskRack(); return true; }
     if (g.def.action !== 'pump' && !g.chambered && g.mag && g.mag.item.rounds > 0) { deskRack(); return true; }
   }
-  if (VM.vis && VM.gun === g && VM.cur && g.def.action !== 'pump') { const t = vmReloadTask(g); t.vm = true; g.task = t; g.taskWait = 0; return true; }   // step 82
+  if (VM.vis && VM.gun === g && VM.cur && g.def.action !== 'pump') { const t = vmReloadTask(g); t.vm = true; t.k = g.afx ? g.afx.rel : 1; g.task = t; g.taskWait = 0; return true; }   // step 82
   if (g.def.action === 'pump') {
     if (g.tube >= g.def.capacity) { toast('Tube is full'); return true; }
     if (inv.shells <= 0) { toast('Out of shells. Resupply in the safe room'); return true; }
     g.task = loadShellTask(g); g.taskWait = 0;
-  } else { g.task = reloadMagTask(g); g.taskWait = 0; }
+  } else { g.task = reloadMagTask(g); g.task.k = g.afx ? g.afx.rel : 1; g.taskWait = 0; }   // step 100: k = reload time
   return true;
 }
 function deskRack() {
@@ -22388,6 +22431,7 @@ function weaponsPrecompile(on) {
   if (!on) WEAPON.precompileDummies.length = 0;
   WEAPON.fx.points.visible = on;
   nadePrecompile(on);                               // step 23
+  g17Precompile(on);                                // step 100: the Glock's parts and the red dot's glass
 }
 
 /* ============================================================================
@@ -23908,7 +23952,7 @@ const WS_GUNS = {
     factory: { optic: 'iron sights', muzzle: 'bare muzzle', tactical: 'no rail on the frame', mag: '7-round magazine', sights: 'factory sights', grip: 'factory panels' } },
   g17: { name: 'Glock 17 Gen 5', cal: '9×19 mm Parabellum', identity: 'Standard tactical sidearm: light, close range, quick transitions.',
     slots: ['optic', 'muzzle', 'tactical', 'mag', 'sights'],
-    factory: { optic: 'iron sights, slide not optic-ready', muzzle: 'bare muzzle', tactical: 'frame rail, empty', mag: '17-round magazine', sights: 'factory polymer sights' } },
+    factory: { optic: 'iron sights, slide not optic-ready', muzzle: 'bare muzzle', tactical: 'PL-2 class light on the frame rail', mag: '17-round magazine', sights: 'factory polymer sights' } },
   m4a1s: { name: 'M4A1-S', cal: '5.56×45 mm NATO', identity: 'Suppressed carbine. Attachments coming: not in the attachment brief yet.', slots: [], factory: {} },
   akmn: { name: 'AKM', cal: '7.62×39 mm', identity: 'Modernized assault rifle: versatile, controllable, adaptable.', identity0: 'Standard AKM: iron sights, wood handguard, fixed stock. The Modernization kit opens the rest.',
     slots: ['optic', 'muzzle', 'handguard', 'underbarrel', 'tactical', 'mag', 'stock', 'sling'],
@@ -23941,19 +23985,19 @@ const WS_SLOTS_MAX = 5;                                        // rows per slot 
  * interface; 10 cosmetic rows have no effect. A row whose requires are not all owned is locked ("Needs: ..."). */
 const WS_ITEMS = [
   // --- Glock 17 Gen 5 (frame rail built in; slide not optic-ready) ---
-  { id: 'g17.plate', gun: 'g17', cat: 'hardware', hw: true, name: 'Optic mounting plate', price: 90, desc: 'Adapter plate for the non-optic-ready slide', requires: [], fx: { wt: 0.02 } },
-  { id: 'g17.thread', gun: 'g17', cat: 'hardware', hw: true, name: 'Threaded barrel', price: 180, desc: 'M13.5x1 LH thread for muzzle devices', requires: [], fx: { wt: 0.01 }, owned: true },
-  { id: 'g17.sear', gun: 'g17', cat: 'hardware', hw: true, name: 'Auto sear back plate', price: 1200, desc: 'Full auto, ~1200 rounds a minute (on the bench)', requires: [], model: 'sear', fx: { rec: 14, acc: -6, hip: -5 }, owned: true },
-  { id: 'g17.dot', gun: 'g17', cat: 'optic', name: 'Red dot (RMR class)', price: 420, desc: 'Fast acquisition, no magnification', requires: ['g17.plate'], fx: { acc: 6, ads: 3, wt: 0.045, move: -0.3 } },
-  { id: 'g17.cover', gun: 'g17', cat: 'optic', addon: true, cosmetic: true, name: 'Optic cover', price: 25, desc: 'Rubber cover for the red dot', requires: ['g17.dot'], fx: {} },
-  { id: 'g17.sup', gun: 'g17', cat: 'muzzle', name: 'Pistol suppressor', price: 650, desc: 'Quieter, never silent; less flash; longer', requires: ['g17.thread'], model: 'sup-pistol',
-    fx: { snd: -30, flash: -28, rec: -3, ads: -6, hip: -3, move: -1, wt: 0.2 }, owned: true },
-  { id: 'g17.light', gun: 'g17', cat: 'tactical', name: 'Weapon light (X300 class)', price: 300, desc: 'On the frame rail; lights dark rooms, shows you when on', requires: [], model: 'light',
-    fx: { acc: 2, vis: 12, ads: -2, move: -0.5, wt: 0.12 }, owned: true },
-  { id: 'g17.laser', gun: 'g17', cat: 'tactical', name: 'Laser module (DBAL class)', price: 260, desc: 'On the frame rail; hip-fire reference, shows you when on', requires: [], model: 'laser',
-    fx: { hip: 12, vis: 8, ads: -1, move: -0.3, wt: 0.08 }, owned: true },
-  { id: 'g17.mag33', gun: 'g17', cat: 'mag', name: '33-round magazine', price: 45, desc: '+16 rounds; heavier, slower to seat', requires: [], model: 'ext-g17', fx: { rel: -6, move: -1, wt: 0.12 }, owned: true },
-  { id: 'g17.sights', gun: 'g17', cat: 'sights', name: 'Suppressor-height sights', price: 130, desc: 'Tall night sights, co-witness over a can or a dot', requires: [], fx: { acc: 3, hip: -1, wt: 0.005 } },
+  // Step 100: every Glock row has its real part (GLOCK_FX holds what each one does; fx below is derived from it at load)
+  { id: 'g17.plate', gun: 'g17', cat: 'hardware', hw: true, name: 'Optic mounting plate', price: 90, desc: 'Slide cut + RMR-footprint plate, ahead of the rear sight', requires: [], model: 'plate', fx: {} },
+  { id: 'g17.thread', gun: 'g17', cat: 'hardware', hw: true, name: 'Threaded barrel', price: 180, desc: '1/2x28, 13 mm out of the slide; thread protector', requires: [], model: 'thread', fx: {}, owned: true },
+  { id: 'g17.sear', gun: 'g17', cat: 'hardware', hw: true, name: 'Auto sear back plate', price: 1200, desc: 'Full auto, ~1200 rounds a minute (on the bench)', requires: [], model: 'sear', fx: {}, owned: true },
+  { id: 'g17.dot', gun: 'g17', cat: 'optic', name: 'Red dot (RMR footprint, 3 MOA)', price: 420, desc: 'Fast acquisition, no magnification; rides the slide', requires: ['g17.plate'], model: 'dot', fx: {} },
+  { id: 'g17.cover', gun: 'g17', cat: 'optic', addon: true, cosmetic: true, name: 'Optic cover', price: 25, desc: 'Rubber cover for the red dot (hides the dot)', requires: ['g17.dot'], model: 'cover', fx: {} },
+  { id: 'g17.sup', gun: 'g17', cat: 'muzzle', name: 'Pistol suppressor (full size)', price: 650, desc: '34 x 148 mm; quieter, never silent; no flash; longer', requires: ['g17.thread'], model: 'sup-pistol', fx: {}, owned: true },
+  { id: 'g17.sup2', gun: 'g17', cat: 'muzzle', name: 'Compact suppressor', price: 520, desc: '34 x 114 mm; lighter and handier, a little louder', requires: ['g17.thread'], model: 'sup-compact', fx: {} },
+  { id: 'g17.comp', gun: 'g17', cat: 'muzzle', name: 'Compensator', price: 140, desc: 'Ports up: less muzzle rise, quicker follow-ups; more flash', requires: ['g17.thread'], model: 'comp', fx: {} },
+  { id: 'g17.light', gun: 'g17', cat: 'tactical', name: 'Weapon light (X300 class)', price: 300, desc: 'On the frame rail; lights dark rooms, shows you when on', requires: [], model: 'light', fx: {}, owned: true },
+  { id: 'g17.laser', gun: 'g17', cat: 'tactical', name: 'Laser module (DBAL class)', price: 260, desc: 'On the frame rail; hip-fire reference, shows you when on', requires: [], model: 'laser', fx: {}, owned: true },
+  { id: 'g17.mag33', gun: 'g17', cat: 'mag', name: '33-round magazine', price: 45, desc: '+16 rounds; heavier, slower to seat', requires: [], model: 'ext-g17', fx: {}, owned: true },
+  { id: 'g17.sights', gun: 'g17', cat: 'sights', name: 'Suppressor-height sights', price: 130, desc: 'Tall night sights, co-witness over a can or a dot', requires: [], model: 'sights', fx: {} },
   // --- M1911 (no rail, no optic cut) ---
   { id: 'm1911.plate', gun: 'm1911', cat: 'hardware', hw: true, name: 'Optic mounting plate', price: 160, desc: 'Slide cut and plate for a red dot', requires: [], fx: { wt: 0.03 } },
   { id: 'm1911.frame', gun: 'm1911', cat: 'hardware', hw: true, name: 'Rail-equipped frame', price: 450, desc: 'Railed dust cover for a light or a laser', requires: [], fx: { wt: 0.06, move: -0.3 } },
@@ -24215,8 +24259,8 @@ function wsActive(it) {
 }
 // Base stats from the gun's own data (WEAPON_DEFS): impulse x pellets, spread, recoil, mass, flash; 0..100 (weight: WS_KG per kg).
 const WS_BASE = new Float64Array(WS_NS), WS_NOW = new Float64Array(WS_NS), WS_PRE = new Float64Array(WS_NS);
-function wsBaseStats(k, out) {
-  const d = WEAPON_DEFS[k], R = d.recoil || { kick: 0.6, climb: 5 }, pistol = d.cls === 'pistol', bolt = !!d.manual, m = d.mass || 1;
+function wsBaseStats(k, out, dIn = null) {                      // step 100: dIn = the gun with its parts' weight and recoil (g17Stats)
+  const d = dIn || WEAPON_DEFS[k], R = d.recoil || { kick: 0.6, climb: 5 }, pistol = d.cls === 'pistol', bolt = !!d.manual, m = d.mass || 1;
   const imp = (d.impulse || 2.2) * (d.pellets || 1);
   out[0] = clamp(imp / 6.5, 0.05, 1) * 100;                                  // damage
   out[1] = clamp(100 - (d.spread || 0.002) * 20000, 5, 98);                  // accuracy
@@ -24237,6 +24281,7 @@ function wsAddFx(out, it, sign) {
   WS_STATS.forEach(([key], i) => { const v = it.fx[key]; if (v) out[i] += sign * (i === WS_WT ? v * WS_KG : v); });
 }
 function wsStats(k, out) {
+  if (k === 'g17' && G17A.on) return g17Stats(g17StoreIds(), out);   // step 100: the Glock's bars are what the gun really does (GLOCK_FX)
   wsBaseStats(k, out);
   for (const it of WS_ITEMS) if (it.gun === k && wsActive(it)) wsAddFx(out, it, 1);
   return out;
@@ -24258,8 +24303,22 @@ function wsBuyItem(id) {
   walletSpend(it.price); it.owned = true; playBuy();
   if (it.model && !it.hw) wsFit(id, true);
   wsSave();
-  wsMsg(`${it.name} bought for ${fmtMoney(it.price)}${it.hw ? '' : it.model ? ' and fitted' : '. Model coming: it fits in a later update'}`);
+  if (it.gun === 'g17') g17StoreChanged(it, true);                 // step 100: on every Glock (and on the bench table)
+  wsMsg(`${it.name} bought for ${fmtMoney(it.price)}${it.hw ? (it.gun === 'g17' && G17A.ready ? ': on your Glock 17 now' : '') : it.model ? (it.gun === 'g17' && G17A.ready ? ' and fitted on your Glock 17' : ' and fitted') : '. Model coming: it fits in a later update'}`);
   return true;
+}
+// Step 100: a Glock row changed in the store: the bench kits' state, every Glock in the world, new parts on the bench table.
+function g17StoreChanged(it, bought = false) {
+  if (it.id === 'g17.mag33' && EXT.mag.g17 !== WORKSHOP.fitted.has('g17.mag33')) { EXT.mag.g17 = WORKSHOP.fitted.has('g17.mag33'); extApplyCaps(true); extSave(); extTags(); }
+  if (!G17A.on || !G17A.ready) return;
+  g17ApplyStore();
+  if (bought && WB.room && WB.room.active) for (const t of wbTable()) {
+    if (WB.atts.some((p) => p.item.tableSpot === t && !p.removing)) continue;
+    const p = wbMakeAtt(t[0], t[1], t[5] || null);
+    if (p) { p.item.tableSpot = t; WB.atts.push(p); wbHome(p, WB.room); }
+  }
+  const S = G17_PARTS[it.id];
+  g17Sfx(!S ? (it.id === 'g17.sights' || it.id === 'g17.plate' ? 'dot' : 'off') : S.sub === 'sup' || S.sub === 'comp' ? 'thread' : S.sub === 'dot' ? 'dot' : S.sub === 'cover' ? 'cover' : 'rail', WORKSHOP.screen ? WORKSHOP.screen.getWorldPosition(_g17P) : null);
 }
 function wsFit(id, quiet = false) {
   const W = WORKSHOP, it = W.byId.get(id);
@@ -24273,12 +24332,15 @@ function wsFit(id, quiet = false) {
     if (!quiet) wsMsg(`${it.name} removed`);
   } else {
     if (!wsReqOk(it)) { if (!quiet) wsMsg(`${it.name}: needs ${wsMissing(it).join(', ')}`); return false; }
+    const base = it.requires.map((r) => W.byId.get(r)).find((r) => r && !r.hw && !W.fitted.has(r.id));   // step 100: an add-on goes on its fitted part
+    if (base) { if (!quiet) { wsMsg(`${it.name}: fit the ${base.name} first`); wsDeny(); } return false; }
     const multi = (WS_GUNS[it.gun] && WS_GUNS[it.gun].multi) || [];
     if (!it.addon && !multi.includes(it.cat)) for (const q of WS_ITEMS) if (q !== it && q.gun === it.gun && q.cat === it.cat && !q.addon && W.fitted.has(q.id)) wsFit(q.id, true);   // one per slot
     W.fitted.add(id);
-    if (!quiet) wsMsg(`${it.name} fitted. Effects apply when fitted on the gun (with this gun's attachment step)`);
+    if (!quiet) wsMsg(it.gun === 'g17' && G17A.ready ? `${it.name} fitted on your Glock 17` : `${it.name} fitted. Effects apply when fitted on the gun (with this gun's attachment step)`);
   }
   wsSave(); W.dirty = true;
+  if (it.gun === 'g17' && !quiet) g17StoreChanged(it);              // step 100 (a quiet fit is part of a buy or a swap: the caller syncs)
   return true;
 }
 
@@ -24403,7 +24465,8 @@ function wsDrawStats(k) {
   if (pv) {
     WS_PRE.set(WS_NOW);
     on = wsActive(pv);
-    if (on) wsAddFx(WS_PRE, pv, -1);                           // fitted: what taking it off does
+    if (k === 'g17' && G17A.on) g17Stats(g17StoreIds(pv), WS_PRE);   // step 100: the build with this part toggled (one per slot)
+    else if (on) wsAddFx(WS_PRE, pv, -1);                      // fitted: what taking it off does
     else wsAddFx(WS_PRE, pv, 1);                              // what fitting it does
   }
   const lx = x + 14, bx = x + 150, bw = w - 150 - 64, rh = 40;
@@ -24429,7 +24492,7 @@ function wsDrawStats(k) {
   });
   const fy = 114 + WS_NS * rh + 8;
   tText(pv ? `${on ? 'Remove' : 'Fit'}: ${pv.name}${pv.cosmetic ? ' (cosmetic: no effect)' : ''}` : 'Touch a part to preview it', lx, fy, 17, pv ? TC.hi : TC.dim, 'left', 600, TC.sans, w - 28);
-  tText('Effects apply when fitted on the gun (coming with each gun\'s step)', lx, fy + 24, 15, TC.dim, 'left', 600, TC.sans, w - 28);
+  tText(k === 'g17' && G17A.ready ? 'Effects apply when fitted: these are your Glock\'s numbers' : 'Effects apply when fitted on the gun (coming with each gun\'s step)', lx, fy + 24, 15, TC.dim, 'left', 600, TC.sans, w - 28);
 }
 // SUPPLIES: the restocks, each with a price.
 function wsDrawSupplies(now) {
@@ -25041,6 +25104,7 @@ function nightCanSee(e) {
   const dist = _nt.m.distanceTo(_nt.h);
   if (dist < N.bare) return true;                                   // a shape right there
   if (flashlightOn || now - NIGHT.shotT < N.flashMemory) return true;   // your light, your muzzle flash
+  if (dist < (N.laserSee ?? 16)) for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.laserOn && g.wr.laser) return true; }   // step 100: a visible laser in the dark shows where you are
   const pr = roomContaining(_nt.h.x, _nt.h.z, 0, _nt.h.y);
   if (pr && !nightDark(pr)) return true;                            // you're backlit by a lit room
   if (e.torch && !e.dead) {                                         // inside his beam
@@ -25571,7 +25635,7 @@ function sfx(name, k = 1) {
     if (name === 'thud') return playBaked(B, 0.26 * k * fk, 0.2, 0.9 + Math.random() * 0.2);
     const P = shotMix(name);
     if (SHOT_DEFS[name]) earsHit(CONFIG.polish.audio.earsShot[name] ?? 0.5);   // step 10: your own shot, at your ears
-    return playBaked(B, 1.25 * P.gain * M.shot, P.verb, 0.96 + Math.random() * 0.08, P.echo * M.echo, M.tone);
+    return playBaked(B, 1.25 * P.gain * M.shot * (SHOT_DEFS[name] ? k : 1), P.verb, 0.96 + Math.random() * 0.08, P.echo * M.echo, M.tone);   // step 100: a shot takes k too (the can's x0.28, a comp's blast)
   }
   switch (name) {
     case 'pistol': nBurst(t, 0.5, 'lowpass', 3000, 0.7, 0.45, 0.11, 0.9, 0.9); nBurst(t, 0.05, 'highpass', 3000, 0.7, 0.15, 0.012, 0); tone(t, 150, 45, 0.12, 0.7); break;
@@ -25741,7 +25805,7 @@ function supShot(g, d) {
   if (!hrecOn() || !gunSuppressed(g.type, g) || !audio.ctx || audio.ctx.state !== 'running') return false;
   const rifle = d.cls !== 'pistol';
   if (rifle) { sfx(d.sound, 0.28); supPlay(true); return true; }
-  if (!supPlay(false)) return false;
+  if (!supPlay(false, g.afx ? g.afx.snd : 1)) return false;        // step 100: the compact can is a little louder (GLOCK_FX)
   const E = CONFIG.polish.audio.earsShot;
   earsHit((E[g.type] ?? E[d.sound] ?? 0.5) * 0.28);
   return true;
@@ -32638,6 +32702,7 @@ function createGun(type) {
   if (type === 'm1911') { item.m19 = { h: -0.5, down: true, tr: true, ss: 0, mc: 0, had: true }; m1911Anim(item, 0); }   // stored hammer down on an empty chamber
   if (type === 'g17' && EXT.sw) gunSwitch(item, true);              // step 78
   if (type === 'g17') g17StockLight(item);                         // step 98: its own light, switchable
+  if (type === 'g17') { try { g17SyncGun(item); } catch (e) { console.warn('step 100: Glock parts not fitted', e); } }   // step 100: the workshop's build
   return p;
 }
 const M1911_HAMMER_DOWN = -0.5, M1911_STOP_UP = -0.075;
@@ -32706,6 +32771,7 @@ WEAPON_DEFS.g17 = Object.assign({}, WEAPON_DEFS.pistol, {
   muzzle: [0, 0, -0.13], chamber: [0, 0, -0.03], eject: [0.013, 0.017, -0.035],
   rackPoint: [0, 0.005, 0.05], rackTo: [0, 0.006, -0.032], travel: 0.03,
   light: null, thumbAt: [-0.017, 0.026, -0.05], thumbSide: 0.013,
+  eye: [0, 0.01385, 0.473],   // step 100: its own sight line (the GLB's front sight top and rear sight top, 13.85 mm over the bore; the M&P9's 26.2 mm was inherited)
   phys: {
     boxes: [
       { c: [0, 0.04, -0.0465], h: [0.016, 0.034, 0.094], th: 0, m: 0.45, f: 0.4 },
@@ -33179,6 +33245,538 @@ function supTip(g) {
   if (ok && !(g.slideOff > 0.0005) && !g.slideLocked) SUP_TIP[g.type] = out;
   return out;
 }
+/* ===========================================================================
+ *  STEP 100 — GLOCK 17 ATTACHMENTS, MADE REAL (CONFIG none; ?g17att=off)
+ *  Models: cqc/models/att/g17-att.glb (tools/pack_glock_att.py, from the user's packs):
+ *    dot       Hex Dragonfly class pistol red dot, 45.5 x 28.7 x 23 mm (RMR footprint); its lens is
+ *              the node dotGlass, drawn with the reticle shader (G17A.glass)
+ *    canMD3    full-size pistol can, 34 x 148 mm      canSB100  compact can, 34 x 114 mm
+ *    comp      thread-on compensator, 22 x 48.5 mm, ports up
+ *  Built here (G17A.kit, geometry and materials once, shared by every Glock): the optic plate in its
+ *  slide cut, the threaded barrel (1/2x28, 13 mm out of the slide) and its knurled thread protector,
+ *  suppressor-height night sights (co-witness: lower third of the dot's window), the rubber optic cover.
+ *  Fit (g17Measure: the GLB's own slide and frame, design space): the plate sits in a cut ahead of the
+ *  rear sight, 0.3 mm proud of the slide top; the dot on the plate rides the slide (parts.slide), like
+ *  the plate and the sights; the barrel, the protector, cans and the comp are on the frame (the barrel
+ *  stays forward when the slide runs back), rear faces on the barrel's shoulder at the slide's front
+ *  face; light / laser on the dust cover rail (the stock light steps aside for them).
+ *  Two ways to fit: at the bench (the step 73 / 88 vise: let go of a part near its place on the clamped
+ *  Glock, or click it on a computer: it snaps there if the hardware allows) or at the workshop store
+ *  (wsBuyItem / wsFit). Both keep one build for every Glock 17: the store's fitted set (g17SyncGun puts
+ *  the parts on every Glock in the world; a RELEASE at the vise writes the gun's parts back: g17FromGun).
+ *  Effects: GLOCK_FX, one table: weight, recoil (kick / climb / desk kick), flash, report, ADS time,
+ *  sway (ready / aimed), reload time, VR heft lag, plus the store's acc / hip / vis bars. g.afx on the
+ *  gun is what fireGun, deskGunPose, deskHeft, the VR pose and the reload tasks read; the store's bars
+ *  (g17Stats) are computed from the same numbers through wsBaseStats' formulas.
+ *  Red dot: the glass shader draws a 3 MOA dot where the line from the eye (each eye: view space) runs
+ *  parallel to the slide: parallax-free, at infinity, only through the window, never under ~1.5 px.
+ *  Brightness follows the room (G17A.lvl from NIGHT.env, eased like an auto-brightness sensor).
+ *  RULES: programs compile at load (g17Precompile from weaponsPrecompile); nothing per frame but the
+ *  brightness uniform and the VR heft slerp; no light added.
+ * ========================================================================= */
+const G17A = {
+  on: !/[?&]g17att=off\b/.test(location.search), ready: false, url: './models/att/g17-att.glb',
+  geo: {}, mat: {}, M: null, kit: null, glass: null, lvl: 1, dotBox: null, glassBox: null,
+  v: new THREE.Vector3(), v2: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), m2: new THREE.Matrix4(), s: new THREE.Vector3()
+};
+// Store id -> the part on the gun (att sub and can variant). Hardware (plate, thread) and sights are meshes on every Glock, not parts.
+const G17_PARTS = { 'g17.dot': { sub: 'dot' }, 'g17.cover': { sub: 'cover' }, 'g17.sup': { sub: 'sup', can: 'md3' }, 'g17.sup2': { sub: 'sup', can: 'sb100' },
+  'g17.comp': { sub: 'comp' }, 'g17.light': { sub: 'light' }, 'g17.laser': { sub: 'laser' } };
+function g17PartId(it) {
+  if (!it || it.kind !== 'att') return null;
+  if (it.sub === 'sup') return it.big ? null : it.can === 'sb100' ? 'g17.sup2' : 'g17.sup';
+  return { dot: 'g17.dot', cover: 'g17.cover', comp: 'g17.comp', light: 'g17.light', laser: 'g17.laser' }[it.sub] || null;
+}
+/* GLOCK_FX: what each part does on the Glock (multipliers unless noted). m kg added; kick / climb the recoil impulse
+   (linear / muzzle rise), dkick the computer's view kick; flash / light the muzzle flash and its light; snd the report
+   (a can: x the suppressed take); ads the aim-in time; sway (ready) / aim (aimed sway, computer); rel the reload time;
+   lever m from the grip (VR heft: lag = GLOCK_FX_VR.k x sum m lever^2); stat: store bar points not covered by the physics
+   (acc acquisition, hip, vis = seen when on, rec cadence). Subtle on purpose: the Glock stays light and quick. */
+const GLOCK_FX = {
+  'g17.thread': { m: 0.012, lever: 0.14 },
+  'g17.plate': { m: 0.015, lever: 0.03 },
+  'g17.sights': { m: 0.006, stat: { acc: 3, hip: -1 } },
+  'g17.dot': { m: 0.045, ads: 0.85, aim: 0.6, lever: 0.03, stat: { acc: 8 } },
+  'g17.cover': {},                                                            // rule 10: cosmetic (it does hide the dot)
+  'g17.sup': { m: 0.19, kick: 0.92, climb: 0.84, dkick: 0.85, snd: 1, ads: 1.12, sway: 1.15, aim: 1.08, lever: 0.21, stat: { vis: -4 } },
+  'g17.sup2': { m: 0.15, kick: 0.94, climb: 0.88, dkick: 0.88, snd: 1.2, ads: 1.08, sway: 1.1, aim: 1.05, lever: 0.19, stat: { vis: -3 } },
+  'g17.comp': { m: 0.045, kick: 0.93, climb: 0.7, dkick: 0.75, flash: 1.35, light: 1.25, snd: 1.08, ads: 1.02, sway: 1.03, lever: 0.16 },
+  'g17.light': { m: 0.115, ads: 1.04, sway: 1.05, lever: 0.1, stat: { acc: 2, vis: 12 } },
+  'g17.laser': { m: 0.08, ads: 1.03, sway: 1.03, lever: 0.1, stat: { hip: 12, vis: 8 } },
+  'g17.mag33': { m: 0.13, rel: 1.15, sway: 1.03, lever: 0.04 },
+  'g17.sear': { stat: { rec: 14, acc: -6, hip: -5 } }
+};
+const GLOCK_FX_VR = { k: 1.45, max: 0.02 };                                   // s per kg m^2 of added inertia; the most lag (20 ms)
+const AFX0 = Object.freeze({ mass: 0, kick: 1, climb: 1, dkick: 1, flash: 1, light: 1, snd: 1, ads: 1, sway: 1, aim: 1, rel: 1, lag: 0, acc: 0, hip: 0, vis: 0, rec: 0 });
+function g17FxOf(ids, out = {}) {
+  Object.assign(out, AFX0);
+  let I = 0;
+  for (const id of ids) {
+    const F = GLOCK_FX[id]; if (!F) continue;
+    out.mass += F.m || 0; I += (F.m || 0) * (F.lever || 0) * (F.lever || 0);
+    for (const k of ['kick', 'climb', 'dkick', 'flash', 'light', 'snd', 'ads', 'sway', 'aim', 'rel']) if (F[k] !== undefined) out[k] *= F[k];
+    if (F.stat) for (const k of Object.keys(F.stat)) out[k] += F.stat[k];
+  }
+  out.lag = Math.min(GLOCK_FX_VR.max, GLOCK_FX_VR.k * I);
+  return out;
+}
+// The store's 12 bars for a Glock with these parts: wsBaseStats' formulas on the Glock with the parts' weight and recoil,
+// then the report, flash, aim time, sway and reload multipliers, then the stat points. Exactly what fireGun & co. apply.
+const _g17St = {};
+function g17Stats(ids, out) {
+  const d = WEAPON_DEFS.g17, F = g17FxOf(ids, _g17St), sup = ids.has('g17.sup') || ids.has('g17.sup2');
+  const R = d.recoil, eff = Object.assign({}, d, { mass: d.mass + F.mass, recoil: { kick: R.kick * F.kick, climb: R.climb * F.climb } });
+  wsBaseStats('g17', out, eff);
+  out[1] += F.acc; out[2] += F.rec; out[3] = clamp(out[3] * F.sway * Math.sqrt(F.aim), 5, 98);
+  out[4] = clamp(out[4] / F.ads, 5, 98); out[5] += F.hip; out[6] = clamp(out[6] / F.rel, 5, 98);
+  out[9] = clamp(out[9] * F.snd * (sup ? 0.28 : 1), 5, 98);
+  out[10] = clamp(out[10] * (sup ? 0.12 : F.flash), 3, 98); out[11] += F.vis;
+  return out;
+}
+// The Glock build the store holds (owned hardware, fitted parts; sear / 33-round: the bench kits' state), optionally with one part toggled.
+function g17StoreIds(toggle = null) {
+  const S = new Set();
+  for (const it of WS_ITEMS) if (it.gun === 'g17' && wsActive(it)) S.add(it.id);
+  if (!EXT.sw) S.delete('g17.sear');
+  if (toggle && toggle.gun === 'g17') {
+    if (S.has(toggle.id)) { S.delete(toggle.id); for (const q of WS_ITEMS) if (q.requires.includes(toggle.id)) S.delete(q.id); }
+    else if (!toggle.cosmetic) {
+      S.add(toggle.id);
+      for (const q of WS_ITEMS) if (q !== toggle && q.gun === 'g17' && q.cat === toggle.cat && !q.addon && !q.hw && toggle.cat !== 'hardware' && !toggle.addon) S.delete(q.id);   // one per slot
+    }
+  }
+  return S;
+}
+// What is on this Glock now (its parts, the owned hardware, the fitted sights, the bench kits).
+function g17GunIds(g, out = new Set()) {
+  out.clear();
+  const own = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
+  if (own('g17.thread')) out.add('g17.thread');
+  if (own('g17.plate')) out.add('g17.plate');
+  if (own('g17.sights') && WORKSHOP.fitted.has('g17.sights')) out.add('g17.sights');
+  if (EXT.mag.g17) out.add('g17.mag33');
+  if (EXT.sw) out.add('g17.sear');
+  for (const p of g.atts || []) { const id = g17PartId(p.item); if (id) out.add(id); }
+  return out;
+}
+
+/* --- the measured Glock (design space, metres) --- */
+function g17Measure() {
+  if (G17A.M) return G17A.M;
+  const X = EXTG.g17, sp = X.geo.slide.attributes.position, fp = X.geo.frame.attributes.position;
+  let top = -1, front = 1, hw = 0, rail = 1;
+  for (let i = 0; i < sp.count; i++) { const y = sp.getY(i), z = sp.getZ(i); if (z < front) front = z; if (z > -0.1 && z < 0.04 && y > top) top = y; }
+  const rs = { z0: 1, z1: -1, hx: 0, y: -1 }, fs = { z0: 1, z1: -1, hx: 0, y: -1 };
+  for (let i = 0; i < sp.count; i++) {
+    const x = sp.getX(i), y = sp.getY(i), z = sp.getZ(i);
+    if (y > top - 0.0004 && z > -0.05 && z < 0.042) hw = Math.max(hw, Math.abs(x));   // the top flat
+    if (y > top + 0.0012) { const s = z > 0 ? rs : z < -0.09 ? fs : null; if (s) { s.z0 = Math.min(s.z0, z); s.z1 = Math.max(s.z1, z); s.hx = Math.max(s.hx, Math.abs(x)); s.y = Math.max(s.y, y); } }
+  }
+  const railAt = (z0, z1) => { let y = 1; for (let i = 0; i < fp.count; i++) { const z = fp.getZ(i); if (z > z0 && z < z1 && Math.abs(fp.getX(i)) < 0.006) y = Math.min(y, fp.getY(i)); } return y; };   // the rail's underside over a clamp's length
+  rail = railAt(-0.121, -0.075);
+  const M = { top, front, hw, rs, fs, rail };
+  M.plateTop = top + 0.0003; M.plateT = 0.0024; M.plateW = 2 * (hw - 0.0012); M.plateL = 0.047;   // in its cut, 0.3 mm proud, 1.2 mm of slide each side
+  M.plateZ = rs.z0 - 0.0015 - M.plateL / 2;                       // ends 1.5 mm ahead of the rear sight
+  M.thread = { len: 0.013, rMaj: 0.00635, rMin: 0.00585, pitch: 0.0254 / 28, prot: 0.0138, rProt: 0.0076 };   // 1/2x28
+  M.lightAt = new THREE.Vector3(0, rail, -0.066); M.laserAt = new THREE.Vector3(0, railAt(-0.12, -0.076), -0.086);   // mount tops flush on it (the bench light's mount runs z -0.055..-0.009, the laser's -0.034..0.010)
+  G17A.M = M;
+  return M;
+}
+
+/* --- the kit: the packed models + the built parts --- */
+async function g17AttLoad() {
+  if (!G17A.on || G17A.ready || !EXTG.g17.ready) return;
+  const r = await fetch(G17A.url);
+  if (!r.ok) throw new Error('step 100: ' + G17A.url + ' HTTP ' + r.status);
+  const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+  const gltf = await gltfParse(GLTFLoader, await r.arrayBuffer());
+  for (const name of ['dot', 'dotGlass', 'canMD3', 'canSB100', 'comp']) {
+    const o = gltf.scene.getObjectByName(name);
+    if (!o || !o.isMesh) throw new Error('step 100: no ' + name + ' in ' + G17A.url);
+    o.geometry.computeBoundingBox();
+    G17A.geo[name] = o.geometry; G17A.mat[name] = o.material;
+    const m = o.material;
+    for (const t of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) if (m[t]) { m[t].anisotropy = maxAniso; m[t].needsUpdate = true; }
+    m.side = THREE.FrontSide;
+  }
+  G17A.dotBox = G17A.geo.dot.boundingBox.clone(); G17A.glassBox = G17A.geo.dotGlass.boundingBox.clone();
+  g17Measure(); g17Kit();
+  G17A.ready = true;
+  for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'g17' && !q.removing) g17SyncGun(q.item);   // guns made before the kit
+}
+const G17_MOA = Math.PI / 180 / 60;
+function g17GlassMat() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uLvl: { value: 1 }, uR: { value: 1.5 * G17_MOA }, uTint: { value: new THREE.Color(0.09, 0.2, 0.22) }, uA: { value: 0.08 } },
+    vertexShader: `varying vec3 vP; varying vec3 vF; varying vec3 vN;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vP = mv.xyz; vF = (modelViewMatrix * vec4(0.0, 0.0, -1.0, 0.0)).xyz; vN = normalMatrix * normal;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `uniform float uLvl, uR, uA; uniform vec3 uTint; varying vec3 vP; varying vec3 vF; varying vec3 vN;
+      void main() {
+        vec3 v = normalize(vP), f = normalize(vF);
+        float c = dot(v, f);
+        float a = length(cross(v, f)) / max(c, 1e-4);              // angle off the dot's axis (precise when small)
+        float px = max(length(fwidth(v)), 1e-6);                    // one pixel, in radians
+        float r = max(uR, px * 0.75);                               // 3 MOA, never under ~1.5 px
+        float on = step(0.0, c) * uLvl;
+        float core = 1.0 - smoothstep(r - px * 0.6, r + px * 0.6, a);
+        float halo = exp(-a / (r * 1.8)) * 0.16;                    // the emitter's little flare
+        float fr = pow(1.0 - abs(dot(normalize(vN), v)), 4.0);      // the coating shows at a grazing angle
+        float al = clamp(uA + 0.35 * fr, 0.0, 0.55);
+        gl_FragColor = vec4(uTint * al + vec3(1.0, 0.045, 0.02) * (core + halo) * on, al);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, premultipliedAlpha: true, toneMapped: true, side: THREE.DoubleSide
+  });
+}
+function g17Kit() {
+  if (G17A.kit) return G17A.kit;
+  const M = g17Measure(), T = M.thread, sh = M.front;
+  const steel = new THREE.MeshStandardMaterial({ color: 0x18191b, roughness: 0.5, metalness: 0.8 });       // black nitride
+  const barrel = new THREE.MeshStandardMaterial({ color: 0x1c1d1f, roughness: 0.38, metalness: 0.88 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x0f0f10, roughness: 0.88, metalness: 0 });
+  const trit = new THREE.MeshStandardMaterial({ color: 0x86c890, roughness: 0.3, metalness: 0, emissive: new THREE.Color(0x35ff62), emissiveIntensity: 0.55 });
+  const ring = new THREE.MeshStandardMaterial({ color: 0xc9c8c0, roughness: 0.6, metalness: 0 });
+  const lathe = (pts, n) => new THREE.LatheGeometry(pts.map(([r, a]) => new THREE.Vector2(r, a)), n).rotateX(-Math.PI / 2);   // lathe height a -> forward (-z)
+  // threaded barrel: the tube inside the slide (seen with the slide back), the shoulder at the slide's face, 1/2x28 threads, the crown
+  const bp = [[0.0066, -0.03], [0.0066, 0], [T.rMaj, 0.0002]];
+  for (let a = 0.0006; a < T.len - 0.0004; a += T.pitch) bp.push([T.rMin, a], [T.rMaj, a + T.pitch / 2]);
+  bp.push([T.rMaj, T.len - 0.0005], [T.rMaj - 0.0005, T.len], [0.0046, T.len], [0.0045, T.len - 0.004]);
+  const barrelGeo = lathe(bp, 28).translate(0, 0, sh);
+  // thread protector: rear face on the shoulder, knurled bands, a chamfered front with the bore
+  const pr = T.rProt, pp = [[0.0064, 0], [pr - 0.0004, 0], [pr, 0.0004]];
+  for (let i = 0; i < 6; i++) { const a = 0.0018 + i * 0.0017; pp.push([pr, a], [pr - 0.00035, a + 0.0004], [pr - 0.00035, a + 0.0008], [pr, a + 0.0012]); }
+  pp.push([pr, T.prot - 0.0008], [pr - 0.0008, T.prot], [0.0049, T.prot], [0.0047, T.prot - 0.003]);
+  const protGeo = lathe(pp, 32).translate(0, 0, sh);
+  // the optic plate in its cut (2.1 mm in the slide, 0.3 mm proud), two screws for when no dot sits on it
+  const plate = [placed(rbox(M.plateW, M.plateT, M.plateL, 0.0007), 0, M.plateTop - M.plateT / 2, M.plateZ)];
+  for (const dz of [-0.0165, 0.0165]) plate.push(placed(new THREE.CylinderGeometry(0.0021, 0.0023, 0.0005, 16), 0, M.plateTop - 0.00015, M.plateZ + dz));
+  const plateGeo = mergeGeometries(plate.map((q) => { const n = q.index ? q.toNonIndexed() : q; if (n.attributes.uv) n.deleteAttribute('uv'); return n; }));
+  // suppressor-height night sights over the factory ones (co-witness: their tops on the lower third of the dot's window)
+  const gb = G17A.glassBox, top = M.plateTop + gb.min.y + (gb.max.y - gb.min.y) / 3;
+  M.tallTop = top; M.winY = M.plateTop + (gb.min.y + gb.max.y) / 2;
+  const h = top - M.top + 0.0004, rw = Math.max(M.rs.hx + 0.0005, 0.0076), fw = Math.max(M.fs.hx + 0.0002, 0.00185), nw = 0.0018, nd = 0.0026;
+  const rsh = new THREE.Shape();
+  rsh.moveTo(-rw, 0); rsh.lineTo(rw, 0); rsh.lineTo(rw, h - 0.0006); rsh.lineTo(rw - 0.0006, h); rsh.lineTo(nw, h); rsh.lineTo(nw, h - nd + nw);
+  rsh.absarc(0, h - nd + nw, nw, 0, -Math.PI, true); rsh.lineTo(-nw, h); rsh.lineTo(-rw + 0.0006, h); rsh.lineTo(-rw, h - 0.0006); rsh.closePath();
+  const rl = M.rs.z1 - M.rs.z0 + 0.0008, fl = M.fs.z1 - M.fs.z0 + 0.0008;
+  const rear = new THREE.ExtrudeGeometry(rsh, { depth: rl, bevelEnabled: false, curveSegments: 6 }).translate(0, M.top - 0.0004, M.rs.z0 - 0.0004);
+  const fsh = new THREE.Shape(); fsh.moveTo(-fw, 0); fsh.lineTo(fw, 0); fsh.lineTo(fw, h - 0.0004); fsh.lineTo(fw - 0.0004, h); fsh.lineTo(-fw + 0.0004, h); fsh.lineTo(-fw, h - 0.0004); fsh.closePath();
+  const frontS = new THREE.ExtrudeGeometry(fsh, { depth: fl, bevelEnabled: false }).translate(0, M.top - 0.0004, M.fs.z0 - 0.0004);
+  const sightGeo = mergeGeometries([rear, frontS].map((q) => { const n = q.index ? q.toNonIndexed() : q; if (n.attributes.uv) n.deleteAttribute('uv'); return n; }));
+  const dotY = top - 0.0019, tr = [], rr = [];
+  for (const [x, z] of [[-0.0042, M.rs.z1 + 0.0004], [0.0042, M.rs.z1 + 0.0004], [0, M.fs.z1 + 0.0004]]) {
+    tr.push(placed(new THREE.CylinderGeometry(0.00095, 0.00095, 0.0004, 14), x, dotY, z + 0.0001, Math.PI / 2));   // tritium vial faces
+    rr.push(placed(new THREE.CylinderGeometry(0.00155, 0.00155, 0.0002, 18), x, dotY, z + 0.00002, Math.PI / 2));   // the white rings round them
+  }
+  const tritGeo = mergeGeometries(tr.map((q) => q.toNonIndexed())), ringGeo = mergeGeometries(rr.map((q) => q.toNonIndexed()));
+  // the optic cover: rubber boot over the hood and the low rear body, open underneath, a pull tab at the front
+  const db = G17A.dotBox, gp = G17A.geo.dot.attributes.position, zs = G17A.glassBox.max.z + 0.002;
+  let hood = 0, tail = 0;
+  for (let i = 0; i < gp.count; i++) { const y = gp.getY(i); if (gp.getZ(i) < zs) hood = Math.max(hood, y); else tail = Math.max(tail, y); }
+  const cw = db.max.x - db.min.x + 0.0024, e = 0.0012, y0 = 0.0018;
+  const coverGeo = mergeGeometries([placed(rbox(cw, hood + e - y0, zs - db.min.z + e, 0.0022), 0, (hood + e + y0) / 2, (db.min.z - e + zs) / 2),
+    placed(rbox(cw, tail + e - y0, db.max.z + e - zs + 0.002, 0.0022), 0, (tail + e + y0) / 2, (zs - 0.002 + db.max.z + e) / 2),
+    placed(rbox(0.009, 0.0016, 0.007, 0.0006), 0, y0 + 0.0008, db.min.z - e - 0.003)].map((q) => { const n = q.index ? q.toNonIndexed() : q; if (n.attributes.uv) n.deleteAttribute('uv'); return n; }));
+  coverGeo.computeBoundingBox();
+  G17A.glass = g17GlassMat();
+  G17A.kit = { steel, barrel, rubber, trit, ring, barrelGeo, protGeo, plateGeo, sightGeo, tritGeo, ringGeo, coverGeo };
+  return G17A.kit;
+}
+// The hardware on one Glock (made once per gun, shared geometry and materials).
+function g17Hw(g) {
+  if (g.g17) return g.g17;
+  const K = g17Kit(), sl = g.parts.slide || g.model, mk = (geo, mat, par) => { const o = new THREE.Mesh(geo, mat); o.castShadow = false; o.receiveShadow = true; o.visible = false; par.add(o); return o; };
+  const sights = new THREE.Group(); sights.visible = false; sl.add(sights);
+  mk(K.sightGeo, K.steel, sights).visible = true; mk(K.ringGeo, K.ring, sights).visible = true; mk(K.tritGeo, K.trit, sights).visible = true;
+  g.g17 = { plate: mk(K.plateGeo, K.steel, sl), barrel: mk(K.barrelGeo, K.barrel, g.model), prot: mk(K.protGeo, K.steel, g.model), sights };
+  return g.g17;
+}
+// Precompile (weaponsPrecompile): every material here once, in view.
+function g17Precompile(on) {
+  if (!G17A.ready) return;
+  if (!on) { if (G17A.pre) { scene.remove(G17A.pre); G17A.pre = null; } return; }
+  const K = G17A.kit, g = new THREE.Group();
+  for (const [geo, mat] of [[G17A.geo.dot, G17A.mat.dot], [G17A.geo.dotGlass, G17A.glass], [G17A.geo.canMD3, G17A.mat.canMD3], [G17A.geo.canSB100, G17A.mat.canSB100],
+    [G17A.geo.comp, G17A.mat.comp], [K.barrelGeo, K.barrel], [K.plateGeo, K.steel], [K.tritGeo, K.trit], [K.ringGeo, K.ring], [K.coverGeo, K.rubber]]) g.add(new THREE.Mesh(geo, mat));
+  camera.updateMatrixWorld(true);
+  g.position.set(0, 0, -0.8).applyMatrix4(camera.matrixWorld); g.scale.setScalar(0.5);
+  scene.add(g); G17A.pre = g;
+}
+
+/* --- the parts as bench items (wbMakeAtt) --- */
+const _g17HQ = new THREE.Quaternion(), _g17HE = new THREE.Euler();
+// A hold for an item: its centre where the pistol magazine's centre sits in the fist (round its body: a can, a comp, a light,
+// a laser), or pinched between the thumb and fingers like a shell (the dot and its cover, by their sides).
+function g17Hold(kind, center, axisUp) {
+  const q = new THREE.Quaternion();
+  let p;
+  if (kind === 'fist') { q.setFromEuler(_g17HE.set(-0.36, 0, 0)); if (axisUp) q.multiply(_g17HQ.setFromAxisAngle(_XAXIS, Math.PI / 2)); p = new THREE.Vector3(0, -0.0066, 0.0045); }
+  else { q.setFromEuler(_g17HE.set(0.25, 0, 0)); p = new THREE.Vector3(-0.0343, 0.0219, -0.0485); }
+  return { p: p.sub(center.clone().applyQuaternion(q)), q };
+}
+function g17MakeAtt(sub, variant) {
+  if (!G17A.ready) return null;
+  const K = G17A.kit, g = new THREE.Group(), mk = (geo, mat) => { const o = new THREE.Mesh(geo, mat); o.castShadow = true; o.receiveShadow = true; g.add(o); return o; };
+  let item, o;
+  if (sub === 'dot') {
+    mk(G17A.geo.dot, G17A.mat.dot);
+    const glass = mk(G17A.geo.dotGlass, G17A.glass); glass.castShadow = false; glass.renderOrder = 2;
+    const b = G17A.dotBox, c = b.getCenter(new THREE.Vector3()), h = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+    item = { kind: 'att', type: 'dot', sub, label: 'red dot', glass, hook: null, stuck: null, gun: null, rest: 0.0003, hold: g17Hold('pinch', c) };
+    o = { mass: 0.045, half: [h.x, h.y, h.z], center: c };
+  } else if (sub === 'cover') {
+    mk(K.coverGeo, K.rubber);
+    const b = K.coverGeo.boundingBox, c = b.getCenter(new THREE.Vector3()), h = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+    item = { kind: 'att', type: 'cover', sub, label: 'optic cover', hook: null, stuck: null, gun: null, rest: 0.0003 - b.min.y, hold: g17Hold('pinch', c) };
+    o = { mass: 0.008, half: [h.x, h.y, h.z], center: c };
+  } else if (sub === 'comp') {
+    mk(G17A.geo.comp, G17A.mat.comp);
+    const L = G17A.geo.comp.boundingBox.max.z - G17A.geo.comp.boundingBox.min.z, c = new THREE.Vector3(0, 0, -L / 2);
+    item = { kind: 'att', type: 'comp', sub, label: 'compensator', hook: null, stuck: null, gun: null, len: L, rest: 0.0113, flat: true, hold: g17Hold('fist', c, true) };
+    o = { mass: 0.045, half: [0.011, 0.011, L / 2], center: c };
+  } else if (sub === 'sup') {
+    const key = variant === 'sb100' ? 'canSB100' : 'canMD3', geo = G17A.geo[key], L = -geo.boundingBox.min.z, c = new THREE.Vector3(0, 0, -L / 2);
+    mk(geo, G17A.mat[key]);
+    item = { kind: 'att', type: 'sup', sub, big: false, can: variant === 'sb100' ? 'sb100' : 'md3', label: variant === 'sb100' ? 'compact pistol suppressor' : 'pistol suppressor',
+      hook: null, stuck: null, gun: null, lamp: null, len: L, rest: 0.0173, flat: true, hold: g17Hold('fist', c, true) };
+    o = { mass: variant === 'sb100' ? 0.15 : 0.19, half: [0.017, 0.017, L / 2], center: c, restitution: 0.1 };
+  } else return null;
+  const p = makeItem(g, item, Object.assign({ restitution: 0.1 }, o));
+  g.userData.att = true;
+  return p;
+}
+
+/* --- where each part goes on a Glock (world pose of its root); its parent frame --- */
+function g17Parent(g, sub) { return (sub === 'dot' || sub === 'cover') && g.parts.slide ? g.parts.slide : g.model; }
+function g17Local(sub, out) {
+  const M = G17A.M;
+  if (sub === 'dot' || sub === 'cover') return out.set(0, M.plateTop, M.plateZ);
+  if (sub === 'sup' || sub === 'comp') return out.set(0, 0, M.front);   // rear face on the barrel's shoulder: thread engaged, no gap
+  if (sub === 'light') return out.copy(M.lightAt);
+  if (sub === 'laser') return out.copy(M.laserAt);
+  return null;
+}
+function g17Pose(g, sub, P, Q) {
+  const par = g17Parent(g, sub);
+  par.updateWorldMatrix(true, false);
+  if (!g17Local(sub, P)) return false;
+  P.applyMatrix4(par.matrixWorld); par.getWorldQuaternion(Q);
+  return true;
+}
+// Parts on this gun: locked on (g.atts) or, in the vise, stuck to it.
+function g17On(g, test) {
+  for (const p of g.atts || []) if (test(p.item)) return p;
+  for (const p of WB.atts) if (p.item.stuck && p.item.stuck.g === g && !p.removing && test(p.item)) return p;
+  return null;
+}
+const g17Owned = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
+// Can this part go on this Glock now? null = yes, else why not.
+function g17Refuse(g, p) {
+  const it = p.item, other = (t) => g17On(g, (q) => q !== it && t(q));
+  if (it.sub === 'sup' && it.big) return 'A rifle can: wrong thread. The Glock takes 1/2x28 pistol cans';
+  if ((it.sub === 'sup' || it.sub === 'comp') && !g17Owned('g17.thread')) return 'Needs the threaded barrel (gunsmith store)';
+  if ((it.sub === 'sup' || it.sub === 'comp') && other((q) => q.sub === 'sup' || q.sub === 'comp')) return 'The muzzle already has a device on it';
+  if (it.sub === 'dot' && !g17Owned('g17.plate')) return 'Needs the optic plate: the slide is not cut for an optic (gunsmith store)';
+  if (it.sub === 'dot' && other((q) => q.sub === 'dot')) return 'There is a red dot on it already';
+  if (it.sub === 'cover' && !other((q) => q.sub === 'dot')) return 'The cover goes on a red dot: fit the dot first';
+  if (it.sub === 'cover' && other((q) => q.sub === 'cover')) return 'The dot has its cover on already';
+  if ((it.sub === 'light' || it.sub === 'laser') && other((q) => q.sub === 'light' || q.sub === 'laser')) return 'One rail: take the other light or laser off first';
+  return null;
+}
+const _g17P = new THREE.Vector3(), _g17Q = new THREE.Quaternion();
+// Bench: a part let go of (VR) or clicked (computer) by the clamped Glock. null = not ours (the old behaviour), true = fitted, false = refused.
+function g17BenchFit(g, p, reach) {
+  if (!G17A.ready || g.type !== 'g17') return null;
+  const it = p.item;
+  if (!g17Local(it.sub, _g17P)) return null;
+  g17Pose(g, it.sub, _g17P, _g17Q);
+  if (reach && p.root.position.distanceTo(_g17P) > reach) return (it.sub === 'light' || it.sub === 'laser' || (it.sub === 'sup' && it.big)) ? null : false;
+  const why = g17Refuse(g, p);
+  if (why) { toast(why, 2600); wsClick(420, 300); return false; }
+  if (it.sub === 'light' || it.sub === 'laser') { const S = g.parts.stockLight; if (S) S.visible = false; }
+  p.root.position.copy(_g17P); p.root.quaternion.copy(_g17Q); p.root.updateMatrixWorld(true);
+  // (light / laser: mount top flush on the measured rail underside, square to the bore)
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
+  setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  g17Sfx(it.sub === 'sup' || it.sub === 'comp' ? 'thread' : it.sub === 'cover' ? 'cover' : it.sub === 'dot' ? 'dot' : 'rail', p.root.position);
+  return true;
+}
+
+/* --- keeping every Glock's build (store <-> guns) --- */
+// After a part comes on or off: hardware shown, the muzzle point, the sight line, the stock light, the effects.
+function g17Refresh(g) {
+  if (!g || g.type !== 'g17' || !G17A.ready) return;
+  const H = g17Hw(g), M = G17A.M, d = g.def, T = M.thread;
+  const thr = g17Owned('g17.thread'), muz = g.sup || g.comp;
+  H.plate.visible = g17Owned('g17.plate');
+  H.barrel.visible = thr; H.prot.visible = thr && !muz;
+  H.sights.visible = g17Owned('g17.sights') && WORKSHOP.fitted.has('g17.sights');
+  g.dot = null; g.cover = null; g.comp = null;
+  for (const p of g.atts || []) { const s = p.item.sub; if (s === 'dot') g.dot = p.item; else if (s === 'cover') g.cover = p.item; else if (s === 'comp') g.comp = p.item; }
+  if (g.dot) g.dot.glass.visible = !g.cover;
+  // the stock light steps aside for a rail device
+  const rail = (g.atts || []).some((p) => p.item.sub === 'light' || p.item.sub === 'laser');
+  if (g.parts.stockLight) {
+    g.parts.stockLight.visible = !rail;
+    if (rail && g.light === g.stockLight) { g.light.on = false; setLens(g.light); g.light = null; }
+    if (!rail && !g.light && g.stockLight) g.light = g.stockLight;
+  }
+  // muzzle: the comp's front, the protector's, the bare crown; the flash goes there
+  const mz = g.sup ? M.front : g.comp ? M.front - g.comp.len : thr ? M.front - T.prot : d.muzzle[2];
+  if (g.parts.flash) g.parts.flash.position.z = mz;
+  const pm = d.palm, base = WR.g17;
+  g.sightY = g.dot && !g.cover ? M.winY : H.sights.visible ? M.tallTop : d.eye[1];
+  g.wr = Object.assign({}, base, g.laserAtt && g.wr.laser ? { laser: g.wr.laser } : {}, {
+    muzzle: new THREE.Vector3(d.muzzle[0] - pm[0], d.muzzle[1] - pm[1], mz - pm[2]),
+    eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]) });
+  g.afx = g17FxOf(g17GunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {});
+  updateLightMount();
+}
+// Make one Glock match the store's build (skipped while it is in the vise: the bench owns it until RELEASE).
+function g17SyncGun(g) {
+  if (!G17A.on || !G17A.ready || !g || g.type !== 'g17' || !g.prop || g.prop.removing) return;
+  if (WB.open && WB.gun === g) return;
+  g17Hw(g);
+  const W = WORKSHOP;
+  const wanted = (it) => !!it && it.owned && W.fitted.has(it.id) && it.requires.every((r) => { const q = W.byId.get(r); return q && q.owned && (q.hw || W.fitted.has(r)); });   // (wsActive leaves cosmetic parts out: the cover still goes on)
+  for (const id of Object.keys(G17_PARTS)) {
+    const it = W.byId.get(id);
+    const want = wanted(it);
+    const have = (g.atts || []).find((p) => g17PartId(p.item) === id);
+    if (!want && have) g17Detach(g, have);
+  }
+  for (const id of ['g17.dot', 'g17.cover', 'g17.sup', 'g17.sup2', 'g17.comp', 'g17.light', 'g17.laser']) {   // the dot before its cover
+    const it = W.byId.get(id);
+    if (!wanted(it)) continue;
+    if (!(g.atts || []).some((p) => g17PartId(p.item) === id)) g17Attach(g, id);
+  }
+  g17Refresh(g);
+}
+function g17Attach(g, id) {
+  const S = G17_PARTS[id];
+  const p = S.sub === 'light' || S.sub === 'laser' ? wbMakeAtt(S.sub) : g17MakeAtt(S.sub, S.can);
+  if (!p) return null;
+  if (S.sub === 'light' || S.sub === 'laser') { const L = g.parts.stockLight; if (L) L.visible = false; }
+  g17Pose(g, S.sub, p.root.position, p.root.quaternion);
+  p.root.updateMatrixWorld(true);
+
+  wbFreeze(g, p);
+  if (!WB.atts.includes(p)) WB.atts.push(p);
+  return p;
+}
+function g17Detach(g, p) {
+  const it = p.item;
+  if (it.sub === 'sup' && g.sup === it) g.sup = null;
+  if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }
+  if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; }
+  if (p.root.parent) p.root.parent.remove(p.root);
+  if (g.atts) g.atts = g.atts.filter((q) => q !== p);
+  it.gun = null;
+  try { world.removeRigidBody(p.body); } catch (e) { /* gone */ }
+  p.removing = true;
+  WB.atts = WB.atts.filter((q) => q !== p);
+}
+function g17ApplyStore() {
+  for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'g17' && !q.removing) g17SyncGun(q.item);
+}
+// The vise let a Glock go: its parts are the build now (the store's fitted set), for every Glock.
+function g17FromGun(g) {
+  if (!G17A.ready || !g || g.type !== 'g17') return;
+  const have = new Set();
+  for (const p of g.atts || []) { const id = g17PartId(p.item); if (id) have.add(id); }
+  for (const id of Object.keys(G17_PARTS)) {
+    const it = WORKSHOP.byId.get(id); if (!it) continue;
+    if (have.has(id)) { it.owned = true; WORKSHOP.fitted.add(id); } else WORKSHOP.fitted.delete(id);
+  }
+  wsSave(); WORKSHOP.dirty = true;
+  g17Refresh(g);
+  for (const q of props) if (q.item && q.item !== g && q.item.kind === 'gun' && q.item.type === 'g17' && !q.removing) g17SyncGun(q.item);
+}
+// The red dot's brightness: an auto-brightness sensor (room light, eased).
+function g17Tick(dt) {
+  if (!G17A.ready) return;
+  const L = typeof eyeLight === 'function' ? eyeLight(stream.current) : 1, want = clamp(0.32 + 0.75 * Math.sqrt(clamp(L, 0, 1.5)), 0.3, 1.2);
+  G17A.lvl += (want - G17A.lvl) * (1 - Math.exp(-Math.min(dt, 0.1) * 1.6));
+  G17A.glass.uniforms.uLvl.value = G17A.lvl;
+}
+// VR heft: the added parts' inertia makes the gun trail your hand's turn by a few ms (GLOCK_FX_VR); never on a grab's blend.
+function g17VrHeft(g, dt, Q) {
+  const F = g.afx, L = g.vrHeft || (g.vrHeft = { q: new THREE.Quaternion(), at: -1 }), now = performance.now() / 1000;
+  if (!F || F.lag < 0.001 || g.blend > 0 || now - L.at > 0.1 || !(dt > 0)) { L.q.copy(Q); L.at = now; return; }
+  L.at = now;
+  L.q.slerp(Q, 1 - Math.exp(-dt / F.lag));
+  Q.copy(L.q);
+}
+
+/* --- sounds: the can / comp threading on, a rail clamp, the dot's screws, the cover's snap (synth) --- */
+function g17Sfx(kind, pos) {
+  if (!audio.ctx || audio.ctx.state !== 'running') return;
+  const play = () => {
+    const t = audio.ctx.currentTime + 0.004;
+    if (kind === 'thread') {                                      // a fine metallic ratchet over 0.4 s, then it seats
+      let a = 0;
+      for (let i = 0; i < 15; i++) { a += 0.022 + 0.008 * Math.sin(i * 1.7) + Math.random() * 0.006; nBurst(t + a, 0.012, 'bandpass', 4300 + Math.random() * 900, 6, 0.05 + 0.03 * Math.random(), 0.007, 0.05); }
+      nBurst(t, 0.42, 'bandpass', 2600, 1.2, 0.018, 0.4, 0.05);  // the threads' hiss
+      nBurst(t + a + 0.03, 0.04, 'bandpass', 2300, 3, 0.22, 0.025, 0.1); nBurst(t + a + 0.03, 0.03, 'lowpass', 520, 1, 0.16, 0.02, 0.05);
+    } else if (kind === 'rail') {                                  // the clamp's clack, then the screw snugged
+      nBurst(t, 0.05, 'bandpass', 2000, 2, 0.32, 0.03, 0.1); nBurst(t, 0.04, 'lowpass', 450, 1, 0.22, 0.03, 0.05);
+      for (let i = 0; i < 3; i++) nBurst(t + 0.16 + i * 0.055, 0.012, 'bandpass', 3600, 6, 0.09, 0.006, 0.05);
+      nBurst(t + 0.34, 0.02, 'bandpass', 2900, 4, 0.12, 0.01, 0.05);
+    } else if (kind === 'dot') {                                   // seated on the plate, two screws run down
+      nBurst(t, 0.04, 'bandpass', 2200, 2.5, 0.2, 0.025, 0.1);
+      for (let s = 0; s < 2; s++) for (let i = 0; i < 4; i++) nBurst(t + 0.14 + s * 0.26 + i * 0.045, 0.01, 'bandpass', 3900, 7, 0.06, 0.005, 0.04);
+    } else if (kind === 'cover') {                                 // rubber pulled over and snapping home
+      nBurst(t, 0.08, 'lowpass', 700, 1, 0.3, 0.05, 0.05); nBurst(t + 0.05, 0.03, 'bandpass', 1500, 3, 0.1, 0.02, 0.05);
+    } else {                                                       // off: a soft click
+      nBurst(t, 0.03, 'bandpass', 1900, 3, 0.15, 0.02, 0.05);
+    }
+  };
+  if (pos) soundAt(pos, play, { occlude: false }); else play();
+}
+
+/* --- fit gaps (dev): the drawn surfaces, measured --- */
+function g17Gaps(g) {
+  if (!G17A.ready || !g) return null;
+  const out = {}, RC = new THREE.Raycaster(), M = G17A.M, root = g.prop.root;
+  root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), v = new THREE.Vector3(), mm = (x) => Math.round(x * 1e5) / 100;
+  const box = (o) => { const b = new THREE.Box3(); o.updateMatrixWorld(true); o.traverse((c) => { if (!c.isMesh || !c.visible) return; const P = c.geometry.attributes.position, Mx = new THREE.Matrix4().multiplyMatrices(inv, c.matrixWorld); for (let i = 0; i < P.count; i++) b.expandByPoint(v.fromBufferAttribute(P, i).applyMatrix4(Mx)); }); return b; };
+  const meshes = []; g.model.traverse((c) => { if (c.isMesh && c.visible && (c.geometry === EXTG.g17.geo.slide || c.geometry === EXTG.g17.geo.frame)) meshes.push(c); });
+  const ray = (x, y, z, dx, dy, dz) => { const o = new THREE.Vector3(x, y, z).applyMatrix4(g.model.matrixWorld), d = new THREE.Vector3(dx, dy, dz).transformDirection(g.model.matrixWorld); RC.set(o, d); RC.far = 0.05; const h = RC.intersectObjects(meshes, false)[0]; return h ? h.distance : null; };
+  if (g.g17.plate.visible) { const b = box(g.g17.plate); out.plate = { top: mm(b.max.y - M.top), note: 'top over the slide flat (mm); 2.1 mm of it in the cut' }; }
+  if (g.dot) { const b = box(g.dot.prop.root); out.dot = { gap: mm(b.min.y - M.plateTop), rearToRearSight: mm(M.rs.z0 - b.max.z), front: mm(b.min.z) }; }
+  if (g.cover && g.dot) { const a = box(g.cover.prop.root), b = box(g.dot.prop.root); out.cover = { side: mm(a.max.x - b.max.x), top: mm(a.max.y - b.max.y), front: mm(b.min.z - a.min.z) }; }
+  if (g.g17.sights.visible) { const b = box(g.g17.sights); out.sights = { base: mm(b.min.y - M.top), top: mm(b.max.y), winBottom: mm(M.plateTop + G17A.glassBox.min.y), winTop: mm(M.plateTop + G17A.glassBox.max.y) }; }
+  if (g.g17.barrel.visible) { const b = box(g.g17.barrel); out.barrel = { out: mm(M.front - b.min.z), shoulderToSlide: mm(M.front - M.front) }; }
+  for (const k of ['sup', 'comp']) if (g[k]) { const b = box(g[k].prop.root); out[k] = { gap: mm(M.front - b.max.z), len: mm(b.max.z - b.min.z), dia: mm(b.max.x - b.min.x), threadInside: mm(M.thread.len) }; }
+  for (const p of g.atts || []) if (p.item.sub === 'light' || p.item.sub === 'laser') {   // rays up from 2 mm under the mount's top face, along the clamp
+    const o = p.root.position, zs = p.item.sub === 'light' ? [-0.05, -0.032, -0.014] : [-0.03, -0.012, 0.006], up = [];
+    for (const dz of zs) for (const x of [-0.005, 0, 0.005]) { const d = ray(o.x + x, o.y - 0.002, o.z + dz, 0, 1, 0); if (d !== null) up.push(d - 0.002); }
+    const b = box(p.root);
+    out[p.item.sub] = { gap: up.length ? mm(Math.min(...up)) : null, gapMax: up.length ? mm(Math.max(...up)) : null, rays: up.length, top: mm(b.max.y), rail: mm(o.y) };
+  }
+  return out;
+}
+// The store rows' fx (the old per-part deltas) are derived from GLOCK_FX, so the two can never disagree: each part alone on a bare Glock.
+function g17DeriveFx() {
+  const b = new Float64Array(WS_NS), s = new Float64Array(WS_NS);
+  g17Stats(new Set(), b);
+  for (const it of WS_ITEMS) {
+    if (it.gun !== 'g17' || it.cosmetic) continue;
+    g17Stats(new Set([it.id]), s);
+    it.fx = {};
+    WS_STATS.forEach(([key], i) => { const dv = s[i] - b[i]; if (Math.abs(dv) > 0.05) it.fx[key] = i === WS_WT ? Math.round(dv / WS_KG * 1000) / 1000 : Math.round(dv * 10) / 10; });
+  }
+}
+g17DeriveFx();
+if (EXT.mag.g17) WORKSHOP.fitted.add('g17.mag33'); else WORKSHOP.fitted.delete('g17.mag33');   // the bench card's state is the store's
+
 function extSpawn(room, s) {
   const gun = s.type === 'g17' || s.type === 'magg17' ? 'g17' : 'm4a1s', X = EXTG[gun];
   if (!X || !X.ready) return;
@@ -33864,6 +34462,7 @@ function freeItemHand(h, it, p, P, Q) {
 if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, WORKSHOP, WALLET, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory };
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
+if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, g17Tick, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 </script>
 </body>
 </html>
