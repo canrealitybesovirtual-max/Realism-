@@ -9658,6 +9658,7 @@ function colOnFloor(col, fy) {
   if (col.lvTop !== undefined && fy > col.lvTop) return false;        // ...or a wall of the floor below
   return col.top > fy + 0.02;                                          // step 89: all of it under your feet (the room below a U well's upper door blocked that doorway)
 }
+const colOffLevel = (col, fy) => !colOnFloor(col, fy);              // the same rule, negated (entry blackout fix's name)
 function resolveBody(p) {
   const r = CONFIG.player.radius, fy = level.floor;
   for (let pass = 0; pass < 3; pass++) {     // several passes settle corners between furniture, walls and a door
@@ -19865,8 +19866,25 @@ function emittingGun() {
   for (const q of props) { const g = q.item; if (g && g.kind === 'gun' && g.light && g.light.on && !q.removing) return g; }
   return null;
 }
+// Entry blackout fix: three.js leaves a light out of the frame's light list when anything above it is hidden (or out of the
+// scene), and a new light count recompiles every material: a long stall, dark in the headset. A lit gun left in a room that
+// then hid (a door shut behind you), or the desktop scope hiding the gun, took the flashlight with it. Such a gun's light now
+// parks on the camera (lit if the gun is in your hand, dark if not) until the gun shows again (lightMountCheck, every frame).
+const LMNT = { hid: null };
+function shownInScene(o) { for (; o; o = o.parent) { if (!o.visible) return false; if (o === scene) return true; } return false; }
+function lightMountCheck() {
+  if (flashlight.parent === camera ? LMNT.hid !== null : !shownInScene(flashlight)) updateLightMount();
+}
 function updateLightMount() {
   const g = emittingGun();
+  LMNT.hid = null;
+  if (g && !shownInScene(g.model)) {
+    LMNT.hid = g;
+    const inHand = vrHands.some((h) => gunOf(h) === g) || gunOf(deskHand) === g;
+    if (flashlight.parent !== camera) mountFlashlight(camera, _lmo.set(0.18, -0.16, -0.05));
+    if (flashlightOn !== inHand) setFlashlight(inHand);
+    return;
+  }
   if (g) {
     if (g.light.free) {                              // step 73: placed on the bench, anywhere on the gun
       const r = g.light.prop.root;
@@ -21170,8 +21188,15 @@ function enemyDress(e, model) {
   holder.traverse((o) => { if (o.isSkinnedMesh) { if (!skel) skel = o.skeleton; else o.skeleton = skel; } });
   // Culling: a skinned mesh's bounds are measured once (standing). One sphere per man, kept on his
   // pelvis, so a body on the floor is never culled for being where he used to stand.
+  // Invisible enemy fix: the sphere is kept in the first mesh's space, so only meshes in that same space share it; any
+  // other skinned part (not merged, own transform) was tested against a sphere in the wrong place and could vanish.
   const sphere = new THREE.Sphere(new THREE.Vector3(), 1.3), meshes = [];
-  holder.traverse((o) => { if (o.isSkinnedMesh) { o.boundingSphere = sphere; meshes.push(o); } });
+  holder.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    const m0 = meshes[0];
+    if (!m0 || (o.parent === m0.parent && o.matrix.equals(m0.matrix))) { o.boundingSphere = sphere; meshes.push(o); }
+    else o.frustumCulled = false;
+  });
   const T = {};
   for (const k of DRIVE_ORDER) T[k] = bones[model.def.map[k]];
   const fingers = model.fingers.map((f) => ({ b: bones[stripIdx(f.name)], axis: f.axis, ang: f.ang, base: f.base }));
@@ -21281,6 +21306,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   const W = ENEMY_LOADOUTS[spec.gun] || ENEMY_LOADOUTS.smg;
   if (spec.look == null) spec.look = Math.random() < 0.5 ? 0 : 1;   // kept in the room plan, so he looks the same next time
   const model = ENEMY.models[spec.look] || ENEMY.models[0];
+  if (!model) return null;                                      // no character loaded: no man (never a body-less one, never a throw mid room activation)
   const root = model.driver.clone(true);
   const B = {};
   root.traverse((o) => { if (o.userData.bone) B[o.userData.bone] = o; });
@@ -21781,10 +21807,10 @@ function enemyMove(e, dt) {
   e.vel.lerp(_mv, 1 - Math.exp(-dt * 8));
   e.pos.addScaledVector(e.vel, dt);
   // Collide: room walls, furniture, partitions, doors, tables.
-  const er = e.room, r = C.radius;
+  const er = e.room, r = C.radius, fy = er.origin.y;
   _mp.x = rWX(er, e.pos.x); _mp.z = rWZ(er, e.pos.y);
   for (let pass = 0; pass < 2; pass++) {
-    for (const col of colliders) if (colOnFloor(col, er.origin.y)) pushOutOf(col, _mp, r);   // not the walls of a wing over or under his room
+    for (const col of colliders) if (!colOffLevel(col, fy)) pushOutOf(col, _mp, r);   // invisible enemy fix: the walls and furniture of a room on another floor (stacked wings) shoved him out through his own walls
     for (const b of tableBoxes(e.room)) pushOutOf({ x: rWX(er, b.x), z: rWZ(er, b.z), c: 1, s: 0, hx: b.hx, hz: b.hz }, _mp, r);
   }
   // Step 9: teammates don't walk through each other.
@@ -21793,12 +21819,14 @@ function enemyMove(e, dt) {
     const mx = rWX(er, m.pos.x) - _mp.x, mz = rWZ(er, m.pos.y) - _mp.z, md = Math.hypot(mx, mz), R = 2 * r + 0.05;
     if (md < R && md > 1e-4) { _mp.x -= mx / md * (R - md) * 0.5; _mp.z -= mz / md * (R - md) * 0.5; }
   }
-  e.pos.set(rLX(er, _mp.x), rLZ(er, _mp.z));
+  // Invisible enemy fix: he never leaves his own room (its nav grid stops r short of the walls). Outside it he stood in a
+  // wall, the gap between rooms or another room's space: drawn with a room you could not see into, still fighting.
+  e.pos.set(clamp(rLX(er, _mp.x), -er.w / 2 + r, er.w / 2 - r), clamp(rLZ(er, _mp.z), -er.d / 2 + r, er.d / 2 - r));
   e.speed = e.vel.length();
-  // Never stand inside you: you get pushed, gently.
+  // Never stand inside you: you get pushed, gently (only on your floor: stacked wings share x and z).
   headWorld(_ev.h);
   const dx = _ev.h.x - _mp.x, dz = _ev.h.z - _mp.z, dd = Math.hypot(dx, dz);
-  if (dd < 0.45 && dd > 1e-4 && !playerState.dead) { rig.position.x += dx / dd * (0.45 - dd); rig.position.z += dz / dd * (0.45 - dd); }
+  if (dd < 0.45 && dd > 1e-4 && !playerState.dead && Math.abs(fy - level.floor) < 1.2) { rig.position.x += dx / dd * (0.45 - dd); rig.position.z += dz / dd * (0.45 - dd); }
   // Facing: where he walks when running, otherwise toward the threat (or his post when idle).
   let want = e.yaw;
   if (e.state === 'idle') want = e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;
@@ -23313,7 +23341,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
   if (AI_ON()) aiDoors();                                       // step 11: a door opening into a room is heard
   for (const e of ENEMY.list) {
     if (e.dead || !e.room.active) continue;
-    if (!(e.room.visible || e.room === stream.current)) continue;     // behind shut doors: frozen
+    if (!(e.room.visible || e.room === stream.current) || !e.room.group.visible || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
     enemyThink(e, dt, now);
     enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
     // Step 25.2: a man you can't see is posed at CONFIG.enemy.offscreenPoseHz (time adds up, nothing is skipped).
@@ -33426,9 +33454,10 @@ function detailUpdate(dt) {
 // Step 54.4: three.js asks for the next frame only after tick returns, so one error thrown in a frame
 // stopped the loop for good and the game froze on its last picture. Now the error is caught, the loop
 // keeps going, and the message is shown on screen (each different one once) and kept in window.cqcErrors.
-const FRAME_ERR = { seen: new Set(), list: [] };
+const FRAME_ERR = { seen: new Set(), list: [], drawn: false };
 window.cqcErrors = () => FRAME_ERR.list;
 function tickSafe(timeMs, frame) {
+  FRAME_ERR.drawn = false;
   try { tick(timeMs, frame); }
   catch (e) {
     const where = (e && e.stack ? String(e.stack).split('\n').find((l) => /:\d+:\d+/.test(l)) || '' : '').trim();
@@ -33437,6 +33466,12 @@ function tickSafe(timeMs, frame) {
       FRAME_ERR.seen.add(msg); FRAME_ERR.list.push(msg);
       console.error('[frame] error caught, game keeps running:', e);
       toast('Game error (still running): ' + msg, 9000);
+    }
+    // Entry blackout fix: the headset clears its framebuffer every frame, so a frame that threw before its draw was shown
+    // black (a blink, often on the frame a room is entered or built). Draw what there is instead.
+    if (renderer.xr.isPresenting && !FRAME_ERR.drawn) {
+      try { renderer.render(scene, camera); } catch (e2) { /* nothing more to show */ }
+      try { eyeAdaptPost(); bodyCamLivePost(); } catch (e3) { /* flags only */ }
     }
   }
 }
@@ -33495,6 +33530,7 @@ function tick(timeMs) {
   vmTick(dt);            // step 82: desktop viewmodels
   detailUpdate(dt);      // step 25: smart detail (pixel-size culling, shadow distance, struggle mode)
   profMark('fx');
+  lightMountCheck();     // entry blackout fix: the flashlight never sits under a hidden parent (a light count change recompiles everything)
   flushShadows();        // performance pass: per-light shadow redraws, throttled while things move
   perfTick(dt);          // performance pass: adaptive quality (MacBook) / foveation (Quest)
   profMark('shadows');
@@ -33504,6 +33540,7 @@ function tick(timeMs) {
   eyeAdaptPre(dt);       // step 96: eye adaptation (computer, outside body cam mode)
   if (renderer.xr.isPresenting || !postEnabled || BOOST.on || !composer) {   // step 12: boost bypasses the post chain
     renderer.render(scene, camera);
+    FRAME_ERR.drawn = true;
   } else {
     filmPass.uniforms.uTime.value = t;
     composer.render(dt);
