@@ -1908,6 +1908,7 @@ const PROJECT_RULES = {
     ,'Step 54.1 safe room: the old safe room is never unloaded while it is the only live one (safeRoomOther), so peeking into a new room and falling back, or dying there, always leaves one. Walking back into it pulls stream.frontier back so it stays the safe room and the next room stays normal. respawnPlayer picks the newest live safe room, pulls the frontier back to it, and if none is live yet keeps you down (screen dark) for up to 8 s while it builds.'
     ,'Step 54.3 phone title: under 861 px wide or 561 px tall the title screen scrolls and #title .foot (the loader) is sticky at the bottom, so the loading line, percentage and any watchdog error are always on screen. Short landscape screens also shrink the name. Layout only; nothing in the game changed.'
     ,'Step 54.4 frame guard: the loop runs tickSafe, which calls tick inside try/catch. An error in one frame no longer stops the loop (three.js only requests the next frame after the callback returns); each distinct message is toasted once for 9 s and kept in cqcErrors().'
+    ,'Step 86 door foley: doorSfx(door, kind, k) at the latch edge through soundAt. lever (leverK reaches 1; VR pulse 0.3), spring (back to 0 after a full turn, a knock into the strike when shut), rattle (locked: a desktop press or a VR grip, at most every 0.4 s), shut (a leaf that passed 0.05 rad settling inside 0.012 under 0.06 rad/s, so a leaf swinging through 0 stays silent; a little louder the faster it settles), stop (reaching its hinge stop above 0.9 rad/s: a kick, a shove). No persistent nodes. CONFIG.polish.audio.doors (on, gain); ?doorsnd=off = silent doors.'
   ],
   step55: [
     'Mobile shooting: Fire and Aim are on screen whenever you have a gun in your hand or in a slot; Reload only with a gun in hand. With empty hands a press on Fire or Aim draws a gun from its slot (mobDrawForShot: rifle first, like Swap) and that press does not throw; Fire reads Fire unless you hold something that is not a gun (Throw).',
@@ -2426,6 +2427,7 @@ const CONFIG = {
       cloth: 0.5,                             // step 86: your clothes and kit: settling into a crouch, getting up, a hard pivot, a fast arm (gain, 0 = off)
       acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
+      doors: { on: true, gain: 1 },           // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before
       ears: true, earsMax: 5, earsRecover: 3.2, earsDull: 0.42, earsFloor: 2600,   // hearing dose after gunfire (step 15: recovers about twice as fast)
       earsShot: { pistol: 0.7, smg: 0.5, shotgun: 1.1, rifle: 0.8, ppk: 0, fn509: 0.05, akm: 1.0, awp: 1.3 },   // step 15: the suppressed PPK leaves your ears alone
       tinnitus: 0.0018, tinnitusHz: 6900, tinnitusFrom: 1.4, tinnitusFull: 4.2   // step 15: quieter ring, needs more shooting to start
@@ -7379,7 +7381,7 @@ function updateDoorsPre(now) {
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
     const next = stream.rooms.get(door.room.slot + 1);
     if (!next || !next.active) {
-      if (door.holder) releaseDoor(door.holder);
+      if (door.holder) { const hl = door.holder; releaseDoor(hl); if (now - (door.rattleAt || 0) > 0.4) { door.rattleAt = now; doorSfx(door, 'rattle'); pulse(hl, 0.45, 35); } }   // step 86: it won't give
       door.drive = null; k = 60; c = 15; mode = 'locked';
     }
     if (door.holder) {
@@ -7422,7 +7424,7 @@ function updateDoorsPre(now) {
   }
 }
 const _qTurn = new THREE.Quaternion(0, 1, 0, 0);                 // step 83: half a turn about y
-function updateDoorsPost() {
+function updateDoorsPost(dt = 0) {
   for (const door of doors) {
     const sleeping = door.body.isSleeping();
     if (sleeping && door.settled) continue;
@@ -7438,6 +7440,12 @@ function updateDoorsPost() {
     }
     door.prevAngle = door.angle;          // step 8.1: tells the latch whether it is opening
     door.angle = a;
+    if (dt > 0) {                                                // step 86: the latch drops in; the leaf hits its stop
+      const ws = Math.abs(a - door.prevAngle) / dt, aa = Math.abs(a), lim = (a > 0 ? CONFIG.doorPhys.maxOpen : CONFIG.doorPhys.maxBack) - 0.03;
+      if (aa > 0.05) door.shutArm = true;
+      else if (door.shutArm && aa <= 0.012 && ws < 0.06) { door.shutArm = false; doorSfx(door, 'shut', ws); if (door.holder) pulse(door.holder, 0.3 + 0.3 * clamp(ws / 0.06), 24); }   // settling home, not swinging through 0
+      if (aa > lim && Math.abs(door.prevAngle) <= lim && ws > 0.9) { doorSfx(door, 'stop', ws); if (door.holder) pulse(door.holder, 0.6, 40); }
+    }
     if (Math.abs(a) > CONFIG.pace.revealAngle) { const nx = stream.rooms.get(door.room.slot + 1); if (nx && !nx.seen) nx.seen = true; }   // step 52
     doorPace(door, 0);
     door.settled = sleeping;
@@ -7514,6 +7522,10 @@ function updateDoorUse(dt) {
       const want = door.holder || now < (door.leverUntil || 0) ? 1 : 0, k0 = door.leverK || 0;
       const k = want ? Math.min(1, k0 + dt / U.leverTime) : Math.max(0, k0 - dt / U.leverTime);
       if (k !== k0) { door.leverK = k; const a = U.leverDrop * smoothstep(0, 1, k); for (const pv of lv) { pv.rotation.z = a; pv.updateMatrix(); } }
+      if (k !== k0 && (k === 1 || k === 0)) {                    // step 86: the clack down, the spring back (only after a full turn)
+        if (k === 1) { door.leverDn = true; doorSfx(door, door.mode === 'locked' ? 'rattle' : 'lever'); if (door.holder) pulse(door.holder, 0.3, 14); }
+        else if (door.leverDn) { door.leverDn = false; doorSfx(door, 'spring', Math.abs(door.angle) < 0.012 ? 1 : 0); }
+      }
     }
     // Pulling it toward you: you give way to the leaf (a short step back), never through a wall.
     if (door.pullUntil > now && door.mode === 'drive' && ready) {
@@ -10001,7 +10013,7 @@ function stepPhysics(dt) {
   const steps = dt > 1 / 55 ? 2 : 1;                            // 72/90 Hz headsets: one step per frame
   world.timestep = dt / steps;
   for (let i = 0; i < steps; i++) world.step();
-  updateDoorsPost();
+  updateDoorsPost(dt);
 
   let awake = false;
   for (let i = props.length - 1; i >= 0; i--) {
@@ -22119,6 +22131,8 @@ const ACOUSTICS = {
   range: { len: 2.8, tau: 0.36, fc0: 700, fc1: 6000, fcTau: 0.34, er: 0.1, seed: 783, wet: 0.38, pre: 0.02 }      // 45 m range: the far wall comes back late
 };
 const ROOMAC = { slots: [], cur: 0, key: 'room', irs: Object.create(null), offAt: 0 };
+const DOORSND = { on: !/[?&]doorsnd=off/.test(location.search) };   // step 86 (see doorSfx)
+const _dsP = new THREE.Vector3();
 function audioUnlock() {
   try {
     if (!audio.ctx) {
@@ -27607,6 +27621,37 @@ function kickSfx(kind, P, k) {
     }
   });
 }
+// Step 86: door foley at the latch edge (lever, bolt, keeper, hinge stop). Positional; the room's reverb carries it.
+function doorSfx(door, kind, k = 0) {
+  const D = CONFIG.polish.audio.doors;
+  if (!D || !D.on || !D.gain || !DOORSND.on || !audio.ctx || !door.walk) return;
+  const w = door.walk, G = D.gain;
+  doorHinge(door, _h2);                                          // latch edge = 2 x leaf centre - hinge, at lever height
+  _dsP.set(2 * w.x - _h2.x, w.top - CONFIG.door.height + 1.0, 2 * w.z - _h2.y);
+  soundAt(_dsP, () => {
+    const t = audio.ctx.currentTime + 0.003, j = 0.92 + Math.random() * 0.16;
+    if (kind === 'lever') {                                      // the lever bottoms out, the bolt pulls back
+      nBurst(t, 0.03, 'bandpass', 2600 * j, 3, 0.14 * G, 0.018, 0.25);
+      nBurst(t + 0.004, 0.05, 'lowpass', 700 * j, 0.9, 0.12 * G, 0.03, 0.2);
+    } else if (kind === 'spring') {                              // it springs back up, the bolt snaps out (k=1: shut, into the strike)
+      nBurst(t, 0.025, 'bandpass', 3400 * j, 4, 0.07 * G, 0.012, 0.2);
+      if (k) nBurst(t + 0.012, 0.04, 'lowpass', 900 * j, 0.9, 0.06 * G, 0.02, 0.15);
+    } else if (kind === 'rattle') {                              // locked: the leaf jerks against its keeper
+      for (let i = 0; i < 3; i++) nBurst(t + i * 0.045 + Math.random() * 0.01, 0.04, 'bandpass', 1700 * j, 2, (0.16 - i * 0.04) * G, 0.025, 0.3);
+      nBurst(t, 0.12, 'lowpass', 200 * j, 0.9, 0.3 * G, 0.08, 0.35);
+    } else if (kind === 'shut') {                                // the bolt rides the strike and drops in; k = rad/s as it settles (under 0.06)
+      const s = clamp(k / 0.06);
+      nBurst(t, 0.03, 'bandpass', 3000 * j, 4, (0.1 + 0.06 * s) * G, 0.014, 0.25);
+      nBurst(t + 0.008, 0.2, 'lowpass', 170 * j, 0.9, (0.22 + 0.2 * s) * G, 0.1 + 0.08 * s, 0.4);
+      if (s > 0.5) { tone(t + 0.008, 300 * j, 284 * j, 0.5, 0.03 * s * G, 'triangle', 0.45); tone(t + 0.008, 517 * j, 500 * j, 0.35, 0.018 * s * G, 'triangle', 0.45); }
+    } else if (kind === 'stop') {                                // the leaf slams its hinge stop (a kick, a shove, a flung hand)
+      const s = clamp((k - 0.9) / 1.2);
+      nBurst(t, 0.25, 'lowpass', 210 * j, 0.9, (0.3 + 0.45 * s) * G, 0.16, 0.5);
+      if (s > 0.05) { tone(t, 300 * j, 284 * j, 0.6, 0.05 * s * G, 'triangle', 0.5); tone(t, 517 * j, 500 * j, 0.45, 0.03 * s * G, 'triangle', 0.5); }   // kickSfx's leaf partials
+      nBurst(t + 0.03, 0.08, 'bandpass', 3100, 3, 0.06 * G, 0.05, 0.3);   // closer arm and latch rattle
+    }
+  });
+}
 
 // Real jumps: read from the headset (physical eye height above the real floor).
 const _jmp = { h: new THREE.Vector3() };
@@ -29234,7 +29279,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND };
 </script>
 </body>
 </html>
