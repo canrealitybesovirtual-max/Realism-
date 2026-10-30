@@ -251,3 +251,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
 - ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
 - Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
+
+## CQC step 86: body bumps (headset check needed)
+- bodyBump(cx, cz, onDoor) from locomote: the push resolveBody gives the moving head is the contact (door loop unchanged: breach first, else nudge; bDoor / bBreach flags). Fresh contact into a wall, prop or leaf above min m/s: self thump (shoulder, sleeve, kit; a nudged leaf rings with kickSfx's modes, quieter), and in the headset a 30 ms buzz weighted to the hand on the wall's side. Sliding along: sleeve scuff (brush), no buzz. Skipped during BREACH / KICK / death. Not positional, no AI noise.
+- CONFIG.polish.audio.bump { gain (0 = off), min m/s, free s, cool s, brush (0 = off), haptic }. ?bump=off. pulse() now stamps hand.hapEnd; pulseSoft(hand, s, ms) skips while a pulse is still running (the Quest replaces a running pulse).
+- Footfall haptics rejected: they would mask the heartbeat buzz. ?dev adds BUMP, bodyBump, pulseSoft.
+- Not verified: how it sounds and feels on a Quest.

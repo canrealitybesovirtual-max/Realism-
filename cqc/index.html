@@ -2002,6 +2002,9 @@ const PROJECT_RULES = {
   step70: [
     'Embedded GLB textures (gltfParse + gltfBytesPlugin, ?gltfblob=on for the old path): every image stored in a GLB bufferView is decoded with createImageBitmap from a Blob (no blob: URL, nothing fetched), then flipY false, name, sampler filters and wrapping and the parser association set as GLTFLoader does. All GLB loads (M1911, Glock / M4A1-S, AKM / M4A4 / AWP) go through gltfParse. A texture that fails to decode returns null (that slot is left empty) with a console warning.'
   ],
+  step86: [
+    'Body bumps (bodyBump from locomote, ?bump=off, CONFIG.polish.audio.bump): what resolveBody pushes the moving head back by is the contact. A fresh contact (free s clear before, cool s since the last) at more than min m/s into the surface is a self thump of shoulder, sleeve and kit (a door leaf you nudge also rings, kickSfx\'s two modes quieter); in the headset a 30 ms buzz, strongest in the hand on the wall\'s side, through pulseSoft (skipped while another pulse runs: pulse() stamps hand.hapEnd). Sliding along a wall is a sleeve scuff (brush) every ~0.45 s, no buzz. Not positional, no AI noise; skipped during a breach, a kick or death. Footfall haptics were left out (they would mask the heartbeat buzz).'
+  ],
   currentStep: 70
 };
 
@@ -2419,6 +2422,7 @@ const CONFIG = {
       impacts: true, impactRange: 12,         // rounds landing within this many m make a sound
       footsteps: true, buzz: 0.006, roomTone: 0.05,
       ownSteps: 0.5,                          // step 85: your own boots and kit (gain, 0 = off), timed to your body's feet
+      bump: { gain: 1, min: 0.6, free: 0.25, cool: 0.35, brush: 1, haptic: 1 },   // step 86: walking into a wall, prop or door leaf: thump of shoulder and kit (a leaf rings), buzz on that side in the headset; min m/s into it, free s clear before, brush = sleeve scuff sliding along (0 = off), gain 0 = off
       acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
       ears: true, earsMax: 5, earsRecover: 3.2, earsDull: 0.42, earsFloor: 2600,   // hearing dose after gunfire (step 15: recovers about twice as fast)
@@ -8983,6 +8987,39 @@ const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const yawOf = (obj) => { obj.getWorldQuaternion(_q); return _euler.setFromQuaternion(_q, 'YXZ').y; };
 const headWorld = (out) => out.setFromMatrixPosition(camera.matrixWorld);
 
+// Step 86: bumping into things is felt (self sound, not positional; the men do not hear it). ?bump=off
+const BUMP_ON = !/[?&]bump=off/.test(location.search);
+const BUMP = { last: -9, at: -9, brushAt: -9 };
+function bodyBump(cx, cz, onDoor) {
+  const B = CONFIG.polish.audio.bump, c = Math.hypot(cx, cz);
+  if (!B || !B.gain || c < 1e-4 || c > 0.3) return;            // no contact, or a snap / respawn
+  const now = performance.now() / 1000, nx = cx / c, nz = cz / c;   // n: off the surface, toward you
+  const vin = -(_vel.x * nx + _vel.z * nz), vt = Math.abs(_vel.x * nz - _vel.z * nx);
+  const fresh = now - BUMP.last > B.free; BUMP.last = now;
+  const au = audio.ctx && audio.ctx.state === 'running' && audio.noise;
+  if (fresh && vin > B.min && now - BUMP.at > B.cool) {
+    BUMP.at = BUMP.brushAt = now;
+    const k = clamp(vin / 1.6, 0.3, 1);
+    if (au) {
+      const t = audio.ctx.currentTime + 0.002, j = 0.9 + Math.random() * 0.2, g = B.gain * k;
+      nBurst(t, 0.14, 'lowpass', 230 * j, 0.9, 0.3 * g, 0.1, 0.3);                 // shoulder and plate into it
+      nBurst(t, 0.12, 'bandpass', 1400 * j, 0.8, 0.05 * g, 0.12, 0.2);             // sleeve
+      nBurst(t + 0.012, 0.07, 'bandpass', 3900 * j, 4, 0.04 * g, 0.05, 0.15);      // kit on the carrier
+      if (onDoor) { tone(t, 300 * j, 284 * j, 0.45, 0.03 * g, 'triangle', 0.4); tone(t, 517 * j, 500 * j, 0.3, 0.02 * g, 'triangle', 0.4); }   // the leaf rings (kickSfx's modes, quieter)
+    }
+    if (renderer.xr.isPresenting && B.haptic) {
+      const y = yawOf(camera), nR = nx * Math.cos(y) - nz * Math.sin(y);   // wall on your right when nR < 0
+      const a = B.haptic * (0.25 + 0.35 * k);
+      for (const h of vrHands) { const hd = h.ctrl && h.ctrl.userData.handedness; if (hd) pulseSoft(h, a * (0.7 + (hd === 'right' ? -0.3 : 0.3) * nR), 30); }   // wall side 1, other 0.4, head-on 0.7 each
+    }
+    return;
+  }
+  if (B.brush && au && vin > 0.15 && vt > 0.8 && now - BUMP.brushAt > 0.42) {   // sliding along it: the sleeve only, no thump, no buzz
+    BUMP.brushAt = now + Math.random() * 0.1;
+    nBurst(audio.ctx.currentTime + 0.002, 0.2, 'bandpass', 1500 * (0.9 + Math.random() * 0.2), 0.7, 0.03 * B.brush * B.gain, 0.18, 0.15);
+  }
+}
+
 // fwd/side are stick values (-1..1), yaw is the facing to move along. Returns speed in m/s.
 function locomote(dt, fwd, side, yaw, speed) {
   const mag = Math.hypot(fwd, side);
@@ -8996,11 +9033,17 @@ function locomote(dt, fwd, side, yaw, speed) {
   headWorld(_head);
   _probe.copy(_head).addScaledVector(_vel, dt);
   // Walking into a door leaf pushes it open (or shut, from the other side).
+  let bDoor = false, bBreach = false;                           // step 86
   for (const door of doors) {
     _probe2.copy(_probe);
-    if (pushOutOf(door.walk, _probe2, CONFIG.player.radius) > 0.004 && !doorBreachTry(door, sp, _vel)) nudgeDoor(door, _probe.x, _probe.z);   // step 54: running in breaches it
+    if (pushOutOf(door.walk, _probe2, CONFIG.player.radius) > 0.004) {
+      if (doorBreachTry(door, sp, _vel)) bBreach = true;           // step 54: running in breaches it
+      else { nudgeDoor(door, _probe.x, _probe.z); bDoor = true; }
+    }
   }
+  const bx = _probe.x, bz = _probe.z;                            // step 86: what resolveBody pushes back is the contact
   resolveBody(_probe);
+  if (BUMP_ON && !bBreach && !BREACH.on && !KICK.on && !playerState.dead) bodyBump(_probe.x - bx, _probe.z - bz, bDoor);
   rig.position.x += _probe.x - _head.x;
   rig.position.z += _probe.z - _head.z;
   rig.updateMatrixWorld(true);
@@ -9600,8 +9643,10 @@ const vrHands = [];
 function pulse(hand, strength, ms) {
   const gp = hand.ctrl && hand.ctrl.userData.gamepad;
   const act = gp && gp.hapticActuators && gp.hapticActuators[0];
-  if (act && act.pulse) { try { act.pulse(clamp(strength), ms); } catch (e) { /* no haptics: fine */ } }
+  if (act && act.pulse) { hand.hapEnd = performance.now() + ms; try { act.pulse(clamp(strength), ms); } catch (e) { /* no haptics: fine */ } }
 }
+// Step 86: a soft buzz never cuts short one still running (the Quest replaces a running pulse).
+function pulseSoft(hand, strength, ms) { if (performance.now() < (hand.hapEnd || 0)) return; pulse(hand, strength, ms); }
 
 const _hs = new THREE.Vector3(), _hm = new THREE.Matrix4();
 function handTarget(hand) {
@@ -29120,7 +29165,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
 </script>
 </body>
 </html>
