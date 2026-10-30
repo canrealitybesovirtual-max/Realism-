@@ -1464,7 +1464,8 @@ const PROJECT_RULES = {
     'Gun handling, reload and brass sounds stay off (GUN_HANDLING_SOUNDS) as before; step 10 adds no gun foley.',
     'Profiling: every frame is split into input, stream, enemies, weapons, physics, fx, shadows and render (CPU ms). Frame interval, p95, dropped frames, draw calls and triangles per second. A frame over budget with low CPU time is reported GPU-bound. Desktop: O. Headset: fps on the terminal (GRAPHICS). Each VR session logs a summary and keeps the last one (window.cqcProfile()).',
     'Optimize only from profiler numbers on the device: Quest first lowers CONFIG.polish.haze.count / haze.maxPx (overdraw), then audio.hrtf (CPU), then the step 4 knobs (shadow size, foveation).',
-    'Nothing in step 10 compiles mid-game or adds a light: blood, haze, mote and contact materials are built in polishKit() and compiled at load; every pool is fixed size.'
+    'Nothing in step 10 compiles mid-game or adds a light: blood, haze, mote and contact materials are built in polishKit() and compiled at load; every pool is fixed size.',
+    'Step 86: his body is heard, not just his boots (enemyBodyFoley): knee down behind cover or to reload (knee pad, carrier, mags, 0.2 s after the drop), coming up (cloth and a boot scuff before his head clears the wall), pivoting on the spot (soles on grit). Synth only, through soundAt. CONFIG.polish.audio.bodyFoley (gain, 0 = off).'
   ],
   // STEP 11: the opposition. Everything after this keeps these.
   ai: [
@@ -2426,6 +2427,7 @@ const CONFIG = {
       ownSteps: 0.5,                          // step 85: your own boots and kit (gain, 0 = off), timed to your body's feet
       bump: { gain: 1, min: 0.6, free: 0.25, cool: 0.35, brush: 1, haptic: 1 },   // step 86: walking into a wall, prop or door leaf: thump of shoulder and kit (a leaf rings), buzz on that side in the headset; min m/s into it, free s clear before, brush = sleeve scuff sliding along (0 = off), gain 0 = off
       cloth: 0.5,                             // step 86: your clothes and kit: settling into a crouch, getting up, a hard pivot, a fast arm (gain, 0 = off)
+      bodyFoley: 1,                           // step 86: his posture: knee down, coming up, pivots on the spot (gain, 0 = off)
       acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
       doors: { on: true, gain: 1 },           // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before
@@ -18652,7 +18654,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
     fl: { p: 0, y: 0, r: 0, vp: 0, vy: 0, vr: 0 }, stumble: 0, hitT: -99, armHit: 0, suppress: 0,
     ammo: W.ammo, reloadT: 0, burst: 0, nextShot: 0, err: CONFIG.enemy.errBase, errVec: new THREE.Vector2(rnd2(-1, 1), rnd2(-1, 1)),
     aimPoint: new THREE.Vector3(), gunQ: new THREE.Quaternion(), gunP: new THREE.Vector3(), lookW: new THREE.Vector3(),
-    dead: false, rag: null, idleT: rnd2(2, 5), walkShadow: false,
+    dead: false, rag: null, idleT: rnd2(2, 5), walkShadow: false, fcLow: false, fcTurnAt: -9,   // step 86
     // step 9
     w: W, type: W.gun, idx, spares: W.spares, alertAt: 0, pumpAt: 0, sharedT: 0, killPart: null,
     skill: 0.4, aggr: 0.4, reactK: 1, errK: 1
@@ -20157,7 +20159,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if (e.dead || !e.room.active) continue;
     if (!(e.room.visible || e.room === stream.current)) continue;     // behind shut doors: frozen
     enemyThink(e, dt, now);
-    enemyMove(e, dt);
+    enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
     // Step 25.2: a man you can't see is posed at CONFIG.enemy.offscreenPoseHz (time adds up, nothing is skipped).
     e.poseAcc = (e.poseAcc || 0) + dt;
     if (!enemyOffscreen(e) || e.poseAcc >= 1 / CONFIG.enemy.offscreenPoseHz) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
@@ -23794,6 +23796,42 @@ function ambTick(dt) {
     const t = audio.ctx.currentTime + 0.01;
     if (Math.random() < 0.7) ambSwell(t, rnd2(4, 7), 180, 420, 0.03 * g * out, 0);   // a car
     else ambSwell(t, rnd2(8, 11), 110, 300, 0.045 * g * out, 42);                    // a truck
+// Step 86: his body, not just his boots. Knee down (pad, carrier, mags), coming up (cloth, a boot scuff a beat
+// before his head clears the wall), a pivot on the spot (sole on grit). Edges on what the pose follows
+// (crouchT + stumble; enemyPose smooths it and runs throttled off screen), hysteresis 0.75 / 0.5.
+const _ebf = new THREE.Vector3();
+function ebfAt(e, y) { return _ebf.set(rWX(e.room, e.pos.x), e.room.origin.y + y, rWZ(e.room, e.pos.y)); }
+function ebfKneel(e) {
+  if (e.dead || !e.room.active || !audio.noise) return;
+  const g = CONFIG.polish.audio.bodyFoley, j = 0.9 + Math.random() * 0.2;
+  if (!g) return;
+  soundAt(ebfAt(e, 0.3), () => {
+    const t = audio.ctx.currentTime + 0.003;
+    nBurst(t, 0.12, 'lowpass', 260 * j, 0.9, 0.42 * g, 0.09, 0.35);          // knee pad on the floor
+    nBurst(t + 0.02, 0.1, 'bandpass', 1400 * j, 1.4, 0.12 * g, 0.08, 0.25);   // the carrier settling
+    nBurst(t + 0.04, 0.07, 'bandpass', 4100, 4, 0.05 * g, 0.05, 0.15);        // mags in the pouches
+  });
+}
+function enemyBodyFoley(e, now) {
+  const g = CONFIG.polish.audio.bodyFoley;
+  if (!g) return;
+  const c = clamp(e.crouchT + e.stumble);
+  if (c >= 0.75 && !e.fcLow) { e.fcLow = true; P10.pending.push({ at: P10.time + 0.2, fn: () => ebfKneel(e) }); }   // lands as the pose gets down (7/s)
+  else if (c <= 0.5 && e.fcLow) {
+    e.fcLow = false;
+    if (audio.noise) soundAt(ebfAt(e, 0.5), () => {                                // no lag: you hear it before his head shows
+      const t = audio.ctx.currentTime + 0.003;
+      nBurst(t, 0.14, 'bandpass', 2200, 0.8, 0.07 * g, 0.12, 0.2);                 // cloth and kit
+      nBurst(t + 0.03, 0.06, 'lowpass', 600, 0.9, 0.15 * g, 0.05, 0.25);           // a boot scuff
+    });
+  }
+  if (e.turning && e.speed < 0.2 && now - e.fcTurnAt > 0.9 && audio.noise) {      // < 0.2: updateFootsteps owns anything faster
+    e.fcTurnAt = now;
+    soundAt(ebfAt(e, 0.08), () => {
+      const t = audio.ctx.currentTime + 0.003;
+      nBurst(t, 0.1, 'bandpass', 900, 1.2, 0.12 * g, 0.08, 0.25);                  // soles turning
+      nBurst(t + 0.015, 0.05, 'bandpass', 2400, 1.5, 0.05 * g, 0.04, 0.2);         // grit
+    });
   }
 }
 // Rounds landing near you. Your own and his.
@@ -29408,7 +29446,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley };
 </script>
 </body>
 </html>
