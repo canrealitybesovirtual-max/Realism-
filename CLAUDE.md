@@ -251,3 +251,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
 - ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
 - Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
+
+## CQC step 86: the building is alive (sound only; CONFIG.polish.audio.amb, ?amb=off; headset check needed)
+- ambTick(dt) from polishUpdate's audio block: every amb.gap (12-36 s) a building sound, but only between fights (no engaged man in an active room, SPAT.dose <= 0.15, no impactSound for amb.quiet 8 s, not dead); busy = retry in 3-6 s. AMB (next, ?amb=off) and _amP are declared beside ROOMAC.
+- ambPipe: water hammer (2-4 decaying knocks) from the plant room's insulated line (layout.pipes, xi / yi 2.8) or a point inside the ceiling collider (occluded, so muffled). ambDuct: 1-4 ticks queued on P10.pending from the wall grille (layout.vent, y 2.55); falls back to ambPipe. ambDoor: a thump 12-25 m beyond a side wall. All positional through soundAt (one pool voice each) at room-local points (rWX/rWZ).
+- ambSwell: traffic outside, not positional (straight to audio.out + a little audio.verb): lowpassed brown noise (SPAT.brown = the room tone's buffer) swelling over 4-7 s (car) or 8-11 s with a 42 Hz sine (truck). Level by roomAcoustic: hall/range 1.5, small 0.6, stair 0 (no traffic), else 1. Weights pipe 0.3, duct 0.3, door 0.1, traffic 0.3.
+- Never calls enemiesHear. Room tone, ballast hum and updateBuzz unchanged. ?dev adds AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell.
