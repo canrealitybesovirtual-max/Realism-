@@ -7129,6 +7129,9 @@ const rF = (r) => r.f || 1;
 const rWX = (r, lx) => r.origin.x + (r.f || 1) * lx, rWZ = (r, lz) => r.origin.z + (r.f || 1) * lz;   // room-local -> world
 const rLX = (r, wx) => (r.f || 1) * (wx - r.origin.x), rLZ = (r, wz) => (r.f || 1) * (wz - r.origin.z); // world -> room-local
 const rYaw = (r) => ((r.f || 1) < 0 ? Math.PI : 0);                                                      // add to a local yaw for the world one
+const _rQturn = new THREE.Quaternion(0, 1, 0, 0);
+const rWP = (r, lx, ly, lz, out) => out.set(rWX(r, lx), r.origin.y + ly, rWZ(r, lz));                  // room-local point -> world (bench fix)
+const rWQ = (r, q) => ((r.f || 1) < 0 ? q.premultiply(_rQturn) : q);                                     // room-local rotation -> world, in place
 function anchor(i) {
   const T = CONFIG.stream.wallT;
   while (anchors.length <= i) {
@@ -17029,7 +17032,7 @@ function wbRestock(room = WB.room) {
     if (i < 0) i = loose.findIndex((p) => !p.item.tableSpot && p.item.sub === t[0] && (t[0] !== 'sup' || (!!p.item.big === t[1] && (p.item.can === 'sb100') === (t[5] === 'sb100'))));
     const p = i >= 0 ? loose.splice(i, 1)[0] : wbMakeAtt(t[0], t[1], t[5] || null);
     if (!p) continue;
-    const home = i >= 0 && p.kinematic && p.root.position.distanceTo(_wbV.set(o.x + t[2], p.root.position.y, o.z + t[3])) < 0.01;
+    const home = i >= 0 && p.kinematic && p.root.position.distanceTo(_wbV.set(rWX(room, t[2]), p.root.position.y, rWZ(room, t[3]))) < 0.01;
     p.item.tableSpot = t; WB.atts.push(p);
     if (!home) { wbHome(p, room); n++; }
   }
@@ -17055,8 +17058,8 @@ function wbHome(p, room = WB.room) {
   const t = p.item.tableSpot, o = room.origin;
   if (!t) return false;
   const lift = p.item.rest ?? (t[0] === 'sup' ? (t[1] ? 0.0178 : 0.0155) : 0.0425);   // a can lies on its side; a light / laser stands on its body, mount up (step 100: each part's own)
-  _wbP.set(o.x + t[2], o.y + 0.905 + lift, o.z + t[3]);
-  _wbQ.setFromAxisAngle(Y_AXIS, t[4]);
+  rWP(room, t[2], 0.905 + lift, t[3], _wbP);
+  _wbQ.setFromAxisAngle(Y_AXIS, t[4] + rYaw(room));
   p.item.stuck = null; p.item.hook = null;
   itemToWorld(p, _wbP, _wbQ, room);
   setKinematic(p); p.collider.setCollisionGroups(COLL.item);
@@ -17068,7 +17071,7 @@ function wbButtonLook() {
   WB.cap.material.color.set(on ? 0xc8501a : 0x1d7a32); WB.cap.material.emissive.set(on ? 0x6a2008 : 0x0c4a1a);
   if (WB.lbl) WB.lbl.material = K.btnLbl[on ? 1 : 0];
 }
-function wbButtonPos(out) { const o = WB.room.origin; return out.set(o.x + WB.btnAt.x, o.y + WB.btnAt.y + 0.046, o.z + WB.btnAt.z); }
+function wbButtonPos(out) { return rWP(WB.room, WB.btnAt.x, WB.btnAt.y + 0.046, WB.btnAt.z, out); }
 // Press it: VR fingertip poke (or the trigger with a hand on it), computer E / click / Grab aimed at it.
 const _wbB = new THREE.Vector3(), _wbT = new THREE.Vector3(), _wbTq = new THREE.Quaternion();
 function wbButtonPress(hand) {
@@ -17118,10 +17121,10 @@ function wbUnhook(it) { if (it.hook) { it.hook.att = null; it.hook = null; } }
 function wbStuckGun() { return WB.open && WB.gun && !WB.gun.prop.removing ? WB.gun : null; }
 function wbVisePose(g, P, Q) {
   const o = WB.room.origin;
-  Q.setFromAxisAngle(Y_AXIS, -Math.PI / 2);                       // muzzle toward the right wall, sights up
+  Q.setFromAxisAngle(Y_AXIS, -Math.PI / 2 + rYaw(WB.room));      // muzzle toward the right wall, sights up
   // the jaws under the front of the frame / handguard (clear of the magazine and the grip), resting on its underside
   _wbV.copy(wbJawPoint(g));
-  P.set(o.x + WB.vise.x, o.y + WB.vise.y - 0.05, o.z + WB.vise.z).sub(_wbV.applyQuaternion(Q));
+  rWP(WB.room, WB.vise.x, WB.vise.y - 0.05, WB.vise.z, P).sub(_wbV.applyQuaternion(Q));
 }
 // Where the jaws hold this gun (gun-root space): under the front of the frame / handguard, clear of the
 // magazine and the grip, at the underside of what is really drawn there (the model sits off its boxes).
@@ -17156,13 +17159,13 @@ function wbJawPoint(g) {
 function wbViseNear(g) {
   if (!WB.room || WB.open || !g || !renderer.xr.isPresenting || !WB.room.active) return false;
   const o = WB.room.origin;
-  return g.prop.root.position.distanceTo(_wbV.set(o.x + WB.vise.x, o.y + WB.vise.y, o.z + WB.vise.z)) < 0.38;
+  return g.prop.root.position.distanceTo(rWP(WB.room, WB.vise.x, WB.vise.y, WB.vise.z, _wbV)) < 0.38;
 }
 // Step 80: let go of a gun over the vise and it is clamped (no button).
 function wbTryVise(g) {
   if (!WB.room || WB.open || !g || g.prop.removing) return false;
   const o = WB.room.origin;
-  _wbV.set(o.x + WB.vise.x, o.y + WB.vise.y, o.z + WB.vise.z);
+  rWP(WB.room, WB.vise.x, WB.vise.y, WB.vise.z, _wbV);
   if (renderer.xr.isPresenting) { if (g.prop.root.position.distanceTo(_wbV) > 0.38) return false; }
   else { headWorld(_wbD); if (Math.hypot(_wbD.x - _wbV.x, _wbD.z - _wbV.z) > 1.4) return false; }   // computer: drop it (E) standing at the bench
   return wbToggle(null, g);
@@ -17170,7 +17173,7 @@ function wbTryVise(g) {
 // A gun not in a hand, lying near the vise (or the one already clamped).
 function wbCandidate() {
   const o = WB.room.origin;
-  _wbV.set(o.x + WB.vise.x, o.y + WB.vise.y, o.z + WB.vise.z);
+  rWP(WB.room, WB.vise.x, WB.vise.y, WB.vise.z, _wbV);
   let best = null, bd = 0.6;
   for (const q of props) {
     const g = q.item;
@@ -17414,8 +17417,7 @@ function wbUpdate() {
   if (WB.open) {
     const g = WB.gun;
     headWorld(_wbV);
-    const o = WB.room.origin;
-    const away = Math.hypot(_wbV.x - (o.x + WB.vise.x), _wbV.z - (o.z + WB.vise.z)) > WB.awayR;
+    const away = Math.hypot(_wbV.x - rWX(WB.room, WB.vise.x), _wbV.z - rWZ(WB.room, WB.vise.z)) > WB.awayR;
     if (!g || g.prop.removing || g.primary || away) wbClose(away ? 'away' : 'taken');
   }
 }
@@ -17806,7 +17808,7 @@ function wearSpawn(room) {
     const g = new THREE.Group(); g.add(cab, rail, plate);
     g.position.set(X, 0, Z); room.group.add(g);
     // a solid body: you can't walk into it (the things inside are reached with your hands, they don't collide)
-    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(o.x + X + D / 2, o.y + Ht / 2, o.z + Z));
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(rWX(room, X + D / 2), o.y + Ht / 2, rWZ(room, Z)));
     world.createCollider(RAPIER.ColliderDesc.cuboid(D / 2, Ht / 2, Wd / 2).setCollisionGroups(COLL.static !== undefined ? COLL.static : groups(GROUP.STATIC, 0xffff)), body);
     room.wearBody = body;
     if (room.walkLocal) { room.walkLocal.push({ x: X + D / 2, z: Z, a: 0, hx: D / 2, hz: Wd / 2, top: Ht }); rebuildWalk(); }   // you walk round it, not through it
@@ -17815,8 +17817,8 @@ function wearSpawn(room) {
   WEAR.items = [];
   const put = (root, sub, label, lx, ly, lz, ry, half, center) => {
     const p = makeItem(root, { kind: 'wear', type: sub, sub, label }, { mass: 0.3, half, center: center || new THREE.Vector3() });
-    _wbQ.setFromAxisAngle(Y_AXIS, ry);
-    itemToWorld(p, _wbP.set(o.x + X + lx, o.y + ly, o.z + Z + lz), _wbQ, room);
+    _wbQ.setFromAxisAngle(Y_AXIS, ry + rYaw(room));
+    itemToWorld(p, rWP(room, X + lx, ly, Z + lz, _wbP), _wbQ, room);
     setKinematic(p); p.collider.setCollisionGroups(COLL.item);
     WEAR.items.push(p);
     return p;
@@ -17933,7 +17935,7 @@ function extKitSpawn(room) {
     const tag = mesh(placed(new THREE.PlaneGeometry(0.12, 0.12), 0, -cy + 0.0012, 0.07, -Math.PI / 2), tagOff, false, true);
     root.add(tag);
     const p = makeItem(root, { kind: 'kit', type: sub, sub, label, tag, tagOn, tagOff }, { mass: 0.3, half, center: new THREE.Vector3() });
-    itemToWorld(p, _wbP.set(o.x + lx, o.y + 0.905 + cy, o.z + lz), _wbQ.setFromAxisAngle(Y_AXIS, Math.PI), room);
+    itemToWorld(p, rWP(room, lx, 0.905 + cy, lz, _wbP), _wbQ.setFromAxisAngle(Y_AXIS, Math.PI + rYaw(room)), room);
     setKinematic(p); p.collider.setCollisionGroups(COLL.item);
     EXT.items.push(p);
   };
@@ -21667,8 +21669,8 @@ function respawnPlayer() {
     rig.updateMatrixWorld(true);
     headWorld(_pr.h);
     const s = CONFIG.player.start;
-    rig.position.x += safe.origin.x + s.x - _pr.h.x;
-    rig.position.z += safe.origin.z + s.z - _pr.h.z;
+    rig.position.x += rWX(safe, s.x) - _pr.h.x;
+    rig.position.z += rWZ(safe, s.z) - _pr.h.z;
     rig.updateMatrixWorld(true);
     _vel.set(0, 0, 0);
     playerState.hasPrev = false;
@@ -22775,8 +22777,8 @@ function spawnSafeItems(room) {
     if (X64[s.type] || (s.type.startsWith('mag') && X64BYMAG[s.type.slice(3)])) { x64Spawn(room, s); continue; }   // step 64
     if (!NADE_DEFS[s.type] || nadeCount(s.type) >= 3) continue;      // step 58: grenades are the only items left
     const p = createNade(s.type);
-    _wq.setFromEuler(_we.set(0, s.ry || 0, 0, 'XYZ'));
-    _wv.set(o.x + s.x, o.y + (s.y !== undefined ? s.y : top) + p.half.y + 0.006, o.z + s.z);
+    _wq.setFromEuler(_we.set(0, (s.ry || 0) + rYaw(room), 0, 'XYZ'));
+    rWP(room, s.x, (s.y !== undefined ? s.y : top) + p.half.y + 0.006, s.z, _wv);
     itemToWorld(p, _wv, _wq, room);
   }
 }
@@ -33390,8 +33392,8 @@ function m1911SpawnNow(room, s) {
     if (n >= 2) return;
     p = createMag('m1911', MAG_DEFS.m1911.capacity);
   }
-  _wq.setFromEuler(_we.set(0, s.ry || 0, -Math.PI / 2, 'YXZ'));    // lying on its right side
-  _wv.set(o.x + s.x, o.y + top + (s.type === 'm1911' ? 0.0164 : 0.0071) + 0.004, o.z + s.z);
+  _wq.setFromEuler(_we.set(0, (s.ry || 0) + rYaw(room), -Math.PI / 2, 'YXZ'));    // lying on its right side
+  rWP(room, s.x, top + (s.type === 'm1911' ? 0.0164 : 0.0071) + 0.004, s.z, _wv);
   itemToWorld(p, _wv, _wq, room);
 }
 
@@ -34441,9 +34443,9 @@ function extSpawn(room, s) {
       if (n >= 2) return;
       p = createMag(mt, MAG_DEFS[mt].capacity);
     }
-    _wq.setFromEuler(_we.set(0, s.ry || 0, -Math.PI / 2, 'YXZ'));
+    _wq.setFromEuler(_we.set(0, (s.ry || 0) + rYaw(room), -Math.PI / 2, 'YXZ'));
     const half = isGun ? WEAPON_DEFS[gun].phys.pick.h[0] : MAG_DEFS[mt].half[0];
-    _wv.set(o.x + s.x, o.y + top + half + 0.004, o.z + s.z);
+    rWP(room, s.x, top + half + 0.004, s.z, _wv);
     itemToWorld(p, _wv, _wq, room);
   } catch (e) { console.warn('step 60: ' + gun + ' not placed', e); X.ready = false; }
 }
@@ -34751,9 +34753,9 @@ function x64Spawn(room, s) {
       if (n >= 2) return;
       p = createMag(mt, MAG_DEFS[mt].capacity);
     }
-    _wq.setFromEuler(_we.set(0, s.ry || 0, -Math.PI / 2, 'YXZ'));
+    _wq.setFromEuler(_we.set(0, (s.ry || 0) + rYaw(room), -Math.PI / 2, 'YXZ'));
     const half = isGun ? WEAPON_DEFS[gun].phys.pick.h[0] : MAG_DEFS[mt].half[0];
-    _wv.set(o.x + s.x, o.y + top + half + 0.004, o.z + s.z);
+    rWP(room, s.x, top + half + 0.004, s.z, _wv);
     itemToWorld(p, _wv, _wq, room);
   } catch (e) { console.warn('step 64: ' + gun + ' not placed', e); X.ready = false; }
 }
