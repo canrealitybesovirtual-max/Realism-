@@ -9700,11 +9700,22 @@ const LABELS = {
   head: 'Where you look', hand: 'Where left hand points'
 };
 const COMFORT_KEY = 'cqcvr.comfort.v1';
-const comfort = { stance: 'standing', turn: 'snap30', vignette: 'low', direction: CONFIG.locomotion.direction };
+// Step 98: where your body sits under your eyes (cm, both modes), whether its clothes show, and the computer's field
+// of view (deg, never used in the headset). Numbers saved with the other comfort settings; out-of-range values clamp.
+// fwd default 8: measured (scratchpad s98/measure.js, Quest view 48 deg below the axis) the old body put the sternum
+// 1.8 cm in front of / 35 cm below your eyes, in view only at a 60 deg nod (upper chest 82 deg); +8 cm puts it 9.8 cm in
+// front (a real chest: 10-15) and in view at 37.5 deg (upper chest 45, belt pouch 37.5, thigh holster 45).
+const VIEW_FIT = { fwd: [-5, 15, 1, 8], up: [-10, 10, 1, 0], fov: [60, 100, 5, 72] };   // [min, max, step, default]
+const comfort = { stance: 'standing', turn: 'snap30', vignette: 'low', direction: CONFIG.locomotion.direction,
+  bodyFwd: VIEW_FIT.fwd[3], bodyUp: VIEW_FIT.up[3], bodyShow: true, fov: VIEW_FIT.fov[3] };
 try {
   const saved = JSON.parse(localStorage.getItem(COMFORT_KEY) || '{}');
   for (const k of Object.keys(OPTIONS)) if (OPTIONS[k].includes(saved[k])) comfort[k] = saved[k];
+  for (const [k, f] of [['bodyFwd', 'fwd'], ['bodyUp', 'up'], ['fov', 'fov']]) if (typeof saved[k] === 'number' && isFinite(saved[k])) comfort[k] = Math.min(VIEW_FIT[f][1], Math.max(VIEW_FIT[f][0], saved[k]));
+  if (typeof saved.bodyShow === 'boolean') comfort.bodyShow = saved.bodyShow;
 } catch (e) { /* storage blocked: defaults are fine */ }
+// A desktop field of view designed against the old fixed 72 deg (aim, the viewmodel) kept in the same ratio to yours.
+const fovFor = (deg) => (comfort.fov === 72 ? deg : 2 * Math.atan(Math.tan(deg * Math.PI / 360) * Math.tan(comfort.fov * Math.PI / 360) / Math.tan(Math.PI / 5)) * 180 / Math.PI);
 
 const xrState = { turnLatch: false, blink: 0, vignette: 0, seatOffset: 0, floorFix: 0, calibrateAt: 0, crouchOn: false, crouchCur: 0, crouchLatch: false, scAt: -1, scLong: false };
 const STICK_SW = { hold: 0.45 };   // step 29: s to hold the right stick click for the laser
@@ -18019,7 +18030,8 @@ function vmGunPlace(V, F, g) {
   // aimed: eased to where your real gun is in your view (deskGunPose), scaled about its eye; the arms come with it
   const k = smoothstep(0, 1, g.ads), n = VM.nadeT * VM.nadeT, base = V.base;
   VM.adsK = k;
-  VM.fovNow = VM.fov + (camera.fov - VM.fov) * k;
+  const vf = fovFor(VM.fov);                                       // step 98: at the hip the arms keep their size against the world
+  VM.fovNow = vf + (camera.fov - vf) * k;
   if (k > 1e-4) {
     camera.updateWorldMatrix(true, false); g.prop.root.updateWorldMatrix(true, false);
     camera.matrixWorld.decompose(W.pA, W.qA, W.sA);
@@ -18419,7 +18431,7 @@ function updateDeskGunInput() {
   reticle.classList.toggle('ads', !!(g && g.ads > 0.5));
   xhair.classList.toggle('ads', !!(g && g.ads > 0.5));
   if (!renderer.xr.isPresenting) {
-    const want = SCOPE.desk ? 72 / SCOPE.mag : g ? THREE.MathUtils.lerp(72, CONFIG.weapons.adsFov, smoothstep(0, 1, g.ads)) : 72;   // step 74
+    const want = SCOPE.desk ? 72 / SCOPE.mag : g ? THREE.MathUtils.lerp(comfort.fov, fovFor(CONFIG.weapons.adsFov), smoothstep(0, 1, g.ads)) : comfort.fov;   // step 74; step 98: COMFORT field of view
     if (Math.abs(camera.fov - want) > 0.01) { camera.fov = want; camera.updateProjectionMatrix(); }
   }
 }
@@ -23146,6 +23158,15 @@ function comfortSet(key, v) {
   comfortChanged();
   termMsg(`${{ stance: 'Stance', turn: 'Turning', vignette: 'Vignette', direction: 'Move toward' }[key]}: ${LABELS[v]}${key === 'stance' && v === 'seated' ? '. Sit down first: your eye height is measured now' : ''}`);
 }
+// Step 98: the number rows on COMFORT (body forward / height in cm, the computer's field of view in degrees).
+function viewFitStep(key, d) {
+  const f = VIEW_FIT[{ bodyFwd: 'fwd', bodyUp: 'up', fov: 'fov' }[key]];
+  const v = comfort[key], st = f[2];
+  comfort[key] = clamp(d > 0 ? (Math.floor(v / st + 1e-6) + 1) * st : (Math.ceil(v / st - 1e-6) - 1) * st, f[0], f[1]);   // 72 -> 75 / 70
+  comfortChanged();
+  const sg = comfort[key] > 0 ? '+' : '';
+  termMsg(key === 'fov' ? `Field of view ${comfort.fov}° (computer only)` : key === 'bodyFwd' ? `Body forward ${sg}${comfort.bodyFwd} cm (default ${VIEW_FIT.fwd[3]})` : `Body height ${sg}${comfort.bodyUp} cm`);
+}
 const EXPOSURE_KEY = 'cqcvr.exposure.v1';
 function exposureStep(d) {
   setExposure(renderer.toneMappingExposure + d);
@@ -23153,7 +23174,7 @@ function exposureStep(d) {
   termMsg(`Brightness ${renderer.toneMappingExposure.toFixed(2)}`);
 }
 function termComfort(W, H, now) {
-  const rh = 50, P = 56, rows = [
+  const rh = 44, P = 50, rows = [
     ['Stance', 'seated: standing eye height', 'stance', [['standing', 'STANDING'], ['seated', 'SEATED']]],
     ['Turning', 'right stick', 'turn', [['snap30', 'SNAP 30°'], ['snap45', 'SNAP 45°'], ['smooth', 'SMOOTH']]],
     ['Tunnel vignette', 'less motion sickness', 'vignette', [['off', 'OFF'], ['low', 'LOW'], ['high', 'HIGH']]],
@@ -23169,7 +23190,13 @@ function termComfort(W, H, now) {
   tBtn('exp:-', T_X0, y, 80, rh, '−', { size: 32, fn: () => exposureStep(-0.1) });
   tText(renderer.toneMappingExposure.toFixed(2), T_X0 + 140, y + rh / 2 + 1, 26, TC.text, 'center', 700, TC.mono);
   tBtn('exp:+', T_X0 + 200, y, 80, rh, '+', { size: 32, fn: () => exposureStep(0.1) });
-  tText('Saved in this browser', 1008, y + rh / 2 + 1, 19, TC.dim, 'right', 600);
+  if (renderer.xr.isPresenting) tText('Saved in this browser', 1008, y + rh / 2 + 1, 19, TC.dim, 'right', 600);
+  else {                                                         // step 98: the computer's field of view (never used in the headset)
+    tText('Field of view', 610, y + rh / 2 + 1, 22, TC.text, 'left', 600, TC.sans, 136);
+    tBtn('fov:-', 752, y, 64, rh, '−', { size: 32, fn: () => viewFitStep('fov', -1) });
+    tText(`${comfort.fov}°`, 862, y + rh / 2 + 1, 26, TC.text, 'center', 700, TC.mono);
+    tBtn('fov:+', 908, y, 64, rh, '+', { size: 32, fn: () => viewFitStep('fov', 1) });
+  }
   // Step 21: height. In the headset you are measured; on a computer you set it.
   y += P;
   const vr = renderer.xr.isPresenting, busy = HEIGHT.state !== 'idle';
@@ -23187,15 +23214,27 @@ function termComfort(W, H, now) {
     tBtn('ht:+', T_X0 + 200, y, 80, rh, '+', { size: 32, fn: () => heightDesk(0.05) });
     tText(`about ${statureOf(HEIGHT.desk)} cm tall. In VR: CALIBRATE`, 1008, y + rh / 2 + 1, 19, TC.dim, 'right', 600, TC.sans, 400);
   }
+  // Step 98: your body. A headset shows ~48 deg below where you look (your eyes ~70), so your chest needs a deeper
+  // nod than in life: move the body forward / up under your eyes, or hide the clothes (the kit stays and works).
+  y += P;
+  tRowLabel('Your body', y, rh, 28, 'see it without looking far down');
+  const sg = (v) => (v > 0 ? `+${v}` : `${v}`);
+  tBtn('bf:-', T_X0, y, 56, rh, '−', { size: 30, fn: () => viewFitStep('bodyFwd', -1) });
+  tText(`forward ${sg(comfort.bodyFwd)} cm`, T_X0 + 116, y + rh / 2 + 1, 20, TC.text, 'center', 700, TC.sans, 116);
+  tBtn('bf:+', T_X0 + 176, y, 56, rh, '+', { size: 30, fn: () => viewFitStep('bodyFwd', 1) });
+  tBtn('bu:-', T_X0 + 248, y, 56, rh, '−', { size: 30, fn: () => viewFitStep('bodyUp', -1) });
+  tText(`height ${sg(comfort.bodyUp)} cm`, T_X0 + 364, y + rh / 2 + 1, 20, TC.text, 'center', 700, TC.sans, 116);
+  tBtn('bu:+', T_X0 + 424, y, 56, rh, '+', { size: 30, fn: () => viewFitStep('bodyUp', 1) });
+  tTog('bshow', T_X0 + 496, y, 1008 - T_X0 - 496, rh, 'Show body', comfort.bodyShow, (v) => { comfort.bodyShow = v; comfortChanged(); termMsg(v ? 'Body shown' : 'Body hidden: holsters, pouches and injectors stay where they ride'); });
   // the controller layout, so nobody has to guess (three columns to make room for the height row)
-  tBox(16, 474, 992, 106, TC.faint, TC.line);
-  tHead('Controllers', 36, 494);
+  tBox(16, 486, 992, 94, TC.faint, TC.line);
+  tHead('Controllers', 36, 504);
   const K = [['Left stick', 'move · click: run', 36, 104, 180], ['Right stick', 'turn · up: kick · down: crouch · click: light', 332, 116, 290], ['Trigger', 'fire', 750, 84, 160],
              ['Grip', 'grab', 36, 104, 180], ['B / Y', 'slide release · fire mode', 332, 116, 290], ['A / X', 'drop magazine', 750, 84, 160]];
   K.forEach(([k, v, x, kw, vw], i) => {
-    const yy = 526 + Math.floor(i / 3) * 32;
-    tText(k, x, yy, 20, TC.hi, 'left', 700);
-    tText(v, x + kw, yy, 20, TC.text, 'left', 500, TC.sans, vw);
+    const yy = 532 + Math.floor(i / 3) * 28;
+    tText(k, x, yy, 19, TC.hi, 'left', 700);
+    tText(v, x + kw, yy, 19, TC.text, 'left', 500, TC.sans, vw);
   });
 }
 function termRecords(W, H, now) {
@@ -29192,8 +29231,13 @@ function bodyLocoSpeed(eye, dt) {
 // Before the weapons: head -> neck -> torso -> pelvis -> legs and feet; holster / pouch sockets.
 function bodyPre(dt) {
   if (!BODY.ready) return;
-  BODY.root.visible = CONFIG.body.on;
-  for (const h of HANDS.list) if (h.root.children[1]) h.root.children[1].visible = !CONFIG.body.on;   // step 13 cuffs only without the body
+  // Step 98: COMFORT "Show body" off hides the clothes, belt and boots; the bones still run, so the holsters,
+  // pouches and injectors stay where they ride and still work, and the step 13 cuffs come back on the hands.
+  const shown = CONFIG.body.on && comfort.bodyShow !== false;
+  BODY.root.visible = shown;
+  for (const h of HANDS.list) if (h.root.children[1]) h.root.children[1].visible = !shown;   // step 13 cuffs only without the body
+  const fw = clamp(comfort.bodyFwd, VIEW_FIT.fwd[0], VIEW_FIT.fwd[1]) / 100, uw = clamp(comfort.bodyUp, VIEW_FIT.up[0], VIEW_FIT.up[1]) / 100;
+  if (Math.abs(fw - (BODY.fwd || 0)) + Math.abs(uw - (BODY.up || 0)) > 1e-4) { BODY.fwd = fw; BODY.up = uw; BODY.init = false; }   // changed: feet go back under you
   if (!CONFIG.body.on) return;
   const C = CONFIG.body, vr = renderer.xr.isPresenting;
   rig.updateMatrixWorld(true);
@@ -29228,6 +29272,13 @@ function bodyPre(dt) {
   const np = BODY.np;
   _bdq.a.setFromEuler(_be.set(np, cYaw, 0, 'YXZ'));
   const C7 = _bx[2].set(0, -0.12 * s, 0.02 * s).applyQuaternion(_bdq.a).add(atlas);
+  // Step 98: COMFORT "Body forward" / "Body height". The whole body hangs this far in front of (along the hips'
+  // heading) and above where the neck model puts it; everything below is solved from the moved neck, so the
+  // legs, feet, holsters, pouches and the sling follow. Your camera never moves.
+  if (BODY.fwd || BODY.up) {
+    const fx = -Math.sin(BODY.yaw), fz = -Math.cos(BODY.yaw), f = BODY.fwd * s, u = BODY.up * s;
+    atlas.x += fx * f; atlas.z += fz * f; atlas.y += u; C7.x += fx * f; C7.z += fz * f; C7.y += u;
+  }
   // Torso lean: crouching folds you at the hips; looking hard down rounds the back a little.
   const drop = Math.max(0, BODY.standEye - eyeH);
   const leanT = bclamp(drop * 0.85, 0, 0.7) + bclamp(-hPitch - 0.35, 0, 0.8) * (vr ? 0.12 : 0.32);   // step 18: on desktop the chest folds away from a gun aimed low
@@ -32141,6 +32192,7 @@ function freeItemHand(h, it, p, P, Q) {
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
 if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject };
+if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 </script>
 </body>
 </html>
