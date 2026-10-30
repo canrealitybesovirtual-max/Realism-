@@ -15134,9 +15134,9 @@ function fireGun(g, now) {
     applyLook();
   }
   // Flash, light, sound, haptics (step 78: a suppressor eats the flash and most of the report)
-  if (!g.sup) { flashBurst(g, d); if (AF.flash !== 1) g.parts.flash.scale.multiplyScalar(AF.flash); }   // step 100: a comp's blast shows more
+  if (!g.sup || g.muzCompLast) { flashBurst(g, d); if (AF.flash !== 1) g.parts.flash.scale.multiplyScalar(AF.flash); }   // step 100: a comp's blast shows more
   if (g.primary === deskHand) vmShot(g);   // step 82: the viewmodel fires with it
-  if (d.flashLight > 0 && !g.sup) {
+  if (d.flashLight > 0 && (!g.sup || g.muzCompLast)) {   // step 103: a comp last in the chain still flashes
     _fp.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
     pool.muzzle.position.copy(_fp).addScaledVector(_fd, 0.06);
     pool.muzzle.color.setRGB(1, 0.4 + Math.random() * 0.1, 0.11 + Math.random() * 0.06);   // linear; a little hotter or cooler each shot
@@ -15146,7 +15146,7 @@ function fireGun(g, now) {
   }
   if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.28 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
-  if (g.sup) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
+  if (g.sup && !g.muzEnd) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
   muzzleSmoke(_wv, _fd, g.type);           // step 10
   if (MBLAST.on) muzzleBlast(_wv, _fd, _fx, g, now);   // step 88: the blast off a wall, the floor or a jamb beside the muzzle
   if (GUN_WISP.on) { g.heat = (g.heat || 0) + (d.impulse || 2.2) * (d.pellets || 1) / 2.2 * (g.sup ? GUN_WISP.sup : 1); g.wispH = GUN_WISP.hold; }   // step 86: barrel heat
@@ -16023,7 +16023,7 @@ function gunWisp(g, dt) {
   if (g.heat < S.from || g.slot || !root.visible || (VM.vis && VM.gun === g)) return;   // holstered / the desktop viewmodel hides the real gun (vmHideGun)
   const k = clamp((g.heat - S.from) / (2 * S.from)), iv = 1 / (S.rate[0] + (S.rate[1] - S.rate[0]) * k);
   _gwP.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
-  if (g.sup) { if (g.sup.endR) _gwP.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _gwP.addScaledVector(_gwF.set(0, 0, -1).transformDirection(root.matrixWorld), 0.16); }   // the can's end (as fireGun)
+  if (g.sup && !g.muzEnd) { if (g.sup.endR) _gwP.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _gwP.addScaledVector(_gwF.set(0, 0, -1).transformDirection(root.matrixWorld), 0.16); }   // the can's end (as fireGun)
   if (!g.wispL) g.wispL = _gwP.clone();                                  // once per gun
   const swept = g.wispL.distanceToSquared(_gwP) > S.step * S.step;      // a moving gun leaves a continuous trail, not beads
   g.wispT = (g.wispT || 0) - dt;
@@ -16942,6 +16942,7 @@ function wbKit() {
   return WB.kit;
 }
 function wbMakeAtt(sub, big = true, variant = null) {
+  if (sub === 'ext') return muzMakeExt();                           // step 103
   const K = wbKit();
   // step 100: the pistol cans are the packed MD3 / SB100 (every pistol), the dot, its cover and the comp the Glock's parts
   if ((sub === 'sup' && !big) || sub === 'dot' || sub === 'cover' || sub === 'comp') { const q = g17MakeAtt(sub, variant); if (q || sub !== 'sup') return q; }
@@ -17026,7 +17027,7 @@ function wbRestock(room = WB.room) {
 // step 88: where each part lies on the bench (room space): [sub, big, x, z, yaw]; lights and lasers lens to the wall
 const WB_TABLE = [['light', true, 3.24, 2.5, Math.PI], ['light', true, 3.39, 2.5, Math.PI], ['light', true, 3.54, 2.5, Math.PI],
   ['laser', true, 3.28, 2.69, Math.PI], ['laser', true, 3.46, 2.69, Math.PI],
-  ['sup', true, 3.36, 2.86, Math.PI / 2], ['sup', false, 3.62, 2.86, Math.PI / 2]];
+  ['sup', true, 3.36, 2.86, Math.PI / 2], ['sup', false, 3.62, 2.86, Math.PI / 2], ['ext', false, 2.52, 2.9, Math.PI / 2]];   // step 103: the barrel extension
 // Step 100: the Glock's own parts, each on the table once the workshop store says you own it: [sub, big, x, z, yaw, can, store id]
 const WB_G17 = [['dot', false, 3.69, 2.5, Math.PI / 2, null, 'g17.dot'], ['cover', false, 3.69, 2.6, Math.PI / 2, null, 'g17.cover'],
   ['comp', false, 3.67, 2.71, Math.PI / 2, null, 'g17.comp'], ['sup', false, 2.3, 2.9, Math.PI / 2, 'sb100', 'g17.sup2']];
@@ -17192,6 +17193,7 @@ function wbClose(why) {
   g.cradle = false;
   let n = 0;
   for (const p of WB.atts.slice()) if (p.item.stuck && p.item.stuck.g === g) { wbFreeze(g, p); n++; }
+  muzSaveGun(g);                                                    // step 103: the muzzle chain is this gun type's build
   if (g.type === 'g17') g17FromGun(g);                             // step 100: the Glock's parts are the build now (store + every Glock)
   if (!g.primary && !g.prop.removing) { setDynamic(g.prop); g.prop.collider.setCollisionGroups(COLL.prop); g.prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
   updateLightMount();
@@ -17203,15 +17205,10 @@ function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
 function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
-  if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 100: its own place on the Glock
+  if (g && muzIsDev(it)) { if (muzBenchFit(g, p, 0.09)) return true; }   // step 103: onto the chain's front end
+  else if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 100: its own place on the Glock
   else if (g && (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp')) { toast('Made for the Glock 17: its plate and its 1/2x28 thread', 2200); return false; }
-  if (g && it.sub === 'sup') {                                      // step 78: a can threads onto the muzzle, nowhere else
-    if (wbSupSnap(g, p, 0.09)) {
-      g.prop.root.updateMatrixWorld(true);
-      it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(g.prop.root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
-      setKinematic(p); p.collider.setCollisionGroups(COLL.item); sfx('pMagIn', 0.6);
-      return true;
-    }
+  if (g && muzIsDev(it)) {                                          // step 103: muzBenchFit above (out of reach: it stays where it was let go)
   } else if (g) {
     const F = g.def.phys || M1911_PHYS, root = g.prop.root;
     root.updateMatrixWorld(true);
@@ -17271,7 +17268,10 @@ function wbSnap(g, p) {
 }
 function wbGrabbed(it) {
   wbUnhook(it);
+  const g = it.stuck && muzIsDev(it) ? it.stuck.g : null;
+  if (g) muzOff(g, it.prop);                                        // step 103: what was in front of it goes back on the table
   it.stuck = null;
+  if (g) muzRefresh(g);
 }
 function wbSupSnap(g, p, reach) {
   const root = g.prop.root; root.updateMatrixWorld(true);
@@ -17297,6 +17297,7 @@ function wbFreeze(g, p) {
   setCast(p.root, true);
   const root = g.prop.root;
   root.updateMatrixWorld(true);
+  if (muzIsDev(it)) { muzRefresh(g); return; }                     // step 103: cans, comps, extensions: the chain
   if (it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp') { if (g.type === 'g17') g17Refresh(g); return; }   // step 100
   if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); if (g.type === 'g17') g17Refresh(g); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
   if (it.sub === 'light') {
@@ -17326,17 +17327,24 @@ function wbUnfreeze(g, p) {
   setKinematic(p); p.collider.setCollisionGroups(COLL.item);
   g.prop.root.updateMatrixWorld(true);
   it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(g.prop.root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
+  muzRefresh(g);                                                    // step 103 (the laser branch reset g.wr)
 }
 // Computer: no free hands to place it, so a click puts it on the clamped gun at a sensible spot
 // (light under the front of the gun, laser on its right side); clicking it there hangs it back up.
 function wbDeskAtt(p) {
   const it = p.item;
+  if (it.stuck && muzIsDev(it) && it.stuck.g) { const g = it.stuck.g; muzOff(g, p); muzStow(p); muzRefresh(g); sfx('pMagOut', 0.4); return; }   // step 103: it and what is in front of it
   if (it.stuck) { if (!wbHome(p)) { const h = WB.hooks.find((x) => !x.att && x.sub === it.sub) || WB.hooks.find((x) => !x.att); if (h) wbHook(p, h); } sfx('pMagOut', 0.4); return; }   // step 88: back on the table
   let g = wbStuckGun();
   if (!g) {                                                          // step 88: your gun goes in the vise for you
     const held = gunOf(deskHand);
     if (held) { wbToggle(null, held); g = wbStuckGun(); }
     if (!g) { toast('Hold a gun (or lay it by the vise), then click a part, or press CLAMP'); return; }
+  }
+  if (muzIsDev(it)) {                                               // step 103: threads onto the chain's front end
+    wbUnhook(it);
+    if (muzBenchFit(g, p, 0)) toast(`${it.label} threaded on (${muzChain(g).length} of ${MUZ.max}). Click it again to take it off, B to lock`);
+    return;
   }
   if (g.type === 'g17') {                                           // step 100: each part to its own place on the Glock
     wbUnhook(it);
@@ -18554,7 +18562,7 @@ function vmShot(g) {
   if (!VM.vis || VM.gun !== g || !VM.cur) return;
   const V = VM.cur, d = vmPlay(V, 'fire', 0.03);
   if (V.R.bolt && g.def.manual) VM.boltAt = performance.now() / 1000 + d * V.R.bolt;
-  VM.flashT = g.sup ? 0 : 0.05;
+  VM.flashT = g.sup && !g.muzCompLast ? 0 : 0.05;
   if (VM.flash) { VM.flash.scale.setScalar((g.def.cls === 'pistol' ? 0.09 : 0.14) * (0.8 + Math.random() * 0.4)); VM.flash.rotation.z = Math.random() * Math.PI * 2; }
 }
 // R with a viewmodel: its own reload clip drives the real magazine change
@@ -24570,6 +24578,12 @@ function wsBuyItem(id) {
 // Step 100: a Glock row changed in the store: the bench kits' state, every Glock in the world, new parts on the bench table.
 function g17StoreChanged(it, bought = false) {
   if (it.id === 'g17.mag33' && EXT.mag.g17 !== WORKSHOP.fitted.has('g17.mag33')) { EXT.mag.g17 = WORKSHOP.fitted.has('g17.mag33'); extApplyCaps(true); extSave(); extTags(); }
+  if (G17_MUZ[it.id]) {                                             // step 103: the store's muzzle row is the chain's first device
+    const k = G17_MUZ[it.id], C = MUZ.saved.g17 || [];
+    if (WORKSHOP.fitted.has(it.id)) MUZ.saved.g17 = [k];
+    else { const i = C.indexOf(k); MUZ.saved.g17 = i < 0 ? C : C.slice(0, i); }
+    muzSave();
+  }
   if (!G17A.on || !G17A.ready) return;
   g17ApplyStore();
   if (bought && WB.room && WB.room.active) for (const t of wbTable()) {
@@ -26086,10 +26100,10 @@ function gunSuppressed(type, g) { return !!(g && g.sup) || type === 'fn509' || t
 function supShot(g, d) {
   if (!hrecOn() || !gunSuppressed(g.type, g) || !audio.ctx || audio.ctx.state !== 'running') return false;
   const rifle = d.cls !== 'pistol';
-  if (rifle) { sfx(d.sound, 0.28); supPlay(true); return true; }
+  if (rifle) { const k = g.afx ? g.afx.snd : 1; sfx(d.sound, 0.28 * k); supPlay(true, k); return true; }   // step 103: k = the extra cans
   if (!supPlay(false, g.afx ? g.afx.snd : 1)) return false;        // step 100: the compact can is a little louder (GLOCK_FX)
   const E = CONFIG.polish.audio.earsShot;
-  earsHit((E[g.type] ?? E[d.sound] ?? 0.5) * 0.28);
+  earsHit((E[g.type] ?? E[d.sound] ?? 0.5) * 0.28 * (g.afx ? g.afx.snd : 1));
   return true;
 }
 // His reload, from his gun: magazine out at the start, in past 55 %, the handle back and home at the end when he ran dry.
@@ -29333,7 +29347,11 @@ function gunClipShape(g) {
 }
 function gunFreeAt(g, e, P, Q, off) {
   CL_c.copy(e.c).add(off).applyQuaternion(Q).add(P);
-  return clipFree(CL_c, Q, e.shape, g.prop.body);
+  if (!clipFree(CL_c, Q, e.shape, g.prop.body)) return false;
+  const m = g.muzClip;                                              // step 103: a muzzle chain clips too (its own box, as long as the chain)
+  if (!m) return true;
+  CL_c.copy(m.c).add(off).applyQuaternion(Q).add(P);
+  return clipFree(CL_c, Q, m.shape, g.prop.body);
 }
 const CL_zero = new THREE.Vector3();
 // Step 59.1: a gun let go while it is inside a bench, table or wall is lifted (world up) to the first
@@ -33167,6 +33185,7 @@ function createGun(type) {
   if (type === 'g17' && EXT.sw) gunSwitch(item, true);              // step 78
   if (type === 'g17') g17StockLight(item);                         // step 98: its own light, switchable
   if (type === 'g17') { try { g17SyncGun(item); } catch (e) { console.warn('step 100: Glock parts not fitted', e); } }   // step 100: the workshop's build
+  try { muzSync(item); } catch (e) { console.warn('step 103: muzzle chain not fitted', e); }   // step 103: the saved muzzle chain
   return p;
 }
 const M1911_HAMMER_DOWN = -0.5, M1911_STOP_UP = -0.075;
@@ -33820,7 +33839,8 @@ function g17GunIds(g, out = new Set()) {
   if (own('g17.sights') && WORKSHOP.fitted.has('g17.sights')) out.add('g17.sights');
   if (EXT.mag.g17) out.add('g17.mag33');
   if (EXT.sw) out.add('g17.sear');
-  for (const p of g.atts || []) { const id = g17PartId(p.item); if (id) out.add(id); }
+  const ch = muzChain(g);
+  for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== ch[0]) continue; const id = g17PartId(p.item); if (id) out.add(id); }   // step 103: the rest of a chain: muzFx
   return out;
 }
 
@@ -33867,6 +33887,7 @@ async function g17AttLoad() {
   g17Measure(); g17Kit();
   G17A.ready = true;
   for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'g17' && !q.removing) g17SyncGun(q.item);   // guns made before the kit
+  for (const q of props) if (q.item && q.item.kind === 'gun' && !q.removing) muzSync(q.item);   // step 103: chains waiting for the pistol cans / comp
 }
 const G17_MOA = Math.PI / 180 / 60;
 function g17GlassMat() {
@@ -34077,7 +34098,7 @@ function g17BenchFit(g, p, reach) {
 function g17Refresh(g) {
   if (!g || g.type !== 'g17' || !G17A.ready) return;
   const H = g17Hw(g), M = G17A.M, d = g.def, T = M.thread;
-  const thr = g17Owned('g17.thread'), muz = g.sup || g.comp;
+  const chain = muzState(g), thr = g17Owned('g17.thread'), muz = chain.length > 0;   // step 103
   H.plate.visible = g17Owned('g17.plate');
   H.barrel.visible = thr; H.prot.visible = thr && !muz;
   H.sights.visible = g17Owned('g17.sights') && WORKSHOP.fitted.has('g17.sights');
@@ -34092,7 +34113,7 @@ function g17Refresh(g) {
     if (!rail && !g.light && g.stockLight) g.light = g.stockLight;
   }
   // muzzle: the comp's front, the protector's, the bare crown; the flash goes there
-  const mz = g.sup ? M.front : g.comp ? M.front - g.comp.len : thr ? M.front - T.prot : d.muzzle[2];
+  const mz = muz ? muzTip(g, chain, _mzT).z - g.model.position.z : thr ? M.front - T.prot : d.muzzle[2];   // step 103: the chain's front end
   if (g.parts.flash) g.parts.flash.position.z = mz;
   const pm = d.palm, base = WR.g17;
   g.sightY = g.dot && !g.cover ? M.winY : H.sights.visible ? M.tallTop : d.eye[1];
@@ -34100,6 +34121,8 @@ function g17Refresh(g) {
     muzzle: new THREE.Vector3(d.muzzle[0] - pm[0], d.muzzle[1] - pm[1], mz - pm[2]),
     eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]) });
   g.afx = g17FxOf(g17GunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {});
+  muzFx(g, chain, g.afx); muzClipSet(g, chain);                     // step 103
+  g.muzEnd = muz ? g.wr.muzzle : null;
   updateLightMount();
 }
 // Make one Glock match the store's build (skipped while it is in the vise: the bench owns it until RELEASE).
@@ -34110,6 +34133,7 @@ function g17SyncGun(g) {
   const W = WORKSHOP;
   const wanted = (it) => !!it && it.owned && W.fitted.has(it.id) && it.requires.every((r) => { const q = W.byId.get(r); return q && q.owned && (q.hw || W.fitted.has(r)); });   // (wsActive leaves cosmetic parts out: the cover still goes on)
   for (const id of Object.keys(G17_PARTS)) {
+    if (G17_MUZ[id]) continue;                                      // step 103: the muzzle is the chain (muzSync)
     const it = W.byId.get(id);
     const want = wanted(it);
     const have = (g.atts || []).find((p) => g17PartId(p.item) === id);
@@ -34117,9 +34141,10 @@ function g17SyncGun(g) {
   }
   for (const id of ['g17.dot', 'g17.cover', 'g17.sup', 'g17.sup2', 'g17.comp', 'g17.light', 'g17.laser']) {   // the dot before its cover
     const it = W.byId.get(id);
-    if (!wanted(it)) continue;
+    if (G17_MUZ[id] || !wanted(it)) continue;
     if (!(g.atts || []).some((p) => g17PartId(p.item) === id)) g17Attach(g, id);
   }
+  muzSync(g);
   g17Refresh(g);
 }
 function g17Attach(g, id) {
@@ -34937,6 +34962,260 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, g17Tick, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
+/* ===========================================================================
+ *  STEP 103 — SCREW-ON MUZZLE CHAINS (?muzchain=off = one device as before)
+ *  Any muzzle device (pistol cans MD3 / SB100, the rifle can, the compensator, the new barrel extension) threads
+ *  onto the front of the last one on the gun, at the bench vise (VR: let go within 9 cm of the chain's front end;
+ *  computer: click it), up to MUZ.max (6). The chain is not stored: it is the muzzle devices on the gun (locked on,
+ *  g.atts, or stuck to it in the vise) in order along the bore. Each sits flush and coaxial on the one behind it:
+ *  rear face (measured per model: the frontmost of each 45-degree sector's rearmost vertex) on the front face of
+ *  the one before (the rearmost of each sector's frontmost vertex, as supTip), 0 mm; the extension's seat is its
+ *  shoulder, its male 1/2x28 thread goes inside the next device. Taking one off (grab / click) sends everything in
+ *  front of it back to the table. The bench is a dispenser: a part threaded on frees its table spot, a fresh one
+ *  takes it; a part taken off with its spot filled goes back into the stock (removed).
+ *  Effects (muzFx, on g.afx; the Glock's first device stays GLOCK_FX): mass adds; each device's inertia about the
+ *  grip (m lever^2, relative to the gun's own) slows aim-in, adds sway and VR heft lag (<= 60 ms); recoil kick by
+ *  momentum, climb by the lever. A comp with no can / comp behind it vents (climb x0.7); in front of one it does
+ *  a fifth of that. Sound: each can after the first takes 0.75, 0.375, 0.19 ... of the first can's -11 dB (a
+ *  converging sum: never silent). Flash: any can hides it unless a comp is last (then half). The muzzle point
+ *  (g.wr.muzzle: flash, muzzle light, smoke, wisp, the touch sound) is the chain's tip; the round still starts in
+ *  the chamber. The clip (gunFreeAt) tests a second box as long and wide as the chain (g.muzClip).
+ *  Saved per gun type in cqc.muzzle.v1 at RELEASE; new guns of that type get it (muzSync), and other guns of the
+ *  type follow. The Glock's store muzzle row sets the chain to that one device (or cuts it there when removed).
+ * ========================================================================= */
+const MUZ = { on: !/[?&]muzchain=off\b/.test(location.search), max: 6, key: 'cqc.muzzle.v1', saved: {}, face: {}, lagMax: 0.06,
+  w: [1, 0.75, 0.375, 0.1875, 0.094, 0.047], db1: 20 * Math.log10(0.28) };
+const MUZ_DEV = { rifle: { m: 0.5, r: 0.0178 }, pcan: { m: 0.3, r: 0.0155 }, md3: { m: 0.19, r: 0.017 }, sb100: { m: 0.15, r: 0.017 }, comp: { m: 0.045, r: 0.011 }, ext: { m: 0.08, r: 0.0095 } };
+const MUZ_EXT = { len: 0.1, seat: -0.088, rC: 0.0095, rT: 0.0075, geo: null, mat: null };
+const G17_MUZ = { 'g17.sup': 'md3', 'g17.sup2': 'sb100', 'g17.comp': 'comp' };
+const _mzV = new THREE.Vector3(), _mzW = new THREE.Vector3(), _mzT = new THREE.Vector3(), _mzB = new THREE.Vector3(), _mzI = new THREE.Matrix4();
+try {
+  const o = JSON.parse(localStorage.getItem(MUZ.key) || 'null');
+  if (o && typeof o === 'object') for (const k of Object.keys(o)) if (Array.isArray(o[k])) MUZ.saved[k] = o[k].filter((x) => MUZ_DEV[x]).slice(0, MUZ.max);
+} catch (e) { /* none */ }
+if (!MUZ.saved.g17) for (const id of Object.keys(G17_MUZ)) if (WORKSHOP.fitted.has(id)) { MUZ.saved.g17 = [G17_MUZ[id]]; break; }   // a step 100 save: its one device
+function muzSave() { try { localStorage.setItem(MUZ.key, JSON.stringify(MUZ.saved)); } catch (e) { /* this visit only */ } }
+function muzIsDev(it) { return MUZ.on && !!it && it.kind === 'att' && (it.sub === 'sup' || it.sub === 'comp' || it.sub === 'ext'); }
+function muzKind(it) { return it.sub === 'ext' ? 'ext' : it.sub === 'comp' ? 'comp' : it.big ? 'rifle' : it.can === 'sb100' ? 'sb100' : it.can === 'md3' ? 'md3' : 'pcan'; }
+// The devices on this gun, nearest the barrel first.
+function muzChain(g) {
+  const out = [];
+  if (!g || !g.prop) return out;
+  for (const p of g.atts || []) if (muzIsDev(p.item) && !p.removing) out.push(p);
+  for (const p of WB.atts) if (p.item.stuck && p.item.stuck.g === g && !p.removing && muzIsDev(p.item) && !out.includes(p)) out.push(p);
+  if (out.length > 1) {
+    const root = g.prop.root; root.updateMatrixWorld(true); _mzI.copy(root.matrixWorld).invert();
+    for (const p of out) { p.root.updateMatrixWorld(true); p.mzZ = _mzV.setFromMatrixPosition(p.root.matrixWorld).applyMatrix4(_mzI).z; }
+    out.sort((a, b) => b.mzZ - a.mzZ);
+  }
+  return out;
+}
+// Rear face, seat (where the next one's rear goes) and tip (the muzzle) of a device, its own frame; measured once per model.
+function muzFace(p) {
+  const it = p.item, k = muzKind(it);
+  if (MUZ.face[k]) return MUZ.face[k];
+  if (k === 'ext') return (MUZ.face[k] = { rear: 0, seat: MUZ_EXT.seat, tip: -MUZ_EXT.len });
+  const fr = new Float64Array(8).fill(Infinity), bk = new Float64Array(8).fill(-Infinity), M = new THREE.Matrix4(), v = new THREE.Vector3();
+  p.root.updateMatrixWorld(true); _mzI.copy(p.root.matrixWorld).invert();
+  p.root.traverse((o) => {
+    if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return;
+    M.multiplyMatrices(_mzI, o.matrixWorld);
+    const P = o.geometry.attributes.position;
+    for (let i = 0; i < P.count; i++) {
+      v.fromBufferAttribute(P, i).applyMatrix4(M);
+      const r2 = v.x * v.x + v.y * v.y;
+      if (r2 < 0.000004 || r2 > 0.0009) continue;                       // 2-30 mm off the axis
+      const s = Math.floor((Math.atan2(v.y, v.x) + Math.PI) / (Math.PI / 4)) & 7;
+      if (v.z < fr[s]) fr[s] = v.z;
+      if (v.z > bk[s]) bk[s] = v.z;
+    }
+  });
+  let f = -Infinity, r = Infinity;
+  for (let s = 0; s < 8; s++) { if (Number.isFinite(fr[s]) && fr[s] > f) f = fr[s]; if (Number.isFinite(bk[s]) && bk[s] < r) r = bk[s]; }
+  if (!Number.isFinite(f)) f = -(it.len || 0.15);
+  if (!Number.isFinite(r)) r = 0;
+  return (MUZ.face[k] = { rear: r, seat: f, tip: f });
+}
+// Root space: where the first device's rear face goes (the Glock's barrel shoulder, else the drawn muzzle end).
+function muzBase(g, out) {
+  if (g.type === 'g17' && G17A.ready) { g.model.updateMatrix(); return out.set(0, 0, G17A.M.front).applyMatrix4(g.model.matrix); }
+  return out.copy(supTip(g));
+}
+function muzAt(g, chain, out, tip) {
+  if (!chain.length) return muzBase(g, out);
+  const p = chain[chain.length - 1], F = muzFace(p), root = g.prop.root;
+  root.updateMatrixWorld(true); p.root.updateMatrixWorld(true);
+  return out.set(0, 0, tip ? F.tip : F.seat).applyMatrix4(p.root.matrixWorld).applyMatrix4(_mzI.copy(root.matrixWorld).invert());
+}
+const muzEnd = (g, chain, out) => muzAt(g, chain, out, false);
+const muzTip = (g, chain, out) => muzAt(g, chain, out, true);
+// World pose of p threaded onto the chain's front end (rear face on its seat, coaxial with the gun).
+function muzPlace(g, p, chain) {
+  const root = g.prop.root, F = muzFace(p);
+  muzEnd(g, chain, _mzV); _mzV.z -= F.rear;
+  p.root.position.copy(_mzV).applyMatrix4(root.matrixWorld); root.getWorldQuaternion(p.root.quaternion); p.root.updateMatrixWorld(true);
+}
+// Bench: a device let go of (VR, reach) or clicked (computer, 0) by the clamped gun. null = not a muzzle device, true = on, false = not.
+function muzBenchFit(g, p, reach) {
+  const it = p.item;
+  if (!muzIsDev(it)) return null;
+  const chain = muzChain(g).filter((q) => q !== p), root = g.prop.root;
+  root.updateMatrixWorld(true);
+  muzEnd(g, chain, _mzW).applyMatrix4(root.matrixWorld);
+  if (reach && p.root.position.distanceTo(_mzW) > reach) return false;
+  const why = chain.length >= MUZ.max ? `${MUZ.max} devices is the limit: take the front one off first`
+    : g.type === 'g17' && G17A.ready && !g17Owned('g17.thread') ? 'Needs the threaded barrel (gunsmith store)'
+    : g.type === 'g17' && !chain.length && it.sub === 'sup' && it.big ? 'A rifle can: wrong thread for the barrel (it goes on a device in front)' : null;
+  if (why) { toast(why, 2600); wsClick(420, 300); return false; }
+  muzPlace(g, p, chain);
+  it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
+  setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  g17Sfx('thread', p.root.position);
+  if (it.tableSpot && WB.room && WB.room.active) {                  // the bench is a dispenser: a fresh one takes its spot
+    const t = it.tableSpot; it.tableSpot = null;
+    const q = wbMakeAtt(t[0], t[1], t[5] || null);
+    if (q) { q.item.tableSpot = t; WB.atts.push(q); wbHome(q); }
+  }
+  muzRefresh(g);
+  return true;
+}
+// p leaves the chain (grabbed or clicked off): everything in front of it goes back on the table.
+function muzOff(g, p) {
+  const chain = muzChain(g), i = chain.indexOf(p);
+  if (i < 0) return;
+  for (const q of chain.slice(i + 1)) if (!q.item.gun) muzStow(q);
+}
+// Back on the table: its spot, a free spot of its kind, or into the stock (a spare is removed).
+function muzStow(p) {
+  const it = p.item;
+  it.stuck = null;
+  if (it.tableSpot && WB.room && wbHome(p)) return;
+  const t = WB.room && wbTable().find((t) => t[0] === it.sub && !WB.atts.some((q) => q !== p && !q.removing && q.item.tableSpot === t)
+    && (t[0] !== 'sup' || (!!it.big === t[1] && (it.can === 'sb100') === (t[5] === 'sb100'))));
+  if (t) { it.tableSpot = t; wbHome(p); return; }
+  WB.atts = WB.atts.filter((q) => q !== p);
+  removeProp(p);
+}
+// g.sup (any can), g.muzCompLast; returns the chain.
+function muzState(g) {
+  const chain = muzChain(g), last = chain.length ? chain[chain.length - 1].item : null;
+  const can = chain.find((p) => p.item.sub === 'sup');
+  g.sup = can ? can.item : null;
+  g.muzCompLast = !!last && last.sub === 'comp' && !!g.sup;
+  g.muzN = chain.length;
+  return chain;
+}
+// Effects of the chain on out (g.afx). On the Glock the first device is GLOCK_FX already (g17GunIds).
+function muzFx(g, chain, out) {
+  const d = g.def, glock = g.type === 'g17' && G17A.ready, root = g.prop.root;
+  let M = (d.mass || 1) + out.mass, I = 0, gas = false, cans = 0;
+  const Lm = Math.max(0.08, -muzBase(g, _mzB).z), Ig = (d.mass || 1) * Lm * Lm / 4;   // the gun's own inertia about the grip, roughly
+  root.updateMatrixWorld(true);
+  chain.forEach((p, i) => {
+    const it = p.item, D = MUZ_DEV[muzKind(it)], F = muzFace(p), can = it.sub === 'sup', counted = glock && i === 0 && !!g17PartId(it);
+    if (can) { if (cans > 0) out.snd *= Math.pow(10, MUZ.db1 * MUZ.w[Math.min(cans, MUZ.w.length - 1)] / 20); cans++; }
+    if (!counted) {
+      p.root.updateMatrixWorld(true); _mzI.copy(root.matrixWorld).invert();
+      const lever = Math.max(0.03, -(_mzV.set(0, 0, F.tip / 2).applyMatrix4(p.root.matrixWorld).applyMatrix4(_mzI).z)), Ii = D.m * lever * lever, r = Ii / Ig;
+      out.mass += D.m; I += Ii;
+      out.ads *= 1 + 0.07 * r; out.sway *= 1 + 0.09 * r; out.aim *= 1 + 0.05 * r;
+      out.kick *= M / (M + D.m); out.climb *= 1 / (1 + 0.1 * r); M += D.m;
+      if (it.sub === 'comp') {                                      // vents only with nothing gassy behind it
+        const k = gas ? 0.2 : 1;
+        out.climb *= 1 - 0.3 * k; out.kick *= 1 - 0.07 * k; out.dkick *= 1 - 0.25 * k;
+        if (!gas) { out.flash *= 1.35; out.light *= 1.25; out.snd *= 1.08; }
+      }
+    }
+    if (can || it.sub === 'comp') gas = true;
+  });
+  if (g.muzCompLast) out.flash *= 0.5;                              // a comp after a can: little gas left to burn
+  out.lag = Math.min(MUZ.lagMax, (out.lag || 0) + GLOCK_FX_VR.k * I);
+  return out;
+}
+// The clip's second box: as long and as wide as the chain, from the base muzzle to the tip.
+function muzClipSet(g, chain) {
+  if (!chain.length || typeof RAPIER === 'undefined') { g.muzClip = null; return; }
+  const b = muzBase(g, _mzB), t = muzTip(g, chain, _mzT), L = b.z - t.z;
+  if (!(L > 0.01)) { g.muzClip = null; return; }
+  let R = 0; for (const p of chain) R = Math.max(R, MUZ_DEV[muzKind(p.item)].r);
+  const k = CLIP.shrink, key = Math.round(L * 1000) + ':' + Math.round(R * 10000);
+  if (g.muzClip && g.muzClip.key === key) { g.muzClip.c.set(b.x, b.y, (b.z + t.z) / 2); return; }
+  g.muzClip = { key, c: new THREE.Vector3(b.x, b.y, (b.z + t.z) / 2), shape: new RAPIER.Cuboid(Math.max(0.005, R - k), Math.max(0.005, R - k), Math.max(0.005, L / 2 - k)) };
+}
+// After the chain changed: muzzle point, flash, effects, clip.
+function muzRefresh(g) {
+  if (!g || !g.prop || g.kind !== 'gun') return;
+  if (g.type === 'g17' && G17A.ready) { g17Refresh(g); return; }   // the Glock builds its own g.wr (calls muzFx / muzClipSet)
+  const chain = muzState(g), base = WR[g.type];
+  if (g.parts.flash && !g.muzFlash0) g.muzFlash0 = g.parts.flash.position.clone();
+  if (chain.length) {
+    const t = muzTip(g, chain, new THREE.Vector3());
+    g.wr = Object.assign({}, g.wr, { muzzle: t });
+    if (g.parts.flash) g.parts.flash.position.copy(t).sub(g.model.position);
+    g.muzEnd = t;
+    g.afx = muzFx(g, chain, Object.assign({}, AFX0));
+  } else {
+    if (g.wr.muzzle !== base.muzzle) g.wr = Object.assign({}, g.wr, { muzzle: base.muzzle });
+    if (g.parts.flash && g.muzFlash0) g.parts.flash.position.copy(g.muzFlash0);
+    g.muzEnd = null; g.afx = null;
+  }
+  muzClipSet(g, chain);
+}
+// RELEASE at the vise: this chain is the gun type's build (other guns of the type follow; the Glock's via g17FromGun).
+function muzSaveGun(g) {
+  if (!MUZ.on || !g || !g.prop) return;
+  MUZ.saved[g.type] = muzChain(g).map((p) => muzKind(p.item));
+  muzSave();
+  if (g.type !== 'g17') for (const q of props) if (q.item && q.item !== g && q.item.kind === 'gun' && q.item.type === g.type && !q.removing) muzSync(q.item);
+}
+function muzMake(k) {
+  if (k === 'ext') return muzMakeExt();
+  if (k === 'rifle') return wbMakeAtt('sup', true);
+  if (k === 'comp') return wbMakeAtt('comp');
+  return wbMakeAtt('sup', false, k === 'sb100' ? 'sb100' : 'md3');
+}
+// Make one gun's locked-on chain match the saved one (not while it is in the vise: the bench owns it).
+function muzSync(g) {
+  if (!MUZ.on || !g || !g.prop || g.prop.removing || g.kind !== 'gun' || (WB.open && WB.gun === g)) return;
+  const want = MUZ.saved[g.type] || [];
+  if (G17A.on && !G17A.ready && want.some((k) => k === 'md3' || k === 'sb100' || k === 'comp')) return;   // the models arrive with the kit (G17A ready runs this again)
+  const have = (g.atts || []).filter((p) => muzIsDev(p.item) && !p.removing);
+  const sorted = muzChain(g).filter((p) => have.includes(p));
+  if (sorted.length === want.length && sorted.every((p, i) => muzKind(p.item) === want[i] || (want[i] === 'md3' && muzKind(p.item) === 'pcan'))) return;
+  for (const p of have) g17Detach(g, p);
+  const cur = [];
+  for (const k of want) {
+    const p = muzMake(k);
+    if (!p) continue;
+    muzPlace(g, p, cur);
+    wbFreeze(g, p);
+    if (!WB.atts.includes(p)) WB.atts.push(p);
+    cur.push(p);
+  }
+  muzRefresh(g);
+}
+// The barrel extension: dark steel, 100 mm. Rear: a knurled female collar (onto a 1/2x28 muzzle); a 15 mm tube; a shoulder
+// at MUZ_EXT.seat (the next device's rear face sits on it) and a 12 mm male 1/2x28 thread into that device. Origin = rear face.
+function muzMakeExt() {
+  if (!MUZ_EXT.geo) {
+    const rMaj = 0.00635, rMin = 0.00585, pitch = 0.0254 / 28, sa = -MUZ_EXT.seat, L = MUZ_EXT.len, rc = MUZ_EXT.rC, rt = MUZ_EXT.rT;
+    const pts = [[0.0059, 0], [rc - 0.0005, 0], [rc, 0.0005]];
+    for (let i = 0; i < 4; i++) { const a = 0.002 + i * 0.0032; pts.push([rc, a], [rc - 0.0004, a + 0.0008], [rc - 0.0004, a + 0.0016], [rc, a + 0.0024]); }
+    pts.push([rc, 0.0155], [rc - 0.0006, 0.0161], [rt, 0.019], [rt, sa - 0.0006], [rt - 0.0006, sa], [rMaj + 0.0002, sa]);
+    for (let a = sa + 0.0006; a < L - 0.0012; a += pitch) pts.push([rMin, a], [rMaj, a + pitch / 2]);
+    pts.push([rMaj, L - 0.0005], [rMaj - 0.0005, L], [0.0046, L], [0.0045, L - 0.004]);
+    MUZ_EXT.geo = new THREE.LatheGeometry(pts.map(([r, a]) => new THREE.Vector2(r, a)), 28).rotateX(-Math.PI / 2);   // lathe height -> forward (-z)
+    MUZ_EXT.mat = new THREE.MeshStandardMaterial({ color: 0x1c1d1f, roughness: 0.4, metalness: 0.85 });
+  }
+  const g = new THREE.Group(), o = new THREE.Mesh(MUZ_EXT.geo, MUZ_EXT.mat);
+  o.castShadow = true; o.receiveShadow = true; g.add(o);
+  const L = MUZ_EXT.len, c = new THREE.Vector3(0, 0, -L / 2);
+  const item = { kind: 'att', type: 'ext', sub: 'ext', label: 'barrel extension', hook: null, stuck: null, gun: null, lamp: null, len: L, rest: MUZ_EXT.rC, flat: true, hold: g17Hold('fist', c, true) };
+  const p = makeItem(g, item, { mass: MUZ_DEV.ext.m, half: [MUZ_EXT.rC, MUZ_EXT.rC, L / 2], center: c, restitution: 0.1 });
+  g.userData.att = true;
+  return p;
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { MUZ, MUZ_DEV, MUZ_EXT, G17_MUZ, muzChain, muzFace, muzBase, muzEnd, muzTip, muzPlace, muzBenchFit, muzOff, muzStow, muzState, muzFx, muzClipSet, muzRefresh, muzSaveGun, muzSync, muzMakeExt });   // step 103
 </script>
 </body>
 </html>
