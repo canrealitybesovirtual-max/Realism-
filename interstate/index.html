@@ -3325,6 +3325,21 @@ class Network {
     return W > 0 ? Y / W : terrainHeight(x, z);
   }
   /** Nearest distance beyond any other road's rail (bridges ignored). A slip road also meets itself across a loop. */
+  /** Build 1.40: for trees. Distance (m) from (x, z) beyond the guardrail of the nearest other road, bridges included
+   *  (a tree must not stand under a flyover either), each road projected from scratch if its cached guess is far off. */
+  treeClear(X, x, z, sSelf) {
+    let best = Infinity;
+    for (const r of this.roads) {
+      if (r === X) continue;
+      const b = r.bb; if (x < b[0] - 40 || x > b[2] + 40 || z < b[1] - 40 || z > b[3] + 40) continue;
+      const h = this.hint[r.id]; this.pr.over = 0; let pr = r.project(x, z, h >= 0 ? h : null, this.pr);
+      if (!Number.isFinite(pr.u) || Math.abs(pr.u) > r.railU + 60) { this.pr.over = 0; pr = r.project(x, z, null, this.pr); }
+      if (!Number.isFinite(pr.u) || (pr.over || 0) > 2) continue;
+      best = Math.min(best, Math.abs(pr.u) - r.railU);
+    }
+    if (X.oneWay) { this.pr.over = 0; const pr = X.project(x, z, null, this.pr); if (Number.isFinite(pr.u) && !(pr.over > 2) && Math.abs(pr.s - sSelf) > 60) best = Math.min(best, Math.abs(pr.u) - X.railU); }
+    return best;
+  }
   otherDist(X, x, z, sSelf) {
     let best = Infinity;
     for (const r of this.roads) {
@@ -3846,7 +3861,8 @@ function worldMaterials(track) {
   });
   const C = A.concrete;
   m.concrete = Atmos.patch(new THREE.MeshStandardMaterial({ vertexColors: true, map: C.albedo, normalMap: C.normal, roughnessMap: C.orm, aoMap: C.orm, aoMapIntensity: .6, normalScale: new THREE.Vector2(.7, .7) }), { key: 'concrete' });
-  m.steel = Atmos.patch(new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(.5, .51, .52), metalness: .82, roughness: .44, roughnessMap: C.orm, side: THREE.DoubleSide }), { key: 'steel' });
+  { const G = guardrailTextures();                                       // build 1.40: galvanised W-beam (§13.3)
+    m.steel = Atmos.patch(new THREE.MeshStandardMaterial({ color: 0xffffff, map: G.map, normalMap: G.normal, normalScale: new THREE.Vector2(.9, .9), roughnessMap: G.rough, metalness: .42, roughness: .85, side: THREE.DoubleSide }), { key: 'steel' }); }   // zinc patina: mostly a dull diffuse grey
   m.paintedSteel = Atmos.patch(new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(.32, .33, .33), metalness: .55, roughness: .55, roughnessMap: C.orm }), { key: 'psteel' });
   /* Build 1.19: snow instead of grass. Procedural, no texture fetches on open ground: two octaves of value noise
      for drifts and wind-packed patches, a cool shade in the hollows and a few glints. Rock shows only on steep
@@ -3922,6 +3938,57 @@ function signTexture(rng, units, layout) {
 const CHUNK_LEN = 100, ROAD_ROWS = 51, VERGE_ROWS = 26;
 const VERGE_D = [.6, 1.2, 2.2, 3.4, 4.8, 6.4, 8.2, 10.5, 13.5, 17.5, 22.5, 29, 38, 50, 65, 85, 110, 140, 175, 215, 260];
 const JERSEY = [[-.31, -.06], [-.31, .075], [-.24, .33], [-.085, .81], [.085, .81], [.24, .33], [.31, .075], [.31, -.06]];
+/* Build 1.40: galvanised W-beam guardrail texture. u across the beam's profile (0 = its bottom edge, WBEAM_ACROSS m
+   to the top), v along the road (one 4.13 m panel per tile). Zinc spangle mottling, the lap joint with its eight splice
+   bolts at the start of each panel, a button-head post bolt every 2 m in the valley, road spray and grime collecting in
+   the lower flute, dust on the top edge, a little rust weeping from the bolts. Height to normals for the bump; roughness
+   lower on the bolt heads and higher in the grime. */
+const WBEAM_ACROSS = .443, WBEAM_PANEL = 4.13;
+function guardrailTextures() {
+  const WX = 128, HY = 1024, mpx = WBEAM_ACROSS / WX, mpy = WBEAM_PANEL / HY, rnd = mulberry32(4130);
+  const mk = () => { const c = document.createElement('canvas'); c.width = WX; c.height = HY; return [c, c.getContext('2d')]; };
+  const [cc, g] = mk(), [hc, hg] = mk(), [rc, rg] = mk();
+  const X = m => m / mpx, Y = m => m / mpy;                             // metres to pixels
+  // base zinc, spangle cells, faint roll marks along the beam
+  g.fillStyle = '#9ea2a5'; g.fillRect(0, 0, WX, HY); hg.fillStyle = '#808080'; hg.fillRect(0, 0, WX, HY); rg.fillStyle = '#8a8a8a'; rg.fillRect(0, 0, WX, HY);
+  for (let i = 0; i < 2600; i++) { const x = rnd() * WX, y = rnd() * HY, r = 3 + rnd() * 9, l = 140 + rnd() * 45 | 0; g.fillStyle = `rgba(${l},${l + 3},${l + 6},${.1 + rnd() * .12})`; g.beginPath();
+    for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + rnd() * .6, rr = r * (.6 + rnd() * .5); k ? g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr * 1.6) : g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr * 1.6); } g.fill(); }
+  for (let i = 0; i < 70; i++) { const x = rnd() * WX; g.fillStyle = `rgba(255,255,255,${.02 + rnd() * .03})`; g.fillRect(x, 0, .8, HY); }
+  // road spray and grime in the lower flute (u 0 .. ~.15 m), heavier toward the bottom edge; dust on the top edge
+  const gr = g.createLinearGradient(0, 0, X(.2), 0); gr.addColorStop(0, 'rgba(58,52,44,.55)'); gr.addColorStop(.45, 'rgba(70,64,56,.28)'); gr.addColorStop(1, 'rgba(70,64,56,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, X(.2), HY);
+  for (let i = 0; i < 380; i++) { const y = rnd() * HY, x = rnd() * X(.17), w = 1 + rnd() * 3, h = 8 + rnd() * 60; g.fillStyle = `rgba(48,42,36,${.05 + rnd() * .12})`; g.fillRect(x, y, w, h); }
+  const gt = g.createLinearGradient(WX, 0, WX - X(.05), 0); gt.addColorStop(0, 'rgba(120,112,100,.35)'); gt.addColorStop(1, 'rgba(120,112,100,0)'); g.fillStyle = gt; g.fillRect(WX - X(.05), 0, X(.05), HY);
+  rg.fillStyle = 'rgba(230,230,230,.5)'; rg.fillRect(0, 0, X(.16), HY);                    // grime is rough
+  // the lap joint at the start of the panel: the overlapping sheet's edge (a step and a dark line) and 8 splice bolts
+  const lap = Y(.32);
+  g.fillStyle = 'rgba(0,0,0,.08)'; g.fillRect(0, 0, WX, lap); g.fillStyle = 'rgba(20,20,22,.75)'; g.fillRect(0, lap, WX, 2.2); g.fillStyle = 'rgba(255,255,255,.25)'; g.fillRect(0, lap - 1.5, WX, 1.2);
+  hg.fillStyle = '#909090'; hg.fillRect(0, 0, WX, lap); hg.fillStyle = '#6a6a6a'; hg.fillRect(0, lap, WX, 2);
+  const bolt = (cx, cy, r) => {
+    const rgr = g.createRadialGradient(cx - r * .3, cy - r * .3, 0, cx, cy, r); rgr.addColorStop(0, '#d8dbde'); rgr.addColorStop(.6, '#8d9194'); rgr.addColorStop(1, '#4a4c4e');
+    g.fillStyle = rgr; g.beginPath(); g.ellipse(cx, cy, r, r, 0, 0, Math.PI * 2); g.fill();
+    const hgr = hg.createRadialGradient(cx, cy, 0, cx, cy, r * 1.15); hgr.addColorStop(0, '#ffffff'); hgr.addColorStop(.75, '#c8c8c8'); hgr.addColorStop(1, '#808080');
+    hg.fillStyle = hgr; hg.beginPath(); hg.arc(cx, cy, r * 1.15, 0, Math.PI * 2); hg.fill();
+    rg.fillStyle = '#4a4a4a'; rg.beginPath(); rg.arc(cx, cy, r, 0, Math.PI * 2); rg.fill();
+    // rust weeping down the beam (toward u = 0) from the bolt
+    const len = X(.03 + rnd() * .07), rr = g.createLinearGradient(cx, 0, cx - len, 0); rr.addColorStop(0, 'rgba(120,58,22,.38)'); rr.addColorStop(1, 'rgba(120,58,22,0)');
+    g.fillStyle = rr; g.fillRect(cx - len, cy - r * .7, len, r * 1.4);
+  };
+  for (const u of [.07, .2, .245, .37]) for (const v of [.08, .24]) bolt(X(u), Y(v), X(.0085));
+  bolt(X(.222), Y(2.065), X(.012));                                     // the post bolt, mid panel (posts every 2 m)
+  // a few scuffs and a dent
+  for (let i = 0; i < 9; i++) { const y = rnd() * HY, x = X(.25 + rnd() * .15); g.strokeStyle = 'rgba(230,232,235,.35)'; g.lineWidth = .8; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (rnd() - .5) * 6, y + 20 + rnd() * 60); g.stroke(); }
+  // normals from the height (Sobel)
+  const H = hg.getImageData(0, 0, WX, HY).data, nc = document.createElement('canvas'); nc.width = WX; nc.height = HY; const ng = nc.getContext('2d'), N = ng.createImageData(WX, HY);
+  const hAt = (x, y) => H[(((y + HY) % HY) * WX + ((x + WX) % WX)) * 4] / 255;
+  for (let y = 0; y < HY; y++) for (let x = 0; x < WX; x++) {
+    const dx = (hAt(x + 1, y) - hAt(x - 1, y)) * 3.2, dy = (hAt(x, y + 1) - hAt(x, y - 1)) * 3.2, l = Math.hypot(dx, dy, 1), o = (y * WX + x) * 4;
+    N.data[o] = (-dx / l * .5 + .5) * 255; N.data[o + 1] = (dy / l * .5 + .5) * 255; N.data[o + 2] = (1 / l * .5 + .5) * 255; N.data[o + 3] = 255;
+  }
+  ng.putImageData(N, 0, 0);
+  const tex = (c, srgb) => { const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / WBEAM_ACROSS, 1 / WBEAM_PANEL); t.anisotropy = 8; return t; };
+  return { map: tex(cc, true), normal: tex(nc, false), rough: tex(rc, false) };
+}
 const WBEAM = [[0, .48], [.05, .53], [.015, .59], [.06, .655], [.015, .72], [.05, .78], [0, .83]];
 const POSTS_PER_SIDE = 50;
 const BOX_INDEX = [0, 2, 1, 2, 3, 1, 4, 6, 5, 6, 7, 5, 8, 10, 9, 10, 11, 9, 12, 14, 13, 14, 15, 13, 16, 18, 17, 18, 19, 17, 20, 22, 21, 22, 23, 21];
@@ -4290,6 +4357,10 @@ class RoadChunk {
         else if (hashI(ci, di, 13) < (tr.treesAt(ss) > .8 ? .84 : .62)) { sp = 0; hgt = 9 + hashI(ci, di, 17) * 12; }
         else { const r2 = hashI(ci, di, 19); sp = r2 < .55 ? 1 : r2 < .8 ? 2 : 3; hgt = 7 + hashI(ci, di, 29) * 9; }
         const asp = .85 + hashI(ci, di, 23) * .3;
+        /* build 1.40: a motorway keeps a mown verge clear of trees: the crown (about a third of the card's width each side)
+           must stay TREE_CLEAR beyond the guardrail, from this road and from every other road near (bridged spans too) */
+        const crown = hgt * asp * (sp >= 4 ? .3 : .34), need = (sp >= 4 ? TREE_CLEAR.bush : TREE_CLEAR.tree) + crown;
+        if (Math.abs(u0) - tr.railU < need || (tr.net && tr.net.treeClear(tr, p.x, p.z, sj) < need)) { tr.frame(ss, F); continue; }
         pos.set(p.x, p.y - .15, p.z); quat.setFromAxisAngle(yAxis, hashI(ci, di, 31) * Math.PI * 2); sc.set(hgt * asp, hgt, hgt * asp);
         m.compose(pos, quat, sc); m.toArray(T.mat, T.count * 16);
         T.pos[T.count * 2] = p.x; T.pos[T.count * 2 + 1] = p.z; T.sp[T.count] = sp;
@@ -4307,6 +4378,7 @@ class RoadChunk {
         tr.frame(ss, F); tr.vergePoint(F, u0, p);
         if (tr.net && tr.net.otherDist(tr, p.x, p.z, ss) < d) continue;
         const hgt = 20 + hashI(k, side, 53) * 8;
+        if (tr.net && tr.net.treeClear(tr, p.x, p.z, ss) < TREE_CLEAR.tree + hgt * .5) continue;   // build 1.40: no far card over another road
         pos.set(p.x, p.y - 1.5, p.z); quat.setFromAxisAngle(yAxis, Math.atan2(-F.T.z, F.T.x)); sc.set(hgt, hgt, hgt);
         m.compose(pos, quat, sc); m.toArray(T.mat, T.count * 16);
         T.pos[T.count * 2] = p.x; T.pos[T.count * 2 + 1] = p.z; T.sp[T.count] = 6;
@@ -4603,6 +4675,8 @@ const TreeAssets = {
   },
 };
 
+/* build 1.40: clear verge beyond the guardrail, to the edge of a tree's crown (m) */
+const TREE_CLEAR = { tree: 7, bush: 6 };
 class TreeSystem {
   constructor(scene, windU) {
     this.scene = scene; this.meshes = null; this.timer = 0;
