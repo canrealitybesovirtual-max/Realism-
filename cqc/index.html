@@ -2029,6 +2029,11 @@ const PROJECT_RULES = {
   step86: [
     'Body bumps (bodyBump from locomote, ?bump=off, CONFIG.polish.audio.bump): what resolveBody pushes the moving head back by is the contact. A fresh contact (free s clear before, cool s since the last) at more than min m/s into the surface is a self thump of shoulder, sleeve and kit (a door leaf you nudge also rings, kickSfx\'s two modes quieter); in the headset a 30 ms buzz, strongest in the hand on the wall\'s side, through pulseSoft (skipped while another pulse runs: pulse() stamps hand.hapEnd). Sliding along a wall is a sleeve scuff (brush) every ~0.45 s, no buzz. Not positional, no AI noise; skipped during a breach, a kick or death. Footfall haptics were left out (they would mask the heartbeat buzz).'
   ],
+  workshop: [
+    'Gunsmith workshop computer (CONFIG.workshop, ?workshop=off): one rugged touchscreen on a wall arm over the gunsmith bench, moved to the current safe room (wsRoomActivated), never rebuilt. Its glass is a clone of the terminal material (same program), the housing uses kit materials; it adds no light. It redraws only on a change (a press, a hover, the wallet or pouches, checked every CONFIG.workshop.check s while you are near): never per frame.',
+    'Money: WALLET (cqc.wallet.v1) earns 1 $ per banked point (loopEnterRoom). Records and scores are unchanged. The terminal\'s free RESTOCK is replaced by the store\'s SUPPLIES (ammo, grenades, medical, each priced; it charges only when the restock adds something). The automatic refill on entering the safe room stays.',
+    'Attachments (docs/ATTACHMENTS.md) live in one table, WS_ITEMS { id, gun, cat (one of the gun\'s WS_GUNS slots or hardware), name, price, desc, owned, requires, hw, addon, cosmetic, model, fx }. A part is locked until its requires are owned; cosmetic parts never change a stat; a part without a model can be bought, not fitted. The 12 stats (WS_STATS) start from WEAPON_DEFS and add the fx of owned hardware and owned + fitted parts. Store only: nothing here changes the guns yet; each gun\'s attachment step wires it.'
+  ],
   currentStep: 70
 };
 
@@ -2579,6 +2584,19 @@ const CONFIG = {
     tip: 0.012,                // m in front of the controller's ray origin that counts as your fingertip
     touch: 0.006, hover: 0.08, rearm: 0.025,   // m from the glass: press, show the ring, re-arm after a press
     refresh: 0.5               // s between live redraws (clock, run timer)
+  },
+  // --- Gunsmith workshop computer (the store): a rugged touchscreen on a wall arm over the gunsmith bench; ?workshop=off ---
+  workshop: {
+    on: true,                  // false (or ?workshop=off): no computer, no store; the terminal keeps its free RESTOCK button
+    x: 2.12, y: 1.72,          // m, safe room front wall: glass centre (over the bench's left end, left of the vise and the GUNSMITH sign)
+    out: 0.27,                 // m from the wall to the glass (the arm)
+    tilt: 0.24,                // rad the glass faces down toward you
+    w: 0.88, h: 0.495,         // m, the glass (16:9); layout 1280 x 720 units, text 18+ units (1.2 cm+)
+    px: 1920, pxLow: 1280,     // canvas pixels across on a computer / headset and phones. PERFORMANCE: pxLow is ~3.7 MB per redraw on the Quest
+    glow: 1.3,                 // emissive strength of the screen
+    reach: 2.4,                // m: desktop aim reach
+    wake: 3.2,                 // m: closer than this the screen is live; further it sleeps
+    check: 0.5                 // s between checks for a changed wallet / pouches while live (redraw only on a change)
   },
   replay: {                   // step 58: the recorder and the TV are deleted; only the body cam look (bcr) is left
     // Step 23.2: Body Cam Realism (MENU.bodyCamRealism). Read only while it is on.
@@ -7335,6 +7353,7 @@ function activateRoom(room) {
   coverRoomActivated(room);            // step 6: crate stacks, boards of crates broken last visit
   enemiesRoomActivated(room);          // step 7: one man per combat room (unless you killed him)
   termRoomActivated(room);             // step 11: the terminal screen, its collider and walk box
+  try { wsRoomActivated(room); } catch (e) { console.warn('gunsmith workshop computer not placed', e); }
   nightApplyRoom(room);                // step 11: tubes off in combat rooms at night
   rebuildWalk();
 }
@@ -7364,6 +7383,7 @@ function unloadRoom(room) {
   probeRoomUnloaded(room);   // step 37
   hitchNote('room off', `${room.kind} ${room.slot}`);   // step 34
   termRoomUnloaded(room);                         // step 11
+  wsRoomUnloaded(room);                           // the gunsmith workshop computer
   if (room.active) weaponsRoomUnloaded(room);     // step 5: holes, casings, collider tags
   coverRoomUnloaded(room);                        // step 6
   enemiesRoomUnloaded(room);                      // step 7: him, or his body
@@ -22173,9 +22193,10 @@ function loopEnterRoom(room) {
     if (!r.pending && r.mult === 1) return;
     const got = r.pending, m = r.mult;
     r.banked += r.pending; r.pending = 0; r.mult = 1;
+    walletEarn(got);                              // gunsmith wallet: 1 banked point = $1 (records and scores unchanged)
     loopSaveBest();
     loopCue([520, 520]);
-    if (!renderer.xr.isPresenting) toast(`Safe room. ${got} banked (streak x${m.toFixed(2)} reset). Ammunition restocked`, 2800);
+    if (!renderer.xr.isPresenting) toast(`Safe room. ${got} banked (streak x${m.toFixed(2)} reset). Ammunition restocked${WORKSHOP.on && got > 0 ? `. Wallet +${fmtMoney(got)}` : ''}`, 2800);
     loopUi();
     return;
   }
@@ -23020,7 +23041,11 @@ function termQuick(W, H, now) {
   tText(`Banked ${r.banked}  ·  At risk ${r.pending}  ·  Threat ${threatLevel()}/10`, ix, 192, 19, r.pending ? TC.hi : TC.text, 'left', 600, TC.sans, iw);
   const bw = (iw - 10) / 2;
   tBtn('q:deploy', ix, 214, bw, 66, 'DEPLOY', { size: 26, fn: () => termConfirm('q:deploy', 'Deploy a new run', termNewRun) });
-  tBtn('q:restock', ix + bw + 10, 214, bw, 66, 'RESTOCK', { size: 26, fn: termRestock });
+  if (WORKSHOP.on) {                                              // gunsmith workshop: restocks are bought at its computer now
+    tBox(ix + bw + 10, 214, bw, 66, TC.faint, TC.line);
+    tText(fmtMoney(WALLET.money), ix + bw + 10 + bw / 2, 236, 24, TC.ok, 'center', 700, TC.mono, bw - 14);
+    tText('Restock: GUNSMITH', ix + bw + 10 + bw / 2, 262, 16, TC.dim, 'center', 600, TC.sans, bw - 14);
+  } else tBtn('q:restock', ix + bw + 10, 214, bw, 66, 'RESTOCK', { size: 26, fn: termRestock });
   tHead('Graphics', ix, 306);
   tSeg('q:perf', ix, 322, iw, 54, [[0, 'CINEMATIC'], [1, 'SHARP'], [2, 'MAX FPS']], perfModeNow(), (v) => { setPerfMode(v); termMsg(`Graphics: ${['Cinematic', 'Sharp', 'Max FPS'][v]}`); }, { size: 19 });
   tHead('Lighting', ix, 402);                                     // step 58
@@ -23134,9 +23159,14 @@ function termLoadout(W, H, now) {
   tText(c.speed > 1 ? 'Quicker on your feet' : c.speed < 1 ? '10% slower' : 'Normal pace', T_X0, 214, 19, TC.dim, 'left', 600, TC.sans, T_CW);
   tRowLabel('In your pouches', 238, 52);
   tText(invLabel(), T_X0, 264, 25, TC.text, 'left', 600, TC.mono, T_CW);
-  tBtn('restock', 16, 304, 992, 76, 'RESTOCK', { size: 28, fn: termRestock });
+  if (WORKSHOP.on) {                                              // gunsmith workshop: the free RESTOCK is gone, the store sells it
+    tBox(16, 304, 992, 76, TC.faint, TC.line);
+    tText('Restock at the GUNSMITH computer', 36, 342, 27, TC.hi, 'left', 700, TC.sans, 620);
+    tText('Wallet', 760, 342, 20, TC.dim, 'right', 600);
+    tText(fmtMoney(WALLET.money), 988, 342, 28, TC.ok, 'right', 700, TC.mono, 216);
+  } else tBtn('restock', 16, 304, 992, 76, 'RESTOCK', { size: 28, fn: termRestock });
   tHead('Guns', 28, 410);
-  tWrap('M1911, .45 ACP, 7+1: on the bench beside the locker, with two magazines. Restock brings it back if it is lost. More guns go here.', 28, 440, 960, 22, TC.dim, 30);   // step 59
+  tWrap(`M1911, .45 ACP, 7+1: on the bench beside the locker, with two magazines. ${WORKSHOP.on ? 'Restock ammo at the GUNSMITH brings it back' : 'Restock brings it back'} if it is lost. More guns go here.`, 28, 440, 960, 22, TC.dim, 30);   // step 59
 }
 
 // Step 11: the comfort settings that used to sit on the face buttons (where a stray press mid-fight changed them).
@@ -23300,6 +23330,7 @@ function termPress(u, v, hand) {
 // Desktop / phone: E, Grab or a click while the dot is on the screen. Returns true if it took the press.
 function termDeskPress(fromClick = false) {
   if (wbDeskButton()) return true;                                  // step 88: the VISE button on the gunsmith bench
+  if (wsDeskPress()) return true;                                   // the gunsmith workshop computer
   if (renderer.xr.isPresenting || !TERM.deskHit || !TERM.awake) return false;
   termPress(TERM.deskHit.u, TERM.deskHit.v, null);
   return true;
@@ -23361,6 +23392,714 @@ function termUpdate(dt) {
   if (TERM.confirm && now > TERM.confirm.until) { TERM.confirm = null; TERM.dirty = true; }
   if (TERM.flashId && now > TERM.flashUntil) { TERM.flashId = null; TERM.dirty = true; }
   if (TERM.dirty || (TERM.awake && now - TERM.lastDraw > C.refresh)) termDraw(now);
+}
+
+/* ============================================================================
+ *  GUNSMITH WORKSHOP COMPUTER (store layout; CONFIG.workshop, ?workshop=off)
+ *
+ *  A rugged touchscreen on a wall arm over the left end of the gunsmith bench
+ *  (front wall, beside the VISE and the parts table): the store. A wallet ($)
+ *  fills from the points you bank in the safe room (1 point = $1; records and
+ *  scores are untouched). The left column lists the player's guns and SUPPLIES.
+ *  A gun shows its name, caliber, build identity, its slots from
+ *  docs/ATTACHMENTS.md (+ HARDWARE) with every part (BUY / FIT / locked
+ *  "Needs: ..."), and its 12 stats as bars for the owned + fitted build, with
+ *  the touched part's deltas (green better, red worse). SUPPLIES sells the
+ *  restocks that used to be the terminal's free RESTOCK button.
+ *  Store only for now: stats and fitting are not wired into the guns yet (each
+ *  gun's attachment step does that); parts without a model can be bought but
+ *  not fitted ("MODEL COMING"). Data: WS_GUNS (slots, identity), WS_ITEMS (one
+ *  table, fields documented on it), WS_STATS. Saved: cqc.workshop.v1 (owned,
+ *  fitted, selection), cqc.wallet.v1.
+ *
+ *  Using it: the terminal's touch code. VR: touch the glass with the controller
+ *  tip. Computer: aim the dot, E / click (scroll: next gun). Phone: aim, Grab.
+ *  RULES: one screen, moved to the current safe room (never rebuilt); its
+ *  material is a clone of the terminal's (same program), the housing uses kit
+ *  materials. The canvas redraws only when something on it changes (checked
+ *  every CONFIG.workshop.check s while you are near): no per-frame allocation.
+ * ========================================================================== */
+const WALLET = { money: 0, earned: 0, spent: 0, key: 'cqc.wallet.v1' };
+try {
+  const o = JSON.parse(localStorage.getItem(WALLET.key) || 'null');
+  if (o && typeof o === 'object') for (const k of ['money', 'earned', 'spent']) if (Number.isFinite(o[k]) && o[k] >= 0) WALLET[k] = Math.floor(o[k]);
+} catch (e) { /* a fresh wallet */ }
+function walletSave() { try { localStorage.setItem(WALLET.key, JSON.stringify({ v: 1, money: WALLET.money, earned: WALLET.earned, spent: WALLET.spent })); } catch (e) { /* this visit only */ } }
+// Banked points pay into the wallet (loopEnterRoom). Records and scores are not touched.
+function walletEarn(n) {
+  n = Math.floor(n);
+  if (!(n > 0)) return;
+  WALLET.money += n; WALLET.earned += n; walletSave();
+  TERM.dirty = true; WORKSHOP.dirty = true;
+}
+function walletSpend(n) {
+  if (!(WALLET.money >= n)) return false;
+  WALLET.money -= n; WALLET.spent += n; walletSave();
+  TERM.dirty = true; WORKSHOP.dirty = true;
+  return true;
+}
+const fmtMoney = (n) => `$${Math.floor(n).toLocaleString('en-US')}`;
+
+// Slot (category) names. Each gun lists its own slots (docs/ATTACHMENTS.md); HARDWARE is always last.
+const WS_CAT_NAME = { optic: 'Optic', muzzle: 'Muzzle', tactical: 'Tactical', mag: 'Magazine', sights: 'Sights', handguard: 'Handguard', underbarrel: 'Underbarrel',
+  stock: 'Stock', sling: 'Sling', bipod: 'Bipod', grip: 'Grip Panels', hardware: 'Hardware' };
+// The player's guns (docs/ATTACHMENTS.md). slots: the brief's slots per gun; factory: what the slot holds with nothing fitted.
+// A gun with no slots (the M4A1-S is not in the brief) shows its stats and "attachments coming".
+const WS_GUNS = {
+  m1911: { name: 'M1911', cal: '.45 ACP', identity: 'Classic tactical sidearm: compact backup, handling, customization.',
+    slots: ['optic', 'muzzle', 'tactical', 'mag', 'sights', 'grip'],
+    factory: { optic: 'iron sights', muzzle: 'bare muzzle', tactical: 'no rail on the frame', mag: '7-round magazine', sights: 'factory sights', grip: 'factory panels' } },
+  g17: { name: 'Glock 17 Gen 5', cal: '9×19 mm Parabellum', identity: 'Standard tactical sidearm: light, close range, quick transitions.',
+    slots: ['optic', 'muzzle', 'tactical', 'mag', 'sights'],
+    factory: { optic: 'iron sights, slide not optic-ready', muzzle: 'bare muzzle', tactical: 'frame rail, empty', mag: '17-round magazine', sights: 'factory polymer sights' } },
+  m4a1s: { name: 'M4A1-S', cal: '5.56×45 mm NATO', identity: 'Suppressed carbine. Attachments coming: not in the attachment brief yet.', slots: [], factory: {} },
+  akmn: { name: 'AKM', cal: '7.62×39 mm', identity: 'Modernized assault rifle: versatile, controllable, adaptable.', identity0: 'Standard AKM: iron sights, wood handguard, fixed stock. The Modernization kit opens the rest.',
+    slots: ['optic', 'muzzle', 'handguard', 'underbarrel', 'tactical', 'mag', 'stock', 'sling'],
+    factory: { optic: 'iron sights', muzzle: 'slant brake', handguard: 'wood handguard', underbarrel: 'none', tactical: 'empty (rails come with the kit)', mag: '30-round magazine', stock: 'fixed stock', sling: 'factory loops' },
+    multi: ['tactical'] },   // rail sections: a light and a laser together
+  awp: { name: 'AWM', cal: '.338 Lapua Magnum', identity: 'Precision rifle: long range, stability, target identification.',
+    slots: ['optic', 'muzzle', 'bipod', 'stock', 'sling'],
+    factory: { optic: 'no optic', muzzle: 'muzzle brake', bipod: 'none', stock: 'folding stock', sling: 'none' } }
+};
+const WS_GUN_ORDER = ['g17', 'm1911', 'akmn', 'awp', 'm4a1s'];  // list order; other bench guns are added after
+const WS_SKIP = ['m4a4', 'k98'];                               // being deleted
+// The 12 stats (docs/ATTACHMENTS.md section 10): [key, label, better (+1 more is better, -1 less is better)]
+const WS_STATS = [['dmg', 'Damage', 1], ['acc', 'Accuracy', 1], ['rec', 'Recoil', -1], ['sway', 'Weapon sway', -1], ['ads', 'ADS speed', 1], ['hip', 'Hip-fire accuracy', 1],
+  ['rel', 'Reload speed', 1], ['move', 'Movement speed', 1], ['wt', 'Weight', -1], ['snd', 'Sound signature', -1], ['flash', 'Muzzle flash', -1], ['vis', 'Visibility', -1]];
+const WS_NS = WS_STATS.length, WS_WT = 8;                      // index of Weight (shown in kg: 1 kg = 12 points on its bar)
+const WS_KG = 12;
+const WS_SLOTS_MAX = 5;                                        // rows per slot page
+/* ONE TABLE: every part the store sells, per gun (docs/ATTACHMENTS.md). Fields:
+ *   id, gun (a WEAPON_DEFS key), cat (a slot, or 'hardware'), name, price ($), desc, owned
+ *   requires  ids that must be owned first (hardware: plate, threaded barrel, rail ...; or the part an add-on goes on)
+ *   hw        mounting hardware: enables, counts once owned (no FIT); mostly weight (section 9)
+ *   addon     sits on another part (covers, killflash, sunshade): does not take its slot
+ *   cosmetic  rule 10: never changes a stat (fx ignored)
+ *   model     the real game part it maps to (bench light / laser / can / magazine / sear, the AWM scope); null = model coming:
+ *             it can be bought, not fitted yet
+ *   fx        stat deltas (WS_STATS keys; wt in kg). Every upgrade carries a drawback; hardware mostly weight.
+ * owned: true = in your workshop already: the parts the bench has today, on guns whose interface takes them.
+ * The 10 rules: 1 / 8 one gun per row (magazines too); 2 hardware rows per gun; 3 / 9 optics need a plate / mount; 4 lights and
+ * lasers need a rail; 5 cans and muzzle devices need a thread / interface; 6 grips need the underbarrel rail; 7 stocks need a stock
+ * interface; 10 cosmetic rows have no effect. A row whose requires are not all owned is locked ("Needs: ..."). */
+const WS_ITEMS = [
+  // --- Glock 17 Gen 5 (frame rail built in; slide not optic-ready) ---
+  { id: 'g17.plate', gun: 'g17', cat: 'hardware', hw: true, name: 'Optic mounting plate', price: 90, desc: 'Adapter plate for the non-optic-ready slide', requires: [], fx: { wt: 0.02 } },
+  { id: 'g17.thread', gun: 'g17', cat: 'hardware', hw: true, name: 'Threaded barrel', price: 180, desc: 'M13.5x1 LH thread for muzzle devices', requires: [], fx: { wt: 0.01 }, owned: true },
+  { id: 'g17.sear', gun: 'g17', cat: 'hardware', hw: true, name: 'Auto sear back plate', price: 1200, desc: 'Full auto, ~1200 rounds a minute (on the bench)', requires: [], model: 'sear', fx: { rec: 14, acc: -6, hip: -5 }, owned: true },
+  { id: 'g17.dot', gun: 'g17', cat: 'optic', name: 'Red dot (RMR class)', price: 420, desc: 'Fast acquisition, no magnification', requires: ['g17.plate'], fx: { acc: 6, ads: 3, wt: 0.045, move: -0.3 } },
+  { id: 'g17.cover', gun: 'g17', cat: 'optic', addon: true, cosmetic: true, name: 'Optic cover', price: 25, desc: 'Rubber cover for the red dot', requires: ['g17.dot'], fx: {} },
+  { id: 'g17.sup', gun: 'g17', cat: 'muzzle', name: 'Pistol suppressor', price: 650, desc: 'Quieter, never silent; less flash; longer', requires: ['g17.thread'], model: 'sup-pistol',
+    fx: { snd: -30, flash: -28, rec: -3, ads: -6, hip: -3, move: -1, wt: 0.2 }, owned: true },
+  { id: 'g17.light', gun: 'g17', cat: 'tactical', name: 'Weapon light (X300 class)', price: 300, desc: 'On the frame rail; lights dark rooms, shows you when on', requires: [], model: 'light',
+    fx: { acc: 2, vis: 12, ads: -2, move: -0.5, wt: 0.12 }, owned: true },
+  { id: 'g17.laser', gun: 'g17', cat: 'tactical', name: 'Laser module (DBAL class)', price: 260, desc: 'On the frame rail; hip-fire reference, shows you when on', requires: [], model: 'laser',
+    fx: { hip: 12, vis: 8, ads: -1, move: -0.3, wt: 0.08 }, owned: true },
+  { id: 'g17.mag33', gun: 'g17', cat: 'mag', name: '33-round magazine', price: 45, desc: '+16 rounds; heavier, slower to seat', requires: [], model: 'ext-g17', fx: { rel: -6, move: -1, wt: 0.12 }, owned: true },
+  { id: 'g17.sights', gun: 'g17', cat: 'sights', name: 'Suppressor-height sights', price: 130, desc: 'Tall night sights, co-witness over a can or a dot', requires: [], fx: { acc: 3, hip: -1, wt: 0.005 } },
+  // --- M1911 (no rail, no optic cut) ---
+  { id: 'm1911.plate', gun: 'm1911', cat: 'hardware', hw: true, name: 'Optic mounting plate', price: 160, desc: 'Slide cut and plate for a red dot', requires: [], fx: { wt: 0.03 } },
+  { id: 'm1911.frame', gun: 'm1911', cat: 'hardware', hw: true, name: 'Rail-equipped frame', price: 450, desc: 'Railed dust cover for a light or a laser', requires: [], fx: { wt: 0.06, move: -0.3 } },
+  { id: 'm1911.thread', gun: 'm1911', cat: 'hardware', hw: true, name: 'Threaded barrel', price: 200, desc: '.578x28 thread for muzzle devices', requires: [], fx: { wt: 0.01 }, owned: true },
+  { id: 'm1911.dot', gun: 'm1911', cat: 'optic', name: 'Red dot', price: 400, desc: 'Fast acquisition, no magnification', requires: ['m1911.plate'], fx: { acc: 6, ads: 3, wt: 0.045, move: -0.3 } },
+  { id: 'm1911.cover', gun: 'm1911', cat: 'optic', addon: true, cosmetic: true, name: 'Optic cover', price: 25, desc: 'Fits the red dot housing', requires: ['m1911.dot'], fx: {} },
+  { id: 'm1911.sup', gun: 'm1911', cat: 'muzzle', name: 'Pistol suppressor', price: 650, desc: 'Quieter, never silent; less flash; longer', requires: ['m1911.thread'], model: 'sup-pistol',
+    fx: { snd: -28, flash: -28, rec: -3, ads: -6, hip: -3, move: -1, wt: 0.2 }, owned: true },
+  { id: 'm1911.light', gun: 'm1911', cat: 'tactical', name: 'Weapon light', price: 300, desc: 'Lights dark rooms, shows you when on', requires: ['m1911.frame'], model: 'light', fx: { acc: 2, vis: 12, ads: -2, move: -0.5, wt: 0.12 } },
+  { id: 'm1911.laser', gun: 'm1911', cat: 'tactical', name: 'Laser module', price: 260, desc: 'Hip-fire reference, shows you when on', requires: ['m1911.frame'], model: 'laser', fx: { hip: 12, vis: 8, ads: -1, move: -0.3, wt: 0.08 } },
+  { id: 'm1911.mag10', gun: 'm1911', cat: 'mag', name: '10-round magazine', price: 45, desc: '+3 rounds; heavier, longer', requires: [], fx: { rel: -5, move: -0.5, wt: 0.06 } },
+  { id: 'm1911.sights', gun: 'm1911', cat: 'sights', name: 'Suppressor-height sights', price: 140, desc: 'Tall night sights, co-witness over a can', requires: [], fx: { acc: 3, hip: -1, wt: 0.005 } },
+  { id: 'm1911.g10', gun: 'm1911', cat: 'grip', cosmetic: true, name: 'G10 grip panels', price: 90, desc: 'Cosmetic: textured G10, fits the factory frame', requires: [], fx: {} },
+  { id: 'm1911.coco', gun: 'm1911', cat: 'grip', cosmetic: true, name: 'Cocobolo grip panels', price: 120, desc: 'Cosmetic: checkered hardwood', requires: [], fx: {} },
+  // --- AKM: Standard -> Modernized (the kit) ---
+  { id: 'akmn.kit', gun: 'akmn', cat: 'handguard', hw: true, name: 'Modernization kit', price: 700, desc: 'Railed handguard, optic mount, rail sections, modern stock adapter',
+    requires: [], fx: { wt: 0.45, move: -2, ads: -2 } },
+  { id: 'akmn.muzzle', gun: 'akmn', cat: 'hardware', hw: true, name: 'Muzzle interface', price: 40, desc: '24x1.5 LH thread adapter for muzzle devices', requires: [], fx: { wt: 0.02 }, owned: true },
+  { id: 'akmn.dot', gun: 'akmn', cat: 'optic', name: 'Red dot (T-2 class)', price: 480, desc: 'Fast acquisition, no magnification', requires: ['akmn.kit'], fx: { acc: 8, ads: -1, move: -0.5, wt: 0.1 } },
+  { id: 'akmn.holo', gun: 'akmn', cat: 'optic', name: 'Holographic sight', price: 650, desc: 'Clear CQB reticle, fast transitions', requires: ['akmn.kit'], fx: { acc: 7, hip: 2, ads: -2, move: -1, wt: 0.32 } },
+  { id: 'akmn.2x', gun: 'akmn', cat: 'optic', name: '2x prism optic', price: 520, desc: 'Better medium-range identification; slower to aim', requires: ['akmn.kit'], fx: { acc: 14, ads: -8, hip: -2, move: -1, wt: 0.4 } },
+  { id: 'akmn.sup', gun: 'akmn', cat: 'muzzle', name: 'Rifle suppressor', price: 950, desc: 'Quieter, never silent; less flash; longer, heavier', requires: ['akmn.muzzle'], model: 'sup-rifle',
+    fx: { snd: -32, flash: -40, rec: -6, ads: -6, sway: 4, move: -2, wt: 0.55 }, owned: true },
+  { id: 'akmn.comp', gun: 'akmn', cat: 'muzzle', name: 'Compensator', price: 130, desc: 'Less muzzle climb; more visible flash', requires: ['akmn.muzzle'], fx: { rec: -14, flash: 12, snd: 6, wt: 0.12 } },
+  { id: 'akmn.fh', gun: 'akmn', cat: 'muzzle', name: 'Flash hider', price: 55, desc: 'Much less visible flash; no recoil change', requires: ['akmn.muzzle'], fx: { flash: -40, ads: -1, wt: 0.06 } },
+  { id: 'akmn.covers', gun: 'akmn', cat: 'handguard', addon: true, cosmetic: true, name: 'Rail covers', price: 30, desc: 'Cosmetic: rubber covers on the kit rails', requires: ['akmn.kit'], fx: {} },
+  { id: 'akmn.vg', gun: 'akmn', cat: 'underbarrel', name: 'Vertical grip', price: 55, desc: 'Steadier on the move; heavier', requires: ['akmn.kit'], fx: { sway: -8, rec: -4, ads: -2, wt: 0.1 } },
+  { id: 'akmn.ag', gun: 'akmn', cat: 'underbarrel', name: 'Angled grip', price: 50, desc: 'Quicker transitions; smaller movement penalty', requires: ['akmn.kit'], fx: { ads: 3, rec: -2, sway: -2, wt: 0.08 } },
+  { id: 'akmn.hs', gun: 'akmn', cat: 'underbarrel', name: 'Hand stop', price: 30, desc: 'Small handling gain, light', requires: ['akmn.kit'], fx: { sway: -3, rec: -1, wt: 0.03 } },
+  { id: 'akmn.light', gun: 'akmn', cat: 'tactical', name: 'Weapon light', price: 320, desc: 'On a kit rail; lights dark rooms, shows you when on', requires: ['akmn.kit'], model: 'light', fx: { acc: 2, vis: 12, ads: -1, move: -0.5, wt: 0.15 } },
+  { id: 'akmn.laser', gun: 'akmn', cat: 'tactical', name: 'Laser module', price: 350, desc: 'On a kit rail; hip-fire reference, shows you when on', requires: ['akmn.kit'], model: 'laser', fx: { hip: 12, vis: 8, ads: -1, move: -0.3, wt: 0.12 } },
+  { id: 'akmn.mag40', gun: 'akmn', cat: 'mag', name: '40-round magazine', price: 40, desc: '+10 rounds (RPK length); heavier, slower to seat', requires: [], model: 'ext-akmn', fx: { rel: -7, ads: -1, move: -1, wt: 0.2 }, owned: true },
+  { id: 'akmn.stock', gun: 'akmn', cat: 'stock', name: 'Adjustable stock', price: 140, desc: 'More stable, less aim movement; on the kit adapter', requires: ['akmn.kit'], fx: { rec: -8, sway: -8, move: -1, wt: 0.25 } },
+  { id: 'akmn.sling', gun: 'akmn', cat: 'sling', cosmetic: true, name: 'Two-point sling', price: 50, desc: 'Cosmetic: carry only, no accuracy effect', requires: [], fx: {} },
+  // --- AWM (the scope is on it today) ---
+  { id: 'awp.mount', gun: 'awp', cat: 'hardware', hw: true, name: 'Scope mounting system', price: 300, desc: 'Rail and 34 mm rings', requires: [], fx: { wt: 0.2 }, owned: true },
+  { id: 'awp.bipodif', gun: 'awp', cat: 'hardware', hw: true, name: 'Bipod interface', price: 70, desc: 'Fore-end rail for a bipod', requires: [], fx: { wt: 0.05 } },
+  { id: 'awp.stockmod', gun: 'awp', cat: 'hardware', hw: true, name: 'Adjustable stock module', price: 400, desc: 'Takes a cheek rest', requires: [], fx: { wt: 0.3, sway: -2 } },
+  { id: 'awp.muzzle', gun: 'awp', cat: 'hardware', hw: true, name: 'Muzzle interface', price: 90, desc: 'Brake mount for a can', requires: [], fx: { wt: 0.05 }, owned: true },
+  { id: 'awp.slingpts', gun: 'awp', cat: 'hardware', hw: true, name: 'Sling points', price: 35, desc: 'QD sockets on the stock and fore-end', requires: [], fx: { wt: 0.02 } },
+  { id: 'awp.scope', gun: 'awp', cat: 'optic', name: 'Variable scope 3-25x', price: 2600, desc: 'Long-range identification; slower to aim, glints', requires: ['awp.mount'], model: 'scope',
+    fx: { acc: 20, ads: -14, sway: 4, vis: 12, move: -1.5, wt: 0.9 }, owned: true },
+  { id: 'awp.kf', gun: 'awp', cat: 'optic', addon: true, name: 'Scope killflash', price: 150, desc: 'Less glint: harder to spot you', requires: ['awp.scope'], fx: { vis: -10, acc: -1, wt: 0.03 } },
+  { id: 'awp.shade', gun: 'awp', cat: 'optic', addon: true, name: 'Scope sunshade', price: 80, desc: 'Less glare in bright light; longer', requires: ['awp.scope'], fx: { vis: -4, acc: 2, ads: -1, wt: 0.08 } },
+  { id: 'awp.cover', gun: 'awp', cat: 'optic', addon: true, cosmetic: true, name: 'Scope cover', price: 45, desc: 'Cosmetic, no combat effect', requires: ['awp.scope'], fx: {} },
+  { id: 'awp.sup', gun: 'awp', cat: 'muzzle', name: 'Rifle suppressor', price: 1200, desc: 'Quieter, never silent; less flash; longer, heavier', requires: ['awp.muzzle'], model: 'sup-rifle',
+    fx: { snd: -28, flash: -45, rec: -6, ads: -5, sway: 3, move: -2, wt: 0.65 }, owned: true },
+  { id: 'awp.bipod', gun: 'awp', cat: 'bipod', name: 'Bipod', price: 250, desc: 'Big stability only when supported; heavy', requires: ['awp.bipodif'], fx: { sway: -15, rec: -6, ads: -3, move: -3, wt: 0.4 } },
+  { id: 'awp.cheek', gun: 'awp', cat: 'stock', name: 'Cheek rest', price: 120, desc: 'Steadier scope picture', requires: ['awp.stockmod'], fx: { sway: -5, acc: 2, wt: 0.12 } },
+  { id: 'awp.sling', gun: 'awp', cat: 'sling', cosmetic: true, name: 'Sling', price: 60, desc: 'Cosmetic: carry only, no accuracy effect', requires: ['awp.slingpts'], fx: {} }
+];
+const WORKSHOP = {
+  on: CONFIG.workshop.on !== false && !/[?&]workshop=off\b/.test(location.search),
+  key: 'cqc.workshop.v1',
+  cv: null, ctx: null, tex: null, mat: null, base: null, head: null, screen: null, cursor: null, room: null,
+  sel: null, cat: {}, pick: null, guns: [],
+  hover: null, flashId: null, flashUntil: 0, hits: [], dirty: true, awake: false, lastDraw: -99, lastCheck: -99, msg: '', msgT: -99, msgLive: false,
+  hands: new Map(), deskHit: null, deskHitO: { u: 0, v: 0 }, deskHinted: false, wheelT: 0, sigA: -1, sigB: -1, sigC: -1,
+  items: WS_ITEMS, byId: new Map(), fitted: new Set(['awp.scope']),
+  // Supplies: what the terminal's RESTOCK used to give for free, one category at a time.
+  supplies: [
+    { id: 'ammo', name: 'Restock ammo', price: 250, desc: 'Every pouch magazine full (shells too); lost bench guns come back' },
+    { id: 'nades', name: 'Grenades', price: 300, desc: 'Frag and flashbang pouches full; bench grenades back to 3 of each' },
+    { id: 'med', name: 'Medical', price: 150, desc: 'Two auto-injectors in the arm pouch' }
+  ]
+};
+for (const it of WS_ITEMS) { it.owned = !!it.owned; it.cosmetic = !!it.cosmetic; it.requires = it.requires || []; it.model = it.model || null; WORKSHOP.byId.set(it.id, it); }
+try {
+  const o = JSON.parse(localStorage.getItem(WORKSHOP.key) || 'null');
+  if (o && typeof o === 'object') {
+    if (o.owned && typeof o.owned === 'object') for (const it of WS_ITEMS) if (typeof o.owned[it.id] === 'boolean') it.owned = o.owned[it.id];
+    if (Array.isArray(o.fitted)) { WORKSHOP.fitted.clear(); for (const id of o.fitted) if (WORKSHOP.byId.has(id)) WORKSHOP.fitted.add(id); }
+    if (typeof o.sel === 'string') WORKSHOP.sel = o.sel;
+    if (o.cat && typeof o.cat === 'object') for (const k of Object.keys(o.cat)) if (WS_CAT_NAME[o.cat[k]]) WORKSHOP.cat[k] = o.cat[k];
+  }
+} catch (e) { /* defaults */ }
+function wsSave() {
+  const owned = {};
+  for (const it of WS_ITEMS) owned[it.id] = it.owned;
+  try { localStorage.setItem(WORKSHOP.key, JSON.stringify({ v: 2, owned, fitted: [...WORKSHOP.fitted], sel: WORKSHOP.sel, cat: WORKSHOP.cat })); } catch (e) { /* this visit only */ }
+}
+const _wsv = { p: new THREE.Vector3(), l: new THREE.Vector3(), o: new THREE.Vector3(), d: new THREE.Vector3(), c: new THREE.Vector3(), h: new THREE.Vector3(),
+  q: new THREE.Quaternion(), m: new THREE.Matrix4(), s: new THREE.Vector3() };
+const WS_LW = 1280, WS_LH = 720;                               // layout units (16:9), scaled to the canvas
+const WS_DASH = [10, 7], WS_NODASH = [];
+
+// The model: wall plate, a two-link arm, a rugged housing with corner bumpers and side handles, the glass.
+// Built once; the whole thing moves to whichever safe room is current (wsRoomActivated).
+function wsBuild() {
+  if (!WORKSHOP.on) return;
+  const C = CONFIG.workshop, M = KIT.mat, W = WORKSHOP;
+  const cv = W.cv = document.createElement('canvas');
+  const px = IS_HEADSET || BOOT.phone ? C.pxLow : C.px;
+  cv.width = px; cv.height = Math.round(px * WS_LH / WS_LW);
+  W.ctx = cv.getContext('2d');
+  const tex = W.tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
+  W.mat = TERM.mat.clone();                                    // the terminal's glass: same shader program, own canvas
+  W.mat.emissiveMap = tex; W.mat.emissiveIntensity = C.glow;
+  W.screen = new THREE.Mesh(new THREE.PlaneGeometry(C.w, C.h), W.mat);
+  W.screen.castShadow = false; W.screen.receiveShadow = false;
+  W.screen.position.z = 0.001;
+  W.cursor = new THREE.Mesh(new THREE.RingGeometry(0.0075, 0.0115, 24), TERM.cursor.material);   // shared material
+  W.cursor.position.z = 0.0015; W.cursor.visible = false; W.cursor.renderOrder = 2;
+  W.screen.add(W.cursor);
+  // head (local: x right, y up, z = the glass normal; glass at z 0)
+  const EW = C.w + 0.07, EH = C.h + 0.07;
+  const head = W.head = new THREE.Group();
+  const grey = [placed(rbox(EW, EH, 0.05, 0.012), 0, 0, -0.031)];
+  const plastic = [placed(lbox(C.w + 0.03, C.h + 0.03, 0.01, 0.004), 0, 0, -0.005),
+    placed(lbox(0.16, 0.012, 0.006, 0.002), 0, -EH / 2 + 0.018, 0.0005)];   // the chin badge strip
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) plastic.push(placed(rbox(0.07, 0.07, 0.066, 0.016), sx * (EW / 2 - 0.02), sy * (EH / 2 - 0.02), -0.028));   // rubber corner bumpers
+  const steel = [placed(lbox(0.13, 0.13, 0.01, 0.003), 0, 0, -0.061)];   // VESA plate
+  for (const sx of [-1, 1]) {
+    steel.push(placed(rbox(0.022, 0.24, 0.022, 0.008), sx * (EW / 2 + 0.045), 0, -0.012));   // carry handles
+    for (const sy of [-1, 1]) steel.push(placed(lbox(0.05, 0.022, 0.022, 0.004), sx * (EW / 2 + 0.018), sy * 0.11, -0.018));
+  }
+  for (let i = 0; i < 10; i++) plastic.push(placed(lbox(0.05, 0.005, 0.004, 0.0015), -0.27 + i * 0.06, EH / 2 - 0.016, 0.0003));   // vent slots on the top rail
+  head.add(merged(grey, M.steelGrey), merged(plastic, M.blackPlastic), merged(steel, M.steel));
+  head.add(W.screen);
+  head.position.set(0, C.y, C.out); head.rotation.x = C.tilt;
+  // wall frame (local: x along the wall, y up from the floor, z out of the wall): the plate and the arm
+  const base = W.base = new THREE.Group();
+  const ay = C.y - 0.02, hz = C.out - 0.075;                   // arm height; where it meets the VESA plate
+  const ex = 0.075, ez = 0.03 + hz * 0.55, link = (x0, z0, x1, z1) => placed(lbox(0.04, 0.034, Math.hypot(x1 - x0, z1 - z0), 0.008), (x0 + x1) / 2, ay, (z0 + z1) / 2, 0, Math.atan2(x1 - x0, z1 - z0), 0);
+  const arm = [placed(lbox(0.11, 0.2, 0.014, 0.004), 0, ay, 0.007),
+    placed(new THREE.CylinderGeometry(0.02, 0.02, 0.07, 16), 0, ay, 0.03), link(0, 0.03, ex, ez),
+    placed(new THREE.CylinderGeometry(0.019, 0.019, 0.06, 16), ex, ay, ez), link(ex, ez, 0, hz + 0.012),
+    placed(new THREE.CylinderGeometry(0.018, 0.018, 0.05, 16), 0, ay, hz + 0.012)];
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) arm.push(placed(new THREE.CylinderGeometry(0.006, 0.006, 0.006, 8), sx * 0.035, ay + sy * 0.075, 0.016, Math.PI / 2));   // wall bolts
+  base.add(merged(arm, M.steel));
+  base.add(head);
+}
+// The guns the store lists: WS_GUN_ORDER plus any other gun on the safe room's bench (layout items), minus WS_SKIP.
+function wsGunList(room) {
+  const out = WORKSHOP.guns; out.length = 0;
+  const add = (k) => { if (k && WEAPON_DEFS[k] && !WS_SKIP.includes(k) && !out.includes(k)) out.push(k); };
+  for (const k of WS_GUN_ORDER) add(k);
+  for (const s of (room && room.layout && room.layout.items) || []) if (s.type && !s.type.startsWith('mag')) add(s.type);
+  if (WORKSHOP.sel !== 'supplies' && !out.includes(WORKSHOP.sel)) WORKSHOP.sel = out[0] || 'supplies';
+}
+// Activation hook (activateRoom): the computer moves to this safe room, with a collider on its head.
+function wsRoomActivated(room) {
+  const W = WORKSHOP, C = CONFIG.workshop;
+  if (!W.on || room.kind !== 'safe' || !W.base) return;
+  wsGunList(room);
+  const b = W.base;
+  b.position.set(C.x, 0, room.d / 2); b.rotation.set(0, Math.PI, 0);   // front wall, facing into the room
+  room.group.add(b);
+  b.updateMatrix(); W.head.updateMatrix(); W.screen.updateMatrix();
+  b.updateMatrixWorld(true);
+  W.room = room; W.dirty = true;
+  // collider: the housing (room space = the base's frame times the head's)
+  _wsv.m.multiplyMatrices(b.matrix, W.head.matrix);
+  _wsv.m.decompose(_wsv.p, _wsv.q, _wsv.s);
+  _wsv.l.set(0, 0, -0.03).applyMatrix4(_wsv.m);
+  const col = world.createCollider(RAPIER.ColliderDesc.cuboid(C.w / 2 + 0.06, C.h / 2 + 0.04, 0.035).setTranslation(_wsv.l.x, _wsv.l.y, _wsv.l.z)
+    .setRotation({ x: _wsv.q.x, y: _wsv.q.y, z: _wsv.q.z, w: _wsv.q.w })
+    .setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.static), room.body);
+  colliderInfo.set(col.handle, { room, kind: 'metal' });
+  room.colliderHandles.push(col.handle);
+  dirtyShadows();
+}
+function wsRoomUnloaded(room) { if (WORKSHOP.room === room) { WORKSHOP.room = null; WORKSHOP.awake = false; } }
+
+/* --- the store's actions ------------------------------------------------------ */
+function wsMsg(text) { const W = WORKSHOP; W.msg = text; W.msgT = performance.now() / 1000; W.msgLive = true; W.dirty = true; }
+function wsSelect(k) {
+  const W = WORKSHOP;
+  W.sel = k; W.dirty = true; wsSave();
+  wsMsg(k === 'supplies' ? 'Supplies: restocks for your wallet' : `${wsGunName(k)}: ${wsGunCal(k)}`);
+}
+function wsCat(k, c) { WORKSHOP.cat[k] = c; WORKSHOP.dirty = true; wsSave(); }
+// Rounds in your pouches (+ shells): a restock only charges when it adds something.
+function wsAmmoRounds() {
+  let n = inv.shells || 0;
+  for (const t in MAG_DEFS) { const a = inv[t]; if (a) for (let i = 0; i < a.length; i++) n += a[i]; }
+  return n;
+}
+function wsMagStats() {
+  let n = 0, full = 0;
+  for (const t in MAG_DEFS) { const a = inv[t]; if (!a) continue; n += a.length; for (let i = 0; i < a.length; i++) if (a[i] >= MAG_DEFS[t].capacity) full++; }
+  return [n, full];
+}
+// Runs the existing safe room restock for one category. Returns true if it changed anything.
+function wsRestock(id) {
+  const I = CONFIG.weapons.inventory, room = WORKSHOP.room;
+  if (id === 'ammo') {
+    const r0 = wsAmmoRounds(), p0 = props.length, keep = { frag: inv.frag, flash: inv.flash, med: inv.med }, old = {};
+    for (const t in MAG_DEFS) if (inv[t]) old[t] = inv[t].slice();
+    refillInventory();                                          // the safe room refill (magazines, shells, grenades, injectors) ...
+    Object.assign(inv, keep);                                   // ... only the ammunition part of it
+    for (const t in old) if (inv[t] && old[t].length > inv[t].length) inv[t] = inv[t].concat(old[t].slice(inv[t].length));   // never takes looted spares
+    if (room) {                                                 // the old RESTOCK also brought lost bench guns (and their magazines) back
+      const items = room.layout.items;
+      room.layout.items = (items || []).filter((s) => !NADE_DEFS[s.type]);
+      try { spawnSafeItems(room); } finally { room.layout.items = items; }
+      updateVisibility();
+    }
+    panel.dirty = true;
+    return wsAmmoRounds() > r0 || props.length > p0;
+  }
+  if (id === 'nades') {
+    const f0 = inv.frag, b0 = inv.flash, n0 = nadeCount('frag') + nadeCount('flash');
+    inv.frag = Math.max(inv.frag, I.frag ?? 2); inv.flash = Math.max(inv.flash, I.flash ?? 2);
+    if (room) {                                                 // the old RESTOCK's bench grenades (up to 3 of each)
+      const items = room.layout.items;
+      room.layout.items = (items || []).filter((s) => NADE_DEFS[s.type]);
+      try { spawnSafeItems(room); } finally { room.layout.items = items; }
+      updateVisibility();
+    }
+    panel.dirty = true;
+    return inv.frag > f0 || inv.flash > b0 || nadeCount('frag') + nadeCount('flash') > n0;
+  }
+  if (id === 'med') {
+    const m0 = inv.med;
+    inv.med = Math.max(inv.med, 2);                             // refillInventory's two injectors
+    panel.dirty = true;
+    return inv.med > m0;
+  }
+  return false;
+}
+function wsBuySupply(id) {
+  const s = WORKSHOP.supplies.find((q) => q.id === id);
+  if (!s) return false;
+  if (WALLET.money < s.price) { wsMsg(`Not enough money: ${s.name} costs ${fmtMoney(s.price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
+  if (!wsRestock(id)) { wsMsg(`${s.name}: already full, nothing charged`); return false; }
+  walletSpend(s.price);
+  wsMsg(`${s.name}: done, ${fmtMoney(s.price)} paid. ${fmtMoney(WALLET.money)} left`);
+  TERM.dirty = true;
+  return true;
+}
+function wsGunName(k) {
+  const I = WS_GUNS[k];
+  if (I) return I.name;
+  const L = (WEAPON_DEFS[k] && WEAPON_DEFS[k].label) || k, m = /^([.\d]+(?: mm| ACP| gauge)?)\s+(.*)$/.exec(L);
+  return m ? m[2] : L;
+}
+function wsGunCal(k) {
+  const I = WS_GUNS[k];
+  if (I) return I.cal;
+  const L = (WEAPON_DEFS[k] && WEAPON_DEFS[k].label) || '', m = /^([.\d]+(?: mm| ACP| gauge)?)\s/.exec(L);
+  return m ? m[1] : '—';
+}
+const wsTabs = (k) => { const G = WS_GUNS[k]; return G && G.slots.length ? G.slots : null; };   // + 'hardware' drawn after
+function wsCatOf(k) {
+  const t = wsTabs(k), c = WORKSHOP.cat[k];
+  return t && (t.includes(c) || c === 'hardware') ? c : t ? t[0] : null;
+}
+// Requirements: every id in it.requires owned; an add-on's base part (not hardware) must be fitted too for it to count.
+const wsReqOk = (it) => it.requires.every((id) => { const r = WORKSHOP.byId.get(id); return r && r.owned; });
+const wsMissing = (it) => it.requires.filter((id) => { const r = WORKSHOP.byId.get(id); return !r || !r.owned; }).map((id) => (WORKSHOP.byId.get(id) || { name: id }).name);
+// Counts toward the gun's stats: owned hardware, and owned + fitted parts whose requirements hold. Cosmetic: never (rule 10).
+function wsActive(it) {
+  if (it.cosmetic || !it.owned || !wsReqOk(it)) return false;
+  if (it.hw) return true;
+  if (!WORKSHOP.fitted.has(it.id)) return false;
+  return it.requires.every((id) => { const r = WORKSHOP.byId.get(id); return r.hw || WORKSHOP.fitted.has(id); });
+}
+// Base stats from the gun's own data (WEAPON_DEFS): impulse x pellets, spread, recoil, mass, flash; 0..100 (weight: WS_KG per kg).
+const WS_BASE = new Float64Array(WS_NS), WS_NOW = new Float64Array(WS_NS), WS_PRE = new Float64Array(WS_NS);
+function wsBaseStats(k, out) {
+  const d = WEAPON_DEFS[k], R = d.recoil || { kick: 0.6, climb: 5 }, pistol = d.cls === 'pistol', bolt = !!d.manual, m = d.mass || 1;
+  const imp = (d.impulse || 2.2) * (d.pellets || 1);
+  out[0] = clamp(imp / 6.5, 0.05, 1) * 100;                                  // damage
+  out[1] = clamp(100 - (d.spread || 0.002) * 20000, 5, 98);                  // accuracy
+  out[2] = clamp(imp * 8 + R.kick * 20 + R.climb * 1.5, 5, 98);              // recoil
+  out[3] = clamp(25 + m * 7 + (pistol ? 15 : 0), 5, 98);                     // sway (one hand on a pistol)
+  out[4] = clamp(100 - m * 10 - (bolt ? 10 : 0), 5, 98);                     // ADS speed
+  out[5] = clamp(82 - m * 7 - (bolt ? 15 : 0), 5, 98);                       // hip-fire accuracy
+  out[6] = pistol ? 80 : bolt ? 45 : 60;                                     // reload speed
+  out[7] = clamp(100 - m * 6, 5, 98);                                        // movement speed
+  out[WS_WT] = m * WS_KG;                                                    // weight
+  out[9] = clamp(imp * 14 * (d.sound === 'smg' && k === 'm4a1s' ? 0.55 : 1), 5, 98);   // sound (the M4A1-S carries its can)
+  out[10] = clamp((d.flash || 0.08) / 0.16 * 100 * (k === 'm4a1s' ? 0.4 : 1), 5, 98);  // muzzle flash
+  out[11] = clamp(15 + m * 2, 5, 98);                                        // visibility
+  return out;
+}
+function wsAddFx(out, it, sign) {
+  if (it.cosmetic || !it.fx) return;
+  WS_STATS.forEach(([key], i) => { const v = it.fx[key]; if (v) out[i] += sign * (i === WS_WT ? v * WS_KG : v); });
+}
+function wsStats(k, out) {
+  wsBaseStats(k, out);
+  for (const it of WS_ITEMS) if (it.gun === k && wsActive(it)) wsAddFx(out, it, 1);
+  return out;
+}
+const wsItemAt = (id) => (id && (id.startsWith('row:') || id.startsWith('act:')) ? WORKSHOP.byId.get(id.slice(4)) : null);
+// The part being previewed: under your finger / the dot, else the last one touched.
+function wsPreviewItem(k) {
+  const it = wsItemAt(WORKSHOP.hover) || WORKSHOP.byId.get(WORKSHOP.pick);
+  return it && it.gun === k ? it : null;
+}
+// Buy and fit (the store's own build; the gun in your hands is unchanged until each gun's attachment step).
+function wsBuyItem(id) {
+  const it = WORKSHOP.byId.get(id);
+  if (!it) return false;
+  WORKSHOP.pick = id;
+  if (it.owned) { wsMsg(`${it.name}: already yours`); return false; }
+  if (!wsReqOk(it)) { wsMsg(`${it.name}: needs ${wsMissing(it).join(', ')} first`); wsDeny(); return false; }
+  if (WALLET.money < it.price) { wsMsg(`Not enough money: ${it.name} costs ${fmtMoney(it.price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
+  walletSpend(it.price); it.owned = true;
+  if (it.model && !it.hw) wsFit(id, true);
+  wsSave();
+  wsMsg(`${it.name} bought for ${fmtMoney(it.price)}${it.hw ? '' : it.model ? ' and fitted' : '. Model coming: it fits in a later update'}`);
+  return true;
+}
+function wsFit(id, quiet = false) {
+  const W = WORKSHOP, it = W.byId.get(id);
+  if (!it || it.hw) return false;
+  W.pick = id;
+  if (!it.owned) { if (!quiet) wsMsg(`${it.name}: buy it first`); return false; }
+  if (!it.model) { if (!quiet) { wsMsg(`${it.name}: model coming, it can't be fitted yet`); wsDeny(); } return false; }
+  if (W.fitted.has(id)) {                                     // off, with whatever sits on it
+    W.fitted.delete(id);
+    for (const q of WS_ITEMS) if (q.requires.includes(id)) W.fitted.delete(q.id);
+    if (!quiet) wsMsg(`${it.name} removed`);
+  } else {
+    if (!wsReqOk(it)) { if (!quiet) wsMsg(`${it.name}: needs ${wsMissing(it).join(', ')}`); return false; }
+    const multi = (WS_GUNS[it.gun] && WS_GUNS[it.gun].multi) || [];
+    if (!it.addon && !multi.includes(it.cat)) for (const q of WS_ITEMS) if (q !== it && q.gun === it.gun && q.cat === it.cat && !q.addon && W.fitted.has(q.id)) wsFit(q.id, true);   // one per slot
+    W.fitted.add(id);
+    if (!quiet) wsMsg(`${it.name} fitted. Effects apply when fitted on the gun (with this gun's attachment step)`);
+  }
+  wsSave(); W.dirty = true;
+  return true;
+}
+
+/* --- drawing (the terminal's helpers, pointed at this canvas for the draw) ------ */
+const _wsSwap = { ctx: null, hits: null, hover: null, flashId: null, flashUntil: 0, confirm: null };
+function wsAsTerm(on) {
+  const T = TERM, W = WORKSHOP, S = _wsSwap;
+  if (on) {
+    S.ctx = T.ctx; S.hits = T.hits; S.hover = T.hover; S.flashId = T.flashId; S.flashUntil = T.flashUntil; S.confirm = T.confirm;
+    T.ctx = W.ctx; T.hits = W.hits; T.hover = W.hover; T.flashId = W.flashId; T.flashUntil = W.flashUntil; T.confirm = null;
+  } else {
+    T.ctx = S.ctx; T.hits = S.hits; T.hover = S.hover; T.flashId = S.flashId; T.flashUntil = S.flashUntil; T.confirm = S.confirm;
+    S.ctx = null; S.hits = null;
+  }
+}
+function wsDraw(now) {
+  const W = WORKSHOP, ctx = W.ctx, LW = WS_LW, LH = WS_LH;
+  W.hits.length = 0; W.lastDraw = now; W.dirty = false;
+  wsAsTerm(true);
+  try {
+    ctx.save();
+    ctx.setTransform(W.cv.width / LW, 0, 0, W.cv.height / LH, 0, 0);
+    ctx.fillStyle = TC.bg; ctx.fillRect(0, 0, LW, LH);
+    if (!W.awake) {
+      tText('GUNSMITH', LW / 2, LH / 2 - 30, 84, 'rgba(255, 196, 107, 0.38)', 'center', 700, TC.mono);
+      tText('Step closer to use', LW / 2, LH / 2 + 44, 30, 'rgba(196, 245, 226, 0.36)', 'center', 600, TC.sans);
+    } else {
+      // header: the name and your wallet
+      ctx.fillStyle = 'rgba(140, 255, 215, 0.07)'; ctx.fillRect(0, 0, LW, 64);
+      tText('GUNSMITH', 24, 33, 34, TC.hi, 'left', 700, TC.mono);
+      tText('Workshop  ·  banked points pay $1 each', 236, 33, 22, TC.dim, 'left', 600, TC.sans, 560);
+      tText('WALLET', LW - 250, 33, 18, TC.dim, 'right', 600);
+      tText(fmtMoney(WALLET.money), LW - 24, 33, 34, TC.ok, 'right', 700, TC.mono, 220);
+      wsDrawList(now);
+      if (W.sel === 'supplies') wsDrawSupplies(now); else wsDrawGun(W.sel, now);
+      // footer: the last thing a press did, or how to press
+      ctx.fillStyle = TC.line; ctx.fillRect(16, LH - 46, LW - 32, 1);
+      const fresh = now - W.msgT < 6;
+      tText(fresh ? W.msg : (renderer.xr.isPresenting ? 'Touch a button with your controller tip' : IS_TOUCH ? 'Aim at a button, tap Grab' : 'Aim at a button: E or click. Scroll: next gun'),
+        24, LH - 23, 21, fresh ? TC.hi : TC.dim, 'left', 600, TC.sans, LW - 48);
+    }
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';                      // scanlines and a light vignette, like the terminal
+    for (let y = 0; y < LH; y += 3) ctx.fillRect(0, y, LW, 1);
+    const g = ctx.createRadialGradient(LW / 2, LH / 2, LH * 0.45, LW / 2, LH / 2, LW * 0.66);
+    g.addColorStop(0, 'rgba(0, 0, 0, 0)'); g.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, LW, LH);
+    ctx.restore();
+  } finally { wsAsTerm(false); }
+  W.tex.needsUpdate = true;
+}
+// Left column: every gun by name, then SUPPLIES.
+function wsDrawList(now) {
+  const W = WORKSHOP, x = 16, w = 288, n = W.guns.length;
+  tHead('GUNS', x + 12, 92);
+  tText(`${n}`, x + w - 8, 92, 19, TC.dim, 'right', 600, TC.mono);
+  const top = 108, room = 452, h = Math.min(66, (room - (n - 1) * 8) / Math.max(1, n));
+  W.guns.forEach((k, i) => {
+    const y = top + i * (h + 8);
+    tBtn(`gun:${k}`, x, y, w, h, wsGunName(k), { sel: W.sel === k, size: h > 54 ? 25 : 21, fn: () => wsSelect(k) });
+  });
+  const ctx = W.ctx;
+  ctx.fillStyle = TC.line; ctx.fillRect(x, 578, w, 1);
+  tBtn('supplies', x, 590, w, 74, 'SUPPLIES', { sel: W.sel === 'supplies', size: 27, fn: () => wsSelect('supplies') });
+}
+// A gun: name, caliber, build identity, its slots (+ HARDWARE) with the parts, and the 12 stats.
+const WS_AX = 320, WS_AW = 580, WS_SX = 914, WS_SW = WS_LW - 16 - 914;   // the parts column and the stats column
+function wsDrawGun(k, now) {
+  const W = WORKSHOP, def = WEAPON_DEFS[k], G = WS_GUNS[k], ctx = W.ctx, x0 = WS_AX, pw = WS_AW;
+  if (!def) return;
+  tText(wsGunName(k), x0, 96, 36, TC.text, 'left', 700, TC.sans, 330);
+  tText(wsGunCal(k), x0 + pw, 98, 21, TC.hi, 'right', 600, TC.mono, 240);
+  const modern = k !== 'akmn' || (W.byId.get('akmn.kit') || {}).owned;
+  tText(G ? (modern ? G.identity : G.identity0) : `${def.capacity}-round magazine`, x0, 134, 18, TC.dim, 'left', 600, TC.sans, pw);
+  const tabs = wsTabs(k), cat = wsCatOf(k);
+  if (!tabs) {
+    tBox(x0, 160, pw, 490, 'rgba(140, 255, 215, 0.02)', TC.line);
+    tText('ATTACHMENTS COMING', x0 + pw / 2, 380, 30, 'rgba(93, 138, 124, 0.9)', 'center', 700, TC.sans, pw - 40);
+    tText('This gun is not in the attachment brief yet. Its stats are on the right.', x0 + pw / 2, 420, 19, TC.dim, 'center', 600, TC.sans, pw - 40);
+  } else {
+    // slot tabs, two rows of 5; a dot = something of yours is in that slot
+    const all = tabs.length + 1, tw = (pw - 4 * 8) / 5, th = 42;
+    for (let i = 0; i < all; i++) {
+      const ck = i < tabs.length ? tabs[i] : 'hardware', r = i < 5 ? 0 : 1, c = r ? i - 5 : i, x = x0 + c * (tw + 8), y = 156 + r * (th + 8);
+      tBtn(`cat:${ck}`, x, y, tw, th, WS_CAT_NAME[ck].toUpperCase(), { sel: cat === ck, size: 16, fn: () => wsCat(k, ck) });
+      let mine = false;
+      for (const it of WS_ITEMS) if (it.gun === k && (ck === 'hardware' ? it.hw : it.cat === ck) && (it.hw ? it.owned : W.fitted.has(it.id))) { mine = true; break; }
+      if (mine) { ctx.fillStyle = TC.ok; ctx.beginPath(); ctx.arc(x + tw - 10, y + 10, 4.5, 0, Math.PI * 2); ctx.fill(); }
+    }
+    const rows = WS_ITEMS.filter((it) => it.gun === k && (cat === 'hardware' ? it.hw : it.cat === cat));
+    tHead(cat === 'hardware' ? 'HARDWARE  ·  mounting parts: they enable, mostly weight' : `${WS_CAT_NAME[cat].toUpperCase()}  ·  factory: ${(G.factory || {})[cat] || '—'}`, x0, 272);
+    const rh = 66;
+    rows.slice(0, WS_SLOTS_MAX).forEach((it, i) => wsItemRow(it, x0, 288 + i * (rh + 6), pw, rh));
+    if (!rows.length) tText('Nothing for this slot yet', x0 + 12, 320, 19, TC.dim, 'left', 600);
+  }
+  wsDrawStats(k);
+}
+// One part: name, its state (needs / model coming / cosmetic / description), price, and BUY / FIT / REMOVE.
+function wsItemRow(it, x, y, w, h) {
+  const W = WORKSHOP, req = wsReqOk(it), fit = W.fitted.has(it.id), pick = W.pick === it.id, hov = W.hover === `row:${it.id}`;
+  tBox(x, y, w, h, fit || (it.hw && it.owned) ? TC.hiBg : hov || pick ? 'rgba(140, 255, 215, 0.12)' : TC.faint, fit || pick ? TC.hi : hov ? TC.text : TC.line);
+  const bw = 112, tx = x + 14, tw = w - bw - 120;
+  tText(it.name, tx, y + 21, 21, req ? TC.text : TC.dim, 'left', 700, TC.sans, tw);
+  const sub = !req ? `Needs: ${wsMissing(it).join(', ')}` : it.cosmetic ? (it.desc.startsWith('Cosmetic') ? it.desc : `Cosmetic  ·  ${it.desc}`) : !it.model && !it.hw ? `Model coming  ·  ${it.desc}` : it.desc;
+  tText(sub, tx, y + 47, 16, !req ? TC.warn : TC.dim, 'left', 600, TC.sans, tw);
+  tText(it.owned ? (it.hw ? 'OWNED' : fit ? 'FITTED' : 'OWNED') : fmtMoney(it.price), x + w - bw - 18, y + h / 2 + 1, it.owned ? 16 : 22, it.owned ? TC.ok : req && WALLET.money >= it.price ? TC.hi : TC.warn, 'right', 700, TC.mono, 100);
+  const bx = x + w - bw - 8, by = y + 9, bh = h - 18;
+  if (!it.owned) tBtn(`act:${it.id}`, bx, by, bw, bh, req ? 'BUY' : 'LOCKED', { size: 19, disabled: !req, fn: () => wsBuyItem(it.id) });
+  else if (it.hw) tBtn(`act:${it.id}`, bx, by, bw, bh, 'INSTALLED', { size: 15, disabled: true });
+  else if (!it.model) tBtn(`act:${it.id}`, bx, by, bw, bh, 'MODEL COMING', { size: 13, disabled: true });
+  else tBtn(`act:${it.id}`, bx, by, bw, bh, fit ? 'REMOVE' : 'FIT', { size: 19, sel: fit, fn: () => wsFit(it.id) });
+  if (!it.owned && !req) W.hits.push({ id: `act:${it.id}`, x: bx, y: by, w: bw, h: bh, fn: () => wsBuyItem(it.id) });   // LOCKED still says why
+  W.hits.push({ id: `row:${it.id}`, x, y, w, h, fn: () => { W.pick = it.id; W.dirty = true; wsMsg(`${it.name}: ${it.desc}`); } });
+}
+// The 12 stats as bars: the owned + fitted build, and the part under your finger as green (better) / red (worse) deltas.
+function wsDrawStats(k) {
+  const W = WORKSHOP, ctx = W.ctx, x = WS_SX, w = WS_SW;
+  tBox(x, 76, w, 586, TC.faint, TC.line);
+  tHead('STATS  ·  THIS BUILD', x + 14, 96);
+  wsStats(k, WS_NOW);
+  const pv = wsPreviewItem(k);
+  let on = false;
+  if (pv) {
+    WS_PRE.set(WS_NOW);
+    on = wsActive(pv);
+    if (on) wsAddFx(WS_PRE, pv, -1);                           // fitted: what taking it off does
+    else wsAddFx(WS_PRE, pv, 1);                              // what fitting it does
+  }
+  const lx = x + 14, bx = x + 150, bw = w - 150 - 64, rh = 40;
+  WS_STATS.forEach(([key, label, better], i) => {
+    const y = 114 + i * rh, v = WS_NOW[i];
+    tText(label, lx, y + 14, 17, TC.text, 'left', 600, TC.sans, 132);
+    tBox(bx, y + 6, bw, 16, 'rgba(140, 255, 215, 0.05)', null, 3);
+    const v0 = clamp(v, 0, 100);
+    ctx.fillStyle = 'rgba(196, 245, 226, 0.7)'; ctx.fillRect(bx, y + 7, bw * v0 / 100, 14);
+    let val = i === WS_WT ? `${(v / WS_KG).toFixed(2)} kg` : `${Math.round(v)}`;
+    if (pv) {
+      const d = WS_PRE[i] - v;
+      if (Math.abs(d) > 0.05) {
+        const good = d * better > 0, a = clamp(Math.min(v, WS_PRE[i]), 0, 100), b = clamp(Math.max(v, WS_PRE[i]), 0, 100);
+        ctx.fillStyle = good ? 'rgba(147, 255, 184, 0.85)' : 'rgba(255, 132, 102, 0.9)';
+        ctx.fillRect(bx + bw * a / 100, y + 7, Math.max(2, bw * (b - a) / 100), 14);
+        val = i === WS_WT ? `${d > 0 ? '+' : '−'}${Math.abs(d / WS_KG).toFixed(2)}` : `${d > 0 ? '+' : '−'}${Math.abs(d) < 1 ? Math.abs(d).toFixed(1) : Math.round(Math.abs(d))}`;
+        tText(val, x + w - 12, y + 14, 16, good ? TC.ok : TC.warn, 'right', 700, TC.mono, 58);
+        return;
+      }
+    }
+    tText(val, x + w - 12, y + 14, 16, TC.dim, 'right', 600, TC.mono, 58);
+  });
+  const fy = 114 + WS_NS * rh + 8;
+  tText(pv ? `${on ? 'Remove' : 'Fit'}: ${pv.name}${pv.cosmetic ? ' (cosmetic: no effect)' : ''}` : 'Touch a part to preview it', lx, fy, 17, pv ? TC.hi : TC.dim, 'left', 600, TC.sans, w - 28);
+  tText('Effects apply when fitted on the gun (coming with each gun\'s step)', lx, fy + 24, 15, TC.dim, 'left', 600, TC.sans, w - 28);
+}
+// SUPPLIES: the restocks, each with a price.
+function wsDrawSupplies(now) {
+  const W = WORKSHOP, x0 = 320, pw = WS_LW - 16 - 320, I = CONFIG.weapons.inventory;
+  tText('Supplies', x0, 100, 38, TC.text, 'left', 700, TC.sans, 560);
+  tText('Restocks cost money from your wallet. Entering the safe room still refills you as before.', x0, 140, 20, TC.dim, 'left', 600, TC.sans, pw);
+  const [mags, full] = wsMagStats();
+  const status = {
+    ammo: `${mags} magazines in your pouches, ${full} full${inv.shells ? `  ·  ${inv.shells} shells` : ''}`,
+    nades: `Pouches: frag ${inv.frag} / ${I.frag ?? 2}, flashbang ${inv.flash} / ${I.flash ?? 2}  ·  bench: ${nadeCount('frag')} + ${nadeCount('flash')}`,
+    med: `Auto-injectors ${inv.med} / 2`
+  };
+  W.supplies.forEach((s, i) => {
+    const y = 166 + i * 166, h = 150, rich = WALLET.money >= s.price;
+    tBox(x0, y, pw, h, TC.faint, TC.line);
+    tText(s.name, x0 + 22, y + 34, 30, TC.text, 'left', 700, TC.sans, pw - 420);
+    tText(s.desc, x0 + 22, y + 74, 20, TC.dim, 'left', 600, TC.sans, pw - 420);
+    tText(status[s.id] || '', x0 + 22, y + 112, 20, TC.text, 'left', 600, TC.mono, pw - 420);
+    tText(fmtMoney(s.price), x0 + pw - 250, y + 46, 38, rich ? TC.hi : TC.warn, 'right', 700, TC.mono, 160);
+    tText(rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`, x0 + pw - 250, y + 92, 18, TC.warn, 'right', 600, TC.sans, 200);
+    tBtn(`sup:${s.id}`, x0 + pw - 226, y + 24, 204, h - 48, 'BUY', { size: 30, sel: rich, fn: () => wsBuySupply(s.id) });
+  });
+}
+
+/* --- input + per frame (the terminal's touch code, for this screen) ------------- */
+function wsHitAt(u, v) {
+  for (const b of WORKSHOP.hits) if (u >= b.x && u <= b.x + b.w && v >= b.y && v <= b.y + b.h) return b.id;
+  return null;
+}
+function wsClick(f0 = 2300, f1 = 2100) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !WORKSHOP.screen) return;
+  WORKSHOP.screen.getWorldPosition(_wsv.c);
+  soundAt(_wsv.c, () => { const t = audio.ctx.currentTime + 0.002; tone(t, f0, f1, 0.022, 0.035, 'square', 0.04); }, { occlude: false });
+}
+function wsDeny() { wsClick(420, 300); }
+function wsPress(u, v, hand) {
+  const W = WORKSHOP, b = W.hits.find((h) => u >= h.x && u <= h.x + h.w && v >= h.y && v <= h.y + h.h);
+  if (!b) return;
+  audioUnlock();
+  W.flashId = b.id; W.flashUntil = performance.now() / 1000 + 0.14;
+  try { b.fn(); } catch (err) { console.warn('workshop action failed', err); }
+  wsClick();
+  if (hand) pulse(hand, 0.45, 18);
+  W.dirty = true;
+}
+// Desktop / phone: E, Grab or a click while the dot is on the screen (termDeskPress asks this first). True = it took the press.
+function wsDeskPress() {
+  const W = WORKSHOP;
+  if (!W.on || renderer.xr.isPresenting || !W.deskHit || !W.awake) return false;
+  wsPress(W.deskHit.u, W.deskHit.v, null);
+  return true;
+}
+// Desktop: the scroll wheel steps through the list while the dot is on the screen.
+window.addEventListener('wheel', (ev) => {
+  const W = WORKSHOP;
+  if (!W.on || renderer.xr.isPresenting || !W.deskHit || !W.awake || Math.abs(ev.deltaY) < 4) return;
+  const now = performance.now() / 1000;
+  if (now - W.wheelT < 0.18) return;
+  W.wheelT = now;
+  const n = W.guns.length + 1, i = W.sel === 'supplies' ? W.guns.length : Math.max(0, W.guns.indexOf(W.sel));
+  const j = (i + (ev.deltaY > 0 ? 1 : -1) + n) % n;
+  wsSelect(j === W.guns.length ? 'supplies' : W.guns[j]);
+  wsClick();
+}, { passive: true });
+function wsUpdate(dt) {
+  const W = WORKSHOP;
+  W.deskHit = null;
+  if (!W.on) return;
+  const s = W.screen, C = CONFIG.workshop, T = CONFIG.terminal;
+  if (!s || !W.room || !W.room.active || W.base.parent !== W.room.group) return;
+  const now = performance.now() / 1000;
+  headWorld(_wsv.h); s.getWorldPosition(_wsv.c);
+  const awake = W.room.group.visible && _wsv.h.distanceTo(_wsv.c) < C.wake;
+  if (awake !== W.awake) { W.awake = awake; W.dirty = true; if (!awake) W.hover = null; }
+  let hover = null, show = false, cx = 0, cy = 0;
+  if (awake) {
+    if (renderer.xr.isPresenting) {
+      // A real touchscreen: the tip of the controller has to reach the glass.
+      for (const h of vrHands) {
+        const ctrl = h.ctrl;
+        if (!ctrl || !ctrl.userData.gamepad || h.door) continue;
+        let st = W.hands.get(h);
+        if (!st) W.hands.set(h, st = { armed: true, id: null });
+        ctrl.getWorldPosition(_wsv.p); ctrl.getWorldQuaternion(_wsv.q);
+        _wsv.d.set(0, 0, -1).applyQuaternion(_wsv.q);
+        _wsv.l.copy(_wsv.p).addScaledVector(_wsv.d, T.tip);
+        s.worldToLocal(_wsv.l);
+        const inside = Math.abs(_wsv.l.x) < C.w / 2 && Math.abs(_wsv.l.y) < C.h / 2 && _wsv.l.z > -0.06;
+        if (inside && _wsv.l.z < T.hover) {
+          const u = (_wsv.l.x / C.w + 0.5) * WS_LW, v = (0.5 - _wsv.l.y / C.h) * WS_LH;
+          const id = wsHitAt(u, v);
+          if (id !== st.id) { st.id = id; if (id) pulse(h, 0.1, 8); }
+          if (!show) { hover = id; show = true; cx = _wsv.l.x; cy = _wsv.l.y; }
+          if (_wsv.l.z < T.touch && st.armed) { st.armed = false; wsPress(u, v, h); }
+        } else st.id = null;
+        if (!inside || _wsv.l.z > T.rearm) st.armed = true;
+      }
+    } else {
+      // The dot in the middle of the view, within reach.
+      camera.getWorldPosition(_wsv.o); camera.getWorldDirection(_wsv.d);
+      _wsv.m.copy(s.matrixWorld).invert();
+      _wsv.o.applyMatrix4(_wsv.m); _wsv.d.transformDirection(_wsv.m);
+      if (_wsv.d.z < -1e-3) {
+        const t = -_wsv.o.z / _wsv.d.z, x = _wsv.o.x + _wsv.d.x * t, y = _wsv.o.y + _wsv.d.y * t;
+        if (t > 0 && t < C.reach && Math.abs(x) < C.w / 2 && Math.abs(y) < C.h / 2) {
+          const u = (x / C.w + 0.5) * WS_LW, v = (0.5 - y / C.h) * WS_LH;
+          if (!W.deskHitO) W.deskHitO = { u: 0, v: 0 };
+          W.deskHitO.u = u; W.deskHitO.v = v; W.deskHit = W.deskHitO;
+          hover = wsHitAt(u, v); show = true; cx = x; cy = y;
+          reticle.classList.toggle('on', !!hover);
+          if (!W.deskHinted) { W.deskHinted = true; toast(IS_TOUCH ? 'Gunsmith: aim the dot at a button, tap Grab' : 'Gunsmith: aim the dot at a button, press E or click. Scroll: next gun', 2600); }
+        }
+      }
+    }
+  }
+  W.cursor.visible = show;
+  if (show) W.cursor.position.set(cx, cy, 0.0015);
+  if (hover !== W.hover) { W.hover = hover; W.dirty = true; }
+  if (W.flashId && now > W.flashUntil) { W.flashId = null; W.dirty = true; }
+  if (W.msgLive && now - W.msgT > 6) { W.msgLive = false; W.dirty = true; }
+  // the wallet or your pouches changed (banking, a magazine taken, a grenade thrown): redraw, checked a few times a second
+  if (W.awake && now - W.lastCheck > C.check) {
+    W.lastCheck = now;
+    const a = WALLET.money, b = wsAmmoRounds(), c = inv.frag * 10000 + inv.flash * 100 + inv.med;
+    if (a !== W.sigA || b !== W.sigB || c !== W.sigC) { W.sigA = a; W.sigB = b; W.sigC = c; W.dirty = true; }
+  }
+  if (W.dirty) wsDraw(now);
 }
 
 /* ============================================================================
@@ -30770,6 +31509,7 @@ function tick(timeMs) {
   clothFoley(dt);        // step 86: your clothes and kit (crouch settle, getting up, a hard pivot, a fast arm)
   rigTick(dt);           // step 79: pouches, leg holster, arm pouch, the sling anchor and the torso capsules follow the bones
   termUpdate(dt);        // step 11: the safe room terminal (touch / aim, redraw only on change)
+  wsUpdate(dt);          // the gunsmith workshop computer (the store; same touch / aim, redraw only on change)
   profMark('stream');
   enemiesUpdate(dtW, tW, dt, t);   // step 7: sight, decisions, movement, pose, his shots; your health
   loopUpdate(dtW);       // step 9: director stress
@@ -32056,6 +32796,7 @@ function freeItemHand(h, it, p, P, Q) {
     await buildKit();
     polishKit();                                 // step 10: blood decals, haze, motes, contact shadows
     buildTerminalKit();                          // step 11: terminal enclosure (kit), screen and cursor
+    try { wsBuild(); } catch (e) { console.warn('gunsmith workshop computer not built', e); WORKSHOP.on = false; }
     watchBuild();                                // step 57: the watch and its mod menu
     nightKit();                                  // step 11: weapon-light lens glows (pool of 3)
     handsBuild();                                // step 13: two skinned hands + sleeves
@@ -32140,7 +32881,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, WORKSHOP, WALLET, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory };
 </script>
 </body>
 </html>
