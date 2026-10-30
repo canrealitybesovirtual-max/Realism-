@@ -2136,6 +2136,15 @@ const CONFIG = {
     min: 0.6, max: 1.8,        // exposure multiplier limits
     kind: { safe: 1.1, stair: 0.85, hall: 0.95, range: 0.95 }   // light level by room (x the fill: night, fixShare)
   },
+  // Step 98: one gloved hand look (HANDLOOK, ?handlook=off = the old look). Your own hands wear a glove made to match
+  // the viewmodel gloves the gun hands use (sage knit back, dark grey leather palm and finger pads, stitched seams, a
+  // dark elastic cuff), gloves on by default (the locker still takes them off: then guns keep your own bare hands too),
+  // and the fitted gun hands are drawn a little smaller (scaled about the grip contact, then re-seated on the gun).
+  handLook: {
+    on: true,
+    vmhScale: 0.9,             // the viewmodel gun hands' size (wrist to middle fingertip 22.5 cm in the packs -> 20.3 cm)
+    procScale: 1.0             // your own hand (20.2 cm wrist joint to middle fingertip: already the size of the scaled gun hands)
+  },
   light: {
     spot: 22,           // candela-ish, physically based (decay 2)
     rect: 38,           // RectAreaLight luminance
@@ -13499,8 +13508,39 @@ function nadeShift(dx, dz, dy) {
 // Where a held item sits in the hand: the same frame a pistol grip uses (the hand model is
 // posed around it from HAND_DATA.grips.pistol / .shell), so what you hold sits in the palm you see.
 const HOLD = {};
+/* Step 98: attachments in the hand. Each part sits where a pistol grip would (its centre ATT_C0 + d, hand-root space
+ * of the drawn hand), long axis up the fist (turned -90 degrees plus the grip's 0.36 rad rake about x, after r[2]
+ * about the part's own long axis), and the fingers close round it (itemContact, GC_WRAP.item.att). Suppressor: a fist
+ * round the can. Light / laser: the body in the fingers, thumb along its side, the rail clamp turned out of the palm
+ * (clear). Offsets solved against the hand's contact (palm on the part, no skin in it). ?handlook=off = the old hold. */
+const ATT_C0 = [0, -0.0066, 0.0045];                               // where a pistol magazine's middle sits in the fist (holdPose 'pistol')
+const ATT_HOLD = {                                                  // c: how closed the fingers start (-1 = as round a pistol grip)
+  'att:sup:b': { d: [-0.012, -0.025, 0], r: [-2.0058, 0, 0], c: -1 },
+  'att:sup:s': { d: [-0.0075, -0.02, -0.006], r: [-1.9308, 0, 0], c: -1 },
+  'att:light': { d: [-0.024, 0.01, 0.006], r: [-1.7808, 0, 1.5708], c: 0.55 },
+  'att:laser': { d: [-0.009, 0, -0.0105], r: [-2.0808, 0, 3.1416], c: -1 }
+};
+const ATT_POSE = { thumb: 0.7 };                                    // the thumb starts this closed
+function attHandPose(h, it) {
+  const A = ATT_HOLD[attKey(it)], c = A ? A.c : -1;
+  if (c < 0) { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); return; }   // as round a pistol grip
+  for (let k = 1; k < 5; k++) setFinger(h, k, lerpPose(HPOSE.relax[k], HPOSE.fist[k], c));
+  setFinger(h, 0, lerpPose(HPOSE.thumbRest, HPOSE.fist[0], ATT_POSE.thumb));
+}
+function attKey(it) { return it.type === 'sup' ? 'att:sup:' + (it.big ? 'b' : 's') : 'att:' + it.sub; }
+function attHold(key) {
+  const A = ATT_HOLD[key], q = new THREE.Quaternion().setFromEuler(new THREE.Euler(A.r[0], A.r[1], A.r[2], 'XYZ'));
+  const c = CONTACT.clouds.get(key), o = new THREE.Vector3();
+  if (c) {                                                          // the part's middle: its surface cloud's box
+    const b = new THREE.Box3();
+    for (const G of c.groups) for (let i = 0; i < G.pts.length; i += 3) b.expandByPoint(o.set(G.pts[i], G.pts[i + 1], G.pts[i + 2]).applyMatrix4(G.rest));
+    b.getCenter(o);
+  }
+  return { p: new THREE.Vector3(ATT_C0[0] + A.d[0], ATT_C0[1] + A.d[1], ATT_C0[2] + A.d[2]).sub(o.applyQuaternion(q)), q };
+}
 function holdPose(it) {
-  const key = it.kind === 'mag' ? (MAG_DEFS[it.type].hold || it.type) : it.kind;
+  const key = it.kind === 'mag' ? (MAG_DEFS[it.type].hold || it.type) : it.kind === 'att' && HANDLOOK.on ? attKey(it) : it.kind;
+  if (!HOLD[key] && ATT_HOLD[key]) HOLD[key] = attHold(key);       // step 98: attachments, each its own hold
   if (!HOLD[key]) {
     const q = new THREE.Quaternion();
     let pos;
@@ -14197,7 +14237,7 @@ function gcSolve(h, A, ents, wrapMask, skipMask, lock = null, thumb = null) {
 const GC_WRAP = {
   primary: 1 | 4 | 8 | 16, support: 2 | 4 | 8 | 16, vfg: 2 | 4 | 8 | 16, rack: 1 | 2 | 4,
   pistolSup: 0, pistolSupHand: 2 | 4 | 8 | 16,                    // step 26.1: wraps once it can feel the firing hand
-  item: { mag: 1 | 2 | 4 | 8 | 16, light: 1 | 2 | 4 | 8 | 16, nade: 2 | 4 | 8 | 16, shell: 1 | 2 | 4 }
+  item: { mag: 1 | 2 | 4 | 8 | 16, light: 1 | 2 | 4 | 8 | 16, nade: 2 | 4 | 8 | 16, shell: 1 | 2 | 4, att: 1 | 2 | 4 | 8 | 16 }
 };
 const GC_one4 = new THREE.Matrix4();
 function gcKeyTgt(h, skipMask) { let k = ''; for (let f = 0; f < 5; f++) if (!(skipMask & (1 << f))) for (let j = 0; j < 4; j++) k += Math.round(h.tgt[f * 4 + j] * 250) + ','; return k; }
@@ -14340,7 +14380,7 @@ function thumbToCatch(h, g, P, Q) {
 const GC_IM = new THREE.Matrix4();
 function itemContact(h, it, P, Q) {
   if (!GUNPHYS.contact || !HANDS.ready || (it.blend || 0) > 0.05) return;
-  const ck = it.kind === 'mag' ? 'mag:' + it.type : it.kind === 'nade' ? 'nade:' + it.type : it.kind;
+  const ck = it.kind === 'att' ? attKey(it) : it.kind === 'mag' ? 'mag:' + it.type : it.kind === 'nade' ? 'nade:' + it.type : it.kind;
   const cloud = CONTACT.clouds.get(ck), wrap = GC_WRAP.item[it.kind];
   if (!cloud || wrap === undefined) return;
   const key = `i|${h.left ? 1 : 0}|${ck}|${wrap}|` + gcKeyTgt(h, 0);
@@ -14645,7 +14685,7 @@ function itemGrab(hand, p) {
   hand.hist.length = 0; hand.hasPrev = false;
   setKinematic(p);
   startBlend(it);
-  if (it.kind !== 'nade') freeGrab(hand, p, 'item');   // step 65
+  if (it.kind !== 'nade' && !(it.kind === 'att' && HANDLOOK.on)) freeGrab(hand, p, 'item');   // step 65 (step 98: an attachment takes its fitted hold)
   pulse(hand, 0.2, 18);
 }
 // Step 30: magazine strip. Distance from a hand (world) to the part of the seated magazine that sticks
@@ -16743,9 +16783,10 @@ function wbMakeAtt(sub, big = true) {
   const K = wbKit();
   if (sub === 'sup') {                                                // step 78
     const m = K.sup(big);
-    const item = { kind: 'att', type: 'sup', sub, label: big ? 'rifle suppressor' : 'pistol suppressor', hook: null, stuck: null, gun: null, lamp: null };
+    const item = { kind: 'att', type: 'sup', sub, big, label: big ? 'rifle suppressor' : 'pistol suppressor', hook: null, stuck: null, gun: null, lamp: null };
     const p = makeItem(m.g, item, { mass: big ? 0.5 : 0.3, half: [m.R, m.R, m.L / 2], center: new THREE.Vector3(0, 0, -m.L / 2), restitution: 0.1 });
     m.g.userData.att = true;
+    if (GUNPHYS.contact && HANDLOOK.on) contactCloud(attKey(item), m.g, null);   // step 98: fingers close round it
     return p;
   }
   const m = sub === 'light' ? K.light() : K.laser();
@@ -16753,6 +16794,7 @@ function wbMakeAtt(sub, big = true) {
   const half = sub === 'light' ? [0.016, 0.02, 0.044] : [0.018, 0.02, 0.036];
   const p = makeItem(m.g, item, { mass: sub === 'light' ? 0.13 : 0.1, half, center: new THREE.Vector3(0, -0.02, sub === 'light' ? -0.04 : -0.01), restitution: 0.1 });
   m.g.userData.att = true;
+  if (GUNPHYS.contact && HANDLOOK.on) contactCloud(attKey(item), m.g, null);   // step 98
   return p;
 }
 // Called when the safe room is built.
@@ -17153,8 +17195,13 @@ function wbUpdate() {
  *  PERFORMANCE: changing clothes recompiles the shirt / trouser shader once (in
  *  the safe room); gloves are their own program, built on first use.
  * ========================================================================= */
-const WEAR = { gloves: false, uniform: 'black', key: 'cqc.wear.v1', room: null, items: [], camo: null, built: false };
-try { const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null'); if (o) { WEAR.gloves = !!o.gloves; if (['black', 'fsb', 'ranger'].includes(o.uniform)) WEAR.uniform = o.uniform; } } catch (e) { /* defaults */ }
+// Step 98: one gloved hand look (CONFIG.handLook). Gloves on by default: the old saves stored gloves: false for
+// everyone who never opened the locker, so the step 98 choice is kept apart (gloves98) and starts on.
+const HANDLOOK = { on: !!(CONFIG.handLook && CONFIG.handLook.on) && !/[?&]handlook=off\b/.test(location.search) };
+HANDLOOK.vmhScale = HANDLOOK.on ? clamp(CONFIG.handLook.vmhScale || 1, 0.7, 1.2) : 1;
+HANDLOOK.procScale = HANDLOOK.on ? clamp(CONFIG.handLook.procScale || 1, 0.8, 1.2) : 1;
+const WEAR = { gloves: HANDLOOK.on, uniform: 'black', key: 'cqc.wear.v1', room: null, items: [], camo: null, built: false };
+try { const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null'); if (o) { WEAR.gloves = HANDLOOK.on ? o.gloves98 !== false : !!o.gloves; if (['black', 'fsb', 'ranger'].includes(o.uniform)) WEAR.uniform = o.uniform; } } catch (e) { /* defaults */ }
 const UNIFORMS = {
   black: { label: 'black combat uniform', shirt: 0x101113, pants: 0x2c2d31, sleeve: 0x0f1012, map: false },
   fsb: { label: 'FSB camouflage', shirt: 0xffffff, pants: 0xffffff, sleeve: 0x3a4630, map: true },
@@ -17195,7 +17242,55 @@ float hSkin = 0.0, rSkin = 0.0, nailM = 0.0;
   col = mix(col, col * 1.6 + vec3(0.012), sc * 0.5);
   diffuseColor.rgb = col;
 }`;
+/* Step 98: the viewmodel packs' glove on your own hand, so empty hands, held magazines and the fitted gun hands are
+ * one pair of gloves. Colours and roughness sampled from the pack texture at the fitted hand's vertices (linear):
+ * sage knit back 0.0229 / 0.0241 / 0.0171 (roughness 0.54), dark grey synthetic leather palm, finger pads and tips
+ * 0.0092 / 0.0098 / 0.0082 (0.81), a dark elastic cuff 0.012 (0.82). Knit: fine pebble weave and knuckle folds;
+ * leather: grain, crease folds; a piped, stitched seam where palm meets back and along the cuff. */
+const HAND_GLSL_GLOVE98 = (wz) => `
+float hSkin = 0.0, rSkin = 0.0, nailM = 0.0;
+{
+  float fw = length(fwidth(vRest));
+  float fadeW = 1.0 - smoothstep(0.00025, 0.0008, fw), fadeP = 1.0 - smoothstep(0.00012, 0.00035, fw);
+  float dorsM = smoothstep(-0.1, 0.35, vSkin.z);
+  float lea = max(1.0 - dorsM, max(smoothstep(0.3, 0.7, vSkin.w) * (1.0 - smoothstep(0.2, 0.6, vSkin.z)), smoothstep(0.55, 0.9, vNail.y) * smoothstep(0.1, 0.5, vNail.x)));
+  float wv = hvn(vRest * 2600.0), wv2 = hvn(vRest * 900.0 + 3.1);           // knit: pebble weave
+  vec3 knit = vec3(0.0229, 0.0241, 0.0171) * (0.86 + 0.22 * wv2 + 0.12 * (wv - 0.5));
+  float gr = hvn(vRest * 1500.0), gr2 = hvn(vRest * 330.0 + 7.0);         // leather grain, wear
+  vec3 leather = vec3(0.0092, 0.0098, 0.0082) * (0.9 + 0.2 * gr2 + 0.1 * (gr - 0.5));
+  vec3 col = mix(knit, leather, lea);
+  rSkin += mix(-0.24, 0.03, lea) + (gr - 0.5) * 0.06 * lea;              // base roughness 0.8: knit 0.56, leather 0.83
+  hSkin += mix((wv - 0.5) * 0.000012, (gr - 0.5) * 0.000008, lea) * fadeP;
+  // piped seam with stitching where palm meets back
+  float sd = abs(lea - 0.5), seam = 1.0 - smoothstep(0.0, 0.16, sd);
+  float st = step(0.55, fract((vRest.z + vRest.x * 0.3) * 520.0));
+  col = mix(col, vec3(0.006, 0.0062, 0.0058), seam * 0.75);
+  col = mix(col, vec3(0.03, 0.031, 0.026), seam * st * 0.6 * fadeW);
+  hSkin += seam * 0.00012 * fadeW;
+  // knit folds over the knuckles (fewer as the hand closes), leather creases as it closes
+  float warp = hvn(vRest * 420.0) - 0.5;
+  float wr = pow(0.5 + 0.5 * cos(6.2831853 * (vSkin.x + warp * 0.9) / 1.05), 3.0);
+  hSkin -= wr * vSkin.y * (1.0 - lea) * (1.25 - vFlex) * 0.00012 * fadeW;
+  col *= 1.0 - wr * vSkin.y * (1.0 - lea) * 0.18;
+  float tc = vSkin.x + warp * 0.35, cr = exp(-tc * tc / 0.12), crA = vSkin.y * lea * (0.6 + 1.6 * vFlex);
+  col *= 1.0 - 0.3 * cr * crA;
+  hSkin -= cr * crA * 0.0002;
+  // elastic cuff before the sleeve: dark band, ribs round the wrist, a raised hem
+  float cz = smoothstep(${(wz - 0.034).toFixed(4)}, ${(wz - 0.03).toFixed(4)}, vRest.z);
+  float rib = 0.5 + 0.5 * cos(atan(vRest.y, vRest.x) * 46.0);
+  col = mix(col, vec3(0.012, 0.0125, 0.0118) * (0.9 + 0.2 * rib), cz);
+  rSkin = mix(rSkin, 0.02, cz);
+  hSkin += cz * rib * 0.00005 * fadeW;
+  float hem = exp(-pow((vRest.z - ${(wz - 0.032).toFixed(4)}) / 0.0012, 2.0));
+  hSkin += hem * 0.0003 * fadeW; col *= 1.0 - hem * 0.3;
+  float sc = smoothstep(0.62, 0.92, hvn(vRest * 160.0)) * lea;             // scuffed leather
+  col = mix(col, col * 1.5 + vec3(0.006), sc * 0.4);
+  diffuseColor.rgb = col;
+}`;
 function handsGloveShader(mat, flexU) {
+  if (HANDLOOK.on) {                                                // step 98: the viewmodel glove, own program
+    mat.roughness = 0.8; mat.sheen = 0.18; mat.sheenRoughness = 0.7; mat.sheenColor.setRGB(0.05, 0.052, 0.04);
+  }
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, HAND_DETAIL_U);
     sh.uniforms.uHandFlex = flexU || { value: new Float32Array(16) };
@@ -17204,13 +17299,20 @@ function handsGloveShader(mat, flexU) {
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRest = position; vNail = aNail; vSkin = aSkin; vFlex = clamp(uHandFlex[int(aJnt + 0.5)] / 1.3, 0.0, 1.0);');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>' + HAND_GLSL_FRAG)
-      .replace('#include <color_fragment>', '#include <color_fragment>' + HAND_GLSL_GLOVE)
+      .replace('#include <color_fragment>', '#include <color_fragment>' + (HANDLOOK.on ? HAND_GLSL_GLOVE98(HAND_DATA.rig.wrist.z) : HAND_GLSL_GLOVE))
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor + rSkin, 0.08, 1.0);')
       .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nnormal = handBump(-vViewPosition, normal, hSkin);');
   };
-  mat.customProgramCacheKey = () => 'hand-glove-1';
+  mat.customProgramCacheKey = () => HANDLOOK.on ? 'hand-glove-98' : 'hand-glove-1';
 }
-function wearSave() { try { localStorage.setItem(WEAR.key, JSON.stringify({ gloves: WEAR.gloves, uniform: WEAR.uniform })); } catch (e) { /* private mode */ } }
+function wearSave() {
+  try {
+    const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null') || {};
+    if (HANDLOOK.on) o.gloves98 = WEAR.gloves; else o.gloves = WEAR.gloves;   // step 98: each look keeps its own choice
+    o.uniform = WEAR.uniform;
+    localStorage.setItem(WEAR.key, JSON.stringify(o));
+  } catch (e) { /* private mode */ }
+}
 // FSB camouflage: a clean patch of the enemy uniform's own texture, mirrored so it tiles without seams.
 function wearCamo() {
   if (WEAR.camo !== null) return WEAR.camo;
@@ -18332,6 +18434,40 @@ function vmhSolveAll(B, g) {
   const L = !B.sides.L || (pist && oneHand) ? null : pist ? R : vmhSolve(B, 'L', g, reg.m).m;   // a pistol's support hand is cupped on the firing hand: it moves with it
   return { R, L, reg };
 }
+/* Step 98: the pack hands are 22.5 cm wrist joint to middle fingertip (a big man's hand, ~12 % over a real one and
+ * over your own 20.2 cm hand). Each fitted hand is scaled by HANDLOOK.vmhScale about the centre of its grip contact
+ * (where it touches the gun), then re-seated by vmhSolve (no skin in the gun, the contacts back on its surface). A
+ * pistol's cupped support hand shares the firing hand's matrix, so it scales with it. VMH_FIT98 keeps the solved
+ * results for the default scale (same code, solved offline); another scale is solved here once per gun type. */
+const VMH_FIT98 = {
+  akmn: { s: 0.9, R: [-0.88921, 0.03083, 0.13549, 0, 0.07319, 0.84989, 0.28692, 0, -0.11812, 0.29449, -0.84222, 0, -0.00309, -0.03273, -0.00474, 1], L: [-0.8743, 0.17805, 0.11787, 0, 0.19113, 0.87407, 0.09735, 0, -0.09522, 0.11961, -0.88692, 0, 0.00616, -0.06526, -0.03888, 1] },
+  m4a4: { s: 0.9, R: [-0.89657, 0.0362, 0.06968, 0, 0.03909, 0.89842, 0.03622, 0, -0.06811, 0.03911, -0.89657, 0, -0.00214, -0.03507, 0.00492, 1], L: [-0.89927, 0.03303, -0.01518, 0, 0.03295, 0.89938, 0.00481, 0, 0.01534, 0.00426, -0.89986, 0, -0.00751, -0.04065, 0.01967, 1] },
+  m4a1s: { s: 0.9, R: [-0.89785, -0.05693, 0.02481, 0, -0.05836, 0.89641, -0.05503, 0, -0.02124, -0.0565, -0.89798, 0, 0.00331, -0.02517, 0.00306, 1], L: [-0.89225, -0.02859, 0.11433, 0, -0.0454, 0.88912, -0.13195, 0, -0.10875, -0.13659, -0.8829, 0, 0.04197, 0.01939, 0.00421, 1] },
+  g17: { s: 0.9, R: [-0.89547, -0.06849, 0.0587, 0, -0.07532, 0.89001, -0.11051, 0, -0.04964, -0.11486, -0.89126, 0, 0.0115, -0.04071, 0.14358, 1], L: null },
+  m1911: { s: 0.9, R: [-0.89937, -0.02985, 0.01544, 0, -0.02886, 0.89786, 0.05482, 0, -0.01722, 0.05428, -0.89819, 0, 0.00605, -0.06203, 0.1252, 1], L: null },
+  awp: { s: 0.9, R: [-0.8983, 0.02605, -0.0488, 0, 0.01583, 0.88182, 0.17927, 0, 0.05301, 0.17808, -0.88062, 0, -0.00102, -0.05675, -0.00575, 1], L: [-0.89668, -0.01706, 0.07532, 0, -0.00634, 0.89108, 0.1263, 0, -0.07697, 0.12531, -0.8879, 0, 0.02448, -0.0957, -0.13562, 1] }
+};
+/* Step 98: the AWP gets the fitted hands too (the AK take's: life-size, a pistol-grip hand). Step 85 left it out because
+ * registration put the AK hand on the receiver; here the start is the AKM-N fit (the x64 guns share the M16A1 grip
+ * line-up) and the support hand that fit moved to the AWP's fore-end (WEAPON_DEFS support), each re-seated by vmhSolve
+ * and searched round the contact: firing hand through the thumbhole and wrapped on the grip, index at the trigger,
+ * support hand cupping the fore-end. Only with HANDLOOK on; the bolt hand stays your own (gloved) racking hand. */
+if (HANDLOOK.on) {
+  VMH.byType.awp = 'ak';
+  VMH_FIT.awp = { R: [-0.99909, -0.01582, 0.0396, 0, -0.01208, 0.99561, 0.09279, 0, -0.04089, 0.09222, -0.9949, 0, -0.00182, -0.0429, 0.00609, 1], L: [-0.99461, -0.10328, -0.00937, 0, -0.10319, 0.99462, -0.00994, 0, 0.01034, -0.00891, -0.99991, 0, 0.00881, -0.06164, -0.0376, 1] };
+}
+function vmhShrink(B, g, Ms, s) {
+  const T = VMH_FIT98[g.type];
+  if (T && T.s === s) { const R = new THREE.Matrix4().fromArray(T.R); return { R, L: T.L === 'R' ? R : T.L ? new THREE.Matrix4().fromArray(T.L) : null }; }
+  const one = (side, M) => {
+    const C = vmhContacts(B, side).cc.clone().applyMatrix4(M);
+    const S = new THREE.Matrix4().makeTranslation(C.x, C.y, C.z).multiply(new THREE.Matrix4().makeScale(s, s, s)).multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z));
+    return vmhSolve(B, side, g, S.multiply(M)).m;
+  };
+  const R = Ms.R ? one('R', Ms.R) : null;
+  const L = !Ms.L ? null : Ms.L === Ms.R ? R : one('L', Ms.L);
+  return { R, L };
+}
 // Fit for gun g (both hands), solved once (or taken from VMH_FIT), meshes ready to draw.
 function vmhFit(g) {
   const t = g.type, F = VMH.fits[t];
@@ -18341,7 +18477,8 @@ function vmhFit(g) {
   VMH.fits[t] = false;                                             // loading
   vmhBake(key).then((B) => {
     if (!B || !B.sides.R) { VMH.fits[t] = null; return; }
-    const out = { sides: {} }, Ms = vmhSolveAll(B, g);
+    const s98 = HANDLOOK.vmhScale, T98 = VMH_FIT98[t];
+    const out = { sides: {} }, Ms = s98 === 1 ? vmhSolveAll(B, g) : T98 && T98.s === s98 ? vmhShrink(B, g, null, s98) : vmhShrink(B, g, vmhSolveAll(B, g), s98);   // step 98
     for (const side of ['R', 'L']) {
       const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
       const geo = H.geo.clone().applyMatrix4(M);
@@ -18368,6 +18505,7 @@ const _vmhM = new THREE.Matrix4(), _vmhM2 = new THREE.Matrix4(), _vmhMir = new T
 // h on gun g in role (primary / support) at P, Q: draw the fitted hand instead; P, Q become the hidden root's pose.
 function vmhTake(h, g, role, dz, P, Q) {
   if (!VMH.on || !HANDS.ready || (role !== 'primary' && role !== 'support')) return false;
+  if (HANDLOOK.on && !WEAR.gloves) return false;                  // step 98: gloves off in the locker = your own bare hands on guns too
   if (!renderer.xr.isPresenting && (VM.vis || vmGun() === g)) return false;   // the computer viewmodel is drawn (step 89: or loading)
   const F = vmhFit(g); if (!F) return false;
   const want = role === 'primary' ? 'R' : 'L', S = F.sides[want]; if (!S) return false;
@@ -18388,7 +18526,7 @@ function vmhTake(h, g, role, dz, P, Q) {
   if (dz) _vmhM.multiply(_vmhM2.makeTranslation(0, 0, dz));
   _vmhM.multiply(R).decompose(P, Q, _vmhV);
   h.vmhOn = true; h.mesh.visible = false;                         // the sleeve stays: it covers the glove's cut
-  for (const o of HANDS.list) if (!o.vmhMat && o.gloveMat && o.mesh.material !== o.gloveMat) { o.vmhMat = o.mesh.material; o.mesh.material = o.gloveMat; }   // your other hand gloved too
+  if (!HANDLOOK.on) for (const o of HANDS.list) if (!o.vmhMat && o.gloveMat && o.mesh.material !== o.gloveMat) { o.vmhMat = o.mesh.material; o.mesh.material = o.gloveMat; }   // your other hand gloved too
   return true;
 }
 
@@ -26846,6 +26984,10 @@ function makeHandModel(left) {
   mesh.add(bones[0]);
   mesh.bind(new THREE.Skeleton(bones, inv), new THREE.Matrix4());
   mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true;
+  if (HANDLOOK.procScale !== 1) {                                   // step 98: drawn size only, about the wrist (the sleeve keeps its size)
+    const s = HANDLOOK.procScale, W = HAND_DATA.rig.wrist;
+    mesh.scale.setScalar(s); mesh.position.set(W.cx * sx * (1 - s), W.cy * (1 - s), W.z * (1 - s));
+  }
   const sleeve = new THREE.Mesh(sleeveGeo(sx), HANDS.sleeveMat);
   sleeve.frustumCulled = false; sleeve.castShadow = false; sleeve.receiveShadow = true;
   const root = new THREE.Group();
@@ -27073,6 +27215,7 @@ function handsBuild() {
   handsSkinShader(HANDS.mat);
   HANDS.sleeveMat = new THREE.MeshStandardMaterial({ color: 0x0f1012, roughness: 0.97, metalness: 0, side: THREE.DoubleSide });
   HANDS.list = [makeHandModel(false), makeHandModel(true)];   // [right, left]
+  if (HANDLOOK.on && WEAR.gloves) for (const h of HANDS.list) h.mesh.material = h.gloveMat;   // step 98: gloves on from the start
   HANDS.raw = null; HANDS.detail = null;
   HANDS.ready = true;
 }
@@ -28011,6 +28154,7 @@ function handsUpdate(dt, now) {
         if (!done) poseCurl(h, role === 'rack' ? 0.72 : 0.55, HPOSE.thumbRest);
       } else if (it && it.kind === 'nade') poseCurl(h, it.type === 'frag' ? 0.48 : 0.56, HPOSE.thumbRest);   // step 23: round the grenade, spoon in the palm
       else if (it && it.free) poseCurl(h, FREEGRIP.open, HPOSE.thumbRest);   // step 65: open, then onto the surface
+      else if (it && it.kind === 'att' && HANDLOOK.on) attHandPose(h, it);   // step 98: closed, then opened onto the part (itemContact)
       else if (it && (it.kind === 'mag' || it.kind === 'light')) { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }   // wrapped round it
       else if (it && it.kind === 'shell') poseFromGrip(h, h.grips.shell);                                  // pinched
       else if (p || vh.door) poseCurl(h, Math.max(0.58, s.grip * 0.85), HPOSE.thumbRest);
@@ -31853,7 +31997,7 @@ function fgSeat(h, ents) {
   return t;
 }
 function fgItemEnts(it, root, P, Q) {
-  const ck = it.kind === 'mag' ? 'mag:' + it.type : it.kind === 'nade' ? 'nade:' + it.type : it.kind, cloud = CONTACT.clouds.get(ck);
+  const ck = it.kind === 'att' ? attKey(it) : it.kind === 'mag' ? 'mag:' + it.type : it.kind === 'nade' ? 'nade:' + it.type : it.kind, cloud = CONTACT.clouds.get(ck);
   if (!cloud) return null;
   root.updateMatrixWorld(true);
   GC_Hi.compose(P, Q, GC_one).invert();
@@ -32041,7 +32185,7 @@ function freeItemHand(h, it, p, P, Q) {
   HD_hM.copy(p.root.matrixWorld).multiply(it.free.rel).decompose(P, Q, HD_hv);
   const wrap = GC_WRAP.item[it.kind];
   if (!GUNPHYS.contact || wrap === undefined) return;
-  const ck = it.kind === 'mag' ? 'mag:' + it.type : it.kind;
+  const ck = it.kind === 'att' ? attKey(it) : it.kind === 'mag' ? 'mag:' + it.type : it.kind;
   _fgM.copy(it.free.rel);
   const e = _fgM.elements, qn = (x) => Math.round(x * 1000);
   const key = `fi|${h.left ? 1 : 0}|${ck}|${wrap}|${e.slice(12, 15).map(qn)}|${[e[0], e[1], e[2], e[4], e[5], e[6]].map(qn)}|` + gcKeyTgt(h, 0);
@@ -32140,7 +32284,17 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact,
+  holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+    const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
+    it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
+    const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
+    M.decompose(p.root.position, p.root.quaternion, new THREE.Vector3()); p.root.updateMatrixWorld(true);
+    CONTACT.frame++; h.gcLim = null; itemContact(h, it, P, Q);
+    for (let k = 0; k < 20; k++) { h.cur[k] = h.gcLim && h.gcFrame === CONTACT.frame ? Math.min(h.tgt[k], h.gcLim[k]) : h.tgt[k]; h.vel[k] = 0; }
+    writeBones(h); h.root.matrix.compose(P, Q, one); h.root.matrixWorldNeedsUpdate = true; h.root.visible = true; h.root.updateMatrixWorld(true);
+    return !!h.gcLim;
+  }, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject };
 </script>
 </body>
 </html>
