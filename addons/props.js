@@ -1,7 +1,7 @@
 // Prop library and material presets (Phase 7, roadmap section 8 and Appendix B).
 // Props are built from simple shapes, so they cost almost nothing to download. Their look comes from
 // material presets that use real PBR maps (colour, normal, roughness/metal):
-//   - the room's own scanned textures (oak, concrete, plaster, fabric, powder-coat grit, perforated mesh),
+//   - the room's own scanned textures (oak, concrete, plaster, felt, powder-coat grit) and the cloth map,
 //     reused from the scene's materials so the GPU holds them once;
 //   - textures drawn here once per session (crate planks, cardboard, painted drum with wear, traffic cone,
 //     tyre tread, hay, book cloth and page edges, road sign, diamond plate, brushed steel, rubber...).
@@ -232,6 +232,14 @@
   function scan(name) { // the room's own textures, shared with the room
     var m = sceneMaterial(name); return m ? { map: m.map, normal: m.normalMap, orm: m.roughnessMap || m.metalnessMap, ns: m.normalScale && m.normalScale.x } : null;
   }
+  // the cloth colour variation map (it was the office chair's; the chair is gone, so it is loaded here, once)
+  var FABRIC_VAR = null;
+  function fabricVar() {
+    if (FABRIC_VAR) return FABRIC_VAR;
+    var THREE = T(); FABRIC_VAR = new THREE.TextureLoader().load("textures/fabric_var.jpg");
+    FABRIC_VAR.colorSpace = THREE.SRGBColorSpace; FABRIC_VAR.wrapS = FABRIC_VAR.wrapT = THREE.RepeatWrapping; FABRIC_VAR.anisotropy = 4;
+    return FABRIC_VAR;
+  }
   function withRepeat(t, rx, ry) { if (!t) return null; var c = t.clone(); c.repeat.set(rx, ry || rx); c.needsUpdate = true; return c; }
   function fromSet(name, opts) {
     var s = set(name, GEN[name]); opts = opts || {};
@@ -253,7 +261,7 @@
     "concrete": function () { var s = scan("polished-concrete"); return { map: s && s.map, normalMap: s && s.normal, roughnessMap: s && s.orm, color: "#d9d6d0", roughness: 1, metalness: 0, normalScale: 0.8 }; },
     "stone": function () { var p = PRESET.concrete(); p.color = "#8d8a84"; p.normalScale = 1.2; return p; },
     "plaster": function () { var s = scan("wall-paint"); return { normalMap: s && s.normal, roughnessMap: s && s.orm, color: "#ecebe6", roughness: 1, metalness: 0, normalScale: 0.4 }; },
-    "fabric": function (c) { var s = scan("upholstery") || scan("felt-desk-pad"); var f = scan("felt-desk-pad"); return { map: s && s.map, normalMap: (f && f.normal) || (s && s.normal), color: c || "#7f8c99", roughness: 0.95, metalness: 0, normalScale: 0.8 }; },
+    "fabric": function (c) { var f = scan("felt-desk-pad"); return { map: fabricVar(), normalMap: f && f.normal, color: c || "#7f8c99", roughness: 0.95, metalness: 0, normalScale: 0.8 }; },
     "rubber": function (c) { var p = fromSet("rubber"); p.color = c || "#1f1f21"; p.roughness = 0.9; p.metalness = 0; p.normalScale = 0.5; return p; },
     "plastic": function (c) { var p = fromSet("rubber"); p.color = c || "#d8d4cc"; p.roughness = 0.38; p.metalness = 0; p.normalScale = 0.08; return p; },
     "glass": function () { return { color: "#dfe9ec", roughness: 0.04, metalness: 0, opacity: 0.32, transparent: true }; },
@@ -597,7 +605,7 @@
       return null;
     },
     warm: function (names) { (names || Object.keys(GEN)).forEach(function (n) { set(n, GEN[n]); }); },
-    // props from other add-ons (armory.js): same definition shape as above
+    // props from other add-ons: same definition shape as above
     register: function (name, def) { prop(name, def); }
   };
 
@@ -647,6 +655,7 @@
     function next() {
       if (i >= names.length) return;
       if (!window.__studio || !window.__studio.ready) { setTimeout(next, 1000); return; }
+      if (i === 0) fabricVar(); // loaded before any copy of it is made
       set(names[i], GEN[names[i]]); i++;
       (window.requestIdleCallback || function (f) { setTimeout(f, 400); })(next, { timeout: 2000 });
     }

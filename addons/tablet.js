@@ -7,7 +7,7 @@
 //   pointer dot when it rests on a prop (switch: Pointer labels).
 // - Recenter: turns you, where you stand, to face the computer.
 // Input is read from the gamepad here with its own edge state (the game's buttons() keeps its own, so it
-// is never called from here). A hand holding the pistol is ignored, so a press can never fire a shot.
+// is never called from here). A hand holding a gun is ignored, so a press can never fire a shot.
 // Placement constants are first guesses for Quest 3S and need a headset check.
 (function () {
   "use strict";

@@ -477,7 +477,7 @@
       });
     };
     // lights
-    var BAKED = "The ceiling lights and the desk lamp are baked into the room's lighting, so they can't be switched. Lights you add can.";
+    var BAKED = "The ceiling downlights are baked into the room's lighting, so they can't be switched. Lights you add can.";
     H.lights = function (a) {
       var ops = lightOps(function (e, l, li, o) {
         if (a.onoff === "off") { if (l.intensity > 0) OFF.set(l, l.intensity); o.push({ op: "light", id: e.id, li: li, key: "intensity", value: 0 }); }
@@ -508,7 +508,7 @@
     H.light_color = function (a) {
       var sel = ed.selection.find(function (e) { return !e.deleted && world.lights(e).length; });
       var ents = sel ? [sel] : lightEntities(true);
-      if (!ents.length) return { error: "The ceiling lights and the desk lamp are baked into the room's lighting, so their colour can't change. Lights you add can (say: add a lamp)." };
+      if (!ents.length) return { error: "The ceiling downlights are baked into the room's lighting, so their colour can't change. Lights you add can (say: add a lamp)." };
       var ops = []; ents.forEach(function (e) { world.lights(e).forEach(function (l, li) { ops.push({ op: "light", id: e.id, li: li, key: "color", value: a.color }); }); });
       return { ops: ops, vars: { color: a.color_shown } };
     };
@@ -678,7 +678,7 @@
       if (j.format !== "studio-commands") throw new Error("not a command registry");
       REG = j; build(); api.ready = true;
       if (log) log.info("Commands: " + REG.commands.length + " in the registry (version " + REG.version + ")");
-      // other add-ons (Inspector, Armory) add their runners once they are up: check for gaps after that
+      // other add-ons (Inspector) add their runners once they are up: check for gaps after that
       setTimeout(function () {
         var missing = REG.commands.filter(function (c) { return c.status === "ready" && !H[c.name]; }).map(function (c) { return c.name; });
         if (missing.length && log) log.warn("Commands without a runner: " + missing.join(", "));

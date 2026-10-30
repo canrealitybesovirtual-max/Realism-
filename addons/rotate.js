@@ -1,5 +1,5 @@
 // Turning held props (VR and desktop), on top of the engine's own grab.
-// VR, holding a prop (not the pistol or its parts):
+// VR, holding a prop (not a gun: a held gun keeps its fitted grip):
 //   - thumbstick left/right: turn it about the vertical; up/down: tip it toward / away from you;
 //     stick pressed in + left/right: roll it. That hand's stick does not walk or snap-turn while it holds.
 //   - B / Y: stand it upright (keeps its heading).
@@ -31,7 +31,7 @@
     function step() { var v = Number(UI.value("rotateStep")); return isFinite(v) ? v : 45; }
     function stickRotates() { return UI.value("heldStick") !== "move"; }
     function inXR() { return !!(renderer.xr && renderer.xr.isPresenting); }
-    function turnable(held) { return !!(held && held.prop && !held.kind); } // the pistol and its parts keep their fitted grip
+    function turnable(held) { return !!(held && held.prop && !held.kind); } // guns keep their fitted grip
     function toast(msg) { if (S.log) S.log.info(msg); }
 
     // ---------- VR ----------

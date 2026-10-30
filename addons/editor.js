@@ -564,7 +564,7 @@
         if (!sample) { this.setStatus("Claude isn’t available in this view. Open the room on claude.ai while signed in, or write code on the Code tab.", true); return; }
         this.busy = true; this.setStatus("Thinking…", false);
         var prompt = [
-          "You are editing a live three.js (r186) first-person game: a small studio room with a desk, a computer, a desk lamp, a potted plant, a wall clock and a pistol. Write JavaScript that will be run with `new Function` inside the running game. Units are meters, y is up, the floor is near y = 0.",
+          "You are editing a live three.js (r186) first-person game: a small studio room with a desk and a computer (monitor, keyboard, mouse, PC tower). Write JavaScript that will be run with `new Function` inside the running game. Units are meters, y is up, the floor is near y = 0.",
           "",
           "In scope as plain variables:",
           "- THREE: the three.js r186 namespace",

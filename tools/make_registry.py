@@ -32,13 +32,8 @@ lib("button","buttons","push button"); lib("switch","switches","light switch"); 
 lib("pressure plate","pressure plates"); lib("trigger zone","trigger zones","trigger box"); lib("spawner","spawners","spawner pad")
 lib("domino","dominoes","dominos"); lib("bowling pin","bowling pins","pin","pins"); lib("balloon","balloons")
 lib("trampoline pad","trampoline","trampolines","trampoline pads")
-# Range (addons/range.js): targets and pistol attachments
+# Range: shooting targets (planned; the desk pistol and its attachments were removed with the office props)
 TARGET_WORDS = ["paper target","paper targets","target","targets","bullseye","bullseye target","shooting target","silhouette target","silhouette","cardboard target","steel gong","gong","gongs","steel plate","steel target","steel popper","popper","poppers","tin can","tin cans","can","cans","scoreboard","score board"]
-lib("suppressor","suppressors","silencer","silencers")
-lib("pistol laser","laser","lasers","laser sight","laser module")
-lib("pistol light","weapon light","flashlight","gun light","torch")
-lib("red dot sight","red dot","red dots","reflex sight","red dot optic")
-lib("extended magazine","extended mag","extended magazines","extended mags","big magazine")
 PROPS.update({"box stack":"alias:box stack","stack of boxes":"alias:box stack","seesaw":"alias:seesaw","seesaws":"alias:seesaw",
  "pendulum":None,"pendulums":None,"smoke":None,"sparks":None,"dust":None,"capsule":None,"wedge":None})
 PROPS.update({w: None for w in TARGET_WORDS})
@@ -63,7 +58,6 @@ ENUMS = {
  "level": ["low","medium","high"],
  "category": ["spawn","move","shape","look","material","physics","presets","lights","rooms","travel","scene","project","view","help","range","shooting"],
  "fog": ["off","none","light","thin","dense","heavy","thick"],
- "attachment": ["suppressor","silencer","laser","laser sight","light","flashlight","weapon light","red dot","red dot sight","reflex sight","extended magazine","extended mag","magazine"],
 }
 PRESETS = {  # Appendix B. mass is x a medium prop (2 kg); gravity null = static
  "heavy metal":{"mass":5,"friction":0.6,"bounce":0.05,"gravity":1.0},
@@ -100,10 +94,10 @@ c("random_props", G, ["random props [n]","add [n] random props","spawn [n] rando
 G = "Move, rotate, scale"
 c("move", G, ["move [target] [direction] [distance]","move [target] [direction]","nudge [target] [direction]","nudge [target] [direction] [distance]","push [target] [direction] [distance]"], "move it up 20 cm", "Moved {target} {direction} {distance}.", {"target":OBJ,"direction":T(type="enum",of="direction"),"distance":T(type="length",min=0.001,max=20,unit="cm")}, defaults={"distance":"10 cm"})
 c("put_floor", G, ["put [target] on floor","put [target] on ground","drop [target] to floor","put [target] down"], "put it on the floor", "{target} is on the floor.", {"target":OBJ})
-c("put_on", G, ["put [target] on [object]","place [target] on [object]","set [target] on [object]","put [target] on top of [object]"], "put the lamp on the desk", "{target} is on {object}.", {"target":OBJ,"object":OBJ})
+c("put_on", G, ["put [target] on [object]","place [target] on [object]","set [target] on [object]","put [target] on top of [object]"], "put the crate on the desk", "{target} is on {object}.", {"target":OBJ,"object":OBJ})
 c("center", G, ["center [target]","centre [target]","move [target] to center","move [target] to middle"], "center it", "{target} is in the middle of the room.", {"target":OBJ})
 c("rotate", G, ["rotate [target] [angle]","turn [target] [angle]","rotate [target] by [angle]","spin [target] round","rotate [target]","turn [target] around"], "rotate it 45", "Turned {target} {angle}.", {"target":OBJ,"angle":T(type="angle",min=-720,max=720)}, defaults={"angle":"90"})
-c("face", G, ["make [target] face [object]","turn [target] to face [object]","point [target] at [object]","face [object]"], "make the chair face the desk", "{target} now faces {object}.", {"target":OBJ,"object":OBJ}, defaults={"target":"it"})
+c("face", G, ["make [target] face [object]","turn [target] to face [object]","point [target] at [object]","face [object]"], "make the crate face the desk", "{target} now faces {object}.", {"target":OBJ,"object":OBJ}, defaults={"target":"it"})
 c("flip", G, ["flip [target]","flip [target] over","turn [target] upside down","flip"], "flip it", "Flipped {target}.", {"target":OBJ}, defaults={"target":"it"})
 c("upright", G, ["stand [target] upright","make [target] upright","stand upright","straighten [target]"], "stand it upright", "{target} is upright.", {"target":OBJ}, defaults={"target":"it"})
 c("scale", G, ["scale [target] [factor]","scale [target] by [factor]","make [target] [factor] bigger","make [target] [factor] size"], "scale it 2x", "Scaled {target} {factor}.", {"target":OBJ,"factor":T(type="factor",min=0.05,max=20)})
@@ -132,7 +126,7 @@ c("glow", G, ["glow [target]","make [target] glow","light up [target]"], "glow i
 c("no_glow", G, ["stop glow","stop [target] glowing","no glow","unglow [target]"], "stop glow", "{target} no longer glows.", {"target":OBJ}, defaults={"target":"it"})
 c("outline", G, ["outline [target]"], "outline it", "{target} is selected and outlined (Editor mode).", {"target":OBJ}, defaults={"target":"it"}, undo=False)
 c("hide", G, ["hide [target]","make [target] invisible"], "hide it", "{target} is hidden. Say show {target} to bring it back.", {"target":OBJ})
-c("show", G, ["show [target]","unhide [target]","make [target] visible"], "show the lamp", "{target} is visible.", {"target":OBJ})
+c("show", G, ["show [target]","unhide [target]","make [target] visible"], "show the crate", "{target} is visible.", {"target":OBJ})
 c("reset_look", G, ["reset look","reset [target] look"], "reset look", "{target} looks as it did at the start.", {"target":OBJ}, defaults={"target":"it"})
 G = "Physics"
 c("gravity_all", G, ["gravity [onoff] everything","gravity [onoff] for everything","turn gravity [onoff]","gravity [onoff]"], "gravity off everything", "Gravity is {onoff} for {count} props.", {"onoff":T(type="enum",of="onoff")})
@@ -191,13 +185,13 @@ c("import", G, ["import","import project","open project file"], "import", "Choos
 c("play", G, ["play","start","start game"], "play", "Playing. Stop puts the room back.", undo=False)
 c("pause", G, ["pause","pause game"], "pause", "Paused.", undo=False)
 c("stop", G, ["stop","stop game"], "stop", "Stopped. The room is back as it was before Play.", undo=False)
-c("select", G, ["select [object]","pick [object]","choose [object]"], "select the lamp", "Selected {object}.", {"object":OBJ}, undo=False)
+c("select", G, ["select [object]","pick [object]","choose [object]"], "select the monitor", "Selected {object}.", {"object":OBJ}, undo=False)
 c("select_all", G, ["select all [prop]","select every [prop]"], "select all boxes", "Selected {count} {prop}.", {"prop":T(type="prop")}, undo=False)
 c("deselect", G, ["deselect","select nothing","clear selection"], "deselect", "Nothing is selected.", undo=False)
 c("group", G, ["group","group them"], "group", "", status="planned", planned=P8)
 c("ungroup", G, ["ungroup"], "ungroup", "", status="planned", planned=P8)
 c("rename", G, ["rename [target] to [name]","call [target] [name]","name [target] [name]"], "rename it to Big Box", "Renamed {old} to {name}.", {"target":OBJ,"name":T(type="name")})
-c("find", G, ["find [object]","where is [object]","show me [object]"], "find the lamp", "Found {object}; it is selected on the Scene tab.", {"object":OBJ}, undo=False)
+c("find", G, ["find [object]","where is [object]","show me [object]"], "find the monitor", "Found {object}; it is selected on the Scene tab.", {"object":OBJ}, undo=False)
 c("lock", G, ["lock [target]"], "lock it", "{target} is locked against moves.", {"target":OBJ})
 c("unlock", G, ["unlock [target]"], "unlock it", "{target} is unlocked.", {"target":OBJ})
 c("hide_all", G, ["hide all","hide everything"], "hide all", "Hid {count} things you added.")
@@ -213,12 +207,8 @@ c("frame_time", G, ["show frame time","frame time","show fps","performance"], "s
 c("text_bigger", G, ["text bigger","bigger text","larger text","zoom in"], "text bigger", "UI scale {scale}.", undo=False)
 c("text_smaller", G, ["text smaller","smaller text","zoom out"], "text smaller", "UI scale {scale}.", undo=False)
 c("contrast", G, ["high contrast [onoff]"], "high contrast on", "", {"onoff":T(type="enum",of="onoff")}, status="planned", planned=P8)
-c("look_at", G, ["look at [object]","face [object]"], "look at the lamp", "Facing {object}.", {"object":OBJ}, undo=False)
+c("look_at", G, ["look at [object]","face [object]"], "look at the monitor", "Facing {object}.", {"object":OBJ}, undo=False)
 G = "Range"
-c("attach", G, ["attach [attachment]","put [attachment] on pistol","put [attachment] on gun","mount [attachment]","fit [attachment]","add [attachment] to pistol","add [attachment] to gun"], "attach the suppressor", "The pistol has a {attachment} now.", {"attachment":T(type="enum",of="attachment")})
-c("detach", G, ["detach [attachment]","take off [attachment]","remove [attachment] from pistol","remove [attachment] from gun","unmount [attachment]"], "take off the suppressor", "Took the {attachment} off the pistol.", {"attachment":T(type="enum",of="attachment")})
-c("strip_pistol", G, ["strip pistol","strip gun","remove all attachments","take off all attachments","stock pistol"], "remove all attachments", "The pistol is back to stock.")
-c("pistol_accessory", G, ["laser [onoff]","light [onoff]","flashlight [onoff]","toggle laser","toggle light"], "laser on", "Pistol accessory {onoff}.", {"onoff":T(type="enum",of="onoff")}, undo=False)
 c("reset_targets", G, ["reset targets","reset range","reset score","stand targets up","clear score"], "reset targets", "Targets are fresh and the score is zero.", undo=False, status="planned", planned="arrives with the shooting targets (next step)")
 c("score", G, ["score","show score","my score","what is my score","how did i do","accuracy"], "what is my score", "{score}", undo=False, status="planned", planned="arrives with the shooting targets (next step)")
 c("range_setup", G, ["set up range","set up shooting range","build range","build shooting range","make shooting range","shooting range"], "set up a shooting range", "Set up a range: {count} targets and a scoreboard.", cost="Med", status="planned", planned="arrives with the shooting targets (next step)")

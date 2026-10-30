@@ -1,7 +1,7 @@
 // Reset the whole studio: back to the room as it was built, as on a first visit.
 // Clears every saved Studio setting and edit (all "studio.*" keys in localStorage: scene autosave and saves,
 // spawned/moved/scaled props, hidden/locked objects, room and object scripts, UI settings, window layout,
-// door, pistol attachments, wrist tablet...), deletes imported models (IndexedDB "studio-assets"), removes
+// door, wrist tablet...), deletes imported models (IndexedDB "studio-assets"), removes
 // training enemies, then reloads the page. CQC Loop and Interstate keep their own saves.
 // Asks first: arm() starts a 6 s window; a second press (confirm) inside it resets. Buttons: UI Settings
 // (System app) "Reset the whole studio", wrist tablet "Reset studio", Commands palette.
