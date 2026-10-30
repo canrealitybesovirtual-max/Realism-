@@ -242,3 +242,12 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Patrol cars in traffic (police_lo.glb, share .035, applyPoliceTraffic): instanced per material, a.siren flashes the light bar (iLamp.w). On the player's patrol car the bar flashes with the hazard switch.
 - Tail lamps: photo-textured cars (traffic and the player's pack car) draw the whole rear lens as plain red glass with an even glow (no photo seams); GLB cars use tailGlassMaterial.
 - Garage: world.garage warehouse | studio. Warehouse = garage/warehouse.glb; walk to your car and press E / click to drive it (W/S, A/D or the pad), the roller door (WH_DOOR_Z) brings up DOOR_MAPS; picking one sets the scenery and starts the run (bus 'garage:go').
+
+## CQC step 85: realism pass (BODYCAM brief in docs/MASTER_PROMPT.md; headset check needed)
+- Room acoustics: ACOUSTICS small / room (the original IR, unchanged) / hall / stair / range, picked by roomAcoustic(stream.current). audio.verb is now a GainNode bus into two convolvers (ROOMAC.slots) crossfaded by updateAcoustics; the idle one is unplugged after its tail. Headset caps tails at 1.8 s. CONFIG.polish.audio.acoustics=false = one reverb. ACOUSTICS/ROOMAC are declared beside `audio` (audioUnlock runs early; its local `AC` is the AudioContext class, hence ROOMAC).
+- Your own footsteps: ownStep(f) from bodyPre when a body foot lands (heel, grit, kit rattle, trousers when running; deeper on stairs, softer crouched, shuffles silent). Not positional, reverb carries them. CONFIG.polish.audio.ownSteps (gain, 0 = off).
+- Air absorption: soundAt lowpasses positional sounds at 20 kHz x e^(-d/air), CONFIG.polish.audio.air 55 m (0 = off).
+- Weapon light beam: FLASH_BEAM spot light map on the shadowed flashlight (hotspot / corona / spill, reflector rings), cone 0.38 -> 0.62 rad, intensity x1.6 (setFlashlight). Haze/motes keep the old 0.38 cone. ?beam=off restores.
+- CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
+- ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
+- Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
