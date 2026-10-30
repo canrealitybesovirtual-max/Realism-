@@ -2418,6 +2418,8 @@ const CONFIG = {
       enemyShot: 0.8,                         // his shots, before distance
       impacts: true, impactRange: 12,         // rounds landing within this many m make a sound
       footsteps: true, buzz: 0.006, roomTone: 0.05,
+      ownSteps: 0.5,                          // step 85: your own boots and kit (gain, 0 = off), timed to your body's feet
+      acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       ears: true, earsMax: 5, earsRecover: 3.2, earsDull: 0.42, earsFloor: 2600,   // hearing dose after gunfire (step 15: recovers about twice as fast)
       earsShot: { pistol: 0.7, smg: 0.5, shotgun: 1.1, rifle: 0.8, ppk: 0, fn509: 0.05, akm: 1.0, awp: 1.3 },   // step 15: the suppressed PPK leaves your ears alone
       tinnitus: 0.0018, tinnitusHz: 6900, tinnitusFrom: 1.4, tinnitusFull: 4.2   // step 15: quieter ring, needs more shooting to start
@@ -22041,6 +22043,15 @@ loopUi();                                          // after step 11's TERM exist
  *  sells the room. Step 10 makes it positional: see SPATIAL AUDIO below.
  * ------------------------------------------------------------------------- */
 const audio = { ctx: null, out: null, verb: null, noise: null, dest: null, verbDest: null, echoDest: null, delay: 0 };   // step 10: dest/delay = spatial voice
+// Step 85: room acoustics (see roomIR / updateAcoustics). Declared here: audioUnlock can run before the code below it.
+const ACOUSTICS = {
+  small: { len: 0.9, tau: 0.085, fc0: 900, fc1: 6200, fcTau: 0.11, er: 0.022, seed: 771, wet: 0.26 },             // office, records, lockers, safe room: furnished, close walls
+  room: { len: 1.4, tau: 0.16, fc0: 1100, fc1: 7500, fcTau: 0.18, er: 0.035, seed: 777, wet: 0.32 },              // bare storage and plant rooms (the original)
+  hall: { len: 2.3, tau: 0.29, fc0: 800, fc1: 6500, fcTau: 0.28, er: 0.07, seed: 779, wet: 0.36, pre: 0.012 },   // warehouse hall: big volume, steel roof
+  stair: { len: 2.1, tau: 0.27, fc0: 1500, fc1: 8000, fcTau: 0.3, er: 0.03, seed: 781, wet: 0.4 },                // stairwell: bare concrete shaft, bright and long
+  range: { len: 2.8, tau: 0.36, fc0: 700, fc1: 6000, fcTau: 0.34, er: 0.1, seed: 783, wet: 0.38, pre: 0.02 }      // 45 m range: the far wall comes back late
+};
+const ROOMAC = { slots: [], cur: 0, key: 'room', irs: Object.create(null), offAt: 0 };
 function audioUnlock() {
   try {
     if (!audio.ctx) {
@@ -22052,10 +22063,17 @@ function audioUnlock() {
       comp.attack.value = 0.002; comp.release.value = 0.22;   // a shot ducks the room a little, like your ears do
       audio.out = ctx.createGain(); audio.out.gain.value = 0.55;
       audio.out.connect(comp); comp.connect(ctx.destination);
-      const ir = roomIR(ctx);
-      audio.verb = ctx.createConvolver(); audio.verb.buffer = ir;
-      const wet = ctx.createGain(); wet.gain.value = 0.32;
-      audio.verb.connect(wet); wet.connect(audio.out);
+      // Step 85: the room reverb is a bus into two convolvers, crossfaded when the room's acoustics
+      // change (updateAcoustics). Starts as the original room sound.
+      audio.verb = ctx.createGain();
+      for (let i = 0; i < 2; i++) {
+        const cv = ctx.createConvolver(), wet = ctx.createGain();
+        wet.gain.value = 0; cv.connect(wet); wet.connect(audio.out);
+        ROOMAC.slots.push({ cv, wet, key: null, on: false });
+      }
+      const s0 = ROOMAC.slots[0];
+      s0.cv.buffer = acousticIR(ctx, 'room'); s0.key = 'room'; s0.wet.gain.value = ACOUSTICS.room.wet;
+      audio.verb.connect(s0.cv); s0.on = true;
       // Echo bus for loud sounds only: discrete slaps off far walls and the corridor,
       // then a long dark rumble through the building. Gunshots send to it.
       audio.echo = ctx.createConvolver(); audio.echo.buffer = echoIR(ctx);
@@ -22188,20 +22206,56 @@ function echoIR(ctx) {
   return ir;
 }
 
+/* Step 85: room acoustics. Each kind of room has its own tail; walking into a room of another
+ * kind crossfades to it (updateAcoustics). Only two convolvers ever run, the idle one is
+ * disconnected once its tail has died. 'room' is the original single reverb, unchanged.
+ * len s, tau s decay (RT60 about 6.9 x tau), fc0 + fc1 Hz brightness falling off over fcTau s,
+ * er s of sparse early reflections, pre s pre-delay, wet send level. */
+function roomAcoustic(r) {
+  if (!r) return 'room';
+  if (r.stair || r.kind === 'stair') return 'stair';
+  const t = r.plan && r.plan.type;
+  if (t === 'range' || t === 'hall') return t;
+  if (r.kind === 'safe' || t === 'office' || t === 'records' || t === 'lockers') return 'small';
+  return 'room';
+}
+function acousticIR(ctx, key) { return ROOMAC.irs[key] || (ROOMAC.irs[key] = roomIR(ctx, ACOUSTICS[key])); }
+// Per frame (cheap: returns unless the room's acoustics changed or an idle tail is to be unplugged).
+function updateAcoustics() {
+  if (ROOMAC.slots.length < 2) return;
+  const ctx = audio.ctx, now = ctx.currentTime;
+  if (ROOMAC.offAt && now > ROOMAC.offAt) {
+    const s = ROOMAC.slots[1 - ROOMAC.cur];
+    if (s.on) { try { audio.verb.disconnect(s.cv); } catch (e) { /* already apart */ } s.on = false; }
+    ROOMAC.offAt = 0;
+  }
+  const key = CONFIG.polish.audio.acoustics ? roomAcoustic(stream.current) : 'room';
+  if (key === ROOMAC.key) return;
+  const a = ROOMAC.slots[ROOMAC.cur], b = ROOMAC.slots[1 - ROOMAC.cur];
+  try {
+    if (b.key !== key) { b.cv.buffer = acousticIR(ctx, key); b.key = key; }
+    if (!b.on) { audio.verb.connect(b.cv); b.on = true; }
+  } catch (e) { console.warn('Room acoustics: keeping the current reverb.', e); ROOMAC.key = key; return; }
+  a.wet.gain.cancelScheduledValues(now); a.wet.gain.setTargetAtTime(0, now, 0.18);
+  b.wet.gain.cancelScheduledValues(now); b.wet.gain.setTargetAtTime(ACOUSTICS[key].wet, now, 0.18);
+  ROOMAC.key = key; ROOMAC.cur = 1 - ROOMAC.cur; ROOMAC.offAt = now + 1.2 + ACOUSTICS[a.key].len;
+}
 // Frequency-dependent room tail: noise that gets darker as it decays.
-function roomIR(ctx) {
-  const sr = ctx.sampleRate, len = Math.floor(sr * 1.4), ir = ctx.createBuffer(2, len, sr), R = mulberry32(777);
+function roomIR(ctx, P = ACOUSTICS.room) {
+  const sr = ctx.sampleRate, full = Math.floor(sr * P.len), len = IS_HEADSET ? Math.min(full, Math.floor(sr * 1.8)) : full;   // step 85: the headset caps the tail (convolver cost)
+  const ir = ctx.createBuffer(2, len, sr), R = mulberry32(P.seed), pre = Math.floor(sr * (P.pre || 0));
   for (let ch = 0; ch < 2; ch++) {
     const a = ir.getChannelData(ch);
     let y1 = 0, y2 = 0;
-    for (let i = 0; i < len; i++) {
-      const t = i / sr, fc = 1100 + 7500 * Math.exp(-t / 0.18), c = 1 - Math.exp(-2 * Math.PI * fc / sr);
+    for (let i = 0; i + pre < len; i++) {
+      const t = i / sr, fc = P.fc0 + P.fc1 * Math.exp(-t / P.fcTau), c = 1 - Math.exp(-2 * Math.PI * fc / sr);
       let x = R() * 2 - 1;
-      if (t < 0.035 && R() < 0.012) x *= 9;                         // sparse early reflections
+      if (t < P.er && R() < 0.012) x *= 9;                          // sparse early reflections
       y1 += c * (x - y1); y2 += c * (y1 - y2);
-      const env = Math.exp(-t / 0.16) * Math.min(1, t / 0.004);
-      a[i] = y2 * env;
+      const env = Math.exp(-t / P.tau) * Math.min(1, t / 0.004);
+      a[i + pre] = y2 * env;
     }
+    if (len < full) { const n = Math.floor(sr * 0.25); for (let i = len - n; i < len; i++) a[i] *= (len - i) / n; }   // a capped tail fades, never clicks
   }
   return ir;
 }
@@ -23470,6 +23524,23 @@ function updateBuzz() {
   }
   P10.flickWas = k;
 }
+// Step 85: your own boots, timed to your body's feet (bodyPre lands them). Not positional: they are
+// under you, and the room's reverb carries them. Weight from your pace and stride; softer crouched.
+let ownStepAt = 0;
+function ownStep(f) {
+  const A = CONFIG.polish.audio;
+  if (!A.ownSteps || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise || playerState.dead) return;
+  const now = audio.ctx.currentTime, d = Math.hypot(f.to.x - f.from.x, f.to.z - f.from.z);
+  if (now - ownStepAt < 0.12 || (d < 0.05 && BODY.speed < 0.3)) return;   // feet closing up, a shuffle on the spot: silent
+  ownStepAt = now;
+  const run = BODY.speed > 2.0, st = !!(stream.current && stream.current.stair);
+  const g = A.ownSteps * clamp(0.3 + BODY.speed / 2.6, 0.3, 1) * clamp(d / 0.3, 0.35, 1) * (headWorld(_p10.h).y - level.floor < 1.2 ? 0.6 : 1);
+  const t = now + 0.002, j = 0.88 + Math.random() * 0.24;
+  nBurst(t, 0.09, 'lowpass', (st ? 420 : 520) * j, 0.9, 0.38 * g * (st ? 1.25 : 1), 0.065, 0.35);   // heel on concrete (a tread rings deeper)
+  nBurst(t + 0.018, 0.06, 'bandpass', 2600 * j, 1.4, 0.08 * g, 0.045, 0.25);                       // grit under the sole
+  if (Math.random() < (run ? 0.85 : 0.45)) nBurst(t + 0.03 + Math.random() * 0.02, 0.08, 'bandpass', 4300 * j, 4, 0.035 * g * (run ? 1.6 : 1), 0.06, 0.15);   // kit on the carrier
+  if (run) nBurst(t, 0.12, 'highpass', 5200, 0.7, 0.02 * g, 0.1, 0);                                 // trousers
+}
 // His boots. Cadence follows his speed; louder when he runs.
 function updateFootsteps(dt) {
   if (!CONFIG.polish.audio.footsteps) return;
@@ -23734,6 +23805,7 @@ function polishUpdate(dt, t) {
     updateEars(dt);
     updateBuzz();
     updateFootsteps(dt);
+    updateAcoustics();                           // step 85
   }
 }
 function polishShift(dx, dz, dy = 0) {
@@ -26278,7 +26350,7 @@ function bodyPre(dt) {
       if (!(r && r.stair)) { f.to.x = hb.x; f.to.z = hb.z; f.to.y = footFloor(f.to, smart); }
     }
     f.t = Math.min(1, f.t + dt / f.T);
-    if (f.t >= 1) { BODY.landAt = now; if (GORE_ON) goreStep(f, k); }   // step 41: a wet boot prints
+    if (f.t >= 1) { BODY.landAt = now; ownStep(f); if (GORE_ON) goreStep(f, k); }   // step 41: a wet boot prints; step 85: and is heard
     const e = f.t * f.t * (3 - 2 * f.t);
     f.p.lerpVectors(f.from, f.to, e);
     f.p.y = f.from.y + (f.to.y - f.from.y) * f.t + f.lift * Math.sin(Math.PI * f.t);
@@ -29026,7 +29098,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
 </script>
 </body>
 </html>
