@@ -6,6 +6,10 @@ Also cuts the pick-up takes (pickup1-9) and the coat strides (cloth1-7) added la
 (dry*, dryReset*), an M4 magazine dropped on a table (magDrop*), button clicks (btn*) and the server room
 bed (ambServer: one seamless loop, see LOOPS).
 
+Step 115: the grenade takes. From ryanconway's "grenade throw": the pin ring pulled (nadePin1 / 2), the spoon
+flying with the striker snap (nadeSpoon), that snap alone (nadeTick: the steel of a landing grenade, pitched down in
+the game), the arm's swing (nadeThrow, see DERIVED), and its explosion (nadeBoom2); knova's "grenade" (nadeBoom1).
+
 Run from the repository root:  python3 tools/cut_user_sfx.py
 Needs ffmpeg and numpy. Writes cqc/sounds/<name>.mp3 (mono, 44.1 kHz, 128 kbit/s).
 
@@ -21,7 +25,7 @@ import numpy as np
 SR = 44100
 PEAK = -3.5            # dBFS of the loudest event in each group (the other sounds/*.mp3 peak at -2..0; clipped takes ring
                        # ~2-3 dB over their source peak once encoded, so this leaves room)
-RMSN = {'coat': -19.0, 'pick': -17.0}   # these groups: each take on its own, loudest 50 ms at this dBFS (capped at PEAK):
+RMSN = {'coat': -19.0, 'pick': -17.0, 'throw': -18.0}   # these groups: each take on its own, loudest 50 ms at this dBFS (capped at PEAK):
                                         # random variants of one rustle / grab should sound equally loud
 FLOOR = -55.0          # tail trimmed below this, dB under the event's own peak
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'cqc', 'sounds')
@@ -40,6 +44,8 @@ DRY = 'pistol_dry_fire_486226.wav'      # ruben_uitenweerde: pistols dry-fired (
 MDROP = 'm4_mag_table_drop_174058.mp3'  # pjkasinski3: M4 magazine dropped on a table (hit + bounces)
 BTN = 'button_click_395541.wav'         # alayan: one button press and its release
 SRV = 'amb_server_room_712564.wav'      # newlocknew: server room / data centre machine and vent noise (wide)
+NTH = 'grenade_throw_161622.wav'        # ryanconway: grenade throw (pin, spoon, the swing; an explosion spliced in at 1.79 s)
+NBM = 'grenade_172334.wav'              # knova: grenade (one explosion, bassy: 87 % of it under 150 Hz, little over 1 kHz)
 
 # name, source, a, b, group[, floor dB under the peak, fade-in s]
 EVENTS = [
@@ -100,6 +106,21 @@ EVENTS = [
     # 0.4 s left out. btnClick3 / 4 = the main click of each alone.
     ('btnClick1', BTN, 0.085, 0.255, 'btn', -40), ('btnClick2', BTN, 0.258, 0.420, 'btn', -40),
     ('btnClick3', BTN, 0.124, 0.250, 'btn', -40), ('btnClick4', BTN, 0.302, 0.420, 'btn', -40),
+    # --- step 115 ---
+    # Grenade arming, all over 2.5 kHz (centroid ~8 kHz): the ring pulled = five clicks 28-74 ms (pin1 all of them, pin2
+    # from the loudest at 42 ms); the spoon = the striker snap at 148 ms with its ring, and the lever landing at 226 ms;
+    # nadeTick = that snap alone (26 ms).
+    ('nadePin1', NTH, 0.024, 0.100, 'narm', -45), ('nadePin2', NTH, 0.039, 0.100, 'narm', -45),
+    ('nadeSpoon', NTH, 0.144, 0.250, 'narm', -45), ('nadeTick', NTH, 0.145, 0.172, 'narm', -40),
+    # The explosions: knova's from its onset (4 ms); the throw take's from 1.791 s (digital silence before the splice,
+    # clipped flat at -0.2 dBFS, 150-400 Hz body, a 2.6 s roll). Normalised together (both are clipped at full scale).
+    ('nadeBoom1', NBM, 0.002, 1.880, 'boom', -50), ('nadeBoom2', NTH, 1.788, 4.450, 'boom', -50),
+]
+# The swing: the take is only the wind of the arm on the microphone (81 % under 60 Hz, nothing over 1 kHz), which small
+# speakers drop. nadeThrow keeps it (highpassed at 28 Hz) and adds a whoosh it shapes: seeded noise in two bands
+# (bright while the arm comes through, darker as it goes), on the take's own 10 ms envelope.
+DERIVED = [
+    ('nadeThrow', NTH, 0.462, 0.950, 'throw'),
 ]
 # name, source, a, b, crossfade s, pad s, RMS dBFS. A seamless loop: [a, b] with its last xf s faded (equal power,
 # uncorrelated noise) into its first, then padded both sides with its own wrap (pad s) so the game can loop from
@@ -160,6 +181,36 @@ def make_loop(x, a, b, xf, pad):
     return np.concatenate([L[-npd:], L, L[:npd]]), n
 
 
+def band(n, lo, hi, rng):
+    # seeded noise with a soft band (raised-cosine skirts an octave wide in log frequency)
+    f = np.fft.rfftfreq(n, 1 / SR)
+    lf = np.log2(np.maximum(f, 1.0))
+    m = np.clip(np.minimum(lf - np.log2(lo) + 1, np.log2(hi) - lf + 1), 0, 1)
+    X = np.fft.rfft(rng.standard_normal(n)) * (0.5 - 0.5 * np.cos(np.pi * m))
+    y = np.fft.irfft(X, n)
+    return y / (np.sqrt((y ** 2).mean()) + 1e-12)
+
+
+def make_whoosh(x, a, b):
+    s = cut(x, a, b, -50)
+    n = len(s)
+    f = np.fft.rfftfreq(n, 1 / SR)
+    s = np.fft.irfft(np.fft.rfft(s) * np.clip((f - 20) / 16, 0, 1), n)       # under 28 Hz: rumble nothing plays
+    w = int(0.01 * SR)
+    k = n // w
+    env = np.sqrt((s[:k * w].reshape(k, w) ** 2).mean(axis=1))
+    env = np.interp(np.arange(n), np.arange(k) * w + w / 2, env)
+    env = np.convolve(env, np.ones(w) / w, 'same')
+    env /= env.max()
+    rng = np.random.default_rng(161622)
+    pk = np.argmax(env) / n                                                  # the arm passing the microphone
+    t = np.arange(n) / n
+    bright = np.clip(1 - (t - pk) / max(1e-3, 1 - pk), 0, 1) ** 1.5           # bright coming through, darker after
+    wh = (bright * band(n, 700, 3200, rng) + (1 - bright) * band(n, 250, 1100, rng)) * env ** 1.3
+    wh *= 0.7 * np.sqrt((s ** 2).mean()) / (np.sqrt((wh ** 2).mean()) + 1e-12)
+    return s + wh
+
+
 def main():
     srcs, cuts = {}, {}
     for name, src, a, b, xf, pad, rms in LOOPS:
@@ -174,6 +225,10 @@ def main():
         if src not in srcs:
             srcs[src] = load(src)
         cuts[name] = (cut(srcs[src], a, b, *opt), grp)
+    for name, src, a, b, grp in DERIVED:
+        if src not in srcs:
+            srcs[src] = load(src)
+        cuts[name] = (make_whoosh(srcs[src], a, b), grp)
     gpk = {}
     for s, grp in cuts.values():
         gpk[grp] = max(gpk.get(grp, 0), np.abs(s).max())
