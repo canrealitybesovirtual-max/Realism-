@@ -89,3 +89,11 @@ Balancing: every functional part has a benefit or a compatibility purpose; most 
 - AWM: precision rifle: long range, stability, target identification.
 - 1911: classic tactical sidearm: compact backup, handling, customization.
 Goal: attachments change feel and performance without changing the weapon's identity; realism, trade-offs and compatibility over rarity.
+
+## User-supplied models (cqc/models/src/, raw; pack before use, not loaded by the game)
+- silencers_pack_1.glb: ATS4, ATS5, MD3, SB100, SR8 cans (with decals).
+- flash_hiders_pack_1.glb: custom flash hiders (2 meshes, baked texture).
+- weapon_accessories.glb: compensators 1-4, flash hiders 1-2, rails 1-3, scopes 1 / 3, sights 1-3 (red dots), silencers 1-4, mini, shotgun.
+- attachments_light_sup_scope.glb: flashlight, suppressor, scope.
+- beretta92x.glb: Beretta 92X 9 mm. The user likes it: keep it for a later step as a new pistol.
+Use them as models or reference, re-finished dark metallic (cerakote / parkerized look) to match the game.
