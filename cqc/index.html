@@ -12223,7 +12223,8 @@ function buildShotgunModel() {
 
 function buildMagModel(type) {
   if (type === 'm1911') return m1911MagModel();   // step 59
-  if (type === 'g17' || type === 'm4') return extMagModel(type);   // step 60
+  if (type === 'g17') return g17MagModel();       // step 98: modelled (the GLB's floated its top round)
+  if (type === 'm4') return extMagModel(type);   // step 60
   if (X64BYMAG[type]) return x64MagModel(type);   // step 64
   const S = MAG_SPECS[type](), root = new THREE.Group(), round = new THREE.Group();
   addSpecParts(root, S.body);
@@ -12707,7 +12708,7 @@ function createMag(type, rounds) {
   updateMagVisual(item);
   return p;
 }
-function updateMagVisual(item) { item.roundMesh.visible = item.rounds > 0; }
+function updateMagVisual(item) { item.roundMesh.visible = item.rounds > 0; if (item.roundMesh.userData.g17) g17MagRounds(item.roundMesh, item.rounds); }   // step 98: the stack and follower
 function createShell() {
   const root = buildShellModel();
   const item = { kind: 'shell', type: 'shell', label: SHELL_DEF.label };
@@ -12726,7 +12727,7 @@ function createShell() {
 const LIGHT_LENS = new THREE.Vector3(0, -0.025, -0.0805);   // step 78: the body hangs under the rail clamp                          // lens centre, light space
 // Step 29: one big switch, a paddle on the left (support-hand) side of the tail, in place of the two small
 // pressure pads. The press point is the paddle's face.
-const LIGHT_BUTTONS = [new THREE.Vector3(0, -0.025, 0.003), new THREE.Vector3(-0.0165, -0.025, 0.002), new THREE.Vector3(0.0165, -0.025, 0.002)];   // step 80: tail cap and both paddles
+const LIGHT_BUTTONS = [new THREE.Vector3(0, -0.025, 0.0032), new THREE.Vector3(-0.0165, -0.025, -0.0045), new THREE.Vector3(0.0165, -0.025, -0.0045)];   // step 80: tail cap and both paddles (step 98: on the rear switch block)
 function setLens(it) { it.lens.material = it.on ? WM.lensOn : WM.lensOff; if (it.lamp) it.lamp.material = it.on ? WM.btnOn : WM.btnOff; }   // step 29: and its lamp
 function mountLight(g, p, hand = null) {
   const it = p.item;
@@ -13731,7 +13732,7 @@ function gcEntries(g, P, Q) {
     if (c && obj) for (const G of c.groups) ents.push(gcEnt(G, new THREE.Matrix4().copy(GC_Hi).multiply(obj.matrixWorld).multiply(G.rest)));
   };
   if (g.mag) add('mag:' + g.mag.item.type, g.mag.root);
-  if (g.light && g.light.prop) add('light', g.light.prop.root);
+  if (g.light && g.light.prop && !g.light.stock) add('light', g.light.prop.root);   // step 98: the stock light is in the gun's own cloud
   return ents;
 }
 function gcLocal(E, x, y, z, out, o) {
@@ -15049,7 +15050,7 @@ function fireGun(g, now) {
   }
   sfx(d.sound, g.sup ? 0.28 : 1);
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
-  if (g.sup) _wv.addScaledVector(_fd, 0.16);                       // the smoke leaves the can's end
+  if (g.sup) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
   muzzleSmoke(_wv, _fd, g.type);           // step 10
   if (MBLAST.on) muzzleBlast(_wv, _fd, _fx, g, now);   // step 88: the blast off a wall, the floor or a jamb beside the muzzle
   if (GUN_WISP.on) { g.heat = (g.heat || 0) + (d.impulse || 2.2) * (d.pellets || 1) / 2.2 * (g.sup ? GUN_WISP.sup : 1); g.wispH = GUN_WISP.hold; }   // step 86: barrel heat
@@ -15921,7 +15922,7 @@ function gunWisp(g, dt) {
   if (g.heat < S.from || g.slot || !root.visible || (VM.vis && VM.gun === g)) return;   // holstered / the desktop viewmodel hides the real gun (vmHideGun)
   const k = clamp((g.heat - S.from) / (2 * S.from)), iv = 1 / (S.rate[0] + (S.rate[1] - S.rate[0]) * k);
   _gwP.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
-  if (g.sup) _gwP.addScaledVector(_gwF.set(0, 0, -1).transformDirection(root.matrixWorld), 0.16);   // the can's end (as fireGun)
+  if (g.sup) { if (g.sup.endR) _gwP.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _gwP.addScaledVector(_gwF.set(0, 0, -1).transformDirection(root.matrixWorld), 0.16); }   // the can's end (as fireGun)
   if (!g.wispL) g.wispL = _gwP.clone();                                  // once per gun
   const swept = g.wispL.distanceToSquared(_gwP) > S.step * S.step;      // a moving gun leaves a continuous trail, not beads
   g.wispT = (g.wispT || 0) - dt;
@@ -16089,7 +16090,7 @@ function gunBodyBoxes(g) {
   root.updateMatrixWorld(true);
   _ldInv.copy(root.matrixWorld).invert();
   const skip = new Set(), sk = (o) => { if (o) skip.add(o); };
-  sk(g.mag && g.mag.root); sk(g.lh && g.lh.mag && g.lh.mag.root); sk(g.sgAnim && g.sgAnim.shell); sk(g.light && g.light.prop && g.light.prop.root);
+  sk(g.mag && g.mag.root); sk(g.lh && g.lh.mag && g.lh.mag.root); sk(g.sgAnim && g.sgAnim.shell); sk(g.light && !g.light.stock && g.light.prop && g.light.prop.root);
   const skipped = (o) => { for (let p = o; p && p !== root; p = p.parent) if (skip.has(p)) return true; return false; };
   const pts = [];
   g.model.traverse((o) => {
@@ -16666,16 +16667,16 @@ function wbKit() {
       placed(new THREE.CylinderGeometry(0.0125, 0.0125, 0.06, 28), 0, BY, -0.036, Math.PI / 2),
       placed(rbox(0.016, 0.004, 0.048, 0.0015), 0, -0.0135, -0.033),                                 // the clamp's foot blending into the body
       placed(new THREE.CylinderGeometry(0.0148, 0.0136, 0.016, 28), 0, BY, -0.0735, Math.PI / 2),    // bezel
-      placed(new THREE.CylinderGeometry(0.0112, 0.0125, 0.006, 24), 0, BY, -0.0035, Math.PI / 2)];   // tail cap
+      placed(rbox(0.027, 0.025, 0.014, 0.0025), 0, BY, -0.004)];   // step 98: the rear switch block the paddles and tail button sit on (z -0.011..0.003)
     for (let i = 0; i < 4; i++) body.push(placed(new THREE.TorusGeometry(0.0127, 0.0008, 6, 28), 0, BY, -0.047 - i * 0.0042));
     for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2; body.push(placed(new THREE.BoxGeometry(0.0042, 0.0026, 0.0028), Math.cos(a) * 0.0138, BY + Math.sin(a) * 0.0138, -0.0825, 0, 0, a)); }
-    body.push(placed(rbox(0.005, 0.015, 0.018, 0.0022), 0.0152, BY, 0.002));                       // right paddle
     g.add(merged(body, black));
     g.add(mesh(placed(new THREE.ConeGeometry(0.0118, 0.007, 64, 1, true), 0, BY, -0.0775, -Math.PI / 2), chromeSoft));   // reflector (orange-peel, not mirror facets)
     const lens = mesh(placed(new THREE.CircleGeometry(0.0118, 28), 0, BY, -0.0815, 0, Math.PI, 0), WM.lensOff); g.add(lens);
     // step 80: black rubber push buttons built into the tail: a round cap in the tail and the two side paddles
-    const pad = merged([placed(new THREE.CylinderGeometry(0.0072, 0.0078, 0.003, 20), 0, BY, 0.0012, Math.PI / 2), placed(rbox(0.005, 0.015, 0.018, 0.0022), -0.0152, BY, 0.002)], btnRub); g.add(pad);
-    const lamp = mesh(placed(new THREE.SphereGeometry(0.0018, 10, 8), 0, -0.0135, 0.008), WM.btnOff); g.add(lamp);
+    // step 98: seated on the block (each 0.3 mm into it): tail button in its back face, a paddle on each side, the lamp on its top
+    const pad = merged([placed(new THREE.CylinderGeometry(0.0072, 0.0078, 0.003, 20), 0, BY, 0.0042, Math.PI / 2), placed(rbox(0.0042, 0.016, 0.009, 0.0016), -0.0153, BY, -0.0045), placed(rbox(0.0042, 0.016, 0.009, 0.0016), 0.0153, BY, -0.0045)], btnRub); g.add(pad);
+    const lamp = mesh(placed(new THREE.SphereGeometry(0.0018, 10, 8), 0, BY + 0.0125 + 0.0012, -0.0045), WM.btnOff); g.add(lamp);
     return { g, lens, lamp };
   };
   // laser module (DBAL class): a chamfered housing, the laser and an illuminator window in front,
@@ -16692,7 +16693,7 @@ function wbKit() {
     g.add(merged(b, black));
     g.add(mesh(placed(new THREE.CircleGeometry(0.0058, 22), 0.007, LY, -0.0465, 0, Math.PI, 0), glassDark));
     const ap = mesh(placed(new THREE.CircleGeometry(0.0034, 16), -0.008, LY, -0.0465, 0, Math.PI, 0), WM.btnOff); g.add(ap);
-    const sw = merged([placed(rbox(0.004, 0.012, 0.016, 0.0018), -0.0186, LY, 0.008), placed(rbox(0.012, 0.004, 0.012, 0.0018), -0.007, LY + 0.0135, 0.016)], btnRub); g.add(sw);   // step 80: black rubber buttons (side and top rear)
+    const sw = merged([placed(rbox(0.004, 0.012, 0.016, 0.0018), -0.0186, LY, 0.008), placed(rbox(0.012, 0.004, 0.012, 0.0018), -0.007, LY + 0.0135, 0.0085)], btnRub); g.add(sw);   // step 80: black rubber buttons (side and top rear; step 98: top one on the flat, not over the rounded rear edge)
     return { g, lamp: ap };
   };
   // Step 78: suppressor (direct-thread): a threaded collar at the muzzle, the tube with a knurled grip band,
@@ -16742,7 +16743,7 @@ function wbMakeAtt(sub, big = true) {
   const K = wbKit();
   if (sub === 'sup') {                                                // step 78
     const m = K.sup(big);
-    const item = { kind: 'att', type: 'sup', sub, label: big ? 'rifle suppressor' : 'pistol suppressor', hook: null, stuck: null, gun: null, lamp: null };
+    const item = { kind: 'att', type: 'sup', sub, label: big ? 'rifle suppressor' : 'pistol suppressor', hook: null, stuck: null, gun: null, lamp: null, len: m.L };
     const p = makeItem(m.g, item, { mass: big ? 0.5 : 0.3, half: [m.R, m.R, m.L / 2], center: new THREE.Vector3(0, 0, -m.L / 2), restitution: 0.1 });
     m.g.userData.att = true;
     return p;
@@ -17013,7 +17014,7 @@ function wbGrabbed(it) {
 }
 function wbSupSnap(g, p, reach) {
   const root = g.prop.root; root.updateMatrixWorld(true);
-  const M = _wbV.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
+  const M = _wbV.copy(supTip(g)).applyMatrix4(root.matrixWorld);   // step 98: the drawn muzzle end (supTip), not def.muzzle: the AKM's slant brake left a wedge of air
   if (reach && p.root.position.distanceTo(M) > reach) return false;
   p.root.position.copy(M); root.getWorldQuaternion(p.root.quaternion); p.root.updateMatrixWorld(true);
   return true;
@@ -17035,7 +17036,7 @@ function wbFreeze(g, p) {
   setCast(p.root, true);
   const root = g.prop.root;
   root.updateMatrixWorld(true);
-  if (it.sub === 'sup') { g.sup = it; return; }                    // step 78: quieter, no flash
+  if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
   if (it.sub === 'light') {
     if (g.light && g.light !== it) { g.light.on = false; setLens(g.light); }
     g.light = it; it.free = true;
@@ -17053,7 +17054,7 @@ function wbUnfreeze(g, p) {
   p.root.updateMatrixWorld(true);
   p.root.matrixWorld.decompose(_wbP, _wbQ, _wbS);
   if (it.sub === 'sup' && g.sup === it) g.sup = null;               // step 78
-  if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = null; it.free = false; }
+  if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }   // step 98: back to the Glock's own light
   if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; it.lamp.material = WM.btnOff; }
   it.gun = null;
   itemToWorld(p, _wbP, _wbQ, WB.room);
@@ -17322,6 +17323,7 @@ try { const o = JSON.parse(localStorage.getItem(EXT.key) || 'null'); if (o) { fo
 function extSave() { try { localStorage.setItem(EXT.key, JSON.stringify({ mag: EXT.mag, sw: EXT.sw })); } catch (e) { /* */ } }
 // a longer magazine: the body stretched down from its feed lips (the top rounds stay as they are)
 function magStretch(m, type, k = EXT_K[type]) {
+  if (m.extend) { m.extend(); return m; }                         // step 98: a magazine with its own long body
   const top = (MAG_DEFS[type].top || [0, 0, 0])[1];
   for (const c of m.root.children) { if (c === m.round) continue; c.scale.y *= k; c.position.y = top + (c.position.y - top) * k; }
   return m;
@@ -17341,8 +17343,14 @@ function gunSwitch(g, on) {
   if (!g || g.type !== 'g17') return;
   g.sw = on; g.mode = on ? 'auto' : 'semi';
   if (on && !g.parts.swPlate) {
-    if (!EXT_SW_MESH) EXT_SW_MESH = merged([placed(rbox(0.0205, 0.016, 0.0035, 0.0012), 0, 0, 0), placed(rbox(0.004, 0.012, 0.005, 0.001), 0.0105, -0.002, 0.003, 0, 0, -0.35)], new THREE.MeshStandardMaterial({ color: 0x151617, roughness: 0.5, metalness: 0.5 }));
-    const m = EXT_SW_MESH.clone(); m.position.set(0, 0.022, 0.047);
+    // Step 98: a slim back-plate replacement on the slide's rear face (z 0.0576, the cover plate's place round the
+    // firing pin), 2.6 mm proud, with a small selector tab out to the right. Top 4.7 mm under the slide top
+    // (0.0097) and the rear sight's base: the sight picture stays clear (it stood 14-30 mm up over the sight before).
+    if (!EXT_SW_MESH) EXT_SW_MESH = merged([placed(rbox(0.0150, 0.0118, 0.0028, 0.0010), 0, -0.0009, 0.00125),   // the plate (origin = the slide's rear face)
+      placed(rbox(0.0058, 0.0026, 0.0022, 0.0008), 0.0086, 0.0012, 0.0021, 0, 0, 0.25),                        // selector tab, out to the right
+      placed(new THREE.CylinderGeometry(0.0009, 0.0009, 0.0006, 10), -0.0045, -0.0045, 0.0028, Math.PI / 2)],   // roll pin
+      new THREE.MeshStandardMaterial({ color: 0x151617, roughness: 0.5, metalness: 0.5 }));
+    const m = EXT_SW_MESH.clone(); m.position.set(0, 0, 0.0574);
     (g.parts.slide || g.model).add(m); g.parts.swPlate = m;
   }
   if (g.parts.swPlate) g.parts.swPlate.visible = on;
@@ -31214,6 +31222,7 @@ function createGun(type) {
   seatMag(item, createMag(d.magType, MAG_DEFS[d.magType].capacity), 0, true);
   if (type === 'm1911') { item.m19 = { h: -0.5, down: true, tr: true, ss: 0, mc: 0, had: true }; m1911Anim(item, 0); }   // stored hammer down on an empty chamber
   if (type === 'g17' && EXT.sw) gunSwitch(item, true);              // step 78
+  if (type === 'g17') g17StockLight(item);                         // step 98: its own light, switchable
   return p;
 }
 const M1911_HAMMER_DOWN = -0.5, M1911_STOP_UP = -0.075;
@@ -31396,11 +31405,13 @@ function extBuild(type) {
   const mesh = (k) => { const o = new THREE.Mesh(X.geo[k], X.mat[k]); o.receiveShadow = true; o.castShadow = false; return o; };
   for (const k of Object.keys(X.geo)) {
     if (k === 'mag' || k === 'slide' || k === 'ch' || k === 'rounds') continue;
+    if (type === 'g17' && (k === 'light' || k === 'lens')) continue;   // step 98: the modelled stock light instead
     model.add(mesh(k));
   }
   if (X.geo.slide) { parts.slide = new THREE.Group(); parts.slide.add(mesh('slide')); model.add(parts.slide); }
   if (X.geo.ch) { parts.slide = new THREE.Group(); parts.slide.add(mesh('ch')); model.add(parts.slide); }   // step 62: rides g.slideOff back when racked
   addFlash(model, d, parts);
+  if (type === 'g17') g17LightBuild(model, parts);                 // step 98
   return { root, model, parts };
 }
 function extMagModel(type) {
@@ -31410,6 +31421,348 @@ function extMagModel(type) {
   root.add(body); root.add(round);
   if (X.geo.rounds) { const r = new THREE.Mesh(X.geo.rounds, X.magMat); r.receiveShadow = true; round.add(r); }
   return { root, round };
+}
+
+/* ===========================================================================
+ *  STEP 98 — THE GLOCK 17 MAGAZINE AND ITS STOCK LIGHT, MODELLED
+ *  The GLB's magazine carried its top round 3 cm ahead of the lips (it floated
+ *  in front of the magazine); the model's own light was a low-poly lump with no
+ *  switch. Both are built here once (geometry and materials shared by every copy).
+ *  Magazine (magazine space: upright, front -z, the GLB's seat and collider kept):
+ *  polymer over a steel liner, a forward lean of the column (G17M.SH), double
+ *  stack below, tapering into the feed lips, a ridge down the front; the steel
+ *  liner shows on the lips; numbered witness holes on the back (real holes, the
+ *  rounds show through them); the baseplate with its front lip (the 33-round one
+ *  its own longer body and thicker plate, not a stretch); the orange Gen 5 follower.
+ *  Rounds: 9 x 19 mm, brass case with its extractor groove and primer, copper FMJ
+ *  nose, parallel to the bore, staggered. The top round sits in the lips with its
+ *  crown just showing; the stack keeps the top round at the lips and the follower
+ *  rides under the last one (g17MagRounds, from updateMagVisual: only visibility and
+ *  transforms change, so the desktop viewmodel mirror follows). Deep rounds are
+ *  in chunks of 16 / 8 / 4 / 2 / 1, so a magazine is at most 8 draw calls.
+ *  Light (PL-2 class pistol light): rail clamp with jaws in the Glock rail's
+ *  grooves, a cross-bolt in its slot and a quick-release lever, a finned body,
+ *  the head with a reflector, LED and lens, a rear switch block with both paddles
+ *  and a tail button on it. It works like a bench light (g.light, free): F, the
+ *  Flashlight button, a poke or the other hand's trigger on its switches. Its frame
+ *  is the bench light's: LIGHT_LENS is its lens, LIGHT_BUTTONS its switches.
+ * ========================================================================= */
+const G17M = {
+  SH: -0.10, ZF: -0.0072, ZB: 0.0253, WALL: 0.0011, W0: 0.0105, WT: 0.0068, YT: 0.0545, DROP: 0.0045, Y0T: 0.0425, TH: 0.007,
+  SW: 0.005, YS: 0.040, EXT: 0.095, TILT: 0.2694, PY: -0.06487, PT: 0.0055,
+  P: 0.005, Y0: 0.050, Y1: 0.042, X0: 0.0012, X1: 0.0044, RL: 0.0297,
+  holes: { 17: [5, 8, 11, 14, 17], 33: [5, 10, 15, 20, 25, 30, 33] }, geo: null, mat: null
+};
+const g17A = () => EXTG.g17.magRot;                                 // the rounds lie along the bore
+function g17RoundY(i) { const M = G17M; return i === 0 ? M.Y0 : M.Y1 - (i - 1) * M.P; }
+function g17RoundZ(y) { const M = G17M, a = g17A(), h = M.RL / 2; return M.ZB - M.WALL - 0.0012 + M.SH * (y - h * Math.sin(a)) - h * Math.cos(a); }
+function g17PlateDz(ext) { return ext ? -G17M.SH * G17M.EXT : 0; }     // the long body leans on: its plate sits under its foot
+function g17PlateTop(z, ext) { const M = G17M; return M.PY - (ext ? M.EXT : 0) - Math.tan(M.TILT) * (z - g17PlateDz(ext)) + (ext ? 0.0072 : M.PT) / Math.cos(M.TILT); }
+// The lips run parallel to the bore (and the rounds): 0.6 mm under the top round's crown along its length, so
+// the front of the lips stands higher than the back; the front third is cut down for the nose. The taper from
+// the double stack into the lips is the last TH (7 mm) under that line.
+function g17Lip(zs) { const M = G17M, z = zs + M.SH * M.YT; return M.Y0 + 0.00495 - 0.0006 + Math.tan(g17A()) * (g17RoundZ(M.Y0) - z); }
+function g17TaperY(zs) { return g17Lip(zs) - G17M.TH; }
+function g17WidthAt(y, zs) { const M = G17M, t = clamp((y - g17TaperY(zs)) / M.TH); return M.W0 - (M.W0 - M.WT) * t * t * (3 - 2 * t); }
+function g17TopY(zs) { const M = G17M, t = clamp((M.ZF + 0.013 - zs) / 0.008); return g17Lip(zs) - M.DROP * t * t * (3 - 2 * t); }
+// one ring of the body: 26 points (x, zs = z at y 0, wear); back face strip from +xs round to -xs
+function g17Ring(W, zf, zb, ridge, j) {
+  const rF = Math.min(0.0042, W * 0.55), rB = Math.min(0.0028, W * 0.4), xs = Math.min(G17M.SW, W - rB - 0.0004), rx = Math.min(0.0022, W - rF - 0.0008);
+  const arc = (cx, cz, r, a0, a1, k) => { const a = a0 + (a1 - a0) * k / 4; return [cx + r * Math.cos(a), cz + r * Math.sin(a), k === 0 || k === 4 ? 0.35 : 1]; };
+  const H = Math.PI / 2;
+  if (j === 0) return [xs, zb, 0];
+  if (j <= 5) return arc(W - rB, zb - rB, rB, H, 0, j - 1);
+  if (j <= 10) return arc(W - rF, zf + rF, rF, 0, -H, j - 6);
+  if (j === 11) return [rx + 0.0006, zf, 0.2];
+  if (j === 12) return [rx, zf - ridge, 0.75];
+  if (j === 13) return [-rx, zf - ridge, 0.75];
+  if (j === 14) return [-rx - 0.0006, zf, 0.2];
+  if (j <= 19) return arc(-W + rF, zf + rF, rF, -H, -2 * H, j - 15);
+  if (j <= 24) return arc(-W + rB, zb - rB, rB, 2 * H, H, j - 20);
+  return [-xs, zb, 0];
+}
+function g17BodyGeo(ext) {
+  const M = G17M, N = 26, rows = [], drop = ext ? M.EXT : 0;
+  // row kinds: 'bot' (on the plate), y (flat), ['up', tau], ['in', k]
+  const kinds = ['bot'];
+  if (ext) for (let y = -0.145; y < -0.05; y += 0.02) kinds.push(y);
+  kinds.push(-0.045, -0.03, -0.015, 0, 0.015, 0.03, M.YS, M.Y0T, ['up', 0.35], ['up', 0.65], ['up', 0.88], ['up', 1], ['in', 0], ['in', 1], ['in', 2]);
+  const outerTop = kinds.length - 4;
+  for (const kd of kinds) {
+    const row = [];
+    for (let j = 0; j < N; j++) {
+      let x, zs, w, y;
+      if (kd === 'bot') {
+        [x, zs, w] = g17Ring(M.W0, M.ZF, M.ZB, 0.0007, j);
+        y = g17PlateTop(zs, ext) - 0.002;
+        for (let it = 0; it < 3; it++) y = g17PlateTop(zs + M.SH * y, ext) - 0.002;
+        w = Math.max(w, 0.5);
+      } else if (typeof kd === 'number') {
+        [x, zs, w] = g17Ring(M.W0, M.ZF, M.ZB, kd < 0.041 ? 0.0007 : 0, j); y = kd;
+      } else if (kd[0] === 'up') {
+        zs = g17Ring(M.W0, M.ZF, M.ZB, 0, j)[1];
+        const y0 = g17TaperY(zs); y = y0 + (g17TopY(zs) - y0) * kd[1];
+        [x, zs, w] = g17Ring(g17WidthAt(y, zs), M.ZF, M.ZB, 0, j);
+        if (kd[1] === 1) w = Math.max(w, 0.8);
+      } else {
+        const zf = M.ZF + M.WALL, zb = M.ZB - M.WALL, top = g17TopY(g17Ring(M.W0, zf, zb, 0, j)[1]);
+        const dy = [0.0004, 0.0035, 0.012][kd[1]];
+        y = top - dy;
+        const W = kd[1] === 0 ? 0.0040 : g17WidthAt(y, g17Ring(M.W0, zf, zb, 0, j)[1]) - M.WALL;
+        [x, zs, w] = g17Ring(W, zf, zb, 0, j); w = kd[1] === 0 ? 0.9 : 0.2;
+      }
+      row.push([x, y, zs + M.SH * y, w]);
+    }
+    rows.push(row);
+  }
+  const pos = [], col = [], uv = [], R = mulberry32(1798);
+  for (const row of rows) {
+    let s = 0;
+    for (let j = 0; j < N; j++) {
+      const p = row[j];
+      if (j) s += Math.hypot(p[0] - row[j - 1][0], p[2] - row[j - 1][2]);
+      pos.push(p[0], p[1], p[2]); uv.push(s / 0.014, p[1] / 0.014);
+      const n = 0.55 + 0.45 * R(), k = p[3] * n * 0.55, b = 0.011 + 0.002 * R();   // linear: black polymer, edges rubbed grey
+      col.push(b + (0.05 - b) * k, b + (0.05 - b) * k, b + (0.054 - b) * k);
+    }
+  }
+  const i0 = [], i1 = [];
+  for (let r = 0; r < rows.length - 1; r++) {
+    const out = r < outerTop ? i0 : i1, a = r * N, b = (r + 1) * N;
+    for (let j = 0; j < N - 1; j++) out.push(a + j, a + j + 1, b + j + 1, a + j, b + j + 1, b + j);
+    if (r + 1 > kinds.indexOf(M.YS)) out.push(a + N - 1, a, b, a + N - 1, b, b + N - 1);   // closing the back above the strip
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(i0.concat(i1)); g.addGroup(0, i0.length, 0); g.addGroup(i0.length, i1.length, 1);
+  g.computeVertexNormals();
+  // the back strip with the witness holes: one flat quad on the back face
+  const yb = rows[0][0][1], xs = M.SW, zb0 = M.ZB + M.SH * yb, zb1 = M.ZB + M.SH * M.YS, n = new THREE.Vector3(0, -M.SH, 1).normalize();
+  const st = new THREE.BufferGeometry();
+  st.setAttribute('position', new THREE.Float32BufferAttribute([-xs, yb, zb0, xs, yb, zb0, xs, M.YS, zb1, -xs, M.YS, zb1], 3));
+  st.setAttribute('normal', new THREE.Float32BufferAttribute([n.x, n.y, n.z, n.x, n.y, n.z, n.x, n.y, n.z, n.x, n.y, n.z], 3));
+  st.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+  st.setIndex([0, 1, 2, 0, 2, 3]);
+  return { body: g, strip: st, yb, drop };
+}
+// the witness-hole strip: holes (alpha 0) with the count moulded beside each, from the rounds' case heads
+function g17StripTex(cap, yb) {
+  const M = G17M, W = 64, H = cap > 17 ? 1024 : 512, kx = W / (2 * M.SW), ky = H / (M.YS - yb), list = M.holes[cap] || M.holes[17];
+  const Hh = new Float32Array(W * H), c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#1c1d1f'; ctx.fillRect(0, 0, W, H);
+  const hc = document.createElement('canvas'); hc.width = W; hc.height = H; const hx = hc.getContext('2d');
+  hx.fillStyle = '#000'; hx.fillRect(0, 0, W, H);
+  const holes = [];
+  for (const n of list) {
+    const y = g17RoundY(n - 1) - (M.RL / 2) * Math.sin(g17A()), py = (M.YS - y) * ky, px = M.SW * kx;   // on the centre line: either column's case head fills it
+    holes.push([px, py]);
+    for (const [cx, alpha] of [[ctx, 1], [hx, 0]]) {
+      cx.save(); cx.translate((0.0033 + M.SW) * kx, py); cx.scale(1, ky / kx);
+      cx.font = `bold ${Math.round(0.0026 * kx)}px sans-serif`; cx.textAlign = 'center'; cx.textBaseline = 'middle';
+      cx.fillStyle = alpha ? '#3b3c3f' : '#fff'; cx.fillText(String(n), 0, 0); cx.restore();
+    }
+    hx.fillStyle = '#555'; hx.beginPath(); hx.ellipse(px, py, 0.0021 * kx, 0.0021 * ky, 0, 0, Math.PI * 2); hx.fill();   // a chamfer round each hole
+    ctx.fillStyle = '#141516'; ctx.beginPath(); ctx.ellipse(px, py, 0.0019 * kx, 0.0019 * ky, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  const hd = hx.getImageData(0, 0, W, H).data;
+  for (let i = 0; i < W * H; i++) Hh[i] = hd[i * 4] / 255;
+  const img = ctx.getImageData(0, 0, W, H), nd = new Uint8Array(W * H * 4);
+  const h = (x, y) => Hh[Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const dx = (h(x + 1, y) - h(x - 1, y)) * 1.6, dy = (h(x, y + 1) - h(x, y - 1)) * 1.6 * kx / ky, l = Math.hypot(dx, dy, 1), j = ((H - 1 - y) * W + x) * 4;   // rows bottom up (v)
+    nd[j] = (-dx / l * 0.5 + 0.5) * 255; nd[j + 1] = (dy / l * 0.5 + 0.5) * 255; nd[j + 2] = (1 / l * 0.5 + 0.5) * 255; nd[j + 3] = 255;
+  }
+  for (const [px, py] of holes) {                                   // the holes themselves: cut out (alpha test)
+    const rx = 0.0015 * kx, ry = 0.0015 * ky;
+    for (let y = Math.floor(py - ry - 1); y <= py + ry + 1; y++) for (let x = Math.floor(px - rx - 1); x <= px + rx + 1; x++) {
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      if (((x + 0.5 - px) / rx) ** 2 + ((y + 0.5 - py) / ry) ** 2 < 1) img.data[(y * W + x) * 4 + 3] = 0;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const map = new THREE.CanvasTexture(c); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = maxAniso;
+  const nm = new THREE.DataTexture(nd, W, H); nm.magFilter = THREE.LinearFilter; nm.minFilter = THREE.LinearMipmapLinearFilter; nm.generateMipmaps = true; nm.needsUpdate = true;
+  return new THREE.MeshStandardMaterial({ map, normalMap: nm, alphaTest: 0.5, roughness: 0.74, metalness: 0, side: THREE.DoubleSide });
+}
+function g17PlateGeo(ext) {
+  const M = G17M, t = ext ? 0.0072 : M.PT, zf = ext ? -0.0125 : -0.0105, zb = 0.0331, wt = ext ? 0.0088 : 0.0080, W = 0.0112, pts = [];
+  const arc = (cx, cz, r, a0, a1) => { for (let i = 0; i <= 4; i++) { const a = a0 + (a1 - a0) * i / 4; pts.push(new THREE.Vector2(cx + r * Math.cos(a), -(cz + r * Math.sin(a)))); } };
+  const P = (x, z) => pts.push(new THREE.Vector2(x, -z)), H = Math.PI / 2;
+  arc(wt - 0.003, zf + 0.003, 0.003, -H, 0); P(wt, -0.003); P(wt + 0.0012, -0.0011); P(W - 0.0005, 0.0004); P(W, 0.0014);
+  arc(W - 0.004, zb - 0.004, 0.004, 0, H); arc(-W + 0.004, zb - 0.004, 0.004, H, 2 * H);
+  P(-W, 0.0014); P(-W + 0.0005, 0.0004); P(-wt - 0.0012, -0.0011); P(-wt, -0.003); arc(-wt + 0.003, zf + 0.003, 0.003, 2 * H, 3 * H);
+  const g = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: t - 0.0014, bevelEnabled: true, bevelThickness: 0.0007, bevelSize: 0.0007, bevelSegments: 2, steps: 1, curveSegments: 4 });
+  g.translate(0, 0, 0.0007).rotateX(-Math.PI / 2).rotateX(M.TILT).translate(0, M.PY - (ext ? M.EXT : 0), g17PlateDz(ext));
+  // the front lip: a short rise at the tab's nose to pull the magazine by
+  const lip = new THREE.BoxGeometry(2 * wt - 0.003, 0.0016, 0.0022).toNonIndexed();
+  lip.translate(0, t + 0.0006, zf + 0.0016).rotateX(M.TILT).translate(0, M.PY - (ext ? M.EXT : 0), g17PlateDz(ext));
+  const out = mergeGeometries([g.index ? g.toNonIndexed() : g, lip].map((q) => { q.deleteAttribute('uv'); return q; }));
+  out.computeVertexNormals();
+  const N = out.attributes.normal, c = new Float32Array(N.count * 3), R = mulberry32(2117);
+  for (let i = 0; i < N.count; i++) {                                // bevels (normals between flat and side) rubbed grey
+    const ny = Math.abs(N.getY(i)), k = ny > 0.15 && ny < 0.92 ? 0.25 + 0.3 * R() : 0.05 * R(), b = 0.012;
+    c[i * 3] = b + (0.04 - b) * k; c[i * 3 + 1] = b + (0.04 - b) * k; c[i * 3 + 2] = b + (0.043 - b) * k;
+  }
+  out.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  return out;
+}
+// one 9 x 19 mm round, centred, nose along the bore (in magazine space: forward and up by magRot)
+function g17RoundGeo(detail) {
+  const P = detail
+    ? [[0, 0.0003], [0.0021, 0.0003], [0.0023, 0], [0.0047, 0], [0.00496, 0.0003], [0.00496, 0.0011], [0.0046, 0.0013], [0.0041, 0.0016], [0.0041, 0.0022], [0.0047, 0.0026],
+      [0.00493, 0.0029], [0.00488, 0.0185], [0.00482, 0.01915], [0.00451, 0.01925], [0.00451, 0.0218], [0.0043, 0.0238], [0.0038, 0.0257], [0.0030, 0.0275], [0.0019, 0.0289], [0.0007, 0.0296], [0, 0.0297]]
+    : [[0, 0], [0.00496, 0], [0.00496, 0.0012], [0.0041, 0.0016], [0.0041, 0.0022], [0.0049, 0.0027], [0.00482, 0.0191], [0.00451, 0.0192], [0.0040, 0.0245], [0.0022, 0.0285], [0, 0.0297]];
+  const g = new THREE.LatheGeometry(P.map(([r, a]) => new THREE.Vector2(r, a)), detail ? 20 : 10);
+  const pa = g.attributes.position, c = new Float32Array(pa.count * 3);
+  for (let i = 0; i < pa.count; i++) {
+    const a = pa.getY(i), r = Math.hypot(pa.getX(i), pa.getZ(i));
+    const k = a > 0.0191 ? [0.80, 0.37, 0.17] : a < 0.0005 && r < 0.00225 ? [0.62, 0.58, 0.52] : [0.78, 0.52, 0.2];   // gilding-metal (copper) jacket, nickel primer, brass
+    c.set(k, i * 3);
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3)); g.deleteAttribute('uv');
+  return g.translate(0, -G17M.RL / 2, 0).rotateX(-Math.PI / 2).rotateX(g17A());
+}
+function g17MagKit() {
+  if (G17M.geo) return G17M;
+  const M = G17M, grain = stippleNormalTex();
+  const std = g17BodyGeo(false), ext = g17BodyGeo(true);
+  const one = g17RoundGeo(false), chunk = (k) => mergeGeometries(Array.from({ length: k }, (_, j) => one.clone().translate(j % 2 ? -M.X1 : M.X1, -j * M.P, -j * M.P * M.SH)));
+  const fol = mergeGeometries([placed(new RoundedBoxGeometry(0.0176, 0.0045, 0.026, 2, 0.0012), 0, -0.00525, 0.0008), placed(new RoundedBoxGeometry(0.008, 0.003, 0.023, 2, 0.001), 0.003, -0.0015, 0.0012),
+    placed(new RoundedBoxGeometry(0.010, 0.009, 0.0022, 2, 0.0008), 0, -0.0095, -0.0095)].map((q) => (q.index ? q.toNonIndexed() : q))).rotateX(g17A());   // tilted with the rounds, clear of the walls
+  M.geo = { body: std.body, strip: std.strip, bodyX: ext.body, stripX: ext.strip, plate: g17PlateGeo(false), plateX: g17PlateGeo(true),
+    top0: g17RoundGeo(true).translate(M.X0, M.Y0, g17RoundZ(M.Y0)), top1: g17RoundGeo(true).translate(-M.X1, M.Y1, g17RoundZ(M.Y1)),
+    chunks: [16, 8, 4, 2, 1].map((k) => [k, chunk(k)]), fol };
+  M.mat = {
+    poly: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.74, metalness: 0, normalMap: grain, normalScale: new THREE.Vector2(0.16, 0.16), side: THREE.DoubleSide }),
+    steel: new THREE.MeshStandardMaterial({ color: 0x25272b, roughness: 0.42, metalness: 0.85, side: THREE.DoubleSide }),
+    plate: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.7, metalness: 0 }),
+    round: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.3, metalness: 1 }),
+    fol: new THREE.MeshStandardMaterial({ color: 0xe0561c, roughness: 0.55, metalness: 0 }),
+    strip: g17StripTex(17, std.yb), stripX: g17StripTex(33, ext.yb)
+  };
+  return M;
+}
+function g17MagModel() {
+  const M = g17MagKit(), root = new THREE.Group(), round = new THREE.Group();
+  const mk = (geo, mat, par) => { const o = new THREE.Mesh(geo, mat); o.receiveShadow = true; o.castShadow = false; par.add(o); return o; };
+  const body = mk(M.geo.body, [M.mat.poly, M.mat.steel], root), strip = mk(M.geo.strip, M.mat.strip, root), plate = mk(M.geo.plate, M.mat.plate, root);
+  const fol = mk(M.geo.fol, M.mat.fol, root);
+  root.add(round);
+  const U = { top0: mk(M.geo.top0, M.mat.round, round), top1: mk(M.geo.top1, M.mat.round, round), chunks: M.geo.chunks.map(([k, g]) => { const o = mk(g, M.mat.round, round); o.userData.k = k; return o; }), fol };
+  round.userData.g17 = U;
+  const m = { root, round };
+  m.extend = () => { body.geometry = M.geo.bodyX; strip.geometry = M.geo.stripX; strip.material = M.mat.stripX; plate.geometry = M.geo.plateX; };   // the 33-round magazine
+  g17MagRounds(round, MAG_DEFS.g17 ? MAG_DEFS.g17.capacity : 17);
+  return m;
+}
+// the stack for n rounds: the top round at the lips, the follower under the last (transforms and visibility only)
+function g17MagRounds(round, n) {
+  const U = round.userData.g17, M = G17M;
+  n = Math.max(0, Math.min(33, n | 0));
+  round.scale.x = n % 2 ? 1 : -1;                                   // the top round changes side with every round taken
+  U.top0.visible = n >= 1; U.top1.visible = n >= 2;
+  let s = 2, left = Math.max(0, n - 2);
+  for (const c of U.chunks) {
+    const k = c.userData.k;
+    if (left < k) { c.visible = false; c.position.set(0, M.Y1 - M.P, g17RoundZ(M.Y1 - M.P)); c.scale.x = 1; continue; }   // parked inside the body (magLocalBox reads every mesh)
+    const y = g17RoundY(s);
+    c.visible = true; c.position.set(0, y, g17RoundZ(y));
+    c.scale.x = s % 2 ? -1 : 1;
+    s += k; left -= k;
+  }
+  const yf = n ? g17RoundY(n - 1) - 0.0050 : 0.047;
+  U.fol.position.set(0, yf, (M.ZF + M.ZB) / 2 + M.SH * yf);
+}
+// the stock light (PL-2 class), in the bench light's frame: LIGHT_LENS = lens centre, LIGHT_BUTTONS = its switches
+const G17L = { root: new THREE.Vector3(0, -0.0185, -0.066), geo: null, mat: null };
+function g17LightKit() {
+  if (G17L.geo) return G17L;
+  const AY = -0.025, ax = (g) => g.rotateX(-Math.PI / 2).translate(0, AY, 0);   // lathe y (a = -z) onto the light's axis
+  const prof = [[0.0112, 0.006], [0.0118, 0.008], [0.0118, 0.029], [0.0112, 0.0295], [0.0112, 0.0315], [0.0118, 0.032], [0.0118, 0.036], [0.0112, 0.0365], [0.0112, 0.0385], [0.0118, 0.039],
+    [0.0118, 0.043], [0.0112, 0.0435], [0.0112, 0.0455], [0.0118, 0.046], [0.0118, 0.0645], [0.0134, 0.068], [0.0137, 0.0692], [0.0137, 0.0785], [0.0129, 0.0805], [0.0111, 0.0805], [0.0109, 0.0797]];
+  const lathe = (pts, n) => new THREE.LatheGeometry(pts.map(([r, a]) => new THREE.Vector2(r, a)), n);
+  const anod = [ax(lathe(prof, 36)),
+    placed(new RoundedBoxGeometry(0.026, 0.024, 0.014, 2, 0.003), 0, AY, -0.0045),                        // rear switch block
+    placed(new RoundedBoxGeometry(0.017, 0.006, 0.05, 2, 0.002), 0, -0.0145, -0.036),                      // saddle from the body to the clamp
+    placed(new RoundedBoxGeometry(0.0256, 0.0045, 0.049, 2, 0.0012), 0, -0.01135, -0.0335)];               // clamp base, flat on the rail
+  for (const sx of [-1, 1]) {
+    anod.push(placed(new RoundedBoxGeometry(0.0018, 0.0046, 0.046, 2, 0.0006), sx * 0.0119, -0.0072, -0.0335));   // jaw wall up the rail's side
+    anod.push(placed(new RoundedBoxGeometry(0.0024, 0.0012, 0.046, 2, 0.0004), sx * 0.0099, -0.0054, -0.0335));   // its lip in the rail groove
+  }
+  anod.push(placed(new THREE.CylinderGeometry(0.0019, 0.0019, 0.027, 10), 0, -0.0073, -0.0265, 0, 0, Math.PI / 2));   // cross-bolt in the rail slot
+  anod.push(placed(new THREE.CylinderGeometry(0.0034, 0.0034, 0.0018, 16), 0.0137, -0.0073, -0.0265, 0, 0, Math.PI / 2));   // its head
+  anod.push(placed(new THREE.CylinderGeometry(0.0033, 0.0033, 0.0018, 6), -0.0137, -0.0073, -0.0265, 0, 0, Math.PI / 2));   // nut
+  anod.push(placed(new RoundedBoxGeometry(0.0016, 0.0052, 0.021, 2, 0.0007), -0.0137, -0.0106, -0.045, 0.05, 0, 0));       // quick-release lever
+  anod.push(placed(new THREE.CylinderGeometry(0.0024, 0.0024, 0.002, 12), -0.0136, -0.0106, -0.054, 0, 0, Math.PI / 2));  // its pivot
+  const rub = [placed(new RoundedBoxGeometry(0.0042, 0.016, 0.009, 2, 0.0016), 0.0149, AY, -0.0045), placed(new RoundedBoxGeometry(0.0042, 0.016, 0.009, 2, 0.0016), -0.0149, AY, -0.0045),
+    placed(new THREE.CylinderGeometry(0.0052, 0.0056, 0.0016, 20), 0, AY, 0.003, Math.PI / 2)];           // both paddles and the tail button, seated in the block
+  const flat = (a) => mergeGeometries(a.map((q) => { const n = q.index ? q.toNonIndexed() : q; if (n.attributes.uv) n.deleteAttribute('uv'); return n; }));
+  G17L.geo = {
+    anod: flat(anod), rub: flat(rub),
+    refl: ax(lathe([[0.0028, 0.0716], [0.0052, 0.0738], [0.0078, 0.0762], [0.0098, 0.0782], [0.0107, 0.0796]], 28)),
+    hex: placed(new THREE.CylinderGeometry(0.0014, 0.0014, 0.0004, 6), 0.0147, -0.0073, -0.0265, 0, 0, Math.PI / 2),
+    led: placed(new THREE.BoxGeometry(0.0024, 0.0024, 0.0006), 0, AY, -0.0718),
+    lens: placed(new THREE.CircleGeometry(0.0108, 28), 0, AY, LIGHT_LENS.z + 0.0007, 0, Math.PI, 0)
+  };
+  G17L.mat = {
+    anod: new THREE.MeshStandardMaterial({ color: 0x151618, roughness: 0.56, metalness: 0.4 }),
+    rub: new THREE.MeshStandardMaterial({ color: 0x0b0b0c, roughness: 0.88, metalness: 0 }),
+    refl: new THREE.MeshStandardMaterial({ color: 0xd2d5da, roughness: 0.2, metalness: 1, side: THREE.DoubleSide }),
+    dark: new THREE.MeshStandardMaterial({ color: 0x050506, roughness: 0.6, metalness: 0.2 }),
+    led: new THREE.MeshStandardMaterial({ color: 0xe6d896, roughness: 0.6, metalness: 0 })
+  };
+  return G17L;
+}
+function g17LightBuild(model, parts) {
+  const L = g17LightKit(), r = new THREE.Group();
+  if (!WM.lensOn) WM.lensOn = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: new THREE.Color(0xfff4e0), emissiveIntensity: 3, roughness: 0.1, metalness: 0 });   // as wbKit
+  if (!WM.lensOff) WM.lensOff = new THREE.MeshStandardMaterial({ color: 0x8a949c, roughness: 0.06, metalness: 0.2, transparent: true, opacity: 0.94 });
+  for (const k of ['anod', 'rub', 'refl', 'hex', 'led']) { const o = new THREE.Mesh(L.geo[k], L.mat[k === 'hex' ? 'dark' : k]); o.receiveShadow = true; o.castShadow = false; r.add(o); }
+  const lens = new THREE.Mesh(L.geo.lens, WM.lensOff); lens.receiveShadow = true; r.add(lens);
+  r.position.copy(G17L.root);
+  model.add(r); parts.stockLight = r; parts.stockLens = lens;
+}
+// createGun: the light is the gun's own (g.light), like a bench light locked on (free: its pose is its root's)
+function g17StockLight(g) {
+  if (!g.parts.stockLight) return;
+  const it = { kind: 'att', type: 'light', sub: 'light', label: 'weapon light', on: false, lens: g.parts.stockLens, lamp: null, hook: null, stuck: null, gun: g, free: true, stock: true, prop: { root: g.parts.stockLight } };
+  g.light = g.stockLight = it;
+}
+// Step 98: where a can threads on: the drawn muzzle end, per gun type, in gun-root space (def.muzzle stays the
+// shot origin). Vertices 2-16 mm off the bore axis (a muzzle device's face has vertices only on its edges;
+// attachments, magazine and flash left out) in eight 45-degree sectors: each sector's most forward point, and the
+// can's rear face goes to the rearmost of those, where the muzzle is still a full circle. A slant brake (the AKM's: its top ends 15 mm short of
+// its bottom) then disappears into the collar instead of leaving a wedge of air over it.
+const SUP_TIP = {}, SUP_SEC = new Float64Array(8), _stM = new THREE.Matrix4(), _stI = new THREE.Matrix4(), _stV = new THREE.Vector3();
+function supTip(g) {
+  if (SUP_TIP[g.type]) return SUP_TIP[g.type];
+  const root = g.prop.root, m = g.wr.muzzle, skip = new Set();
+  root.updateMatrixWorld(true); _stI.copy(root.matrixWorld).invert();
+  g.model.traverse((o) => { if (o.userData.att || (g.mag && o === g.mag.root)) o.traverse((c) => skip.add(c)); });
+  SUP_SEC.fill(Infinity);
+  let zMin = Infinity;
+  g.model.traverseVisible((o) => {
+    if (!o.isMesh || skip.has(o) || o.material === WM.flash || !o.geometry || !o.geometry.attributes.position) return;
+    _stM.multiplyMatrices(_stI, o.matrixWorld);
+    const P = o.geometry.attributes.position;
+    for (let i = 0; i < P.count; i++) {
+      _stV.fromBufferAttribute(P, i).applyMatrix4(_stM);
+      const dx = _stV.x - m.x, dy = _stV.y - m.y, r2 = dx * dx + dy * dy;
+      if (r2 >= 0.016 * 0.016 || r2 < 0.000004) continue;
+      if (r2 < 0.0105 * 0.0105 && _stV.z < zMin) zMin = _stV.z;
+      const k = Math.floor((Math.atan2(dy, dx) + Math.PI) / (Math.PI / 4)) & 7;
+      if (_stV.z < SUP_SEC[k]) SUP_SEC[k] = _stV.z;
+    }
+  });
+  let z = -Infinity;
+  for (let k = 0; k < 8; k++) if (Number.isFinite(SUP_SEC[k]) && SUP_SEC[k] > z) z = SUP_SEC[k];
+  if (!Number.isFinite(z) || z > zMin + 0.025) z = zMin;            // no ring found, or a notch: the most forward point
+  const ok = Number.isFinite(z), out = new THREE.Vector3(m.x, m.y, ok ? z + 0.0003 : m.z);   // 0.3 mm over the crown: the thread engaged
+  if (ok && !(g.slideOff > 0.0005) && !g.slideLocked) SUP_TIP[g.type] = out;
+  return out;
 }
 function extSpawn(room, s) {
   const gun = s.type === 'g17' || s.type === 'magg17' ? 'g17' : 'm4a1s', X = EXTG[gun];
@@ -32134,6 +32487,7 @@ function freeItemHand(h, it, p, P, Q) {
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
 if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject };
+if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 </script>
 </body>
 </html>
