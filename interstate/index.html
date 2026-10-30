@@ -567,6 +567,11 @@ button{font:inherit;color:inherit}
 .hud-note b{color:var(--bone);font-weight:500}
 .lockhint{position:absolute;left:50%;bottom:calc(var(--pad-y)*.5);transform:translateX(-50%);font-size:var(--fs-xs);color:var(--bone-2);opacity:0;transition:opacity .3s;text-shadow:0 1px 10px rgba(0,0,0,.8)}
 .lockhint.on{opacity:1}
+.mirhint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;display:none}
+.mirhint i{display:block;width:6px;height:6px;margin:0 auto;border-radius:50%;background:rgba(255,255,255,.55);box-shadow:0 0 4px rgba(0,0,0,.8)}
+.mirhint span{position:absolute;left:50%;top:14px;transform:translateX(-50%);white-space:nowrap;font-size:var(--fs-xs);color:var(--bone-2);text-shadow:0 1px 8px rgba(0,0,0,.85)}
+.mirhint.dot,.mirhint.aim,.mirhint.door,.mirhint.drag{display:block}
+.mirhint.aim i,.mirhint.door i,.mirhint.drag i{background:#fff;width:8px;height:8px}
 
 .aids{display:flex;justify-content:flex-end;gap:12px;margin-top:10px;font-size:var(--fs-xs);letter-spacing:.04em;color:var(--ash-2)}
 .aids span{transition:color .12s linear}
@@ -712,6 +717,7 @@ button{font:inherit;color:inherit}
       <div class="aids" id="hud-aids"><span class="ap" id="hud-ap">Autopilot</span><span data-a="abs">ABS</span><span data-a="tc">TC</span><span data-a="esc">ESC</span></div>
     </div>
     <div class="lockhint" id="hud-lock">Click to capture the mouse for camera look</div>
+    <div class="mirhint" id="hud-mir"><i></i><span></span></div>
     <div class="score" id="hud-score">
       <div class="sc-label">Score</div>
       <div class="sc-total" id="sc-total">0</div>
@@ -1103,7 +1109,7 @@ const ACTIONS = [
 ];
 
 const DEFAULTS = {
-  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, tunnelAE: true, headBeam: true, grime: true, brightness: 1 },
+  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, mirrorAdjust: true, slush: true, tunnelAE: true, headBeam: true, grime: true, brightness: 1 },
   audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true, roadSurface: true },
   controls: {
     bindings: {
@@ -1147,6 +1153,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'graphics', key: 'graphics.shadows', type: 'select', label: 'Shadow quality', desc: 'From Medium up, shadows are sharp where things touch the ground and soften with height, as in real sunlight.', options: [['off', 'Off'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['ultra', 'Ultra']] },
   { tab: 'graphics', key: 'graphics.ssao', type: 'toggle', label: 'Ambient occlusion', desc: 'Darkens creases, under the car and where things meet the ground. Combines sampled and horizon-based occlusion.' },
   { tab: 'graphics', key: 'graphics.mirrors', type: 'select', label: 'Mirrors', desc: 'A live view in the rear-view and door mirrors, true to where your head is. High refreshes them more often and sharper; Low suits the headset.', options: [['off', 'Off'], ['low', 'Low'], ['high', 'High']] },
+  { tab: 'graphics', key: 'graphics.mirrorAdjust', type: 'toggle', label: 'Adjustable mirrors', desc: 'Aim the rear-view and door mirrors yourself. In VR squeeze a grip on the glass and twist or move your hand; push a door mirror\'s housing to fold it. On a computer, in the cockpit, aim the dot at a mirror and drag with the mouse (or hold E and move); F folds a door mirror. Kept per car.' },
   { tab: 'graphics', key: 'graphics.reflections', type: 'select', label: 'Road reflections', desc: 'A mirrored view under the road, projected into wet asphalt. The highest setting adds screen-space reflections for fine contact detail, even on dry tarmac.', options: [['off', 'Off'], ['planar', 'When wet'], ['planar-ssr', 'Always, with screen-space']] },
   { tab: 'graphics', key: 'graphics.volumetrics', type: 'toggle', label: 'Light shafts', desc: 'Sun rays through the haze.' },
   { tab: 'graphics', key: 'graphics.ssgi', type: 'toggle', label: 'Bounce light', desc: 'Screen-space global illumination: sunlit surfaces tint what stands beside them.' },
@@ -2188,7 +2195,8 @@ class VehicleAudio {
       for (const e of cab.events) {
         if (e === 'crank') this.#starter(false); else if (e === 'keyOff') this.#stopStarter();
         else if (e === 'tickOn' || e === 'tickOff') this.#click(e === 'tickOn' ? 2900 : 2100, .05, e === 'tickOn' ? .16 : .11);
-        else if (e === 'wipe') this.#click(160, .12, .05);                 // realism 1: the wiper arm turning or parking, through the bulkhead
+        else if (e === 'wipe') this.#click(160, .12, .05);
+        else if (e === 'mirFold') { this.#click(900, .05, .09); this.#click(2400, .02, .05); }   // mirror adjust: a door mirror's housing on its detent                 // realism 1: the wiper arm turning or parking, through the bulkhead
         else this.#click(e === 'stalk' ? 1800 : 3600, .03, .08);
       }
       cab.events.length = 0;
@@ -2389,7 +2397,12 @@ class InputSystem {
     bus.on('settings:changed', ({ path }) => { if (path.startsWith('controls.bindings')) this.#rebuildMap(); });
     addEventListener('keydown', e => this.#onKeyDown(e), { capture: true });
     addEventListener('keyup', e => this.down.delete(e.code), { capture: true });
-    addEventListener('blur', () => { this.down.clear(); this.kbSteer = 0; });
+    addEventListener('blur', () => { this.down.clear(); this.kbSteer = 0; this.mb = false; });
+    if (MIRADJ.on) {                                                   // mirror adjust: the left button held with the mouse captured; keyHook can take a key first
+      this.mb = false; this.keyHook = null;
+      addEventListener('mousedown', e => { if (e.button === 0 && this.locked) this.mb = true; });
+      addEventListener('mouseup', e => { if (e.button === 0) this.mb = false; });
+    }
     addEventListener('mousemove', e => { if (this.locked) { this.mouse.dx += e.movementX; this.mouse.dy += e.movementY; } });
     addEventListener('gamepadconnected', e => bus.emit('toast', `Controller connected: ${e.gamepad.id.split('(')[0].trim()}`));
     addEventListener('gamepaddisconnected', () => bus.emit('input:gamepadLost'));
@@ -2404,6 +2417,7 @@ class InputSystem {
     this.#setDevice('keyboard');
     this.down.add(e.code);
     if (!this.enabled) return;
+    if (this.keyHook && !e.repeat && this.keyHook(e.code)) { e.preventDefault(); return; }   // mirror adjust: E / F on a mirror
     const a = this.#codeMap.get(e.code);
     if (a) { e.preventDefault(); if (!e.repeat) this.pending.add(a); }
   }
@@ -7797,6 +7811,7 @@ class DriveWorld {
     ct.pos = car.position; ct.yaw = this.yaw; ct.speed = Math.abs(this.v); ct.q = car.quaternion; ct.body = this.carObj.body; ct.ride = this.carObj.rideHeight || 0; ct.impact = sim.impact || 0;
     /* Build 1.15: in the headset the rig rides the car instead of the chase rig */
     const vr = this.vr, inVR = !!(vr && vr.driving), co = this.carObj;
+    if (MIRADJ.on) co.mirrors.tick(dt, this, ctx, inVR);                 // mirror adjust: folding, the cockpit dot and mouse drag
     if (inVR) vr.drive(this); else this.rig.update(dt, ct, ctx.mouse, ctx.stick, ctx.lookBack);
     const cockpit = inVR || this.rig.mode === 'cockpit';
     this.cabinCam = cockpit;                                             // build 1.27: mirrors refresh fully from the seat
@@ -10076,9 +10091,23 @@ const MIRROR_GLASS = {
   e30:     { root: 'model', inner: { at: [0, 1.3, -.3845], r: .14, root: 'cabin', mat: m => m.metalness === 1 && m.roughness < .06 && m.color?.getHex() === 0xcdd1d6, wide: 1 },
              door: { at: [.875, 1.04, -.685], r: .1, face: [-.46, -.02, .89], tol: .94, wide: 1.3 } },
 };
+/* Mirror adjust (graphics.mirrorAdjust; ?mirradj=off = the fixed mirrors exactly as before: no housing split, no
+   pivots, no hover, no grabs). Each glass turns about its pivot (door: just behind the glass; inner: the ball joint
+   behind and above the head) by yaw (about its up axis) and pitch (about its across axis); the door housings fold
+   back about a vertical hinge at their inboard end. The live reflection uses the turned frame (frames[id].M, body
+   space). Kept per body in localStorage (MIRADJ.key) as { body: { id: [yaw, pitch, fold] } }. lim: [yaw, pitch] rad. */
+const MIRADJ = { on: !/[?&]mirradj=off\b/.test(location.search), key: 'interstate.mirrors.v1',
+  lim: { inner: [.45, .3], door: [.26, .26] }, fold: 1.05, foldT: .45, reach: .06, desk: .0022, house: { inner: [.015, .055], door: [.025, .12] } };
 class CarMirrors {
   constructor(car) {
     this.car = car; this.rigs = {}; this.rt = {}; this.q = null; this.frame = 0;
+    if (MIRADJ.on) {                                                   // mirror adjust: scratch made once (no per-frame allocation)
+      this.hold = { left: null, right: null }; this.hint = ''; this.desk = { hover: null, drag: null, e: false, btn: false }; this.adjWas = null;
+      this._hs = { left: { id: null }, right: { id: null } };
+      this._a = [...Array(8)].map(() => new THREE.Vector3()); this._qa = new THREE.Quaternion(); this._qb = new THREE.Quaternion(); this._qc = new THREE.Quaternion();
+      this._mi = new THREE.Matrix4(); this._up = new THREE.Vector3(0, 1, 0);
+      try { this.saved = JSON.parse(localStorage.getItem(MIRADJ.key) || '{}') || {}; } catch { this.saved = {}; }
+    }
     this.cam = new THREE.PerspectiveCamera(); this.cam.matrixAutoUpdate = false; this.cam.layers.enable(5);
     this.glassMat = {};                                                // one live material per mirror id
     for (const id of ['inner', 'left', 'right']) this.glassMat[id] = new THREE.MeshBasicMaterial({ color: new THREE.Color(.82, .83, .85), fog: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });   // silvered glass returns ~80 %
@@ -10145,10 +10174,221 @@ class CarMirrors {
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.computeVertexNormals();
       const live = new THREE.Mesh(g, this.glassMat[id]); live.renderOrder = 1; group.add(live);
       rig.glass[id] = live; rig.frames[id] = { C: C.clone().addScaledVector(n, .0012), n, u, v, hw, hh, wide: G.wide || 1, asp: hw / hh };
+      if (MIRADJ.on) (rig._tmp ??= {})[id] = { T, ng, G, sx };          // mirror adjust: the glass as the model has it, for the housing split
     };
     place('inner', spec.inner, 1);
     if (spec.door) { place('right', spec.door, 1); place('left', spec.door, -1); }
+    if (MIRADJ.on) { try { this.#adjRig(key, rig); } catch (e) { Log.warn('mirror adjust could not be set up: ' + key, e); rig.adj = null; } delete rig._tmp; }
     return (this.rigs[key] = rig);
+  }
+  /* ── mirror adjust (MIRADJ) ── */
+  get adjOn() { return MIRADJ.on && this.car.s.data.graphics.mirrorAdjust !== false; }
+  /** Once per body: splits each mirror's housing and glass out of the model (triangles wholly inside a box about the
+   *  glass: across and up its extent plus a rim, from `depth` behind it to 2 cm in front), hangs them on pivots
+   *  (door: fold hinge, then the glass pivot; inner: the ball joint) and restores the saved aim. */
+  #adjRig(key, rig) {
+    const body = this.car.body, group = rig.group; body.updateWorldMatrix(true, true);
+    const inv = new THREE.Matrix4().copy(body.matrixWorld).invert(), S = this.saved?.[key] || {}, x = new THREE.Vector3();
+    rig.adj = {}; rig.piv = {}; rig.house = [];
+    for (const id of Object.keys(rig.frames)) {
+      const F = rig.frames[id], tmp = rig._tmp?.[id]; if (!tmp) continue;
+      const door = id !== 'inner', T = tmp.T, ng = tmp.ng.clone().normalize();
+      const ug = new THREE.Vector3(0, 1, 0).cross(ng).normalize(), vg = ng.clone().cross(ug), Cg = new THREE.Vector3();
+      for (const p of T) Cg.add(p); Cg.multiplyScalar(1 / T.length);
+      let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+      for (const p of T) { const du = x.subVectors(p, Cg).dot(ug), dv = x.dot(vg); u0 = Math.min(u0, du); u1 = Math.max(u1, du); v0 = Math.min(v0, dv); v1 = Math.max(v1, dv); }
+      const [m, depth] = MIRADJ.house[door ? 'door' : 'inner'];
+      const parts = this.#extract(key, tmp.G, tmp.sx, { C: Cg, n: ng, u: ug, v: vg, u0: u0 - m, u1: u1 + m, v0: v0 - m, v1: v1 + m, n0: -depth, n1: .02 }, inv);
+      const aim = new THREE.Group(), aimBack = new THREE.Group(); aim.add(aimBack);
+      const P = door ? Cg.clone().addScaledVector(ng, -.012) : Cg.clone().addScaledVector(ng, -.03).addScaledVector(vg, (v1 - v0) * .25);
+      aim.position.copy(P); aimBack.position.copy(P).negate();
+      let fold = null, foldBack = null, H = null;
+      if (door) {                                                      // the hinge: vertical, at the housing's inboard end
+        let xin = Infinity, zs = 0, ys = 0, nv = 0;
+        for (const pt of parts) if (pt.house) { const g = pt.house.geometry.attributes.position; pt.house.updateMatrix();
+          for (let i = 0; i < g.count; i++) { x.fromBufferAttribute(g, i).applyMatrix4(pt.house.matrix); xin = Math.min(xin, x.x * tmp.sx); zs += x.z; ys += x.y; nv++; } }
+        H = nv ? new THREE.Vector3(xin * tmp.sx, ys / nv, zs / nv) : Cg.clone().addScaledVector(ug, -tmp.sx * (u1 - u0) / 2);
+        fold = new THREE.Group(); foldBack = new THREE.Group(); fold.position.copy(H); foldBack.position.copy(H).negate(); fold.add(foldBack); foldBack.add(aim); group.add(fold);
+        if (!nv) Log.warn('mirror housing not found: ' + key + ' ' + id);
+      } else group.add(aim);
+      for (const pt of parts) { if (pt.glass) aimBack.add(pt.glass); if (pt.house) (door ? foldBack : aimBack).add(pt.house); for (const mm of [pt.glass, pt.house]) if (mm) rig.house.push({ m: mm, src: pt.src }); }
+      aimBack.add(rig.glass[id]);                                      // the live glass (body space) turns with the model's own
+      F.M = new THREE.Matrix4();
+      const lim = MIRADJ.lim[door ? 'door' : 'inner'], sv = Array.isArray(S[id]) ? S[id] : [], fs = door ? clamp(+sv[2] || 0, 0, 1) : 0;
+      rig.adj[id] = { y: clamp(+sv[0] || 0, -lim[0], lim[0]), p: clamp(+sv[1] || 0, -lim[1], lim[1]), f: fs, ft: fs, fh: false, lim, door, fs: -tmp.sx };
+      rig.piv[id] = { fold, foldBack, aim, aimBack, P, H, c: new THREE.Vector3(), n: new THREE.Vector3(), u: new THREE.Vector3(), v: new THREE.Vector3() };
+      this.#apply(rig, id);
+    }
+  }
+  /** Moves the model's triangles inside the box out of their meshes into new meshes (same material, same local frame):
+   *  { src, glass (the model's own mirror glass, as #glassTris finds it), house (the rest), rel }. */
+  #extract(key, G, sx, box, inv) {
+    const car = this.car, body = car.body, rootKey = G.root || MIRROR_GLASS[key].root;
+    const root = rootKey === 'cel' ? car.cel?.group : rootKey === 'model' ? car.models?.[key]?.group : body;
+    if (!root) return [];
+    const skip = new Set([car.cel?.group, ...Object.values(car.models || {}).map(m => m.group), ...Object.values(this.rigs).map(r => r?.group)].filter(Boolean));
+    const at = new THREE.Vector3(sx * G.at[0], G.at[1], G.at[2]), face = G.face ? new THREE.Vector3(sx * G.face[0], G.face[1], G.face[2]).normalize() : null;
+    const out = [], M = new THREE.Matrix4(), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), d = new THREE.Vector3(), m = new THREE.Vector3(), n = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+    const inBox = p => { d.subVectors(p, box.C); const du = d.dot(box.u), dv = d.dot(box.v), dn = d.dot(box.n); return du > box.u0 && du < box.u1 && dv > box.v0 && dv < box.v1 && dn > box.n0 && dn < box.n1; };
+    const R = Math.hypot(Math.max(-box.u0, box.u1), Math.max(-box.v0, box.v1), -box.n0);
+    const visit = (o) => {
+      if (o !== root && skip.has(o)) return;
+      const geo = o.geometry;
+      if (o.isMesh && !o.isSkinnedMesh && o.visible !== false && !Array.isArray(o.material) && geo?.attributes.position && !geo.groups?.length && !geo.userData.mirShared) {
+        const P = geo.attributes.position, I = geo.index, N = I ? I.count : P.count;
+        M.multiplyMatrices(inv, o.matrixWorld);
+        if (!geo.boundingSphere) geo.computeBoundingSphere();
+        if (m.copy(geo.boundingSphere.center).applyMatrix4(M).distanceTo(box.C) <= geo.boundingSphere.radius * M.getMaxScaleOnAxis() + R) {
+          const gl = [], hs = [], keep = [];
+          for (let t = 0; t + 2 < N; t += 3) {
+            const i0 = I ? I.getX(t) : t, i1 = I ? I.getX(t + 1) : t + 1, i2 = I ? I.getX(t + 2) : t + 2;
+            a.fromBufferAttribute(P, i0).applyMatrix4(M); b.fromBufferAttribute(P, i1).applyMatrix4(M); c.fromBufferAttribute(P, i2).applyMatrix4(M);
+            if (inBox(a) && inBox(b) && inBox(c)) {
+              let glass = m.copy(a).add(b).add(c).multiplyScalar(1 / 3).distanceTo(at) <= G.r && (!G.mat || G.mat(o.material));
+              if (glass && face) { n.crossVectors(e1.subVectors(b, a), e2.subVectors(c, a)).normalize(); if (Math.abs(n.dot(face)) < G.tol) glass = false; }
+              (glass ? gl : hs).push(i0, i1, i2);
+            } else keep.push(i0, i1, i2);
+          }
+          if (gl.length || hs.length) {
+            geo.setIndex(keep);                                         // they leave the model's mesh (its vertices stay)
+            const rel = M.clone();
+            out.push({ src: o, glass: gl.length ? this.#subMesh(o, gl, rel) : null, house: hs.length ? this.#subMesh(o, hs, rel) : null, rel });
+          }
+        }
+      }
+      for (const ch of o.children) visit(ch);
+    };
+    visit(root);
+    return out;
+  }
+  /** A mesh of some of src's triangles (every attribute copied, unindexed), placed in body space like src. */
+  #subMesh(src, ids, rel) {
+    const sg = src.geometry, g = new THREE.BufferGeometry();
+    for (const name in sg.attributes) {
+      const A = sg.attributes[name], k = A.itemSize, arr = new Float32Array(ids.length * k);
+      for (let i = 0; i < ids.length; i++) { const j = ids[i], o = i * k; arr[o] = A.getX(j); if (k > 1) arr[o + 1] = A.getY(j); if (k > 2) arr[o + 2] = A.getZ(j); if (k > 3) arr[o + 3] = A.getW(j); }
+      g.setAttribute(name, new THREE.BufferAttribute(arr, k));
+    }
+    g.computeBoundingSphere(); g.userData.mirShared = true;
+    const mm = new THREE.Mesh(g, src.material); mm.name = 'mirror-part';
+    mm.castShadow = src.castShadow; mm.receiveShadow = src.receiveShadow; mm.renderOrder = src.renderOrder; mm.layers.mask = src.layers.mask; mm.frustumCulled = src.frustumCulled;
+    if ('caster' in src.userData) mm.userData.caster = src.userData.caster;
+    rel.decompose(mm.position, mm.quaternion, mm.scale);
+    return mm;
+  }
+  /** Poses one mirror from its adjust state (rest pose with the setting off) and its body-space frame matrix F.M. */
+  #apply(rig, id) {
+    const A = rig.adj[id], V = rig.piv[id], F = rig.frames[id], on = this.adjOn;
+    const y = on ? A.y : 0, p = on ? A.p : 0, f = on ? A.f : 0, M = F.M.identity();
+    this._qa.setFromAxisAngle(F.v, y); this._qb.setFromAxisAngle(F.u, -p); V.aim.quaternion.multiplyQuaternions(this._qa, this._qb);   // n → n cos p + v sin p, then toward u by y
+    if (V.fold) { V.fold.rotation.set(0, A.fs * f * MIRADJ.fold, 0); V.fold.updateMatrix(); V.foldBack.updateMatrix(); M.multiply(V.fold.matrix).multiply(V.foldBack.matrix); }
+    V.aim.updateMatrix(); V.aimBack.updateMatrix(); M.multiply(V.aim.matrix).multiply(V.aimBack.matrix);
+    V.c.copy(F.C).applyMatrix4(M); V.n.copy(F.n).transformDirection(M); V.u.copy(F.u).transformDirection(M); V.v.copy(F.v).transformDirection(M);
+  }
+  #save() {
+    const key = this.car.bodyKey, rig = this.rigs[key]; if (!rig?.adj) return;
+    const o = {}; for (const id in rig.adj) { const A = rig.adj[id]; o[id] = [+A.y.toFixed(4), +A.p.toFixed(4), A.door ? +A.ft.toFixed(3) : 0]; }
+    this.saved[key] = o; try { localStorage.setItem(MIRADJ.key, JSON.stringify(this.saved)); } catch {}
+  }
+  /** Scripted / test adjust: aim (rad, clamped to the limits) and fold (0 out, 1 in) of one mirror on the current body; saved. */
+  setAim(id, y, p, f) {
+    const rig = this.rigs[this.car.bodyKey], A = rig?.adj?.[id]; if (!A) return false;
+    A.y = clamp(y, -A.lim[0], A.lim[0]); A.p = clamp(p, -A.lim[1], A.lim[1]); if (A.door && f !== undefined) A.f = A.ft = clamp(f, 0, 1);
+    this.#apply(rig, id); this.#save(); return true;
+  }
+  /** Per frame from DriveWorld (live run): fold motion, and on the computer the cockpit dot: hover, drag (mouse button or
+   *  E held, mouse moves the glass and not the view), hint for the HUD ('', 'dot', 'aim', 'door', 'drag'). */
+  tick(dt, d, ctx, vr) {
+    const rig = this.rigs[this.car.bodyKey], K = this.desk; this.hint = '';
+    if (!rig?.adj) { K.hover = K.drag = null; return; }
+    const on = this.adjOn;
+    if (on !== this.adjWas) { this.adjWas = on; for (const id in rig.adj) this.#apply(rig, id); if (!on) { this.vrRelease('left'); this.vrRelease('right'); K.drag = null; } }
+    for (const h of rig.house) h.m.visible = h.src.visible;
+    if (!on) { K.hover = null; return; }
+    for (const id in rig.adj) {                                        // a door mirror swinging to its stop (F, or let go mid-way)
+      const A = rig.adj[id]; if (A.fh || A.f === A.ft) continue;
+      const s = dt / MIRADJ.foldT; A.f = A.f < A.ft ? Math.min(A.ft, A.f + s) : Math.max(A.ft, A.f - s); this.#apply(rig, id);
+      if (A.f === A.ft) { this.car.cab?.events.push('mirFold'); this.#save(); }
+    }
+    if (vr || d?.rig?.mode !== 'cockpit' || !ctx?.inp) { K.hover = K.drag = null; K.btn = K.e = false; return; }
+    const inp = ctx.inp; if (!inp.down.has('KeyE')) K.e = false;
+    const btn = !!inp.mb || K.e;
+    if (!K.drag) K.hover = this.#pick(rig, d.camera);
+    if (K.drag && !btn) { K.drag = null; this.#save(); }
+    else if (!K.drag && btn && !K.btn && K.hover) K.drag = K.hover;
+    K.btn = btn;
+    if (K.drag) {
+      const A = rig.adj[K.drag], m = ctx.mouse, k = MIRADJ.desk * (this.car.s.data.controls.mouseSensitivity || 1);
+      if (m.dx || m.dy) { A.y = clamp(A.y + m.dx * k, -A.lim[0], A.lim[0]); A.p = clamp(A.p - m.dy * k, -A.lim[1], A.lim[1]); this.#apply(rig, K.drag); }
+      m.dx = m.dy = 0;                                                 // the view holds still while the glass moves
+    }
+    this.hint = K.drag ? 'drag' : K.hover ? (rig.adj[K.hover].door ? 'door' : 'aim') : inp.locked ? 'dot' : '';
+  }
+  /** The input's key hook: E (hold to adjust) and F (fold a door mirror) while the dot is on a mirror. True = used. */
+  key(code) {
+    const K = this.desk, rig = this.rigs[this.car.bodyKey]; if (!this.adjOn || !rig?.adj || !K?.hover) return false;
+    if (code === 'KeyE') { K.e = true; return true; }
+    if (code === 'KeyF' && rig.adj[K.hover].door) { const A = rig.adj[K.hover]; A.ft = A.ft > .5 ? 0 : 1; return true; }
+    return false;
+  }
+  /** The mirror under the screen centre (cockpit camera), or null: its glass, a door mirror's with the housing rim. */
+  #pick(rig, cam) {
+    const mi = this._mi.copy(this.car.body.matrixWorld).invert(), o = this._a[0].copy(cam.position).applyMatrix4(mi), dir = this._a[1].set(0, 0, -1).applyQuaternion(cam.quaternion).transformDirection(mi);
+    let best = null, bt = 2.2;
+    for (const id in rig.adj) {
+      const V = rig.piv[id], F = rig.frames[id], A = rig.adj[id], dn = dir.dot(V.n); if (Math.abs(dn) < .05) continue;
+      const t = this._a[2].subVectors(V.c, o).dot(V.n) / dn; if (t <= 0 || t >= bt) continue;
+      const p = this._a[3].copy(o).addScaledVector(dir, t).sub(V.c);
+      if (Math.abs(p.dot(V.u)) < F.hw + (A.door ? .035 : .012) && Math.abs(p.dot(V.v)) < F.hh + (A.door ? .03 : .012)) { bt = t; best = id; }
+    }
+    return best;
+  }
+  /** A VR hand (CabinControls.vrHands): squeeze on a glass to aim it (the glass follows the hand's twist, and its face
+   *  turns toward where the hand pulls), on a door mirror's outer end or back to fold it. gp: grip (body space), q: grip
+   *  (world). True while this hand holds a mirror. */
+  vrHand(side, sq, gp, q, onPulse) {
+    const rig = this.rigs[this.car.bodyKey]; let H = this.hold[side];
+    if (!rig?.adj || !this.adjOn) { if (H) this.vrRelease(side); return false; }
+    if (H && (sq < .45 || !rig.adj[H.id])) { this.vrRelease(side); return false; }
+    const qb = this._qc.copy(this.car.body.getWorldQuaternion(this._qa)).invert().multiply(q);   // the grip in body space
+    if (!H) {
+      if (sq <= .6) return false;
+      let best = null, bd = Infinity;
+      for (const id in rig.adj) { if (this.hold.left?.id === id || this.hold.right?.id === id) continue;
+        const F = rig.frames[id], dd = gp.distanceTo(rig.piv[id].c); if (dd < Math.max(F.hw, F.hh) + MIRADJ.reach && dd < bd) { bd = dd; best = id; } }
+      if (!best) return false;
+      const V = rig.piv[best], A = rig.adj[best], F = rig.frames[best], rel = this._a[4].subVectors(gp, V.c);
+      H = this.hold[side] = this._hs[side];
+      H.id = best; (H.p0 ??= new THREE.Vector3()).copy(gp); (H.q0 ??= new THREE.Quaternion()).copy(qb); (H.n0 ??= new THREE.Vector3()).copy(V.n); H.f0 = A.f; H.atLim = false;
+      H.mode = A.door && (rel.dot(V.u) * -A.fs > F.hw * .75 || rel.dot(V.n) < -.035) ? 'fold' : 'aim';   // outboard of the glass or on its back: the housing
+      H.L = clamp(rel.dot(V.n) + .03, .12, .3);                         // the lever from the pivot to the hand (3 cm ~ 14 deg)
+      if (H.mode === 'fold') { A.fh = true; H.ang0 = Math.atan2(gp.z - V.H.z, gp.x - V.H.x); }
+      onPulse?.(side, .3, 20);
+    }
+    const A = rig.adj[H.id], V = rig.piv[H.id], F = rig.frames[H.id];
+    if (H.mode === 'fold') {                                           // the housing turns about its hinge with the hand; stops at both ends
+      let da = Math.atan2(gp.z - V.H.z, gp.x - V.H.x) - H.ang0; da = Math.atan2(Math.sin(da), Math.cos(da));
+      const f = clamp(H.f0 - da / (A.fs * MIRADJ.fold), 0, 1), was = A.f;
+      if (f !== was) { A.f = A.ft = f; this.#apply(rig, H.id); if (f === 0 || f === 1) { onPulse?.(side, .45, 16); this.car.cab?.events.push('mirFold'); } }
+      return true;
+    }
+    const dq = this._qb.copy(H.q0).invert().premultiply(qb);          // the hand's turn since the grab
+    const nd = this._a[5].copy(H.n0).applyQuaternion(dq), dp = this._a[6].subVectors(gp, H.p0);
+    dp.addScaledVector(H.n0, -dp.dot(H.n0)); nd.addScaledVector(dp, 1 / H.L).normalize();
+    if (V.fold && A.f) nd.applyAxisAngle(this._up, -A.fs * A.f * MIRADJ.fold);   // back into the housing's own frame
+    let y = Math.atan2(nd.dot(F.u), nd.dot(F.n)), p = Math.asin(clamp(nd.dot(F.v), -1, 1));
+    const ly = A.lim[0], lp = A.lim[1], lim = Math.abs(y) >= ly || Math.abs(p) >= lp;
+    if (lim && !H.atLim) onPulse?.(side, .45, 14);                     // a tick at the stop
+    H.atLim = lim; y = clamp(y, -ly, ly); p = clamp(p, -lp, lp);
+    if (y !== A.y || p !== A.p) { A.y = y; A.p = p; this.#apply(rig, H.id); }
+    return true;
+  }
+  vrRelease(side) {
+    const H = this.hold?.[side]; if (!H) return;
+    this.hold[side] = null;
+    const A = this.rigs[this.car.bodyKey]?.adj?.[H.id];
+    if (A && H.mode === 'fold') { A.fh = false; A.ft = A.f > .5 ? 1 : 0; }   // let go mid-way: it swings to the nearer stop
+    this.#save(); H.id = null;
   }
   #targets(q, rig) {
     const key = q && rig ? q + rig.group.name : null;
@@ -10189,7 +10429,11 @@ class CarMirrors {
     try {
       for (const id of ids) {
         const F = rig.frames[id]; if (!F) continue;
-        const c = this._c.copy(F.C).applyMatrix4(Mb), n = this._n.copy(F.n).transformDirection(Mb), u = this._u.copy(F.u).transformDirection(Mb), v = this._w.copy(F.v).transformDirection(Mb);
+        let c, n, u, v;
+        if (F.M) {                                                      // mirror adjust: the glass as it is turned (F.M, body space)
+          if (rig.adj?.[id]?.f > .35) continue;                          // folded in: the glass faces the window
+          const V = rig.piv[id]; c = this._c.copy(V.c).applyMatrix4(Mb); n = this._n.copy(V.n).transformDirection(Mb); u = this._u.copy(V.u).transformDirection(Mb); v = this._w.copy(V.v).transformDirection(Mb);
+        } else { c = this._c.copy(F.C).applyMatrix4(Mb); n = this._n.copy(F.n).transformDirection(Mb); u = this._u.copy(F.u).transformDirection(Mb); v = this._w.copy(F.v).transformDirection(Mb); }
         const d = this._v.copy(eye).sub(c).dot(n); if (d < .02) continue;   // the eye is behind the glass
         /* reflected eye; camera looks along +n through the glass, its x along −u (the reversal is in the glass uv) */
         const ep = this._v.copy(eye).addScaledVector(n, -2 * d), cam = this.cam;
@@ -10593,9 +10837,9 @@ class CabinControls {
     const R = this.#rig(this.car.bodyKey); if (!R) return {};
     const out = {}, inv = this._m.copy(this.car.body.matrixWorld).invert(), wp = new THREE.Vector3();
     for (const side of ['left', 'right']) {
-      const h = hands[side]; if (!h?.grip) { this.vrGrab[side] = null; this.vrPoke[side] = false; if (this.vrPokeObj) this.vrPokeObj[side] = null; continue; }
+      const h = hands[side]; if (!h?.grip) { this.vrGrab[side] = null; this.vrPoke[side] = false; if (this.vrPokeObj) this.vrPokeObj[side] = null; if (MIRADJ.on) this.car.mirrors.vrRelease(side); continue; }
       if (h.wheel) {                                                    // build 1.39: holding the rim, the thumb still presses the wheel's own buttons
-        this.vrGrab[side] = null;
+        this.vrGrab[side] = null; if (MIRADJ.on) this.car.mirrors.vrRelease(side);
         const th = h.tips?.[1], tw = th ? th.getWorldPosition(this._v2) : null; let hit = null;
         if (tw) for (const c of R.ctl) { if (!c.poke || !c.box || c.obj.parent !== this.car.wheelSpin) continue;
           const l = this._v3.copy(tw).applyMatrix4((this._mi2 ??= new THREE.Matrix4()).copy(c.obj.matrixWorld).invert());
@@ -10615,6 +10859,7 @@ class CabinControls {
         if (G.id === 'lever') { this.leverHold = null; }
         this.vrGrab[side] = G = null;
       }
+      if (!G && MIRADJ.on && this.car.mirrors.vrHand(side, h.sq, gp, q, onPulse)) { out[side] = 'mirror'; continue; }   // a mirror in this hand (§14.10)
       if (!G && h.sq > .6) {
         let best = null, bd = 1;
         for (const c of R.ctl) { if (!c.grab) continue; const cp = c.obj.localToWorld(this._v2.set(...(c.at || [0, 0, 0]))).applyMatrix4(inv), dd = cp.distanceTo(gp); if (dd < c.r && dd < bd) { bd = dd; best = c; } }
@@ -13551,7 +13796,7 @@ class UIManager {
 class HUD {
   constructor(settings) {
     this.s = settings; this.el = $('#hud'); this.visible = false; this.acc = 1; this.cache = {};
-    this.e = { spd: $('#hud-spd'), unit: $('#hud-unit'), gear: $('#hud-gear'), rpm: $('#hud-rpm'), note: $('#hud-note'), lock: $('#hud-lock'),
+    this.e = { spd: $('#hud-spd'), unit: $('#hud-unit'), gear: $('#hud-gear'), rpm: $('#hud-rpm'), note: $('#hud-note'), lock: $('#hud-lock'), mir: $('#hud-mir'), mirT: $('#hud-mir span'),
       total: $('#sc-total'), pend: $('#sc-pend'), mult: $('#sc-mult'), ap: $('#hud-ap') };
     this.chainEl = $('#sc-chain'); this.timerEl = $('#sc-timer'); this.timerI = $('#sc-timer-i'); this.feedEl = $('#sc-feed');
     this.lamps = Object.fromEntries($$('#hud-aids [data-a]').map(e => [e.dataset.a, e]));
@@ -13569,6 +13814,8 @@ class HUD {
     const r = Math.round(d.rpm * 200) / 200;
     if (this.cache.rpm !== r) { this.cache.rpm = r; this.e.rpm.style.transform = `scaleX(${r})`; this.e.rpm.classList.toggle('red', r > .9); }
     if (this.cache.lock !== d.lockHint) { this.cache.lock = d.lockHint; this.e.lock.classList.toggle('on', d.lockHint); }
+    if (this.cache.mir !== (d.mir || '') && this.e.mir) { const m = this.cache.mir = d.mir || ''; this.e.mir.className = 'mirhint' + (m ? ' ' + m : '');   // mirror adjust: the cockpit dot and its label
+      this.e.mirT.textContent = m === 'door' ? 'Adjust mirror · drag or hold E · F folds' : m === 'aim' ? 'Adjust mirror · drag or hold E' : m === 'drag' ? 'Adjusting mirror' : ''; }
     if (d.aids) for (const k of ['abs', 'tc', 'esc']) {
       const on = !!d.aids[k], en = !!this.s.data.assists[k], key = k + (en ? 1 : 0) + (on ? 1 : 0);
       if (this.cache['lamp' + k] !== key) { this.cache['lamp' + k] = key; this.lamps[k].classList.toggle('on', on); this.lamps[k].classList.toggle('off', !en); }
@@ -13758,6 +14005,7 @@ class App {
 
     L.set(.9, 'Preparing the interface');
     this.input = new InputSystem(this.settings, this.canvas);
+    if (MIRADJ.on) this.input.keyHook = code => this.state === 'run' && !this.vr?.presenting && this.carObj.mirrors.key(code);   // mirror adjust
     this.vr = new VRSystem(this); this.rs.vr = this.vr; this.input.vr = this.vr;   // build 1.15
     this.audio = new AudioSystem(this.settings);
     this.hud = new HUD(this.settings);
@@ -13927,7 +14175,7 @@ class App {
     const mouse = this.input.consumeMouse();
     if (this.state === 'replay') this.#replayFrame(dt);
     else if (this.state === 'photo') this.#photoFrame(dt);
-    else if (this.state !== 'paused' && this.state !== 'summary') this.world.update(dt, alpha, { mouse, stick: this.input.look, lookBack: this.state === 'run' && this.input.held('lookBack'), keys: this.state === 'menu' ? this.input.down : null });
+    else if (this.state !== 'paused' && this.state !== 'summary') this.world.update(dt, alpha, { mouse, stick: this.input.look, lookBack: this.state === 'run' && this.input.held('lookBack'), keys: this.state === 'menu' ? this.input.down : null, inp: this.input });
     if (this.state === 'run' && this.driveWorld && this.vaudio) {
       const d = this.driveWorld;
       this.vaudio.update(dt, d.liveSrc(), d.camera, d.car.position, d.car.quaternion, d.environment, d.trafficSources(d.camera.position), this.vr?.driving ? 'cockpit' : d.rig.mode);
@@ -13936,7 +14184,7 @@ class App {
 
     if (this.state === 'run' && !this.vr?.presenting) {                // build 1.17: the page HUD is not seen in the headset
       const d = this.driveWorld, g = d.gearInfo;
-      this.hud.update(dt, { speed: d.v, gear: g.gear, rpm: g.rpm, aids: d.sim.aids, score: d.score, auto: d.autopilot.on, noteOn: this.noteClock < 9, lockHint: this.input.device === 'keyboard' && !this.input.locked && (Math.abs(d.v) < 1 || this.runClock < 4) });
+      this.hud.update(dt, { speed: d.v, gear: g.gear, rpm: g.rpm, aids: d.sim.aids, score: d.score, auto: d.autopilot.on, noteOn: this.noteClock < 9, mir: MIRADJ.on ? d.carObj.mirrors.hint : '', lockHint: this.input.device === 'keyboard' && !this.input.locked && (Math.abs(d.v) < 1 || this.runClock < 4) });
     }
     this.telemetry.update(dt, this.state === 'run' && this.settings.data.assists.telemetry && this.driveWorld?.sim?.telemetry ? this.driveWorld.sim : null);
     this.perf.update(raw, steps, this.rs);
