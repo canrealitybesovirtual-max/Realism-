@@ -251,3 +251,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
 - ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
 - Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
+
+## CQC step 86: his body foley (headset check needed)
+- enemyBodyFoley(e, now) from enemiesUpdate after enemyMove: edges on clamp(crouchT + stumble) with hysteresis (>= 0.75 down, <= 0.5 up; e.fcLow). Knee down (cover on a half wall, reload, leg-hit stumble): knee pad, carrier, mags via P10.pending 0.2 s later (ebfKneel). Coming up to peek: cloth and a boot scuff at once, before the pose lifts his head. Pivot on the spot (e.turning, speed < 0.2, once per 0.9 s; e.fcTurnAt): soles on grit. Synth nBurst through soundAt (voice pool, occlusion, air). CONFIG.polish.audio.bodyFoley (gain, 0 = off).
+- ?dev adds enemyBodyFoley. Not verified: how it sounds, Quest frame time.
