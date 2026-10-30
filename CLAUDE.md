@@ -251,3 +251,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - CONFIG.post.chroma 0.0025 -> 0.0012 (body cam mode keeps its own extra fringe).
 - ?dev adds ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM.
 - Verified in headless Chromium (SwiftShader, ~0.2 fps): loads with no errors, convolver crossfade between every acoustic kind, ownStep plays, beam renders (docs/realism-shots/). Not verified: how it sounds, Quest frame time.
+
+## CQC step 86: props knock (CONFIG.polish.audio.knocks; headset check needed)
+- Props and debris knock by material and mass when they land, bump or fall over: stepPhysics calls knockTick for loose props (speed lost in one frame >= knocks.minDv 0.6 m/s; gravity and friction never lose that much), knockSfx picks KNOCK_MAT[p.name] -> KNOCK_SND card / wood / pipe (beam modes 1 : 2.76 : 5.4) / can / drum (the jerry can's boom) / block / plaster / glass / chair. Heavier = lower and longer (pitch cbrt(2.5 / mass), 0.6-1.6). Through soundAt (8-voice pool), 50 ms between knocks, 100 ms per prop, within impactRange. Items (guns, mags, shells) stay silent; the men do not hear knocks (no aiNoise).
+- Held props also sound on contact (beside the buzz in stepPhysics; once per contact, not while you lean it there). A knock that breaks a bottle is left to propsBreakTick / glassSfx (unchanged).
+- Quiet for 1.5 s after a prop is built (room settling, addProp knFrom); debris spawned flying (spawnDebris with vel) clatters at once, boards from memory do not; resetProp clears the speed so a teleport is not a landing.
+- CONFIG.polish.audio.knocks { on, gain, minDv } (on false = silent as before). ?dev adds knockSfx, KNOCK_SND, KNOCK_MAT.
+- Not verified: how it sounds, Quest frame time.
