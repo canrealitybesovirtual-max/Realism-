@@ -1458,6 +1458,7 @@ const PROJECT_RULES = {
     'Blood follows the round: a little blowback, most of it out the far side as mist and droplets. Droplets mark the floor where they land; the wall or floor behind him gets spatter shaped along the shot; a pool spreads under the body over about half a minute. Plates never bleed. Blood decals are per-room decal layers, saved and restored like bullet holes.',
     'The air remembers the fight: muzzle smoke and plaster or concrete dust hang, drift, pool under the ceiling and fade over seconds. Sparks bounce off the floor. Dust motes float everywhere and show only in a beam or a flash, like real dust.',
     'Particles are lit: room ambient (follows the failing tube), the flashlight cone and the muzzle flash. Nothing glows in the dark unless it is hot (sparks).',
+    'Step 86: a hot gun smokes (GUN_WISP). Each shot adds heat (impulse x pellets, a can 1.8x), bleeding off over ~9 s; past 5 a thin grey thread rises and wanders from the muzzle or the can end (the open port 30%, 60% with the slide locked), starting a third of a second after the last shot and thinning as the gun cools. Impact pool: no new draw, lit like dust, so it shows in the headset where haze is off. Not from a holster or behind the desktop viewmodel. CONFIG.polish.wisp, ?wisp=off',
     'Spatial audio: positional sounds use a fixed pool of HRTF voices (CONFIG.polish.audio.voices). A ray to the listener decides occlusion: walls and shut doors lowpass and quieten the sound and its reverb. Sound arrives at the speed of sound. Your own shots stay head-locked; his shots, impacts, near-miss cracks, boots, a body falling and the ballast hum come from where they happen.',
     'The building is alive (step 86): between fights (no engaged man, ears clear, no rounds landing for 8 s) it makes a sound every 12-36 s: a water-hammer knock (the room\'s insulated pipe, or muffled through the slab), duct ticks from the wall grille, a car or truck passing outside (louder in the hall and range, none in stairwells), and rarely a door far off beyond a side wall. Walls, slab and distance muffle them; nobody hears them. CONFIG.polish.audio.amb; ?amb=off.',
     'Hearing: unprotected gunfire indoors raises a dose that dulls the top end of the whole mix and adds a faint ring; it recovers over ~10 s. Toggle: CONFIG.polish.audio.ears.',
@@ -2416,6 +2417,7 @@ const CONFIG = {
       plaster: [0.8, 0.79, 0.75], concrete: [0.6, 0.58, 0.55], wood: [0.5, 0.4, 0.3]
     },
     motes: { on: true, count: 220, box: 5 },  // dust in the air around you (m box), seen only in a beam or a flash
+    wisp: true,                               // step 86: a hot gun smokes after a string of shots (GUN_WISP, impact pool); ?wisp=off
     audio: {
       spatial: true, hrtf: true, voices: 8,   // PERFORMANCE: hrtf false = cheaper equal-power panning
       refDistance: 1.2, rolloff: 0.75,        // inverse distance model
@@ -14299,6 +14301,13 @@ const RAY_GROUPS = groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | G
 let _rapRay = null;
 const _fo = new THREE.Vector3(), _fd = new THREE.Vector3(), _fd2 = new THREE.Vector3(), _fn = new THREE.Vector3(), _fp = new THREE.Vector3();
 const _fx = new THREE.Vector3(), _fy = new THREE.Vector3(), _hn = new THREE.Vector3(), _fxd = new THREE.Vector3();
+// Step 86: a hot gun smokes. Each shot adds heat (the cartridge's push: impulse x pellets / 2.2, so a 9 mm = 1; a can x sup),
+// bleeding off over tau s. Past `from` a thin thread rises and wanders from the muzzle (the can's end; the open port
+// now and then, most with the slide locked), hold s after the last shot, fainter as it cools. Impact pool: one draw,
+// lit like dust, so the headset gets gun smoke with haze off. CONFIG.polish.wisp, ?wisp=off
+const GUN_WISP = { on: CONFIG.polish.wisp !== false && !/[?&]wisp=off\b/.test(location.search), tau: 9, from: 5, rate: [5, 16], sup: 1.8, hold: 0.35, step: 0.025, swept: 1 / 30, a: 0.14,
+  p: { c: [0.6, 0.6, 0.58], a: 0.14, sp: [0.05, 0.12], life: [1.3, 2.3], size: [0.004, 0.007], grow: 0.02, drag: 1.8, grav: -0.32 } };   // grav < 0: it rises (terminal ~0.18 m/s)
+const _gwP = new THREE.Vector3(), _gwA = new THREE.Vector3(), _gwF = new THREE.Vector3();
 function fireGun(g, now) {
   const d = g.def, root = g.prop.root;
   root.updateMatrixWorld(true);
@@ -14345,6 +14354,7 @@ function fireGun(g, now) {
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
   if (g.sup) _wv.addScaledVector(_fd, 0.16);                       // the smoke leaves the can's end
   muzzleSmoke(_wv, _fd, g.type);           // step 10
+  if (GUN_WISP.on) { g.heat = (g.heat || 0) + (d.impulse || 2.2) * (d.pellets || 1) / 2.2 * (g.sup ? GUN_WISP.sup : 1); g.wispH = GUN_WISP.hold; }   // step 86: barrel heat
   if (g.primary) pulse(g.primary, 1, d.auto ? 28 : 45);
   if (g.support) pulse(g.support, 0.65, d.auto ? 22 : 35);
 
@@ -14985,6 +14995,27 @@ function updateGun(g, dt, now) {
   if (g.lh) lhTick(g, dt);                      // step 16: the support hand's reload / rack motion
   if (g.parts.dot) opticDot(g);                  // step 23: red dot
   if (g.anim) { try { g.anim(g, dt); } catch (e) { console.warn('step 59: M1911 animation off', e); g.anim = null; } }   // step 59
+  if (g.heat > 0.02) gunWisp(g, dt);            // step 86
+}
+// Step 86: the hot gun's thread of smoke (GUN_WISP)
+function gunWisp(g, dt) {
+  const S = GUN_WISP, d = g.def, root = g.prop.root;
+  g.heat *= Math.exp(-dt / S.tau);
+  if ((g.wispH = (g.wispH || 0) - dt) > 0) return;                       // still shooting: the gas blows it away
+  if (g.heat < S.from || g.slot || !root.visible || (VM.vis && VM.gun === g)) return;   // holstered / the desktop viewmodel hides the real gun (vmHideGun)
+  const k = clamp((g.heat - S.from) / (2 * S.from)), iv = 1 / (S.rate[0] + (S.rate[1] - S.rate[0]) * k);
+  _gwP.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
+  if (g.sup) _gwP.addScaledVector(_gwF.set(0, 0, -1).transformDirection(root.matrixWorld), 0.16);   // the can's end (as fireGun)
+  if (!g.wispL) g.wispL = _gwP.clone();                                  // once per gun
+  const swept = g.wispL.distanceToSquared(_gwP) > S.step * S.step;      // a moving gun leaves a continuous trail, not beads
+  g.wispT = (g.wispT || 0) - dt;
+  if (g.wispT > 0 && !(swept && g.wispT <= iv - S.swept)) return;
+  g.wispT = iv; g.wispL.copy(_gwP);
+  if (d.action !== 'pump' && !d.manual && Math.random() < (g.slideLocked ? 0.6 : 0.3)) _gwP.copy(g.wr.eject).applyMatrix4(root.matrixWorld);   // the port
+  g.wispPh = (g.wispPh || 0) + iv * 2.4;
+  _gwA.set(Math.sin(g.wispPh) * 0.3, 1, Math.sin(g.wispPh * 0.63 + 1.7) * 0.3);   // a slow wander, so the thread curls (fxEmit normalizes)
+  S.p.a = S.a * (0.55 + 0.45 * k);                                        // thinner as it cools
+  fxEmit(_gwP, _gwA, 0.12, 1, S.p);
 }
 
 // Magazines and shells in a hand: palm pose, then try the magwell / loading port.
