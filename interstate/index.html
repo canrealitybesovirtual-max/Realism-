@@ -9168,6 +9168,11 @@ class CarMirrors {
       let A = 0;
       for (let i = 0; i < T.length; i += 3) { x.crossVectors(e1.subVectors(T[i + 1], T[i]), e2.subVectors(T[i + 2], T[i])); const ar = x.length() / 2; if (x.dot(n) < 0 && n.lengthSq() > 0) x.negate(); n.add(x); C0.addScaledVector(T[i], ar / 3).addScaledVector(T[i + 1], ar / 3).addScaledVector(T[i + 2], ar / 3); A += ar; }
       C0.multiplyScalar(1 / A); n.normalize(); if (n.dot(x.subVectors(eye, C0)) < 0) n.negate();   // faces the driver
+      /* build 1.39: the glass stays where the model has it, but a driver adjusts it in its housing: the reflection is aimed
+         halfway between the eye and the view wanted (the inner one back through the rear window, a touch down; a door
+         one straight back with a sliver of the flank). The model's factory angle looked at the sky and into the car. */
+      const te = x.subVectors(eye, C0).normalize(), want = id === 'inner' ? new THREE.Vector3(0, -.03, 1) : new THREE.Vector3(sx * (id === 'right' ? .44 : .34), -.01, 1);   // the far (passenger) glass needs more outward to clear the flank
+      const ng = n.clone(); n.copy(te).add(want.normalize()).normalize();
       const u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = n.clone().cross(u);
       let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
       for (const p of T) { const du = x.subVectors(p, C0).dot(u), dv = x.dot(v); u0 = Math.min(u0, du); u1 = Math.max(u1, du); v0 = Math.min(v0, dv); v1 = Math.max(v1, dv); }
@@ -9175,8 +9180,8 @@ class CarMirrors {
       const pos = [], uv = [];
       for (let i = 0; i < T.length; i += 3) {
         const tri = [T[i], T[i + 1], T[i + 2]];
-        x.crossVectors(e1.subVectors(tri[1], tri[0]), e2.subVectors(tri[2], tri[0])); if (x.dot(n) < 0) tri.reverse();   // front faces toward the eye
-        for (const p of tri) { const q = x.copy(p).addScaledVector(n, .0012), du = this._v.subVectors(p, C).dot(u), dv = this._v.dot(v); pos.push(q.x, q.y, q.z); uv.push(.5 - du / (2 * hw), .5 + dv / (2 * hh)); }
+        x.crossVectors(e1.subVectors(tri[1], tri[0]), e2.subVectors(tri[2], tri[0])); if (x.dot(ng) < 0) tri.reverse();   // front faces toward the eye
+        for (const p of tri) { const q = x.copy(p).addScaledVector(ng, .0012), du = this._v.subVectors(p, C).dot(u), dv = this._v.dot(v); pos.push(q.x, q.y, q.z); uv.push(.5 - du / (2 * hw), .5 + dv / (2 * hh)); }
       }
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.computeVertexNormals();
       const live = new THREE.Mesh(g, this.glassMat[id]); live.renderOrder = 1; group.add(live);
@@ -9235,7 +9240,7 @@ class CarMirrors {
         cam.matrix.decompose(cam.position, cam.quaternion, cam.scale);
         const rx = (c.x - ep.x) * nx + (c.y - ep.y) * ny + (c.z - ep.z) * nz, ry = (c.x - ep.x) * v.x + (c.y - ep.y) * v.y + (c.z - ep.z) * v.z;
         /* the window through the glass, widened about its centre (convex door glass, wide inner glass); near plane on the glass */
-        const near = d + .006, k = near / d, far = 2400, hw = F.hw * F.wide, hh = F.hh * F.wide;
+        const near = d + (id === 'inner' ? .02 : .075), k = near / d, far = 2400, hw = F.hw * F.wide, hh = F.hh * F.wide;   // build 1.39: past the housing and its rim
         cam.near = near; cam.far = far;
         cam.projectionMatrix.makePerspective((rx - hw) * k, (rx + hw) * k, (ry + hh) * k, (ry - hh) * k, near, far);
         cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
@@ -9364,11 +9369,12 @@ class CabinControls {
    *  sides, in a crisp shut-line with a soft drop shadow below it (light from above), and travels in when pressed. */
   #texCap(c, t, shell) {
     const g = c.obj, w = t.w, h = t.h, H = CAP.h, rc = this._rc ??= new THREE.Raycaster();
-    g.updateWorldMatrix(true, false);
+    if (c.cap) return true;
+    shell.updateWorldMatrix(true, true); g.updateWorldMatrix(true, false);   // build 1.39: the model's matrices may not be current yet (the rays missed and no caps were built)
     const axisZ = new THREE.Vector3(0, 0, 1).transformDirection(g.matrixWorld).negate();
     const uvAt = (x, y) => { rc.set(g.localToWorld(new THREE.Vector3(x, y, .02)), axisZ); rc.far = .05; const hit = rc.intersectObject(shell, true)[0]; return hit ? { uv: hit.uv.clone(), mat: [].concat(hit.object.material)[hit.face.materialIndex || 0], z: g.worldToLocal(hit.point.clone()).z } : null; };
     const C = [uvAt(-w / 2, -h / 2), uvAt(w / 2, -h / 2), uvAt(w / 2, h / 2), uvAt(-w / 2, h / 2)];
-    if (C.some(q => !q)) return;
+    if (C.some(q => !q)) return false;
     const z0 = Math.max(...C.map(q => q.z));                           // the panel's surface under the button
     const cap = new THREE.Group(); cap.position.z = z0; g.add(cap); c.cap = cap;
     /* face: the texture at the button, mapped corner to corner */
@@ -9389,6 +9395,7 @@ class CabinControls {
     const gl = new THREE.Mesh(new THREE.ShapeGeometry(ring), this.M.capGap); gl.position.z = z0 + .0003; gl.renderOrder = 2; g.add(gl);
     /* the glow rides on the cap face */
     cap.add(c.glow); c.glow.position.z = H + .0004;
+    return true;
   }
   /** Places a group at p facing n (body space). */
   #mount(parent, p, n) { const g = new THREE.Group(); g.position.set(...p); if (n) g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...n).normalize()); parent.add(g); return g; }
@@ -9431,7 +9438,8 @@ class CabinControls {
       glow.position.z = .0009; glow.renderOrder = 4; glow.visible = false; g.add(glow);
       const c = { id: t.id, arg: t.arg, obj: g, r: Math.hypot(t.w, t.h) / 2 + .004, poke: true, box: [t.w, t.h], glow, flash: 0, lit: t.lit || null }; R.ctl.push(c); R.fx.push(c); return c; };
     for (const t of WHEEL_PADS) touch(car.wheelSpin, t);
-    for (const t of L.touch || []) { const c = touch(root, t); if (key === 'celsior' && car.cel) this.#texCap(c, t, car.cel.group); }
+    R.capPending = [];
+    for (const t of L.touch || []) { const c = touch(root, t); if (key === 'celsior' && car.cel && !this.#texCap(c, t, car.cel.group)) R.capPending.push([c, t]); }
     R.parts.lights = R.ctl.find(c => c.id === 'lights').obj;
     R.parts.hazard = (R.ctl.find(c => c.id === 'hazard' && c.obj.parent === root) || R.ctl.find(c => c.id === 'hazard')).obj;
     const lcd = this.#canvas(512, 128); R.lcd = lcd;
@@ -9445,11 +9453,11 @@ class CabinControls {
     { const hb = new THREE.Object3D(); hb.position.set(0, 0, -NRG_WHEEL.D + .0122); car.wheelSpin.add(hb);   // build 1.34: the NRG button, down in the dish
       R.ctl.push({ id: 'horn', obj: hb, r: .03, poke: true, hold: true, box: [.058, .058] }); }
     /* gear lever: build 1.35: none drawn (the added one floated over the car's own gate); an invisible pivot keeps the
-       VR grab (squeeze where the knob would be and move it through the gate) and the gate logic */
+       gate logic. Build 1.39: and no grab (squeezing by the console shifted gear with nothing in your hand) */
     { const g = this.#mount(root, L.shifter.p); R.gate = L.shifter.type;
       const lever = new THREE.Group(); g.add(lever);
       const len = L.shifter.len ?? (L.shifter.type === 'h' ? .2 : .13);
-      R.parts.lever = lever; R.leverLen = len; R.noLever = true; R.ctl.push({ id: 'lever', obj: lever, r: .06, grab: true, at: [0, len, 0] });
+      R.parts.lever = lever; R.leverLen = len; R.noLever = true;          // build 1.39: no grab on a lever you cannot see (A / X shift)
     }
     if (L.clutch) { const pc = this.#mount(root, L.clutch); const arm = new THREE.Mesh(new THREE.BoxGeometry(.02, .26, .02).translate(0, -.13, 0), M.plastic); const pad = new THREE.Mesh(rb(.08, .065, .016, .005).translate(0, -.29, .008), car.mats.alu || M.metal); pc.add(arm, pad); R.parts.clutch = pc; }
     /* corner lamps that blink (body exterior) */
@@ -9528,6 +9536,8 @@ class CabinControls {
     const P = R.parts;
     P.key.rotation.z = -[0, .9, 1.45][S.ign];
     P.stalkL.rotation.z = S.blink * .14; P.stalkR.rotation.z = -[0, .1, .2][S.wipers];
+    if (R.capPending?.length && car.cel && (R.capTries = (R.capTries || 0) + 1) < 240)   // build 1.39: caps whose rays missed at build, again
+      R.capPending = R.capPending.filter(([c, t]) => !this.#texCap(c, t, car.cel.group));
     for (const c of R.fx) {                                            // build 1.32: the switches' glow
       c.flash = Math.max(0, c.flash - dt * 5);
       if (c.cap) { const pressed = this.vrPokeObj?.left === c || this.vrPokeObj?.right === c ? 1 : Math.min(1, c.flash * 2.5); c.cap.position.z = c.capZ0 ?? (c.capZ0 = c.cap.position.z); c.cap.position.z = c.capZ0 - CAP.travel * pressed; }   // build 1.38: it goes in
@@ -9624,7 +9634,19 @@ class CabinControls {
     const R = this.#rig(this.car.bodyKey); if (!R) return {};
     const out = {}, inv = this._m.copy(this.car.body.matrixWorld).invert(), wp = new THREE.Vector3();
     for (const side of ['left', 'right']) {
-      const h = hands[side]; if (!h?.grip || h.wheel) { this.vrGrab[side] = null; this.vrPoke[side] = false; continue; }
+      const h = hands[side]; if (!h?.grip) { this.vrGrab[side] = null; this.vrPoke[side] = false; if (this.vrPokeObj) this.vrPokeObj[side] = null; continue; }
+      if (h.wheel) {                                                    // build 1.39: holding the rim, the thumb still presses the wheel's own buttons
+        this.vrGrab[side] = null;
+        const th = h.tips?.[1], tw = th ? th.getWorldPosition(this._v2) : null; let hit = null;
+        if (tw) for (const c of R.ctl) { if (!c.poke || !c.box || c.obj.parent !== this.car.wheelSpin) continue;
+          const l = this._v3.copy(tw).applyMatrix4((this._mi2 ??= new THREE.Matrix4()).copy(c.obj.matrixWorld).invert());
+          if (Math.abs(l.x) < c.box[0] / 2 + .004 && Math.abs(l.y) < c.box[1] / 2 + .004 && l.z < .01 && l.z > -.012) { hit = c; break; } }
+        (this.vrPokeObj ??= {})[side] = hit;
+        if (hit && this.vrPoke[side] !== hit.id) { this.vrPoke[side] = hit.id; onPulse?.(side, .2, 18); if (hit.id === 'horn') this.st.horn = true; else this.act(hit.id, hit.arg); if (hit.glow) hit.flash = 1; }
+        else if (!hit && this.vrPoke[side]) { if (this.vrPoke[side] === 'horn') this.st.horn = false; this.vrPoke[side] = false; }
+        if (hit) out[side] = hit.id;
+        continue;
+      }
       const gw = wp.setFromMatrixPosition(h.grip.matrixWorld), gp = gw.clone().applyMatrix4(inv);
       /* index fingertip: 8 cm ahead of the grip along its pointing axis */
       const tipW = this._v.set(0, -.015, -.085).applyMatrix4(h.grip.matrixWorld), tip = tipW.clone().applyMatrix4(inv);
