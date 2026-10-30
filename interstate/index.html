@@ -1103,7 +1103,7 @@ const ACTIONS = [
 ];
 
 const DEFAULTS = {
-  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, brightness: 1 },
+  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, brightness: 1 },
   audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true },
   controls: {
     bindings: {
@@ -1159,6 +1159,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'graphics', key: 'graphics.chromaticAberration', type: 'toggle', label: 'Lens fringing', desc: 'Faint colour separation toward the edges of the frame.' },
   { tab: 'graphics', key: 'graphics.lensFlare', type: 'toggle', label: 'Lens flare', desc: 'Faint ghosts and veiling glare when the sun is in frame; anything in front of the sun hides them.' },
   { tab: 'graphics', key: 'graphics.lensRain', type: 'toggle', label: 'Rain on the lens', desc: 'Drops land on the camera in the rain, bead, and are blown off as you pick up speed. Photo mode stays clean.' },
+  { tab: 'graphics', key: 'graphics.windscreen', type: 'toggle', label: 'Water on the windscreen', desc: 'Cockpit camera: rain and road spray bead on the screen, run up the glass at speed and are cleared by the wipers (V). Needs a depth effect (Medium and up). Off in the headset.' },   // realism 1
   { tab: 'graphics', group: 'World' },
   { tab: 'graphics', key: 'graphics.anisotropy', type: 'select', label: 'Texture filtering', desc: 'Keeps the road sharp at grazing angles.', options: [[1, 'Off'], [2, '2×'], [4, '4×'], [8, '8×'], [16, '16×']] },
   { tab: 'graphics', key: 'graphics.drawDistance', type: 'range', label: 'Draw distance', desc: 'How far ahead the road is built. Shorter distances bring the haze closer.', min: .4, max: 1, step: .05, fmt: pct },
@@ -2076,6 +2077,7 @@ class VehicleAudio {
       for (const e of cab.events) {
         if (e === 'crank') this.#starter(false); else if (e === 'keyOff') this.#stopStarter();
         else if (e === 'tickOn' || e === 'tickOff') this.#click(e === 'tickOn' ? 2900 : 2100, .05, e === 'tickOn' ? .16 : .11);
+        else if (e === 'wipe') this.#click(160, .12, .05);                 // realism 1: the wiper arm turning or parking, through the bulkhead
         else this.#click(e === 'stalk' ? 1800 : 3600, .03, .08);
       }
       cab.events.length = 0;
@@ -5402,16 +5404,109 @@ function makeGradeLUT(N = 32) {
   t.wrapR = t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.unpackAlignment = 1; t.needsUpdate = true;
   return t;
 }
+/* realism 1: water on the windscreen and the wipers (cockpit camera, computer only). ?wscreen=off = exactly the old cockpit. */
+const WSR = { on: !/[?&]wscreen=off\b/.test(location.search) };
 const finishShader = () => ({
   uniforms: { tDiffuse: { value: null }, tLUT: { value: null }, tDepth: { value: null }, uHaze: { value: 0 }, uLutSize: { value: 32 }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 }, uGrain: { value: 1 }, uCA: { value: 1 }, uVignette: { value: .24 }, uSharpen: { value: .3 },
     uDistort: { value: .018 }, uAspect: { value: 1 }, uHeat: { value: 0 }, uHeatPos: { value: new THREE.Vector3(.5, .5, .05) },
     uFlare: { value: 0 }, uSunUV: { value: new THREE.Vector2(.5, .5) }, uFlareCol: { value: new THREE.Vector3(1, .9, .75) },
-    uDrops: { value: 0 }, uDropT: { value: 0 }, uAir: { value: 0 }, uUpFlow: { value: 0 }, uDropLight: { value: 1 } },        // section 12: rain on the lens
+    uDrops: { value: 0 }, uDropT: { value: 0 }, uAir: { value: 0 }, uUpFlow: { value: 0 }, uDropLight: { value: 1 },        // section 12: rain on the lens
+    /* realism 1: water on the windscreen and the wipers (cockpit camera on a computer; the headset never runs this pass) */
+    uWsOn: { value: 0 }, uWs: { value: 0 }, uWsT: { value: 0 }, uWsW: { value: 0 }, uWsF: { value: 0 }, uWsMove: { value: 0 }, uWsAir: { value: 0 },
+    uWsRun: { value: 0 }, uWsRunK: { value: 0 }, uWsDir: { value: 1 }, uWsDay: { value: 1 }, uWsNight: { value: 0 },
+    uWsIP: { value: new THREE.Matrix4() }, uWsPM: { value: new THREE.Matrix4() },
+    uWsC: { value: new THREE.Vector3() }, uWsN: { value: new THREE.Vector3(0, 0, 1) }, uWsU: { value: new THREE.Vector3(1, 0, 0) }, uWsV: { value: new THREE.Vector3(0, 1, 0) },
+    uWsBox: { value: new THREE.Vector4(-.7, .7, -.4, .4) }, uWsPiv: { value: new THREE.Vector4() }, uWsRad: { value: new THREE.Vector4() }, uWsAng: { value: new THREE.Vector4() },
+    uWk0: { value: new THREE.Vector4() }, uWk1: { value: new THREE.Vector4() }, uWw: { value: new THREE.Vector4() } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: GLSL_NOISE + /* glsl */`
     uniform sampler2D tDiffuse, tDepth; uniform highp sampler3D tLUT; uniform float uLutSize, uTime, uGrain, uCA, uVignette, uSharpen, uHaze; uniform vec2 uRes;
     uniform float uDistort, uAspect, uHeat, uFlare; uniform vec3 uHeatPos, uFlareCol; uniform vec2 uSunUV;
     uniform float uDrops, uDropT, uAir, uUpFlow, uDropLight;
+    /* ── realism 1: water on the windscreen, and the wipers ─────────────────
+       The screen is a plane in the car's body (fitted to the model at first use), seen
+       through the cockpit camera: each pixel's ray meets it at g (metres across, u, and up
+       the rake, v). Only pixels whose scene depth lies on or beyond that plane are looked
+       at through the glass; the dash, pillars, roof lining and mirror stay dry.
+       Water is analytic like the lens drops, but on a clock of its own: uWsW counts water
+       landed (rain x airspeed, plus spray off a wet road), so drops build up between
+       wipes and stay when the rain stops. Each wiper blade's last pass over a point is
+       solved from the current and previous strokes (eased sweeps, uWk0 / uWk1, with the
+       water clock at either end, uWw); a pass starts a fresh field there. A cell's drops
+       grow as they merge; big ones are carried off by the airflow and become runners that
+       race up the glass trailing a thin wake (or creep down when parked). Behind the blade
+       a film flattens out, and the worn blade leaves arcs that spread lamps into streaks
+       toward the pivot at night. A drop is a small lens: the ray is bent by its dome and
+       the scene is read where the bent ray lands, so it shows the world upside down. */
+    uniform float uWsOn, uWs, uWsT, uWsW, uWsF, uWsMove, uWsAir, uWsRun, uWsRunK, uWsDir, uWsDay, uWsNight;
+    uniform mat4 uWsIP, uWsPM; uniform vec3 uWsC, uWsN, uWsU, uWsV;
+    uniform vec4 uWsBox, uWsPiv, uWsRad, uWsAng, uWk0, uWk1, uWw;
+    vec2 gWsRad; float gWsR;
+    vec2 wsCross(float x, vec4 k, vec2 w) {                                        // (time, water) when stroke k crossed sweep fraction x
+      float s = acos(clamp(k.z > 0.0 ? 1.0 - 2.0 * x : 2.0 * x - 1.0, -1.0, 1.0)) / 3.14159265;
+      return vec2(k.x + s * k.y, mix(w.x, w.y, s));
+    }
+    /* the last blade pass over g: (time, water clock, swept); time -1e4 = not wiped yet */
+    vec3 wsLast(vec2 g) {
+      vec3 best = vec3(-1e4, 0.0, 0.0);
+      for (int i = 0; i < 2; i++) {
+        vec2 piv = i == 0 ? uWsPiv.xy : uWsPiv.zw, rr = i == 0 ? uWsRad.xy : uWsRad.zw, an = i == 0 ? uWsAng.xy : uWsAng.zw;
+        vec2 d = g - piv; float r = length(d);
+        if (r < rr.x || r > rr.y) continue;
+        float x = (atan(d.y, d.x) - an.x) / (an.y - an.x);
+        if (x < 0.0 || x > 1.0) continue;
+        vec3 c = vec3(-1e4, 0.0, 1.0);
+        if (uWk0.w > 0.5) {
+          vec2 p = wsCross(x, uWk0, uWw.xy);
+          if (p.x <= uWsT) c.xy = p; else if (uWk1.w > 0.5) c.xy = wsCross(x, uWk1, uWw.zw);
+        }
+        if (best.z < 0.5 || c.x > best.x) { best = c; gWsRad = d / max(r, 1e-4); gWsR = r; }
+      }
+      return best;
+    }
+    /* static drops of one layer: (dome normal in glass axes, cover, rim) */
+    vec4 wsDrops(vec2 g, float cs, float seed, float rMin, float rMax, float mpp) {
+      vec2 id = floor(g / cs), cc = (id + 0.5) * cs;
+      vec3 L = wsLast(cc);
+      float h1 = hash12(id * 0.731 + seed), h2 = hash12(id * 1.37 + seed * 2.3);
+      float tauW, ep, fade = 1.0;
+      if (L.x > -1e3) { tauW = uWsW - L.y; ep = floor(L.x * 13.0); }
+      else { float q = uWsW + h1 * 60.0; ep = floor(q / 60.0); tauW = q - ep * 60.0; fade = 1.0 - smoothstep(48.0, 60.0, tauW); ep += 977.0; }   // never wiped: slow cycles
+      vec2 cid = id + vec2(mod(ep, 263.0) * 7.13, mod(ep, 263.0) * 3.31);
+      float h3 = hash12(cid + seed * 5.1), h4 = hash12(cid * 1.11 + 2.7), h5 = hash12(cid * 0.83 + 6.1), h6 = hash12(cid * 1.73 + 9.4);
+      float n = tauW * mix(0.2, 1.0, h1) - h3;                                      // drops landed here since the last pass
+      float on = smoothstep(h2, h2 + 0.12, uWs * 1.15) * fade * step(0.0, n);
+      if (on <= 0.0) return vec4(0.0);
+      float rad = mix(rMin, rMax, h4 * h4) * sqrt(1.0 + 0.55 * min(floor(n), 5.0));   // merging beads grow
+      float runR = mix(0.02, 0.0024, uWsAir);
+      on *= 1.0 - smoothstep(runR * 0.85, runR, rad);                               // the big ones are blown away
+      rad = min(rad, cs * 0.42);
+      vec2 d = g - (cc + (vec2(h5, h6) - 0.5) * (cs - 2.0 * rad));
+      float ang = h4 * 6.2832, sq = mix(0.72, 1.0, h5), ca = cos(ang), sa = sin(ang);
+      float q = length(vec2(ca * d.x + sa * d.y, (ca * d.y - sa * d.x) / sq)) / rad;
+      float m = (1.0 - smoothstep(1.0 - max(mpp / rad, 0.05), 1.0, q)) * on;
+      if (m <= 0.0) return vec4(0.0);
+      vec2 nn = d / rad; nn /= max(1.0, length(nn));
+      return vec4(nn, m, smoothstep(0.55, 0.95, q) * m);
+    }
+    /* runners: beads riding the airflow up the glass (down at a standstill), each with a thin wake */
+    vec4 wsRunner(vec2 g, float mpp) {
+      float cw = 0.012, ci = floor(g.x / cw);
+      float r1 = hash12(vec2(ci, 3.7)), r2 = hash12(vec2(ci, 8.1)), r3 = hash12(vec2(ci, 1.9)), r4 = hash12(vec2(ci, 5.3));
+      if (r1 > uWsRunK) return vec4(0.0);
+      float L = mix(0.16, 0.5, r2), y = g.y - uWsRun * mix(0.7, 1.3, r3);
+      float cell = floor(y / L), hc = hash12(vec2(ci * 1.3, cell) + 4.4);
+      if (hc > 0.75) return vec4(0.0);
+      float ly = (fract(y / L) - 0.5) * L;
+      float dx = g.x - (ci + 0.5 + (hc - 0.375) * 0.6) * cw - sin(g.y * 47.0 + r4 * 6.283) * cw * 0.1;
+      float rh = mix(0.0015, 0.0026, hash12(vec2(ci, cell) + 9.2));
+      vec2 d = vec2(dx, ly / (1.0 + 1.2 * uWsAir));
+      float q = length(d) / rh, head = 1.0 - smoothstep(1.0 - max(mpp / rh, 0.05), 1.0, q);
+      float tl = -ly * uWsDir, tr = 0.0, len = L * 0.45, w = rh * 0.35 * (1.0 - tl / len);
+      if (tl > 0.0 && tl < len) tr = (1.0 - smoothstep(w * 0.6, w + mpp, abs(dx))) * 0.6;
+      if (head >= tr) { vec2 nn = d / rh; nn /= max(1.0, length(nn)); return vec4(nn, head, smoothstep(0.55, 0.95, q) * head); }
+      return vec4(clamp(dx / max(w, 1e-4), -1.0, 1.0), 0.0, tr, tr * 0.5);
+    }
     /* ── Section 12: rain on the lens ──────────────────────────────────────
        Water drops sitting on the camera's front element. Each grid cell runs
        its own cycle: a drop lands at a random spot, beads for a moment, then
@@ -5492,6 +5587,59 @@ const finishShader = () => ({
         dropM = max(A.z, B.z); dropRim = max(rA, rB * 0.7); dropSpec = max(A.w, B.w * 0.6);
         uv += vec2(off.x / uAspect, off.y);
       }
+      float wsA = 0.0, wsRim = 0.0, wsBlade = 0.0, wsHi = 0.0; vec2 wsD = vec2(0.0); vec3 wsGlare = vec3(0.0);
+      if (uWsOn > 0.5) {                                                             // realism 1: the windscreen
+        vec4 vp = uWsIP * vec4(vUv * 2.0 - 1.0, 1.0, 1.0); vec3 rd = normalize(vp.xyz / vp.w);
+        float den = dot(rd, uWsN), tP = dot(uWsC, uWsN) / (abs(den) > 1e-4 ? den : 1e-4);
+        vec3 P = rd * tP; vec2 g = vec2(dot(P - uWsC, uWsU), dot(P - uWsC, uWsV));
+        float mpp = length(fwidth(g));
+        vec4 qv = uWsIP * vec4(vUv * 2.0 - 1.0, texture2D(tDepth, vUv).x * 2.0 - 1.0, 1.0);
+        float msk = step(0.05, tP) * step(mpp, 0.01) * smoothstep(tP - 0.04, tP - 0.015, length(qv.xyz / qv.w));   // seen through the glass
+        if (msk > 0.0) {
+          /* the blades lie on the glass: arm, pivot nut, blade; a bead of water rides ahead of a moving one */
+          vec4 bead = vec4(0.0);
+          for (int i = 0; i < 2; i++) {
+            vec2 piv = i == 0 ? uWsPiv.xy : uWsPiv.zw, rr = i == 0 ? uWsRad.xy : uWsRad.zw, an = i == 0 ? uWsAng.xy : uWsAng.zw;
+            float th = an.x + uWsF * (an.y - an.x); vec2 dir = vec2(cos(th), sin(th)), pd = vec2(-dir.y, dir.x), d = g - piv;
+            float al = dot(d, dir), pp = dot(d, pd), ap = abs(pp);
+            float bl = (1.0 - smoothstep(0.0075, 0.0075 + mpp, ap)) * step(rr.x, al) * step(al, rr.y);
+            float arm = (1.0 - smoothstep(0.0045, 0.0045 + mpp, ap)) * step(-0.02, al) * step(al, rr.y * 0.86);
+            float nut = 1.0 - smoothstep(0.014, 0.014 + mpp, length(d));
+            wsBlade = max(wsBlade, max(bl, max(arm, nut)));
+            wsHi = max(wsHi, bl * (1.0 - smoothstep(0.0008, 0.0016 + mpp, abs(pp - 0.0035))));
+            float lead = pp * uWsMove;
+            if (uWsMove != 0.0 && uWs > 0.002 && al > rr.x && al < rr.y && lead > 0.0075 && lead < 0.016) {
+              float k = (lead - 0.0118) / 0.0042; bead = vec4(pd * uWsMove * clamp(k, -1.0, 1.0), (1.0 - k * k) * min(uWs * 1.5, 1.0), 0.0);
+            }
+          }
+          wsBlade *= msk;
+          float bx = smoothstep(uWsBox.x, uWsBox.x + 0.03, g.x) * (1.0 - smoothstep(uWsBox.y - 0.03, uWsBox.y, g.x))
+                   * smoothstep(uWsBox.z, uWsBox.z + 0.02, g.y) * (1.0 - smoothstep(uWsBox.w - 0.03, uWsBox.w, g.y)) * msk;
+          if (uWs > 0.002 && bx > 0.0) {
+            vec3 Lp = wsLast(g); vec2 rad = gWsRad; float rW = gWsR;
+            float tauS = Lp.x > -1e3 ? uWsT - Lp.x : 1e4;
+            vec4 D = wsDrops(g, 0.013, 1.0, 0.0011, 0.0019, mpp);
+            vec4 B = wsDrops(g + 0.0047, 0.0085, 7.0, 0.0006, 0.0011, mpp); if (B.z > D.z) D = B;
+            vec4 R = wsRunner(g, mpp) * vec4(1.0, 1.0, vec2(smoothstep(0.3, 1.6, tauS) * min(uWs * 2.0, 1.0))); if (R.z > D.z) D = R;
+            if (bead.z > D.z) D = bead;
+            wsA = D.z * bx; wsRim = D.w * bx; wsD = D.xy;
+            float film = exp(-tauS / 0.45) * min(uWs * 2.0, 1.0) * Lp.z * bx;       // the wake behind the blade, flattening out
+            vec3 bend = -(D.x * uWsU + D.y * uWsV) * 0.32 * wsA;
+            bend += (uWsU * (vnoise(g * 140.0) - 0.5) + uWsV * (vnoise(g * 140.0 + 7.0) - 0.5)) * 0.03 * film;
+            vec4 cp = uWsPM * vec4((rd + bend) * 20.0, 1.0); uv += cp.xy / cp.w * 0.5 + 0.5 - vUv;
+            float sm = (0.25 + 0.75 * exp(-tauS / 2.5)) * Lp.z * bx * min(uWs * 2.0, 1.0) * uWsNight;
+            sm *= 0.4 + 0.6 * smoothstep(0.55, 0.9, vnoise(vec2(rW * 380.0, 0.5)));   // the worn blade's arcs
+            if (sm > 0.01) {
+              vec4 cq = uWsPM * vec4(P + (rad.x * uWsU + rad.y * uWsV) * 0.01, 1.0); vec2 st = cq.xy / cq.w * 0.5 + 0.5 - vUv;
+              for (int k = 1; k <= 4; k++) {
+                float f = float(k) * float(k) * 0.6, wk = 1.0 / (1.0 + f);
+                wsGlare += (max(texture2D(tDiffuse, vUv + st * f).rgb - 0.72, 0.0) + max(texture2D(tDiffuse, vUv - st * f).rgb - 0.72, 0.0)) * wk;
+              }
+              wsGlare *= sm * 0.55;
+            }
+          }
+        }
+      }
       vec2 c = uv - 0.5; float r2 = dot(c, c);
       /* Contrast-adaptive sharpening (after AMD FidelityFX CAS). Sharpens in proportion to
          local headroom, so fine detail (aggregate, lane paint, badges, foliage) regains
@@ -5517,6 +5665,17 @@ const finishShader = () => ({
         col *= 1.0 - dropRim * 0.24;                                                 // meniscus: total internal reflection darkens the edge
         col += vec3(0.9, 0.93, 0.97) * dropSpec * 0.22 * uDropLight;
       }
+      if (wsA > 0.0) {                                                               // realism 1: water on the windscreen
+        vec2 bo = px * 1.5;
+        vec3 soft = (texture2D(tDiffuse, uv + vec2(bo.x, bo.y)).rgb + texture2D(tDiffuse, uv + vec2(-bo.x, bo.y)).rgb
+                   + texture2D(tDiffuse, uv + vec2(bo.x, -bo.y)).rgb + texture2D(tDiffuse, uv - bo).rgb) * 0.25;
+        col = mix(col, soft, wsA * 0.35);
+        col *= 1.0 - wsRim * 0.3;                                                    // the rim turns the light back in
+        vec2 hd = wsD - vec2(0.08, -0.42);
+        col += vec3(0.86, 0.9, 0.96) * exp(-dot(hd, hd) / 0.03) * wsA * 0.12 * uWsDay;   // sky focused in the lower dome
+      }
+      col += wsGlare;
+      if (wsBlade > 0.0) col = mix(col, vec3(0.011, 0.011, 0.012) + vec3(0.05) * wsHi * uWsDay, wsBlade);
       if (uCA > 0.0) {                                                               // lateral colour: a hair at the frame edge only
         vec2 o = c * r2 * 0.004 * uCA;
         col.r += texture2D(tDiffuse, uv - o).r - e.r; col.b += texture2D(tDiffuse, uv + o).b - e.b;
@@ -5637,6 +5796,24 @@ class PostFX {
       fu.uDrops.value = this.dropK;
       if (this.dropK > 0) { this.dropT = ((this.dropT || 0) + dt) % 3600; fu.uDropT.value = this.dropT; }
       fu.uAir.value = damp(fu.uAir.value, vd?.air || 0, 3, dt); fu.uUpFlow.value = vd?.upFlow || 0; fu.uDropLight.value = vd?.dropLight ?? 1;
+    }
+    /* realism 1: the windscreen plane into the camera's view space, the wipers and the water clock */
+    {
+      const ws = vd?.ws, on = !!(ws && ws.view && ws.glass && ws.body && depth && cam);
+      fu.uWsOn.value = on ? 1 : 0;
+      if (on) {
+        const G = ws.glass, T = this._wsT || (this._wsT = { v: new THREE.Matrix4(), m: new THREE.Matrix4() });
+        cam.updateMatrixWorld(); ws.body.updateWorldMatrix(true, false);
+        T.v.copy(cam.matrixWorld).invert(); T.m.multiplyMatrices(T.v, ws.body.matrixWorld);
+        fu.uWsC.value.copy(G.C).applyMatrix4(T.m); fu.uWsN.value.copy(G.n).transformDirection(T.m);
+        fu.uWsU.value.copy(G.u).transformDirection(T.m); fu.uWsV.value.copy(G.v).transformDirection(T.m);
+        fu.uWsIP.value.copy(cam.projectionMatrixInverse); fu.uWsPM.value.copy(cam.projectionMatrix);
+        fu.uWsBox.value.copy(G.box); fu.uWsPiv.value.copy(G.piv); fu.uWsRad.value.copy(G.rad); fu.uWsAng.value.copy(G.ang);
+        fu.uWk0.value.fromArray(ws.k0); fu.uWk1.value.fromArray(ws.k1); fu.uWw.value.set(ws.w0[0], ws.w0[1], ws.w1[0], ws.w1[1]);
+        fu.uWs.value = ws.wet; fu.uWsT.value = ws.T; fu.uWsW.value = ws.Wc; fu.uWsF.value = ws.f; fu.uWsMove.value = ws.move;
+        fu.uWsAir.value = ws.air; fu.uWsRun.value = ws.run; fu.uWsRunK.value = ws.runK; fu.uWsDir.value = ws.dir;
+        fu.uWsNight.value = ws.night; fu.uWsDay.value = 1 - ws.night;
+      }
     }
     /* sun flare: on screen, unclouded, daylight; the shader tests occlusion against depth */
     fu.uFlare.value = 0;
@@ -7278,6 +7455,7 @@ class DriveWorld {
     this.traffic.draw(alpha, Math.max(env.night, env.rain * .6));      // lights on after dark and in rain
     this.carObj.setNight(Math.max(env.night, env.rain * .5), sim.brake > .05 && Math.abs(sim.speed) > .5, sim.damage || 0);
     this.#bodyWater(dt, env, Math.abs(sim.speed));                        // section 12
+    this.#windscreen(dt, env, Math.abs(sim.speed));                       // realism 1
     // World streaming (one build stage per frame keeps frame times flat)
     this.#stream(1);
     this.#syncWindow(false);
@@ -7474,6 +7652,7 @@ class DriveWorld {
     this.traffic.renderer.draw(this.traffic.track, this.replay.proxies, 1, R.t);
     this.carObj.setNight(Math.max(env.night, env.rain * .5), H[16] > .05 && Math.abs(H[15]) > .5, H[17]);
     this.#bodyWater(dt, env, Math.abs(H[15]));                           // section 12
+    this.#windscreen(dt, env, Math.abs(H[15]));                          // realism 1
     this.#stream(2); this.#syncWindow(false);
     this.trees.update(dt, this.camera.position, this.#chunks(), this.streamer.ahead * .85); if (!this.tunnel) this.far.update(car.position);
     const tu = this.mats.treeU; tu.uWindTime.value += dt * (.8 + .4 * env.wind); tu.uWindStrength.value = env.wind;
@@ -7486,6 +7665,126 @@ class DriveWorld {
       this.replayRig.update(Math.max(dt, 1e-4), ct, z.m, z.s, false);
     }
     this.#effects(dt, this.replay.sourceOf(H, this.track.length), true);
+  }
+  /** Interstate realism 1: water on the windscreen and the wipers. The glass keeps a water clock (Wc: rain, harder
+   *  at speed, plus spray thrown up off a wet road), so drops build between wipes and stay after the rain stops until
+   *  they dry (~4 min, quicker in the airflow). The wipers follow the right stalk with the key on: off / intermittent
+   *  (one sweep, then a pause) / fast; switched off mid-sweep they finish and park. Each sweep is an eased stroke; the
+   *  current and the previous one (k0 / k1, with the water clock at their ends, w0 / w1) are all the shader needs to
+   *  know when a blade last crossed any point. Runners ride up the rake with the airflow (run, m along the glass).
+   *  Drawn only for the cockpit camera on a computer (view); the state runs always so it is right on a camera change. */
+  #windscreen(dt, env, speed) {
+    const W = this.ws || (this.ws = { view: false, glass: null, body: null, wet: 0, T: 0, Wc: 0, f: 0, move: 0, air: 0, run: 0, runK: 0, dir: 1, night: 0,
+      phase: 0, pauseAt: 0, k0: [0, 0, 0, 0], k1: [0, 0, 0, 0], w0: [0, 0], w1: [0, 0] });
+    W.view = false;
+    if (!WSR.on) return;
+    const co = this.carObj, g = this.s.data.graphics, cab = co.cab;
+    dt = clamp(dt, 0, .1); W.T += dt;
+    if (W.T > 1500) { W.T -= 1000; W.k0[0] -= 1000; W.k1[0] -= 1000; W.pauseAt -= 1000; }
+    const rain = env.rain || 0, air = clamp((speed - 6) / 30, 0, 1);
+    const rate = rain * (.45 + speed / 14) + (env.wet || 0) * .22 * clamp(speed / 20, 0, 1);
+    W.Wc += rate * dt;
+    if (rate > .03) W.wet = Math.min(1, W.wet + dt * (.05 + rate * .12));
+    else W.wet = Math.max(0, W.wet - dt / (240 - 150 * air));
+    W.air = air; W.night = clamp(env.night || 0, 0, 1);
+    const vr = .9 * air * air - .03 * (1 - air);                         // m/s along the rake: up in the airflow, a creep down standing
+    W.dir = vr >= 0 ? 1 : -1; W.run = (W.run + vr * dt) % 500;
+    W.runK = clamp(W.wet * (.15 + .55 * air) * clamp(rate * .8, .25, 1), 0, .85);
+    /* wipers */
+    const sw = cab && cab.ign >= 1 ? cab.wipers | 0 : 0, dur = sw === 2 ? .42 : .62;
+    if (W.phase === 0) { if (sw === 2 || (sw === 1 && W.T >= W.pauseAt)) this.#wsStroke(W, 1, dur); }
+    else {
+      const s = (W.T - W.k0[0]) / W.k0[1];
+      if (s >= 1) {
+        W.w0[1] = W.Wc; cab?.events.push('wipe');                      // the blade turns (or parks) with a soft knock
+        if (W.phase === 1) this.#wsStroke(W, -1, dur); else { W.phase = 0; W.pauseAt = W.T + (rain > .5 ? 2.2 : 3.6); }
+      } else W.w0[1] = W.w0[0] + (W.Wc - W.w0[0]) / Math.max(s, .05);   // water at the stroke's end, from the rate so far
+    }
+    const s = W.phase ? clamp((W.T - W.k0[0]) / W.k0[1], 0, 1) : 0;
+    W.f = W.phase === 1 ? (1 - Math.cos(Math.PI * s)) / 2 : W.phase === 2 ? (1 + Math.cos(Math.PI * s)) / 2 : 0;
+    W.move = W.phase === 1 ? 1 : W.phase === 2 ? -1 : 0;
+    /* drawn for the cockpit camera only, never in the headset */
+    if (g.windscreen !== false && (this.activeRig || this.rig).mode === 'cockpit' && !this.vr?.driving) {
+      const key = co.bodyKey === 'e30' ? 'e30' : co.bodyKey === 'celsior' ? 'celsior' : 'sedan';
+      W.glass = this.#wsGlass(key); W.body = co.body; W.view = !!W.glass;
+    }
+  }
+  #wsStroke(W, dir, dur) {
+    W.k1[0] = W.k0[0]; W.k1[1] = W.k0[1]; W.k1[2] = W.k0[2]; W.k1[3] = W.k0[3]; W.w1[0] = W.w0[0]; W.w1[1] = W.w0[1];
+    W.k0[0] = W.T; W.k0[1] = dur; W.k0[2] = dir; W.k0[3] = 1; W.w0[0] = W.w0[1] = W.Wc; W.phase = dir > 0 ? 1 : 2;
+  }
+  /** Realism 1: the windscreen of the body in view, fitted once per body from rays out of the driver's eye: the first
+   *  surface each ray meets (glass, or the shell's own glass just outside it), a plane y = a + bx + cz fitted to them with
+   *  the outliers (pillars, mirror, roof edge, dash) dropped in four rounds, a little slack for the screen's wrap. The
+   *  glass's extent is that of the points kept (mirrored about the centreline); the two blades (left-hand drive, tandem) are placed in it. If the model
+   *  gives too little, a 32° screen just ahead of the inner mirror stands in. Body space, metres. */
+  #wsGlass(key) {
+    const cache = this._wsG || (this._wsG = {}); if (cache[key]) return cache[key];
+    const co = this.carObj, body = co.body; if (!body) return null;
+    const E = new THREE.Vector3(...(key === 'e30' ? CABIN_E30 : CABIN_CEL).eye);
+    const mir = MIRROR_GLASS[key]?.inner?.at || [0, E.y + .19, E.z - .33], sl = Math.tan(32 * Math.PI / 180);
+    let a = mir[1] + .02 - sl * (mir[2] - .08), b = 0, c = sl;
+    body.updateWorldMatrix(true, true);
+    const inv = new THREE.Matrix4().copy(body.matrixWorld).invert(), M = new THREE.Matrix4(), V = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    const tri = [], near = v => v.x > -1.05 && v.x < 1.05 && v.z > E.z - 1.7 && v.z < E.z - .08 && Math.abs(v.y - (a + c * v.z)) < .32;
+    const visit = o => {
+      if (o.visible === false || o.name?.startsWith('mirrors-')) return;
+      const P = o.isMesh && !o.isSkinnedMesh && !o.isInstancedMesh ? o.geometry?.attributes?.position : null;
+      if (P) {
+        const I = o.geometry.index, N = I ? I.count : P.count; M.multiplyMatrices(inv, o.matrixWorld);
+        for (let t = 0; t + 2 < N; t += 3) {
+          for (let k = 0; k < 3; k++) V[k].fromBufferAttribute(P, I ? I.getX(t + k) : t + k).applyMatrix4(M);
+          if (near(V[0]) || near(V[1]) || near(V[2])) tri.push(V[0].x, V[0].y, V[0].z, V[1].x, V[1].y, V[1].z, V[2].x, V[2].y, V[2].z);
+        }
+      }
+      for (const ch of o.children) visit(ch);
+    };
+    visit(body);
+    const hits = [];
+    for (let yd = -60; yd <= 60; yd += 5) for (let pd = -22; pd <= 30; pd += 4) {
+      const ya = yd * Math.PI / 180, pa = pd * Math.PI / 180, dx = Math.sin(ya) * Math.cos(pa), dy = Math.sin(pa), dz = -Math.cos(ya) * Math.cos(pa);
+      let best = 1.8;
+      for (let i = 0; i < tri.length; i += 9) {                         // Möller–Trumbore, both faces
+        const e1x = tri[i + 3] - tri[i], e1y = tri[i + 4] - tri[i + 1], e1z = tri[i + 5] - tri[i + 2], e2x = tri[i + 6] - tri[i], e2y = tri[i + 7] - tri[i + 1], e2z = tri[i + 8] - tri[i + 2];
+        const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x, det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-12) continue;
+        const id = 1 / det, tx = E.x - tri[i], ty = E.y - tri[i + 1], tz = E.z - tri[i + 2], u = (tx * px + ty * py + tz * pz) * id;
+        if (u < 0 || u > 1) continue;
+        const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x, v = (dx * qx + dy * qy + dz * qz) * id;
+        if (v < 0 || u + v > 1) continue;
+        const t = (e2x * qx + e2y * qy + e2z * qz) * id; if (t > .12 && t < best) best = t;
+      }
+      if (best < 1.8) hits.push(E.x + dx * best, E.y + dy * best, E.z + dz * best);
+    }
+    const keep = (i, tol, wide) => Math.abs(hits[i + 1] - (a + b * hits[i] + c * hits[i + 2])) <= tol + wide * hits[i] * hits[i];
+    const fit = (tol, wide) => {                                       // the screen is symmetric: y = a + c z, wrap as slack
+      let n = 0, Z = 0, Y = 0, ZZ = 0, ZY = 0;
+      for (let i = 0; i < hits.length; i += 3) { if (!keep(i, tol, wide)) continue; const y = hits[i + 1], z = hits[i + 2]; n++; Z += z; Y += y; ZZ += z * z; ZY += z * y; }
+      const D = n * ZZ - Z * Z; if (n < 12 || Math.abs(D) < 1e-9) return 0;
+      c = (n * ZY - Z * Y) / D; a = (Y - c * Z) / n;
+      return n;
+    };
+    let n = 0;
+    for (const [tol, wide] of [[.15, 0], [.06, .1], [.03, .12], [.025, .12]]) n = fit(tol, wide) || n;
+    const nrm = new THREE.Vector3(-b, 1, -c).normalize();
+    let ok = n >= 20 && Math.abs(nrm.y) > .45 && Math.abs(nrm.y) < .97, C0 = new THREE.Vector3(), u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
+    if (ok) { let k = 0; for (let i = 0; i < hits.length; i += 3) if (keep(i, .025, .12)) { C0.x += hits[i]; C0.z += hits[i + 2]; k++; } C0.x = 0; C0.z /= k; C0.y = a + b * C0.x + c * C0.z; }
+    else { a = mir[1] + .02 - sl * (mir[2] - .08); b = 0; c = sl; nrm.set(0, 1, -sl).normalize(); C0.set(0, 0, mir[2] - .35); C0.y = a + c * C0.z; }
+    if (nrm.dot(V[0].subVectors(E, C0)) < 0) nrm.negate();
+    const U = new THREE.Vector3(1, 0, 0).addScaledVector(nrm, -nrm.x).normalize(), Vv = new THREE.Vector3().crossVectors(nrm, U); if (Vv.y < 0) Vv.negate();
+    if (ok) for (let i = 0; i < hits.length; i += 3) if (keep(i, .025, .12)) {
+      V[0].set(hits[i], hits[i + 1], hits[i + 2]).sub(C0); const gu = V[0].dot(U), gv = V[0].dot(Vv);
+      u1 = Math.min(.8, Math.max(u1, Math.abs(gu))); u0 = -u1; v0 = Math.min(v0, gv); v1 = Math.max(v1, gv);
+    }
+    if (!ok || u1 - u0 < .8 || v1 - v0 < .3) { if (ok) ok = false; u0 = -.68; u1 = .68; v0 = -.42; v1 = .3; }
+    u0 -= .01; u1 += .01; v0 -= .01; v1 += .01;
+    if (!ok) Log.warn('windscreen: model glass not found for ' + key + ', using a stand-in');
+    const Wd = u1 - u0, H = v1 - v0, rA = Math.min(.45 * Wd, .95 * H), rB = Math.min(.38 * Wd, .8 * H);
+    const pA = u0 + .22 * Wd, pB = u0 + .6 * Wd, pv = v0 - .025;
+    const G = cache[key] = { C: C0, n: nrm, u: U, v: Vv, fitted: ok, hits: n,
+      box: new THREE.Vector4(u0, u1, v0, v1), piv: new THREE.Vector4(pA, pv, pB, pv), rad: new THREE.Vector4(.2 * rA, rA, .2 * rB, rB),
+      ang: new THREE.Vector4(.03, Math.min(Math.acos(clamp((u0 + .05 * Wd - pA) / rA, -1, 1)), 2.3), .03, 1.72) };
+    return G;
   }
   /** Section 12: water on the car and on traffic. Rain beads the body within a minute
    *  or so; once it stops the panels dry over a few minutes, faster at speed. Water on
@@ -7514,7 +7813,7 @@ class DriveWorld {
       sunDir: env.sunDir, sunOn: clamp(el / 6, 0, 1) * (1 - .92 * env.cloud), rayColor: this.day.sunColor, fogMult: env.fogMult,
       haze: clamp((el - 18) / 35, 0, 1) * .8 * (1 - env.cloud) * (1 - env.wet) * (env.roadT === undefined ? 1 : sstep(24, 42, env.roadT)), speed: sp,   // build 1.11: shimmer needs hot asphalt
       focus: this.lens ? (this.lens.focus || Math.max(1, carDist)) : onCar ? Math.max(2, carDist) : 12 + sp * .15, fStop: this.lens ? this.lens.fStop : fStop,
-      wet: env.wet, flareK: 1 - env.cloud,
+      wet: env.wet, flareK: 1 - env.cloud, ws: this.ws,                 // realism 1: the windscreen state (one object, reused)
       /* section 12: water on the lens. The chase camera takes the full shower; the bonnet camera
          sits in the screen's lee; the bumper camera also catches the spray off the road. The
          roadside cinematic camera is sheltered and still. Photo mode stays clean. */
@@ -13206,7 +13505,7 @@ const VR_QUALITY = {
   balanced:    { scale: 1,   foveation: .75, g: { preset: 'medium', shadows: 'low', vegetation: .45, drawDistance: .5,  particles: .45, anisotropy: 4, lite: true } },
   quality:     { scale: 1.2, foveation: .5,  g: { preset: 'medium', shadows: 'low', vegetation: .7,  drawDistance: .7,  particles: .6, anisotropy: 8, lite: false } },
 };
-const VR_GFX_OFF = { ssao: false, reflections: 'off', volumetrics: false, ssgi: false, bloom: false, motionBlur: false, dof: false, lensFlare: false, lensRain: false, filmGrain: false, chromaticAberration: false, dynamicResolution: false };
+const VR_GFX_OFF = { ssao: false, reflections: 'off', volumetrics: false, ssgi: false, bloom: false, motionBlur: false, dof: false, lensFlare: false, lensRain: false, windscreen: false, filmGrain: false, chromaticAberration: false, dynamicResolution: false };
 const VR_HELP = 'Right trigger: throttle. Left trigger: brake. Squeeze a grip on the rim and turn the wheel, or steer with the left stick. A and X: shift up and down. B: handbrake. Click the right stick for the horn, the left stick to re-centre your seat. Y: pause.';
 
 /** Build 1.21: poses a WebXR "generic-hand" skeleton (flat joint list under the armature). Returns pose(curls) with
