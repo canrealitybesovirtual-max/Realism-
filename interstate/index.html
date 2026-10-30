@@ -1104,7 +1104,7 @@ const ACTIONS = [
 
 const DEFAULTS = {
   graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, tunnelAE: true, brightness: 1 },
-  audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true },
+  audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true, roadSurface: true },
   controls: {
     bindings: {
       throttle: ['KeyW', 'ArrowUp'], brake: ['KeyS', 'ArrowDown'], steerLeft: ['KeyA', 'ArrowLeft'], steerRight: ['KeyD', 'ArrowRight'],
@@ -1179,6 +1179,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'audio', key: 'audio.radio', type: 'range', label: 'Car radio', desc: 'The radio in the car, times its own volume knob.', min: 0, max: 1, step: .01, fmt: pct },
   { tab: 'audio', group: 'Behaviour' },
   { tab: 'audio', key: 'audio.spatial', type: 'toggle', label: 'Headphone 3D', desc: 'Binaural placement of traffic, engine and tyres. Best with headphones; turn off for speakers.' },
+  { tab: 'audio', key: 'audio.roadSurface', type: 'toggle', label: 'Road surface sound', desc: 'Tyres sound like what they roll on: asphalt roar, wet hiss and spray, bridge joints, a buzz over the edge lines and lane paint on the side that crosses them, crunch on gravel and snow. Muffled inside the car.' },   // realism 4
   { tab: 'audio', key: 'audio.muteUnfocused', type: 'toggle', label: 'Mute when the window is in the background' },
   // Controls
   { tab: 'controls', group: 'Keyboard' },
@@ -1675,6 +1676,33 @@ class AudioSystem {
    (HRTF when Headphone 3D is on, equal-power otherwise).
    ════════════════════════════════════════════════════════════════════════ */
 const SOUND_C = 343;                       // speed of sound (m/s)
+/* realism 4: road sound by surface (audio.roadSurface; ?roadsnd=off = exactly the old tyre and road audio).
+   Each wheel's lateral place on the road (from the car's pose, so a drift counts) is checked against the painted
+   lines (the edge lines are profiled: a rumble; lane dashes a light paint buzz), the paved edge (gravel beyond it,
+   snow beyond the gravel strip) and bridge decks (Network spans: concrete, joints every jointBridge m). Left and
+   right wheels feed their own positional voice. In the cabin a lowpass takes the top off all outside rolling noise. */
+const ROADSND = { on: !/[?&]roadsnd=off\b/.test(location.search), jointBridge: 18, rib: .3, hw: .14, cabinHz: 1100 };
+/** One wheel at (u, s) on tr: o.rumble / o.paint (tyre overlap with a profiled / a flat painted line, 0..1),
+ *  o.crunch (off the paved edge or in the median), o.snow (of that, beyond the gravel strip), o.bridge (on a deck). */
+function roadSurfWheel(tr, u, s, o, tunnel) {
+  const hw = ROADSND.hw, aU = Math.abs(u), sd = u < 0 ? -1 : 1;
+  const ov = (x, c, w) => { const a = Math.max(x - hw, c - w / 2), b = Math.min(x + hw, c + w / 2); return b > a ? (b - a) / Math.min(2 * hw, w) : 0; };
+  let rumble = 0, paint = 0;
+  const po = tr.oneWay ? tr.paintOff : null, pi = po ? clamp(Math.round(mod(s, tr.length) / tr.ds), 0, tr.n - 1) : 0;
+  const painted = sg => !po || !po[sg > 0 ? 0 : 1][pi];
+  if (painted(sd)) rumble = ov(aU, tr.laneEnd + .2, tr.oneWay && sd < 0 ? .15 : .2);
+  if (!tr.oneWay) rumble = Math.max(rumble, ov(aU, tr.laneStart - .25, .15));
+  if (mod(s, 12) < 3 && painted(1) && painted(-1)) for (let l = 1; l < tr.lanes; l++) paint = Math.max(paint, ov(tr.oneWay ? u : aU, tr.laneStart + l * tr.laneW, .15));
+  let crunch = 0, snow = 0;
+  if (!tunnel) {
+    crunch = sstep(tr.edge - hw, tr.edge + hw, aU);
+    if (!tr.oneWay && tr.medianHalf > 0) crunch = Math.max(crunch, sstep(tr.medianHalf + hw, tr.medianHalf - hw, aU));
+    snow = sstep(tr.roadOuter - .2, tr.roadOuter + .4, aU);
+  }
+  o.rumble = Math.min(1, rumble); o.paint = Math.min(1, paint); o.crunch = crunch; o.snow = snow;
+  o.bridge = tr.bridgeK ? clamp(1 - tr.bridgeK(clamp(s, 0, tr.length)), 0, 1) : 0;
+  return o;
+}
 class VoicePool {
   /** Caps concurrent one-shot voices; the oldest is cut when the cap is reached. */
   constructor(cap) { this.cap = cap; this.live = []; }
@@ -1970,7 +1998,9 @@ class VehicleAudio {
   }
   /* ── Tyres, road, scrape ── */
   #tyres() {
-    const T = this.tyrePan; T.connect(this.fxOut);
+    const T = this.tyrePan;
+    if (ROADSND.on) { this.rsCab = this.#f('lowpass', 20000, .5); this.rsCab.connect(this.fxOut); T.connect(this.rsCab); this.#roadSurface(); }   // realism 4
+    else T.connect(this.fxOut);
     // squeal: band-limited noise with a resonant peak plus a faint wobbling tone
     this.sqBP = this.#f('bandpass', 1050, 7); this.sqG = this.#g(0);
     this.#loop(this.white).connect(this.sqBP);
@@ -2000,6 +2030,77 @@ class VehicleAudio {
     this.#loop(this.white).connect(this.scBP);
     const scTone = this.#osc('sawtooth', 173), scTG = this.#g(.08); scTone.connect(scTG).connect(this.scBP);
     this.scBP.connect(this.scG).connect(T);
+  }
+  /* realism 4: per-side lines and crunch, bridge concrete, wet spray swish. All loops made once; gains start at 0. */
+  #roadSurface() {
+    const T = this.tyrePan, C = this.rsCab;
+    const crAM1 = this.#osc('square', 19), crAM2 = this.#osc('square', 31.7), cr1 = this.#g(.22), cr2 = this.#g(.16);   // stones under the tread, shared by both sides
+    crAM1.connect(cr1); crAM2.connect(cr2);
+    this.rsSide = [-1, 1].map(() => {
+      const pan = this.#panner(3); pan.connect(C);
+      const ln = this.#osc('sawtooth', 80), lnLP = this.#f('lowpass', 420, .9), lnG = this.#g(0);      // profiled line: one knock per rib
+      ln.connect(lnLP).connect(lnG).connect(pan);
+      const pzBP = this.#f('bandpass', 1500, 1.3), pzG = this.#g(0);                                      // raised paint: a zip
+      this.#loop(this.white).connect(pzBP).connect(pzG).connect(pan);
+      const crBP = this.#f('bandpass', 1700, .9), crMod = this.#g(.55), crG = this.#g(0);                // gravel / snow crunch
+      cr1.connect(crMod.gain); cr2.connect(crMod.gain);
+      this.#loop(this.white).connect(crBP).connect(crMod).connect(crG).connect(pan);
+      const crLo = this.#f('lowpass', 380, .7), crLoG = this.#g(0);                                       // snow packs under the tyre: a soft low churn
+      this.#loop(this.brown).connect(crLo).connect(crLoG).connect(pan);
+      return { pan, ln, lnLP, lnG, pzBP, pzG, crBP, crG, crLoG };
+    });
+    this.conBP = this.#f('bandpass', 1050, 1.6); this.conG = this.#g(0);                                  // concrete deck: a tighter, brighter whine
+    this.#loop(this.pink).connect(this.conBP).connect(this.conG).connect(T);
+    this.spBP = this.#f('bandpass', 950, .6); this.spMod = this.#g(.6); this.spG = this.#g(0);           // wet: water thrown into the arches, swishing
+    const sw1 = this.#osc('sine', .83), sw2 = this.#osc('sine', 1.91), swg1 = this.#g(.25), swg2 = this.#g(.17);
+    sw1.connect(swg1).connect(this.spMod.gain); sw2.connect(swg2).connect(this.spMod.gain);
+    this.#loop(this.pink).connect(this.spBP).connect(this.spMod).connect(this.spG).connect(T);
+    this.rsSF = null; this.rsBr = 0; this.rsTr = null;
+  }
+  /** realism 4: a deck joint under one axle at ctx time t0: a hollow knock plus the steel fingers' clack. */
+  #jointAt(t0, k) {
+    const ctx = this.ctx, dur = .09, out = this.#shot(this.tyrePan, t0 - ctx.currentTime + dur + .12), o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(82, t0); o.frequency.exponentialRampToValueAtTime(46, t0 + dur * .6);
+    g.gain.setValueAtTime(1e-4, t0); g.gain.exponentialRampToValueAtTime(k, t0 + .005); g.gain.exponentialRampToValueAtTime(1e-4, t0 + dur);
+    o.connect(g).connect(out); o.start(t0); o.stop(t0 + dur + .05);
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), h = ctx.createGain();
+    s.buffer = this.white; f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 2.2;
+    h.gain.setValueAtTime(1e-4, t0); h.gain.exponentialRampToValueAtTime(k * .35, t0 + .003); h.gain.exponentialRampToValueAtTime(1e-4, t0 + .045);
+    s.connect(f).connect(h).connect(out); s.start(t0, Math.random() * 1.5); s.stop(t0 + .08);
+  }
+  /** realism 4: the surface layers for this frame. Returns the asphalt roar's share (concrete and gravel take some). */
+  #roadUpdate(src, v, wet, t, carPos, carQuat) {
+    const R = src.road, on = this.s.data.audio.roadSurface !== false;
+    this.#set(this.rsCab.frequency, on ? lerp(20000, ROADSND.cabinHz, this.cabin) : 20000, .05);
+    const w = this._rsW || (this._rsW = new THREE.Vector3()), zc = (CAR.frontZ + CAR.rearZ) / 2;
+    let crAvg = 0;
+    for (let i = 0; i < 2; i++) {
+      const S = this.rsSide[i], W = R ? R.side[i] : null;
+      const rumble = on && W ? W.rumble : 0, paint = on && W ? W.paint : 0;
+      const crunch = on ? (W ? W.crunch : src.off ? 1 : 0) : 0, snow = W ? W.snow : 0;
+      crAvg += crunch * .5;
+      w.set(i ? CAR.track / 2 : -CAR.track / 2, .1, zc).applyQuaternion(carQuat).add(carPos); this.#pos(S.pan, w.x, w.y, w.z);
+      const rib = clamp(v / ROADSND.rib, 15, 420);
+      this.#set(S.ln.frequency, rib, .03); this.#set(S.lnLP.frequency, 260 + rib * 1.4, .05);
+      this.#set(S.lnG.gain, (rumble * .42 + paint * .05) * clamp(v / 6, 0, 1), .012);
+      this.#set(S.pzG.gain, (paint * .1 + rumble * .07) * clamp(v / 8, 0, 1.2), .012); this.#set(S.pzBP.frequency, 1200 + v * 12, .05);
+      const cv = crunch * clamp(v / 4, 0, 1) * (.35 + .3 * clamp(v / 30, 0, 1));
+      this.#set(S.crG.gain, cv * (1 - .55 * snow), .04); this.#set(S.crBP.frequency, lerp(1500 + v * 12, 650 + v * 6, snow), .06);
+      this.#set(S.crLoG.gain, cv * snow * .9, .06);
+    }
+    const br = on && R ? R.bridge : 0, vn = clamp(v / 70, 0, 1.2);
+    this.#set(this.conG.gain, br * vn * vn * .2, .08); this.#set(this.conBP.frequency, 800 + v * 9, .08);
+    this.#set(this.spG.gain, on ? wet * clamp(v / 20, 0, 1.3) * .16 * (1 - .4 * crAvg) : 0, .08); this.#set(this.spBP.frequency, 700 + v * 8, .08);
+    /* deck joints: front axle as it crosses, rear axle a wheelbase later (scheduled in audio time, no timers) */
+    if (on && R && R.sF != null) {
+      const sF = R.sF, js = ROADSND.jointBridge;
+      if (this.rsSF !== null && R.tr === this.rsTr && v > 3 && Math.abs(sF - this.rsSF) < 8) {
+        const crossed = Math.floor(sF / js) !== Math.floor(this.rsSF / js), edge = (R.bridge > .5) !== (this.rsBr > .5);
+        if ((crossed && R.bridge > .5) || edge) { const k = clamp(v / 40, .25, 1) * .55, t0 = t + .005; this.#jointAt(t0, k); this.#jointAt(t0 + CAR.wheelbase / Math.max(v, 1), k * .85); }
+      }
+      this.rsSF = sF; this.rsTr = R.tr; this.rsBr = R.bridge;
+    } else this.rsSF = null;
+    return on ? (1 - .55 * br) * (1 - .35 * crAvg) : 1;
   }
   /* ── Wind, rain, distant ambience (non-spatial beds) ── */
   #world() {
@@ -2138,14 +2239,16 @@ class VehicleAudio {
     const vn = clamp(v / 70, 0, 1.2);
     this.#set(this.rollG.gain, (.05 + .5 * vn) * clamp(v / 2, 0, 1), .05);
     this.#set(this.rollLP.frequency, 90 + v * 5, .05);
-    this.#set(this.roarG.gain, .16 * vn * vn * (1 - .3 * wet), .05); this.#set(this.roarBP.frequency, 380 + v * 9, .05);
+    const asK = ROADSND.on ? this.#roadUpdate(src, v, wet, t, carPos, carQuat) : 1;   // realism 4: 1 = the old roar
+    this.#set(this.roarG.gain, .16 * vn * vn * (1 - .3 * wet) * asK, .05); this.#set(this.roarBP.frequency, 380 + v * 9, .05);
     const slu = SLUSH.on ? (src.slush || 0) : 0;                     // realism 2: slush adds hiss and a squelch
     this.#set(this.wetG.gain, wet * vn * .32 + wet * sq * .2 + slu * clamp(v / 25, 0, 1.2) * .2, .06);
     if (this.slG) { this.#set(this.slG.gain, slu * clamp(v / 12, 0, 1) * (.32 + .1 * wet), .08); this.#set(this.slLP.frequency, 300 + v * 9, .08); this.#set(this.slAM.frequency, 6 + v * .35, .08); }
-    this.#set(this.grvG.gain, src.off ? clamp(v / 25, 0, 1) * .45 : 0, .05); this.#set(this.grvBP.frequency, 1300 + v * 14, .05);
+    const rsOn = ROADSND.on && this.s.data.audio.roadSurface !== false;   // realism 4: the per-side crunch replaces the whole-car verge
+    this.#set(this.grvG.gain, src.off && !rsOn ? clamp(v / 25, 0, 1) * .45 : 0, .05); this.#set(this.grvBP.frequency, 1300 + v * 14, .05);
     this.#set(this.scG.gain, clamp(src.scrape, 0, 1) * clamp(v / 8, 0, 1) * .6, .02);
     /* expansion joints: front axle, then the rear one wheelbase later */
-    if (this.lastS !== null && v > 4) {
+    if (this.lastS !== null && v > 4 && !(rsOn && src.road && src.road.bridge > .5)) {   // realism 4: on a deck its own joints play
       this.jointAcc += Math.min(60, Math.abs(wrapRel(src.sCar - this.lastS, src.trackLen)));
       if (this.jointAcc > 32) { this.jointAcc -= 32; const k = clamp(v / 50, .2, 1) * .5; this.#thump(this.tyrePan, 48, .05, k); setTimeout(() => { if (this.ok && !this.paused) this.#thump(this.tyrePan, 44, .05, k * .8); }, 2940 / Math.max(v, 1)); }
     }
@@ -7600,7 +7703,28 @@ class DriveWorld {
     let lock = 0; for (let i = 0; i < 4; i++) { const w = m.wheels[i]; S.slip[i] = w.slipPow || 0; if (w.locked) lock |= 1 << i; }
     S.lockedMask = lock; S.scrape = clamp(+m.scrape || 0, 0, 1); S.off = !!this.P.off; S.sCar = this.sCar; S.uCar = this.u; S.trackLen = this.track.length; S.brake = m.brake || 0;
     S.slush = this.slushK || 0;                                          // realism 2
+    if (ROADSND.on) this.#roadSrc(S);                                    // realism 4
     return S;
+  }
+  /** realism 4: each wheel's surface, folded per side (left, right): the most of each among its two wheels. */
+  #roadSrc(S) {
+    const tr = this.sim.track || this.track;
+    if (!tr || !tr.frame) { S.road = null; return; }
+    const R = S.road || (S.road = { side: [{}, {}], w: {}, bridge: 0, sF: null, tr: null });
+    const F = this._rsF || (this._rsF = newFrame()), q = this.car.quaternion, o = this._rsO || (this._rsO = new THREE.Vector3());
+    const s0 = this.sim.sCar ?? this.sCar, u0 = this.sim.uCar ?? this.u ?? 0;
+    tr.frame(s0, F);
+    for (const sd of R.side) { sd.rumble = sd.paint = sd.crunch = sd.snow = 0; }
+    let br = 0, sF = 0;
+    for (let i = 0; i < 4; i++) {
+      const side = i % 2 === 0 ? -1 : 1;
+      o.set(side * CAR.track / 2, 0, i < 2 ? CAR.frontZ : CAR.rearZ).applyQuaternion(q);
+      const du = o.x * F.R.x + o.y * F.R.y + o.z * F.R.z, ds = o.x * F.T.x + o.y * F.T.y + o.z * F.T.z;
+      const W = roadSurfWheel(tr, u0 + du, s0 + ds, R.w, this.tunnel), sd = R.side[side < 0 ? 0 : 1];
+      sd.rumble = Math.max(sd.rumble, W.rumble); sd.paint = Math.max(sd.paint, W.paint); sd.crunch = Math.max(sd.crunch, W.crunch); sd.snow = Math.max(sd.snow, W.snow);
+      br += W.bridge * .25; if (i < 2) sF += (s0 + ds) * .5;
+    }
+    R.bridge = br; R.sF = sF; R.tr = tr;
   }
   /** Vehicles near the listener as world points, nearest first (live traffic, or replay proxies). */
   trafficSources(cp, list = this.traffic.agents) {

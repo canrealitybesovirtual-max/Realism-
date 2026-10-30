@@ -266,6 +266,14 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Headset: eyeAE 1, no animation. ?tunnelae=off never sets eyeAE (old exposure exactly). No per-frame allocation.
 - Checked: syntax; one headless run (tunnel): no page errors, eyeAE 0.37 at start rising. Not checked by eye or on Quest.
 
+## Interstate realism 4: road sound by surface (audio.roadSurface, ?roadsnd=off; headset check needed)
+- Extends VehicleAudio #tyres (squeal, roll, roar, wet hiss incl. realism 2's slush, verge gravel, scrape, joints). ROADSND holds the knobs; ?roadsnd=off builds none of it and routes exactly as before; the setting off = new gains 0, old formulas, cabin filter open.
+- World #roadSrc (from liveSrc): each wheel's u/s from the car's pose on sim.track (so drifts count) -> roadSurfWheel: rumble (edge lines, treated as profiled; no rumble strips are drawn), paint (lane dashes, 3 m of every 12), crunch (beyond tr.edge or in the median; off in the tunnel), snow (beyond roadOuter), bridge (1 - bridgeK: Network flyover spans). Folded per side into src.road.
+- Audio #roadSurface (made once): per side a panner at the left / right wheels with a rib tone (v / 0.3 m) + paint zip, and gravel crunch (two shared square AMs) / snow churn; centre: concrete-deck whine, wet spray swish (pink, two slow LFOs; slush stays in the wet hiss). Asphalt roar = the old roar, lowered on decks and gravel. Old whole-car verge gravel muted when on.
+- Deck joints: every 18 m along a span and at its ends, front axle then rear a wheelbase / v later, scheduled in audio time (#jointAt one-shots); the old 32 m thumps skip decks.
+- Cabin: tyre bus (old tyre sounds too) and the side voices through rsCab, lowpass 20 kHz -> 1.1 kHz by this.cabin (the existing camera-mode cabin factor).
+- Checked: syntax, one headless run (open road, no page errors, src.road present), Node check of roadSurfWheel. Not heard; replays have no src.road (crunch falls back to src.off).
+
 ## CQC step 85: realism pass (BODYCAM brief in docs/MASTER_PROMPT.md; headset check needed)
 - Room acoustics: ACOUSTICS small / room (the original IR, unchanged) / hall / stair / range, picked by roomAcoustic(stream.current). audio.verb is now a GainNode bus into two convolvers (ROOMAC.slots) crossfaded by updateAcoustics; the idle one is unplugged after its tail. Headset caps tails at 1.8 s. CONFIG.polish.audio.acoustics=false = one reverb. ACOUSTICS/ROOMAC are declared beside `audio` (audioUnlock runs early; its local `AC` is the AudioContext class, hence ROOMAC).
 - Your own footsteps: ownStep(f) from bodyPre when a body foot lands (heel, grit, kit rattle, trousers when running; deeper on stairs, softer crouched, shuffles silent). Not positional, reverb carries them. CONFIG.polish.audio.ownSteps (gain, 0 = off).
