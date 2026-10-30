@@ -1822,7 +1822,8 @@ const PROJECT_RULES = {
     'A climb needs all of: the current rate held at rate - 1 or better for upAfter s; foveation and shadow rate at their best; the game frame work (RATE.cpu, tick time) under cpuShare of the next rate frame; no live man engaged; firstTry s since entering VR and any cooldown passed; that rate not failed twice this session.',
     'A new rate is on trial for trial s, while quality changes wait: fps under rate - trialDrop for 2 s sends it back. Passing the trial remembers it for the next session.',
     'At a raised rate the rate gives way before any quality: fps under rate - dropBelow for dropAfter s steps down one rung before foveation, shadows or detail react; the remembered rate goes down with it and that rung waits cooldown s, doubled each time it fails. At the bottom rung the step 10 / step 25 quality system works as before, with one change: if foveation has to go back up within 30 s of easing off, the next ease-off waits twice as long (up to 8x raiseAfter), back to normal after 120 s settled. A scene on the edge no longer pumps the foveation every few seconds.',
-    'CONFIG.xr.targetFps is the live rate while in the headset, so the quality system, the profiler budget and detail struggle mode all follow it; it returns to the base on leaving VR. cqcXR() shows the rate, the ladder, changes, the frame work and the next start rate. Boundary and room untouched: no new session features.'
+    'CONFIG.xr.targetFps is the live rate while in the headset, so the quality system, the profiler budget and detail struggle mode all follow it; it returns to the base on leaving VR. cqcXR() shows the rate, the ladder, changes, the frame work and the next start rate. Boundary and room untouched: no new session features.',
+    'Step 104: gloved hands all the time (GLOVE104, ?glove104=off). Each hand draws the viewmodel pack glove (vm-ak arms cut at the wrist, the gun hands\' material, HANDLOOK.vmhScale) as a skinned child of the procedural hand, whose bones drive it (pack finger bone = procedural bone rotation x a fixed rest swing, pack lengths kept); the procedural mesh draws nothing but keeps posing, contact and grips. Saved choice moved to gloves104 so old gloves: false saves start gloved; the locker still takes them off (bare hands everywhere, guns too).'
   ],
   step34: [
     'Hitch hunter (HITCH, ?hitch=off): a hitch is a frame interval over 1.5 frames at the live rate (profBudget). Each frame hitchEnd (from profEnd) keeps, in one reused record, the game work time, the slowest profiler section, events noted during the frame (hitchNote) and how many shader programs, geometries and textures the renderer gained; the next profBegin (hitchFrame) knows the interval and, only for a hitch, stores a small object: time, ms, game work, main cause and every reason.',
@@ -17628,7 +17629,7 @@ const HANDLOOK = { on: !!(CONFIG.handLook && CONFIG.handLook.on) && !/[?&]handlo
 HANDLOOK.vmhScale = HANDLOOK.on ? clamp(CONFIG.handLook.vmhScale || 1, 0.7, 1.2) : 1;
 HANDLOOK.procScale = HANDLOOK.on ? clamp(CONFIG.handLook.procScale || 1, 0.8, 1.2) : 1;
 const WEAR = { gloves: HANDLOOK.on, uniform: 'black', key: 'cqc.wear.v1', room: null, items: [], camo: null, built: false };
-try { const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null'); if (o) { WEAR.gloves = HANDLOOK.on ? o.gloves98 !== false : !!o.gloves; if (['black', 'fsb', 'ranger'].includes(o.uniform)) WEAR.uniform = o.uniform; } } catch (e) { /* defaults */ }
+try { const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null'); if (o) { WEAR.gloves = HANDLOOK.on ? o.gloves104 !== false : !!o.gloves;   /* step 104: a new key, so an old gloves98: false starts gloved */ if (['black', 'fsb', 'ranger'].includes(o.uniform)) WEAR.uniform = o.uniform; } } catch (e) { /* defaults */ }
 const UNIFORMS = {
   black: { label: 'black combat uniform', shirt: 0x101113, pants: 0x2c2d31, sleeve: 0x0f1012, map: false },
   fsb: { label: 'FSB camouflage', shirt: 0xffffff, pants: 0xffffff, sleeve: 0x3a4630, map: true },
@@ -17735,7 +17736,7 @@ function handsGloveShader(mat, flexU) {
 function wearSave() {
   try {
     const o = JSON.parse(localStorage.getItem(WEAR.key) || 'null') || {};
-    if (HANDLOOK.on) o.gloves98 = WEAR.gloves; else o.gloves = WEAR.gloves;   // step 98: each look keeps its own choice
+    if (HANDLOOK.on) o.gloves104 = WEAR.gloves; else o.gloves = WEAR.gloves;   // step 98: each look keeps its own choice
     o.uniform = WEAR.uniform;
     localStorage.setItem(WEAR.key, JSON.stringify(o));
   } catch (e) { /* private mode */ }
@@ -17768,7 +17769,11 @@ function wearApply() {
     }
   }
   if (HANDS.sleeveMat) HANDS.sleeveMat.color.setHex(U.sleeve);
-  for (const h of HANDS.list || []) if (h.mesh && h.skinMat) h.mesh.material = WEAR.gloves && h.gloveMat ? h.gloveMat : h.skinMat;
+  for (const h of HANDS.list || []) if (h.mesh && h.skinMat) {
+    const G = GLOVE104.ready ? GLOVE104.sides[h.left ? 'L' : 'R'] : null;   // step 104: the pack glove drawn, your hand only drives it
+    h.mesh.material = WEAR.gloves ? (G ? GLOVE104.hide : h.gloveMat || h.skinMat) : h.skinMat;
+    if (G) G.mesh.visible = WEAR.gloves;
+  }
   for (const p of WEAR.items) {                                   // what is still in the locker
     const it = p.item;
     const show = it.sub === 'gloves' ? !WEAR.gloves : it.sub !== WEAR.uniform;
@@ -19142,6 +19147,139 @@ function vmhTake(h, g, role, dz, P, Q) {
   h.vmhOn = true; h.mesh.visible = false;                         // the sleeve stays: it covers the glove's cut
   if (!HANDLOOK.on) for (const o of HANDS.list) if (!o.vmhMat && o.gloveMat && o.mesh.material !== o.gloveMat) { o.vmhMat = o.mesh.material; o.mesh.material = o.gloveMat; }   // your other hand gloved too
   return true;
+}
+
+/* ===========================================================================
+ *  STEP 104 — GLOVED HANDS ALL THE TIME. The step 98 glove shader drew the
+ *  procedural hand mesh (its own shape, no texture), so it only looked like the
+ *  pack glove once vmhTake swapped in the fitted pack hand on a gun. Now each
+ *  hand draws the pack's own skinned glove (vm-ak arms cut at the wrist, same
+ *  texture and material as the gun hands, HANDLOOK.vmhScale): a child of the
+ *  procedural SkinnedMesh, which keeps posing, contact and grips but draws
+ *  nothing (GLOVE104.hide). Each pack finger bone takes its procedural bone's
+ *  rotation (mesh space, rest = identity) times a fixed swing that lines the
+ *  pack's bind segment up with the procedural rest segment; pack bone lengths
+ *  are kept (FK). Wrist frame as vmhRootM (wrist, forearm, index / pinky
+ *  knuckles), so the sleeve meets it the way it meets the gun hands. Bone
+ *  matrices are written in skeleton.update (once per rendered frame, after the
+ *  scene's matrices), no allocation; one draw per hand. ?glove104=off or a
+ *  failed load = the step 98 shader glove.
+ * ========================================================================= */
+const GLOVE104 = { on: HANDLOOK.on && VMH.on && VM.on && !/[?&]glove104=off\b/.test(location.search), rig: 'ak', ready: false, hide: null, sides: null };
+const G104_MAP = { thumb1: 1, thumb2: 2, thumb3: 3, point1: 4, point2: 5, point3: 6, middle1: 7, middle2: 8, middle3: 9, ring1: 10, ring2: 11, ring3: 12, pink1: 13, pink2: 14, pink3: 15 };
+const _g4q = new THREE.Quaternion(), _g4M = new THREE.Matrix4(), _g4S = new THREE.Vector3(1, 1, 1);
+function glove104Start() {
+  if (!GLOVE104.on || GLOVE104.sides) return;
+  GLOVE104.sides = {};
+  vmLoad(GLOVE104.rig).then((V) => {
+    let arms = null;
+    if (V) V.root.traverse((o) => { if (o.isSkinnedMesh && V.R.arms.includes(o.name)) arms = o; });
+    if (!arms) return;
+    const m0 = [].concat(arms.material)[0], mat = m0.clone();
+    if (m0.userData.vmBase) mat.color.copy(m0.userData.vmBase);   // untinted (vmTint tints the shared arm material by the uniform)
+    GLOVE104.hide = new THREE.MeshBasicMaterial({ visible: false });
+    for (const h of HANDS.list) { const G = glove104Hand(h, arms, mat); if (G) GLOVE104.sides[h.left ? 'L' : 'R'] = G; }
+    GLOVE104.ready = !!(GLOVE104.sides.L && GLOVE104.sides.R);
+    if (!GLOVE104.ready) for (const k in GLOVE104.sides) GLOVE104.sides[k].mesh.removeFromParent();
+    wearApply();
+  }).catch((e) => console.warn('Step 104: glove hands not built', e));
+}
+function glove104Hand(h, arms, mat) {
+  const sk = arms.skeleton, pre = h.left ? 'L_' : 'R_', nm = (b) => b.name.replace(/_\d+$/, '');
+  const wr = sk.bones.find((b) => nm(b) === pre + 'wrist'), el = sk.bones.find((b) => nm(b) === pre + 'elbow');
+  if (!wr || !el) return null;
+  const list = []; wr.traverse((b) => { if (b.isBone) list.push(b); });   // parents before children
+  const n = list.length, I = new THREE.Matrix4(), V3 = THREE.Vector3;
+  const ibm = (b) => { const i = sk.bones.indexOf(b); return i >= 0 && !sk.boneInverses[i].equals(I) ? sk.boneInverses[i] : null; };
+  // bind pose (rig units, cm): inverse bind matrices; an end joint without one = its parent's bind x its local offset
+  const bind = list.map(() => new THREE.Matrix4());
+  list.forEach((b, k) => {
+    const M = ibm(b);
+    if (M) bind[k].copy(M).invert();
+    else if (k > 0) bind[k].copy(bind[list.indexOf(b.parent)]).multiply(_g4M.makeTranslation(b.position.x, b.position.y, b.position.z));
+  });
+  if (!ibm(wr) || !ibm(el)) return null;
+  const at = (s) => list.findIndex((b) => nm(b) === pre + s), kI = at('point1'), kK = at('pink1');
+  if (kI < 0 || kK < 0) return null;
+  const bp = bind.map((m) => new V3().setFromMatrixPosition(m));
+  const frame = (W, E, A, B) => {
+    const z = E.clone().sub(W).normalize(), nr = new V3().crossVectors(A.clone().sub(W), B.clone().sub(W));
+    const y = nr.addScaledVector(z, -nr.dot(z)).normalize(), x = new V3().crossVectors(y, z);
+    return new THREE.Matrix4().makeBasis(x, y, z).setPosition(W);
+  };
+  const s = h.left ? -1 : 1, Wr = HAND_DATA.rig.wrist, Wo = new V3(s * Wr.cx, Wr.cy, Wr.z);
+  const ours = frame(Wo, Wo.clone().setZ(Wr.z + 0.1), h.rp[4], h.rp[13]);
+  const fit = frame(bp[0], new V3().setFromMatrixPosition(new THREE.Matrix4().copy(ibm(el)).invert()), bp[kI], bp[kK]);
+  const sg = 0.01 * HANDLOOK.vmhScale;                              // cm rig (vmhBake's unit), the gun hands' size
+  const G = ours.multiply(new THREE.Matrix4().makeScale(sg, sg, sg)).multiply(fit.invert());
+  const Gq = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(G));
+  const P0 = bp.map((p) => p.clone().applyMatrix4(G));
+  const Q0 = bind.map((m) => Gq.clone().multiply(new THREE.Quaternion().setFromRotationMatrix(_g4M.extractRotation(m))));
+  const par = list.map((b) => list.indexOf(b.parent)), proc = list.map((b) => { const v = G104_MAP[nm(b).slice(2)]; return v === undefined ? -1 : v; });
+  const inv = P0.map((p, k) => new THREE.Matrix4().compose(p, Q0[k], _g4S).invert());
+  const off = P0.map((p, k) => par[k] < 0 ? new V3() : p.clone().sub(P0[par[k]]).applyQuaternion(Q0[par[k]].clone().invert()));
+  const qrel = Q0.map((q, k) => par[k] < 0 ? q.clone() : Q0[par[k]].clone().invert().multiply(q));
+  const R = HAND_DATA.rig, rp = h.rp;
+  const qa = Q0.map((q, k) => {                                      // swing: pack bind segment onto the procedural rest segment
+    const i = proc[k], c = list.findIndex((b) => b.parent === list[k]);
+    if (i < 0 || c < 0) return q.clone();
+    const u = P0[c].clone().sub(P0[k]).normalize(), f = i / 3 - 1;
+    const v = (i % 3 === 0 ? new V3(R.tip[f * 3] * s, R.tip[f * 3 + 1], R.tip[f * 3 + 2]) : rp[i + 1].clone()).sub(rp[i]).normalize();
+    return new THREE.Quaternion().setFromUnitVectors(u, v).multiply(q);
+  });
+  // geometry: the hand's vertices (half or more of their weight on the wrist's bones), in procedural mesh space
+  const g = arms.geometry, Pa = g.attributes.position, Na = g.attributes.normal, UVa = g.attributes.uv, SI = g.attributes.skinIndex, SW = g.attributes.skinWeight, Ix = g.index;
+  const kOf = new Int16Array(sk.bones.length).fill(-1); list.forEach((b, k) => { const i = sk.bones.indexOf(b); if (i >= 0) kOf[i] = k; });
+  const M = G.clone().multiply(arms.bindMatrix), Nm = new THREE.Matrix3().getNormalMatrix(M), map = new Int32Array(Pa.count).fill(-1);
+  const pos = [], nrm = [], uv = [], si4 = [], sw4 = [], idx = [], v = new V3();
+  for (let i = 0; i < Pa.count; i++) {
+    let w = 0; for (let c = 0; c < 4; c++) if (kOf[SI.getComponent(i, c)] >= 0) w += SW.getComponent(i, c);
+    if (w < 0.5) continue;
+    map[i] = pos.length / 3;
+    v.fromBufferAttribute(Pa, i).applyMatrix4(M); pos.push(v.x, v.y, v.z);
+    if (Na) { v.fromBufferAttribute(Na, i).applyMatrix3(Nm).normalize(); nrm.push(v.x, v.y, v.z); } else nrm.push(0, 1, 0);
+    if (UVa) uv.push(UVa.getX(i), UVa.getY(i)); else uv.push(0, 0);
+    for (let c = 0; c < 4; c++) { const k = kOf[SI.getComponent(i, c)]; si4.push(k < 0 ? 0 : k); sw4.push(SW.getComponent(i, c)); }   // the forearm's share rides the wrist
+  }
+  const cnt = Ix ? Ix.count : Pa.count;
+  for (let t = 0; t + 2 < cnt; t += 3) {
+    const a = map[Ix ? Ix.getX(t) : t], b = map[Ix ? Ix.getX(t + 1) : t + 1], c = map[Ix ? Ix.getX(t + 2) : t + 2];
+    if (a >= 0 && b >= 0 && c >= 0) idx.push(a, b, c);
+  }
+  if (!idx.length) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si4, 4));
+  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw4, 4));
+  geo.setIndex(idx); geo.computeBoundingSphere();
+  const mesh = new THREE.SkinnedMesh(geo, mat);
+  mesh.bindMode = 'detached';                                        // bone matrices are written in this mesh's space
+  mesh.bind(new THREE.Skeleton(list.map(() => new THREE.Bone()), inv), new THREE.Matrix4());
+  mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false;
+  const Gd = { h, mesh, n, par, proc, off, qrel, qa, inv, P0, Q0, P: P0.map(() => new V3()), Q: Q0.map(() => new THREE.Quaternion()), D: Array.from({ length: 16 }, () => new THREE.Quaternion()) };
+  mesh.skeleton.update = () => glove104Pose(Gd);
+  h.mesh.add(mesh);
+  return Gd;
+}
+// Bone matrices from the procedural hand's bones (rest = identity in mesh space; bone 0 never turns).
+function glove104Pose(G) {
+  const B = G.h.bones, D = G.D, sk = G.mesh.skeleton, out = sk.boneMatrices;
+  for (let f = 0; f < 5; f++) {
+    const i = 1 + 3 * f;
+    D[i].copy(B[i].quaternion); D[i + 1].multiplyQuaternions(D[i], B[i + 1].quaternion); D[i + 2].multiplyQuaternions(D[i + 1], B[i + 2].quaternion);
+  }
+  for (let k = 0; k < G.n; k++) {
+    const pk = G.par[k], P = G.P[k], Q = G.Q[k];
+    if (pk < 0) { P.copy(G.P0[k]); Q.copy(G.Q0[k]); }
+    else {
+      P.copy(G.off[k]).applyQuaternion(G.Q[pk]).add(G.P[pk]);
+      if (G.proc[k] > 0) Q.multiplyQuaternions(D[G.proc[k]], G.qa[k]); else Q.multiplyQuaternions(G.Q[pk], G.qrel[k]);
+    }
+    _g4M.compose(P, Q, _g4S).multiply(G.inv[k]).toArray(out, k * 16);
+  }
+  if (sk.boneTexture) sk.boneTexture.needsUpdate = true;
 }
 
 function deskReload(smart = false) {
@@ -29040,6 +29178,7 @@ function handsBuild() {
   if (HANDLOOK.on && WEAR.gloves) for (const h of HANDS.list) h.mesh.material = h.gloveMat;   // step 98: gloves on from the start
   HANDS.raw = null; HANDS.detail = null;
   HANDS.ready = true;
+  glove104Start();                                                  // step 104: the pack glove on both hands
 }
 function handsPrecompile(on) {
   if (!HANDS.ready) return;
