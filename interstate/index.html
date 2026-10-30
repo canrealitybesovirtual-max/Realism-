@@ -1122,7 +1122,7 @@ const DEFAULTS = {
   traffic: { preset: 'commuter', ...structuredClone(TRAFFIC_PRESETS.commuter.values) },
   car: { finish: 'gloss', wheels: 'twin', wheelFinish: 'gloss', calipers: 'graphite', aero: 'lip', rideHeight: 0, suspension: 'sport', tyrePressure: 2.3, brakeBias: .64, drive: 'awd',
          engine: 'stock', brakes: 'stock', tyres: 'road', weight: 'stock', upholstery: 'black', trim: 'walnut', ambient: 'ice', wheelStyle: 'galaxy', model: 'celsior', paintColor: 'black', tint: 'none', exhaust: 'stock' },
-  world: { scenery: 'tunnel', time: 'afternoon', cycleMinutes: 45, weather: 'dynamic', crosswind: true, headlights: .35, garage: 'warehouse' },   // build 1.31: garage: warehouse | studio
+  world: { scenery: 'tunnel', time: 'afternoon', cycleMinutes: 45, weather: 'dynamic', crosswind: true, snowfall: true, headlights: .35, garage: 'warehouse' },   // build 1.31: garage: warehouse | studio
   photo: { focal: 50, focus: 0, aperture: 2.8, exposure: 0, roll: 0 },   // section 11: the photo-mode lens, kept between sessions
   vr: { quality: 'performance', refresh: 72, bodyMotion: .35, seatHeight: 0, hud: true, ratio: 14, stickSteer: true, hands: 'gloves' },   // build 1.15: headset, comfort, steering
 };
@@ -1231,6 +1231,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'world', key: 'world.cycleMinutes', type: 'range', label: 'Length of a full day', desc: 'Real minutes for a complete day and night when the cycle runs.', min: 15, max: 120, step: 5, fmt: v => v + ' min', when: d => d.world.time === 'cycle' && d.world.scenery !== 'tunnel' },
   { tab: 'world', group: 'Weather', when: d => d.world.scenery !== 'tunnel' },
   { tab: 'world', key: 'world.weather', type: 'select', label: 'Weather', desc: 'Dynamic drifts between clear, overcast and rain during the run. Rain wets the road over half a minute and cuts grip by a third; it takes a few minutes to dry. Changes apply at once.', options: [['dynamic', 'Dynamic'], ['clear', 'Clear'], ['overcast', 'Overcast'], ['rain', 'Rain']], when: d => d.world.scenery !== 'tunnel' },
+  { tab: 'world', key: 'world.snowfall', type: 'toggle', label: 'Snowfall and spray', desc: 'Under cloud, snow falls in calm flurries and denser bands that close the view for tens of seconds; gusts sweep the flakes and lean on the car a little; your lamps light the flakes after dark; a truck or car ahead throws a spray cloud that hides the road and makes lamps bloom. Off: the old weather.', when: d => d.world.scenery !== 'tunnel' },   // realism 6
   { tab: 'world', key: 'world.crosswind', type: 'toggle', label: 'Crosswind', desc: 'Gusts lean on the car, harder at speed and in stormy weather. Trucks and buses shelter you while you run in their wake.', when: d => d.world.scenery !== 'tunnel' },
   // Interface
   { tab: 'interface', group: 'Display' },
@@ -5628,13 +5629,15 @@ const finishShader = () => ({
     uWsC: { value: new THREE.Vector3() }, uWsN: { value: new THREE.Vector3(0, 0, 1) }, uWsU: { value: new THREE.Vector3(1, 0, 0) }, uWsV: { value: new THREE.Vector3(0, 1, 0) },
     uWsBox: { value: new THREE.Vector4(-.7, .7, -.4, .4) }, uWsPiv: { value: new THREE.Vector4() }, uWsRad: { value: new THREE.Vector4() }, uWsAng: { value: new THREE.Vector4() },
     uWk0: { value: new THREE.Vector4() }, uWk1: { value: new THREE.Vector4() }, uWw: { value: new THREE.Vector4() },
-    ...(HEADBEAM.on ? { uDz: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) }, uDzOn: { value: 0 }, uDzOcc: { value: 0 }, uDzDeg: { value: 50 }, uDzNF: { value: new THREE.Vector2(.1, 1000) } } : {}) },   // realism 5
+    ...(HEADBEAM.on ? { uDz: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) }, uDzOn: { value: 0 }, uDzOcc: { value: 0 }, uDzDeg: { value: 50 }, uDzNF: { value: new THREE.Vector2(.1, 1000) } } : {}),   // realism 5
+    ...(SNOWX.on ? { uSxV: { value: 0 }, uSxCol: { value: new THREE.Vector3(.6, .6, .6) }, uSxDep: { value: 0 }, uSxNF: { value: new THREE.Vector2(.1, 1000) } } : {}) },   // realism 6
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: GLSL_NOISE + /* glsl */`
     uniform sampler2D tDiffuse, tDepth; uniform highp sampler3D tLUT; uniform float uLutSize, uTime, uGrain, uCA, uVignette, uSharpen, uHaze; uniform vec2 uRes;
     uniform float uDistort, uAspect, uHeat, uFlare; uniform vec3 uHeatPos, uFlareCol; uniform vec2 uSunUV;
     uniform float uDrops, uDropT, uAir, uUpFlow, uDropLight;${HEADBEAM.on ? `
-    uniform vec4 uDz[8]; uniform float uDzOn, uDzOcc, uDzDeg; uniform vec2 uDzNF;                  // realism 5: oncoming lamps` : ''}
+    uniform vec4 uDz[8]; uniform float uDzOn, uDzOcc, uDzDeg; uniform vec2 uDzNF;                  // realism 5: oncoming lamps` : ''}${SNOWX.on ? `
+    uniform float uSxV, uSxDep; uniform vec3 uSxCol; uniform vec2 uSxNF;                          // realism 6: spray veil` : ''}
     /* ── realism 1: water on the windscreen, and the wipers ─────────────────
        The screen is a plane in the car's body (fitted to the model at first use), seen
        through the cockpit camera: each pixel's ray meets it at g (metres across, u, and up
@@ -5934,6 +5937,15 @@ const finishShader = () => ({
           gl += L.z * vis * 10.0 / (th * th + 0.15);                                    // veiling glare, 10 E / theta^2
         }
         col += vec3(1.0, 0.95, 0.86) * min(gl, ${HEADBEAM.glareMax.toFixed(2)});
+      }` : ''}${SNOWX.on ? `
+      if (uSxV > 0.001) {                                                            // realism 6: in the spray cloud of what you follow
+        float sd = 30.0;
+        if (uSxDep > 0.5) { float z = texture2D(tDepth, vUv).x * 2.0 - 1.0; sd = 2.0 * uSxNF.x * uSxNF.y / (uSxNF.y + uSxNF.x - z * (uSxNF.y - uSxNF.x)); }
+        float k = uSxV * (1.0 - exp(-max(sd - 2.0, 0.0) * 0.06));                    // more of it between you and what lies further
+        vec2 o = vec2(0.03 / uAspect, 0.03);
+        vec3 glow = (texture2D(tDiffuse, uv + o).rgb + texture2D(tDiffuse, uv - o).rgb + texture2D(tDiffuse, uv + vec2(o.x, -o.y)).rgb + texture2D(tDiffuse, uv - vec2(o.x, -o.y)).rgb) * 0.25;
+        float mv = vnoise(vec2(vUv.x * 5.0 + uTime * 0.6, vUv.y * 3.0 - uTime * 0.25));   // it rolls and thins as you drive through it
+        col = mix(col, uSxCol + glow * 0.6, clamp(k * (0.75 + 0.35 * mv), 0.0, 0.92));
       }` : ''}
       vec3 lc = clamp(col, 0.0, 1.0); float sc = (uLutSize - 1.0) / uLutSize, of = 0.5 / uLutSize;
       col = texture(tLUT, lc * sc + of).rgb;
@@ -6080,6 +6092,10 @@ class PostFX {
       fu.uDzOn.value = any; fu.uDzOcc.value = depth ? 1 : 0; fu.uDzDeg.value = cam ? cam.fov : 50; if (cam) fu.uDzNF.value.set(cam.near, cam.far);
       DAZ.n = 0; DAZ.want = on;
     }
+    if (SNOWX.on) {                                                     // realism 6: the spray veil
+      const X = vd?.sx, V = X ? X.veil : 0; fu.uSxV.value = V;
+      if (V > 0) { fu.uSxCol.value.fromArray(X.col); fu.uSxDep.value = depth ? 1 : 0; if (cam) fu.uSxNF.value.set(cam.near, cam.far); }
+    }
     /* exhaust heat over the tailpipes, strongest when the car is slow and the engine hot */
     fu.uHeat.value = 0;
     if (vd?.exhaust && vd.heat > .01) {
@@ -6099,6 +6115,7 @@ class PostFX {
     u.uTime.value = this.time; u.uGrain.value = g.filmGrain ? 1 : 0; u.uCA.value = g.chromaticAberration ? 1 : 0;
     u.uSharpen.value = clamp(.42 + (1 - g.renderScale * this.rs.dynScale) * 1.5 + (g.antialiasing === 'fxaa' ? .2 : 0), 0, 1);   // FXAA softens more: compensate
     this.bloom.enabled = g.bloom;
+    if (SNOWX.on) { const V = this.world?.sprayV?.veil || 0; this.bloom.strength = .2 + .5 * V; this.bloom.radius = .55 + .3 * V; this.bloom.threshold = 1.15 - .45 * V; }   // realism 6: lamps bloom in spray
     if (this.prepass) this.prepass.enabled = !!this.world?.visualData;
     if (this.reflection) this.reflection.enabled = !!this.world?.reflectionPlane;
     if (this.ao) this.ao.enabled = !!this.world?.visualData;
@@ -7756,6 +7773,7 @@ class DriveWorld {
     this.trees.update(dt, this.camera.position, this.#chunks(), this.streamer.ahead * .85);
     if (!this.tunnel) this.far.update(car.position);
     const tu = this.mats.treeU; tu.uWindTime.value += dt * (.8 + .4 * env.wind); tu.uWindStrength.value = env.wind;
+    if (SNOWX.on && env.sxGust) tu.uWindStrength.value += env.sxGust * .12;   // realism 6
     { const sk = env.sky, a = TreeAssets.windU.uTreeAmb.value, sl = this.day.sunLight, k = 7 * .045 * (1 - (env.night || 0)) * (1 - .6 * (env.cloud || 0)); if (sk) { a.x = sk.horizon[0] * 1.1 + sl[0] * k; a.y = sk.horizon[1] * 1.1 + sl[1] * k; a.z = sk.horizon[2] * 1.1 + sl[2] * k; } }
     tu.uSunView.value.copy(this.day.sunDir).transformDirection(this.camera.matrixWorldInverse); tu.uSunColorT.value.set(...this.day.sunLight);
     this.#sunFollow();
@@ -7785,7 +7803,8 @@ class DriveWorld {
     if (!env || this.s.data.world.crosswind === false || this.tunnel || sim.vx === undefined) { this.crossF = 0; return 0; }
     const t = this.windClock = (this.windClock || 0) + dt;
     const swell = fbm2(t * .045, 13.7, 3), gust = Math.max(0, vnoise2(t * .35, 41.3) - .45) * 2;
-    const ws = (env.wind ?? .7) * 3.2 * (.45 + 1.1 * swell + .55 * gust);                // m/s
+    let ws = (env.wind ?? .7) * 3.2 * (.45 + 1.1 * swell + .55 * gust);                  // m/s
+    if (SNOWX.on && env.sxGust) ws += env.sxGust * SNOWX.push;                           // realism 6: the gust events that sweep the snow
     const yaw = sim.heading, wLat = ws * (.949 * Math.cos(yaw) - .316 * Math.sin(yaw));  // wind (.949, .316) · car right (cos ψ, −sin ψ)
     const shelter = .35 + .65 * clamp(this.traffic.draft ?? 1, 0, 1);
     const F = 3.4 * Math.max(0, sim.vx) * wLat * shelter;
@@ -7970,10 +7989,47 @@ class DriveWorld {
         }
       }
     }
+    if (SNOWX.on) this.#sprayVeil(dt, near, env, fw, slOn, vrS, replaying, P, dens);    // realism 6
     const L = this.envLight; L.sunDir = this.day.sunDir; L.sunLight = this.day.sunLight; L.sky = env.sky; L.lamps = env.lamps; L.wind = env.wind;
+    if (SNOWX.on && env.sxGust) L.wind += env.sxGust * .35;             // realism 6: gusts carry the spray and dust sideways
     P.update(dt, L, this.rs.post?.prepass?.enabled ? this.rs.post.prepass.rt?.depthTexture : null, this.rs.r.getDrawingBufferSize(this._res), this.camera);
     this.skids.flush(wet); this.tracks?.flush(wet);
   }
+  /** realism 6: the spray cloud of the vehicle ahead in your path (slush, water or fresh snow off its tyres). Sets
+   *  this.sprayV.veil (0..1, eased) and its display colour for the finish pass, and puffs big slow mist behind it. */
+  #sprayVeil(dt, near, env, fw, slOn, vrS, replaying, P, dens) {
+    const X = this.sprayV || (this.sprayV = { veil: 0, col: [0, 0, 0], sl: 0 }), rt = this._rt, R = Math.random;
+    let best = 0, lead = null, lsl = 0;
+    if (!this.tunnel && this.s.data.world.snowfall !== false) {
+      const list = near || this.trafficSources(this.camera.position, replaying ? this.replay.proxies : this.traffic.agents), tr = this.traffic.track, cp = this.car.position;
+      for (let j = 0; j < Math.min(list.length, 10); j++) {
+        const o = list[j], a = o.a; if (o.v < 8 || !a.T) continue;
+        const dx = o.x - cp.x, dz = o.z - cp.z, al = dx * fw.x + dz * fw.z;
+        if (al < 2 || al > SNOWX.veilFar || (o.vx || 0) * fw.x + (o.vz || 0) * fw.z < 5) continue;   // ahead of you, going your way
+        const lat = Math.abs(dx * rt.x + dz * rt.z), hw = a.T.hw + CAR.width * .5 + .6; if (lat > hw) continue;
+        const sl = slOn && a.u !== undefined ? Math.max(slushAt(tr, a.u - a.T.hw * .8), slushAt(tr, a.u + a.T.hw * .8)) : 0;
+        const src = Math.min(1, Math.max(sl * 1.15, env.wet * .9, (env.snow || 0) * .75));
+        const k = src * sstep(8, 28, o.v) * (o.truck ? 1 : .45) * (al < 14 ? 1 : sstep(SNOWX.veilFar, 14, al)) * sstep(hw, hw * .45, lat);
+        if (k > best) { best = k; lead = o; lsl = sl; }
+      }
+    }
+    const T = best * SNOWX.veil; X.veil = damp(X.veil, T, T > X.veil ? 1.8 : .9, dt); if (X.veil < 1e-3 && T === 0) X.veil = 0;
+    X.sl = damp(X.sl, lsl, 2, dt);
+    /* its display colour: the fog through the exposure (a rough tone curve), plus your lamps scattered back at night */
+    const f = env.sky.fog, ex = (this.exposure ?? 1) * (this.eyeAE ?? 1), lit = (this.carObj.headlights?.[0]?.intensity > 0 ? .12 : 0) * env.night, lc = [1, .95, .86];
+    for (let k = 0; k < 3; k++) { const c = f[k] * ex * 1.6 + lit * lc[k]; X.col[k] = Math.pow(c / (1 + c), 1 / 2.2); }
+    if (lead && X.veil > .05) {                                         // the cloud itself: big slow puffs off its back
+      const a = lead.a, th = Math.hypot(lead.vx, lead.vz) || 1, tx = lead.vx / th, tz = lead.vz / th, sl = X.sl;
+      const cr = .82 - .32 * sl, cg = .84 - .37 * sl, cb = .86 - .43 * sl;
+      for (let n = this.#spawnAt(40, X.veil * (vrS ? SNOWX.puffVR : SNOWX.puff) * dens, dt); n > 0; n--) {
+        const back = a.T.len * .5 + .5 + R() * 4, side = (R() - .5) * 2 * a.T.hw;
+        P.emit(PT.spray, lead.x - tx * back - tz * side, lead.y - .2 + R() * 1.6, lead.z - tz * back + tx * side,
+          tx * lead.v * .7 + (R() - .5) * 1.2, .2 + R() * .6, tz * lead.v * .7 + (R() - .5) * 1.2,
+          1.6 + R() * 1.2, 1.1, lead.truck ? 4.5 + R() * 1.5 : 3 + R(), cr, cg, cb, .05 + .08 * X.veil);
+      }
+    }
+  }
+  #spawnAt(slot, rate, dt) { const acc = this.emitAcc; acc[slot] += rate * dt; const n = Math.floor(acc[slot]); acc[slot] -= n; return Math.min(n, 24); }
   /** realism 2: slush on the road this run (open road, setting on). */
   slushOn() { return SLUSH.on && !this.tunnel && this.s.data.graphics.slush !== false; }
   /** An impact: chips of trim and a scatter of glass at the front corner. */
@@ -7990,7 +8046,10 @@ class DriveWorld {
   /** Objects that must stay out of the depth pre-pass and the road mirror. */
   /** Build 1.27: what the mirrors (§14.10) render from, flat: the cockpit camera, else the seat. */
   mirrorView() { const o = this._mv ??= { eye: null, cabin: false, xr: false }; o.cabin = !!this.cabinCam; o.eye = this.camera.position; return o; }
-  fxHidden() { return this._fxh || (this._fxh = this.tracks ? [this.particles.mesh, this.skids.mesh, this.tracks.mesh] : [this.particles.mesh, this.skids.mesh]); }
+  fxHidden() {
+    if (!this._fxh) { this._fxh = this.tracks ? [this.particles.mesh, this.skids.mesh, this.tracks.mesh] : [this.particles.mesh, this.skids.mesh]; if (this.environment?.snowMesh) this._fxh.push(this.environment.snowMesh); }   // realism 6: no flakes in the depth pre-pass
+    return this._fxh;
+  }
 
   /* ── Section 11: replay ── */
   enterReplay() {
@@ -8020,6 +8079,7 @@ class DriveWorld {
     this.#stream(2); this.#syncWindow(false);
     this.trees.update(dt, this.camera.position, this.#chunks(), this.streamer.ahead * .85); if (!this.tunnel) this.far.update(car.position);
     const tu = this.mats.treeU; tu.uWindTime.value += dt * (.8 + .4 * env.wind); tu.uWindStrength.value = env.wind;
+    if (SNOWX.on && env.sxGust) tu.uWindStrength.value += env.sxGust * .12;   // realism 6
     { const sk = env.sky, a = TreeAssets.windU.uTreeAmb.value, sl = this.day.sunLight, k = 7 * .045 * (1 - (env.night || 0)) * (1 - .6 * (env.cloud || 0)); if (sk) { a.x = sk.horizon[0] * 1.1 + sl[0] * k; a.y = sk.horizon[1] * 1.1 + sl[1] * k; a.z = sk.horizon[2] * 1.1 + sl[2] * k; } }
     tu.uSunView.value.copy(this.day.sunDir).transformDirection(this.camera.matrixWorldInverse);
     this.#sunFollow();
@@ -8178,6 +8238,7 @@ class DriveWorld {
       haze: clamp((el - 18) / 35, 0, 1) * .8 * (1 - env.cloud) * (1 - env.wet) * (env.roadT === undefined ? 1 : sstep(24, 42, env.roadT)), speed: sp,   // build 1.11: shimmer needs hot asphalt
       focus: this.lens ? (this.lens.focus || Math.max(1, carDist)) : onCar ? Math.max(2, carDist) : 12 + sp * .15, fStop: this.lens ? this.lens.fStop : fStop,
       wet: env.wet, flareK: 1 - env.cloud, ws: this.ws,                 // realism 1: the windscreen state (one object, reused)
+      sx: this.sprayV,                                                  // realism 6: the spray veil (undefined with ?snowx=off)
       /* section 12: water on the lens. The chase camera takes the full shower; the bonnet camera
          sits in the screen's lee; the bumper camera also catches the spray off the road. The
          roadside cinematic camera is sheltered and still. Photo mode stays clean. */
@@ -12345,6 +12406,19 @@ const TUNNEL_EXPOSURE = 1.5, TUNNEL_LIGHT = 420;   // build 1.21: eye adaptation
    shifts only glow of the way toward outside, so the portal ahead still burns white. Snow outside: the eye was
    adapted to a sunlit snow field, darker by snow (less under cloud and at night). Headset: no animation (eyeAE 1). */
 const TUNNEL_AE = { on: !/[?&]tunnelae=off\b/.test(location.search), outside: .74, snow: .6, floor: -2.2, open: 1, close: .22, glow: .4, glowFar: 220, glowNear: 12 };
+/* realism 6: snowfall, wind gusts and spray visibility (world.snowfall; ?snowx=off = exactly the old weather: no snow
+   mesh, no gusts, no fog change, no spray veil, no shader text). Under cloud, snow comes in calm flurries (calm, level
+   0.06-0.2, 35-110 s) and denser bands (band, 0.55-1, 18-60 s) eased over ~tau s; it is the cloud's, so a clear sky stays
+   clear and rain mostly replaces it. Heavy snow thickens the fog (x 1 + fog x snow^1.5) and greys it. Gusts are
+   events (rise, hold, decay) on top of the existing crosswind: flakes sweep with them and #crosswind adds push x gust
+   m/s (a gentle side force through the old model, no handling change). Flakes: a camera box like the rain, N quads
+   (nLow on Low / Quest, nVR in the headset), drifted on the CPU (wrapped, so no time precision loss), lit by the sky,
+   the sun and your own lamps (the dipped cut-off too). Spray: the vehicle ahead in your path throwing slush, water or
+   fresh snow gives a veil (0..1): thicker fog everywhere (headset too), a depth-scaled grey veil and wider, lower
+   bloom on a computer, and big slow puffs behind it. */
+const SNOWX = { on: !/[?&]snowx=off\b/.test(location.search), N: 9000, nLow: 3000, nVR: 1400, box: [30, 18, 30], size: .009,
+  calm: [.06, .2], band: [.55, 1], calmT: [35, 110], bandT: [18, 60], tau: 7, fall: 1.1, fog: 2.4, sprayFog: 2.2, push: .6,
+  veil: .85, veilFar: 75, puff: 16, puffVR: 5 };
 const SKY_KEYS = [
   { el: -14, zenith: [.0016, .0021, .0042], horizon: [.008, .0085, .012], ground: [.002, .002, .002], fog: [.0065, .007, .0095], insc: [0, 0, 0], sun: [.62, .72, .92], sunI: 0, exp: 2.7, mie: 0 },
   { el: -5, zenith: [.01, .016, .04], horizon: [.085, .062, .06], ground: [.01, .01, .01], fog: [.06, .052, .056], insc: [.05, .025, .018], sun: [.9, .42, .25], sunI: 0, exp: 1.9, mie: .04 },
@@ -12402,6 +12476,7 @@ class WorldEnvironment {
     }));
     this.rainMesh.frustumCulled = false; this.rainMesh.layers.set(6); this.rainMesh.renderOrder = 5; this.rainMesh.visible = false;
     world.scene.add(this.rainMesh); world.camera.layers.enable(6);
+    if (SNOWX.on) this.#snowBuild(world);                              // realism 6
     /* Median lamps that actually light the road: a fixed pool near the car, so the shader light count never changes */
     const q = this.s.data.graphics.preset, lowQ = q === 'low' || q === 'quest', n = world.tunnel ? (lowQ ? 2 : 4) : lowQ ? 0 : q === 'medium' ? 2 : 4;
     this.streetLights = [];
@@ -12479,6 +12554,11 @@ class WorldEnvironment {
     this.lamps = sstep(.3, .55, this.night);
     this.fogMult = 1 + .55 * c + 1.5 * r;
     this.wind = .6 + .35 * c + .8 * r;
+    if (SNOWX.on) {                                                    // realism 6: snow bands and spray thicken the air
+      this.#snowX(dt, force);
+      const sn = this.snow, vl = w.sprayV?.veil || 0;
+      if (sn > 0 || vl > 0) { this.fogMult *= 1 + SNOWX.fog * sn * Math.sqrt(sn) + SNOWX.sprayFog * vl; lerp3(S.fog, greyOf(S.fog, 1.12, g), sn * .55, S.fog); }
+    }
     /* lights */
     this.moonDir.copy(this.sunDir).negate(); this.moonDir.y = Math.max(this.moonDir.y, .38); this.moonDir.normalize();
     const moon = el < -3;
@@ -12520,6 +12600,7 @@ class WorldEnvironment {
     /* road and rain */
     w.wet = this.wet; w.mats.asphaltU.uWet.value = this.wet;
     this.#rainUpdate(dt, S);
+    if (SNOWX.on) this.#snowDraw(dt, S);                               // realism 6
   }
   /** Build 1.21: inside the tunnel there is no sky, sun, weather or clock. Lamps are always on, the road is dry, the
    *  air is a warm sodium haze, the eye is adapted to the lit bore, and a small pool of real lights follows the car
@@ -12553,6 +12634,7 @@ class WorldEnvironment {
     }
     w.wet = 0; w.mats.asphaltU.uWet.value = 0;
     this.rainMesh.visible = false;
+    if (SNOWX.on) { this.snow = 0; this.sxGust = 0; this.snowMesh.geometry.setDrawRange(0, 0); }   // realism 6
   }
   /** realism 3: the eye adapting in and out of tunnels; sets world.eyeAE (see TUNNEL_AE). No allocation. */
   #eye(dt, force) {
@@ -12585,15 +12667,103 @@ class WorldEnvironment {
     u.uOpacity.value = .32 * clamp(this.rain * 1.4, 0, 1);
     this.rainMesh.geometry.setDrawRange(0, Math.ceil(this.rainN * clamp(this.rain, .15, 1)) * 6);
   }
+  /** realism 6: the flake box (built once; kept visible with an empty draw range so its program compiles at load). */
+  #snowBuild(world) {
+    this.snow = 0; this.sxGust = 0;
+    this.sx = { band: false, lvl: SNOWX.calm[0], tgt: SNOWX.calm[0], timer: -1, t: 0, gT: 3, g0: -99, gH: 0, gD: 2, gA: 0, gv: 0 };
+    this.snowU = { uCam: { value: new THREE.Vector3() }, uBox: { value: new THREE.Vector3(...SNOWX.box) }, uDrift: { value: new THREE.Vector3() }, uRel: { value: new THREE.Vector3(0, -1, 0) },
+      uTime: { value: 0 }, uSize: { value: SNOWX.size }, uOpacity: { value: 0 }, uAmb: { value: new THREE.Vector3(.5, .5, .5) },
+      uHlP: { value: new THREE.Vector3() }, uHlF: { value: new THREE.Vector3(0, 0, -1) }, uHlU: { value: new THREE.Vector3(0, 1, 0) }, uHlI: { value: 0 }, uHlLow: { value: 1 } };
+    this.snowMesh = new THREE.Mesh(rainGeometry(SNOWX.N), new THREE.ShaderMaterial({
+      uniforms: this.snowU, transparent: true, depthWrite: false,
+      vertexShader: /* glsl */`
+        uniform vec3 uCam, uBox, uDrift, uRel, uAmb, uHlP, uHlF, uHlU; uniform float uTime, uSize, uHlI, uHlLow; attribute vec2 aCorner;
+        varying float vA; varying vec3 vC; varying vec2 vQ;
+        void main(){
+          float ph = fract(dot(position, vec3(91.7, 47.3, 13.1))) * 6.2831;
+          vec3 rel = mod(position * uBox + uDrift - uCam, uBox) - uBox * 0.5;
+          rel.x += sin(uTime * 1.3 + ph) * 0.16; rel.z += cos(uTime * 1.07 + ph * 1.7) * 0.16; rel.y += sin(uTime * 0.9 + ph * 2.3) * 0.06;   // flutter
+          vec3 w = uCam + rel; float dist = length(rel);
+          vec3 toC = normalize(w - cameraPosition);
+          float sp = length(uRel); vec3 dir = sp > 1e-3 ? uRel / sp : vec3(0.0, -1.0, 0.0);
+          vec3 dp = dir - toC * dot(dir, toC); float dl = length(dp); dp = dl > 1e-3 ? dp / dl : vec3(0.0, 1.0, 0.0);
+          vec3 side = normalize(cross(dp, toC));
+          float size = uSize * (0.6 + 0.8 * fract(ph * 7.31)) * (1.0 + dist * 0.02);
+          float len = size + min(sp * dl * 0.012, 0.4);                              // smeared by your speed, as the shutter sees it
+          vec2 q = vec2(aCorner.x, aCorner.y * 2.0 - 1.0); vQ = q;
+          vec3 pos = w + side * q.x * size + dp * q.y * len;
+          vA = smoothstep(1.0, 2.6, dist) * (1.0 - smoothstep(uBox.x * 0.32, uBox.x * 0.5, length(rel.xz))) * (1.0 - smoothstep(uBox.y * 0.36, uBox.y * 0.5, abs(rel.y))) * (0.35 + 0.65 * size / len);
+          vec3 d = w - uHlP; float r = max(length(d), 0.05); vec3 L = d / r;
+          float cone = smoothstep(0.82, 0.97, dot(L, uHlF)) * mix(1.0, 0.1 + 0.9 * smoothstep(0.06, -0.02, dot(L, uHlU)), uHlLow);   // dipped: little above the cut-off
+          vC = uAmb + vec3(1.0, 0.95, 0.86) * uHlI * cone * 40.0 / (r * r + 4.0);
+          gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+        }`,
+      fragmentShader: /* glsl */`
+        uniform float uOpacity; varying float vA; varying vec3 vC; varying vec2 vQ;
+        void main(){
+          float a = smoothstep(1.0, 0.25, length(vQ)) * vA * uOpacity;
+          if (a < 0.003) discard;
+          gl_FragColor = vec4(vC, a);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
+    }));
+    const m = this.snowMesh; m.frustumCulled = false; m.layers.set(6); m.renderOrder = 5; m.geometry.setDrawRange(0, 0); m.name = 'snowfall';
+    world.scene.add(m);
+  }
+  /** realism 6: flurries and bands, and gust events (state only; no allocation). */
+  #snowX(dt, force) {
+    const X = this.sx, on = this.s.data.world.snowfall !== false, R = Math.random;
+    if (force || X.timer < 0 || (X.timer -= dt) <= 0) {
+      X.band = force ? R() < .3 : !X.band;
+      const T = X.band ? SNOWX.bandT : SNOWX.calmT, L = X.band ? SNOWX.band : SNOWX.calm;
+      X.timer = T[0] + R() * (T[1] - T[0]); X.tgt = L[0] + R() * (L[1] - L[0]);
+      if (force) X.lvl = X.tgt;
+      else if (on && X.band && X.tgt > .75 && this.cloud > .5 && this.rain < .3) bus.emit('toast', 'Heavy snow');
+    }
+    X.lvl = damp(X.lvl, X.tgt, 1 / SNOWX.tau, dt); X.t += dt;
+    const k = on ? sstep(.3, .75, this.cloud) * (1 - .8 * clamp(this.rain / .6, 0, 1)) : 0;
+    this.snow = clamp(X.lvl * (1 + .3 * (vnoise2(X.t * .11, 7.7) - .5)) * k, 0, 1);
+    if ((X.gT -= dt) <= 0) {                                           // a gust: rises, holds a moment, dies away
+      X.gA = (1.2 + 2.8 * R()) * (.6 + .6 * X.lvl); X.g0 = X.t; X.gH = 1.5 + 2.5 * R(); X.gD = 1.5 + 2.5 * R(); X.gT = (5 + 11 * R()) * (X.band ? .6 : 1);
+    }
+    const hold = X.t - X.g0 < X.gH;
+    X.gv = damp(X.gv, hold ? X.gA : 0, hold ? 1.6 : 1 / X.gD, dt);
+    this.sxGust = on ? X.gv * (.4 + .6 * Math.max(this.cloud, this.snow)) : 0;
+  }
+  /** realism 6: drift the flakes with the wind, light them, size the draw. */
+  #snowDraw(dt, S) {
+    const m = this.snowMesh, u = this.snowU, w = this.w, vr = !!(w.vr || w.rs?.vr)?.presenting, q = this.s.data.graphics.preset;
+    const cap = vr ? SNOWX.nVR : q === 'low' || q === 'quest' ? SNOWX.nLow : SNOWX.N, n = this.snow > .01 ? Math.ceil(cap * clamp(this.snow, .12, 1)) : 0;
+    m.geometry.setDrawRange(0, n * 6);
+    if (!n) return;
+    const ws = this.wind * 1.6 + this.sxGust, vx = .949 * ws, vz = .316 * ws, vy = -SNOWX.fall, D = u.uDrift.value, B = u.uBox.value, cv = this.camVel;
+    D.set((D.x + vx * dt) % B.x, (D.y + vy * dt) % B.y, (D.z + vz * dt) % B.z);
+    u.uRel.value.set(vx - cv.x, vy - cv.y, vz - cv.z); u.uCam.value.copy(w.camera.position); u.uTime.value += dt;
+    const sl = w.day.sunLight, lk = this.lamps * .3;
+    u.uAmb.value.set(S.horizon[0] * 1.1 + S.zenith[0] * .5 + sl[0] * .9 + lk, S.horizon[1] * 1.1 + S.zenith[1] * .5 + sl[1] * .9 + lk * .74, S.horizon[2] * 1.1 + S.zenith[2] * .5 + sl[2] * .9 + lk * .48);
+    u.uOpacity.value = .9 * clamp(.45 + this.snow, 0, 1);
+    const hl = w.carObj?.headlights, l0 = hl?.[0], l1 = hl?.[1];
+    let I = 0;
+    if (l0 && l1 && l0.intensity > 0 && l0.parent) {                  // your own lamps catch the flakes (last frame's pose)
+      const b = l0.parent, e = b.matrixWorld.elements, high = l0.distance > 200;
+      u.uHlP.value.set((l0.position.x + l1.position.x) * .5, l0.position.y, l0.position.z).applyMatrix4(b.matrixWorld);
+      u.uHlF.value.set(-e[8], -e[9], -e[10]).normalize(); u.uHlU.value.set(e[4], e[5], e[6]).normalize(); u.uHlLow.value = high ? 0 : 1;
+      I = (high ? 1.5 : 1) * clamp((this.s.data.world.headlights ?? .35) / .35, .3, 2.5) * (.3 + .7 * this.night);
+    }
+    u.uHlI.value = I;
+  }
   get label() {
     const h = Math.floor(this.time), m = Math.floor((this.time - h) * 60);
-    const wx = this.rain > .5 ? 'Rain' : this.rain > .05 ? 'Light rain' : this.cloud > .6 ? 'Overcast' : this.cloud > .3 ? 'Broken cloud' : 'Clear';
+    let wx = this.rain > .5 ? 'Rain' : this.rain > .05 ? 'Light rain' : this.cloud > .6 ? 'Overcast' : this.cloud > .3 ? 'Broken cloud' : 'Clear';
+    if (SNOWX.on && this.snow > .1) wx = this.snow > .5 ? 'Heavy snow' : 'Snow';   // realism 6
     if (this.w.tunnel) return 'Tunnel';
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} · ${wx}${this.wet > .3 && this.rain < .05 ? ', wet road' : ''}`;
   }
   dispose() {
     this.offWeather?.();
     this.rainMesh.parent?.remove(this.rainMesh); this.rainMesh.geometry.dispose(); this.rainMesh.material.dispose();
+    if (this.snowMesh) { this.snowMesh.parent?.remove(this.snowMesh); this.snowMesh.geometry.dispose(); this.snowMesh.material.dispose(); }   // realism 6
     for (const L of this.streetLights) L.parent?.remove(L);
   }
 }
