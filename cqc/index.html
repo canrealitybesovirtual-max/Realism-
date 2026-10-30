@@ -2419,6 +2419,7 @@ const CONFIG = {
       impacts: true, impactRange: 12,         // rounds landing within this many m make a sound
       footsteps: true, buzz: 0.006, roomTone: 0.05,
       ownSteps: 0.5,                          // step 85: your own boots and kit (gain, 0 = off), timed to your body's feet
+      cloth: 0.5,                             // step 86: your clothes and kit: settling into a crouch, getting up, a hard pivot, a fast arm (gain, 0 = off)
       acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
       ears: true, earsMax: 5, earsRecover: 3.2, earsDull: 0.42, earsFloor: 2600,   // hearing dose after gunfire (step 15: recovers about twice as fast)
@@ -23563,6 +23564,73 @@ function ownStep(f) {
   if (Math.random() < (run ? 0.85 : 0.45)) nBurst(t + 0.03 + Math.random() * 0.02, 0.08, 'bandpass', 4300 * j, 4, 0.035 * g * (run ? 1.6 : 1), 0.06, 0.15);   // kit on the carrier
   if (run) nBurst(t, 0.12, 'highpass', 5200, 0.7, 0.02 * g, 0.1, 0);                                 // trousers
 }
+// Step 86: your clothes and kit, heard. Like ownStep these are not positional: nBurst goes straight to audio.out and the room reverb carries it.
+// The crouch (real, right stick or Space) settles at the bottom: boots take the weight, trousers fold, the belt kit ticks. Getting up gives a swish and two ticks.
+// A hard pivot uses a play-space torso yaw with bodyPre's dead zone, so a glance, snap or smooth turn never counts. A fast arm gives a faint sleeve swish.
+const CLOTH = { ok: false, vr: false, knelt: 0, prev: 0, v: 0, vMax: 0, quietTo: 0, by: 0, hy: 0, sw: 0, turnAt: 0, armAt: 0,
+  e: new THREE.Euler(), h: new THREE.Vector3(), hp: [new THREE.Vector3(), new THREE.Vector3()], hOk: [false, false] };
+function clothFoley(dt) {
+  const G = CONFIG.polish.audio.cloth, vr = renderer.xr.isPresenting;
+  if (!G || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise || playerState.dead || !xrHeadOk() || !(dt > 0) || vr !== CLOTH.vr) { CLOTH.ok = false; CLOTH.vr = vr; return; }
+  const now = audio.ctx.currentTime, stand = vr ? BODY.standEye : CONFIG.player.eyeHeight, s = stand / 1.7;
+  const drop = vr && comfort.stance === 'seated' ? (xrState.crouchCur || 0) : stand - (headWorld(CLOTH.h).y - level.floor);   // seated: the toggle only (leaning to the floor is not a crouch)
+  CLOTH.e.setFromQuaternion(camera.quaternion, 'YXZ');   // rig-local = play space (desktop: look.yaw / look.pitch)
+  const hy = CLOTH.e.y, pitch = CLOTH.e.x;
+  if (!CLOTH.ok) { CLOTH.ok = true; CLOTH.prev = drop; CLOTH.v = 0; CLOTH.knelt = drop > 0.38 * s ? 3 : 0; CLOTH.by = CLOTH.hy = hy; CLOTH.sw = 0; CLOTH.hOk[0] = CLOTH.hOk[1] = false; CLOTH.quietTo = now + 0.6; return; }
+  // crouch / kneel: 0 up, 1 going down, 2 down (heard), 3 down (silent)
+  const dd = drop - CLOTH.prev; CLOTH.prev = drop;
+  if (Math.abs(dd) > 0.25 && dt < 0.05) { CLOTH.knelt = drop > 0.38 * s ? 3 : 0; CLOTH.v = 0; }   // a re-base, calibration or respawn: resync silently
+  else {
+    CLOTH.v += (dd / dt - CLOTH.v) * (1 - Math.exp(-dt * 20));
+    if (CLOTH.knelt === 0 && drop > 0.38 * s) { CLOTH.knelt = JUMP.air || performance.now() / 1000 - JUMP.landAt < 0.5 ? 3 : 1; CLOTH.vMax = CLOTH.v; }   // landing a jump into it: jumpLand was the sound
+    else if (CLOTH.knelt === 1) {
+      CLOTH.vMax = Math.max(CLOTH.vMax, CLOTH.v);
+      if (CLOTH.v < Math.min(0.5, 0.05 + 0.35 * CLOTH.vMax)) {          // the bottom of the move (a slow kneel too)
+        CLOTH.knelt = pitch > -0.8 && now > CLOTH.quietTo ? 2 : 3;      // bent over looking at the floor (looting): silent
+        if (CLOTH.knelt === 2) clothSettle(now, G * clamp(CLOTH.vMax / 1.2, 0.35, 1));
+      }
+    }
+    if (CLOTH.knelt && drop < 0.22 * s) { if (CLOTH.knelt === 2) clothRise(now, G); CLOTH.knelt = 0; }
+  }
+  // hard pivot: a torso yaw that follows the head past CONFIG.body.turnDead (as bodyPre does), counted only beyond it
+  if (vr && Math.abs(bwrap(hy - CLOTH.hy)) > 1) CLOTH.by = hy;          // a recentre jumps the play space: not a turn
+  CLOTH.hy = hy;
+  const dz = CONFIG.body.turnDead, dh = bwrap(hy - CLOTH.by);
+  let mv = 0;
+  if (Math.abs(dh) > dz) { mv = dh - Math.sign(dh) * dz; CLOTH.by = bwrap(CLOTH.by + mv); }
+  CLOTH.by = bwrap(CLOTH.by + bwrap(hy - CLOTH.by) * (1 - Math.exp(-dt * CONFIG.body.turnRate)));   // settles back under the head (not counted)
+  CLOTH.sw = CLOTH.sw * Math.exp(-dt * 5) + Math.abs(mv);
+  if (CLOTH.sw > 0.45 && now - CLOTH.turnAt > 0.5) {
+    const k = clamp((Math.abs(mv) / dt - 3) / 9, 0, 1); CLOTH.turnAt = now; CLOTH.sw = 0;   // how hard: the turn rate as it fires (3 rad/s soft .. 12 full)
+    nBurst(now + 0.002, 0.2, 'bandpass', 3000 * (0.9 + Math.random() * 0.2), 0.7, (0.012 + 0.023 * k) * G, 0.17, 0.12);   // trousers and shirt twist
+  }
+  // fast arm (headset): grip speed in rig space, so moving and turning never count
+  if (vr) for (let i = 0; i < 2 && i < controllers.length; i++) {
+    const c = controllers[i], gp = c.userData.grip, q = CLOTH.hp[i];
+    if (!gp || !gp.visible || !c.userData.gamepad) { CLOTH.hOk[i] = false; continue; }
+    if (!CLOTH.hOk[i]) { q.copy(gp.position); CLOTH.hOk[i] = true; continue; }
+    const d = gp.position.distanceTo(q); q.copy(gp.position);
+    if (d > 0.3) continue;                                              // tracking came back somewhere else
+    const v = d / dt;
+    if (v > 2.4 && now - CLOTH.armAt > 0.3) {                         // both hands at once: one sound
+      CLOTH.armAt = now;
+      nBurst(now + 0.002, 0.14, 'bandpass', 2300 * (0.9 + Math.random() * 0.2), 0.8, (0.01 + 0.015 * clamp((v - 2.4) / 3, 0, 1)) * G, 0.12, 0.1);   // sleeve
+    }
+  }
+}
+function clothSettle(now, g) {
+  const t = now + 0.002, j = 0.9 + Math.random() * 0.2;
+  nBurst(t, 0.12, 'lowpass', 220 * j, 0.9, 0.22 * g, 0.09, 0.25);                  // the weight onto the boots
+  nBurst(t + 0.01, 0.07, 'bandpass', 2200 * j, 1.4, 0.05 * g, 0.05, 0.2);         // grit under the soles
+  nBurst(t, 0.22, 'bandpass', 1100 * j, 0.7, 0.04 * g, 0.2, 0.15);                // trousers fold
+  nBurst(t + 0.05, 0.08, 'bandpass', 3600 * j, 4, 0.03 * g, 0.06, 0.15);          // the belt kit settles (holster, pouches)
+}
+function clothRise(now, g) {
+  const t = now + 0.002, j = 0.9 + Math.random() * 0.2;
+  nBurst(t, 0.2, 'highpass', 2400, 0.7, 0.03 * g, 0.18, 0.1);                     // trousers straighten
+  nBurst(t + 0.06, 0.07, 'bandpass', 3800 * j, 4, 0.025 * g, 0.05, 0.15);         // kit
+  nBurst(t + 0.13, 0.07, 'bandpass', 3400 * j, 4, 0.02 * g, 0.05, 0.15);
+}
 // His boots. Cadence follows his speed; louder when he runs.
 function updateFootsteps(dt) {
   if (!CONFIG.polish.audio.footsteps) return;
@@ -27754,6 +27822,7 @@ function tick(timeMs) {
   disposeDrain();        // step 25.3: a few GPU frees per frame from unloaded rooms
   updateHands();
   bodyPre(dt);           // step 14: torso, hips, legs, feet; the holster and pouch sockets (before the weapons use them)
+  clothFoley(dt);        // step 86: your clothes and kit (crouch settle, getting up, a hard pivot, a fast arm)
   rigTick(dt);           // step 79: pouches, leg holster, arm pouch, the sling anchor and the torso capsules follow the bones
   termUpdate(dt);        // step 11: the safe room terminal (touch / aim, redraw only on change)
   profMark('stream');
@@ -29120,7 +29189,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, CLOTH, clothFoley, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } } };
 </script>
 </body>
 </html>
