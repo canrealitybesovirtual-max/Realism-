@@ -259,6 +259,13 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Headset: a third of the spray, no lumps, no tracks. ?slush=off: no shader code, no tracks mesh, no audio nodes, no drag (old behaviour).
 - Checked: syntax; one headless run (open road): no page errors, uSlush 1. Not checked by eye, by ear or on Quest. P.off is "past the lanes" (the shoulder), so it does not gate slush.
 
+## Interstate realism 3: exposure in and out of tunnels (graphics.tunnelAE, ?tunnelae=off; computer only)
+- Extends the existing exposure (WorldEnvironment: open-road w.exposure from SKY_KEYS, TUNNEL_EXPOSURE 1.5 in the tunnel). #eye(dt, force) in WorldEnvironment keeps eyeEV (log2 adapted exposure) and sets world.eyeAE = 2^(eyeEV - log2 w.exposure); RenderSystem.render multiplies it in. TUNNEL_AE holds the knobs.
+- Brightness from state only: tunnel flag, distance to the exit portal (track.tunnelSpans [s0, s1, ...]) and time of day (the open road's sky exposure; tunnel scenery: a snowy afternoon, .74 x snow .6). Opening up tau 1 s (2-3 s to settle), closing down tau 0.22 s (blown out, settles in ~0.7 s). Within 220 m of an exit the eye shifts 40 % toward outside, so the portal stays white.
+- Found: neither scenery has a portal today (tunnel scenery is one endless bore, the open road has no tunnels; tunnelSpans is never set). So the visible effect is the run start in the tunnel (eye arrives from the snow: ~-1.75 EV, opens over ~2-3 s); the exit/portal path is ready for when spans exist. Open road without spans: eyeAE exactly 1.
+- Headset: eyeAE 1, no animation. ?tunnelae=off never sets eyeAE (old exposure exactly). No per-frame allocation.
+- Checked: syntax; one headless run (tunnel): no page errors, eyeAE 0.37 at start rising. Not checked by eye or on Quest.
+
 ## CQC step 85: realism pass (BODYCAM brief in docs/MASTER_PROMPT.md; headset check needed)
 - Room acoustics: ACOUSTICS small / room (the original IR, unchanged) / hall / stair / range, picked by roomAcoustic(stream.current). audio.verb is now a GainNode bus into two convolvers (ROOMAC.slots) crossfaded by updateAcoustics; the idle one is unplugged after its tail. Headset caps tails at 1.8 s. CONFIG.polish.audio.acoustics=false = one reverb. ACOUSTICS/ROOMAC are declared beside `audio` (audioUnlock runs early; its local `AC` is the AudioContext class, hence ROOMAC).
 - Your own footsteps: ownStep(f) from bodyPre when a body foot lands (heel, grit, kit rattle, trousers when running; deeper on stairs, softer crouched, shuffles silent). Not positional, reverb carries them. CONFIG.polish.audio.ownSteps (gain, 0 = off).

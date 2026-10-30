@@ -1103,7 +1103,7 @@ const ACTIONS = [
 ];
 
 const DEFAULTS = {
-  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, brightness: 1 },
+  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, tunnelAE: true, brightness: 1 },
   audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true },
   controls: {
     bindings: {
@@ -1161,6 +1161,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'graphics', key: 'graphics.lensRain', type: 'toggle', label: 'Rain on the lens', desc: 'Drops land on the camera in the rain, bead, and are blown off as you pick up speed. Photo mode stays clean.' },
   { tab: 'graphics', key: 'graphics.windscreen', type: 'toggle', label: 'Water on the windscreen', desc: 'Cockpit camera: rain and road spray bead on the screen, run up the glass at speed and are cleared by the wipers (V). Needs a depth effect (Medium and up). Off in the headset.' },   // realism 1
   { tab: 'graphics', key: 'graphics.slush', type: 'toggle', label: 'Slush and snow tracks', desc: 'Open road: ploughed slush on the shoulders and between the wheel tracks. Tyres throw it up and leave tracks in it that fade; it hisses and drags a little. The headset gets lighter spray and no tracks.' },   // realism 2
+  { tab: 'graphics', key: 'graphics.tunnelAE', type: 'toggle', label: 'Eyes adjust in tunnels', desc: 'Into a tunnel the view starts dark and opens up over a couple of seconds; back out into the snow it blows out white and settles. Computer only; the headset keeps a steady exposure.' },   // realism 3
   { tab: 'graphics', group: 'World' },
   { tab: 'graphics', key: 'graphics.anisotropy', type: 'select', label: 'Texture filtering', desc: 'Keeps the road sharp at grazing angles.', options: [[1, 'Off'], [2, '2×'], [4, '4×'], [8, '8×'], [16, '16×']] },
   { tab: 'graphics', key: 'graphics.drawDistance', type: 'range', label: 'Draw distance', desc: 'How far ahead the road is built. Shorter distances bring the haze closer.', min: .4, max: 1, step: .05, fmt: pct },
@@ -2465,7 +2466,7 @@ class RenderSystem {
   /** One frame: world exposure × player brightness, then the post chain. */
   render(world, dt) {
     this.r.info.reset();
-    this.r.toneMappingExposure = (world.exposure ?? 1) * this.s.data.graphics.brightness * (world.photoEV ?? 1);
+    this.r.toneMappingExposure = (world.exposure ?? 1) * this.s.data.graphics.brightness * (world.photoEV ?? 1) * (world.eyeAE ?? 1);   // realism 3: eyeAE, the eye's lag in and out of tunnels
     if (this.vr?.presenting && this.r.xr.isPresenting) { this.vr.render(world); return; }   // build 1.15: one forward pass per eye
     if (this.vr?.precompiling) return;                                 // build 1.17: entering the headset; the flat chain is released
     const mv = world.mirrorView?.(); if (mv) world.carObj.mirrors.render(this.r, world, mv);   // build 1.27: mirror targets before the chain
@@ -12053,6 +12054,15 @@ const WEATHER_STATES = { clear: { cloud: .08, rain: 0 }, overcast: { cloud: .78,
 const WEATHER_NEXT = { clear: [['clear', .45], ['overcast', .45], ['rain', .1]], overcast: [['clear', .35], ['overcast', .3], ['rain', .35]], rain: [['overcast', .55], ['rain', .3], ['clear', .15]] };
 /* Sky by sun elevation (degrees). Linear HDR values, as daylight(). */
 const TUNNEL_EXPOSURE = 1.5, TUNNEL_LIGHT = 420;   // build 1.21: eye adaptation and fitting brightness in the tunnel
+/* realism 3: the eye's lag in and out of tunnels (graphics.tunnelAE, ?tunnelae=off = never sets world.eyeAE: the old
+   exposure exactly). eyeEV is the log2 exposure the eye is adapted to; world.eyeAE = 2^(eyeEV - log2 world.exposure)
+   rides on top of the existing exposure. Brightness comes from state only (no readback): the tunnel flag, the distance
+   to the exit portal (track.tunnelSpans [s0, s1, ...] on the road; the tunnel scenery is one endless bore, so none
+   there) and the time of day (the open road's sky exposure; the tunnel scenery has no clock: a snowy afternoon).
+   Opening up (into the dark) is slow, tau open; closing down (into the light) quick, tau close. Near an exit the eye
+   shifts only glow of the way toward outside, so the portal ahead still burns white. Snow outside: the eye was
+   adapted to a sunlit snow field, darker by snow (less under cloud and at night). Headset: no animation (eyeAE 1). */
+const TUNNEL_AE = { on: !/[?&]tunnelae=off\b/.test(location.search), outside: .74, snow: .6, floor: -2.2, open: 1, close: .22, glow: .4, glowFar: 220, glowNear: 12 };
 const SKY_KEYS = [
   { el: -14, zenith: [.0016, .0021, .0042], horizon: [.008, .0085, .012], ground: [.002, .002, .002], fog: [.0065, .007, .0095], insc: [0, 0, 0], sun: [.62, .72, .92], sunI: 0, exp: 2.7, mie: 0 },
   { el: -5, zenith: [.01, .016, .04], horizon: [.085, .062, .06], ground: [.01, .01, .01], fog: [.06, .052, .056], insc: [.05, .025, .018], sun: [.9, .42, .25], sunI: 0, exp: 1.9, mie: .04 },
@@ -12083,6 +12093,7 @@ class WorldEnvironment {
     this.w = world; this.s = world.s;
     this.time = 15; this.cloud = .08; this.rain = 0; this.wet = 0; this.night = 0; this.lamps = 0; this.wind = .7; this.fogMult = 1; this.cloudT = .08; this.rainT = 0;
     this.state = 'clear'; this.timer = 200; this.envT = 0; this.envKey = ''; this.skyT = 0;
+    this.eyeEV = 0; this.expOut = 1;                                   // realism 3
     this.sky = { zenith: [0, 0, 0], horizon: [0, 0, 0], ground: [0, 0, 0], fog: [0, 0, 0], insc: [0, 0, 0], sun: [0, 0, 0], sunI: 0, exp: 1, mie: 0 };
     this._g = [0, 0, 0]; this.sunDir = new THREE.Vector3(0, 1, 0); this.lightDir = new THREE.Vector3(0, 1, 0); this.moonDir = new THREE.Vector3();
     this.camPrev = new THREE.Vector3(); this.camVel = new THREE.Vector3(); this.rel = new THREE.Vector3(); this.fall = new THREE.Vector3(0, -8.6, 0);
@@ -12206,6 +12217,7 @@ class WorldEnvironment {
     /* the eye adapts: slowly into the dark, quicker into the light */
     const expT = S.exp * (1 + .3 * c);
     w.exposure = force ? expT : damp(w.exposure, expT, expT < w.exposure ? 1.2 : .45, dt);
+    this.expOut = expT; this.#eye(dt, force);                          // realism 3
     /* image-based lighting from the same sky, rebuilt when it has moved on */
     this.envT += dt;
     const key = `${Math.round(el * 1.4)}|${Math.round(c * 24)}|${moon}`;
@@ -12244,7 +12256,7 @@ class WorldEnvironment {
       U.uFogColor.value.set(.05, .04, .03); U.uSunColorA.value.set(0, 0, 0); U.uSunDirA.value.set(0, 1, 0);
     }
     U.uFogDensity.value = 1 / 520;
-    w.exposure = TUNNEL_EXPOSURE;
+    w.exposure = TUNNEL_EXPOSURE; this.#eye(dt, force);                // realism 3
     if (w.tunnelFill) { const zc = tunnelZone(w.sCar || 0); w.tunnelFill.color.setRGB(zc[0], zc[1] * .9, zc[2] * .82); }
     w.mats.lampHead.emissiveIntensity = 16;
     const L = this.streetLights;
@@ -12259,6 +12271,24 @@ class WorldEnvironment {
     }
     w.wet = 0; w.mats.asphaltU.uWet.value = 0;
     this.rainMesh.visible = false;
+  }
+  /** realism 3: the eye adapting in and out of tunnels; sets world.eyeAE (see TUNNEL_AE). No allocation. */
+  #eye(dt, force) {
+    if (!TUNNEL_AE.on) return;
+    const w = this.w, A = TUNNEL_AE, base = Math.log2(Math.max(w.exposure, 1e-4)), vr = (w.vr || w.rs?.vr)?.presenting;
+    if (vr || this.s.data.graphics.tunnelAE === false) { this.eyeEV = base; w.eyeAE = 1; return; }
+    let inside = !!w.tunnel, dExit = Infinity;
+    const sp = !w.tunnel && w.track?.tunnelSpans;
+    if (sp) { const s = w.sCar || 0; for (let i = 0; i + 1 < sp.length; i += 2) if (s >= sp[i] && s < sp[i + 1]) { inside = true; dExit = sp[i + 1] - s; break; } }
+    if (!inside && !sp) { this.eyeEV = base; w.eyeAE = 1; return; }  // open road with no tunnels: exactly the old exposure
+    const snowK = w.tunnel ? A.snow : lerp(1, A.snow, (1 - this.night) * (1 - .5 * this.cloud));
+    const outEV = Math.log2((w.tunnel ? A.outside : this.expOut) * snowK);
+    const inEV = w.tunnel ? base : Math.log2(TUNNEL_EXPOSURE);
+    const T = inside ? inEV + A.glow * sstep(A.glowFar, A.glowNear, dExit) * (outEV - inEV) : base;
+    let e = this.eyeEV;
+    if (force) e = w.tunnel ? Math.max(outEV, inEV + A.floor) : T;      // a run in the tunnel starts as if just in from the snow
+    else if (dt > 0) e += (T - e) * (1 - Math.exp(-dt / (T > e ? A.open : A.close)));
+    this.eyeEV = e; w.eyeAE = Math.pow(2, e - base);
   }
   #rainUpdate(dt, S) {
     const cam = this.w.camera, u = this.rainU, on = this.rain > .02;
