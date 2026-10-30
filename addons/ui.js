@@ -27,6 +27,7 @@
     { key: "heldStick", group: "Holding props", type: "choice", label: "VR stick while holding", desc: "Turn it: that hand's stick turns the prop, stick pressed in rolls it, B / Y stands it upright. Walk: the stick walks as usual.", def: "rotate", options: [["rotate", "Turn it"], ["move", "Walk"]], noPreset: true },
     { key: "twoHandTurn", group: "Holding props", type: "choice", label: "Two-hand turning (VR)", desc: "Hold a prop, squeeze the other grip in the air and move that hand round it: the prop turns with your hands.", def: "on", options: [["on", "On"], ["off", "Off"]], noPreset: true },
     { key: "wheelMode", group: "Holding props", type: "choice", label: "Mouse wheel while holding", desc: "Push / pull: nearer or further (Alt + wheel turns it, Alt + Shift tips it). Rotate: the wheel turns it.", def: "push", options: [["push", "Push / pull"], ["rotate", "Rotate"]], noPreset: true },
+    { key: "zoomScreen", group: "Display", label: "Zoom to the computer screen", desc: "Using the computer on a desktop moves the view up to the screen; leaving moves it back. Never in VR.", noPreset: true },
     { key: "uiScale", group: "Display", type: "choice", label: "UI scale", desc: "Size of everything on the computer screen.", def: 1, options: [[1, "100%"], [1.15, "115%"], [1.3, "130%"]], noPreset: true },
     { key: "autoRestore", group: "Saving", label: "Restore autosave on start", desc: "Scene edits come back after a reload. Off in safe start.", noPreset: true },
     { key: "propLimit", group: "Performance", label: "Prop limit", desc: "Stop new props at 100 to protect the frame rate.", noPreset: true },
@@ -42,7 +43,7 @@
     comfort: { wristTablet: true, console: true, statusBar: true, palette: true, pointerLabels: true, undoButtons: true, playControls: true, savedLayout: true, editorHelpers: true, advancedPhysics: false, materialPreview: true, perfBadges: true, validation: true, sceneSettings: true },
     full: { wristTablet: true, console: true, statusBar: true, palette: true, pointerLabels: true, undoButtons: true, playControls: true, savedLayout: true, editorHelpers: true, advancedPhysics: true, materialPreview: true, perfBadges: true, validation: true, sceneSettings: true }
   };
-  var DEFAULTS = { wristTablet: true, palette: true, pointerLabels: true, autoRestore: true, console: true, statusBar: true, undoButtons: true, playControls: true, savedLayout: true, editorHelpers: true, propLimit: true, advancedPhysics: false, materialPreview: true, perfBadges: true, validation: true, sceneSettings: true };
+  var DEFAULTS = { zoomScreen: true, wristTablet: true, palette: true, pointerLabels: true, autoRestore: true, console: true, statusBar: true, undoButtons: true, playControls: true, savedLayout: true, editorHelpers: true, propLimit: true, advancedPhysics: false, materialPreview: true, perfBadges: true, validation: true, sceneSettings: true };
 
   function waitForStudio() {
     return new Promise(function (resolve) {
