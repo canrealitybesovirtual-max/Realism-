@@ -1103,7 +1103,7 @@ const ACTIONS = [
 ];
 
 const DEFAULTS = {
-  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, tunnelAE: true, brightness: 1 },
+  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, tunnelAE: true, headBeam: true, brightness: 1 },
   audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true, roadSurface: true },
   controls: {
     bindings: {
@@ -1162,6 +1162,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'graphics', key: 'graphics.windscreen', type: 'toggle', label: 'Water on the windscreen', desc: 'Cockpit camera: rain and road spray bead on the screen, run up the glass at speed and are cleared by the wipers (V). Needs a depth effect (Medium and up). Off in the headset.' },   // realism 1
   { tab: 'graphics', key: 'graphics.slush', type: 'toggle', label: 'Slush and snow tracks', desc: 'Open road: ploughed slush on the shoulders and between the wheel tracks. Tyres throw it up and leave tracks in it that fade; it hisses and drags a little. The headset gets lighter spray and no tracks.' },   // realism 2
   { tab: 'graphics', key: 'graphics.tunnelAE', type: 'toggle', label: 'Eyes adjust in tunnels', desc: 'Into a tunnel the view starts dark and opens up over a couple of seconds; back out into the snow it blows out white and settles. Computer only; the headset keeps a steady exposure.' },   // realism 3
+  { tab: 'graphics', key: 'graphics.headBeam', type: 'toggle', label: 'Headlamp beams', desc: 'Dipped beam with a sharp cut-off that reaches further on the kerb side, a long main beam, road signs glowing back in your lamps, and glare from oncoming headlamps at night (glare on a computer only). Off: the old even cone.' },   // realism 5
   { tab: 'graphics', group: 'World' },
   { tab: 'graphics', key: 'graphics.anisotropy', type: 'select', label: 'Texture filtering', desc: 'Keeps the road sharp at grazing angles.', options: [[1, 'Off'], [2, '2×'], [4, '4×'], [8, '8×'], [16, '16×']] },
   { tab: 'graphics', key: 'graphics.drawDistance', type: 'range', label: 'Draw distance', desc: 'How far ahead the road is built. Shorter distances bring the haze closer.', min: .4, max: 1, step: .05, fmt: pct },
@@ -4045,7 +4046,74 @@ function worldMaterials(track) {
   m.marker = Atmos.patch(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .5 }), { key: 'marker' });
   return m;
 }
-function signMaterial(texture) { return Atmos.patch(new THREE.MeshStandardMaterial({ map: texture, roughness: .52, metalness: 0 }), { key: 'sign' }); }
+/* realism 5: headlamp beams (graphics.headBeam; ?headbeam=off = exactly the old even cone, signs and image).
+   Your lamps project a photometric pattern (SpotLight.map, made once at load, so the light-map count never changes):
+   dipped beam with a sharp cut-off 0.57 deg under the horizon on the oncoming side and a 15 deg kerb-side rise,
+   hot spot ~1 deg down and right, wide low foreground spill; main beam a long hot centre on top of the dipped beam.
+   Signs are retroreflective: lit by your lamps they glow back toward you (narrow lobe about the lamp-eye line).
+   Oncoming lamps dazzle at night (computer only, finish pass): a veiling glare L = 10 E / theta^2 from each lamp's
+   intensity toward your eye (its own dipped pattern), depth-tested, stronger through a wet windscreen.
+   Setting off at run time: a white map with the old aim, retro 0 and glare 0 (no recompile). */
+const HEADBEAM = { on: !/[?&]headbeam=off\b/.test(location.search), angle: .76, pen: .22, N: 512, lowK: 1.6, highK: 2.55, lowD: 160, highD: 260,
+  retro: 150, retroMax: 3, glare: .06, glareMax: 1.5, trafficCd: 20000, reach: 260, low: null, high: null, white: null,
+  U: null };
+/** the sign uniforms, shared by every sign material (made on first use: THREE arrives after this script starts) */
+function hbU() { return HEADBEAM.U ??= { uHbPos: { value: new THREE.Vector3() }, uHbR: { value: new THREE.Vector3(1, 0, 0) }, uHbU: { value: new THREE.Vector3(0, 1, 0) }, uHbF: { value: new THREE.Vector3(0, 0, -1) }, uHbI: { value: 0 }, uHbHi: { value: 0 }, uHbMax: { value: HEADBEAM.retroMax } }; }
+/** Relative intensity (peak ~1) of a dipped beam, right-hand traffic; h + right, v + up, degrees from the lamp axis. */
+function beamLow(h, v) {
+  const vc = h < 0 ? -.57 : Math.min(-.57 + h * .268, 1.6), cut = 1 - sstep(vc - .18, vc + .18, v);
+  const a = (h - 1.8) / 4, b = (v + 1.2) / 1.1, c = h / 13, d = (v + 2.2) / 2.6, e = h / 30, f = (v + 6) / 9, g = h / 5, k = (v - 2) / 2;
+  const lit = Math.exp(-a * a - b * b) + .38 * Math.exp(-c * c - d * d) + .14 * Math.exp(-e * e - f * f) * (1 - sstep(-5, -1, v));
+  const above = .012 + .02 * Math.exp(-g * g - k * k);                  // stray light, and the sign zone over the line
+  return Math.min(1, lit * cut + above * (1 - cut));
+}
+function beamHigh(h, v) { const a = h / 4.5, b = (v - .3) / 2, c = h / 13, d = (v + .5) / 4.5; return Math.min(1, (Math.exp(-a * a - b * b) + .4 * Math.exp(-c * c - d * d) + .5 * beamLow(h, v)) / 1.5); }
+/** The pattern as seen through the spot's projection (square frustum of half-angle HEADBEAM.angle); row 0 = bottom. */
+function beamTexture(fn) {
+  const N = fn ? HEADBEAM.N : 4, d = new Uint8Array(N * N * 4), t = Math.tan(HEADBEAM.angle), D = 180 / Math.PI;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const nx = (i + .5) / N * 2 - 1, ny = (j + .5) / N * 2 - 1, x = t * nx, y = t * ny;
+    const val = fn ? fn(Math.atan(x) * D, Math.atan(y / Math.hypot(1, x)) * D) * sstep(1, .9, Math.max(Math.abs(nx), Math.abs(ny))) : 1;
+    const o = (j * N + i) * 4, b = Math.round(clamp(val, 0, 1) * 255); d[o] = d[o + 1] = d[o + 2] = b; d[o + 3] = 255;
+  }
+  const tx = new THREE.DataTexture(d, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tx.minFilter = tx.magFilter = THREE.LinearFilter; tx.generateMipmaps = false; tx.wrapS = tx.wrapT = THREE.ClampToEdgeWrapping; tx.needsUpdate = true;
+  return tx;
+}
+function headBeamMaps() { if (!HEADBEAM.low) { HEADBEAM.low = beamTexture(beamLow); HEADBEAM.high = beamTexture(beamHigh); HEADBEAM.white = beamTexture(null); } return HEADBEAM; }
+/* the same patterns in GLSL (signs) */
+const HB_GLSL = /* glsl */`
+uniform vec3 uHbPos, uHbR, uHbU, uHbF; uniform float uHbI, uHbHi, uHbMax;
+float hbLow(float h, float v) {
+  float vc = h < 0.0 ? -0.57 : min(-0.57 + h * 0.268, 1.6), cut = 1.0 - smoothstep(vc - 0.18, vc + 0.18, v);
+  float a = (h - 1.8) / 4.0, b = (v + 1.2) / 1.1, c = h / 13.0, d = (v + 2.2) / 2.6, e = h / 30.0, f = (v + 6.0) / 9.0, g = h / 5.0, k = (v - 2.0) / 2.0;
+  float lit = exp(-a * a - b * b) + 0.38 * exp(-c * c - d * d) + 0.14 * exp(-e * e - f * f) * (1.0 - smoothstep(-5.0, -1.0, v));
+  float above = 0.012 + 0.02 * exp(-g * g - k * k);
+  return min(1.0, lit * cut + above * (1.0 - cut));
+}
+float hbBeam(float h, float v) {
+  float lo = hbLow(h, v); if (uHbHi < 0.5) return lo;
+  float a = h / 4.5, b = (v - 0.3) / 2.0, c = h / 13.0, d = (v + 0.5) / 4.5;
+  return min(1.0, (exp(-a * a - b * b) + 0.4 * exp(-c * c - d * d) + 0.5 * lo) / 1.5);
+}`;
+/* retroreflective sheeting: luminance = R_A x illuminance from your lamps, in a ~0.6 deg lobe about the lamp-to-eye line */
+const HB_SIGN_FRAG = /* glsl */`
+  if (uHbI > 0.0) {
+    vec3 toL = uHbPos - vAtmoWorld; float d2 = max(dot(toL, toL), 1.0); vec3 l = toL * inversesqrt(d2);
+    float ci = max(dot(normalize(vAtmoNormal), l), 0.0), fw = -dot(l, uHbF);
+    if (ci > 0.0 && fw > 0.05) {
+      float h = degrees(atan(-dot(l, uHbR), fw)), v = degrees(atan(-dot(l, uHbU), fw));
+      float a2 = 2.0 * (1.0 - dot(l, normalize(cameraPosition - vAtmoWorld))) * 3283.0;   // observation angle, deg^2
+      totalEmissiveRadiance += diffuseColor.rgb * min(uHbI * hbBeam(h, v) * ci / d2 / (1.0 + a2 / 0.36), uHbMax);
+    }
+  }`;
+/* oncoming dazzle: the brightest 4 cars' lamps toward your eye, gathered in TrafficRenderer.draw, projected in #feed */
+const DAZ = { want: false, n: 0, night: 0, p: new Float32Array(24), k: new Float32Array(8), e: new Float32Array(4) };
+function signMaterial(texture) {
+  const m = new THREE.MeshStandardMaterial({ map: texture, roughness: .52, metalness: 0 });
+  if (!HEADBEAM.on) return Atmos.patch(m, { key: 'sign' });
+  return Atmos.patch(m, { key: 'signhb', uniforms: hbU(),fragPars: HB_GLSL, frag: [['#include <emissivemap_fragment>', HB_SIGN_FRAG]] });   // realism 5
+}
 
 /** Highway guide sign artwork drawn on a canvas. */
 function signTexture(rng, units, layout) {
@@ -5559,12 +5627,14 @@ const finishShader = () => ({
     uWsIP: { value: new THREE.Matrix4() }, uWsPM: { value: new THREE.Matrix4() },
     uWsC: { value: new THREE.Vector3() }, uWsN: { value: new THREE.Vector3(0, 0, 1) }, uWsU: { value: new THREE.Vector3(1, 0, 0) }, uWsV: { value: new THREE.Vector3(0, 1, 0) },
     uWsBox: { value: new THREE.Vector4(-.7, .7, -.4, .4) }, uWsPiv: { value: new THREE.Vector4() }, uWsRad: { value: new THREE.Vector4() }, uWsAng: { value: new THREE.Vector4() },
-    uWk0: { value: new THREE.Vector4() }, uWk1: { value: new THREE.Vector4() }, uWw: { value: new THREE.Vector4() } },
+    uWk0: { value: new THREE.Vector4() }, uWk1: { value: new THREE.Vector4() }, uWw: { value: new THREE.Vector4() },
+    ...(HEADBEAM.on ? { uDz: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) }, uDzOn: { value: 0 }, uDzOcc: { value: 0 }, uDzDeg: { value: 50 }, uDzNF: { value: new THREE.Vector2(.1, 1000) } } : {}) },   // realism 5
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: GLSL_NOISE + /* glsl */`
     uniform sampler2D tDiffuse, tDepth; uniform highp sampler3D tLUT; uniform float uLutSize, uTime, uGrain, uCA, uVignette, uSharpen, uHaze; uniform vec2 uRes;
     uniform float uDistort, uAspect, uHeat, uFlare; uniform vec3 uHeatPos, uFlareCol; uniform vec2 uSunUV;
-    uniform float uDrops, uDropT, uAir, uUpFlow, uDropLight;
+    uniform float uDrops, uDropT, uAir, uUpFlow, uDropLight;${HEADBEAM.on ? `
+    uniform vec4 uDz[8]; uniform float uDzOn, uDzOcc, uDzDeg; uniform vec2 uDzNF;                  // realism 5: oncoming lamps` : ''}
     /* ── realism 1: water on the windscreen, and the wipers ─────────────────
        The screen is a plane in the car's body (fitted to the model at first use), seen
        through the cockpit camera: each pixel's ray meets it at g (metres across, u, and up
@@ -5843,7 +5913,28 @@ const finishShader = () => ({
           }
           col += fl * k;
         }
-      }
+      }${HEADBEAM.on ? `
+      if (uDzOn > 0.0) {                                                             // realism 5: glare from oncoming lamps
+        vec2 asp = vec2(uAspect, 1.0); vec3 gl = vec3(0.0);
+        for (int i = 0; i < 8; i++) {
+          vec4 L = uDz[i];
+          if (L.z <= 0.0) continue;
+          float vis = 1.0;
+          if (uDzOcc > 0.5) {                                                          // every pixel reads the same three texels
+            vis = 0.0;
+            for (int j = 0; j < 3; j++) {
+              vec2 o = vec2(float(j - 1) * 0.0015 / uAspect, 0.0);
+              float z = texture2D(tDepth, clamp(L.xy + o, 0.001, 0.999)).x * 2.0 - 1.0;
+              float lz = 2.0 * uDzNF.x * uDzNF.y / (uDzNF.y + uDzNF.x - z * (uDzNF.y - uDzNF.x));
+              vis += step(L.w * 0.96 - 0.4, lz);
+            }
+            vis /= 3.0;
+          }
+          float th = length((uv - L.xy) * asp) * uDzDeg;                              // degrees from the lamp
+          gl += L.z * vis * 10.0 / (th * th + 0.15);                                    // veiling glare, 10 E / theta^2
+        }
+        col += vec3(1.0, 0.95, 0.86) * min(gl, ${HEADBEAM.glareMax.toFixed(2)});
+      }` : ''}
       vec3 lc = clamp(col, 0.0, 1.0); float sc = (uLutSize - 1.0) / uLutSize, of = 0.5 / uLutSize;
       col = texture(tLUT, lc * sc + of).rgb;
       col *= 1.0 - uVignette * smoothstep(0.12, 0.72, r2 * 1.7);
@@ -5965,6 +6056,29 @@ class PostFX {
         const edge = clamp((1.25 - Math.max(Math.abs(p.x), Math.abs(p.y))) / .3, 0, 1);
         fu.uSunUV.value.set(p.x * .5 + .5, p.y * .5 + .5); fu.uFlare.value = vd.sunOn * edge * (vd.flareK ?? 1); fu.uFlareCol.value.set(...vd.rayColor);
       }
+    }
+    /* realism 5: glare from oncoming lamps. TrafficRenderer.draw gathered the four brightest cars (E at your eye, lux);
+       here they go on screen with their view depth for the shader's occlusion test. A wet windscreen scatters more. */
+    if (HEADBEAM.on) {
+      const U = fu.uDz.value, on = !!(vd && cam && g.headBeam !== false && DAZ.night > .02);
+      let any = 0;
+      for (let i = 0; i < 8; i++) U[i].set(0, 0, 0, 0);
+      if (on && DAZ.n) {
+        const nk = DAZ.night * DAZ.night * HEADBEAM.glare * (1 + 1.5 * (fu.uWsOn.value ? fu.uWs.value : 0));
+        const cf = cam.getWorldDirection(this._dzF ??= new THREE.Vector3()), cpos = (this._dzC ??= new THREE.Vector3()).setFromMatrixPosition(cam.matrixWorld), p = this._dzV ??= new THREE.Vector3();
+        for (let j = 0; j < 8; j++) {
+          if (!(DAZ.e[j >> 1] > 0) || !(DAZ.k[j] > 0)) continue;
+          p.fromArray(DAZ.p, j * 3);
+          const vz = (p.x - cpos.x) * cf.x + (p.y - cpos.y) * cf.y + (p.z - cpos.z) * cf.z;
+          if (vz < 1) continue;
+          p.project(cam);
+          const m = Math.max(Math.abs(p.x), Math.abs(p.y));
+          if (p.z >= 1 || m > 1.2) continue;
+          U[j].set(p.x * .5 + .5, p.y * .5 + .5, DAZ.k[j] * nk * clamp((1.2 - m) / .2, 0, 1), vz); any = 1;
+        }
+      }
+      fu.uDzOn.value = any; fu.uDzOcc.value = depth ? 1 : 0; fu.uDzDeg.value = cam ? cam.fov : 50; if (cam) fu.uDzNF.value.set(cam.near, cam.far);
+      DAZ.n = 0; DAZ.want = on;
     }
     /* exhaust heat over the tailpipes, strongest when the car is slow and the engine hot */
     fu.uHeat.value = 0;
@@ -9252,6 +9366,7 @@ class Car {
       const l = new THREE.SpotLight(new THREE.Color().setRGB(1, .95, .86), 0, 120, .42, .6, 2);   // build 1.21: physical fall-off (was 1.6: far walls and trucks blew out)
       const src = [.62, .66, CAR.zf + .2];                             // near the body's own headlamps
       l.position.set(sg * src[0], src[1], src[2]); l.target.position.set(sg * .9, -.6, CAR.zf - 30); body.add(l, l.target); this.headlights.push(l);
+      if (HEADBEAM.on) l.map = headBeamMaps().white;                   // realism 5: a map from the first compile, swapped (never added or removed) later
     }
   }
   /** Build 1.15: the cabin (§14.7). Replaces the placeholder blocks. */
@@ -9676,7 +9791,26 @@ class Car {
   setLights(night = 0, braking = false) {
     const S = this.cab || { lights: 0, ign: 0 }, L = S.lights, lamp = L === 0 ? 0 : L === 1 ? .3 : L === 2 ? 1 : 1.25, beams = L >= 2 ? (L === 3 ? 1.7 : 1) : 0;
     const hk = this.s.data.world?.headlights ?? .35;                  // build 1.21: player setting (was a fixed 2600, blinding on snow and in VR)
-    for (const l of this.headlights) { l.intensity = 2400 * beams * hk; l.distance = L === 3 ? 220 : 120; l.angle = L === 3 ? .5 : .42; l.target.position.y = L === 3 ? .4 : -.6; }
+    const pat = HEADBEAM.on && this.s.data.graphics?.headBeam !== false, hi = L === 3;
+    for (const l of this.headlights) {
+      if (pat) {                                                       // realism 5: the photometric pattern carries the aim, cut-off and spread
+        l.map = hi ? HEADBEAM.high : HEADBEAM.low; l.intensity = beams ? 2400 * (hi ? HEADBEAM.highK : HEADBEAM.lowK) * hk : 0;
+        l.distance = hi ? HEADBEAM.highD : HEADBEAM.lowD; l.angle = HEADBEAM.angle; l.penumbra = HEADBEAM.pen; l.target.position.set(l.position.x, l.position.y, CAR.zf - 30);
+        continue;
+      }
+      if (HEADBEAM.on) { l.map = HEADBEAM.white; l.penumbra = .6; l.target.position.set(Math.sign(l.position.x) * .9, -.6, CAR.zf - 30); }   // setting off: the old cone
+      l.intensity = 2400 * beams * hk; l.distance = L === 3 ? 220 : 120; l.angle = L === 3 ? .5 : .42; l.target.position.y = L === 3 ? .4 : -.6;
+    }
+    if (HEADBEAM.on && HEADBEAM.U) {                                   // realism 5: retroreflective signs see your lamps (both, from their midpoint)
+      const U = HEADBEAM.U, l0 = this.headlights[0], l1 = this.headlights[1], b = l0.parent;
+      U.uHbI.value = pat && beams ? 2 * l0.intensity * HEADBEAM.retro : 0; U.uHbHi.value = hi ? 1 : 0;
+      if (U.uHbI.value > 0 && b) {
+        b.updateWorldMatrix(true, false);
+        U.uHbPos.value.set((l0.position.x + l1.position.x) / 2, l0.position.y, l0.position.z).applyMatrix4(b.matrixWorld);
+        const e = b.matrixWorld.elements;
+        U.uHbR.value.set(e[0], e[1], e[2]).normalize(); U.uHbU.value.set(e[4], e[5], e[6]).normalize(); U.uHbF.value.set(-e[8], -e[9], -e[10]).normalize();
+      }
+    }
     if (this.cel?.lampMat) this.cel.lampMat.emissiveIntensity = .1 + 2.4 * lamp + (braking ? 1.2 : 0);   // build 1.16: the saloon's lenses
     if (this.cel?.decals) this.cel.decals.emissiveIntensity = S.ign ? (L ? 1.1 : .35 + .5 * night) : 0;
     if (this.packCar) { this.packCar.U.uNight.value = Math.min(1, lamp); this.packCar.U.uBrake.value = braking ? 1 : 0; }   // build 1.18
@@ -11374,13 +11508,36 @@ class TrafficRenderer {
     const r = this.vr.crossVectors(up, b);
     return out.makeBasis(r, up, b).setPosition(p.x, p.y, p.z);
   }
+  /** realism 5: a car facing you: its two lamps' illuminance at your eye (lux) from its own dipped pattern, kept if it
+   *  is among the four brightest (DAZ, fixed slots). M is its road-aligned base: columns right, up, back. */
+  dazzleAt(a, M, cp) {
+    const e = M.elements, T = a.T, len = T.len || 4.8, fx = -e[8], fy = -e[9], fz = -e[10];
+    const half = len * .5 - .1, ly = len > 8 ? 1.05 : .66, side = (T.hw || .9) * .72;
+    const cx = e[12] + fx * half + e[4] * ly, cy = e[13] + fy * half + e[5] * ly, cz = e[14] + fz * half + e[6] * ly;
+    const tx = cp.x - cx, ty = cp.y - cy, tz = cp.z - cz, d2 = tx * tx + ty * ty + tz * tz, R = HEADBEAM.reach;
+    if (d2 > R * R || d2 < 4) return;
+    const f = tx * fx + ty * fy + tz * fz;
+    if (f < .2 * Math.sqrt(d2)) return;                                 // not facing you
+    const D = 180 / Math.PI, hr = tx * e[0] + ty * e[1] + tz * e[2], v = Math.atan2(tx * e[4] + ty * e[5] + tz * e[6], f) * D;
+    const dL2 = d2 + 2 * side * hr + side * side, dR2 = d2 - 2 * side * hr + side * side;
+    const eL = HEADBEAM.trafficCd * beamLow(Math.atan2(hr + side, f) * D, v) / dL2, eR = HEADBEAM.trafficCd * beamLow(Math.atan2(hr - side, f) * D, v) / dR2;
+    const E = eL + eR, S = DAZ.e;
+    let mi = 0; for (let i = 1; i < 4; i++) if (S[i] < S[mi]) mi = i;
+    if (E <= S[mi]) return;
+    S[mi] = E; DAZ.n = 1; DAZ.k[mi * 2] = eL; DAZ.k[mi * 2 + 1] = eR;
+    const P = DAZ.p, o = mi * 6;
+    P[o] = cx - e[0] * side; P[o + 1] = cy - e[1] * side; P[o + 2] = cz - e[2] * side;
+    P[o + 3] = cx + e[0] * side; P[o + 4] = cy + e[1] * side; P[o + 5] = cz + e[2] * side;
+  }
   draw(track, agents, alpha, time) {
-    if (this.A.U.uTrafT) this.A.U.uTrafT.value = time;
+    if (this.A.U.uTrafT)this.A.U.uTrafT.value = time;
     for (const t of this.types) { t.n = t.nf = t.nl = t.nlf = 0; if (t.tr) t.tr.n = t.tr.nf = t.tr.nl = 0; }
     let nw = 0, nwf = 0, ns = 0, nm = 0;
     const L = track.length, M = this.M, Mb = this.Mb, R = this.R;
     const cam = this.view, cp = cam?.position, cf = cam ? this._f.set(0, 0, -1).applyQuaternion(cam.quaternion) : null;
     const lod2 = this.lodDist * this.lodDist, sh2 = Math.max(this.shadowReach, this.rearReach || 0) ** 2;   // build 1.27: or the mirrors' reach
+    const dz = HEADBEAM.on && DAZ.want && !!cam;                       // realism 5: oncoming lamps for the glare (the finish pass asked)
+    if (HEADBEAM.on) { DAZ.want = false; DAZ.night = this.A.U.uNight?.value || 0; DAZ.n = 0; DAZ.e.fill(0); DAZ.k.fill(0); }
     for (const a of agents) {
       if (!a.on) continue;
       const s = a.ps + wrapRel(a.s - a.ps, L) * alpha, u = lerp(a.pu, a.u, alpha), psi = lerp(a.ppsi, a.psi, alpha);
@@ -11391,6 +11548,7 @@ class TrafficRenderer {
         const e = M.elements, dx = e[12] - cp.x, dy = e[13] - cp.y, dz = e[14] - cp.z, d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > sh2 && dx * cf.x + dy * cf.y + dz * cf.z < -(a.T.len || 5) - 4) continue;   // behind (any view under 180°, the headset's too) and casting no shadow we draw
         near = d2 < lod2;
+        if (dz) this.dazzleAt(a, M, cp);
       }
       /* body pitch and roll about a pivot at axle height */
       const pv = .55; R.makeRotationFromEuler(this.e.set(pitch, 0, roll, 'YXZ'));
