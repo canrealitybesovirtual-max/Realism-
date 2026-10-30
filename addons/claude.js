@@ -289,7 +289,7 @@
       c.save(); c.beginPath(); c.rect(x0, top, W, bottom - top); c.clip();
       if (!P.entries.length) {
         c.fillStyle = "#8a8a8e"; c.font = "400 16px " + UI;
-        wrap(c, connected() ? "Ask for a change (\"make the lamp red\"), a bigger job (\"build a small road with cones\"), or a question (\"why is it slow?\"). Commands run at once; bigger jobs come back as a plan to approve. Every reply is one Undo step."
+        wrap(c, connected() ? "Ask for a change (\"make the desk red\"), a bigger job (\"build a small road with cones\"), or a question (\"why is it slow?\"). Commands run at once; bigger jobs come back as a plan to approve. Every reply is one Undo step."
           : "Known commands run here offline. To talk to Claude, deploy backend/worker.js (see backend/README.md) and type:\n/connect https://your-worker.workers.dev your-access-code", tw).forEach(function (l, i) { c.fillText(l, x0 + 22, top + 22 + i * 24); });
       }
       P.entries.forEach(function (e) {

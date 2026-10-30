@@ -11,13 +11,16 @@
   var FORMAT = "studio-project", VERSION = 1;
   var OS_KEYS = ["editor.code", "editor.keep", "editor.outliner", "editor.snap", "ui.settings", "door.dest"];
   var AUTOSAVE = "studio.autosave";
+  // the desk pistol and its attachments are gone: drop their saved fit (old autosave ops naming the removed
+  // office props or attachment props are refused one by one by the engine's load and counted as skipped)
+  try { localStorage.removeItem("studio.pistol.mods"); } catch (e) {}
 
   function waitForStudio() {
     return new Promise(function (resolve) {
       (function check() {
         var s = window.__studio;
         var os = s && s.ready && ((s.computer && s.computer.os) || (s.targets && s.targets.computer && s.targets.computer.os));
-        if (os && s.editor && window.__studioUI && (!window.__studioSet || window.__studioSet.compsReady) && (!window.__studioArmoryPending || window.__studioArmoryReady)) resolve({ S: s, os: os });
+        if (os && s.editor && window.__studioUI && (!window.__studioSet || window.__studioSet.compsReady)) resolve({ S: s, os: os });
         else setTimeout(check, 250);
       })();
     });

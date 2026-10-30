@@ -22,8 +22,8 @@
 
   waitForStudio().then(function (ctx) {
     var S = ctx.S, os = ctx.os, LIB = window.__studioPropLib, C = window.__studioCommands, FONT = os.fonts.ui;
-    var GROUPS = ["All", "Enemies", "Armory", "Office", "Driving", "Building", "Interactive", "Toys", "Lights"];
-    var TINT = { Office: "#b8916a", Driving: "#e2672d", Building: "#a9a59d", Interactive: "#4f8fd6", Toys: "#c64a57", Lights: "#e9c46a", Armory: "#2b2d31", Enemies: "#5b4a3a" };
+    var GROUPS = ["All", "Enemies", "Office", "Driving", "Building", "Interactive", "Toys", "Lights"];
+    var TINT = { Office: "#b8916a", Driving: "#e2672d", Building: "#a9a59d", Interactive: "#4f8fd6", Toys: "#c64a57", Lights: "#e9c46a", Enemies: "#5b4a3a" };
     var MATS = ["wood", "dark wood", "steel", "painted metal", "concrete", "fabric", "plastic", "rubber", "glass", "cardboard"];
     var PRESETS = ["heavy metal", "bouncy rubber", "zero-g", "static lock", "ice", "wood", "stone", "foam", "glass", "balloon"];
     // the word the command runner knows for each library prop
@@ -94,7 +94,7 @@
           c.restore();
           c.fillStyle = "#1d1d1f"; c.font = "600 18px " + FONT; c.fillText(card.label, cx + 14, cy + 134);
           c.fillStyle = "#8a8a8e"; c.font = "400 14px " + FONT;
-          var info = card.info ? card.info : card.d ? (card.d.group === "Armory" ? "fits the P38 · " : "") + (card.d.phys.mass >= 1 ? Math.round(card.d.phys.mass) + " kg" : Math.round(card.d.phys.mass * 1000) + " g") + (card.d.dyn === false ? " · fixed" : "") + (card.d.comp ? " · " + card.d.comp[0].toLowerCase() : "") : "several pieces";
+          var info = card.info ? card.info : card.d ? (card.d.phys.mass >= 1 ? Math.round(card.d.phys.mass) + " kg" : Math.round(card.d.phys.mass * 1000) + " g") + (card.d.dyn === false ? " · fixed" : "") + (card.d.comp ? " · " + card.d.comp[0].toLowerCase() : "") : "several pieces";
           c.fillText(info, cx + 14, cy + 158);
           self.hits.push({ x: cx - r.x, y: Math.max(cy, top) - r.y, w: cw, h: Math.min(ch, top + area - Math.max(cy, top)), card: i, act: function () { if (card.act) { card.act(); setTimeout(function () { self.os.invalidate(); }, 50); } else self.run("add " + (WORD[card.name] || card.name)); } });
         });

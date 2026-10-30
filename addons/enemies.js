@@ -1,8 +1,8 @@
 // Training enemies: the CQC Loop's two characters (cqc/models/enemy-fsb.glb, enemy-soldier.glb) standing
 // in the studio as shootable targets. Not the CQC AI: they stand in a relaxed pose, flinch when hit and
 // fall over when "killed" (a scripted fall, not a physics ragdoll), then get back up after a few seconds
-// (Props app switch "Get back up"). Bullets from the desk pistol hit invisible capsules on head / torso /
-// legs (the skinned meshes themselves are never ray-tested, so a shot costs the same as before).
+// (Props app switch "Get back up"). Bullets hit invisible capsules on head / torso /
+// legs through userData.onBulletHit (no gun in the office now: the desk pistol is gone, the CQC guns come later).
 // Spawn: Props app > Enemies, the Commands palette, or the wrist tablet's "+ Enemy". Remove: Props app
 // "Remove all enemies", Delete on the keyboard while the dot is on one, or point the right controller at
 // one and press B. They are not saved: a reload (or Reset studio) starts without them. At most 6.
