@@ -1103,7 +1103,7 @@ const ACTIONS = [
 ];
 
 const DEFAULTS = {
-  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, brightness: 1 },
+  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, slush: true, brightness: 1 },
   audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true },
   controls: {
     bindings: {
@@ -1160,6 +1160,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'graphics', key: 'graphics.lensFlare', type: 'toggle', label: 'Lens flare', desc: 'Faint ghosts and veiling glare when the sun is in frame; anything in front of the sun hides them.' },
   { tab: 'graphics', key: 'graphics.lensRain', type: 'toggle', label: 'Rain on the lens', desc: 'Drops land on the camera in the rain, bead, and are blown off as you pick up speed. Photo mode stays clean.' },
   { tab: 'graphics', key: 'graphics.windscreen', type: 'toggle', label: 'Water on the windscreen', desc: 'Cockpit camera: rain and road spray bead on the screen, run up the glass at speed and are cleared by the wipers (V). Needs a depth effect (Medium and up). Off in the headset.' },   // realism 1
+  { tab: 'graphics', key: 'graphics.slush', type: 'toggle', label: 'Slush and snow tracks', desc: 'Open road: ploughed slush on the shoulders and between the wheel tracks. Tyres throw it up and leave tracks in it that fade; it hisses and drags a little. The headset gets lighter spray and no tracks.' },   // realism 2
   { tab: 'graphics', group: 'World' },
   { tab: 'graphics', key: 'graphics.anisotropy', type: 'select', label: 'Texture filtering', desc: 'Keeps the road sharp at grazing angles.', options: [[1, 'Off'], [2, '2×'], [4, '4×'], [8, '8×'], [16, '16×']] },
   { tab: 'graphics', key: 'graphics.drawDistance', type: 'range', label: 'Draw distance', desc: 'How far ahead the road is built. Shorter distances bring the haze closer.', min: .4, max: 1, step: .05, fmt: pct },
@@ -1983,6 +1984,11 @@ class VehicleAudio {
     // wet: spray hiss
     this.wetHP = this.#f('highpass', 2200, .5); this.wetG = this.#g(0);
     this.#loop(this.white).connect(this.wetHP).connect(this.wetG).connect(T);
+    if (SLUSH.on) {                                                    // realism 2: slush squelch: low churned noise, chopped by the tread
+      this.slLP = this.#f('lowpass', 520, .8); this.slG = this.#g(0); this.slMod = this.#g(.55);
+      const am = this.#osc('triangle', 11), amg = this.#g(.45); am.connect(amg).connect(this.slMod.gain); this.slAM = am;
+      this.#loop(this.brown).connect(this.slLP).connect(this.slMod).connect(this.slG).connect(T);
+    }
     // gravel verge
     this.grvBP = this.#f('bandpass', 1700, .9); this.grvG = this.#g(0);
     const grvAM = this.#osc('square', 23), grvAMg = this.#g(.35); this.grvMod = this.#g(.6);
@@ -2132,7 +2138,9 @@ class VehicleAudio {
     this.#set(this.rollG.gain, (.05 + .5 * vn) * clamp(v / 2, 0, 1), .05);
     this.#set(this.rollLP.frequency, 90 + v * 5, .05);
     this.#set(this.roarG.gain, .16 * vn * vn * (1 - .3 * wet), .05); this.#set(this.roarBP.frequency, 380 + v * 9, .05);
-    this.#set(this.wetG.gain, wet * vn * .32 + wet * sq * .2, .06);
+    const slu = SLUSH.on ? (src.slush || 0) : 0;                     // realism 2: slush adds hiss and a squelch
+    this.#set(this.wetG.gain, wet * vn * .32 + wet * sq * .2 + slu * clamp(v / 25, 0, 1.2) * .2, .06);
+    if (this.slG) { this.#set(this.slG.gain, slu * clamp(v / 12, 0, 1) * (.32 + .1 * wet), .08); this.#set(this.slLP.frequency, 300 + v * 9, .08); this.#set(this.slAM.frequency, 6 + v * .35, .08); }
     this.#set(this.grvG.gain, src.off ? clamp(v / 25, 0, 1) * .45 : 0, .05); this.#set(this.grvBP.frequency, 1300 + v * 14, .05);
     this.#set(this.scG.gain, clamp(src.scrape, 0, 1) * clamp(v / 8, 0, 1) * .6, .02);
     /* expansion joints: front axle, then the rear one wheelbase later */
@@ -3798,6 +3806,35 @@ function surfaceTextures(set, repeat) {
   }
   return out;
 }
+/* realism 2: slush and snow on the road (graphics.slush, ?slush=off = exactly the old road, spray, marks and sound).
+   Ploughed slush lies on both shoulders, in a ridge between the wheel tracks of each lane and thinly along the lane
+   lines; the wheel paths stay black. slushAt() is the shader's profile on the CPU (its patchiness taken at its mean),
+   so spray, tracks, sound and drag come from what is drawn. uSlush 0 = the old road; uSlushQ 0 = the headset's
+   single-noise path. */
+const SLUSH = { on: !/[?&]slush=off\b/.test(location.search), mean: .78, drag: 150, life: 45 };
+function slushAt(tr, u) {
+  const ls = tr.oneWay ? 1 : tr.laneStart, lw = tr.laneW, aU = Math.abs(u), le = ls + tr.lanes * lw;
+  if (aU >= le) return sstep(le + .2, le + 1.1, aU) * SLUSH.mean;                 // outer shoulder
+  if (aU < ls) return sstep(ls - .2, ls - .9, aU) * SLUSH.mean;                   // inner shoulder, toward the median
+  const lxl = (aU - ls) % lw, m = (lxl - 1.85) / .42, e = Math.min(lxl, lw - lxl) / .28;
+  return Math.max(Math.exp(-m * m) * .75, Math.exp(-e * e) * .45) * SLUSH.mean;
+}
+/** Tracks only on the paved road (lanes and shoulders), never out on the snow bank. */
+function slushPaved(tr, u) { const aU = Math.abs(u), ls = tr.oneWay ? 1 : tr.laneStart; return aU < ls + tr.lanes * tr.laneW + (tr.outerShoulder ?? 1.5) - .3 && aU > (tr.medianHalf ?? 0) + .3; }
+const SLUSH_GLSL_MAP = /* glsl */`
+      float slP;
+      if (aU >= laneEnd) slP = smoothstep(laneEnd + 0.2, laneEnd + 1.1, aU);
+      else if (aU < uLaneStart) slP = smoothstep(uLaneStart - 0.2, uLaneStart - 0.9, aU);
+      else { float sm = (lxl - 1.85) / 0.42, se = min(lxl, uLaneW - lxl) / 0.28; slP = max(exp(-sm * sm) * 0.75, exp(-se * se) * 0.45); }
+      float slN = vnoise(vec2(aU * 0.9, aS * 0.08) + 5.7), slF = 0.5;
+      if (uSlushQ > 0.5) slF = vnoise(vAtmoWorld.xz * 6.5) * 0.65 + vnoise(vAtmoWorld.xz * 19.0 + 3.1) * 0.35;   // clumps and tyre-cut lumps
+      float sl = uSlush * smoothstep(0.18, 0.5, slP * (0.55 + 0.45 * slN) + (slF - 0.5) * 0.32);
+      vec3 slCol = vec3(0.37, 0.35, 0.32) * (0.8 + 0.4 * slF) * mix(1.0, 0.78, uWet);   // grey-brown: grit, salt and road film
+      slCol = mix(slCol, vec3(0.6, 0.62, 0.65), smoothstep(0.75, 1.0, slP * slN) * (1.0 - uWet) * 0.5);   // fresh snow on the deep shoulder
+      diffuseColor.rgb = mix(diffuseColor.rgb, slCol, sl);
+      wetAmt *= 1.0 - 0.75 * sl;`;
+const SLUSH_GLSL_ROUGH = /* glsl */`
+      roughnessFactor = mix(roughnessFactor, mix(0.62, 0.38, uWet) - 0.12 * slF, sl);`;
 /** The road surface (§13.4); build 1.30: one per road, its own lane layout, the wet and mirror uniforms shared. */
 function asphaltMaterial(A, asphaltU, extra = {}) {
   return Atmos.patch(new THREE.MeshStandardMaterial({
@@ -3805,7 +3842,7 @@ function asphaltMaterial(A, asphaltU, extra = {}) {
   }), {
     key: 'asphalt', uniforms: asphaltU,
     vertPars: 'varying vec2 vRoadM;', vertMain: 'vRoadM = uv;',
-    fragPars: 'varying vec2 vRoadM; uniform float uLaneStart, uLaneW, uLaneCount, uWet, uReflOn; uniform sampler2D tReflect; uniform mat4 uReflMat;',
+    fragPars: 'varying vec2 vRoadM; uniform float uLaneStart, uLaneW, uLaneCount, uWet, uReflOn; uniform sampler2D tReflect; uniform mat4 uReflMat;' + (SLUSH.on ? ' uniform float uSlush, uSlushQ;' : ''),
     frag: [['#include <map_fragment>', /* glsl */`
       float aU = abs(vRoadM.x), aS = vRoadM.y;
       float laneEnd = uLaneStart + uLaneCount * uLaneW;
@@ -3826,10 +3863,10 @@ function asphaltMaterial(A, asphaltU, extra = {}) {
                         * mix(1.0, 0.86, oil * 0.6) * mix(1.0, 1.12, shoulder) * mix(1.0, 0.6, seam) * mix(1.0, 0.7, skid);
       float wetPud = smoothstep(0.5, 0.78, macro * 0.75 + wp * 0.3);
       float wetAmt = clamp(uWet * (0.55 + 0.45 * wetPud), 0.0, 1.0);
-      diffuseColor.rgb *= mix(1.0, 0.5, wetAmt);`],
+      diffuseColor.rgb *= mix(1.0, 0.5, wetAmt);` + (SLUSH.on ? SLUSH_GLSL_MAP : '')],
     ['#include <roughnessmap_fragment>', /* glsl */`
       roughnessFactor *= mix(1.0, 0.8, wp * 0.7) * mix(1.0, 0.92, patchM) * mix(1.0, 1.04, shoulder);
-      roughnessFactor = mix(roughnessFactor, mix(0.22, 0.04, wetPud), wetAmt);`],
+      roughnessFactor = mix(roughnessFactor, mix(0.22, 0.04, wetPud), wetAmt);` + (SLUSH.on ? SLUSH_GLSL_ROUGH : '')],
     ['#include <opaque_fragment>', /* glsl */`
       if (uReflOn > 0.0) {                                                              // mirrored view under the road, in the puddles and the wet sheen
         vec4 rp = uReflMat * vec4(vAtmoWorld, 1.0);
@@ -3845,13 +3882,14 @@ function asphaltMaterial(A, asphaltU, extra = {}) {
 /** Asphalt for another road of the network: slip roads sit a hair behind the road they leave or join. */
 function roadAsphalt(mats, r) {
   const U = mats.asphaltU;
-  return asphaltMaterial(Assets.surfaces, { uLaneStart: { value: r.oneWay ? 1 : r.laneStart }, uLaneW: { value: r.laneW }, uLaneCount: { value: r.lanes }, uWet: U.uWet, tReflect: U.tReflect, uReflMat: U.uReflMat, uReflOn: U.uReflOn },
+  return asphaltMaterial(Assets.surfaces, { uLaneStart: { value: r.oneWay ? 1 : r.laneStart }, uLaneW: { value: r.laneW }, uLaneCount: { value: r.lanes }, uWet: U.uWet, tReflect: U.tReflect, uReflMat: U.uReflMat, uReflOn: U.uReflOn, ...(SLUSH.on ? { uSlush: U.uSlush, uSlushQ: U.uSlushQ } : {}) },
     r.oneWay ? { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 4 } : {});
 }
 function worldMaterials(track) {
   const A = Assets.surfaces;
   const m = {};
   const asphaltU = m.asphaltU = { uLaneStart: { value: track.laneStart }, uLaneW: { value: track.laneW }, uLaneCount: { value: track.lanes }, uWet: { value: 0 }, tReflect: { value: null }, uReflMat: { value: new THREE.Matrix4() }, uReflOn: { value: 0 } };
+  if (SLUSH.on) { asphaltU.uSlush = { value: 0 }; asphaltU.uSlushQ = { value: 1 }; }   // realism 2
   m.asphalt = asphaltMaterial(A, asphaltU);
   m.paint = Atmos.patch(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .55, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }), {
     key: 'paint', vertPars: 'varying vec2 vRoadM;', vertMain: 'vRoadM = uv;', fragPars: 'varying vec2 vRoadM;',
@@ -6043,15 +6081,18 @@ class ParticleSystem {
  *  The oldest marks are overwritten; only the changed range is uploaded each frame. */
 const SKID_SEGS = 2400;
 class SkidMarks {
-  constructor(scene) {
-    const N = SKID_SEGS, pos = new Float32Array(N * 4 * 3), aux = new Float32Array(N * 4 * 2), idx = new Uint32Array(N * 6);
+  /** realism 2: o = { segs, step, life } makes the slush/snow track variant: aux carries the birth time, marks fade over o.life s. */
+  constructor(scene, o = null) {
+    this.o = o; this.N = o ? o.segs : SKID_SEGS; this.step = o ? o.step : .3; this.now = 0;
+    const N = this.N, AN = o ? 3 : 2, pos = new Float32Array(N * 4 * 3), aux = new Float32Array(N * 4 * AN), idx = new Uint32Array(N * 6);
     for (let i = 0; i < N; i++) { const v = i * 4, o = i * 6; idx.set([v, v + 2, v + 1, v + 1, v + 2, v + 3], o); }
     const g = this.geo = new THREE.BufferGeometry();
-    this.pos = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage); this.aux = new THREE.BufferAttribute(aux, 2).setUsage(THREE.DynamicDrawUsage);
+    this.pos = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage); this.aux = new THREE.BufferAttribute(aux, AN).setUsage(THREE.DynamicDrawUsage);
     g.setAttribute('position', this.pos); g.setAttribute('aux', this.aux); g.setIndex(new THREE.BufferAttribute(idx, 1));
     g.setDrawRange(0, 0); g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7);
     this.U = { uWet: { value: 0 } };
-    this.mat = new THREE.ShaderMaterial({
+    if (o) { this.U.uNow = { value: 0 }; this.U.uLife = { value: o.life }; }
+    this.mat = o ? SkidMarks.trackMat(this.U) : new THREE.ShaderMaterial({
       uniforms: this.U, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
       vertexShader: 'attribute vec2 aux; varying vec2 vAux; varying vec3 vW; void main(){ vAux = aux; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
       fragmentShader: GLSL_NOISE + /* glsl */`
@@ -6065,10 +6106,34 @@ class SkidMarks {
           gl_FragColor = vec4(vec3(0.012, 0.011, 0.01), a);
         }`,
     });
-    this.mesh = new THREE.Mesh(g, this.mat); this.mesh.frustumCulled = false; this.mesh.renderOrder = 2; this.mesh.name = 'skidmarks';
+    this.mesh = new THREE.Mesh(g, this.mat); this.mesh.frustumCulled = false; this.mesh.renderOrder = 2; this.mesh.name = o ? 'slushtracks' : 'skidmarks';
     scene.add(this.mesh);
     this.head = 0; this.count = 0; this.wheel = [0, 1, 2, 3].map(() => ({ on: false, l: new THREE.Vector3(), r: new THREE.Vector3(), p: new THREE.Vector3(), k: 0 }));
     this.dirty = []; this._a = new THREE.Vector3(); this._b = new THREE.Vector3();
+  }
+  /** realism 2: tracks pressed into slush and snow: the slush is pushed aside to wet, darker road with the tread's
+   *  ribs left standing in it, a lighter ridge thrown up at each edge; they fade (refreeze, are driven over) over uLife s. */
+  static trackMat(U) {
+    return new THREE.ShaderMaterial({
+      uniforms: U, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+      vertexShader: 'attribute vec3 aux; varying vec3 vAux; varying vec3 vW; void main(){ vAux = aux; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+      fragmentShader: GLSL_NOISE + /* glsl */`
+        uniform float uWet, uNow, uLife; varying vec3 vAux; varying vec3 vW;
+        void main(){
+          float across = vAux.x, k = vAux.y, age = uNow - vAux.z;
+          float fade = 1.0 - smoothstep(uLife * 0.35, uLife, age);
+          float edge = smoothstep(0.0, 0.12, across) * smoothstep(1.0, 0.88, across);
+          float rim = (1.0 - edge) * smoothstep(0.0, 0.05, across) * smoothstep(1.0, 0.95, across);   // slush pushed up at the edges
+          float rib = smoothstep(0.3, 0.7, vnoise(vec2(across * 9.0, 0.0) + 2.0));                    // tread ribs leave slush standing
+          float lug = step(0.5, fract(dot(vW.xz, vec2(5.3, 4.1)) + across * 0.6));
+          float grain = 0.7 + 0.3 * vnoise(vW.xz * 11.0);
+          float press = edge * (1.0 - 0.45 * rib * lug) * grain;
+          vec3 col = mix(vec3(0.05, 0.048, 0.045), vec3(0.44, 0.42, 0.39), rim);
+          float a = k * fade * (press * mix(0.62, 0.42, uWet) + rim * 0.35);
+          if (a < 0.003) discard;
+          gl_FragColor = vec4(col, a);
+        }`,
+    });
   }
   /** One wheel's contact this frame. k: mark strength 0…1 (0 lifts the pen). */
   wheelAt(i, p, side, up, halfW, k) {
@@ -6076,13 +6141,16 @@ class SkidMarks {
     if (k <= .02) { w.on = false; return; }
     const l = this._a.copy(p).addScaledVector(side, -halfW).addScaledVector(up, .012), r = this._b.copy(p).addScaledVector(side, halfW).addScaledVector(up, .012);
     if (!w.on) { w.on = true; w.l.copy(l); w.r.copy(r); w.p.copy(p); w.k = k; return; }
-    if (w.p.distanceToSquared(p) < .3 * .3) return;
+    if (w.p.distanceToSquared(p) < this.step * this.step) return;
     if (w.p.distanceToSquared(p) > 6 * 6) { w.l.copy(l); w.r.copy(r); w.p.copy(p); w.k = k; return; }   // a teleport (reset, replay): never draw a streak across the world
     const s = this.head, v = s * 4, P = this.pos.array, A = this.aux.array;
-    P.set([w.l.x, w.l.y, w.l.z, w.r.x, w.r.y, w.r.z, l.x, l.y, l.z, r.x, r.y, r.z], v * 3);
-    A.set([0, w.k, 1, w.k, 0, k, 1, k], v * 2);
+    let j = v * 3;                                                       // realism 2: written in place (no array per segment)
+    P[j++] = w.l.x; P[j++] = w.l.y; P[j++] = w.l.z; P[j++] = w.r.x; P[j++] = w.r.y; P[j++] = w.r.z;
+    P[j++] = l.x; P[j++] = l.y; P[j++] = l.z; P[j++] = r.x; P[j++] = r.y; P[j] = r.z;
+    if (this.o) { const t = this.now; j = v * 3; A[j++] = 0; A[j++] = w.k; A[j++] = t; A[j++] = 1; A[j++] = w.k; A[j++] = t; A[j++] = 0; A[j++] = k; A[j++] = t; A[j++] = 1; A[j++] = k; A[j] = t; }
+    else { j = v * 2; A[j++] = 0; A[j++] = w.k; A[j++] = 1; A[j++] = w.k; A[j++] = 0; A[j++] = k; A[j++] = 1; A[j] = k; }
     this.dirty.push(s);
-    this.head = (s + 1) % SKID_SEGS; this.count = Math.min(this.count + 1, SKID_SEGS);
+    this.head = (s + 1) % this.N; this.count = Math.min(this.count + 1, this.N);
     w.l.copy(l); w.r.copy(r); w.p.copy(p); w.k = k;
   }
   lift() { for (const w of this.wheel) w.on = false; }
@@ -6090,7 +6158,9 @@ class SkidMarks {
     this.U.uWet.value = wet;
     if (!this.dirty.length) return;
     let lo = Infinity, hi = -1; for (const s of this.dirty) { lo = Math.min(lo, s); hi = Math.max(hi, s); } this.dirty.length = 0;
-    for (const [A, n] of [[this.pos, 12], [this.aux, 8]]) { A.clearUpdateRanges(); A.addUpdateRange(lo * n, (hi - lo + 1) * n); A.needsUpdate = true; }
+    const P = this.pos, A = this.aux, an = this.o ? 12 : 8;
+    P.clearUpdateRanges(); P.addUpdateRange(lo * 12, (hi - lo + 1) * 12); P.needsUpdate = true;
+    A.clearUpdateRanges(); A.addUpdateRange(lo * an, (hi - lo + 1) * an); A.needsUpdate = true;
     this.geo.setDrawRange(0, this.count * 6);
   }
   clear() { this.head = 0; this.count = 0; this.lift(); this.geo.setDrawRange(0, 0); }
@@ -6459,7 +6529,7 @@ class VehicleDynamics {
     const hF = .13 + this.rh - cF, hR = .15 + this.rh - cR;
     const gfx = hh => clamp(1 + (.13 - hh) * 5.5, .7, 1.45) * (1 - .35 * sstep(.06, .03, hh));   // ground effect, stalls when bottomed
     const dfF = q * this.ClF * gfx(hF), dfR = q * this.ClR * gfx(hR);
-    const drag = q * (this.CdA + .05 * dmg) * this.draft, dragX = v > .01 ? drag * vx / v : 0, dragY = v > .01 ? drag * vy / v * 1.8 : 0;
+    const drag = q * (this.CdA + .05 * dmg) * this.draft, dragX = v > .01 ? (drag + (this.slushN || 0)) * vx / v : 0, dragY = v > .01 ? drag * vy / v * 1.8 : 0;
     this.dragN = drag; this.downN = dfF + dfR;                         // build 1.11: the forces actually applied, for telemetry
 
     /* Suspension → wheel loads */
@@ -7250,9 +7320,10 @@ class DriveWorld {
     /* Sections 10 and 11: particles, tyre marks, the replay recorder and its cameras */
     this.particles = new ParticleSystem(this.scene, settings);
     this.skids = new SkidMarks(this.scene);
+    this.tracks = SLUSH.on ? new SkidMarks(this.scene, { segs: 3000, step: .7, life: SLUSH.life }) : null;   // realism 2: tracks in slush and snow
     this.replay = new ReplayBuffer();
     this.replayRig = new CameraRig(this.camera, settings); this.activeRig = null; this.lens = null; this.photoEV = 1;
-    this.audioEvents = []; this.emitAcc = new Float32Array(16); this._res = new THREE.Vector2(); this.F4 = newFrame();
+    this.audioEvents = []; this.emitAcc = new Float32Array(48); this._res = new THREE.Vector2(); this.F4 = newFrame();
     this._cv = new THREE.Vector3(); this._cpPrev = null; this._fw = new THREE.Vector3(); this._rt = new THREE.Vector3(); this._up = new THREE.Vector3(); this._wp = new THREE.Vector3(); this._ex = new THREE.Vector3();
     this.envLight = { sunDir: null, sunLight: null, sky: null, lamps: 0, wind: .7 };
     onProgress('Reading the sky');
@@ -7300,7 +7371,7 @@ class DriveWorld {
     this.traffic.reset(this.P); this.score.reset(); this.autopilot.reset();
     this.environment.start();
     this.carObj.controls.reset(Math.max(this.environment.night || 0, this.tunnel ? 1 : 0));   // build 1.28: key out; lamps on after dark and in the tunnel
-    this.particles?.clear(); this.skids?.clear(); this.replay?.clear(); this._cpPrev = null; this.audioEvents.length = 0;
+    this.particles?.clear(); this.skids?.clear(); this.tracks?.clear(); this.replay?.clear(); this._cpPrev = null; this.audioEvents.length = 0;
     /* build 1.22: a restart jumps back to the start line; build the road window there at once, or the first seconds of
        the new run drove on half-streamed road with missing chunks (streaming only builds one stage per frame) */
     this.sCar = this.s0; this.#stream(100000); this.#syncWindow(true); if (!this.tunnel) this.far.update(this.posCur, true);
@@ -7411,6 +7482,11 @@ class DriveWorld {
     this.sim.wet = this.wet;
     if (this.environment) { this.sim.airT = this.environment.airT; this.sim.roadT = this.environment.roadT; }   // build 1.11
     this.sim.gustFy = this.#crosswind(dt);                              // build 1.12
+    if (SLUSH.on) {                                                     // realism 2: slush under the tyres: a little rolling drag, read by the sound
+      const m = this.sim, tr = m.track || this.track, h = CAR.track * .5, u = m.uCar ?? this.u ?? 0, av = Math.abs(m.speed || 0);
+      const sl = this.slushOn() && tr ? (slushAt(tr, u - h) + slushAt(tr, u + h)) * .5 : 0;
+      this.slushK = sl; m.slushN = sl * SLUSH.drag * clamp(av / 3, 0, 1) * (1 + av / 40);
+    }
     if (this.autopilot.on) this.autopilot.drive(dt, input.state);     // build 1.13: the autopilot works the same pedals
     { const S = this.carObj.cab; if (S) { this.sim.ign = S.ign >= 1; this.sim.crank = S.ign === 2; } }   // build 1.28: the key (§14.11)
     this.sim.step(dt, input.state);
@@ -7522,6 +7598,7 @@ class DriveWorld {
     S.speed = m.speed; S.rpm = m.rpm || 0; S.throttle = m.throttle ?? 0; S.boost = m.boost ?? 0; S.gear = m.gear ?? 1; S.limiter = !!m.limiterCut; S.running = m.running !== false;
     let lock = 0; for (let i = 0; i < 4; i++) { const w = m.wheels[i]; S.slip[i] = w.slipPow || 0; if (w.locked) lock |= 1 << i; }
     S.lockedMask = lock; S.scrape = clamp(+m.scrape || 0, 0, 1); S.off = !!this.P.off; S.sCar = this.sCar; S.uCar = this.u; S.trackLen = this.track.length; S.brake = m.brake || 0;
+    S.slush = this.slushK || 0;                                          // realism 2
     return S;
   }
   /** Vehicles near the listener as world points, nearest first (live traffic, or replay proxies). */
@@ -7541,8 +7618,11 @@ class DriveWorld {
   }
   /** Particles and tyre marks for this frame, from the live car or a replay frame. */
   #effects(dt, src, replaying) {
-    if (!this.particles || dt <= 0) { this.skids?.flush(this.wet); return; }
+    const slOn = SLUSH.on && this.slushOn(), vrS = !!this.vr?.driving;   // realism 2
+    if (SLUSH.on) { const U = this.mats.asphaltU; U.uSlush.value = slOn ? 1 : 0; U.uSlushQ.value = vrS ? 0 : 1; if (dt > 0) this.tracks.now += dt; }
+    if (!this.particles || dt <= 0) { this.skids?.flush(this.wet); this.tracks?.flush(this.wet); return; }
     const P = this.particles, dens = P.density, car = this.car, env = this.environment, wet = env.wet, v = Math.abs(src.speed), acc = this.emitAcc, R = Math.random;
+    const slTr = replaying ? this.track : (this.sim.track || this.track), slK = vrS ? .35 : 1;
     car.updateMatrixWorld();
     const cv = this._cv;
     if (this._cpPrev) { cv.subVectors(car.position, this._cpPrev).divideScalar(dt); if (cv.lengthSq() > 150 * 150) cv.set(0, 0, 0); } else { this._cpPrev = new THREE.Vector3(); cv.set(0, 0, 0); }
@@ -7573,8 +7653,30 @@ class DriveWorld {
           2.2 + R() * 1.8, .5, 3.4 + R() * 1.5, .42, .36, .27, .26);
       /* tyre marks: laid live only (a replay re-runs time that already left them) */
       if (!replaying) this.skids.wheelAt(i, wp, rt, up, CAR.tyreW * .5, src.off ? 0 : (locked && v > 2 ? .9 : clamp((sp - 9000) / 26000, 0, 1)) * (wet > .6 ? .5 : 1));
+      /* realism 2: slush and snow off the tread where the tyre crosses it, a grey-brown mist and wet lumps that land on
+         the road; the rears press tracks into it (on a computer; the headset gets a third of the spray and no tracks) */
+      if (slOn) {
+        const uw = src.uCar + side * CAR.track * .5, sl = slushAt(slTr, uw);   // ('off' is any wheel past the lanes: the shoulder, where the slush lies)
+        if (sl > .08 && v > 4) {
+          const rate = sl * clamp((v - 4) / 30, 0, 1.4) * (i >= 2 ? 46 : 26) * dens * slK, vk = clamp(v / 30, .3, 1.5);
+          for (let n = spawn(16 + i, rate); n > 0; n--) {
+            const b = .5 + R() * 1.3;
+            P.emit(PT.spray, wp.x - fw.x * .35 + rt.x * side * .1, wp.y + .08, wp.z - fw.z * .35 + rt.z * side * .1,
+              cv.x * .5 - fw.x * v * .06 + rt.x * side * b + (R() - .5) * .5, (.5 + R() * 1.2) * vk, cv.z * .5 - fw.z * v * .06 + rt.z * side * b + (R() - .5) * .5,
+              .45 + R() * .6, .2, 1.1 + R() * .8, .5, .47, .43, .2 * sl + .06);
+          }
+          if (!vrS) for (let n = spawn(20 + i, rate * .6); n > 0; n--) {
+            const b = .3 + R() * 1.6, sz = .025 + R() * .05;
+            P.emit(PT.debris, wp.x - fw.x * .3 + rt.x * side * .1, wp.y + .1, wp.z - fw.z * .3 + rt.z * side * .1,
+              cv.x * .62 - fw.x * v * .05 + rt.x * side * b + (R() - .5) * .8, (.8 + R() * 2.2) * vk, cv.z * .62 - fw.z * v * .05 + rt.z * side * b + (R() - .5) * .8,
+              .7 + R() * .8, sz, sz * .8, .34, .32, .29, 1, wp.y - .01);
+          }
+        }
+        if (!replaying && !vrS && i >= 2) this.tracks.wheelAt(i, wp, rt, up, CAR.tyreW * .5, sl > .1 && v > 1 && slushPaved(slTr, uw) ? clamp(sl * 1.5, 0, 1) : 0);
+      }
     }
-    if (replaying) this.skids.lift();
+    if (replaying) { this.skids.lift(); this.tracks?.lift(); }
+    if (SLUSH.on && (!slOn || vrS)) this.tracks.lift();
     /* sparks where the body grinds the barrier */
     if (src.scrape > .04 && v > 3) {
       const tr = replaying ? this.track : this.sim.track, F = tr.frame(src.sCar, this.F4), au = Math.abs(src.uCar), outer = au > (tr.laneStart + tr.laneEnd) / 2, su = (outer ? 1 : -1) * Math.sign(src.uCar || 1);
@@ -7596,8 +7698,9 @@ class DriveWorld {
       }
     }
     /* spray thrown up by nearby traffic, heaviest from trucks */
+    const near = wet > .15 || slOn ? this.trafficSources(this.camera.position, replaying ? this.replay.proxies : this.traffic.agents) : null;   // realism 2: one list for both
     if (wet > .15) {
-      const near = this.trafficSources(this.camera.position, replaying ? this.replay.proxies : this.traffic.agents), tr = this.traffic.track;
+      const tr = this.traffic.track;
       for (let j = 0; j < Math.min(near.length, 8); j++) {
         const o = near[j], a = o.a; if (o.v < 10 || o.d2 > 110 * 110) continue;
         const F = tr.frame(a.s, this.F4), th = Math.hypot(F.T.x, F.T.z), tx = a.dir * F.T.x / th, tz = a.dir * F.T.z / th;
@@ -7608,10 +7711,32 @@ class DriveWorld {
         }
       }
     }
+    /* realism 2: traffic throws slush where its wheels cross it (its rear wheels, either side) */
+    if (slOn) {
+      const tr = this.traffic.track;
+      for (let j = 0; j < Math.min(near.length, 8); j++) {
+        const o = near[j], a = o.a; if (o.v < 6 || o.d2 > 90 * 90 || a.u === undefined) continue;
+        const F = tr.frame(a.s, this.F4), th = Math.hypot(F.T.x, F.T.z), tx = a.dir * F.T.x / th, tz = a.dir * F.T.z / th, vk = clamp(o.v / 30, .3, 1.5);
+        for (let sd = -1; sd <= 1; sd += 2) {
+          const sl = slushAt(tr, a.u + sd * a.T.hw * .8); if (sl < .08) continue;
+          const rate = sl * clamp((o.v - 4) / 30, 0, 1.4) * (o.truck ? 80 : 40) * dens * slK, slot = 24 + j * 2 + (sd > 0 ? 1 : 0);
+          const x = o.x - tx * a.T.len * .35 + F.Rh.x * sd * a.T.hw * .8, z = o.z - tz * a.T.len * .35 + F.Rh.z * sd * a.T.hw * .8, y = o.y - .55;
+          for (let n = spawn(slot, rate); n > 0; n--) {
+            const chunk = !vrS && R() < .4, b = .4 + R() * 1.2, sz = .03 + R() * .05;
+            if (chunk) P.emit(PT.debris, x, y + .1, z, tx * o.v * .6 + F.Rh.x * sd * b + (R() - .5) * .8, (.8 + R() * 2) * vk, tz * o.v * .6 + F.Rh.z * sd * b + (R() - .5) * .8,
+              .7 + R() * .7, sz, sz * .8, .34, .32, .29, 1, y - .03);
+            else P.emit(PT.spray, x, y + .1, z, tx * o.v * .55 + F.Rh.x * sd * b + (R() - .5) * .5, (.5 + R() * 1.2) * vk, tz * o.v * .55 + F.Rh.z * sd * b + (R() - .5) * .5,
+              .5 + R() * .6, .25, o.truck ? 2 : 1.4, .5, .47, .43, .2 * sl + .06);
+          }
+        }
+      }
+    }
     const L = this.envLight; L.sunDir = this.day.sunDir; L.sunLight = this.day.sunLight; L.sky = env.sky; L.lamps = env.lamps; L.wind = env.wind;
     P.update(dt, L, this.rs.post?.prepass?.enabled ? this.rs.post.prepass.rt?.depthTexture : null, this.rs.r.getDrawingBufferSize(this._res), this.camera);
-    this.skids.flush(wet);
+    this.skids.flush(wet); this.tracks?.flush(wet);
   }
+  /** realism 2: slush on the road this run (open road, setting on). */
+  slushOn() { return SLUSH.on && !this.tunnel && this.s.data.graphics.slush !== false; }
   /** An impact: chips of trim and a scatter of glass at the front corner. */
   debris(strength) {
     if (!this.particles) return;
@@ -7626,13 +7751,13 @@ class DriveWorld {
   /** Objects that must stay out of the depth pre-pass and the road mirror. */
   /** Build 1.27: what the mirrors (§14.10) render from, flat: the cockpit camera, else the seat. */
   mirrorView() { const o = this._mv ??= { eye: null, cabin: false, xr: false }; o.cabin = !!this.cabinCam; o.eye = this.camera.position; return o; }
-  fxHidden() { return this._fxh || (this._fxh = [this.particles.mesh, this.skids.mesh]); }
+  fxHidden() { return this._fxh || (this._fxh = this.tracks ? [this.particles.mesh, this.skids.mesh, this.tracks.mesh] : [this.particles.mesh, this.skids.mesh]); }
 
   /* ── Section 11: replay ── */
   enterReplay() {
     this.activeRig = this.replayRig; this.replayRig.mode = 'cinematic'; this.replayRig.snap = true; this.replayRig.cineValid = false;
     const H = this.replay.sample(0, this.track.length);
-    this.car.position.set(H[0], H[1], H[2]); this.yaw = H[38]; this.sCar = H[22]; this.#stream(100000); this.#syncWindow(true); this._cpPrev = null; this.skids.lift();
+    this.car.position.set(H[0], H[1], H[2]); this.yaw = H[38]; this.sCar = H[22]; this.#stream(100000); this.#syncWindow(true); this._cpPrev = null; this.skids.lift(); this.tracks?.lift();
   }
   exitReplay() {
     this.activeRig = null; this.sCar = this.sim.sCar; this.v = this.sim.speed; this.yaw = this.sim.heading;
@@ -7849,7 +7974,7 @@ class DriveWorld {
     this.leave();
     for (const st of this.streamers) if (st !== this.streamer) st.dispose(); this.netStatics?.dispose();
     this.streamer.dispose(); this.far.dispose(); this.trees.dispose(); this.props.dispose(); this.tunnelProps?.dispose(); this.traffic.dispose(); this.environment.dispose();
-    this.particles.dispose(); this.skids.dispose(); this.replay.frames.length = 0;
+    this.particles.dispose(); this.skids.dispose(); this.tracks?.dispose(); this.replay.frames.length = 0;
     for (const m of Object.values(this.mats)) if (m?.isMaterial) m.dispose();
     this.hills.geometry.dispose(); this.hillMat.dispose(); this.sky.geometry.dispose(); this.sky.material.dispose();
     this.envRT.dispose(); this.pmrem.dispose(); this.envMat.dispose(); this.envScene.children[0].geometry.dispose();
