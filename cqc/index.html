@@ -1459,6 +1459,7 @@ const PROJECT_RULES = {
     'The air remembers the fight: muzzle smoke and plaster or concrete dust hang, drift, pool under the ceiling and fade over seconds. Sparks bounce off the floor. Dust motes float everywhere and show only in a beam or a flash, like real dust.',
     'Particles are lit: room ambient (follows the failing tube), the flashlight cone and the muzzle flash. Nothing glows in the dark unless it is hot (sparks).',
     'Spatial audio: positional sounds use a fixed pool of HRTF voices (CONFIG.polish.audio.voices). A ray to the listener decides occlusion: walls and shut doors lowpass and quieten the sound and its reverb. Sound arrives at the speed of sound. Your own shots stay head-locked; his shots, impacts, near-miss cracks, boots, a body falling and the ballast hum come from where they happen.',
+    'The building is alive (step 86): between fights (no engaged man, ears clear, no rounds landing for 8 s) it makes a sound every 12-36 s: a water-hammer knock (the room\'s insulated pipe, or muffled through the slab), duct ticks from the wall grille, a car or truck passing outside (louder in the hall and range, none in stairwells), and rarely a door far off beyond a side wall. Walls, slab and distance muffle them; nobody hears them. CONFIG.polish.audio.amb; ?amb=off.',
     'Hearing: unprotected gunfire indoors raises a dose that dulls the top end of the whole mix and adds a faint ring; it recovers over ~10 s. Toggle: CONFIG.polish.audio.ears.',
     'Gun handling, reload and brass sounds stay off (GUN_HANDLING_SOUNDS) as before; step 10 adds no gun foley.',
     'Profiling: every frame is split into input, stream, enemies, weapons, physics, fx, shadows and render (CPU ms). Frame interval, p95, dropped frames, draw calls and triangles per second. A frame over budget with low CPU time is reported GPU-bound. Desktop: O. Headset: fps on the terminal (GRAPHICS). Each VR session logs a summary and keeps the last one (window.cqcProfile()).',
@@ -2429,6 +2430,7 @@ const CONFIG = {
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
       doors: { on: true, gain: 1 },           // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before
       knocks: { on: true, gain: 1, minDv: 0.6 },   // step 86: props landing / bumping / falling over make a sound by material and mass (minDv m/s lost in a frame; on false = silent as before)
+      amb: { on: true, gain: 1, gap: [12, 36], quiet: 8 },   // step 86: the building, between fights: pipe knocks, duct ticks, traffic outside, a far door (?amb=off)
       ears: true, earsMax: 5, earsRecover: 3.2, earsDull: 0.42, earsFloor: 2600,   // hearing dose after gunfire (step 15: recovers about twice as fast)
       earsShot: { pistol: 0.7, smg: 0.5, shotgun: 1.1, rifle: 0.8, ppk: 0, fn509: 0.05, akm: 1.0, awp: 1.3 },   // step 15: the suppressed PPK leaves your ears alone
       tinnitus: 0.0018, tinnitusHz: 6900, tinnitusFrom: 1.4, tinnitusFull: 4.2   // step 15: quieter ring, needs more shooting to start
@@ -22138,6 +22140,8 @@ const ACOUSTICS = {
 const ROOMAC = { slots: [], cur: 0, key: 'room', irs: Object.create(null), offAt: 0 };
 const DOORSND = { on: !/[?&]doorsnd=off/.test(location.search) };   // step 86 (see doorSfx)
 const _dsP = new THREE.Vector3();
+const AMB = { next: 10, off: /[?&]amb=off\b/.test(location.search) };   // step 86: next = s to the next building sound
+const _amP = new THREE.Vector3();
 function audioUnlock() {
   try {
     if (!audio.ctx) {
@@ -23492,7 +23496,7 @@ function updateContact() {
  *  room reverb and the echo bus. nBurst / tone / playBaked play into whatever
  *  voice soundAt() opened, so the old sound code didn't change shape.
  * ------------------------------------------------------------------------- */
-const SPAT = { ok: false, voices: [], next: 0, ears: null, tinGain: null, tin: null, dose: 0, buzz: null, buzzGain: null, buzzPan: null };
+const SPAT = { ok: false, voices: [], next: 0, ears: null, tinGain: null, tin: null, dose: 0, buzz: null, buzzGain: null, buzzPan: null, brown: null };
 function setPannerPos(p, x, y, z) {
   if (p.positionX) { p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z; } else p.setPosition(x, y, z);
 }
@@ -23529,6 +23533,7 @@ function polishAudioInit(ctx, comp) {
     const rt = ctx.createBufferSource(), rl = ctx.createBiquadFilter(), rg = ctx.createGain();
     rt.buffer = nb; rt.loop = true; rl.type = 'lowpass'; rl.frequency.value = 170; rg.gain.value = A.roomTone;
     rt.connect(rl); rl.connect(rg); rg.connect(audio.out); rt.start();
+    SPAT.brown = nb;   // step 86: the traffic outside reuses the room tone's noise
     // The failing tube's ballast: 120 Hz hum with its harmonics, from the fixture itself.
     const bz = ctx.createOscillator(), bf = ctx.createBiquadFilter(), bg = ctx.createGain(), bp = panner();
     bz.type = 'sawtooth'; bz.frequency.value = 120; bf.type = 'bandpass'; bf.frequency.value = 360; bf.Q.value = 0.8; bg.gain.value = 0;
@@ -23712,6 +23717,83 @@ function updateFootsteps(dt) {
       nBurst(t + 0.02, 0.06, 'bandpass', 2400 * j, 1.5, 0.1 * k, 0.04, 0.2);    // grit under the sole
       if (Math.random() < 0.6) nBurst(t + 0.012, 0.07, 'bandpass', 4100, 4, 0.045 * k, 0.05, 0.15);   // gear on the carrier
     });
+  }
+}
+// Step 86: the building between fights. A sound every A.gap s while nobody is engaged, your ears are
+// clear and no round has landed for A.quiet s. Room-local points (rWX/rWZ), so a rebase cannot misplace
+// one; walls, the slab, air and distance (soundAt) do the muffling. Nobody hears these (no enemiesHear).
+const ambAt = (r, lx, ly, lz) => _amP.set(rWX(r, lx), r.origin.y + ly, rWZ(r, lz));
+// Water hammer: the plant room's insulated line (layout.pipes, at xi / yi), else a pipe in the slab overhead.
+function ambPipe(r, g) {
+  const P = r.layout && r.layout.pipes;
+  if (P) { const sg = P.wall === 'left' ? -1 : 1; ambAt(r, sg * (r.w / 2 - 0.31), 2.8, rnd2(-0.4, 0.4) * r.d); }
+  else ambAt(r, (Math.random() < 0.5 ? -1 : 1) * (r.w / 2 - rnd2(0.3, 1.0)), r.h + 0.3, rnd2(-0.45, 0.45) * r.d);   // inside the ceiling collider: occluded
+  soundAt(_amP, () => {
+    const t = audio.ctx.currentTime + 0.003, n = 2 + (Math.random() * 3 | 0);
+    let at = t, k = g;
+    for (let i = 0; i < n; i++) {
+      const j = 0.9 + Math.random() * 0.2;
+      tone(at, 112 * j, 100 * j, 0.2, 0.16 * k, 'sine', 0.35);                  // the pipe rings
+      nBurst(at, 0.06, 'bandpass', 700 * j, 5, 0.1 * k, 0.05, 0.3);             // the knock on the hanger
+      at += rnd2(0.06, 0.14); k *= 0.62;
+    }
+  });
+}
+// Sheet metal cooling: dry ticks from the wall grille (layout.vent, placed as buildLayout's P.vent), a second or so apart.
+function ambDuct(r, g) {
+  const V = r.layout && r.layout.vent;
+  if (!V) { ambPipe(r, g); return; }
+  const side = V.wall === 'left' || V.wall === 'right', s = V.wall === 'left' || V.wall === 'back' ? -1 : 1;
+  const lx = side ? s * (r.w / 2 - 0.05) : V.u, lz = side ? V.u : s * (r.d / 2 - 0.05), ly = 2.55;
+  for (let i = 0, n = 1 + (Math.random() * 4 | 0), acc = 0; i < n; i++, acc += rnd2(0.3, 1.6)) {
+    P10.pending.push({ at: P10.time + acc, fn: () => { ambAt(r, lx, ly, lz); soundAt(_amP, () => {
+      const t = audio.ctx.currentTime + 0.003, j = 0.9 + Math.random() * 0.2;
+      nBurst(t, 0.03, 'bandpass', 2100 * j, 3, 0.05 * g, 0.02, 0.2);
+      tone(t, 330 * j, 300 * j, 0.07, 0.03 * g, 'triangle', 0.2);
+    }); } });
+  }
+}
+// A door banging somewhere deep in the building: beyond a side wall, never along the route.
+function ambDoor(r, g) {
+  ambAt(r, (Math.random() < 0.5 ? -1 : 1) * (r.w / 2 + rnd2(12, 25)), 1.0, rnd2(-0.5, 0.5) * r.d);
+  soundAt(_amP, () => {
+    const t = audio.ctx.currentTime + 0.003, j = 0.9 + Math.random() * 0.2;
+    nBurst(t, 0.4, 'lowpass', 130 * j, 0.9, 0.9 * g, 0.3, 0.9, 0.4);           // the slab of the leaf
+    nBurst(t + 0.03, 0.12, 'bandpass', 600 * j, 1, 0.15 * g, 0.08, 0.6);       // the latch and frame
+  });
+}
+// Traffic outside: filtered brown noise swelling past (a truck adds its engine's sub). Not positional: no pool voice.
+function ambSwell(t, dur, f0, f1, g, sub) {
+  const c = audio.ctx, src = c.createBufferSource(), f = c.createBiquadFilter(), gn = c.createGain(), s = c.createGain();
+  src.buffer = SPAT.brown || audio.noise; src.loop = true; src.playbackRate.value = rnd2(0.8, 1.2);
+  f.type = 'lowpass'; f.Q.value = 0.7; f.frequency.setValueAtTime(f0, t); f.frequency.linearRampToValueAtTime(f1, t + dur * 0.45); f.frequency.linearRampToValueAtTime(f0, t + dur);
+  gn.gain.setValueAtTime(0.0001, t); gn.gain.linearRampToValueAtTime(g, t + dur * 0.4); gn.gain.linearRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(gn); gn.connect(audio.out); s.gain.value = 0.2; gn.connect(s); s.connect(audio.verb);
+  src.start(t, Math.random() * src.buffer.duration * 0.75); src.stop(t + dur + 0.05);   // brown: 0-3 s in
+  if (sub) {
+    const o = c.createOscillator(), og = c.createGain();
+    o.type = 'sine'; o.frequency.value = sub;
+    og.gain.setValueAtTime(0.0001, t); og.gain.linearRampToValueAtTime(0.5 * g, t + dur * 0.4); og.gain.linearRampToValueAtTime(0.0001, t + dur);
+    o.connect(og); og.connect(audio.out); o.start(t); o.stop(t + dur + 0.05);
+  }
+}
+function ambTick(dt) {
+  const A = CONFIG.polish.audio.amb;
+  if (!A || !A.on || AMB.off || !audio.noise) return;
+  if ((AMB.next -= dt) > 0) return;
+  AMB.next = rnd2(A.gap[0], A.gap[1]);
+  const r = stream.current;
+  if (!r || playerState.dead || SPAT.dose > 0.15 || audio.ctx.currentTime - P10.impactSfxAt < A.quiet) { AMB.next = rnd2(3, 6); return; }
+  for (const e of ENEMY.list) if (!e.dead && e.engaged && e.room.active) { AMB.next = rnd2(3, 6); return; }   // a fight on: try again soon
+  const key = roomAcoustic(r), out = key === 'hall' || key === 'range' ? 1.5 : key === 'small' ? 0.6 : key === 'stair' ? 0 : 1, g = A.gain;   // how much street gets in
+  const x = Math.random() * (out > 0 ? 1 : 0.7);   // pipe 0.3, duct 0.3, door 0.1, traffic 0.3
+  if (x < 0.3) ambPipe(r, g);
+  else if (x < 0.6) ambDuct(r, g);
+  else if (x < 0.7) ambDoor(r, g);
+  else {
+    const t = audio.ctx.currentTime + 0.01;
+    if (Math.random() < 0.7) ambSwell(t, rnd2(4, 7), 180, 420, 0.03 * g * out, 0);   // a car
+    else ambSwell(t, rnd2(8, 11), 110, 300, 0.045 * g * out, 42);                    // a truck
   }
 }
 // Rounds landing near you. Your own and his.
@@ -24001,6 +24083,7 @@ function polishUpdate(dt, t) {
     updateBuzz();
     updateFootsteps(dt);
     updateAcoustics();                           // step 85
+    ambTick(dt);                                 // step 86: the building between fights
   }
 }
 function polishShift(dx, dz, dy = 0) {
@@ -29325,7 +29408,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell };
 </script>
 </body>
 </html>
