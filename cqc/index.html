@@ -2375,6 +2375,7 @@ const CONFIG = {
     holster: [0.2, -0.72, 0.02],   // right hip, body space: x right, y below the eyes, z back
     sling: [0.06, -0.44, -0.2],    // front of the chest
     slotReach: 0.24,           // let go of a gun this close to its slot and it stays there
+    slingAnim: { on: true, reach: 0.3, time: 0.42, holsterTime: 0.34, arc: 0.05, draw: 0.15, deskDraw: 0.22, grabReach: 0.13, seat: 0.8, sway: 1 },   // animated sling / holsters (no physics; ?slinganim=off = the old carry): chest reach m, move s, arc m, draw s, VR grab reach on the chest m, seat sound gain, sway gain
     bodyTurn: 0.7,             // rad your head turns before your belt follows
     triggerPull: 0.72, triggerReset: 0.4,
     laserBeam: 0.07,           // step 16: opacity of the faint laser beam (0 = dot only)
@@ -14536,7 +14537,7 @@ function handPose(hand, outP, outQ) {
   } else hand.source.getWorldQuaternion(outQ);
 }
 function startBlend(item) {
-  item.blend = 1;
+  item.blend = 1; item.blendDur = 0;
   item.fromPos.copy(item.prop.root.position);
   item.fromQuat.copy(item.prop.root.quaternion);
 }
@@ -14553,12 +14554,14 @@ function itemGrab(hand, p) {
   if (it.kind === 'gun') {
     const g = it;
     if (!g.primary) {
-      if (g.slot) { slingDetach(g); g.slot = null; sfx('holster'); }   // step 79: off the sling
+      const fromSlot = !!g.slot;
+      if (g.slot) { stowStop(g); slingDetach(g); g.slot = null; sfx('holster'); }   // step 79: off the sling
       g.primary = hand; hand.prop = p; p.holders = [hand]; hand.role = 'primary'; g.ads = 0;
       if (g.type === 'awp') rangeWant();                          // step 75: the next unseen room becomes a long range
       hand.hist.length = 0; hand.hasPrev = false;
       setKinematic(p);
       startBlend(g);
+      if (fromSlot && SLANIM.on) g.blendDur = hand.ctrl ? SLANIM.draw : SLANIM.deskDraw;   // animated sling: the draw eases into your hand
       g.hasBase = false;
       if (hand.ctrl) freeGrab(hand, p, 'primary');   // step 65: stays where you took it
       pulse(hand, 0.45, 30);
@@ -14789,7 +14792,8 @@ function itemRelease(hand, vel) {
     p.holders.length = 0; g.support = null; g.rack = null;
     g.trigger = 0; g.triggerReset = true;
     if (!p.removing && hand.ctrl && wbViseNear(g)) { if (wbTryVise(g)) { updateLightMount(); return; } }   // fix: at the bench the vise wins over a holster in reach (a pistol let go over the vise went to your hip)
-    if (!p.removing && hand.ctrl) {                               // step 79: the nearest free slot in reach
+    if (!p.removing && hand.ctrl && SLANIM.on) { const sl = slotPick(g, p.root.position); if (sl) { stowStart(g, sl); updateLightMount(); return; } }   // animated sling / holster
+    else if (!p.removing && hand.ctrl) {                          // step 79: the nearest free slot in reach
       let best = null, bd = CONFIG.weapons.slotReach;
       for (const sl of slotsFor(g)) { if (slotTaken(sl)) continue; slotPose(sl, _wv, _wq); const dd = p.root.position.distanceTo(_wv); if (dd < bd) { bd = dd; best = sl; } }
       if (best === 'chest' && RIG.ready) { slingAttach(g); sfx('holster'); updateLightMount(); return; }
@@ -14825,6 +14829,7 @@ function stowGun(g) {
   for (const hh of p.holders) { hh.prop = null; hh.role = null; }
   p.holders.length = 0; g.primary = g.support = g.rack = null;
   g.slot = slotFor(g); g.ads = 0;
+  if (SLANIM.on) { stowStart(g, g.slot); updateLightMount(); syncButtons(); return; }   // animated: the sound plays when it seats
   if (g.slot === 'chest' && RIG.ready) slingAttach(g); else startBlend(g);   // step 79: the rifle goes on the sling
   sfx('holster');
   updateLightMount(); syncButtons();
@@ -15802,14 +15807,16 @@ function updateGun(g, dt, now) {
     wbCradlePose(g, _gp, _gq);
   } else if (g.slung) {                              // the slung rifle rides the chest anchor (simple sway, no physics)
     held = true;
-    slingPose(g, dt, _gp, _gq);
+    if (SLANIM.on) { slingCarry(g, dt, _gp, _gq); if (g.stw && g.stw.on) stowAnim(g, dt, _gp, _gq); }   // animated sling: the carry, eased in from where you let go
+    else slingPose(g, dt, _gp, _gq);
   } else if (g.slot) {
     held = true;
     slotPose(g.slot, _gp, _gq);
+    if (SLANIM.on && g.stw && g.stw.on) stowAnim(g, dt, _gp, _gq);
   }
   if (held) {
     if (g.blend > 0) {
-      g.blend = Math.max(0, g.blend - dt / 0.12);
+      g.blend = Math.max(0, g.blend - dt / (g.blendDur || 0.12));   // animated sling: a draw takes SLANIM.draw
       const t = 1 - g.blend * g.blend;
       _gp.lerpVectors(g.fromPos, _gp, t);
       _gq.copy(g.fromQuat).slerp(_bq.copy(_gq), t);
@@ -17561,6 +17568,10 @@ function rigLegPose(outPos, outQuat) {
 // the sling: a rope from the chest anchor to the back of the receiver
 const SLUNG_GROUPS = groups(GROUP.PROP, GROUP_TORSO);
 function slingAttach(g, reset = false) {
+  if (SLANIM.on) {                                               // animated sling: back on you at once (reset), else the eased move
+    if (!reset) { stowStart(g, 'chest'); return; }
+    stowStop(g); setKinematic(g.prop); g.slot = 'chest'; g.slung = slcLive(); g.blend = 0; g.hasBase = false; if (g.slc) g.slc.ok = false; return;
+  }
   if (!RIG.ready || !RIG.anchorP) { g.slot = 'chest'; startBlend(g); return; }   // no body: the old fixed carry
   const p = g.prop;
   if (g.slingJoint) { try { world.removeImpulseJoint(g.slingJoint, true); } catch (e) { /* gone */ } g.slingJoint = null; }
@@ -17601,6 +17612,177 @@ function slingDetach(g) {
   if (g.slingJoint) { try { world.removeImpulseJoint(g.slingJoint, true); } catch (e) { /* gone */ } g.slingJoint = null; }
   g.slung = false; g.slingQ = g.slingV = null;
 }
+
+/* Animated sling and holsters, no physics (CONFIG.weapons.slingAnim, ?slinganim=off).
+ * Letting go of a long gun near your chest (or a pistol over a holster, or the computer's stow keys)
+ * starts a short eased move from exactly where the gun was to its carry pose; the start pose rides
+ * with your body (held relative to the carry pose), so walking or turning mid-move never drags it.
+ * The carry: a single-point sling clipped to the front of the vest (spine bone, rigLocal): the rifle
+ * hangs from the back of its receiver, muzzle down and across toward your weak-side knee, ejection
+ * port out, grip by your strong-side hip, held clear of the torso. A damped spring (animation only)
+ * swings it a little as you walk and turn. The gun's body stays kinematic and touches nothing (COLL.item).
+ * The 'holster' sound plays when it seats. Taking it back blends into your hand (draw). */
+const SLANIM = (() => {
+  const C = CONFIG.weapons.slingAnim || {};
+  return Object.assign({ on: true, reach: 0.3, time: 0.42, holsterTime: 0.34, arc: 0.05, draw: 0.15, deskDraw: 0.22, grabReach: 0.13, seat: 0.8, sway: 1 }, C,
+    { on: C.on !== false && !/[?&]slinganim=off/.test(location.search) });
+})();
+// carry geometry, body rest space (m, facing -z, x right): the sling's clip on the vest, the short tail
+// to the receiver, and the hang (yaw frame: across = about your forward axis, pitch, roll about the bore)
+const SLC = { clip: [0.075, 1.16, -0.2], tail: 0.085, attach: new THREE.Vector3(0, 0.07, 0.05), across: -0.3, pitch: -1.34, roll: 0.9,
+  w: 6.2, zeta: 0.42, L: 0.38, yawK: 0.05, lim: { back: -0.06, fwd: 0.26, side: 0.2, yaw: 0.28 } };
+const SLC_HANG = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), SLC.across)
+  .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), SLC.pitch))
+  .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), SLC.roll));
+const _sc = { m: new THREE.Matrix4(), mi: new THREE.Matrix4(), A: new THREE.Vector3(), f: new THREE.Vector3(), r: new THREE.Vector3(), b: new THREE.Vector3(), v: new THREE.Vector3(), a: new THREE.Vector3(),
+  q: new THREE.Quaternion(), q2: new THREE.Quaternion(), qs: new THREE.Quaternion(), p: new THREE.Vector3(), p2: new THREE.Vector3(), qi: new THREE.Quaternion(), d: new THREE.Vector3() };
+// a long gun (AWP, Kar98k) would reach the floor hanging like a carbine: tip it up the way it already
+// leans (out and across) just enough that its lowest point stays a hand above the floor. Once per gun (and size).
+function slcHangFor(g) {
+  const p = g.prop, sB = BODY.s || 1;
+  if (g.slcHang && Math.abs(g.slcS - sB) < 0.02) return g.slcHang;
+  const H = g.slcHang || (g.slcHang = new THREE.Quaternion()); g.slcS = sB;
+  if (!g.slcBox) {                                                // the drawn gun's extent in root space (its physics box is shorter)
+    const B = g.slcBox = new THREE.Box3(), bb = new THREE.Box3(), mi = new THREE.Matrix4();
+    p.root.updateMatrixWorld(true); mi.copy(p.root.matrixWorld).invert();
+    p.root.traverseVisible((o) => {                               // vertices, not geometry.boundingBox (some are stale after the part splits)
+      if (!o.isMesh || o.isInstancedMesh || !o.geometry || !o.geometry.attributes.position) return;
+      const pos = o.geometry.attributes.position; _sc.m.multiplyMatrices(mi, o.matrixWorld); bb.makeEmpty();
+      for (let i = 0; i < pos.count; i++) bb.expandByPoint(_sc.v.fromBufferAttribute(pos, i).applyMatrix4(_sc.m));
+      if (!bb.isEmpty() && bb.min.length() < 2 && bb.max.length() < 2) B.union(bb);   // never a beam, a dot or a helper out in front
+    });
+    if (B.isEmpty()) B.set(_sc.p.copy(p.center).sub(p.half), _sc.p2.copy(p.center).add(p.half));
+  }
+  const Bx = g.slcBox;
+  const gripY = (SLC.clip[1] - SLC.tail) * sB - _sc.p.copy(SLC.attach).applyQuaternion(SLC_HANG).y, allow = gripY - 0.1 * sB;
+  _sc.d.set(0, 0, -1).applyQuaternion(SLC_HANG);                   // muzzle; tip axis = muzzle x up
+  _sc.r.crossVectors(_sc.d, Y_AXIS).normalize();
+  for (let e = 0; e <= 0.9; e += 0.05) {
+    H.setFromAxisAngle(_sc.r, e).multiply(SLC_HANG);
+    let low = 0;
+    for (let i = 0; i < 8; i++) { _sc.p.set(i & 1 ? Bx.max.x : Bx.min.x, i & 2 ? Bx.max.y : Bx.min.y, i & 4 ? Bx.max.z : Bx.min.z).applyQuaternion(H); if (_sc.p.y < low) low = _sc.p.y; }
+    if (-low <= allow) break;
+  }
+  return H;
+}
+const slcLive = () => RIG.ready && BODY.ready && CONFIG.body.on && BODY.init && !playerState.dead;
+// the clip on the vest (world); returns your chest's heading
+function slcAnchor(out) {
+  if (!RIG.slingL) RIG.slingL = rigLocal(BB.spine, new THREE.Vector3(SLC.clip[0], SLC.clip[1], SLC.clip[2]), new THREE.Vector3(0, 0, -1), Y_AXIS);
+  _sc.m.multiplyMatrices(BODY.M[BB.spine], RIG.slingL);
+  out.setFromMatrixPosition(_sc.m);
+  let yaw = BODY.yaw;
+  if (BODY.chestQ) { _sc.f.set(0, 0, -1).applyQuaternion(BODY.chestQ); if (Math.hypot(_sc.f.x, _sc.f.z) > 0.2) yaw = Math.atan2(-_sc.f.x, -_sc.f.z); }
+  return yaw;
+}
+// The carry pose this frame. dt 0 = no spring step.
+function slingCarry(g, dt, outP, outQ) {
+  if (!slcLive()) { slotPose('chest', outP, outQ); return; }
+  const A = _sc.A, yaw = slcAnchor(A);
+  const S = g.slc || (g.slc = { ok: false, last: new THREE.Vector3(), v: new THREE.Vector3(), yaw: 0, yr: 0, f: 0, fv: 0, s: 0, sv: 0, y: 0, yv: 0 });
+  if (!S.ok || A.distanceToSquared(S.last) > 0.36) {             // fresh, or a teleport / respawn / re-base: no kick
+    S.ok = true; S.last.copy(A); S.v.set(0, 0, 0); S.yaw = yaw; S.yr = 0; S.f = S.fv = S.s = S.sv = S.y = S.yv = 0;
+  } else if (dt > 1e-4 && SLANIM.sway > 0) {
+    // anchor velocity (low-passed: head tracking jitter) and its change = the push on the hanging gun
+    const kv = 1 - Math.exp(-dt / 0.06);
+    _sc.v.copy(A).sub(S.last).multiplyScalar(1 / dt);
+    _sc.a.copy(S.v); S.v.lerp(_sc.v, kv); _sc.a.subVectors(S.v, _sc.a).multiplyScalar(1 / dt);
+    if (_sc.a.lengthSq() > 144) _sc.a.setLength(12);
+    S.last.copy(A);
+    let dy = yaw - S.yaw; while (dy > Math.PI) dy -= 2 * Math.PI; while (dy < -Math.PI) dy += 2 * Math.PI;
+    S.yaw = yaw;
+    const yr0 = S.yr; S.yr += (clamp(dy / dt, -12, 12) - S.yr) * kv;
+    const yacc = clamp((S.yr - yr0) / dt, -60, 60);
+    const af = -Math.sin(yaw) * _sc.a.x - Math.cos(yaw) * _sc.a.z, as = Math.cos(yaw) * _sc.a.x - Math.sin(yaw) * _sc.a.z;
+    const w2 = SLC.w * SLC.w, c = 2 * SLC.zeta * SLC.w, k = SLANIM.sway / SLC.L, Lm = SLC.lim;
+    const n = Math.min(12, Math.ceil(dt / 0.004)), h = dt / n;    // sub-stepped: a long frame never blows the spring up
+    for (let i = 0; i < n; i++) {
+      S.fv += (-w2 * S.f - c * S.fv - af * k) * h; S.f += S.fv * h;   // f > 0: the muzzle swings forward
+      S.sv += (-w2 * S.s - c * S.sv - as * k) * h; S.s += S.sv * h;   // s > 0: toward your right
+      S.yv += (-w2 * S.y - c * S.yv - yacc * SLC.yawK * SLANIM.sway) * h; S.y += S.yv * h;   // lags a turn
+      if (S.f < Lm.back) { S.f = Lm.back; if (S.fv < 0) S.fv = 0; } else if (S.f > Lm.fwd) { S.f = Lm.fwd; if (S.fv > 0) S.fv = 0; }   // the back stop is you
+      if (Math.abs(S.s) > Lm.side) { S.s = Math.sign(S.s) * Lm.side; S.sv = 0; }
+      if (Math.abs(S.y) > Lm.yaw) { S.y = Math.sign(S.y) * Lm.yaw; S.yv = 0; }
+    }
+  } else S.last.copy(A);
+  // sway = a turn about the clip: forward swing about your right axis, side swing about your back axis
+  _sc.r.set(Math.cos(yaw), 0, -Math.sin(yaw)); _sc.b.set(Math.sin(yaw), 0, Math.cos(yaw));
+  _sc.qs.setFromAxisAngle(_sc.r, S.f).multiply(_sc.q2.setFromAxisAngle(_sc.b, S.s));
+  outQ.setFromAxisAngle(Y_AXIS, yaw + S.y).multiply(slcHangFor(g)).premultiply(_sc.qs);
+  outP.set(0, -SLC.tail * BODY.s, 0).applyQuaternion(_sc.qs).add(A);          // the receiver's sling plate
+  outP.sub(_sc.p.copy(SLC.attach).applyQuaternion(outQ));                     // gun root (grip point)
+}
+// where a gun's slot carries it now (the move's target)
+function stowTarget(g, dt, outP, outQ) {
+  if (g.slot === 'chest' && g.slung) slingCarry(g, dt, outP, outQ);
+  else slotPose(g.slot, outP, outQ);
+}
+// the slot this let-go seats the gun in (nearest free one in reach), or null
+function slotPick(g, at) {
+  let best = null, bd = 1;
+  for (const sl of slotsFor(g)) {
+    if (slotTaken(sl)) continue;
+    let d;
+    if (sl === 'chest' && slcLive()) {                            // the clip or the carry's sling plate, generous
+      slcAnchor(_sc.p2);
+      d = Math.min(at.distanceTo(_sc.p2), at.distanceTo(_sc.p.set(0, -SLC.tail * BODY.s - 0.07, 0).add(_sc.p2))) / SLANIM.reach;
+    } else { slotPose(sl, _sc.p2, _sc.q); d = at.distanceTo(_sc.p2) / (sl === 'chest' ? SLANIM.reach : CONFIG.weapons.slotReach); }
+    if (d < bd) { bd = d; best = sl; }
+  }
+  return best;
+}
+// start the move into a slot from the gun's pose right now (where the hand let go)
+function stowStart(g, slot) {
+  const p = g.prop;
+  g.slot = slot; g.blend = 0; g.hasBase = false;
+  setKinematic(p);
+  if (slot === 'chest' && slcLive()) { g.slung = true; g.slingQ = g.slingV = null; if (g.slc) g.slc.ok = false; }
+  const M = g.stw || (g.stw = { on: false, t: 0, dur: 0.4, rp: new THREE.Vector3(), rq: new THREE.Quaternion(), arc: 0, side: 0 });
+  stowTarget(g, 0, _sc.p2, _sc.q);
+  _sc.qi.copy(_sc.q).invert();
+  M.rq.copy(_sc.qi).multiply(p.root.quaternion);                  // start = carry x rel: rides with your body
+  M.rp.copy(p.root.position).sub(_sc.p2).applyQuaternion(_sc.qi);
+  const dist = p.root.position.distanceTo(_sc.p2);
+  M.dur = (slot === 'chest' ? SLANIM.time : SLANIM.holsterTime) * (0.75 + 0.25 * clamp(dist / 0.3));
+  M.arc = SLANIM.arc * clamp(dist / 0.25, 0.25, 1);
+  M.side = slot === 'chest' ? 0 : 0.6;                            // a holster bulges out to your side
+  M.t = 0; M.on = true;
+}
+// ease from the start pose to the carry pose (both this frame's): smootherstep, a slight arc out from you
+function stowAnim(g, dt, P, Q) {
+  const M = g.stw;
+  M.t = Math.min(1, M.t + dt / M.dur);
+  const u = M.t, s = u * u * u * (u * (u * 6 - 15) + 10);
+  _sc.p.copy(M.rp).applyQuaternion(Q).add(P);                     // the start, carried along
+  _sc.q.copy(Q).multiply(M.rq);
+  const yaw = BODY.ready && BODY.init ? BODY.yaw : bodyFrame.yaw;
+  _sc.d.set(-Math.sin(yaw) * (1 - M.side) + Math.cos(yaw) * M.side, 0.35, -Math.cos(yaw) * (1 - M.side) - Math.sin(yaw) * M.side).normalize();
+  P.lerpVectors(_sc.p, P, s).addScaledVector(_sc.d, Math.sin(Math.PI * s) * M.arc);
+  _sc.q2.copy(Q); Q.copy(_sc.q).slerp(_sc.q2, s);
+  if (M.t >= 1) { M.on = false; stowSeatSfx(); }
+}
+function stowSeatSfx() {                                          // the existing holster sound, when it seats
+  SLANIM.seated = (SLANIM.seated || 0) + 1;
+  if (foleyK('holster')) { sfx('holster'); return; }
+  if (FOLEY_OFF || !SLANIM.seat || !audio.ctx || audio.ctx.state !== 'running') return;
+  nBurst(audio.ctx.currentTime + 0.005, 0.08, 'lowpass', 700, 1, 0.3 * SLANIM.seat, 0.06, 0.05);   // = sfx('holster') at the seat gain (its kit group is off by default)
+}
+function stowStop(g) { if (g.stw) g.stw.on = false; }
+// VR: a grip anywhere near a gun on your chest takes it (a little more reach than a loose prop)
+function slungNear(point) {
+  if (!SLANIM.on) return null;
+  let best = null, bd = SLANIM.grabReach;
+  for (const p of props) {
+    const g = p.item;
+    if (!g || g.kind !== 'gun' || g.slot !== 'chest' || g.primary || p.removing) continue;
+    _sc.mi.copy(p.root.matrixWorld).invert();
+    _sc.p.copy(point).applyMatrix4(_sc.mi).sub(p.center);
+    const d = Math.hypot(Math.max(Math.abs(_sc.p.x) - p.half.x, 0), Math.max(Math.abs(_sc.p.y) - p.half.y, 0), Math.max(Math.abs(_sc.p.z) - p.half.z, 0));
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+if (/[?&]dev\b/.test(location.search)) window.__cqcSling = { SLANIM, SLC, slingCarry, stowTarget, slotPick, stowStart, stowAnim, slungNear, slcAnchor, rigTick, bodyPre, weaponsUpdate, updateGun, itemRelease, itemGrab, stowGun, deskSlot, slotPose, release };
 
 // VR: the laser's master switch, pressed like the light's: your other hand's fingers on it + trigger,
 // or an empty hand poking it.
@@ -29705,7 +29887,7 @@ for (let i = 0; i < 2; i++) {
   const squeezeStart = () => {
     if (!renderer.xr.isPresenting) return;
     grip.getWorldPosition(_cur);
-    const p = hand.hover || nearestProp(_cur, CONFIG.physics.reach);
+    const p = hand.hover || nearestProp(_cur, CONFIG.physics.reach) || slungNear(_cur);   // animated sling: anywhere on the rifle on your chest
     if (p) { grab(hand, p); return; }
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
     if (d) { grabDoor(hand, d); return; }
