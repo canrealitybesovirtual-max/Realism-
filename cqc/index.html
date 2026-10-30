@@ -1462,7 +1462,8 @@ const PROJECT_RULES = {
     'Spatial audio: positional sounds use a fixed pool of HRTF voices (CONFIG.polish.audio.voices). A ray to the listener decides occlusion: walls and shut doors lowpass and quieten the sound and its reverb. Sound arrives at the speed of sound. Your own shots stay head-locked; his shots, impacts, near-miss cracks, boots, a body falling and the ballast hum come from where they happen.',
     'The building is alive (step 86): between fights (no engaged man, ears clear, no rounds landing for 8 s) it makes a sound every 12-36 s: a water-hammer knock (the room\'s insulated pipe, or muffled through the slab), duct ticks from the wall grille, a car or truck passing outside (louder in the hall and range, none in stairwells), and rarely a door far off beyond a side wall. Walls, slab and distance muffle them; nobody hears them. CONFIG.polish.audio.amb; ?amb=off.',
     'Hearing: unprotected gunfire indoors raises a dose that dulls the top end of the whole mix and adds a faint ring; it recovers over ~10 s. Toggle: CONFIG.polish.audio.ears.',
-    'Gun handling, reload and brass sounds stay off (GUN_HANDLING_SOUNDS) as before; step 10 adds no gun foley.',
+    'Gun handling, reload and brass sounds stay off (GUN_HANDLING_SOUNDS) as before; step 10 adds no gun foley. (Off through step 86; step 87 brings them back by group.)',
+    'Step 87: gun foley is back by group (CONFIG.polish.audio.foley: brass, mech, drops, kit; gain each, 0 = off, kit stays off; ?foley=off = shots only, as before). Reloads, racks, the selector, dry fire, the pump and the bench clicks play their baked sounds again (sfx now applies its k). Brass near you plays head-locked as before; further brass (yours or his: first landing, within 9 m, 0.12 s apart) comes from where it lands through soundAt; on a table or crate top it is a duller tock. Dropped mags, guns, grenades and live shells land with baked magLand / gunLand / the hull thud, lights, lasers, cans, kits and injectors knock like a small can (KNOCK_SND.can by mass): dropKnock from stepPhysics, peak fall speed over 1.4 m/s, duller off the floor (a table, a crate, a body), 0.15 s per item, 0.05 s overall, 12 m at most. The men do not hear any of it.',
     'Profiling: every frame is split into input, stream, enemies, weapons, physics, fx, shadows and render (CPU ms). Frame interval, p95, dropped frames, draw calls and triangles per second. A frame over budget with low CPU time is reported GPU-bound. Desktop: O. Headset: fps on the terminal (GRAPHICS). Each VR session logs a summary and keeps the last one (window.cqcProfile()).',
     'Optimize only from profiler numbers on the device: Quest first lowers CONFIG.polish.haze.count / haze.maxPx (overdraw), then audio.hrtf (CPU), then the step 4 knobs (shadow size, foveation).',
     'Nothing in step 10 compiles mid-game or adds a light: blood, haze, mote and contact materials are built in polishKit() and compiled at load; every pool is fixed size.',
@@ -2436,6 +2437,7 @@ const CONFIG = {
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
       doors: { on: true, gain: 1 },           // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before
       knocks: { on: true, gain: 1, minDv: 0.6 },   // step 86: props landing / bumping / falling over make a sound by material and mass (minDv m/s lost in a frame; on false = silent as before)
+      foley: { brass: 1, mech: 1, drops: 1, kit: 0 },   // step 87: gun sounds besides shots, gain per group (0 = off; all 0 or ?foley=off = shots only, as before): brass / hull landings; reload, rack, selector, dry, pump, bench clicks; dropped mags, guns, nades, shells, parts; holster / pouch / handle (synth only, so off)
       amb: { on: true, gain: 1, gap: [12, 36], quiet: 8 },   // step 86: the building, between fights: pipe knocks, duct ticks, traffic outside, a far door (?amb=off)
       ears: true, earsMax: 5, earsRecover: 3.2, earsDull: 0.42, earsFloor: 2600,   // hearing dose after gunfire (step 15: recovers about twice as fast)
       earsShot: { pistol: 0.7, smg: 0.5, shotgun: 1.1, rifle: 0.8, ppk: 0, fn509: 0.05, akm: 1.0, awp: 1.3 },   // step 15: the suppressed PPK leaves your ears alone
@@ -10050,6 +10052,7 @@ function stepPhysics(dt) {
       if (p.spawnRoom && p.spawnRoom.active && !p.debris) resetProp(p); else removeProp(p);   // debris has no home: it goes
       continue;
     }
+    if (p.item && !p.holders.length) dropKnock(p, (t.y - p.root.position.y) / dt, now, t, r, rc);   // step 87: dropped kit lands with a sound
     p.root.position.set(t.x, t.y, t.z);
     p.root.quaternion.set(r.x, r.y, r.z, r.w);
     // Held prop hit something: the solver changed the velocity we asked for. Buzz the hand.
@@ -14649,7 +14652,7 @@ function updateCasings() {
       const rc = roomContaining(t.x, t.z, 0.3, t.y);
       if (!rc || t.y < rc.origin.y - 0.5) { parkCasing(P, e); continue; }
       const sp = Math.hypot(v.x, v.y, v.z);
-      if (e.tinks < 3 && e.speed > 0.8 && sp < e.speed * 0.6) { e.tinks++; sfx(P === WEAPON.debris.hull ? 'thud' : (e.tinks === 1 ? 'tinkBounce' : 'tink'), Math.min(1, e.speed / 3)); }
+      if (e.tinks < 3 && e.speed > 0.8 && sp < e.speed * 0.6) { e.tinks++; brassTink(P, e, t, rc); }   // step 87: placed in the room (was sfx, head-locked)
       e.speed = sp;
       _dm.compose(_dp.set(t.x, t.y, t.z), _dq.set(r.x, r.y, r.z, r.w), _dsc.set(1, 1, 1));
       for (const m of P.im) m.setMatrixAt(e.idx, _dm);
@@ -22591,10 +22594,14 @@ function bakeSounds(ctx) {
     // 12 gauge pump: forend and action bars over the receiver, wood and steel
     pumpBack:  [0.3,  [...drag(0.0, 0.15, 220, 165, 0.7), ...chunk(0.15, 1.3, 380, 95)], 2600],
     pumpFwd:   [0.4,  [...drag(0.0, 0.09, 200, 300, 0.6, 'rise'), ...chunk(0.09, 1.7, 430, 78), ...chunk(0.1, 0.4, 820, 180), { type: 'knock', at: 0.09, g: 1.3, fc: 58, d: 0.08 }], 2800],
-    shellIn:   [0.14, [...drag(0.0, 0.04, 300, 420, 0.3, 'rise'), ...chunk(0.04, 0.7, 700, 180)], 2800]
+    shellIn:   [0.14, [...drag(0.0, 0.04, 300, 420, 0.3, 'rise'), ...chunk(0.04, 0.7, 700, 180)], 2800],
+    // step 87: dropped kit on concrete (dropKnock). A loaded magazine: hit, two short bounces
+    magLand:   [0.3,  [{ type: 'click', at: 0.002, g: 0.5, fc: 3800 }, ...chunk(0.002, 1, 820, 210), ...chunk(0.075, 0.45, 900, 230), ...chunk(0.13, 0.18, 950, 240)], 3600],
+    // a gun: the receiver's heavy chunk, the light parts rattling, a short skid, a settle
+    gunLand:   [0.42, [...chunk(0.002, 1.4, 480, 105), ...chunk(0.01, 0.7, 1250, 250), ...drag(0.03, 0.09, 520, 420, 0.25), ...chunk(0.12, 0.5, 520, 120), ...chunk(0.2, 0.22, 600, 140)], 3200]
   };
   const LVL = { pMagOut: 0.4, pMagIn: 0.6, pRackBack: 0.5, pRackFwd: 0.7, pLockBack: 0.6, magOut: 0.45, magIn: 0.65, rackBack: 0.55,
-    rackFwd: 0.75, selector: 0.3, dry: 0.35, pumpBack: 0.7, pumpFwd: 0.95, shellIn: 0.45 };
+    rackFwd: 0.75, selector: 0.3, dry: 0.35, pumpBack: 0.7, pumpFwd: 0.95, shellIn: 0.45, magLand: 0.55, gunLand: 0.8 };   // step 87: + magLand, gunLand
   audio.foleyLevel = LVL;
   for (const [k, [len, layers, lp]] of Object.entries(FOLEY)) {
     baked[k] = [];
@@ -22627,19 +22634,28 @@ function playBaked(list, gain, verb, rate = 1, echo = 0, tone = 0) {
 }
 
 // Only gunshots make sound. Set to true to bring back reload / handling / brass / holster sounds.
+// Step 87: true = every gun sound at full, whatever CONFIG.polish.audio.foley says; false = the foley groups decide.
 const GUN_HANDLING_SOUNDS = false;
+const FOLEY_GRP = { tink: 'brass', tinkBounce: 'brass', thud: 'brass', holster: 'kit', pouch: 'kit', handle: 'kit', magLand: 'drops', gunLand: 'drops' };   // step 87: anything else is 'mech'
+const FOLEY_OFF = /[?&]foley=off\b/.test(location.search);   // step 87: shots only, as before
+function foleyK(name) {   // step 87: gain of a non-shot gun sound's group (0 = silent)
+  if (GUN_HANDLING_SOUNDS) return 1;
+  const F = CONFIG.polish.audio.foley;
+  return FOLEY_OFF || !F ? 0 : (F[FOLEY_GRP[name] || 'mech'] || 0);
+}
 function sfx(name, k = 1) {
   if (!audio.ctx || audio.ctx.state !== 'running') return;
-  if (!GUN_HANDLING_SOUNDS && !SHOT_DEFS[name]) return;
+  const fk = SHOT_DEFS[name] ? 1 : foleyK(name);                 // step 87: was GUN_HANDLING_SOUNDS alone
+  if (!fk) return;
   const t = audio.ctx.currentTime + 0.005;
   const B = SHOT_DEFS[name] ? shotBufs(name) : baked[name];       // step 81: recordings first
   if (B && B.length) {
     const M = GUN_MIX;
-    if (name === 'tink') return playBaked(B, 0.13 * k * M.brass, 0.25, 0.95 + Math.random() * 0.1, 0, M.tone * 1.3);
-    if (name === 'tinkBounce') return playBaked(B, 0.17 * k * M.brass, 0.25, 0.95 + Math.random() * 0.1, 0, M.tone * 1.3);
+    if (name === 'tink') return playBaked(B, 0.13 * k * M.brass * fk, 0.25, 0.95 + Math.random() * 0.1, 0, M.tone * 1.3);
+    if (name === 'tinkBounce') return playBaked(B, 0.17 * k * M.brass * fk, 0.25, 0.95 + Math.random() * 0.1, 0, M.tone * 1.3);
     const lv = audio.foleyLevel && audio.foleyLevel[name];
-    if (lv) return playBaked(B, lv * M.handling, 0.22, 0.95 + Math.random() * 0.08, (name === 'pumpFwd' || name === 'pumpBack') ? 0.4 * M.echo : 0, M.tone * 0.85);
-    if (name === 'thud') return playBaked(B, 0.26 * k, 0.2, 0.9 + Math.random() * 0.2);
+    if (lv) return playBaked(B, lv * M.handling * k * fk, 0.22, 0.95 + Math.random() * 0.08, (name === 'pumpFwd' || name === 'pumpBack') ? 0.4 * M.echo : 0, M.tone * 0.85);   // step 87: k applies (callers pass 0.3-0.8 for soft clicks)
+    if (name === 'thud') return playBaked(B, 0.26 * k * fk, 0.2, 0.9 + Math.random() * 0.2);
     const P = shotMix(name);
     if (SHOT_DEFS[name]) earsHit(CONFIG.polish.audio.earsShot[name] ?? 0.5);   // step 10: your own shot, at your ears
     return playBaked(B, 1.25 * P.gain * M.shot, P.verb, 0.96 + Math.random() * 0.08, P.echo * M.echo, M.tone);
@@ -22662,9 +22678,9 @@ function sfx(name, k = 1) {
     case 'pumpFwd': nBurst(t, 0.08, 'bandpass', 1700, 3, 0.55, 0.05, 0.15); break;
     case 'shellIn': nBurst(t, 0.05, 'bandpass', 2000, 2.5, 0.35, 0.035, 0.1); break;
     case 'selector': nBurst(t, 0.02, 'bandpass', 3000, 2, 0.3, 0.012, 0); break;
-    case 'handle': nBurst(t, 0.05, 'lowpass', 900, 1, 0.25, 0.04, 0.05); break;
-    case 'holster': nBurst(t, 0.08, 'lowpass', 700, 1, 0.3, 0.06, 0.05); break;
-    case 'pouch': nBurst(t, 0.06, 'lowpass', 1100, 1, 0.22, 0.05, 0.05); break;
+    case 'handle': nBurst(t, 0.05, 'lowpass', 900, 1, 0.25 * fk, 0.04, 0.05); break;      // step 87: x the kit group's gain
+    case 'holster': nBurst(t, 0.08, 'lowpass', 700, 1, 0.3 * fk, 0.06, 0.05); break;
+    case 'pouch': nBurst(t, 0.06, 'lowpass', 1100, 1, 0.22 * fk, 0.05, 0.05); break;
     case 'tink': nBurst(t, 0.02, 'bandpass', 2600, 1.5, 0.14 * k, 0.012, 0.15); break;
     case 'thud': nBurst(t, 0.05, 'bandpass', 700, 2, 0.18 * k, 0.04, 0.1); break;
   }
@@ -22675,6 +22691,76 @@ for (const ev of ['pointerdown', 'keydown', 'touchstart']) window.addEventListen
 function weaponsRigTurned(angle) {
   if (Math.abs(angle) < 0.1) return;
   for (const p of props) if (p.item && p.item.kind === 'gun') p.item.hasBase = false;
+}
+
+// Step 87: brass / hull landings (updateCasings). Near you: straight to the mix, head-locked, as before. Further: from where
+// it lands (soundAt: distance, occlusion, air, speed of sound), first landing only, 9 m at most and 0.12 s apart so a burst
+// cannot churn the voice pool; his brass ticks from where he stands. Off the floor (a table or crate top) the ring is a duller tock.
+const BRASS_SND = { near: 2.5, far: 9, gap: 0.045, gapPos: 0.12, off: 0.12, at: 0, atPos: 0, p: new THREE.Vector3(), list: null, g: 0, rate: 1, lp: 0, verb: 0.25 };
+function brassPlay() { const S = BRASS_SND; playBaked(S.list, S.g, S.verb, S.rate, 0, S.lp); }
+function brassTink(P, e, t, rc) {
+  const F = foleyK('tink');
+  if (!F || !audio.ctx || audio.ctx.state !== 'running') return;
+  const S = BRASS_SND, now = audio.ctx.currentTime, hull = P === WEAPON.debris.hull;
+  const name = hull ? 'thud' : (e.tinks === 1 ? 'tinkBounce' : 'tink'), list = baked[name];
+  if (!list || !list.length) return;
+  S.p.set(t.x, t.y, t.z);
+  const d = headWorld(_p10.h).distanceTo(S.p), near = d < S.near;
+  if (near ? now - S.at < S.gap : (d > S.far || e.tinks > 1 || now - S.atPos < S.gapPos)) return;
+  const off = t.y - (rc.origin.y + roomFloorAt(rc, rLX(rc, t.x), rLZ(rc, t.z), t.y - rc.origin.y)) > S.off, k = Math.min(1, e.speed / 3) * F;
+  S.list = list; S.verb = hull ? 0.2 : 0.25;
+  S.g = (hull ? 0.26 : (name === 'tink' ? 0.13 : 0.17) * GUN_MIX.brass) * k * (off ? 0.6 : 1);
+  S.rate = (hull ? 0.9 + Math.random() * 0.2 : 0.95 + Math.random() * 0.1) * (off ? 0.88 : 1);
+  S.lp = hull ? 0 : GUN_MIX.tone * (off ? 0.7 : 1.3);
+  if (near) { S.at = now; brassPlay(); } else { S.atPos = now; soundAt(S.p, brassPlay); }
+}
+// Step 87: a dropped magazine, gun, grenade, live shell or bench part lands with a sound (stepPhysics, loose items; plain props
+// keep knockTick). Fall speed from the root's step (no linvel); vyPk keeps the fastest fall, so a landing caught part way
+// through a step still counts in full. Positional like a prop's knock, 12 m at most; the men do not hear it (no aiNoise).
+// Off the floor (a table, a crate, a body) it is duller. Parts knock like a small can, by mass, as knockSfx does (KNOCK_SND.can).
+const DROP_SND = { minV: 1.4, full: 4.5, gap: 0.05, each: 0.15, off: 0.12, at: 0, p: new THREE.Vector3(), list: null, g: 0, rate: 1, lp: 0 };
+function dropPlay() {
+  const S = DROP_SND;
+  if (S.list) playBaked(S.list, S.g, 0.22, S.rate, 0, S.lp);
+  else if (audio.noise) KNOCK_SND.can(audio.ctx.currentTime + 0.003, S.rate, S.g, 1 / S.rate);
+}
+function dropKnock(p, vy, now, pos, q, rc) {
+  if (now - (p.dkT || 0) > 0.1 || vy > 12 || vy < -12) p.vyPk = 0;   // held, asleep or teleported (resetProp): start over
+  p.dkT = now;
+  if (vy > 12 || vy < -12) return;
+  const pk = p.vyPk || 0, S = DROP_SND;
+  if (vy < pk) { p.vyPk = vy; return; }                         // still speeding up
+  if (pk > -S.minV || vy < pk * 0.35) return;                  // a slow fall, or still going down
+  p.vyPk = 0;
+  const it = p.item, kd = it.kind, F = foleyK('magLand');
+  if (!F || kd === 'wear' || !audio.ctx || audio.ctx.state !== 'running') return;
+  const t = audio.ctx.currentTime;
+  if (t - S.at < S.gap || t - (p.dkAt || 0) < S.each) return;
+  const A = CONFIG.polish.audio;
+  S.p.set(pos.x, pos.y, pos.z);
+  if (headWorld(_p10.h).distanceToSquared(S.p) > A.impactRange * A.impactRange) return;
+  // the collider box's lowest point (world y row of the body's rotation) against the floor under it
+  const h = p.half, c = p.center, ry0 = 2 * (q.x * q.y + q.w * q.z), ry1 = 1 - 2 * (q.x * q.x + q.z * q.z), ry2 = 2 * (q.y * q.z - q.w * q.x);
+  const low = pos.y + ry0 * c.x + ry1 * c.y + ry2 * c.z - (Math.abs(ry0) * h.x + Math.abs(ry1) * h.y + Math.abs(ry2) * h.z);
+  const off = low - (rc.origin.y + roomFloorAt(rc, rLX(rc, pos.x), rLZ(rc, pos.z), low - rc.origin.y)) > S.off;
+  const v = clamp(-pk / S.full, 0.15, 1);
+  if (kd === 'att' || kd === 'light' || kd === 'kit' || kd === 'med') {   // a light, laser, can, kit or injector
+    if (!audio.noise) return;
+    const m = p.mass || 0.3;
+    S.list = null;
+    S.rate = clamp(Math.cbrt(2.5 / m), 0.6, 1.6) * (0.94 + Math.random() * 0.12) * (off ? 0.85 : 1);
+    S.g = Math.pow(v, 0.8) * clamp(0.35 + 0.25 * Math.cbrt(m)) * F * (off ? 0.6 : 1);
+  } else {
+    const name = kd === 'shell' ? 'thud' : (kd === 'gun' || kd === 'nade') ? 'gunLand' : 'magLand', B = baked[name];
+    const lv = name === 'thud' ? 0.45 : audio.foleyLevel && audio.foleyLevel[name];
+    if (!B || !B.length || !lv) return;
+    S.list = B;
+    S.g = lv * GUN_MIX.handling * F * v * (off ? 0.6 : 1);
+    S.rate = (kd === 'nade' ? 1.25 : kd === 'gun' && it.def && it.def.cls === 'pistol' ? 1.15 : 1) * (0.94 + Math.random() * 0.12) * (off ? 0.9 : 1);
+    S.lp = name === 'thud' ? 0 : GUN_MIX.tone * (off ? 0.55 : 0.85);
+  }
+  S.at = p.dkAt = t;
+  soundAt(S.p, dropPlay);
 }
 
 /* ============================================================================
@@ -23905,7 +23991,7 @@ function impactSound(kind, p) {
   soundAt(p, () => IMPACT_SND[kind](audio.ctx.currentTime + 0.003, 0.88 + Math.random() * 0.24));
 }
 // Step 86: props landing, bumping, knocked over. Speed lost in one frame (floor, wall, bounce) is a knock;
-// friction and gravity never lose 0.6 m/s a frame. Lower and longer the heavier it is. Items stay silent (GUN_HANDLING_SOUNDS).
+// friction and gravity never lose 0.6 m/s a frame. Lower and longer the heavier it is. Items stay silent here (step 87: dropKnock).
 // Not heard by the men (no aiNoise). stepPhysics calls knockTick (loose) and knockSfx (held, on contact).
 const KNOCK_MAT = { 'cardboard box': 'card', 'cardboard flap': 'card', 'small crate': 'wood', 'two-by-four': 'wood', board: 'wood', table: 'wood', 'steel pipe': 'pipe', 'ammo can': 'can', 'paint tin': 'can', 'jerry can': 'drum', 'concrete block': 'block', 'drywall chunk': 'plaster', 'glass bottle': 'glass', 'office chair': 'chair' };
 const KNOCK_SND = {   // (t, j pitch, g gain, s = 1/j decay stretch)
@@ -29499,7 +29585,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse };
+if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP };
 </script>
 </body>
 </html>
