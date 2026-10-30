@@ -597,7 +597,7 @@
       return null;
     },
     warm: function (names) { (names || Object.keys(GEN)).forEach(function (n) { set(n, GEN[n]); }); },
-    // props from other add-ons (vehicles.js): same definition shape as above
+    // props from other add-ons (armory.js): same definition shape as above
     register: function (name, def) { prop(name, def); }
   };
 
