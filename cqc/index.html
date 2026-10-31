@@ -2030,6 +2030,12 @@ const PROJECT_RULES = {
   step70: [
     'Embedded GLB textures (gltfParse + gltfBytesPlugin, ?gltfblob=on for the old path): every image stored in a GLB bufferView is decoded with createImageBitmap from a Blob (no blob: URL, nothing fetched), then flipY false, name, sampler filters and wrapping and the parser association set as GLTFLoader does. All GLB loads (M1911, Glock / M4A1-S, AKM / AWP) go through gltfParse. A texture that fails to decode returns null (that slot is left empty) with a console warning.'
   ],
+  step112: [
+    'Stacked rail devices (?rails=off = step 111): every gun with rails lists its faces (railFaces: the Glock frame rail, the AKM kit rails, the M4 quad rail, a clamp-on wrap rail when owned); a spot is a 10 mm recoil slot on a face. Lights, lasers and the PL-2 take the next free spot (VR: the free spot nearest where you let go); a spot is free when the device\'s boxes (RAIL_DEV) miss every other part, the gun\'s drawn body (railCloud: points every 3 mm over its triangles), the firing and support hands and the sight line. No free spot: refused with a message.',
+    'Several lights: each switches on its own buttons (the desktop key and the stick click switch all). One shadowed flashlight and a fixed light count: the brightest light that is on drives it, every other lit one adds its lens glow and a faint additive cone (RAIL.glow, 4 pooled meshes). Several lasers: each module its own pad and its own LASER slot (6 slots).',
+    'The Glock\'s PL-2 is a part (railMakePl2, store row g17.pl2 PL-2 (factory), owned and fitted): it works, comes off at the vise, goes back on; a new device fitted where it sits sends it to the bench table (RAIL_PL2_SPOTS).',
+    'Wrap rails (store hardware): Glock U sleeve round the dust cover (measured from its frame) with bottom and side rails; the 1911\'s clamp-on rail gains side rails; clamp rings for the AKM (ahead of the handguard), M4A1-S (round handguard, not with the quad rail), M16A1 (handguard front) and AWP (barrel), measured from the drawn gun (railSection). Layout per gun type in cqc.rails.v1, written at RELEASE, played on every gun (railSync).'
+  ],
   step98: [
     'Two rifles left the game with their models, bench spots, magazines, extended-magazine kit, viewmodel fits and hand fits; soldiers (spec.look 1) drop the M4A1-S. Saved kit state (cqc.ext.v1) ignores keys it does not know.',
     'Gunsmith table restock (wbRestock): on every safe-room visit (wbSpawn at activation, weaponsEnterRoom, new run, terminal restock, respawn). A part keeps its spot in a hand, on the clamped gun or locked on a gun you carry (hand, holster, sling); a loose part goes back to its spot; one locked on a gun left behind keeps riding it and frees its spot; one whose gun was unloaded is dropped. Free spots get fresh parts. The bug: every part ever locked on a gun held its spot for good (item.gun stayed set after the gun was unloaded), so the table emptied.'
@@ -12890,8 +12896,9 @@ function unmountLight(g) {
   updateLightMount();
   return p;
 }
-function toggleGunLight(g) {
+function toggleGunLight(g, it = null) {
   if (!g || !g.light) return false;
+  if (RAIL.on && g.lights && g.lights.length) return railToggleLight(g, it);   // step 112: its own switch, or all of them
   g.light.on = !g.light.on; setLens(g.light);
   if (!btnSfx(g.light.stock ? 'stock' : 'light')) sfx('selector');   // step 101: the tail cap / the Glock's own paddle
   updateLightMount(); if (typeof syncButtons === 'function') syncButtons();
@@ -16411,6 +16418,7 @@ function weaponsUpdate(dt, now) {
   updateDeskGunInput(now);
   updateLightMount();
   updateLasers();                                   // step 16
+  railTick();                                       // step 112: the beam glow of lights that do not drive the flashlight
   reticleTick(dt);                                  // step 100: the red dots' auto brightness (step 105: every reticle)
   if (HEAT.on) canHeatTick(dt, now);                // step 107: hot cans glow, steam, tick, burn
   awmTick(dt);                                      // step 113: bipods, rest, scope glint
@@ -17602,7 +17610,7 @@ function buildLaserKit() {
     airGeo.setAttribute('aTS', new THREE.BufferAttribute(new Float32Array([0, -1, 0, 1, 1, -1, 1, 1]), 2));
     airGeo.setIndex([0, 2, 1, 1, 2, 3]);
   }
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < (RAIL.on ? RAIL.laserSlots : 2); i++) {   // step 112: stacked lasers each get a slot
     const dot = new THREE.Sprite(dotMat); dot.renderOrder = 6; dot.frustumCulled = false; dot.visible = false;
     const beam = airGeo ? new THREE.Mesh(airGeo, laserAirMat()) : new THREE.Mesh(beamGeo, beamMat); beam.renderOrder = 5; beam.frustumCulled = false; beam.visible = false;
     if (airGeo) beam.raycast = () => {};                          // never picked
@@ -17618,13 +17626,14 @@ function updateLasers() {
   const vr = renderer.xr.isPresenting;
   for (const h of vr ? vrHands : [deskHand]) {
     const g = gunOf(h);
+    if (RAIL.on && g && g.lasers && g.lasers.length) { n = railLasersCast(g, n); continue; }   // step 112: every lit module
     if (!laserLive(g) || n >= LASER.slots.length) continue;
     laserCast(g, LASER.slots[n++]);
   }
   for (; n < LASER.slots.length; n++) LASER.slots[n].dot.visible = LASER.slots[n].beam.visible = false;
 }
-function laserCast(g, S) {
-  const root = g.prop.root, L = g.wr.laser;
+function laserCast(g, S, L = g.wr.laser) {   // step 112: L = one laser module of the gun
+  const root = g.prop.root;
   root.updateMatrixWorld(true);
   _lzO.copy(L.emit).applyMatrix4(root.matrixWorld);
   root.getWorldQuaternion(_lzQ);
@@ -17650,8 +17659,9 @@ function laserCast(g, S) {
   S.dot.position.addScaledVector(_lzC.sub(S.dot.position).normalize(), 0.006);   // sit just proud of the surface, toward your eye
   S.dot.scale.setScalar(Math.max(0.009, cd * 0.0042));                          // a real dot plus its bloom: never vanishes at range
 }
-function toggleGunLaser(g) {
+function toggleGunLaser(g, ent = null) {
   if (!g || !g.wr.laser) return false;
+  if (RAIL.on && g.lasers && g.lasers.length) return railToggleLaser(g, ent);   // step 112: its own pad, or all of them
   g.laserOn = !g.laserOn;
   if (g.laserLamp) g.laserLamp.material = g.laserOn ? WM.btnOn : WM.btnOff;   // step 29
   if (!btnSfx('laser')) sfx('selector');                            // step 101: the pressure pad
@@ -17809,6 +17819,7 @@ function wbKit() {
   return WB.kit;
 }
 function wbMakeAtt(sub, big = true, variant = null) {
+  if (variant === 'pl2') return railMakePl2();                     // step 112: the Glock's PL-2
   if (sub === 'ext') return muzMakeExt();                           // step 103
   if (AKM_ITEM[variant] || AKM_ITEM[sub]) return akmMakeAtt(AKM_ITEM[variant] ? variant : sub);   // step 102: the AKM's parts
   if (variant === 'c45') return m19MakeAtt(sub === 'comp' ? 'comp45' : 'can45');   // step 108: the .45 can and comp
@@ -17908,11 +17919,11 @@ function wbTable() {
   if (AKMA.ready) for (const t of WB_AKM) if (own(t)) L.push(t);   // step 102
   if (AWMA.ready) for (const t of WB_AWM) if (own(t)) L.push(t);   // step 113: the AWM's parts, the front row of the same bench
   if (M4A.on && M4A.ready) for (const t of WB_M4) if (own(t)) L.push(t);   // step 105: the M4A1-S's parts, on the bench left of the gunsmith's
-  return m19Table(L);                                               // step 108: the 1911's own parts
+  return m19Table(railTable(L));                                    // step 108: the 1911's own parts (step 112: a PL-2 that came off)
 }
 // A table spot t ([sub, big, x, z, yaw, variant, store id]) takes part it: the same sub; a can of the same size; the same variant:
 // the AKM's parts (step 102, by key), the .45 parts (step 108), the M4A1-S's (step 105: its can, its parts by kind), the 9 mm compact can.
-function wbVar(it) { return it.awm ? 'awm:' + it.awm : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
+function wbVar(it) { return it.awm ? 'awm:' + it.awm : it.pl2 ? 'pl2' : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
 function wbSpotFits(it, t) { return it.sub === t[0] && (t[0] !== 'sup' || !!it.big === t[1]) && wbVar(it) === (t[5] || null); }
 // Step 100 / 105: spots a store purchase just opened get their part.
 function wbTableFill() {
@@ -18093,11 +18104,13 @@ function wbClose(why) {
   let n = 0;
   for (const p of WB.atts.slice()) if (p.item.stuck && p.item.stuck.g === g) { wbFreeze(g, p); n++; }
   muzSaveGun(g);                                                    // step 103: the muzzle chain is this gun type's build
+  railSaveGun(g);                                                   // step 112: so is the rail layout
   if (g.type === 'g17') g17FromGun(g);                             // step 100: the Glock's parts are the build now (store + every Glock)
   if (g.type === 'akmn') akmFromGun(g);                            // step 102: so are the AKM's
   if (g.type === 'm1911') m19FromGun(g);                           // step 108: the same for the 1911
   if (g.type === 'awp') awmFromGun(g);                             // step 113: the AWM's
   if (g.type === 'm4a1s') m4FromGun(g);                            // step 105: the M4A1-S's too
+  railSyncType(g);                                                  // step 112: every gun of the type takes the layout
   if (!g.primary && !g.prop.removing) { setDynamic(g.prop); g.prop.collider.setCollisionGroups(COLL.prop); g.prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
   updateLightMount();
   sfx('pMagOut', 0.8);
@@ -18108,6 +18121,7 @@ function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
 function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
+  if (g && !muzIsDev(it) && railDevOf(it)) { const r = railBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 112: the next free rail spot
   if (g && muzIsDev(it)) { if (muzBenchFit(g, p, 0.09)) return true; }   // step 103: onto the chain's front end
   else if (g && it.awm) { if (g.type !== 'awp' || !AWMA.ready) { toast(AWM_NOT_HERE, 2200); return false; } const r = awmBenchFit(g, p, AWMA.reach); if (r !== null) return r; }   // step 113: its place on the AWM
   else if (g && g.type === 'akmn' && AKMA.ready) { const r = akmBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 102: its rail on the AKM
@@ -18125,6 +18139,7 @@ function wbAttRelease(p) {
     const c = F.pick.c, h = F.pick.h, r = WB.stickR;
     if (Math.abs(_wbV.x - c[0]) < h[0] + r && Math.abs(_wbV.y - c[1]) < h[1] + r && Math.abs(_wbV.z - c[2]) < h[2] + r) {
       wbSnap(g, p);                                                 // step 74: clamped flush onto the gun's surface
+      if (railDevOf(it) && railClash(g, p)) { toast('No room there: it would sit inside a part already on the gun', 2200); return false; }   // step 112
       it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
       setKinematic(p); p.collider.setCollisionGroups(COLL.item);
       sfx('pMagIn', 0.5);
@@ -18176,6 +18191,8 @@ function wbSnap(g, p) {
   return true;
 }
 function wbGrabbed(it) {
+  if (RAIL.on && it.pl2 && !it.tableSpot) it.tableSpot = railPl2Spot();   // step 112: a PL-2 off a gun keeps a place on the table
+  it.rail = null;
   wbUnhook(it);
   const sg = it.stuck ? it.stuck.g : null, g = sg && muzIsDev(it) ? sg : null;
   if (g) muzOff(g, it.prop);                                        // step 103: what was in front of it goes back on the table
@@ -18220,6 +18237,7 @@ function wbFreeze(g, p) {
   if (muzIsDev(it)) { muzRefresh(g); return; }                     // step 103: cans, comps, extensions: the chain
   if (it.akKey || it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp' || it.sub === 'm4part' || it.awm) { attRefresh(g); return; }   // step 100 / 102 / 105 / 108
   if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); if (g.type === 'g17') g17Refresh(g); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
+  if (RAIL.on && (it.sub === 'light' || it.sub === 'laser')) { railWire(g, p); attRefresh(g); return; }   // step 112: one of several
   if (it.sub === 'light') {
     if (g.light && g.light !== it) { g.light.on = false; setLens(g.light); }
     g.light = it; it.free = true;
@@ -18238,8 +18256,9 @@ function wbUnfreeze(g, p) {
   p.root.updateMatrixWorld(true);
   p.root.matrixWorld.decompose(_wbP, _wbQ, _wbS);
   if (it.sub === 'sup' && g.sup === it) g.sup = null;               // step 78
-  if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }   // step 98: back to the Glock's own light
-  if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; it.lamp.material = WM.btnOff; }
+  if (RAIL.on && (it.sub === 'light' || it.sub === 'laser')) railUnwire(g, it);   // step 112
+  else if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }   // step 98: back to the Glock's own light
+  else if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; it.lamp.material = WM.btnOff; }
   if (g.atts) g.atts = g.atts.filter((q) => q !== p);               // step 100: off the gun's list now (the vise empties it after anyway)
   it.gun = null;
   paintAtt(p, null);                                                // step 106: its own finish again
@@ -18255,12 +18274,19 @@ function wbUnfreeze(g, p) {
 function wbDeskAtt(p) {
   const it = p.item;
   if (it.stuck && muzIsDev(it) && it.stuck.g) { const g = it.stuck.g; muzOff(g, p); muzStow(p); muzRefresh(g); sfx('pMagOut', 0.4); return; }   // step 103: it and what is in front of it
+  if (RAIL.on && it.stuck && !it.tableSpot && railDevOf(it) && railDeskOff(p)) return;   // step 112: came with the gun (the PL-2 gets a table spot)
   if (it.stuck) { if (!wbHome(p)) { const h = WB.hooks.find((x) => !x.att && x.sub === it.sub) || WB.hooks.find((x) => !x.att); if (h) wbHook(p, h); } sfx('pMagOut', 0.4); return; }   // step 88: back on the table
   let g = wbStuckGun();
   if (!g) {                                                          // step 88: your gun goes in the vise for you
     const held = gunOf(deskHand);
     if (held) { wbToggle(null, held); g = wbStuckGun(); }
     if (!g) { toast('Hold a gun (or lay it by the vise), then click a part, or press CLAMP'); return; }
+  }
+  if (railDevOf(it)) {                                              // step 112: the next free rail spot (null: no rails on this gun)
+    wbUnhook(it);
+    const r = railBenchFit(g, p, 0);
+    if (r === true) { toast(`${it.label} on. Click it again to take it off, B to lock`); return; }
+    if (r === false) return;
   }
   if (muzIsDev(it)) {                                               // step 103: threads onto the chain's front end
     wbUnhook(it);
@@ -18316,6 +18342,7 @@ function wbDeskAtt(p) {
   WB.m.compose(_wbV, _wbQ, _wbS.set(1, 1, 1)).premultiply(root.matrixWorld).decompose(p.root.position, p.root.quaternion, _wbS);
   p.root.updateMatrixWorld(true);
   wbSnap(g, p);                                                     // step 74
+  if (railClash(g, p)) { wbHome(p); toast('No room for it: a part is already there (a clamp-on rail adds spots, gunsmith store)', 2600); wsDeny(); return; }   // step 112
   it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
   setKinematic(p); p.collider.setCollisionGroups(COLL.item);
   sfx('pMagIn', 0.5);
@@ -19289,11 +19316,12 @@ if (/[?&]dev\b/.test(location.search)) window.__cqcSling = { SLANIM, SLC, slingC
 // or an empty hand poking it.
 const _lzs = new THREE.Vector3();
 function nearLaserSwitch(tip, reach) {
+  RAIL.nearL = null;
   for (const q of props) {
     const g = q.item;
     if (!g || g.kind !== 'gun' || !g.wr || !g.wr.laser || q.removing) continue;
     q.root.updateWorldMatrix(true, false);
-    if (_lzs.copy(g.wr.laser.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip) < reach) return g;
+    for (const e of railLasersOf(g)) if (_lzs.copy(e.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip) < reach) { RAIL.nearL = e; return g; }   // step 112: which module
   }
   return null;
 }
@@ -20368,17 +20396,17 @@ function switchNear(vh, T, k, tip) {
     if (!g || g.kind !== 'gun' || q.removing || !(tipMask(vh, T, g) & (1 << k))) continue;
     q.root.updateWorldMatrix(true, false);
     if (_vtW.setFromMatrixPosition(q.root.matrixWorld).distanceTo(tip) > B.cull) continue;
-    if (g.light) {
-      const r = g.light.prop.root; r.updateWorldMatrix(true, false);
-      for (const b of LIGHT_BUTTONS) switchTry(g, false, _vtW.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip));
+    for (const it of railLightsOf(g)) {                                // step 112: each light, each laser module
+      const r = it.prop.root; r.updateWorldMatrix(true, false);
+      for (const b of LIGHT_BUTTONS) switchTry(g, false, _vtW.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip), it);
     }
-    if (g.wr && g.wr.laser) switchTry(g, true, _vtW.copy(g.wr.laser.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip));
+    for (const e of railLasersOf(g)) switchTry(g, true, _vtW.copy(e.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip), e);
   }
   return S;
 }
-function switchTry(g, laser, d) {
+function switchTry(g, laser, d, ent = null) {
   const S = VRTIP.sw, z = d - CONFIG.vrInput.button.r - CONFIG.vrInput.pad;
-  if (z < S.z) { S.z = z; S.g = g; S.laser = laser; }
+  if (z < S.z) { S.z = z; S.g = g; S.laser = laser; S.ent = ent; }
 }
 function switchTips() {
   const B = CONFIG.vrInput.button;
@@ -20391,7 +20419,7 @@ function switchTips() {
       const S = switchNear(vh, T, k, k ? T.t : T.i);
       if (!S.g) { st[k].armed = false; continue; }
       if (!tipCross(st[k], S.z, true, B.press, B.rearm)) continue;
-      if (S.laser) toggleGunLaser(S.g); else toggleGunLight(S.g);
+      if (S.laser) toggleGunLaser(S.g, S.ent); else toggleGunLight(S.g, S.ent);   // step 112: the one pressed
       pulse(vh, 0.3, 20);
     }
   }
@@ -20517,11 +20545,14 @@ function updateLightMount() {
 // an empty hand can also just poke it. (VRTIP on: fingertip / thumb tip contacts only, switchTips.)
 const _lb = new THREE.Vector3(), _lb2 = new THREE.Vector3(), _lbq = new THREE.Quaternion();
 function nearLightSwitch(tip, reach) {
+  RAIL.nearLt = null;
   for (const q of props) {
     const g = q.item;
     if (!g || g.kind !== 'gun' || !g.light || q.removing) continue;
-    const r = g.light.prop.root; r.updateWorldMatrix(true, false);
-    for (const b of LIGHT_BUTTONS) if (_lb2.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip) < reach) return g;
+    for (const it of railLightsOf(g)) {                                // step 112: each light's own buttons
+      const r = it.prop.root; r.updateWorldMatrix(true, false);
+      for (const b of LIGHT_BUTTONS) if (_lb2.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip) < reach) { RAIL.nearLt = it; return g; }
+    }
   }
   return null;
 }
@@ -20536,15 +20567,15 @@ function updateLightSwitches() {
     _lb.add(_lb2.set(0, -0.01, -0.075).applyQuaternion(_lbq));     // about where your index fingertip is
     if (edge && h.prop && h.prop.item && h.prop.item.kind === 'med') { medUse(h, h.prop); continue; }   // step 79: inject
     if (edge && !gunOf(h)) {
-      const g = nearLightSwitch(_lb, h.prop ? 0.075 : 0.065); if (g) { toggleGunLight(g); pulse(h, 0.3, 20); continue; }
-      const gl = nearLaserSwitch(_lb, h.prop ? 0.065 : 0.06); if (gl) { toggleGunLaser(gl); pulse(h, 0.3, 20); continue; }   // step 16 (step 80: easy to hit)
+      const g = nearLightSwitch(_lb, h.prop ? 0.075 : 0.065); if (g) { toggleGunLight(g, RAIL.nearLt); pulse(h, 0.3, 20); continue; }
+      const gl = nearLaserSwitch(_lb, h.prop ? 0.065 : 0.06); if (gl) { toggleGunLaser(gl, RAIL.nearL); pulse(h, 0.3, 20); continue; }   // step 16 (step 80: easy to hit)
     }
     if (!h.prop) {
       const g = nearLightSwitch(_lb, 0.034);                                  // step 29 (step 80: easier)
-      if (g && !h.pokeLatch) { h.pokeLatch = true; toggleGunLight(g); pulse(h, 0.3, 20); }
+      if (g && !h.pokeLatch) { h.pokeLatch = true; toggleGunLight(g, RAIL.nearLt); pulse(h, 0.3, 20); }
       else if (!g && h.pokeLatch && !nearLightSwitch(_lb, 0.055)) h.pokeLatch = false;
       const gl = nearLaserSwitch(_lb, 0.032);                                  // step 16: poke the laser switch (step 80: easier)
-      if (gl && !h.laserLatch) { h.laserLatch = true; toggleGunLaser(gl); pulse(h, 0.3, 20); }
+      if (gl && !h.laserLatch) { h.laserLatch = true; toggleGunLaser(gl, RAIL.nearL); pulse(h, 0.3, 20); }
       else if (!gl && h.laserLatch && !nearLaserSwitch(_lb, 0.05)) h.laserLatch = false;
     }
   }
@@ -24250,6 +24281,7 @@ function weaponsPrecompile(on) {
   m19Precompile(on);                                // step 108: the 1911's parts, rail, grip panel program
   awmPrecompile(on);                                // step 113: the AWM's parts, the 10x eyepiece, the .338 can's glow
   m4Precompile(on);                                 // step 105: the M4A1-S's reticle glasses and scope eyepiece
+  railPrecompile(on);                               // step 112: the light glow cones
 }
 
 /* ============================================================================
@@ -25761,10 +25793,12 @@ const WS_CAT_NAME = { optic: 'Optic', muzzle: 'Muzzle', tactical: 'Tactical', ma
 const WS_GUNS = {
   m1911: { name: 'M1911', cal: '.45 ACP', identity: 'Classic tactical sidearm: compact backup, handling, customization.',
     slots: ['optic', 'muzzle', 'tactical', 'mag', 'sights', 'grip'],
-    factory: { optic: 'iron sights, slide not cut for an optic', muzzle: 'bare muzzle', tactical: 'no rail on a GI frame', mag: '7-round magazine', sights: 'GI sights', grip: 'GI walnut double-diamond' } },
+    factory: { optic: 'iron sights, slide not cut for an optic', muzzle: 'bare muzzle', tactical: 'no rail on a GI frame', mag: '7-round magazine', sights: 'GI sights', grip: 'GI walnut double-diamond' },
+    multi: ['tactical'] },   // step 112: rail devices stack
   g17: { name: 'Glock 17 Gen 5', cal: '9×19 mm Parabellum', identity: 'Standard tactical sidearm: light, close range, quick transitions.',
     slots: ['optic', 'muzzle', 'tactical', 'mag', 'sights'],
-    factory: { optic: 'iron sights, slide not optic-ready', muzzle: 'bare muzzle', tactical: 'PL-2 class light on the frame rail', mag: '17-round magazine', sights: 'factory polymer sights' } },
+    factory: { optic: 'iron sights, slide not optic-ready', muzzle: 'bare muzzle', tactical: 'PL-2 class light on the frame rail', mag: '17-round magazine', sights: 'factory polymer sights' },
+    multi: ['tactical'] },   // step 112: the PL-2, lights and lasers stack
   rifle: { name: 'M16A1', cal: '5.56×45 mm NATO', identity: 'Full-length service rifle: reach, accuracy, a 40-round magazine.',
     slots: ['muzzle', 'tactical', 'mag'],
     factory: { muzzle: 'three-prong flash hider', tactical: 'barrel-clamp laser and light', mag: '40-round extended magazine' },
@@ -25816,12 +25850,14 @@ const WS_ITEMS = [
   { id: 'g17.comp', gun: 'g17', cat: 'muzzle', name: 'Compensator', price: 140, desc: 'Ports up: less muzzle rise, quicker follow-ups; more flash', requires: ['g17.thread'], model: 'comp', fx: {} },
   { id: 'g17.light', gun: 'g17', cat: 'tactical', name: 'Weapon light (X300 class)', price: 300, desc: 'On the frame rail; lights dark rooms, shows you when on', requires: [], model: 'light', fx: {}, owned: true },
   { id: 'g17.laser', gun: 'g17', cat: 'tactical', name: 'Laser module (DBAL class)', price: 260, desc: 'On the frame rail; hip-fire reference, shows you when on', requires: [], model: 'laser', fx: {}, owned: true },
+  { id: 'g17.pl2', gun: 'g17', cat: 'tactical', name: 'PL-2 (factory)', price: 160, desc: 'The Glock\'s own pistol light on the frame rail: works, comes off at the vise', requires: [], model: 'pl2', fx: {}, owned: true },   // step 112
+  { id: 'g17.wrap', gun: 'g17', cat: 'hardware', hw: true, name: 'Wrap-around accessory rail', price: 110, desc: 'Clamps round the dust cover: a longer bottom rail and side rails, so lights and lasers stack', requires: [], model: 'wrap', fx: {} },
   { id: 'g17.mag33', gun: 'g17', cat: 'mag', name: '33-round magazine', price: 45, desc: '+16 rounds; heavier, slower to seat', requires: [], model: 'ext-g17', fx: {}, owned: true },
   { id: 'g17.sights', gun: 'g17', cat: 'sights', name: 'Suppressor-height sights', price: 130, desc: 'Tall night sights, co-witness over a can or a dot', requires: [], model: 'sights', fx: {} },
   // --- M1911 (GI: round-top slide, no optic cut, no rail) ---
   // Step 108: every 1911 row has its real part (M1911_FX holds what each one does; fx below is derived from it at load)
   { id: 'm1911.plate', gun: 'm1911', cat: 'hardware', hw: true, name: 'Optic cut + plate', price: 160, desc: 'Pocket milled in the round slide top, RMR-footprint plate ahead of the rear sight', requires: [], model: 'plate', fx: {} },
-  { id: 'm1911.frame', gun: 'm1911', cat: 'hardware', hw: true, name: 'Clamp-on accessory rail', price: 140, desc: '5-slot Picatinny round the dust cover, strapped to the trigger guard', requires: [], model: 'rail', fx: {} },
+  { id: 'm1911.frame', gun: 'm1911', cat: 'hardware', hw: true, name: 'Clamp-on accessory rail', price: 140, desc: '5-slot Picatinny round the dust cover, side rails, strapped to the trigger guard', requires: [], model: 'rail', fx: {} },
   { id: 'm1911.thread', gun: 'm1911', cat: 'hardware', hw: true, name: 'Threaded barrel', price: 200, desc: '.578x28 (.45 ACP), 15 mm out of the bushing; thread protector', requires: [], model: 'thread', fx: {}, owned: true },
   { id: 'm1911.dot', gun: 'm1911', cat: 'optic', name: 'Red dot (RMR footprint, 3 MOA)', price: 420, desc: 'Fast acquisition, no magnification; rides the slide', requires: ['m1911.plate'], model: 'dot', fx: {} },
   { id: 'm1911.cover', gun: 'm1911', cat: 'optic', addon: true, cosmetic: true, name: 'Optic cover', price: 25, desc: 'Rubber cover for the red dot (hides the dot)', requires: ['m1911.dot'], model: 'cover', fx: {} },
@@ -25841,6 +25877,7 @@ const WS_ITEMS = [
   // --- AKM: Standard -> Modernized (the kit) ---
   // Step 102: every AKM row has its real part (AKM_FX holds what each one does; fx below is derived from it at load)
   { id: 'akmn.kit', gun: 'akmn', cat: 'handguard', name: 'Modernization kit', price: 700, desc: 'Railed handguard (side and bottom rails), side-rail optic mount: opens the rest', requires: [], model: 'kit', fx: {} },
+  { id: 'akmn.wrap', gun: 'akmn', cat: 'hardware', hw: true, name: 'Clamp-on rail section', price: 120, desc: 'Bolts round the barrel and gas tube ahead of the handguard: bottom and side rails, no kit needed', requires: [], model: 'wrap', fx: {} },   // step 112
   { id: 'akmn.muzzle', gun: 'akmn', cat: 'hardware', hw: true, name: 'Muzzle interface', price: 40, desc: '14x1 LH thread to a 5/8x24 adapter collar (the slant brake comes off)', requires: [], model: 'collar', fx: {}, owned: true },
   { id: 'akmn.dot', gun: 'akmn', cat: 'optic', name: 'Red dot (reflex on a riser)', price: 480, desc: '3 MOA dot: fast acquisition, no magnification', requires: ['akmn.kit'], model: 'akdot', fx: {} },
   { id: 'akmn.holo', gun: 'akmn', cat: 'optic', name: 'Holographic sight (EXPS3 class)', price: 650, desc: '65 MOA ring and 1 MOA dot: clear CQB picture, fast transitions', requires: ['akmn.kit'], model: 'akholo', fx: {} },
@@ -25860,6 +25897,7 @@ const WS_ITEMS = [
   // --- M4A1-S (step 105): every row a real part; M4_FX holds what each one does (fx below is derived from it at load) ---
   { id: 'm4a1s.flattop', gun: 'm4a1s', cat: 'hardware', hw: true, name: 'Flat-top rail + flip-up sight', price: 220, desc: 'Carry handle off: a Picatinny rail on the upper, a folding rear sight', requires: [], model: 'flattop', fx: {} },
   { id: 'm4a1s.ras', gun: 'm4a1s', cat: 'hardware', hw: true, name: 'Quad rail handguard (RAS)', price: 380, desc: 'Drop-in, rails at 12 / 3 / 6 / 9 o\'clock; replaces the round handguard', requires: [], model: 'ras', fx: {} },
+  { id: 'm4a1s.wrap', gun: 'm4a1s', cat: 'hardware', hw: true, name: 'Handguard clamp rail', price: 130, desc: 'Clamps round the round handguard\'s front: 3 / 6 / 9 o\'clock rails (the quad rail replaces it)', requires: [], model: 'wrap', fx: {} },   // step 112
   { id: 'm4a1s.dot', gun: 'm4a1s', cat: 'optic', name: 'Red dot (CompM4 class, 2 MOA)', price: 560, desc: 'Fast, no magnification; co-witnesses the irons', requires: ['m4a1s.flattop'], model: 'dot', fx: {} },
   { id: 'm4a1s.holo', gun: 'm4a1s', cat: 'optic', name: 'Holographic sight (EXPS class)', price: 680, desc: '68 MOA ring + 1 MOA dot; big window, quickest up close', requires: ['m4a1s.flattop'], model: 'holo', fx: {} },
   { id: 'm4a1s.acog', gun: 'm4a1s', cat: 'optic', name: '4x32 prism scope (ACOG class)', price: 1250, desc: 'Lit chevron at 4x: identification at range; slow up close', requires: ['m4a1s.flattop'], model: 'acog', fx: {} },
@@ -25879,10 +25917,12 @@ const WS_ITEMS = [
   // --- AWM (the scope is on it today) ---
   { id: 'rifle.sup', gun: 'rifle', cat: 'muzzle', name: 'Rifle suppressor', price: 950, desc: 'Threads over the flash hider; quieter, never silent; less flash; longer', requires: [], model: 'sup-rifle',
     fx: { snd: -32, flash: -40, rec: -5, ads: -6, sway: 4, move: -2, wt: 0.55 }, owned: true },
+  { id: 'rifle.wrap', gun: 'rifle', cat: 'hardware', hw: true, name: 'Handguard clamp rail', price: 120, desc: 'Clamps round the front of the A1 handguard: rails for lights and lasers instead of barrel clamps', requires: [], model: 'wrap', fx: { wt: 0.09, ads: -0.5 } },   // step 112
   { id: 'rifle.light', gun: 'rifle', cat: 'tactical', name: 'Weapon light', price: 300, desc: 'Barrel clamp; lights dark rooms, shows you when on', requires: [], model: 'light', fx: { acc: 2, vis: 12, ads: -1, move: -0.5, wt: 0.15 }, owned: true },
   { id: 'rifle.laser', gun: 'rifle', cat: 'tactical', name: 'Laser module', price: 350, desc: 'Barrel clamp; hip-fire reference, shows you when on', requires: [], model: 'laser', fx: { hip: 12, vis: 8, ads: -1, move: -0.3, wt: 0.12 }, owned: true },
   // step 113: every AWM row is a real part (AWM_FX holds what each does; fx below is derived from it at load, these are ?awmatt=off's)
   { id: 'awp.mount', gun: 'awp', cat: 'hardware', hw: true, name: 'Scope mounting system', price: 300, desc: 'Receiver Picatinny rail and 34 mm rings', requires: [], model: 'rings', fx: { wt: 0.2 }, owned: true },
+  { id: 'awp.wrap', gun: 'awp', cat: 'hardware', hw: true, name: 'Barrel clamp rail', price: 150, desc: 'Clamps round the barrel ahead of the stock: rails for a light and a laser', requires: [], model: 'wrap', fx: { wt: 0.1, ads: -0.5, sway: 0.5 } },   // step 112
   { id: 'awp.bipodif', gun: 'awp', cat: 'hardware', hw: true, name: 'Bipod interface', price: 70, desc: 'Picatinny section under the fore-end nose', requires: [], model: 'bipodRail', fx: { wt: 0.05 } },
   { id: 'awp.stockmod', gun: 'awp', cat: 'hardware', hw: true, name: 'Adjustable stock module', price: 400, desc: 'Cheek-piece base and its height knobs on the comb', requires: [], model: 'stockMod', fx: { wt: 0.16 } },
   { id: 'awp.muzzle', gun: 'awp', cat: 'hardware', hw: true, name: 'Muzzle interface', price: 90, desc: 'QD lock ring behind the brake: a brake-mount can locks on it', requires: [], model: 'qd', fx: { wt: 0.03 }, owned: true },
@@ -26171,6 +26211,7 @@ function wsBuyItem(id) {
   wsSave();
   const RB = WS_REAL[it.gun], live = wsReal(it.gun);
   if (RB) RB.changed(it, true);                                    // step 100 / 102 / 105 / 108: on every gun of the type (and on the bench table)
+  if (RAIL.on && RAIL_WRAP[it.gun] && RAIL_WRAP[it.gun].id === it.id) railSyncType(it.gun);   // step 112: the wrap rail on every gun of the type
   wsMsg(`${it.name} bought for ${fmtMoney(it.price)}${it.hw ? (live ? `: on your ${live.name} now` : '') : it.model ? (live ? ` and fitted on your ${live.name}` : ' and fitted') : '. Model coming: it fits in a later update'}`);
   return true;
 }
@@ -36736,6 +36777,7 @@ function createGun(type) {
   if (type === 'awp' && AWMA.ready) { try { awmNewGun(item); } catch (e) { console.warn('step 113: AWM parts not fitted', e); } }   // step 113: the workshop's build
   if (type === 'm4a1s' && M4A.ready) { try { m4NewGun(item); } catch (e) { console.warn('step 105: M4A1-S parts not fitted', e); } }   // step 105: its own def, the workshop's build
   try { muzSync(item); } catch (e) { console.warn('step 103: muzzle chain not fitted', e); }   // step 103: the saved muzzle chain
+  try { railSync(item); } catch (e) { console.warn('step 112: rail devices not fitted', e); }   // step 112: the saved rail layout, the wrap rail
   return p;
 }
 const M1911_HAMMER_DOWN = -0.5, M1911_STOP_UP = -0.075;
@@ -36932,7 +36974,7 @@ function extBuild(type) {
   if (X.geo.ch) { parts.slide = new THREE.Group(); parts.slide.add(mesh('ch')); model.add(parts.slide); }   // step 62: rides g.slideOff back when racked
   if (type === 'm4a1s') for (const k of M4_CUT_KEYS) { const o = model.children.find((c) => c.geometry === X.geo[k]); if (o) parts[k] = o; }   // step 105: swapped by M4A
   addFlash(model, d, parts);
-  if (type === 'g17') g17LightBuild(model, parts);                 // step 98
+  if (type === 'g17' && !RAIL.on) g17LightBuild(model, parts);     // step 98 (step 112: a PL-2 part instead, railMakePl2)
   return { root, model, parts };
 }
 function extMagModel(type) {
@@ -37321,9 +37363,10 @@ const G17A = {
 };
 // Store id -> the part on the gun (att sub and can variant). Hardware (plate, thread) and sights are meshes on every Glock, not parts.
 const G17_PARTS = { 'g17.dot': { sub: 'dot' }, 'g17.cover': { sub: 'cover' }, 'g17.sup': { sub: 'sup', can: 'md3' }, 'g17.sup2': { sub: 'sup', can: 'sb100' },
-  'g17.comp': { sub: 'comp' }, 'g17.light': { sub: 'light' }, 'g17.laser': { sub: 'laser' } };
+  'g17.comp': { sub: 'comp' }, 'g17.light': { sub: 'light' }, 'g17.laser': { sub: 'laser' }, 'g17.pl2': { sub: 'light', pl2: true } };   // step 112: the PL-2
 function g17PartId(it) {
   if (!it || it.kind !== 'att') return null;
+  if (it.pl2) return 'g17.pl2';                                     // step 112
   if (it.sub === 'sup') return it.big ? null : it.can === 'sb100' ? 'g17.sup2' : 'g17.sup';
   return { dot: 'g17.dot', cover: 'g17.cover', comp: 'g17.comp', light: 'g17.light', laser: 'g17.laser' }[it.sub] || null;
 }
@@ -37343,6 +37386,8 @@ const GLOCK_FX = {
   'g17.comp': { m: 0.045, kick: 0.93, climb: 0.7, dkick: 0.75, flash: 1.35, light: 1.25, snd: 1.08, ads: 1.02, sway: 1.03, lever: 0.16 },
   'g17.light': { m: 0.115, ads: 1.04, sway: 1.05, lever: 0.1, stat: { acc: 2, vis: 12 } },
   'g17.laser': { m: 0.08, ads: 1.03, sway: 1.03, lever: 0.1, stat: { hip: 12, vis: 8 } },
+  'g17.pl2': { m: 0.085, ads: 1.02, sway: 1.03, lever: 0.1, stat: { acc: 1, vis: 10 } },        // step 112: the factory light, a part now
+  'g17.wrap': { m: 0.06, sway: 1.01, lever: 0.1 },                                              // step 112: the wrap-around rail
   'g17.mag33': { m: 0.13, rel: 1.15, sway: 1.03, lever: 0.04 },
   'g17.sear': { stat: { rec: 14, acc: -6, hip: -5 } }
 };
@@ -37401,6 +37446,7 @@ function g17GunIds(g, out = new Set()) {
   const own = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
   if (own('g17.thread')) out.add('g17.thread');
   if (own('g17.plate')) out.add('g17.plate');
+  if (own('g17.wrap')) out.add('g17.wrap');                         // step 112
   if (own('g17.sights') && WORKSHOP.fitted.has('g17.sights')) out.add('g17.sights');
   if (EXT.mag.g17) out.add('g17.mag33');
   if (EXT.sw) out.add('g17.sear');
@@ -37679,7 +37725,7 @@ function g17Refresh(g) {
   if (g.dot) g.dot.glass.visible = !g.cover;
   // the stock light steps aside for a rail device
   const rail = (g.atts || []).some((p) => p.item.sub === 'light' || p.item.sub === 'laser');
-  if (g.parts.stockLight) {
+  if (g.parts.stockLight && !RAIL.on) {
     g.parts.stockLight.visible = !rail;
     if (rail && g.light === g.stockLight) { g.light.on = false; setLens(g.light); g.light = null; }
     if (!rail && !g.light && g.stockLight) g.light = g.stockLight;
@@ -37694,6 +37740,7 @@ function g17Refresh(g) {
     eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]) });
   g.afx = g17FxOf(g17GunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {});
   muzFx(g, chain, g.afx); muzClipSet(g, chain);                     // step 103
+  railFx(g);                                                        // step 112
   g.muzEnd = muz ? g.wr.muzzle : null;
   updateLightMount();
 }
@@ -37705,7 +37752,7 @@ function g17SyncGun(g) {
   const W = WORKSHOP;
   const wanted = (it) => !!it && it.owned && W.fitted.has(it.id) && it.requires.every((r) => { const q = W.byId.get(r); return q && q.owned && (q.hw || W.fitted.has(r)); });   // (wsActive leaves cosmetic parts out: the cover still goes on)
   for (const id of Object.keys(G17_PARTS)) {
-    if (G17_MUZ[id]) continue;                                      // step 103: the muzzle is the chain (muzSync)
+    if (G17_MUZ[id] || railRowSkip(id)) continue;                   // step 103: the muzzle is the chain (muzSync); step 112: rails railSync
     const it = W.byId.get(id);
     const want = wanted(it);
     const have = (g.atts || []).find((p) => g17PartId(p.item) === id);
@@ -37713,10 +37760,11 @@ function g17SyncGun(g) {
   }
   for (const id of ['g17.dot', 'g17.cover', 'g17.sup', 'g17.sup2', 'g17.comp', 'g17.light', 'g17.laser']) {   // the dot before its cover
     const it = W.byId.get(id);
-    if (G17_MUZ[id] || !wanted(it)) continue;
+    if (G17_MUZ[id] || railRowSkip(id) || !wanted(it)) continue;
     if (!(g.atts || []).some((p) => g17PartId(p.item) === id)) g17Attach(g, id);
   }
   muzSync(g);
+  railSync(g);                                                      // step 112
   g17Refresh(g);
 }
 function g17Attach(g, id) {
@@ -37734,8 +37782,9 @@ function g17Attach(g, id) {
 function g17Detach(g, p) {
   const it = p.item;
   if (it.sub === 'sup' && g.sup === it) g.sup = null;
-  if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }
-  if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; }
+  if (RAIL.on && (it.sub === 'light' || it.sub === 'laser')) railUnwire(g, it);   // step 112
+  else if (it.sub === 'light' && g.light === it) { it.on = false; setLens(it); g.light = g.stockLight || null; it.free = false; }
+  else if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; }
   if (p.root.parent) p.root.parent.remove(p.root);
   if (g.atts) g.atts = g.atts.filter((q) => q !== p);
   it.gun = null;
@@ -38581,6 +38630,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, RETICLE, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HS, DZ, dzProf, hsRays, hsSpheres, hsSeg, hsBeam, hsHook, hsScan, hsGuns, hsLights, handShadowTick, handShadowFlush, dazzleTick, dazzleRender, dzOwn, dzLux, dzAft });   // step 110
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
+if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 /* ===========================================================================
  *  STEP 103 — SCREW-ON MUZZLE CHAINS (?muzchain=off = one device as before)
  *  Any muzzle device (pistol cans MD3 / SB100, the rifle can, the compensator, the new barrel extension) threads
@@ -38958,7 +39008,8 @@ const AKM_FX = {
   'akmn.light': { m: 0.13, ads: 1.03, sway: 1.03, lever: 0.3, stat: { acc: 2, vis: 12 } },
   'akmn.laser': { m: 0.10, ads: 1.02, sway: 1.02, lever: 0.33, stat: { hip: 12, vis: 8 } },
   'akmn.mag40': { m: 0.20, rel: 1.12, sway: 1.03, lever: 0.14 },
-  'akmn.stock': { m: 0.15, kick: 0.94, climb: 0.9, dkick: 0.9, sway: 0.92, aim: 0.85, lever: 0.2 }
+  'akmn.stock': { m: 0.15, kick: 0.94, climb: 0.9, dkick: 0.9, sway: 0.92, aim: 0.85, lever: 0.2 },
+  'akmn.wrap': { m: 0.09, sway: 1.01, lever: 0.42 }                 // step 112: the clamp-on rail section
 };
 const AKM_FX_VR = { k: 0.12, max: 0.045 };                         // s per kg m^2 (a rifle's own inertia dwarfs a pistol's)
 // A store row that should be on the gun: owned, fitted, and what it needs owned (hardware) or fitted (a part).
@@ -39356,6 +39407,7 @@ function akmGunIds(g, out) {
   out.clear();
   const H = akmHw(g), chain = muzChain(g);
   if (H.kit) out.add('akmn.kit');
+  if (akmOwned('akmn.wrap')) out.add('akmn.wrap');                  // step 112
   if (H.stock) out.add('akmn.stock');
   if (chain.length) out.add('akmn.muzzle');
   if (EXT.mag.akmn) out.add('akmn.mag40');
@@ -39389,6 +39441,7 @@ function akmRefresh(g) {
     vfg: g.def.vfg ? new THREE.Vector3(g.def.vfg[0] - pm[0], g.def.vfg[1] - pm[1], g.def.vfg[2] - pm[2]) : null });
   g.afx = afxOf(AKM_FX, akmGunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {}, AKM_FX_VR);
   muzFx(g, chain, g.afx); muzClipSet(g, chain);                     // step 103: the chain beyond its first device
+  railFx(g);                                                        // step 112
   g.muzEnd = dev ? g.wr.muzzle : null;
   updateLightMount();
 }
@@ -39402,12 +39455,13 @@ function akmSyncGun(g) {
   const H = akmHw(g);
   for (const k of Object.keys(AKM_HW)) H[k] = wsWanted(AKM_HW[k]);
   for (const id of AKM_BENCH) {
-    if (AKM_MUZ[id]) continue;                                      // the muzzle is the chain (muzSync)
+    if (AKM_MUZ[id] || railRowSkip(id)) continue;                   // the muzzle is the chain (muzSync); step 112: rails railSync
     const have = (g.atts || []).find((p) => akmPartId(p.item) === id), want = wsWanted(id);
     if (have && !want) g17Detach(g, have);
     if (want && !have) akmAttach(g, id);
   }
   muzSync(g);
+  railSync(g);                                                      // step 112
   akmRefresh(g);
 }
 function akmAttach(g, id) {
@@ -40064,6 +40118,7 @@ function m19Refresh(g) {
     eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]) });
   g.afx = m19FxOf(m19GunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {});
   muzFx(g, chain, g.afx); muzClipSet(g, chain);
+  railFx(g);                                                        // step 112
   g.muzEnd = muz ? g.wr.muzzle : null;
   updateLightMount();
 }
@@ -40074,11 +40129,12 @@ function m19SyncGun(g) {
   m19Hw(g);
   const W = WORKSHOP;
   const wanted = (id) => { const it = W.byId.get(id); return !!it && it.owned && W.fitted.has(id) && it.requires.every((r) => { const q = W.byId.get(r); return q && q.owned && (q.hw || W.fitted.has(r)); }); };
-  for (const id of Object.keys(M19_PARTS)) { const have = (g.atts || []).find((p) => !muzIsDev(p.item) && m19PartId(p.item) === id); if (have && !wanted(id)) g17Detach(g, have); }
+  for (const id of Object.keys(M19_PARTS)) { if (railRowSkip(id)) continue; const have = (g.atts || []).find((p) => !muzIsDev(p.item) && m19PartId(p.item) === id); if (have && !wanted(id)) g17Detach(g, have); }
   for (const id of ['m1911.dot', 'm1911.cover', 'm1911.light', 'm1911.laser']) {   // the dot before its cover
-    if (wanted(id) && !(g.atts || []).some((p) => m19PartId(p.item) === id)) m19Attach(g, M19_PARTS[id]);
+    if (!railRowSkip(id) && wanted(id) && !(g.atts || []).some((p) => m19PartId(p.item) === id)) m19Attach(g, M19_PARTS[id]);
   }
   muzSync(g);
+  railHw(g); railSync(g);                                           // step 112: side rails, the layout
   m19Refresh(g);
 }
 function m19Attach(g, sub) {
@@ -40278,6 +40334,7 @@ const WB_M4 = [['m4part', false, 0.7, 2.92, Math.PI / 2, 'sopmod', 'm4a1s.sopmod
 const M4_FX = {
   'm4a1s.flattop': { m: -0.12, lever: 0.08 },                                   // the handle off (~0.25 kg), a rail and a folding sight on
   'm4a1s.ras': { m: 0.17, lever: 0.27, sway: 1.02 },
+  'm4a1s.wrap': { m: 0.08, lever: 0.3, sway: 1.01 },                            // step 112: the handguard clamp rail
   'm4a1s.dot': { m: 0.34, ads: 0.86, aim: 0.65, lever: 0.08, stat: { acc: 9 } },
   'm4a1s.holo': { m: 0.32, ads: 0.82, aim: 0.7, lever: 0.08, stat: { acc: 8, hip: 3 } },
   'm4a1s.acog': { m: 0.45, ads: 1.18, aim: 0.55, sway: 1.04, lever: 0.07, stat: { acc: 16, hip: -5, vis: 3 } },
@@ -40645,12 +40702,13 @@ function m4SyncGun(g) {
     if (have && !want) g17Detach(g, have);
     if (want && !have) m4Attach(g, id);
   }
-  if (m4Owned('m4a1s.ras')) for (const id of ['m4a1s.light', 'm4a1s.laser']) {   // the store puts them on the side rails; without the
+  if (!RAIL.on && m4Owned('m4a1s.ras')) for (const id of ['m4a1s.light', 'm4a1s.laser']) {   // step 112: railSync places them   // the store puts them on the side rails; without the
     let have = m4Have(g, id);                                         // quad rail a bench clamp stays as it was fitted
     if (have && (!m4Wanted(id) || !have.item.m4Side)) { g17Detach(g, have); have = null; }
     if (m4Wanted(id) && !have) m4Attach(g, id);
   }
   muzSync(g);
+  railSync(g);                                                      // step 112
   m4Refresh(g);
 }
 function m4ApplyStore() { for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'm4a1s' && !q.removing) m4SyncGun(q.item); }
@@ -40676,6 +40734,7 @@ function m4Refresh(g) {
     eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]),
     vfg: d.vfg ? new THREE.Vector3(d.vfg[0] - pm[0], d.vfg[1] - pm[1], d.vfg[2] - pm[2]) : null });
   g.afx = muzApply(g, muzState(g), afxOf(M4_FX, m4GunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {}));
+  railFx(g);                                                        // step 112
   updateLightMount();
 }
 // The sling for this stock: shown when fitted, its strap rebuilt only when the stock kind changes.
@@ -40687,6 +40746,7 @@ function m4Sling(H, kind) {
 function m4GunIds(g, out = new Set()) {
   out.clear();
   for (const id of ['m4a1s.flattop', 'm4a1s.ras']) if (m4Owned(id)) out.add(id);
+  if (m4Owned('m4a1s.wrap') && !m4Owned('m4a1s.ras')) out.add('m4a1s.wrap');   // step 112
   if (EXT.mag.m4) out.add('m4a1s.mag60'); else if (M4A.mag20) out.add('m4a1s.mag20');
   const ch = muzChain(g);
   for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== ch[0]) continue; const id = m4PartId(p.item); if (id) out.add(id); }   // the rest of a chain: muzFx
@@ -41454,6 +41514,719 @@ if (AWMA.on) {
 if (window.__cqcDev) Object.assign(window.__cqcDev, { AWMA, AWM_GEO, AWM_PARTS, AWM_FX, AWM_FX_VR, AWM_BIP, AWM_REST, AWM_S10, AWM_SPEC, WB_AWM, awmInit, awmMeasure, awmSeats,
   awmTpl, awmMakeAtt, awmHw, awmSyncGun, awmRefresh, awmBenchFit, awmRefuse, awmMuzRefuse, awmFromGun, awmStoreChanged, awmStats, awmGunIds, awmMagApply, awmMagDress,
   awmTick, awmBipodTick, awmRestPose, awmRestFx, awmLegsSet, awmDrop, awmGlint, awmHoneycomb, awmSlingGeo, awmS10Desc, awmNotchPad });   // step 113
+/* ===========================================================================
+ *  STEP 112 — RAILS: STACKED DEVICES, WRAP-AROUND RAILS, THE GLOCK'S STOCK LIGHT  (?rails=off)
+ *  RAIL SPOTS. Every gun with rails lists its rail faces (railFaces, model space = design space): the Glock's
+ *  frame rail (two key positions), the AKM kit's side and bottom rails, the M4's quad rail (12 / 3 / 6 / 9), and
+ *  the clamp-on wrap rail when the store row is owned. A face is a line of MIL-STD-1913 recoil slots, 10 mm apart
+ *  (the same tooth layout akmRailGeo draws); a spot = (face, slot): the device's cross-bolt sits in that slot.
+ *  Lights, lasers and the PL-2 take the next free spot (light: bottom, right, left, top; laser: right, left, top,
+ *  bottom; front-most slot first); in VR the free spot nearest where you let go. A spot is free when the device's
+ *  boxes (RAIL_DEV: its mount and body, measured from the wbKit / G17L geometry) overlap
+ *    - no other part on the gun (rail devices by their own boxes, every other part by its meshes' bounds),
+ *    - nothing of the gun's drawn body (railCloud: points sampled every 3 mm over its visible triangles, hashed in
+ *      1 cm cells; only the bodies are tested, the mounts are built to touch the rail),
+ *    - the firing hand (round the grip) and, on long guns, the support hand (round def.support),
+ *    - the sight line (a 6 mm tube from the muzzle back to the eye, at g.sightY),
+ *  and at least 60 % of its clamp is on the rail. No free spot = refused with a message (and a pointer to the
+ *  clamp-on rail when the gun can take one). Fitted parts are frozen (no body: itemFromWorld), so they never
+ *  collide; in the vise they are kinematic (no contact forces between them).
+ *  SEVERAL LIGHTS. g.lights holds every light on the gun, each with its own switch (its own buttons, VR poke /
+ *  trigger / fingertip); the desktop key and the stick click switch them all. The game has ONE shadowed weapon
+ *  light (the flashlight SpotLight), and the light count never changes (a new count recompiles every program):
+ *  so the brightest light that is on (it.lum: X300 1, PL-2 0.55) is g.light and drives the flashlight from its
+ *  lens (updateLightMount, unchanged); every other light that is on adds only its beam glow: its lens lights up
+ *  (WM.lensOn, bloom) and a faint additive cone (RAIL.glow, a pool of 4 meshes, one program) rides on its lens.
+ *  SEVERAL LASERS. g.lasers: one entry per laser module ({ it, emit, dir, sw }, gun-root space), each switched
+ *  by its own pad; g.wr.laser is the first (the AI's laser check, the old code); updateLasers casts every lit
+ *  one in its own LASER slot (6 slots: sprites and ribbons, no lights).
+ *  THE GLOCK'S STOCK LIGHT is a real part now (railMakePl2: the step 98 PL-2 geometry as an att item; store row
+ *  g17.pl2 "PL-2 (factory)", owned and fitted). It works like any light; it comes off at the vise and goes back
+ *  on. A new device fitted where it sits takes the spot: the PL-2 comes off and lands on the bench table
+ *  (RAIL_PL2_SPOTS, listed only while a loose PL-2 claims one), never hidden.
+ *  WRAP RAILS (store hardware per gun, $110-150; the 1911's clamp-on rail of step 108 is its own, now with side
+ *  rails): pistols: a U sleeve round the dust cover (measured from the Glock's frame: front, rail underside,
+ *  width, where the frame widens / the guard begins; the slide's skirt) with a bottom rail out past the frame and
+ *  side rails on risers (at least RAIL.sideX 21.2 mm out, so a device underneath and one on each side clear each other); rifles: a clamp ring round the barrel / handguard (railSection: the drawn gun's
+ *  section over the band, a rounded box 1.2 mm off it) with bottom and side rails, the split screws on top.
+ *  Devices sit on them with their own rail section inside the wrap's (base plane = device origin).
+ *  LAYOUT. Per gun type in cqc.rails.v1 ({ type: [{ d, f, k }] }), written at RELEASE (railSaveGun), played on
+ *  every gun of the type (railSync, from createGun and each gun's store sync). The store's light / laser / PL-2
+ *  rows say whether at least one is on; a row turned off takes all of its kind off, turned on adds one at the
+ *  next free spot (the PL-2 steps aside for it if that is the only way). Extra devices of a kind add their table
+ *  entry once more to g.afx (railFx). ?rails=off = the game as step 111.
+ * ========================================================================= */
+const RAIL = {
+  on: !/[?&]rails=off\b/.test(location.search), key: 'cqc.rails.v1', saved: {}, pl2Seen: false,
+  laserSlots: 6, sideX: 0.0212, sightR: 0.006, gunTol: 0.0006, devTol: 0.0003, onRail: 0.6, reach: 0.12, near: 0.32,
+  cloud: new Map(), kit: {}, fc: {}, mat: null, glow: [], nearL: null, nearLt: null,
+  I: new THREE.Matrix4(), M: new THREE.Matrix4(), v: new THREE.Vector3(), q: new THREE.Quaternion()
+};
+/* Device boxes in the device's frame (origin on the rail, +y into the gun, -z forward): [x0, x1, y0, y1, z0, z1].
+   bolt: the cross-bolt's z (it sits in a recoil slot); jaw: the clamp's z span; base: the PL-2 clamps the rail head
+   itself (origin on the rail's base plane), the X300 / DBAL carry their own rail section (they sit adapt out). */
+const RAIL_DEV = {
+  light: { bolt: -0.0252, jaw: [-0.049, -0.015], lum: 1, mount: [[-0.0181, 0.0181, -0.0155, 0, -0.055, -0.009]],
+    body: [[-0.0148, 0.0148, -0.0398, -0.0102, -0.0825, -0.011], [-0.0174, 0.0174, -0.0375, -0.0095, -0.011, 0.0057]] },
+  laser: { bolt: -0.0055, jaw: [-0.0283, 0.0043], mount: [[-0.0181, 0.0181, -0.0125, 0, -0.034, 0.010]],
+    body: [[-0.0206, 0.0205, -0.0365, -0.0125, -0.0465, 0.020], [-0.0075, 0.0075, -0.032, -0.017, 0.019, 0.031], [-0.013, -0.001, -0.013, -0.009, 0.0025, 0.0145]] },
+  pl2: { bolt: -0.0265, jaw: [-0.058, -0.009], lum: 0.55, base: true, mount: [[-0.0146, 0.0146, -0.0175, 0, -0.0585, -0.009]],
+    body: [[-0.0137, 0.0137, -0.0387, -0.0113, -0.0812, -0.006], [-0.017, 0.017, -0.037, -0.013, -0.0115, 0.0038]] }
+};
+const RAIL_PREF = { light: ['bottom', 'right', 'left', 'top'], laser: ['right', 'left', 'top', 'bottom'], pl2: ['bottom', 'right', 'left'] };
+// Store rows per gun and kind (only guns whose rows are real parts: WS_REAL).
+const RAIL_ROWS = { g17: { light: 'g17.light', laser: 'g17.laser', pl2: 'g17.pl2' }, m1911: { light: 'm1911.light', laser: 'm1911.laser' },
+  akmn: { light: 'akmn.light', laser: 'akmn.laser' }, m4a1s: { light: 'm4a1s.light', laser: 'm4a1s.laser' } };
+const RAIL_ROW_IDS = new Set(Object.values(RAIL_ROWS).flatMap((R) => Object.values(R)));
+// The clamp-on rail each gun can take (z: the ring's band, rear and front, design space).
+const RAIL_WRAP = {
+  g17: { id: 'g17.wrap', kind: 'pistol' }, m1911: { id: 'm1911.frame', kind: 'm19' },
+  akmn: { id: 'akmn.wrap', kind: 'ring', z: [-0.395, -0.450] }, m4a1s: { id: 'm4a1s.wrap', kind: 'ring', z: [-0.290, -0.343], off: () => m4Owned('m4a1s.ras') },
+  rifle: { id: 'rifle.wrap', kind: 'ring', z: [-0.430, -0.485] }, awp: { id: 'awp.wrap', kind: 'ring', z: [-0.520, -0.575] }
+};
+const RAIL_SUPZ = { m4a1s: -0.25 };                                   // the M4's support hand on its handguard (def.support is the M16A1's)
+const RAIL_FXT = { g17: () => GLOCK_FX, m1911: () => M1911_FX, akmn: () => AKM_FX, m4a1s: () => M4_FX };
+// The PL-2's places on the bench table once it came off: [sub, big, x, z, yaw, variant, store id]
+const RAIL_PL2_SPOTS = [['light', false, 3.56, 2.66, Math.PI, 'pl2', 'g17.pl2'], ['light', false, 3.56, 2.765, Math.PI, 'pl2', 'g17.pl2']];
+try {
+  const o = JSON.parse(localStorage.getItem(RAIL.key) || 'null');
+  if (o && typeof o === 'object') {
+    RAIL.pl2Seen = !!o.pl2Seen;
+    if (o.saved && typeof o.saved === 'object') for (const [t, L] of Object.entries(o.saved)) if (Array.isArray(L))
+      RAIL.saved[t] = L.filter((w) => w && RAIL_DEV[w.d] && typeof w.f === 'string' && Number.isInteger(w.k)).map((w) => ({ d: w.d, f: w.f, k: w.k }));
+  }
+} catch (e) { /* a fresh layout */ }
+function railSave() { try { localStorage.setItem(RAIL.key, JSON.stringify({ v: 1, saved: RAIL.saved, pl2Seen: RAIL.pl2Seen })); } catch (e) { /* this visit only */ } }
+if (RAIL.on && !RAIL.pl2Seen) { RAIL.pl2Seen = true; WORKSHOP.fitted.add('g17.pl2'); wsSave(); railSave(); }   // the factory light is on every Glock until you take it off
+
+const railDevOf = (it) => (!it || it.kind !== 'att' ? null : it.pl2 ? 'pl2' : it.sub === 'light' ? 'light' : it.sub === 'laser' ? 'laser' : null);
+const railRowSkip = (id) => RAIL.on && RAIL_ROW_IDS.has(id);     // the per-gun syncs leave these rows to railSync
+const railOwned = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
+const railLightsOf = (g) => (RAIL.on && g.lights && g.lights.length ? g.lights : g.light ? [g.light] : []);
+const railLasersOf = (g) => (RAIL.on && g.lasers && g.lasers.length ? g.lasers : g.wr && g.wr.laser ? [g.wr.laser] : []);
+
+/* --- faces --- */
+// The recoil slots of a rail drawn by akmRailGeo(z0, z1) (z0 rear > z1 front): the gaps between its teeth.
+function railSlotsOf(z0, z1) {
+  const R = AKM_DIM.rail, out = [];
+  let n = 0;
+  for (let z = z0 - (R.pitch - R.tooth) / 2; z - R.tooth >= z1 - 1e-6; z -= R.pitch) n++;
+  for (let k = 0; k < n - 1; k++) out.push(z0 - R.pitch * (k + 1));
+  return out;
+}
+const railFace = (id, side, rz, x, y, adapt, slots, rail) => ({ id, side, rz, x, y, adapt, slots, rail });
+function railWrapShown(g) {
+  const W = RAIL_WRAP[g.type];
+  if (!RAIL.on || !W || !railOwned(W.id) || (W.off && W.off())) return false;
+  return W.kind !== 'm19' || M1911A.ready;
+}
+function railFaces(g) {
+  if (!RAIL.on || !g || !g.model) return [];
+  const t = g.type, F = [], wrap = railWrapShown(g);
+  if (t === 'g17' && EXTG.g17.ready && !wrap) F.push(railG17Factory());
+  if (t === 'akmn' && AKMA.ready && g.akm && g.akm.kit) F.push(...railAkmKit());
+  if (t === 'm4a1s' && M4A.on && M4A.ready && m4Owned('m4a1s.ras')) F.push(...railM4Ras());
+  if (wrap) { const K = railWrapKit(g); if (K) F.push(...K.faces); }
+  return F;
+}
+// The Glock's own frame rail: the PL-2's base plane (G17L.root), the X300 / DBAL hung under its underside (their
+// step 100 places); two key positions: the PL-2's factory one and 10 mm ahead (the DBAL's battery cap clears the guard there).
+function railG17Factory() {
+  if (RAIL.fc.g17) return RAIL.fc.g17;
+  const M = g17Measure(), y = G17L.root.y;
+  return (RAIL.fc.g17 = railFace('g17:bottom', 'bottom', 0, 0, y, Math.max(0, y - M.rail), [-0.0925, -0.1025], [-0.121, -0.075]));
+}
+function railAkmKit() {
+  if (RAIL.fc.akm) return RAIL.fc.akm;
+  const M = akmMeasure(), R = AKM_DIM.rail, H = AKM_DIM.hg, z0 = M.hgRear - R.inset, z1 = M.hgFront + R.inset, s = railSlotsOf(z0, z1);
+  return (RAIL.fc.akm = [['right', Math.PI / 2, H.side, H.railY], ['left', -Math.PI / 2, -H.side, H.railY], ['bottom', 0, 0, H.bottom]]
+    .map(([side, rz, x, y]) => railFace('kit:' + side, side, rz, x, y, R.top, s, [z1, z0])));
+}
+function railM4Ras() {
+  if (RAIL.fc.ras) return RAIL.fc.ras;
+  const M = M4A.M, rb = M4_R.rail - 0.0072, z0 = M.hg.z0 - 0.006, z1 = M.hg.z1 + 0.006, s = railSlotsOf(z0, z1);
+  return (RAIL.fc.ras = [['right', Math.PI / 2, rb, 0], ['left', -Math.PI / 2, -rb, 0], ['bottom', 0, 0, -rb], ['top', Math.PI, 0, rb]]
+    .map(([side, rz, x, y]) => railFace('ras:' + side, side, rz, x, y, 0.0072, s, [z1, z0])));
+}
+
+/* --- the gun's drawn body: triangles, sampled points, sections --- */
+function railSkip(o, root, g, skipRail) {
+  for (let q = o; q && q !== root; q = q.parent) if (!q.visible || q.userData.att || (g.mag && q === g.mag.root) || (skipRail && q.userData.rail112)) return true;
+  return false;
+}
+// fn(ax, ay, az, bx, by, bz, cx, cy, cz) for every drawn triangle of the gun's model (model space), its parts left out.
+function railTris(g, skipRail, fn, list = null) {
+  const root = g.model; root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert(), M = new THREE.Matrix4(), e = M.elements, meshes = list || [];
+  if (!list) root.traverse((o) => { if (o.isMesh && o.geometry && o.geometry.attributes.position && o.material !== WM.flash && !railSkip(o, root, g, skipRail)) meshes.push(o); });
+  const T = new Float64Array(9);
+  for (const o of meshes) {
+    M.multiplyMatrices(inv, o.matrixWorld);
+    const G = o.geometry, P = G.attributes.position, I = G.index, s0 = Math.max(0, G.drawRange.start), n = Math.min(I ? I.count : P.count, s0 + G.drawRange.count);
+    for (let t = s0; t + 2 < n; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const i = I ? I.getX(t + k) : t + k, x = P.getX(i), y = P.getY(i), z = P.getZ(i);
+        T[k * 3] = e[0] * x + e[4] * y + e[8] * z + e[12]; T[k * 3 + 1] = e[1] * x + e[5] * y + e[9] * z + e[13]; T[k * 3 + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+      }
+      fn(T[0], T[1], T[2], T[3], T[4], T[5], T[6], T[7], T[8]);
+    }
+  }
+  return meshes;
+}
+const railKey = (x, y, z) => ((Math.floor(x * 100) + 1024) * 2048 + (Math.floor(y * 100) + 1024)) * 2048 + (Math.floor(z * 100) + 1024);
+// Points every 3 mm over the gun's drawn triangles, in 1 cm cells; one per gun type and set of shown meshes.
+function railCloud(g) {
+  const root = g.model, meshes = [];
+  root.updateMatrixWorld(true);
+  root.traverse((o) => { if (o.isMesh && o.geometry && o.geometry.attributes.position && o.material !== WM.flash && !railSkip(o, root, g, false)) meshes.push(o); });
+  const key = g.type + ':' + meshes.map((o) => o.geometry.id).join(',');
+  let C = RAIL.cloud.get(key);
+  if (C) return C;
+  C = new Map();
+  const add = (x, y, z) => { const k = railKey(x, y, z); let a = C.get(k); if (!a) C.set(k, (a = [])); a.push(x, y, z); };
+  railTris(g, false, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    const L = Math.max(Math.hypot(bx - ax, by - ay, bz - az), Math.hypot(cx - ax, cy - ay, cz - az), Math.hypot(cx - bx, cy - by, cz - bz));
+    const n = Math.min(24, Math.max(1, Math.ceil(L / 0.003)));
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n - i; j++) { const u = i / n, v = j / n; add(ax + (bx - ax) * u + (cx - ax) * v, ay + (by - ay) * u + (cy - ay) * v, az + (bz - az) * u + (cz - az) * v); }
+  }, meshes);
+  if (RAIL.cloud.size >= 8) RAIL.cloud.delete(RAIL.cloud.keys().next().value);
+  RAIL.cloud.set(key, C);
+  return C;
+}
+// Any gun point inside box b (shrunk by tol)?
+function railCloudHit(C, b, tol) {
+  const x0 = b[0] + tol, x1 = b[1] - tol, y0 = b[2] + tol, y1 = b[3] - tol, z0 = b[4] + tol, z1 = b[5] - tol;
+  if (x0 >= x1 || y0 >= y1 || z0 >= z1) return false;
+  for (let ix = Math.floor(x0 * 100); ix <= Math.floor(x1 * 100); ix++) for (let iy = Math.floor(y0 * 100); iy <= Math.floor(y1 * 100); iy++) for (let iz = Math.floor(z0 * 100); iz <= Math.floor(z1 * 100); iz++) {
+    const a = C.get(((ix + 1024) * 2048 + (iy + 1024)) * 2048 + (iz + 1024));
+    if (a) for (let i = 0; i < a.length; i += 3) if (a[i] > x0 && a[i] < x1 && a[i + 1] > y0 && a[i + 1] < y1 && a[i + 2] > z0 && a[i + 2] < z1) return true;
+  }
+  return false;
+}
+// The drawn gun's section over z zr..zf (zr rear): half width about the bore, bottom, top (plane cuts every 4 mm). null = nothing there.
+function railSection(g, zr, zf) {
+  let hx = 0, y0 = Infinity, y1 = -Infinity;
+  const planes = [];
+  for (let z = zr - 0.002; z >= zf + 0.002 - 1e-9; z -= 0.004) planes.push(z);
+  const cut = (ax, ay, az, bx, by, bz, z) => { const da = az - z, db = bz - z; if (da * db >= 0) return; const s = da / (da - db), x = ax + (bx - ax) * s, y = ay + (by - ay) * s; hx = Math.max(hx, Math.abs(x)); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+  railTris(g, true, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    const lo = Math.min(az, bz, cz), hi = Math.max(az, bz, cz);
+    if (hi < zf || lo > zr) return;
+    for (const z of planes) if (z > lo && z < hi) { cut(ax, ay, az, bx, by, bz, z); cut(bx, by, bz, cx, cy, cz, z); cut(cx, cy, cz, ax, ay, az, z); }
+  });
+  return Number.isFinite(y0) && hx > 0.002 ? { hx, y0, y1 } : null;
+}
+// Where the triangles of a design-space geometry cross the plane (axis ax: 0 x, 1 y, 2 z) at v, of the crossings f(x, y, z) passes.
+function railCutGeo(geo, ax, v, f) {
+  const P = geo.attributes.position, I = geo.index, n = I ? I.count : P.count, e = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, z0: Infinity, z1: -Infinity, n: 0 };
+  const A = [0, 0, 0], B = [0, 0, 0], C = [0, 0, 0], pt = (i, o) => { o[0] = P.getX(i); o[1] = P.getY(i); o[2] = P.getZ(i); };
+  const edge = (p, q) => {
+    const da = p[ax] - v, db = q[ax] - v; if (da * db >= 0) return;
+    const s = da / (da - db), x = p[0] + (q[0] - p[0]) * s, y = p[1] + (q[1] - p[1]) * s, z = p[2] + (q[2] - p[2]) * s;
+    if (!f(x, y, z)) return;
+    e.n++; e.x0 = Math.min(e.x0, x); e.x1 = Math.max(e.x1, x); e.y0 = Math.min(e.y0, y); e.y1 = Math.max(e.y1, y); e.z0 = Math.min(e.z0, z); e.z1 = Math.max(e.z1, z);
+  };
+  for (let t = 0; t + 2 < n; t += 3) { pt(I ? I.getX(t) : t, A); pt(I ? I.getX(t + 1) : t + 1, B); pt(I ? I.getX(t + 2) : t + 2, C); edge(A, B); edge(B, C); edge(C, A); }
+  return e;
+}
+
+/* --- the wrap rails (geometry once per gun type, shared) --- */
+function railMats() {
+  return RAIL.mat || (RAIL.mat = { alu: new THREE.MeshStandardMaterial({ color: 0x141516, roughness: 0.58, metalness: 0.35 }),
+    steel: new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.42, metalness: 0.85 }), dark: new THREE.MeshStandardMaterial({ color: 0x060607, roughness: 0.8, metalness: 0.2 }) });
+}
+// A Picatinny rail from z0 back to z1 on a face: rail space (y out of the surface) turned onto the face's outward side.
+function railStrip(parts, rz, x, y, z0, z1) {
+  const M = new THREE.Matrix4().makeRotationZ(rz + Math.PI).setPosition(x, y, 0);
+  for (const q of akmRailGeo(z0, z1)) parts.push(q.applyMatrix4(M));
+}
+function railScrew(heads, sockets, x, y, z, ax) {   // a cap screw's head and socket on a face (ax: 'x' side, 'y' top)
+  const s = ax === 'x' ? Math.sign(x) : 1;
+  heads.push(ax === 'x' ? placed(new THREE.CylinderGeometry(0.0021, 0.0021, 0.0012, 16), x + s * 0.0006, y, z, 0, 0, Math.PI / 2) : placed(new THREE.CylinderGeometry(0.0021, 0.0021, 0.0012, 16), x, y + 0.0006, z));
+  sockets.push(ax === 'x' ? placed(new THREE.CylinderGeometry(0.0009, 0.0009, 0.0002, 6), x + s * 0.00125, y, z, 0, 0, Math.PI / 2) : placed(new THREE.CylinderGeometry(0.0009, 0.0009, 0.0002, 6), x, y + 0.00125, z));
+}
+function railWrapKit(g) {
+  const W = RAIL_WRAP[g.type];
+  if (!W) return null;
+  if (RAIL.kit[g.type] !== undefined) return RAIL.kit[g.type];
+  let K = null;
+  try { K = W.kind === 'ring' ? railRingKit(g, W) : W.kind === 'pistol' ? railPistolKit() : W.kind === 'm19' ? railM19Kit() : null; } catch (e) { console.warn('step 112: no wrap rail for ' + g.type, e); K = null; }
+  RAIL.kit[g.type] = K;
+  return K;
+}
+const railPack = (parts, heads, sockets, faces) => ({ geo: akmMerge(parts), screw: akmMerge(heads), socket: akmMerge(sockets), faces });
+// Rifles: a clamp ring 1.2 mm off the drawn section over the band, 3 mm wall, rounded; rails bottom, right, left; screws on top.
+function railRingKit(g, W) {
+  const zr = W.z[0], zf = W.z[1], S = railSection(g, zr, zf);
+  if (!S) return null;
+  const c = 0.0012, t = 0.003, a = S.hx + c, y0 = S.y0 - c, y1 = S.y1 + c, ri = Math.min(0.006, a * 0.6, (y1 - y0) * 0.3), ro = ri + t;
+  const rr = (P, x0, x1, b, top, r) => { P.moveTo(x0 + r, b); P.lineTo(x1 - r, b); P.quadraticCurveTo(x1, b, x1, b + r); P.lineTo(x1, top - r); P.quadraticCurveTo(x1, top, x1 - r, top); P.lineTo(x0 + r, top); P.quadraticCurveTo(x0, top, x0, top - r); P.lineTo(x0, b + r); P.quadraticCurveTo(x0, b, x0 + r, b); return P; };
+  const sh = rr(new THREE.Shape(), -a - t, a + t, y0 - t, y1 + t, ro); sh.holes.push(rr(new THREE.Path(), -a, a, y0, y1, ri));
+  const parts = [new THREE.ExtrudeGeometry(sh, { depth: zr - zf, bevelEnabled: false, curveSegments: 6 }).translate(0, 0, zf)], heads = [], sockets = [];
+  parts.push(placed(new THREE.BoxGeometry(0.0007, 0.0004, zr - zf), 0, y1 + t + 0.0001, (zr + zf) / 2));   // the split line on top
+  const yc = (y0 + y1) / 2, r0 = zr - 0.002, r1 = zf + 0.002, s = railSlotsOf(r0, r1), faces = [], xs = Math.max(a + t, RAIL.sideX);
+  if (xs > a + t + 0.0003) for (const sx of [-1, 1]) parts.push(placed(rbox(xs - a - t + 0.001, 0.022, zr - zf, 0.0006), sx * (a + t - 0.001 + xs) / 2, yc, (zr + zf) / 2));   // risers: side devices clear one underneath
+  for (const [side, rz, x, y] of [['bottom', 0, 0, y0 - t], ['right', Math.PI / 2, xs, yc], ['left', -Math.PI / 2, -xs, yc]]) {
+    railStrip(parts, rz, x, y, r0, r1);
+    faces.push(railFace('wrap:' + side, side, rz, x, y, 0, s, [r1, r0]));
+  }
+  for (const sx of [-1, 1]) for (const z of [zr - (zr - zf) * 0.2, zf + (zr - zf) * 0.2]) railScrew(heads, sockets, sx * Math.min(a * 0.5, a + t - ro), y1 + t, z, 'y');
+  return railPack(parts, heads, sockets, faces);
+}
+// The Glock: a U sleeve round the dust cover (bottom plate, cheeks up to just under the slide's skirt), its bottom rail
+// carried 12 mm out in front of the frame, side rails on risers over the cheeks, cross screws at the risers' ends.
+function railPistolKit() {
+  const X = EXTG.g17, fr = X.geo.frame, sl = X.geo.slide, P = fr.attributes.position;
+  let zF = Infinity;
+  for (let i = 0; i < P.count; i++) if (P.getY(i) < -0.012 && P.getZ(i) < zF) zF = P.getZ(i);
+  const yB = railCutGeo(fr, 2, zF + 0.012, (x, y) => y < -0.005).y0;                       // the rail's underside
+  const half = (z) => { const e = railCutGeo(fr, 2, z, (x, y) => y < -0.012); return e.n ? Math.max(-e.x0, e.x1) : 0; };
+  const hw = half(zF + 0.02);
+  let zS = zF + 0.02;
+  for (let z = zF + 0.02; z < zF + 0.1; z += 0.001) { if (half(z) > hw + 0.0005) break; zS = z; }   // up to where the frame widens
+  const gf = railCutGeo(fr, 1, yB - 0.0002, (x, y, z) => z > zF + 0.03 && Math.abs(x) < 0.008).z0;   // the guard's fillet at the rail
+  if (Number.isFinite(gf)) zS = Math.min(zS, gf - 0.0006);
+  let yT = Infinity;
+  for (let z = zF + 0.004; z < zS; z += 0.004) { const e = railCutGeo(sl, 2, z, (x, y) => y < -0.008 && Math.abs(x) > hw - 0.003); if (e.n) yT = Math.min(yT, e.y0); }
+  yT = (Number.isFinite(yT) ? yT : yB + 0.007) - 0.0006;                                       // just under the slide's skirt
+  if (!(Number.isFinite(zF) && Number.isFinite(yB) && hw > 0.008 && hw < 0.02 && zS - zF > 0.03 && yT > yB)) throw new Error('step 112: the Glock frame is not the measured one');
+  const w = 0.0018, t = 0.003, xr = Math.max(hw + w + 0.0016, RAIL.sideX), rw = xr - hw - w, zN = zF - 0.012, zc = zF + 0.0005, yc = (yB - t + yT) / 2, parts = [], heads = [], sockets = [];
+  parts.push(placed(rbox(2 * (hw + w), t, zS - zN, 0.0008), 0, yB - t / 2, (zS + zN) / 2));
+  for (const sx of [-1, 1]) {
+    parts.push(placed(rbox(w, yT - (yB - t), zS - zc, 0.0005), sx * (hw + w / 2), (yT + yB - t) / 2, (zS + zc) / 2));
+    parts.push(placed(rbox(rw, 0.022, zS - zc, 0.0006), sx * (hw + w + rw / 2), yc, (zS + zc) / 2));
+    for (const z of [zc + 0.0035, zS - 0.0035]) railScrew(heads, sockets, sx * xr, yc, z, 'x');
+  }
+  const faces = [railFace('wrap:bottom', 'bottom', 0, 0, yB - t, 0, railSlotsOf(zS - 0.002, zN + 0.002), [zN + 0.002, zS - 0.002])];
+  railStrip(parts, 0, 0, yB - t, zS - 0.002, zN + 0.002);
+  for (const [side, rz, x] of [['right', Math.PI / 2, xr], ['left', -Math.PI / 2, -xr]]) {
+    railStrip(parts, rz, x, yc, zS - 0.007, zc + 0.007);
+    faces.push(railFace('wrap:' + side, side, rz, x, yc, 0, railSlotsOf(zS - 0.007, zc + 0.007), [zc + 0.007, zS - 0.007]));
+  }
+  return railPack(parts, heads, sockets, faces);
+}
+// The 1911's clamp-on rail (step 108, the bottom face as built) with side rails on risers over its cheeks.
+function railM19Kit() {
+  const M = m19Measure(), dc = M.dc, cw = dc.hw + 0.0016, xr = Math.max(cw + 0.0016, RAIL.sideX), rw = xr - cw, yT = dc.bottom + 0.0086, yc = (M.railY + yT) / 2, z0 = M.railZ0, z1 = M.railZ1;
+  const parts = [], heads = [], sockets = [], L = z1 - z0, n = Math.max(3, Math.round(L / 0.01)), bs = [];
+  for (let i = 0; i < n - 1; i++) bs.push(z0 + (i + 1) * L / n);                             // between its teeth (m19Kit)
+  const faces = [railFace('m19:bottom', 'bottom', 0, 0, M.railY, 0, bs, [z0, z1])];
+  for (const [side, rz, sx] of [['right', Math.PI / 2, 1], ['left', -Math.PI / 2, -1]]) {
+    parts.push(placed(rbox(rw, 0.022, L, 0.0006), sx * (cw + rw / 2), yc, (z0 + z1) / 2));
+    railStrip(parts, rz, sx * xr, yc, z1 - 0.007, z0 + 0.007);
+    for (const z of [z0 + 0.0035, z1 - 0.0035]) railScrew(heads, sockets, sx * xr, yc, z, 'x');
+    faces.push(railFace('wrap:' + side, side, rz, sx * xr, yc, 0, railSlotsOf(z1 - 0.007, z0 + 0.007), [z0 + 0.007, z1 - 0.007]));
+  }
+  return railPack(parts, heads, sockets, faces);
+}
+function railMeshes(K) {
+  const G = new THREE.Group(), Mt = railMats();
+  for (const [geo, mat] of [[K.geo, Mt.alu], [K.screw, Mt.steel], [K.socket, Mt.dark]]) { const o = new THREE.Mesh(geo, mat); o.castShadow = false; o.receiveShadow = true; G.add(o); }
+  G.userData.rail112 = true;
+  return G;
+}
+// The wrap rail on one gun: made the first time it shows, then shown or hidden with the store row.
+function railHw(g) {
+  const W = RAIL_WRAP[g.type];
+  if (!RAIL.on || !W || !g.model) return;
+  const show = railWrapShown(g);
+  if (W.kind === 'm19') {                                            // inside the 1911's own rail group (m19Refresh shows it)
+    if (!show || !M1911A.ready) return;
+    const H = m19Hw(g);
+    if (!H.rail112) { const K = railWrapKit(g); if (K) { H.rail112 = railMeshes(K); H.rail.add(H.rail112); } }
+    return;
+  }
+  if (!g.rail112 && show) { const K = railWrapKit(g); if (K) { g.rail112 = railMeshes(K); g.model.add(g.rail112); } }
+  if (g.rail112) g.rail112.visible = show;
+}
+
+/* --- spots --- */
+const _rbM = new THREE.Matrix4(), _rbV = new THREE.Vector3(), _rbW = new THREE.Vector3();
+// Box b6 through matrix M: its axis-aligned bounds (out6).
+function railXBox(b, M, out) {
+  out[0] = out[2] = out[4] = Infinity; out[1] = out[3] = out[5] = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    _rbV.set(i & 1 ? b[1] : b[0], i & 2 ? b[3] : b[2], i & 4 ? b[5] : b[4]).applyMatrix4(M);
+    out[0] = Math.min(out[0], _rbV.x); out[1] = Math.max(out[1], _rbV.x); out[2] = Math.min(out[2], _rbV.y); out[3] = Math.max(out[3], _rbV.y); out[4] = Math.min(out[4], _rbV.z); out[5] = Math.max(out[5], _rbV.z);
+  }
+  return out;
+}
+const railOverlap = (a, b, tol) => a[0] < b[1] - tol && a[1] > b[0] + tol && a[2] < b[3] - tol && a[3] > b[2] + tol && a[4] < b[5] - tol && a[5] > b[4] + tol;
+// A device's boxes (mount + body, or body only) under matrix M, model space.
+function railDevBoxes(D, M, bodyOnly = false) {
+  const out = [];
+  for (const b of bodyOnly ? D.body : D.mount.concat(D.body)) out.push(railXBox(b, M, new Array(6)));
+  return out;
+}
+// Every part on the gun (locked on, or stuck to it in the vise).
+function railOn(g) {
+  const L = (g.atts || []).filter((p) => !p.removing);
+  for (const p of WB.atts) if (p.item.stuck && p.item.stuck.g === g && !p.removing && !L.includes(p)) L.push(p);
+  return L;
+}
+// What a spot must not touch: the other parts' boxes (with their props, so a PL-2 can step aside).
+function railObstacles(g, ignore) {
+  const out = [];
+  g.model.updateMatrixWorld(true);
+  RAIL.I.copy(g.model.matrixWorld).invert();
+  for (const p of railOn(g)) {
+    if (p === ignore || p.item === ignore) continue;
+    p.root.updateMatrixWorld(true);
+    _rbM.multiplyMatrices(RAIL.I, p.root.matrixWorld);
+    const d = railDevOf(p.item);
+    if (d) { for (const b of railDevBoxes(RAIL_DEV[d], _rbM)) out.push({ b, p }); continue; }
+    p.root.traverse((o) => {
+      if (!o.isMesh || !o.visible || !o.geometry) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      const B = o.geometry.boundingBox; if (B.isEmpty()) return;
+      out.push({ b: railXBox([B.min.x, B.max.x, B.min.y, B.max.y, B.min.z, B.max.z], _rbM.multiplyMatrices(RAIL.I, o.matrixWorld), new Array(6)), p });
+    });
+  }
+  return out;
+}
+// The hands and the sight line (model space = design space).
+function railZones(g) {
+  const d = g.def, P = d.palm, Z = [[-0.023, 0.023, P[1] - 0.075, P[1] + 0.045, P[2] - 0.035, P[2] + 0.06]];
+  if (d.cls !== 'pistol' && d.support) { const S = d.support, z = RAIL_SUPZ[g.type] ?? S[2]; Z.push([-0.028, 0.028, S[1] - 0.035, S[1] + 0.02, z - 0.04, z + 0.04]); }
+  return { Z, sy: Number.isFinite(g.sightY) ? g.sightY : d.eye[1], z0: (d.muzzle ? d.muzzle[2] : -1) - 0.02, z1: d.eye[2] };
+}
+function railSightHit(Zn, b) {
+  const r = RAIL.sightR;
+  return b[0] < r && b[1] > -r && b[2] < Zn.sy + r && b[3] > Zn.sy - r && b[5] > Zn.z0 && b[4] < Zn.z1;
+}
+// A device's origin on a face slot (model space) and its turn.
+function railOrigin(f, k, D, out) {
+  const off = D.base ? 0 : f.adapt;
+  return out.set(f.x + Math.sin(f.rz) * off, f.y - Math.cos(f.rz) * off, f.slots[k] - D.bolt);
+}
+/* The free spots for device d on gun g, in order (faces by RAIL_PREF[d], front-most slot first): { f, k, P, rz, bump }.
+   bump(p): a part that may step aside (the PL-2): a spot only it blocks is listed with bump = its prop. */
+function railSpots(g, d, ignore = null, bump = null) {
+  const faces = railFaces(g), D = RAIL_DEV[d], out = [];
+  if (!faces.length || !D) return out;
+  const pref = RAIL_PREF[d], rank = (f) => { const i = pref.indexOf(f.side); return i < 0 ? 9 : i; };
+  faces.sort((a, b) => rank(a) - rank(b));
+  const obs = railObstacles(g, ignore), C = railCloud(g), Zn = railZones(g), M = new THREE.Matrix4(), jl = D.jaw[1] - D.jaw[0];
+  for (const f of faces) {
+    if (rank(f) > 3) continue;
+    const ks = f.slots.map((z, k) => k).sort((a, b) => f.slots[a] - f.slots[b]);
+    for (const k of ks) {
+      const P = railOrigin(f, k, D, new THREE.Vector3());
+      const j0 = Math.max(P.z + D.jaw[0], f.rail[0]), j1 = Math.min(P.z + D.jaw[1], f.rail[1]);
+      if (j1 - j0 < RAIL.onRail * jl) continue;                      // the clamp mostly off the rail
+      M.makeRotationZ(f.rz).setPosition(P);
+      const all = railDevBoxes(D, M), body = railDevBoxes(D, M, true);
+      if (all.some((b) => Zn.Z.some((z) => railOverlap(b, z, 0)) || railSightHit(Zn, b))) continue;
+      if (body.some((b) => railCloudHit(C, b, RAIL.gunTol))) continue;
+      let hit = false, by = null;
+      for (const o of obs) if (all.some((b) => railOverlap(b, o.b, RAIL.devTol))) { if (bump && bump(o.p)) by = o.p; else { hit = true; break; } }
+      if (!hit) out.push({ f, k, P, rz: f.rz, bump: by });
+    }
+  }
+  return out;
+}
+const railBumpPl2 = (p) => !!(p && p.item && p.item.pl2);
+function railPose(g, s, P, Q) {
+  g.model.updateWorldMatrix(true, false);
+  P.copy(s.P).applyMatrix4(g.model.matrixWorld);
+  g.model.getWorldQuaternion(Q).multiply(RAIL.q.setFromAxisAngle(_wbZ, s.rz));
+  return P;
+}
+const railRec = (s) => ({ f: s.f.id, k: s.k, P: s.P.toArray() });
+function railNoSpot(g, d) {
+  const W = RAIL_WRAP[g.type], row = W && WORKSHOP.byId.get(W.id);
+  return `No free rail spot for the ${d === 'laser' ? 'laser' : 'light'}: every slot is taken or blocked (parts, your hands, the sight line)` +
+    (row && !row.owned ? `. The ${row.name} adds spots (gunsmith store)` : '');
+}
+
+/* --- the bench --- */
+// A rail device let go of (VR, reach) or clicked (computer, 0) by the clamped gun. null = this gun has no rails (the old fits),
+// true = on a spot, false = not (out of reach, or no spot: refused with a message).
+function railBenchFit(g, p, reach) {
+  const it = p.item, d = railDevOf(it);
+  if (!RAIL.on || !d || !railFaces(g).length) return null;
+  p.root.updateMatrixWorld(true); g.prop.root.updateMatrixWorld(true);
+  const near = p.root.position.distanceTo(g.prop.root.position) < RAIL.near;
+  const S = railSpots(g, d, p, railBumpPl2);
+  if (!S.length) { if (!reach || near) { toast(railNoSpot(g, d), 2800); wsDeny(); } return false; }
+  let s = null;
+  if (reach) {
+    let bd = Math.max(reach, RAIL.reach);
+    g.model.updateMatrixWorld(true);
+    for (const x of S) { const dd = _rbW.copy(x.P).applyMatrix4(g.model.matrixWorld).distanceTo(p.root.position); if (dd < bd) { bd = dd; s = x; } }
+    if (!s) return false;
+  } else s = S.find((x) => !x.bump) || S[0];
+  if (s.bump) railBump(g, s.bump);
+  railPose(g, s, p.root.position, p.root.quaternion); p.root.updateMatrixWorld(true);
+  it.rail = railRec(s);
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
+  setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  g17Sfx('rail', p.root.position);
+  attRefresh(g);
+  return true;
+}
+// The legacy barrel-clamp snap (guns without rails): a part there must not sit inside another.
+function railClash(g, p) {
+  if (!RAIL.on) return false;
+  g.model.updateMatrixWorld(true); p.root.updateMatrixWorld(true);
+  RAIL.I.copy(g.model.matrixWorld).invert();
+  const d = railDevOf(p.item), mine = d ? railDevBoxes(RAIL_DEV[d], _rbM.multiplyMatrices(RAIL.I, p.root.matrixWorld)) : [];
+  return railObstacles(g, p).some((o) => mine.some((b) => railOverlap(b, o.b, 0.001)));
+}
+// The PL-2 steps aside: off the gun, onto its place on the bench table.
+function railBump(g, q) {
+  const it = q.item;
+  if (it.gun === g) wbUnfreeze(g, q);
+  it.rail = null;
+  if (!it.tableSpot) it.tableSpot = railPl2Spot();
+  wbHome(q);
+  toast('The PL-2 came off: it is on the bench table', 2400);
+}
+function railPl2Spot() {
+  for (const t of RAIL_PL2_SPOTS) if (!WB.atts.some((p) => !p.removing && p.item.pl2 && p.item.tableSpot === t)) return t;
+  return RAIL_PL2_SPOTS[0];
+}
+// wbTable: a PL-2 spot is on the table only while a PL-2 off a gun claims it (no spare ones appear).
+function railTable(L) {
+  if (RAIL.on) for (const t of RAIL_PL2_SPOTS) if (WB.atts.some((p) => !p.removing && p.item.pl2 && p.item.tableSpot === t && !p.item.gun)) L.push(t);
+  return L;
+}
+// Computer: a stuck rail device that has no table spot (it came with the gun): the PL-2 gets one, a bench light / laser
+// goes back to the dispenser (the table always has spares).
+function railDeskOff(p) {
+  const it = p.item, g = it.stuck && it.stuck.g;
+  if (it.pl2) { it.tableSpot = railPl2Spot(); return false; }
+  it.stuck = null; it.rail = null;
+  removeProp(p);
+  if (g) attRefresh(g);
+  sfx('pMagOut', 0.4);
+  return true;
+}
+// The PL-2 as a part (the step 98 geometry, its frame the bench light's: LIGHT_LENS, LIGHT_BUTTONS).
+function railMakePl2() {
+  const L = g17LightKit(), r = new THREE.Group();
+  if (!WM.lensOn) WM.lensOn = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: new THREE.Color(0xfff4e0), emissiveIntensity: 3, roughness: 0.1, metalness: 0 });
+  if (!WM.lensOff) WM.lensOff = new THREE.MeshStandardMaterial({ color: 0x8a949c, roughness: 0.06, metalness: 0.2, transparent: true, opacity: 0.94 });
+  for (const k of ['anod', 'rub', 'refl', 'hex', 'led']) { const o = new THREE.Mesh(L.geo[k], L.mat[k === 'hex' ? 'dark' : k]); o.castShadow = true; o.receiveShadow = true; r.add(o); }
+  const lens = new THREE.Mesh(L.geo.lens, WM.lensOff); lens.receiveShadow = true; r.add(lens);
+  const item = { kind: 'att', type: 'light', sub: 'light', pl2: true, stock: true, label: 'PL-2 light', on: false, lens, lamp: null, hook: null, stuck: null, gun: null,
+    rest: 0.039, lum: RAIL_DEV.pl2.lum, hold: g17Hold('fist', new THREE.Vector3(0, -0.025, -0.04), true) };
+  const p = makeItem(r, item, { mass: 0.085, half: [0.017, 0.0148, 0.0425], center: new THREE.Vector3(0, -0.0239, -0.0387), restitution: 0.1 });
+  r.userData.att = true;
+  return p;
+}
+const railMake = (d) => (d === 'pl2' ? railMakePl2() : wbMakeAtt(d));
+
+/* --- wiring: several lights, several lasers --- */
+// The lead light: the brightest that is on (it drives the one shadowed flashlight); none on: the one that led, else the first.
+function railLead(g) {
+  const L = (g.lights || []).filter((it) => it.gun === g);
+  g.lights = L;
+  if (!L.length) { if (g.light && g.light.free) g.light = null; return; }
+  let lead = null;
+  for (const it of L) if (it.on && (!lead || (it.lum || 1) > (lead.lum || 1))) lead = it;
+  g.light = lead || (L.includes(g.light) ? g.light : L[0]);
+}
+// g.wr.laser = the first laser module (the old code and the AI read it); the built-in one again when none is left.
+function railLasers(g) {
+  const L = (g.lasers || []).filter((e) => e.it.gun === g);
+  g.lasers = L;
+  if (L.length) { g.wr = Object.assign({}, g.wr, { laser: L[0] }); g.laserAtt = L[0].it; g.laserLamp = L[0].it.lamp; g.laserOn = L.some((e) => e.it.on); }
+  else if (g.laserAtt) { g.wr = Object.assign({}, g.wr, { laser: (WR[g.type] || {}).laser || null }); g.laserAtt = null; g.laserLamp = null; g.laserOn = false; }
+}
+// wbFreeze: a light or laser locked on.
+function railWire(g, p) {
+  const it = p.item, root = g.prop.root;
+  root.updateMatrixWorld(true);
+  if (it.sub === 'light') {
+    it.free = true; it.gun = g;
+    const L = g.lights || (g.lights = []);
+    if (!L.includes(it)) L.push(it);
+    if (it.lens) setLens(it);
+    railLead(g);
+    return;
+  }
+  const emit = root.worldToLocal(LASER_EMIT.clone().applyMatrix4(p.root.matrixWorld));
+  const sw = root.worldToLocal(LASER_SW.clone().applyMatrix4(p.root.matrixWorld));
+  p.root.getWorldQuaternion(_wbQ); root.getWorldQuaternion(_lzQ);
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(_wbQ).applyQuaternion(_lzQ.invert());
+  const L = g.lasers || (g.lasers = []);
+  const e = L.find((x) => x.it === it);
+  if (e) Object.assign(e, { emit, dir, sw }); else L.push({ it, emit, dir, sw });
+  railLasers(g);
+}
+// wbUnfreeze / g17Detach: a light or laser off the gun.
+function railUnwire(g, it) {
+  it.on = false;
+  if (it.sub === 'light') {
+    if (it.lens) setLens(it);
+    it.free = false;
+    if (g.lights) g.lights = g.lights.filter((q) => q !== it);
+    if (g.light === it) g.light = null;
+    railLead(g);
+    updateLightMount();
+  } else {
+    if (it.lamp) it.lamp.material = WM.btnOff;
+    if (g.lasers) g.lasers = g.lasers.filter((e) => e.it !== it);
+    railLasers(g);
+  }
+}
+// A light's own switch (it), or every light on the gun (the desktop key, the stick click).
+function railToggleLight(g, it) {
+  const L = g.lights, one = it && L.includes(it) ? it : null, on = one ? !one.on : !L.some((q) => q.on);
+  for (const q of one ? [one] : L) { q.on = on; setLens(q); }
+  railLead(g);
+  if (!btnSfx((one || g.light || L[0]).stock ? 'stock' : 'light')) sfx('selector');
+  updateLightMount(); if (typeof syncButtons === 'function') syncButtons();
+  return true;
+}
+function railToggleLaser(g, e) {
+  const L = g.lasers, one = e && L.includes(e) ? e : null, on = one ? !one.it.on : !L.some((q) => q.it.on);
+  for (const q of one ? [one] : L) { q.it.on = on; if (q.it.lamp) q.it.lamp.material = on ? WM.btnOn : WM.btnOff; }
+  g.laserOn = L.some((q) => q.it.on);
+  if (!btnSfx('laser')) sfx('selector');
+  if (!renderer.xr.isPresenting) toast(L.length > 1 ? (one ? `Laser ${L.indexOf(one) + 1} of ${L.length} ${on ? 'on' : 'off'}` : `Lasers ${on ? 'on' : 'off'}`) : `Laser ${on ? 'on' : 'off'}`);
+  if (typeof syncButtons === 'function') syncButtons();
+  return true;
+}
+// updateLasers: every lit laser module on a held gun, each in its own slot.
+function railLasersCast(g, n) {
+  if (!g.primary || g.prop.removing || (g.blend || 0) >= 0.05) return n;
+  for (const e of g.lasers) if (e.it.on && n < LASER.slots.length) laserCast(g, LASER.slots[n++], e);
+  return n;
+}
+// Extra devices of a kind (beyond the first, which the gun's own table counts) add their entry once more.
+function railFx(g) {
+  if (!RAIL.on || !g || !g.afx || !RAIL_FXT[g.type] || !RAIL_ROWS[g.type]) return;
+  const T = RAIL_FXT[g.type](), R = RAIL_ROWS[g.type], n = {};
+  for (const p of g.atts || []) {
+    const d = railDevOf(p.item);
+    if (!d || p.removing || (n[d] = (n[d] || 0) + 1) < 2) continue;
+    const F = T[R[d]]; if (!F) continue;
+    g.afx.mass += F.m || 0;
+    for (const k of AFX_MUL) if (F[k] !== undefined) g.afx[k] *= F[k];
+    if (F.stat) for (const k of Object.keys(F.stat)) g.afx[k] += F.stat[k];
+  }
+}
+
+/* --- the beam glow of the lights that do not drive the flashlight --- */
+function railGlowMake() {
+  if (RAIL.glow.length) return;
+  const h = 0.9, geo = new THREE.CylinderGeometry(0.15, 0.011, h, 20, 6, true).rotateX(-Math.PI / 2).translate(0, 0, -h / 2), P = geo.attributes.position, col = new Float32Array(P.count * 3);
+  for (let i = 0; i < P.count; i++) { const t = clamp(-P.getZ(i) / h), k = 0.8 * (1 - t) * (1 - t); col[i * 3] = k; col[i * 3 + 1] = k * 0.96; col[i * 3 + 2] = k * 0.88; }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, fog: false });
+  for (let i = 0; i < 4; i++) { const m = new THREE.Mesh(geo, mat); m.visible = false; m.renderOrder = 4; m.castShadow = m.receiveShadow = false; m.raycast = () => {}; scene.add(m); RAIL.glow.push(m); }
+}
+function railTick() {
+  if (!RAIL.on) return;
+  let n = 0;
+  for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) {
+    const g = gunOf(h);
+    if (!g || !g.lights || g.lights.length < 2) continue;
+    for (const it of g.lights) {
+      if (!it.on || it === g.light || !it.prop || !it.prop.root) continue;
+      if (!RAIL.glow.length) railGlowMake();
+      if (n >= RAIL.glow.length) break;
+      const m = RAIL.glow[n++], r = it.prop.root;
+      r.updateWorldMatrix(true, false);
+      m.position.copy(LIGHT_LENS).applyMatrix4(r.matrixWorld); r.getWorldQuaternion(m.quaternion); m.visible = true;
+    }
+  }
+  for (; n < RAIL.glow.length; n++) RAIL.glow[n].visible = false;
+}
+function railPrecompile(on) {
+  if (!RAIL.on) return;
+  railGlowMake();
+  camera.updateMatrixWorld(true);
+  for (const m of RAIL.glow) { m.visible = on; if (on) m.position.set(0, 0, -1).applyMatrix4(camera.matrixWorld); }
+}
+
+/* --- the layout: per gun type, on every gun --- */
+function railReady(g) {
+  const t = g.type;
+  if (t === 'g17') return !!EXTG.g17.ready;
+  if (t === 'akmn') return !AKMA.on || AKMA.ready;
+  if (t === 'm4a1s') return !M4A.on || M4A.ready;
+  if (t === 'm1911') return !M1911A.on || M1911A.ready;
+  return true;
+}
+// The layout the store and the saved build ask for: [{ d, f, k }] (f null: the next free spot).
+function railWant(t) {
+  const saved = RAIL.saved[t], base = saved ? saved.map((w) => ({ d: w.d, f: w.f, k: w.k })) : t === 'g17' ? [{ d: 'pl2', f: null, k: -1 }] : [];
+  const R = RAIL_ROWS[t];
+  if (!R || !wsReal(t)) return base;
+  const out = base.filter((w) => !R[w.d] || wsWanted(R[w.d]));
+  for (const d of Object.keys(R)) if (wsWanted(R[d]) && !out.some((w) => w.d === d)) out.push({ d, f: null, k: -1 });
+  return out;
+}
+// Make one gun's rail devices match the layout (not while it is in the vise: the bench owns it until RELEASE).
+function railSync(g) {
+  if (!RAIL.on || !g || g.kind !== 'gun' || !g.prop || g.prop.removing || (WB.open && WB.gun === g) || !railReady(g)) return;
+  railHw(g);
+  const faces = railFaces(g);
+  if (!faces.length) return;
+  const want = railWant(g.type), R = RAIL_ROWS[g.type] && wsReal(g.type) ? RAIL_ROWS[g.type] : null;
+  const have = (g.atts || []).filter((p) => !p.removing && railDevOf(p.item) && p.item.rail);
+  const keep = new Set();
+  for (const w of want) {
+    const p = have.find((q) => !keep.has(q) && railDevOf(q.item) === w.d && q.item.rail.f === w.f && q.item.rail.k === w.k && faces.some((f) => f.id === w.f));
+    if (p) { keep.add(p); w.done = true; }
+  }
+  for (const p of have) if (!keep.has(p)) g17Detach(g, p);
+  let changed = false;
+  for (const w of want) {
+    if (w.done || w.drop) continue;
+    let S = railSpots(g, w.d);
+    if (!S.length && w.d !== 'pl2') {                                 // only the PL-2's spot: it steps aside for the new device
+      const B = railSpots(g, w.d, null, railBumpPl2).find((x) => x.bump);
+      if (B) {
+        const q = B.bump; g17Detach(g, q);
+        for (const v of want) if (v.d === 'pl2') v.drop = true;
+        if (R && R.pl2) WORKSHOP.fitted.delete(R.pl2);
+        if (WB.room && WB.room.active && !WB.atts.some((x) => !x.removing && x.item.pl2 && !x.item.gun)) { const t = railPl2Spot(), n = railMakePl2(); n.item.tableSpot = t; WB.atts.push(n); wbHome(n, WB.room); }
+        S = railSpots(g, w.d);
+      }
+    }
+    const s = S.find((x) => x.f.id === w.f && x.k === w.k) || S[0];
+    if (!s) { w.drop = true; changed = true; continue; }
+    const p = railMake(w.d);
+    if (!p) continue;
+    railPose(g, s, p.root.position, p.root.quaternion); p.root.updateMatrixWorld(true);
+    p.item.rail = railRec(s);
+    wbFreeze(g, p);
+    if (!WB.atts.includes(p)) WB.atts.push(p);
+    w.done = true;
+    if (w.f !== s.f.id || w.k !== s.k) { w.f = s.f.id; w.k = s.k; changed = true; }
+  }
+  if (R) {                                                           // a row whose device found no spot is not fitted
+    let off = false;
+    for (const d of Object.keys(R)) if (WORKSHOP.fitted.has(R[d]) && !want.some((w) => w.d === d && w.done)) { WORKSHOP.fitted.delete(R[d]); off = true; }
+    if (off) { wsSave(); WORKSHOP.dirty = true; }
+  }
+  if (changed || want.some((w) => w.drop)) { RAIL.saved[g.type] = want.filter((w) => w.done && !w.drop).map((w) => ({ d: w.d, f: w.f, k: w.k })); railSave(); }
+}
+// RELEASE: the clamped gun's rail devices are the layout of its type now.
+const _rsV = new THREE.Vector3();
+function railSaveGun(g) {
+  if (!RAIL.on || !g || !railFaces(g).length) return;
+  const L = [];
+  for (const p of g.atts || []) {
+    const it = p.item, d = railDevOf(it);
+    if (!d || p.removing || !it.rail || p.root.parent !== g.model || p.root.position.distanceToSquared(_rsV.fromArray(it.rail.P)) > 4e-6) continue;
+    L.push({ d, f: it.rail.f, k: it.rail.k });
+  }
+  RAIL.saved[g.type] = L; railSave();
+}
+function railSyncType(t) {
+  if (!RAIL.on) return;
+  const type = typeof t === 'string' ? t : t && t.type;
+  for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === type && !q.removing) { try { railSync(q.item); } catch (e) { console.warn('step 112: rail sync', e); } }
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { RAIL, RAIL_DEV, RAIL_WRAP, RAIL_ROWS, RAIL_PL2_SPOTS, railFaces, railSpots, railCloud, railSection, railCutGeo, railSlotsOf,
+  railWrapKit, railRingKit, railPistolKit, railM19Kit, railHw, railBenchFit, railClash, railBump, railMakePl2, railLead, railLasers, railWire, railUnwire, railToggleLight,
+  railToggleLaser, railFx, railTick, railSync, railWant, railSaveGun, railSyncType, railZones, railObstacles, railXBox });
 </script>
 </body>
 </html>
