@@ -41,6 +41,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 - Gunsmith: buy parts with banked points (optics, suppressors and muzzle chains, lights, lasers, grips, stocks, magazines, rails), fit them at the vise or from the store, see the build turn in the live BUILD view, and paint guns in solid finishes or camos.
 - Extended magazines and the Glock's auto sear are store parts (FIT / REMOVE on the gun's page; no more bench cards); a switchable LED lamp over the gunsmith vise; weapon lights now throw like a real X300 (useful at 30-50 m in the long range).
 - Fitted attachments (lights, lasers, optics, cans, stocks, grips) stop on walls and push or stop door leaves like the gun itself; a loose part held or thrown hits doors and walls with a knock (`?attclip=off` = old behaviour).
+- Bench zoom (computer): with a gun clamped in the vise and empty hands, the view closes in on the gun; the mouse moves a cursor to fit parts, take them off or press RELEASE. A walking key or Esc leaves it. COMFORT "Bench zoom" turns it off.
 - Night vision with infrared lasers and lights; brass collection and selling; grenades with recorded sound, smoke and scorch.
 - Detailed sound: recorded gun handling, room acoustics, foley, ambience.
 - Also included: the Studio office (`index.html`, a WebXR office with a game editor) and Interstate (`interstate/index.html`, a winter highway driving game).

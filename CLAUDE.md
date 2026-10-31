@@ -911,3 +911,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Held loose part (kind att, VR or carried on the computer): atcItemClip = the empty-hand / step 30 search in its own frame against walls, cover, heavy props and leaves, with gunTouch knocks and buzz. Thrown parts already had COLL.prop (doors included, CCD); side hits now knock (atcKnock from knockTick; not while kinematic / on a gun or peg).
 - No per-frame allocation (shapes, colliders and the item's clip state made on a change / once). ?dev: ATC and atc* functions.
 - Checked: module parse (node --check), eslint no-undef (browser globals only). Not run in a browser or on Quest.
+## CQC: bench zoom (computer)
+- BZ (after scopeDeskView, ?benchzoom=off = old behaviour; COMFORT "Bench zoom" on the height row, comfort.benchZoom, default on): a gun clamped in the vise, empty hands, pointer locked, within BZ.near 1.4 m of the vise: the camera eases 0.4 s (cubic in-out) to a three-quarter view from your side of the bench (el 0.58, az 0.42 rad), the gun's glBounds filling half the width, aim nudged toward the table parts, fov 40-45.
+- bzPre (top of tick) puts your own pose back, bzApply (before the draw) lays the zoom over it, so walking / look / stance are untouched. Body, hanging hands and viewmodel hidden while k > 0. Room-local maths via rLX / rWX / rWZ (turned safe rooms).
+- Mouse moves a free cursor (look held, edge of the screen pans along the bench); click / E picks through the zoomed view (bzPick): table part = fit (wbDeskAtt via grab), part on the gun = take off, gun = take it out, VISE cap = RELEASE.
+- Leaves: WASD or Esc (dismissed until re-clamp or stepping 1.7 m away), gun removed, walking away, picking something up.
+- Checked: module parse; one headless load (?dev): no page errors, handle __cqcBenchZoom. Not checked by eye or in play (framing per gun, cursor picking).

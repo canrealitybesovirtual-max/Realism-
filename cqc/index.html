@@ -27832,7 +27832,7 @@ function termComfort(W, H, now) {
     tBtn('ht:-', T_X0, y, 80, rh, '−', { size: 32, fn: () => heightDesk(-0.05) });
     tText(`${HEIGHT.desk.toFixed(2)} m`, T_X0 + 140, y + rh / 2 + 1, 26, TC.text, 'center', 700, TC.mono);
     tBtn('ht:+', T_X0 + 200, y, 80, rh, '+', { size: 32, fn: () => heightDesk(0.05) });
-    tText(`about ${statureOf(HEIGHT.desk)} cm tall. In VR: CALIBRATE`, 1008, y + rh / 2 + 1, 19, TC.dim, 'right', 600, TC.sans, 400);
+    if (!bzComfortRow(y, rh)) tText(`about ${statureOf(HEIGHT.desk)} cm tall. In VR: CALIBRATE`, 1008, y + rh / 2 + 1, 19, TC.dim, 'right', 600, TC.sans, 400);   // bench zoom: its switch on the right
   }
   // Step 98: your body. A headset shows ~48 deg below where you look (your eyes ~70), so your chest needs a deeper
   // nod than in life: move the body forward / up under your eyes, or hide the clothes (the kit stays and works).
@@ -39250,6 +39250,7 @@ function tickSafe(timeMs, frame) {
 }
 function tick(timeMs) {
   if (!ready) return;
+  bzPre();               // bench zoom: your own view back before anything reads or moves it
   if (renderer.xr.isPresenting && XRVIS.state !== 'visible') { clock.getDelta(); PROF.last = 0; renderer.render(scene, camera); return; }   // step 31: Quest menu open: the world waits, nobody shoots you
   if (document.hidden && !renderer.xr.isPresenting) { clock.getDelta(); PROF.last = 0; return; }   // perf: background tab: no sim, no render
   if (!mobFrame(timeMs)) return;                   // step 48: mobile frame cap (the skipped time joins the next frame)
@@ -39316,6 +39317,7 @@ function tick(timeMs) {
   profMark('shadows');
   stillsTick(performance.now() / 1000);   // step 42: a body cam still, before this frame's own render
   scopeTick(dt);         // step 74: the view through the AWP scope
+  bzApply(dt);           // bench zoom (computer): the view closes in on the gun in the vise
   bodyCamLivePre(dt, performance.now() / 1000);   // step 23.3: live body cam (off / BOOST / headset: uBody = 0, no motion)
   eyeAdaptPre(dt);       // step 96: eye adaptation (computer, outside body cam mode)
   nvgPre();              // step 118: night vision down: the tube's tone map and gain for this frame's draw
@@ -41441,6 +41443,233 @@ function scopeDeskView(on, g) {
   if (on) scopeDeskFov();
 }
 window.addEventListener('wheel', (ev) => { if (SCOPE.desk) { scopeZoom(ev.deltaY > 0 ? 1 / 1.15 : 1.15); ev.preventDefault(); } }, { passive: false });
+
+/* ===========================================================================
+ *  BENCH ZOOM (computer only; COMFORT "Bench zoom", ?benchzoom=off)
+ *  The office's zoom-to-the-screen, at the gunsmith bench: while a gun is clamped
+ *  in the vise, your hands are empty and you stand at the bench (within BZ.near of
+ *  the vise), the view eases (BZ.DUR, cubic in-out) to a three-quarter view from
+ *  your side of the bench: elevated BZ.el, turned BZ.az toward where you stand,
+ *  the gun's drawn bounds (glBounds, measured once per clamp) filling about half
+ *  the width, the aim a little toward the parts lying on the table, fov 40-45 deg.
+ *  Your own pose is put back at the start of every frame (bzPre), so walking, look
+ *  and stance are untouched; the zoom is laid over it just before the draw (bzApply)
+ *  and stays on the camera until the next frame, so whatever reads the camera
+ *  between frames sees what is on screen.
+ *  Input while zoomed: the mouse moves a free cursor (pointer stays locked, look is
+ *  held); it picks from the cursor through the zoomed view (bzPick): a table part
+ *  = fit it, a part on the gun = take it off, the gun = take it out, the VISE cap =
+ *  RELEASE (the same grab / wbButtonPress calls the dot used). E acts on the part
+ *  under the cursor too. The cursor at the screen edge turns the view along the
+ *  bench (BZ.panMax), so far parts can be reached.
+ *  Leaving: a walking key or Esc (pointer lock lost) eases back and stays out until
+ *  you clamp again or step away from the bench; taking the gun, RELEASE, walking
+ *  away or picking something up end it too. Nothing is drawn of you or a viewmodel
+ *  while zoomed (body hidden for the frame; zoom needs empty hands).
+ *  Never in the headset or on touch. No per-frame allocation (picking allocates only
+ *  on mouse events). Room-local maths through rLX / rWX, so turned safe rooms work.
+ * ========================================================================= */
+const BZ = { on: !/[?&]benchzoom=off\b/.test(location.search), DUR: 0.4, fovMin: 40, fovMax: 45, dMin: 0.45, fill: 0.5, el: 0.58, az: 0.42,
+  bias: 0.3, biasMax: 0.3, partR: 1.3, near: 1.4, far: 1.7, edge: 0.86, panRate: 1.1, panMax: 0.6, panPMax: 0.3,
+  k: 0, want: false, applied: false, dismissed: false, gun: null, side: 1, dist: 9, nx: 0, ny: 0, panY: 0, panP: 0, hover: null, hk: '', picked: false,
+  box: new THREE.Box3(), c: new THREE.Vector3(), Lh: 0.12, Hh: 0.05, px: 0, pz: 0, pn: 0,
+  bpL: new THREE.Vector3(), bqL: new THREE.Quaternion(), bFov: 72, lp: new THREE.Vector3(), lq: new THREE.Quaternion(),
+  bp: new THREE.Vector3(), bq: new THREE.Quaternion(), ow: new THREE.Vector3(), oq: new THREE.Quaternion(), tp: new THREE.Vector3(), tq: new THREE.Quaternion(), tFov: 45, hasT: false,
+  v: new THREE.Vector3(), f: new THREE.Vector3(), s: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), mi: new THREE.Matrix4(), xA: new THREE.Vector3(1, 0, 0),
+  cam: new THREE.PerspectiveCamera(45, 1, 0.03, 60), ray: new THREE.Raycaster(), ndc: new THREE.Vector2(), roots: [], hits: [], dom: null, lbl: null };
+BZ.ray.far = 6;
+if (BZ.on) {
+  comfort.benchZoom = true;
+  try { const s = JSON.parse(localStorage.getItem(COMFORT_KEY) || '{}'); if (typeof s.benchZoom === 'boolean') comfort.benchZoom = s.benchZoom; } catch (e) { /* default on */ }
+}
+const BZ_WALK = ['KeyW', 'KeyA', 'KeyS', 'KeyD'];
+// The gun's drawn size and middle (its own frame), and the table parts near the vise (room-local), once per clamp.
+function bzMeasure(g) {
+  glBounds(g.prop.root, BZ.box);
+  if (BZ.box.isEmpty()) { BZ.c.set(0, 0, -0.1); BZ.Lh = 0.2; BZ.Hh = 0.06; }
+  else { BZ.box.getCenter(BZ.c); BZ.box.getSize(BZ.s); BZ.Lh = Math.max(BZ.s.x, BZ.s.z) / 2; BZ.Hh = BZ.s.y / 2; }
+  BZ.px = BZ.pz = 0; BZ.pn = 0;
+  for (const p of WB.atts) {
+    const t = p.item.tableSpot;
+    if (!t || p.removing || p.item.stuck || Math.hypot(t[2] - WB.vise.x, t[3] - WB.vise.z) > BZ.partR) continue;
+    BZ.px += t[2]; BZ.pz += t[3]; BZ.pn++;
+  }
+  if (BZ.pn) { BZ.px /= BZ.pn; BZ.pz /= BZ.pn; }
+  headWorld(BZ.v);
+  BZ.side = rLX(WB.room, BZ.v.x) >= WB.vise.x ? 1 : -1;            // three-quarter from the side you stand on
+}
+// Your horizontal distance to the vise (camera = your own pose when called).
+function bzDist() { const R = WB.room; headWorld(BZ.v); return Math.hypot(BZ.v.x - rWX(R, WB.vise.x), BZ.v.z - rWZ(R, WB.vise.z)); }
+function bzWanted() {
+  if (!BZ.on || comfort.benchZoom === false || renderer.xr.isPresenting || IS_TOUCH || !ready) return false;
+  const g = WB.open ? WB.gun : null, R = WB.room;
+  if (!g || !g.prop || g.prop.removing || g.primary || !R || !R.active || stream.current !== R) return false;
+  if (deskHand.prop || playerState.dead || SCOPE.desk || document.pointerLockElement !== canvas) return false;
+  return BZ.dist < BZ.near;
+}
+// Start of the frame: your own view back (only if the camera still carries the zoom: anything that moved it since wins).
+function bzPre() {
+  if (!BZ.applied) return;
+  if (camera.position.equals(BZ.lp)) camera.position.copy(BZ.bpL);
+  if (camera.quaternion.equals(BZ.lq)) camera.quaternion.copy(BZ.bqL);
+  camera.fov = BZ.bFov; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+  BZ.applied = false;
+}
+// The zoomed pose (world) for the clamped gun, into BZ.tp / BZ.tq / BZ.tFov.
+function bzTarget(g, R) {
+  const root = g.prop.root; root.updateWorldMatrix(true, false);
+  BZ.f.copy(BZ.c).applyMatrix4(root.matrixWorld);
+  let fx = rLX(R, BZ.f.x), fz = rLZ(R, BZ.f.z);
+  const fy = BZ.f.y;
+  if (BZ.pn) {                                                      // aim a little toward the parts on the table
+    const dx = BZ.px - fx, dz = BZ.pz - fz, l = Math.hypot(dx, dz), sh = Math.min(BZ.biasMax, l * BZ.bias);
+    if (l > 1e-3) { fx += dx / l * sh; fz += dz / l * sh; }
+  }
+  BZ.tFov = Math.max(BZ.fovMin, Math.min(BZ.fovMax, BZ.bFov));
+  const tv = Math.tan(BZ.tFov * Math.PI / 360), th = tv * (camera.aspect || 1.6);
+  const d = Math.max(BZ.dMin, BZ.Lh / (BZ.fill * th), BZ.Hh / (0.35 * tv));
+  const a = BZ.side * BZ.az, ce = Math.cos(BZ.el);
+  // your side of the bench is room-local -z from the vise (the bench stands against the +z wall)
+  BZ.tp.set(rWX(R, fx + d * ce * Math.sin(a)), fy + d * Math.sin(BZ.el), rWZ(R, fz - d * ce * Math.cos(a)));
+  BZ.f.set(rWX(R, fx), fy, rWZ(R, fz));
+  BZ.m.lookAt(BZ.tp, BZ.f, Y_AXIS); BZ.tq.setFromRotationMatrix(BZ.m);
+  if (BZ.panY) BZ.tq.premultiply(BZ.q.setFromAxisAngle(Y_AXIS, BZ.panY));
+  if (BZ.panP) BZ.tq.multiply(BZ.q.setFromAxisAngle(BZ.xA, BZ.panP));
+  BZ.hasT = true;
+}
+const bzEase = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+// Before the draw: the zoom over your pose (eased), cursor and edge turn, nothing of you in the picture.
+function bzApply(dt) {
+  if (!BZ.on) return;
+  if (renderer.xr.isPresenting || IS_TOUCH) { if (BZ.want) bzShow(false); BZ.want = false; BZ.k = 0; return; }
+  const g = WB.open && WB.gun && !WB.gun.prop.removing ? WB.gun : null;
+  camera.updateWorldMatrix(true, false);
+  BZ.dist = WB.room ? bzDist() : 9;
+  if (g !== BZ.gun) { BZ.gun = g; BZ.dismissed = false; BZ.panY = BZ.panP = 0; if (g) bzMeasure(g); }
+  let want = bzWanted();
+  if (want && BZ.k > 0) for (let i = 0; i < BZ_WALK.length; i++) if (keys.has(BZ_WALK[i])) { BZ.dismissed = true; break; }   // a walking key leaves it
+  if (BZ.dismissed && (!g || BZ.dist > BZ.far)) BZ.dismissed = false;   // clamp again or step away: armed again
+  want = want && !BZ.dismissed;
+  if (want !== BZ.want) { BZ.want = want; bzShow(want); }
+  const st = Math.min(Math.max(dt || 0, 0), 0.1) / BZ.DUR;
+  BZ.k = want ? Math.min(1, BZ.k + st) : Math.max(0, BZ.k - st);
+  if (BZ.k <= 0) { BZ.hasT = false; return; }
+  if (want) {                                                       // the cursor at an edge turns the view along the bench
+    const ex = Math.abs(BZ.nx) - BZ.edge, ey = Math.abs(BZ.ny) - BZ.edge, r = BZ.panRate * Math.min(dt || 0, 0.1) / (1 - BZ.edge);
+    const py = BZ.panY, pp = BZ.panP;
+    if (ex > 0) BZ.panY = clamp(BZ.panY - Math.sign(BZ.nx) * r * ex, -BZ.panMax, BZ.panMax);
+    if (ey > 0) BZ.panP = clamp(BZ.panP + Math.sign(BZ.ny) * r * ey * 0.6, -BZ.panPMax, BZ.panPMax);
+    if ((py !== BZ.panY || pp !== BZ.panP) && BZ.hk) { BZ.hover = null; BZ.hk = ''; bzLabel(); }
+  }
+  // your own pose (the engine's, this frame)
+  BZ.bpL.copy(camera.position); BZ.bqL.copy(camera.quaternion); BZ.bFov = camera.fov;
+  camera.matrixWorld.decompose(BZ.bp, BZ.bq, BZ.s);
+  if (g) bzTarget(g, WB.room); else if (!BZ.hasT) { BZ.k = 0; return; }   // gun gone mid-way: ease back from the last pose
+  const e = bzEase(BZ.k);
+  BZ.ow.lerpVectors(BZ.bp, BZ.tp, e); BZ.oq.slerpQuaternions(BZ.bq, BZ.tq, e);
+  rig.updateWorldMatrix(true, false);
+  BZ.mi.copy(rig.matrixWorld).invert();
+  BZ.lp.copy(BZ.ow).applyMatrix4(BZ.mi);
+  rig.getWorldQuaternion(BZ.q); BZ.lq.copy(BZ.q.invert()).multiply(BZ.oq);
+  camera.position.copy(BZ.lp); camera.quaternion.copy(BZ.lq);
+  camera.fov = BZ.bFov + (BZ.tFov - BZ.bFov) * e; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+  BZ.applied = true;
+  const C = BZ.cam;                                                 // the picking camera: exactly what is drawn
+  C.position.copy(BZ.ow); C.quaternion.copy(BZ.oq); C.near = camera.near; C.far = camera.far;
+  C.fov = camera.fov; C.aspect = camera.aspect; C.updateProjectionMatrix(); C.updateMatrixWorld();
+  if (BODY.ready) BODY.root.visible = false;                        // your body is behind / under the view (bodyPre shows it again)
+  for (const h of HANDS.list) h.root.visible = false;               // and the empty arms' hanging hands (handsUpdate / bodyArms set them again)
+  if (VM.vis) VM.vis = false;                                       // never a floating viewmodel
+  if (want) { reticle.classList.add('hidden'); xhair.classList.add('hidden'); }
+  if (want && BZ.k >= 1 && !BZ.picked) { BZ.picked = true; bzPick(); bzLabel(); }   // settled: what is under the cursor
+}
+function bzDom() {
+  if (BZ.dom) return;
+  const d = BZ.dom = document.createElement('div'), l = BZ.lbl = document.createElement('div');
+  d.style.cssText = 'position:fixed;left:0;top:0;width:18px;height:18px;margin:-11px 0 0 -11px;border:2px solid rgba(255,255,255,0.92);border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,0.55),inset 0 0 0 1px rgba(0,0,0,0.4);pointer-events:none;z-index:40;display:none';
+  l.style.cssText = 'position:fixed;left:0;top:0;padding:3px 8px;border-radius:4px;background:rgba(10,12,14,0.78);color:#f2f2ee;font:600 13px system-ui,sans-serif;white-space:nowrap;pointer-events:none;z-index:40;display:none';
+  document.body.appendChild(d); document.body.appendChild(l);
+}
+function bzShow(on) {
+  bzDom();
+  if (on) { BZ.nx = 0; BZ.ny = 0; BZ.panY = BZ.panP = 0; BZ.hover = null; BZ.hk = ''; BZ.picked = false; }
+  BZ.dom.style.display = on ? 'block' : 'none';
+  if (!on) BZ.lbl.style.display = 'none';
+  if (on) bzCursor();
+}
+function bzCursor() {
+  const r = canvas.getBoundingClientRect(), x = r.left + (BZ.nx + 1) / 2 * r.width, y = r.top + (1 - BZ.ny) / 2 * r.height;
+  BZ.dom.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+  BZ.lbl.style.transform = `translate(${(x + 16).toFixed(1)}px, ${(y + 12).toFixed(1)}px)`;
+}
+function bzLabel() {
+  if (!BZ.dom) return;
+  const p = BZ.hover, k = BZ.hk;
+  const t = k === 'btn' ? 'RELEASE: lock the parts on' : k === 'gun' && WB.gun ? `Take the ${WB.gun.def.label} out` : k === 'att' && p ? `${p.item.stuck ? 'Take off' : 'Fit'} ${p.item.label || 'part'}` : '';
+  BZ.dom.style.borderColor = t ? '#ffb347' : 'rgba(255,255,255,0.92)';
+  if (t) BZ.lbl.textContent = t;
+  BZ.lbl.style.display = t ? 'block' : 'none';
+}
+// What is under the cursor, through the zoomed view: a bench part (on the table or on the gun), the clamped gun, the VISE cap.
+function bzPick() {
+  BZ.hover = null; BZ.hk = '';
+  if (!BZ.applied) return;
+  const R = BZ.roots, g = WB.gun; R.length = 0;
+  for (const p of WB.atts) if (!p.removing && p.inWorld && p.root.visible && deskPickable(p)) R.push(p.root);
+  if (g && !g.prop.removing) R.push(g.prop.root);
+  if (WB.cap) R.push(WB.cap);
+  if (WB.btn) R.push(WB.btn);
+  BZ.ndc.set(BZ.nx, BZ.ny); BZ.ray.setFromCamera(BZ.ndc, BZ.cam);
+  BZ.hits.length = 0; BZ.ray.intersectObjects(R, true, BZ.hits);
+  for (const h of BZ.hits) {
+    for (let o = h.object; o; o = o.parent) {
+      if (o === WB.cap || o === WB.btn) { BZ.hk = 'btn'; return; }
+      const c = o.userData.prop;
+      if (!c) continue;
+      if (c.item && c.item.kind === 'att' && deskPickable(c)) { BZ.hover = c; BZ.hk = 'att'; return; }
+      if (g && c === g.prop) { BZ.hover = c; BZ.hk = 'gun'; return; }
+      break;
+    }
+  }
+}
+function bzAct() {
+  bzPick();
+  const p = BZ.hover, k = BZ.hk;
+  if (k === 'btn') wbButtonPress(null);
+  else if ((k === 'att' || k === 'gun') && p && !deskHand.prop) { grab(deskHand, p, true); syncButtons(); }
+  bzPick(); bzLabel();
+  return !!k;
+}
+if (BZ.on) {
+  // The mouse drives the cursor while zoomed (look held); clicks and E go to what is under it.
+  window.addEventListener('mousemove', (e) => {
+    if (!BZ.want || document.pointerLockElement !== canvas) return;
+    e.stopImmediatePropagation();
+    const r = canvas.getBoundingClientRect();
+    BZ.nx = clamp(BZ.nx + e.movementX * 2 / Math.max(1, r.width), -1, 1);
+    BZ.ny = clamp(BZ.ny - e.movementY * 2 / Math.max(1, r.height), -1, 1);
+    bzCursor(); bzPick(); bzLabel();
+  }, true);
+  window.addEventListener('mousedown', (e) => {
+    if (!BZ.want || document.pointerLockElement !== canvas) return;
+    e.stopImmediatePropagation(); e.preventDefault();
+    if (e.button === 0) bzAct();
+  }, true);
+  window.addEventListener('keydown', (e) => {
+    if (!BZ.want || e.code !== 'KeyE' || e.repeat) return;
+    bzPick();
+    if (BZ.hk) { e.stopImmediatePropagation(); bzAct(); }
+  }, true);
+  document.addEventListener('pointerlockchange', () => { if (BZ.want && document.pointerLockElement !== canvas) BZ.dismissed = true; });   // Esc leaves
+}
+// COMFORT (computer): the height row's right side carries the switch. False = draw the row as before.
+function bzComfortRow(y, rh) {
+  if (!BZ.on) return false;
+  tText(`about ${statureOf(HEIGHT.desk)} cm tall`, T_X0 + 296, y + rh / 2 + 1, 19, TC.dim, 'left', 600, TC.sans, 150);
+  tTog('bzoom', 752, y, 256, rh, 'Bench zoom', comfort.benchZoom !== false, (v) => { comfort.benchZoom = v; comfortChanged(); termMsg(v ? 'Bench zoom on: the view closes in on a gun in the vise' : 'Bench zoom off'); });
+  return true;
+}
+if (/[?&]dev\b/.test(location.search)) window.__cqcBenchZoom = { BZ, bzPre, bzApply, bzWanted, bzMeasure, bzTarget, bzPick, bzAct, bzDist };
 
 function x64MagModel(magType) {
   const X = X64[X64BYMAG[magType]], root = new THREE.Group(), round = new THREE.Group();
