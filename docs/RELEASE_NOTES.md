@@ -39,6 +39,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 - Squad AI: roles, suppression, flanking, hearing, morale, surrender (keep him covered, then tie his hands).
 - Six player guns in the safe room's gun locker: Glock 17, Beretta 92X, M1911, AKM, M4A1-S, AWM. Real handling: chamber, magazines, press checks, slides and bolts that lock open on the last round (pistols, M4A1-S, AWM; the AKM closes), recoil, ballistics with penetration through drywall and doors.
 - Gunsmith: buy parts with banked points (optics, suppressors and muzzle chains, lights, lasers, grips, stocks, magazines, rails), fit them at the vise or from the store, see the build turn in the live BUILD view, and paint guns in solid finishes or camos.
+- Extended magazines and the Glock's auto sear are store parts (FIT / REMOVE on the gun's page; no more bench cards); a switchable LED lamp over the gunsmith vise; weapon lights now throw like a real X300 (useful at 30-50 m in the long range).
 - Night vision with infrared lasers and lights; brass collection and selling; grenades with recorded sound, smoke and scorch.
 - Detailed sound: recorded gun handling, room acoustics, foley, ambience.
 - Also included: the Studio office (`index.html`, a WebXR office with a game editor) and Interstate (`interstate/index.html`, a winter highway driving game).
