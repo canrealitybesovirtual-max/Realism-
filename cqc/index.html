@@ -15736,6 +15736,7 @@ function fireGun(g, now) {
   const AF = g.afx || AFX0;                                        // step 100: the fitted parts (GLOCK_FX)
   _fx.set(1, 0, 0).applyQuaternion(_wq); _fy.set(0, 1, 0).applyQuaternion(_wq);
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
+  if (TRC_ON) trcArm(g, g.type, false);    // step 121: every Nth rifle round a tracer
   for (let i = 0; i < d.pellets; i++) {
     const a = Math.random() * Math.PI * 2, r = d.spread * Math.sqrt(Math.random());
     _fd2.copy(_fd).addScaledVector(_fx, Math.cos(a) * r).addScaledVector(_fy, Math.sin(a) * r).normalize();
@@ -16968,6 +16969,7 @@ function brassSupplies(now) {
     tBtn(id, x0 + pw - 226, y + 16, 204, h - 32, label, { size: 28, sel, fn });
   };
   W.supplies.forEach((s, i) => {
+    if (s.rowDraw) { s.rowDraw(s, x0, top + i * (h + gap), pw, h); return; }   // step 121: the tracer mix switch
     const rich = WALLET.money >= s.price;
     row(i, s.name, s.desc, status[s.id] || '', fmtMoney(s.price), rich ? TC.hi : TC.warn, rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`, TC.warn, `sup:${s.id}`, 'BUY', rich, () => wsBuySupply(s.id));
   });
@@ -21810,10 +21812,10 @@ function traceBullet0(origin, dir, d, type, opts = null) {
     const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : range;
     if (!fromEnemy) {                                            // step 7: a man in the way?
       const eh = enemyRayTest(_tbo, dir, toi);
-      if (eh) { _tbTravel += eh.t; enemyShot(eh, dir, d, E); return false; }
+      if (eh) { _tbTravel += eh.t; if (TRC.rec >= 0) trcSeg(_tbo, dir, eh.t, 2, null); enemyShot(eh, dir, d, E); return false; }   // step 121: a tracer's path
       aiRoundPassed(_tbo, dir, toi);                             // step 11: a crack past his head suppresses him
     }
-    if (!hit) { _tbTravel += range; _tbE = E; return true; }
+    if (!hit) { if (TRC.rec >= 0) trcSeg(_tbo, dir, range, 0, null); _tbTravel += range; _tbE = E; return true; }   // step 121
     _tbTravel += toi;
     _cv.p.copy(_tbo).addScaledVector(dir, toi);
     _cv.n.set(hit.normal.x, hit.normal.y, hit.normal.z);
@@ -21821,6 +21823,7 @@ function traceBullet0(origin, dir, d, type, opts = null) {
     else if (_cv.n.dot(dir) > 0) _cv.n.negate();
     const Eb = E;                                                // step 119: what it had going in
     const r = coverHit(hit, _cv.p, _cv.n, dir, d, E) || (PEN.live ? penHit(hit, toi, _cv.p, _cv.n, dir, d, E) : null);   // step 119: walls, doors, props
+    if (TRC.rec >= 0) trcSeg(_tbo, dir, toi, r && !r.stop ? 3 : 1, _cv.n);   // step 121: a tracer's path (stopped here or through)
     if (!r) { bulletHit(hit, dir, d, E); return false; }
     if (r.stop) return false;
     E = r.E; _tbE = E;
@@ -21868,6 +21871,10 @@ function penRound(type) {
   return R;
 }
 function traceBullet(origin, dir, d, type, opts = null) {
+  if (TRC_ON && TRC.arm === 1) { trcBegin(); try { return traceBullet1(origin, dir, d, type, opts); } finally { trcEnd(); } }   // step 121: a tracer records its path
+  return traceBullet1(origin, dir, d, type, opts);
+}
+function traceBullet1(origin, dir, d, type, opts) {
   if (!PEN_ON) return traceBullet0(origin, dir, d, type, opts);
   penStart(type, opts);
   try { return traceBullet0(origin, PEN.d.copy(dir), d, type, opts); } finally { PEN.live = false; }   // its own copy of the path: it may turn
@@ -22467,6 +22474,280 @@ function rebuildRoomDecals(room) {
   for (const h of m.holes) putDecal(decalLayer(room, room.group, h[0]), h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
   if (GORE_ON && room.decals && room.decals.pool && room.decals.pool.im.instanceColor) goreInitPool(room.decals.pool.im);   // step 41: you come back, it has dried
 }
+
+/* ---------------------------------------------------------------------------
+ *  STEP 121 — TRACER ROUNDS (CONFIG.tracer, ?tracer=off)
+ *  Rifles (AKM / AKM-N 7.62x39, M4A1-S and M16A1 5.56, AWM .338) load a mixed
+ *  magazine: every Nth round a tracer (CONFIG.tracer.every 5; per gun / man a
+ *  counter starting at a random place). His rifles too (his: true). Pistols,
+ *  buckshot and fragments never (CONFIG.tracer.guns: gun type -> cartridge).
+ *  The path is the round's own: traceBullet0 hands over each straight piece it
+ *  flies (trcSeg: start, direction, length, how it ended) while traceBullet's
+ *  wrapper records (trcBegin / trcEnd), so step 119's turns after penetration
+ *  and the gaps through walls are in it. The streak runs down that path in real
+ *  time: s(t) = Lk ln(1 + v0 t / Lk) (v0 from CONFIG.ballistics.rounds, Lk the
+ *  round's drag length), dark until the pyrotechnic lights 10-15 m out, one
+ *  frame of travel long (shutter persistence, capped), never reaching back past
+ *  the light-up point or its own segment, burnt out at ~900 m.
+ *  At the end: a round stopped by a surface (bulletHit) may ricochet (likelier
+ *  at a graze: the streak goes on at a shallow angle, one Rapier ray at that
+ *  moment, dimmer, sparks at the glance), else it dies in hot sparks (impact pool).
+ *  Drawing: one Mesh of n camera-facing quads (ShaderMaterial, additive, HDR red
+ *  with a hot core, at least minPx wide), tone mapped where the scene is (the
+ *  headset; the step 118 night-vision tone map turns it green), bloomed by the
+ *  computer's post. Always in the scene (zero-size quads when idle), so it
+ *  compiles with the rest at load; no light, no per-frame allocation.
+ *  Night vision: lit streaks feed the gate (trcNvgF in nvgGain). AI: in the
+ *  dark a tracer of yours gives away where you fired from for seeMemory s to
+ *  men within seeRange m of that spot (trcSeen in nightCanSee). Store: GUNSMITH
+ *  SUPPLIES "Tracer mix" 1:5 / OFF (free), saved in cqc.tracer.v1.
+ * ------------------------------------------------------------------------- */
+CONFIG.tracer = Object.assign({
+  on: true, every: 5, his: true,             // every Nth round in a mixed magazine; his rifles too
+  guns: { rifle: '556', m4a1s: '556', akm: '762', akmn: '762', awp: '338' },   // gun type -> cartridge; anything else has no tracers
+  ignite: [10, 15], ramp: 3,                 // m past the muzzle where it lights; m it takes to come up
+  burn: 900, fade: 60,                       // m it burns out at; m it fades over
+  drag: { '556': 1000, '762': 900, '338': 2000 },   // m: velocity e-folding length (v = v0 / (1 + v0 t / Lk))
+  persist: 1, cap: 7,                        // frames of travel the streak shows; m at most
+  width: 0.0035, minPx: 1.4,                 // m half width; px at least
+  gain: 26, gainVR: 7,                       // HDR level (the computer's post blooms it; the headset tone maps in the shader)
+  col: [1.0, 0.13, 0.035], core: [1.0, 0.5, 0.2],
+  rico: 0.35, ricoCos: 0.5, ricoMin: 0.02, ricoLen: 40, ricoK: 0.6,   // ricochet: chance at a full graze, |cos| under which it rises, chance head-on, m at most, brightness after
+  sparks: 7, n: 24,                          // sparks where it dies; streaks at once
+  seeMemory: 3, seeRange: 40,                // s / m: in the dark, men near where you fired see you
+  nvgI: 6                                    // into the night-vision gate like a muzzle light of this size
+}, CONFIG.tracer || {});
+const TRC_ON = !/[?&]tracer=off\b/.test(location.search) && CONFIG.tracer.on !== false;
+const TRC_SEG = 6;
+const TRC = {
+  n: CONFIG.tracer.n | 0 || 24, every: CONFIG.tracer.every, arm: -1, key: '762', his: false, rec: -1, next: 0, mesh: null, mat: null, uiDone: false,
+  youT: -99, youP: new THREE.Vector3(), h: new THREE.Vector3(), v: new THREE.Vector3(), w: new THREE.Vector3(), q: new THREE.Vector3(),
+  any: false
+};
+{
+  const n = TRC.n;
+  Object.assign(TRC, {
+    live: new Uint8Array(n), t: new Float32Array(n), v0: new Float32Array(n), lk: new Float32Array(n), ign: new Float32Array(n), burn: new Float32Array(n),
+    total: new Float32Array(n), ns: new Uint8Array(n), endT: new Int8Array(n), rico: new Int8Array(n), gl: new Uint8Array(n), hisR: new Uint8Array(n),
+    so: new Float32Array(n * TRC_SEG * 3), sd: new Float32Array(n * TRC_SEG * 3), s0: new Float32Array(n * TRC_SEG), sl: new Float32Array(n * TRC_SEG),
+    sn: new Float32Array(n * 3)                                     // the surface normal where it stopped (ricochet)
+  });
+  try { const v = JSON.parse(localStorage.getItem('cqc.tracer.v1') || 'null'); if (v && typeof v.mix === 'number') TRC.every = Math.max(0, v.mix | 0); } catch (e) { /* default mix */ }
+}
+// Before a shot (fireGun / enemyShoot): is the next round out of this gun a tracer?
+function trcArm(o, type, his) {
+  TRC.arm = -1;
+  const C = CONFIG.tracer, key = C.guns[type], every = his ? (C.his ? C.every : 0) : TRC.every;
+  if (!TRC_ON || !key || !(every > 0)) return;
+  if (o.trcN === undefined) o.trcN = (Math.random() * every) | 0;   // a magazine starts anywhere in the mix
+  if (++o.trcN % every) return;
+  TRC.arm = 1; TRC.key = key; TRC.his = his;
+}
+// traceBullet: start / finish recording the path of an armed tracer (the first pellet only).
+function trcBegin() {
+  TRC.rec = -1;
+  if (TRC.arm !== 1) return;
+  TRC.arm = -1;
+  let i = -1;
+  for (let j = 0; j < TRC.n; j++) { const q = (TRC.next + j) % TRC.n; if (!TRC.live[q]) { i = q; break; } }
+  if (i < 0) i = TRC.next;                                          // all busy: the oldest goes
+  TRC.next = (i + 1) % TRC.n;
+  TRC.live[i] = 0; TRC.ns[i] = 0; TRC.total[i] = 0; TRC.endT[i] = 0; TRC.rico[i] = -1; TRC.gl[i] = 0; TRC.hisR[i] = TRC.his ? 1 : 0;
+  TRC.rec = i;
+}
+// From traceBullet0: one straight piece. type 0 flew out of range, 1 stopped in a surface (n), 2 a body, 3 went through, 4 a ricochet that hit.
+function trcSeg(o, d, len, type, n) {
+  const i = TRC.rec;
+  if (i < 0 || TRC.ns[i] >= TRC_SEG || !(len > 0)) return;
+  const j = i * TRC_SEG + TRC.ns[i]++;
+  TRC.so[j * 3] = o.x; TRC.so[j * 3 + 1] = o.y; TRC.so[j * 3 + 2] = o.z;
+  TRC.sd[j * 3] = d.x; TRC.sd[j * 3 + 1] = d.y; TRC.sd[j * 3 + 2] = d.z;
+  TRC.s0[j] = TRC.total[i]; TRC.sl[j] = len; TRC.total[i] += len; TRC.endT[i] = type;
+  if (n) { TRC.sn[i * 3] = n.x; TRC.sn[i * 3 + 1] = n.y; TRC.sn[i * 3 + 2] = n.z; }
+}
+function trcEnd() {
+  const i = TRC.rec, C = CONFIG.tracer;
+  TRC.rec = -1;
+  if (i < 0 || !TRC.ns[i]) return;
+  const R = CONFIG.ballistics.rounds[TRC.key] || CONFIG.ballistics.rounds['762'];
+  TRC.v0[i] = R.v; TRC.lk[i] = C.drag[TRC.key] || 1000; TRC.ign[i] = rnd2(C.ignite[0], C.ignite[1]); TRC.burn[i] = C.burn * rnd2(0.92, 1.05);
+  TRC.t[i] = 0;
+  if (TRC.endT[i] === 1 && TRC.total[i] > TRC.ign[i]) trcRicochet(i);
+  TRC.live[i] = 1; TRC.any = true;
+  if (!TRC.hisR[i] && TRC.total[i] > TRC.ign[i]) { TRC.youT = wnow(); TRC.youP.fromArray(TRC.so, i * TRC_SEG * 3); }   // a tracer that lit: where you fired from shows
+}
+// A stopped round may glance off: likelier the flatter it came in. One ray now; its piece is appended to the path.
+function trcRicochet(i) {
+  const C = CONFIG.tracer, j = i * TRC_SEG + TRC.ns[i] - 1, D = TRC.w, N = TRC.q, P = TRC.v;
+  if (TRC.ns[i] >= TRC_SEG || !world) return;
+  D.fromArray(TRC.sd, j * 3); N.fromArray(TRC.sn, i * 3);
+  const c = -D.dot(N);
+  if (!(c > 0)) return;
+  const p = c < C.ricoCos ? C.ricoMin + (C.rico - C.ricoMin) * (1 - c / C.ricoCos) : C.ricoMin * 0.5;
+  if (Math.random() >= p) return;
+  P.fromArray(TRC.so, j * 3).addScaledVector(D, TRC.sl[j]);
+  D.addScaledVector(N, 2 * c);                                      // mirrored, then flatter, a little scattered
+  D.addScaledVector(N, -D.dot(N) * rnd2(0.4, 0.8));
+  D.x += (Math.random() - 0.5) * 0.12; D.y += (Math.random() - 0.5) * 0.12; D.z += (Math.random() - 0.5) * 0.12;
+  D.normalize();
+  if (D.dot(N) < 0.02) D.addScaledVector(N, 0.04 - D.dot(N)).normalize();
+  P.addScaledVector(N, 0.01);
+  if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
+  _rapRay.origin = { x: P.x, y: P.y, z: P.z }; _rapRay.dir = { x: D.x, y: D.y, z: D.z };
+  const hit = world.castRayAndGetNormal(_rapRay, C.ricoLen, true, undefined, RAY_GROUPS);
+  const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : C.ricoLen;
+  TRC.rico[i] = TRC.ns[i];
+  TRC.rec = i; trcSeg(P, D, Math.max(0.05, toi), hit ? 4 : 0, null); TRC.rec = -1;
+}
+// Where it dies (or glances): a few hot sparks from the step 5 impact pool.
+const TRC_SPARK = { c: [7, 1.6, 0.5], a: 1, sp: [1.2, 4.5], life: [0.12, 0.35], size: [0.0025, 0.0045], grow: 0, drag: 0.6, grav: 9.8 };
+function trcSpark(P, axis, n) { if (WEAPON.fx && n > 0) fxEmit(P, axis, 0.7, n, TRC_SPARK); }
+
+function trcBuild() {
+  if (!TRC_ON || TRC.mesh) return;
+  const C = CONFIG.tracer, n = TRC.n, geo = new THREE.BufferGeometry();
+  const ts = new Float32Array(n * 8), idx = [];
+  for (let i = 0; i < n; i++) {
+    ts.set([0, -1, 0, 1, 1, -1, 1, 1], i * 8);
+    const b = i * 4; idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 12), 3).setUsage(THREE.DynamicDrawUsage));   // head
+  geo.setAttribute('aA', new THREE.BufferAttribute(new Float32Array(n * 12), 3).setUsage(THREE.DynamicDrawUsage));         // tail
+  geo.setAttribute('aK', new THREE.BufferAttribute(new Float32Array(n * 4), 1).setUsage(THREE.DynamicDrawUsage));          // brightness, 0 = not drawn
+  geo.setAttribute('aT', new THREE.BufferAttribute(ts, 2));                                                                 // along 0..1, side -1..1
+  geo.setIndex(idx);
+  TRC.mat = new THREE.ShaderMaterial({
+    uniforms: { uHalfH: { value: 500 }, uW: { value: C.width }, uMinPx: { value: C.minPx }, uGain: { value: C.gain },
+      uCol: { value: new THREE.Color(C.col[0], C.col[1], C.col[2]) }, uCore: { value: new THREE.Color(C.core[0], C.core[1], C.core[2]) } },
+    vertexShader: `
+      attribute vec3 aA; attribute vec2 aT; attribute float aK; uniform float uHalfH, uW, uMinPx; varying vec2 vT; varying float vK;
+      void main() {
+        vT = aT; vK = 0.0;
+        if (aK <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+        vec4 mv = viewMatrix * vec4(mix(aA, position, aT.x), 1.0);
+        vec3 dv = (viewMatrix * vec4(position - aA, 0.0)).xyz, cx = cross(dv, mv.xyz);
+        float l = length(cx), ld = length(dv);
+        vec3 side = l > 1e-9 ? cx / l : vec3(1.0, 0.0, 0.0);
+        float px = max(-mv.z, 0.02) / (projectionMatrix[1][1] * uHalfH);
+        float hw = max(uW, uMinPx * px);
+        mv.xyz += side * aT.y * hw + (ld > 1e-6 ? dv / ld : vec3(0.0)) * (aT.x * 2.0 - 1.0) * hw;   // the ends run on by a half width
+        vK = aK * pow(uW / hw, 0.7);                                      // thinner than a pixel: dimmer, never gone
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uCol, uCore; uniform float uGain; varying vec2 vT; varying float vK;
+      void main() {
+        float r2 = vT.y * vT.y, a = exp(-r2 * 4.0), c = exp(-r2 * 22.0);
+        float along = mix(0.18, 1.0, vT.x * vT.x);                       // the head burns, the rest is the eye's persistence
+        gl_FragColor = vec4((uCol * a + uCore * c * along) * along * vK * uGain, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+  });
+  TRC.mesh = new THREE.Mesh(geo, TRC.mat);
+  TRC.mesh.frustumCulled = false; TRC.mesh.renderOrder = 7; TRC.mesh.matrixAutoUpdate = false;
+  scene.add(TRC.mesh);
+  trcStoreInit();
+}
+// weaponsPrecompile: built before the warm-up draws (always in the scene, so it compiles with them).
+function trcPrecompile(on) { if (on) trcBuild(); }
+function trcWrite(i, hx, hy, hz, tx, ty, tz, k) {
+  const g = TRC.mesh.geometry, P = g.attributes.position.array, A = g.attributes.aA.array, K = g.attributes.aK.array;
+  for (let v = 0; v < 4; v++) {
+    const b = (i * 4 + v) * 3;
+    P[b] = hx; P[b + 1] = hy; P[b + 2] = hz; A[b] = tx; A[b + 1] = ty; A[b + 2] = tz; K[i * 4 + v] = k;
+  }
+}
+// polishUpdate: every live streak down its path; drawn; the ones at their end finish (sparks).
+function trcTick(dt) {
+  if (!TRC_ON || !TRC.mesh || !TRC.any) return;
+  const C = CONFIG.tracer, U = TRC.mat.uniforms, xr = renderer.xr.isPresenting;
+  U.uHalfH.value = xr ? 900 * (perf.xr.scale || 1) : (window.innerHeight * renderer.getPixelRatio()) / 2;
+  U.uGain.value = xr ? C.gainVR : C.gain;
+  const fr = Math.max(dt, 1 / 90) * C.persist;
+  let live = false, ended = false;
+  for (let i = 0; i < TRC.n; i++) {
+    if (!TRC.live[i]) { trcWrite(i, 0, 0, 0, 0, 0, 0, 0); continue; }
+    TRC.t[i] += dt;
+    const lk = TRC.lk[i], v0 = TRC.v0[i], t = TRC.t[i], tot = Math.min(TRC.total[i], TRC.burn[i]);
+    let s = lk * Math.log(1 + v0 * t / lk);
+    const end = s >= tot;
+    if (end) s = tot;
+    let j = 0;
+    while (j < TRC.ns[i] - 1 && s > TRC.s0[i * TRC_SEG + j] + TRC.sl[i * TRC_SEG + j]) j++;
+    const J = i * TRC_SEG + j, s0 = TRC.s0[J], v = v0 / (1 + v0 * t / lk), rico = TRC.rico[i] >= 0 && j >= TRC.rico[i];
+    const tail = Math.max(s - Math.min(v * fr, C.cap), s0, TRC.ign[i]);
+    TRC.h.fromArray(TRC.so, J * 3); TRC.w.fromArray(TRC.sd, J * 3);
+    if (s > tail) {
+      const k = clamp((s - TRC.ign[i]) / C.ramp) * clamp((TRC.burn[i] - s) / C.fade) * (rico ? C.ricoK : 1);
+      trcWrite(i, TRC.h.x + TRC.w.x * (s - s0), TRC.h.y + TRC.w.y * (s - s0), TRC.h.z + TRC.w.z * (s - s0),
+        TRC.h.x + TRC.w.x * (tail - s0), TRC.h.y + TRC.w.y * (tail - s0), TRC.h.z + TRC.w.z * (tail - s0), k);
+    } else trcWrite(i, 0, 0, 0, 0, 0, 0, 0);
+    if (rico && !TRC.gl[i]) { TRC.gl[i] = 1; TRC.q.fromArray(TRC.sn, i * 3); trcSpark(TRC.h.fromArray(TRC.so, (i * TRC_SEG + TRC.rico[i]) * 3), TRC.q, 3); }   // the glance, once
+    if (end) {
+      TRC.live[i] = 0;
+      const et = TRC.endT[i];
+      if (TRC.total[i] <= TRC.burn[i] && s > TRC.ign[i] && (et === 1 || et === 3 || et === 4)) {
+        TRC.v.fromArray(TRC.so, J * 3).addScaledVector(TRC.w.fromArray(TRC.sd, J * 3), TRC.sl[J]);
+        if (et === 1) TRC.q.fromArray(TRC.sn, i * 3); else TRC.q.copy(TRC.w).negate();
+        trcSpark(TRC.v, TRC.q, C.sparks);
+      }
+      ended = true;                                                 // its last streak is drawn this frame; cleared on the next pass
+    } else live = true;
+  }
+  const g = TRC.mesh.geometry;
+  g.attributes.position.needsUpdate = g.attributes.aA.needsUpdate = g.attributes.aK.needsUpdate = true;
+  TRC.any = live || ended;
+}
+// shiftWorld (polishShift): the paths move with the world.
+function trcShift(dx, dy, dz) {
+  if (!TRC_ON) return;
+  for (let i = 0; i < TRC.n * TRC_SEG; i++) { TRC.so[i * 3] += dx; TRC.so[i * 3 + 1] += dy; TRC.so[i * 3 + 2] += dz; }
+  TRC.youP.x += dx; TRC.youP.y += dy; TRC.youP.z += dz;
+}
+// nightCanSee: in the dark a man near where your last tracer came from has seen it.
+function trcSeen(eye, now) {
+  const C = CONFIG.tracer;
+  return now - TRC.youT < C.seeMemory && eye.distanceToSquared(TRC.youP) < C.seeRange * C.seeRange;
+}
+// nvgGain: lit streaks are bright points to the tubes (added like the muzzle light).
+function trcNvgF() {
+  if (!TRC_ON || !TRC.any || !TRC.mesh) return 0;
+  const K = TRC.mesh.geometry.attributes.aK.array, P = TRC.mesh.geometry.attributes.position.array;
+  headWorld(TRC.v);
+  let F = 0;
+  for (let i = 0; i < TRC.n; i++) {
+    const k = K[i * 4];
+    if (k <= 0) continue;
+    const dx = P[i * 12] - TRC.v.x, dy = P[i * 12 + 1] - TRC.v.y, dz = P[i * 12 + 2] - TRC.v.z;
+    F += CONFIG.tracer.nvgI * k / Math.max(0.25, dx * dx + dy * dy + dz * dz);
+  }
+  return F;
+}
+// GUNSMITH SUPPLIES: "Tracer mix" 1:5 / OFF, free, saved.
+function trcSetMix(v) {
+  TRC.every = Math.max(0, v | 0);
+  try { localStorage.setItem('cqc.tracer.v1', JSON.stringify({ mix: TRC.every })); } catch (e) { /* private mode */ }
+  wsMsg(TRC.every ? `Tracer mix: every ${TRC.every}th rifle round is a tracer` : 'Tracer mix off: ball ammunition only');
+  return true;
+}
+function trcStoreInit() {
+  if (TRC.uiDone || !WORKSHOP.supplies) return;
+  TRC.uiDone = true;
+  WORKSHOP.supplies.push({ id: 'tracer', name: 'Tracer mix', price: 0, draw: trcStoreRow, rowDraw: trcStoreRow,
+    buy: () => trcSetMix(TRC.every ? 0 : CONFIG.tracer.every),
+    desc: 'Red tracers in your rifle magazines (AKM, M4, M16, AWM); they light 10-15 m out. Free' });
+}
+function trcStoreRow(s, x0, y, pw, h) {
+  const on = TRC.every > 0, e = CONFIG.tracer.every, k = Math.min(1, h / 120);
+  tBox(x0, y, pw, h, on ? TC.hiBg : TC.faint, on ? TC.hi : TC.line);
+  tText(s.name, x0 + 22, y + 30 * k, 26, TC.text, 'left', 700, TC.sans, pw - 420);
+  tText(s.desc, x0 + 22, y + 60 * k, 16, TC.dim, 'left', 600, TC.sans, pw - 420);
+  tText(on ? `1 in ${TRC.every}: they show where you shoot from, both ways` : 'Off: ball ammunition only', x0 + 22, y + h - 18 * k, 17, on ? TC.ok : TC.dim, 'left', 600, TC.mono, pw - 420);
+  tSeg('trc:mix', x0 + pw - 226, y + 12, 204, h - 24, [[e, `1:${e}`], [0, 'OFF']], on ? e : 0, trcSetMix, { size: 22 });
+}
+if (TRC_ON && /[?&]dev\b/.test(location.search)) window.__cqcTracer = { TRC, TRC_SEG, trcArm, trcBegin, trcSeg, trcEnd, trcRicochet, trcTick, trcBuild, trcSeen, trcNvgF, trcSetMix };
 
 /* ---------------------------------------------------------------------------
  *  SOUND — impacts on cover. Throttled: nine pellets make one sound, not nine
@@ -24037,6 +24318,7 @@ function enemyShoot(e, now) {
   _es.x.set(1, 0, 0).applyQuaternion(e.gunQ); _es.y.set(0, 1, 0).applyQuaternion(e.gunQ);
   // Step 9: buckshot is 9 pellets, each its own round through cover. A pellet that reaches you is a share of a 9 mm hit.
   let missed = false;
+  if (TRC_ON) trcArm(e, W.gun, true);                              // step 121: his rifles load tracers too
   for (let i = 0; i < W.pellets; i++) {
     const a = Math.random() * Math.PI * 2, r = W.spread * Math.sqrt(Math.random()) * (W.pellets > 1 ? 1 : 1 + e.armHit);
     _es.d.copy(_es.b).addScaledVector(_es.x, Math.cos(a) * r).addScaledVector(_es.y, Math.sin(a) * r).normalize();
@@ -25997,6 +26279,7 @@ function weaponsPrecompile(on) {
   awmPrecompile(on);                                // step 113: the AWM's parts, the 10x eyepiece, the .338 can's glow
   m4Precompile(on);                                 // step 105: the M4A1-S's reticle glasses and scope eyepiece
   railPrecompile(on);                               // step 112: the light glow cones
+  trcPrecompile(on);                                // step 121: the tracer streaks (built now, always in the scene)
 }
 
 /* ============================================================================
@@ -30381,6 +30664,7 @@ function nightCanSee(e) {
   if ((flashlightOn && !nvgIr('light')) || now - NIGHT.shotT < N.flashMemory) return true;   // your light (step 118: not an IR one), your muzzle flash
   if (dist < (N.laserSee ?? 16)) for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.laserOn && g.wr.laser && !nvgIr('laser')) return true; }   // step 100 (step 118: he has no night vision: an IR laser is invisible to him): a visible laser in the dark shows where you are
   if (AWMA.ready && awmGlint(e, _nt.m, true)) return true;         // step 113: his torch back off your scope's glass
+  if (TRC_ON && trcSeen(_nt.m, now)) return true;                   // step 121: your tracer showed where you fired from
   const pr = roomContaining(_nt.h.x, _nt.h.z, 0, _nt.h.y);
   if (pr && !nightDark(pr)) return true;                            // you're backlit by a lit room
   if (e.torch && !e.dead) {                                         // inside his beam
@@ -30693,6 +30977,7 @@ function nvgGain(d) {
   if (DZ.on) for (let i = 0; i < DZ.n; i++) Es += DZ.src[i].E;    // last frame's lights at your eyes (your own splash, his lights)
   else if (flashlight.intensity > 0) Es = C.srcFallback;
   if (pool.muzzleT > 0 && pool.muzzle.intensity > 0) { headWorld(NVG.h); F = pool.muzzle.intensity / Math.max(0.09, NVG.h.distanceToSquared(pool.muzzle.position)); }
+  if (TRC_ON) F += trcNvgF();                                       // step 121: lit tracers in view
   const Gt = nvgGainTarget(eyeLight(stream.current), Es, F, NADE.white, C);
   NVG.Gr = NVG.G;
   const lg = Math.log(NVG.G);
@@ -34178,6 +34463,7 @@ function polishUpdate(dt, t) {
   updateHaze(dt, t);
   updateBloodPools(dt);
   trickleTick(dt);                               // step 88: dust sifting from fresh holes
+  trcTick(dt);                                   // step 121: tracer streaks down their paths
   if (SPLASH.on) splashTick(dt);                 // step 94: wet prints dry
   updateContact();
   if (audio.ctx && audio.ctx.state === 'running') {
@@ -34194,6 +34480,7 @@ function polishShift(dx, dz, dy = 0) {
   const H = P10.haze;
   if (H) for (let j = 0; j < H.n; j++) { H.pos[j * 3] += dx; H.pos[j * 3 + 1] += dy; H.pos[j * 3 + 2] += dz; }
   if (LAIR.on) for (let j = 0; j < LAIR.n; j++) { const P = LAIR.m.p; P[j * 3] += dx; P[j * 3 + 1] += dy; P[j * 3 + 2] += dz; }   // step 98: the laser's clouds
+  trcShift(dx, dy, dz);                                           // step 121: tracer paths
 }
 function polishRoomUnloaded(room) {
   P10.pools = P10.pools.filter((g) => g.room !== room);
