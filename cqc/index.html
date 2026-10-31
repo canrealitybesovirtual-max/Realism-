@@ -2722,6 +2722,7 @@ const CONFIG = {
     button: { r: 0.01, press: 0.0, rearm: 0.012, cull: 0.5 }, // gun switches: m radius about each switch, touch, re-arm, guns further than cull skipped
     vise: { r: 0.03, press: -0.003, rearm: 0.015 }           // the VISE cap: m radius, pushed in 3 mm, re-arm
   },
+  brass: { on: true, cap: 200, pile: 6, settle: 5, price: 0.5, hot: 6, reach: 0.6, bag: 2000, scoop: 5, gain: 1 },   // step 116: spent cases stay (cap entries a room, piles drawn up to pile), settle s, $ a case, hot s, E reach m, bag cm3, VR scoop; false or ?brass=off = as before
   // --- Gunsmith workshop computer (the store): a rugged touchscreen on a wall arm over the gunsmith bench; ?workshop=off ---
   workshop: {
     killPay: 100,                                 // $ per enemy killed (0 = none)
@@ -10728,6 +10729,7 @@ function toast(text, ms = 1800) {
 function deskToggleGrab() {
   if (renderer.xr.isPresenting) return;
   if (SURR.on && surrDetainDesk()) { syncButtons(); return; }      // step 117: E on a man who gave up ties his hands
+  if (brassDesk()) { syncButtons(); return; }   // step 116: E at the brass bin, or with the dot on the floor by spent brass
   if (deskHand.prop) {
     // Step 22.1: with a gun in your hand, E on a magazine, shell or weapon light picks it up (pouch / rail).
     // Before, E always dropped the gun, so attachments and spares could never be taken with a gun out.
@@ -16202,6 +16204,7 @@ function updateImpactFx(dt) {
 function spawnCasing(g, type) {
   const P = WEAPON.debris[type];
   const e = P.list[P.next], idx = P.next;
+  if (e.active && BRASS.on) brassSettle(P, e, true);                // step 116: a reused slot's case stays on the floor
   P.next = (P.next + 1) % P.list.length;
   const root = g.prop.root;
   root.updateMatrixWorld(true);
@@ -16222,6 +16225,7 @@ function spawnCasing(g, type) {
   e.body.setAngvel({ x: (Math.random() - 0.5) * 30, y: (Math.random() - 0.5) * 30, z: (Math.random() - 0.5) * 30 }, true);
   e.active = true; e.speed = _wv2.length(); e.tinks = 0; e.idx = idx;
   e.room = stream.current;
+  brassSpawned(P, e, g, type);                                      // step 116: calibre, size, time
 }
 function parkCasing(P, e) {
   e.active = false;
@@ -16232,6 +16236,7 @@ function parkCasing(P, e) {
 function updateCasings() {
   for (const P of Object.values(WEAPON.debris)) {
     for (const e of P.list) {
+      if (BRASS.on && e.active && brassSettle(P, e, false)) continue;   // step 116: at rest = kept in room memory
       if (!e.active || e.body.isSleeping()) continue;
       const t = e.body.translation(), r = e.body.rotation(), v = e.body.linvel();
       const rc = roomContaining(t.x, t.z, 0.3, t.y);
@@ -16239,7 +16244,7 @@ function updateCasings() {
       const sp = Math.hypot(v.x, v.y, v.z);
       if (e.tinks < 3 && e.speed > 0.8 && sp < e.speed * 0.6) { e.tinks++; brassTink(P, e, t, rc); }   // step 87: placed in the room (was sfx, head-locked)
       e.speed = sp;
-      _dm.compose(_dp.set(t.x, t.y, t.z), _dq.set(r.x, r.y, r.z, r.w), _dsc.set(1, 1, 1));
+      _dm.compose(_dp.set(t.x, t.y, t.z), _dq.set(r.x, r.y, r.z, r.w), _dsc.set(e.bx || 1, e.by || 1, e.bx || 1));   // step 116: the calibre's size
       for (const m of P.im) m.setMatrixAt(e.idx, _dm);
       P.dirty = true;
     }
@@ -16256,6 +16261,727 @@ function ejectLiveShell(g) {
   p.body.setLinvel(_wv2, true);
   p.collider.setCollisionGroups(COLL.held);
   p.restoreAt = performance.now() / 1000 + 0.3;
+}
+
+/* ===========================================================================
+ *  STEP 116 — BRASS: SPENT CASES STAY, YOU PICK THEM UP AND SELL THEM
+ *  A fired case (yours or his) that comes to rest leaves the physics pool and is
+ *  kept in its room's memory: room-local position and turn, calibre, count, time.
+ *  Each room draws its brass as one InstancedMesh per calibre under room.group
+ *  (turned rooms right), rebuilt with the room. Over CONFIG.brass.cap entries the
+ *  oldest merge into the nearest case of their calibre: small piles.
+ *  Collect: VR grip near a case takes it; keep the grip and sweep low to scoop
+ *  up to 5. Computer: E with the dot on the floor takes every case within 0.6 m.
+ *  They go into a canvas dump bag on your left hip (per calibre, by loose volume).
+ *  The safe room's brass bin (steel ammo-can style, lid open, back right corner)
+ *  takes the bag: hold the bag over it (VR) or E at it. The pile inside rises.
+ *  The GUNSMITH's SUPPLIES sells the bin: CONFIG.brass.price a case.
+ *  A fresh case is hot for CONFIG.brass.hot s: touching it stings (haptic), no damage.
+ *  Saved: cqc.brass.v1 (bag, bin, cents carried). ?brass=off = as before.
+ *  COST: settling and collecting are events; per frame only the bag's matrix and
+ *  the hands while they scoop. No light, no new program after load (brass and
+ *  hull materials are the casings').
+ * ========================================================================= */
+// Calibres: L length, rb base radius, neck [shoulder r, shoulder y, neck r, neck y] (from the base), m kg, bulk cm3 loose, rate tink pitch.
+const BRASS_CAL = [
+  { k: '9', name: '9 mm', L: 0.01915, rb: 0.00495, rm: 0.00472, m: 0.0039, bulk: 2.5, rate: 1 },
+  { k: '45', name: '.45 ACP', L: 0.0228, rb: 0.006, rm: 0.00598, m: 0.0058, bulk: 4.3, rate: 0.9 },
+  { k: '556', name: '5.56', L: 0.0447, rb: 0.00479, neck: [0.00453, 0.0362, 0.00317, 0.0391], m: 0.0055, bulk: 5.4, rate: 0.93 },
+  { k: '762', name: '7.62x39', L: 0.0386, rb: 0.00566, neck: [0.00502, 0.0305, 0.00433, 0.033], m: 0.0068, bulk: 6.5, rate: 0.87 },
+  { k: '338', name: '.338 LM', L: 0.0692, rb: 0.00748, neck: [0.0069, 0.0544, 0.00468, 0.0606], m: 0.0215, bulk: 20, rate: 0.7 },
+  { k: 'sg', name: '12 ga hulls', L: 0.0674, rb: 0.0108, m: 0.012, bulk: 47, rate: 1, hull: true }
+];
+const BRASS_SHORT = ['9mm', '.45', '5.56', '7.62', '.338', '12ga'];
+const BRASS_TYPE = { pistol: 0, smg: 0, fn509: 0, ppk: 0, g17: 0, m1911: 1, rifle: 2, m4a1s: 2, akm: 3, akmn: 3, awp: 4, shotgun: 5 };
+// The bin (safe room local, back right corner between the exit door and the gun locker): body L x W x H on skids, lid open against the wall.
+const BRASS_BIN = { x: 3.1, z: -2.74, L: 0.5, W: 0.3, H: 0.38, t: 0.004, skid: 0.012, open: 1.75, hMax: 0.355, slope: 0.53, tops: 40, nx: 28, nz: 16 };
+const BRASS = {
+  on: !!CONFIG.brass && CONFIG.brass.on !== false && !/[?&]brass=off\b/.test(location.search),
+  key: 'cqc.brass.v1', bag: [0, 0, 0, 0, 0, 0], bin: [0, 0, 0, 0, 0, 0], cents: 0, sold: 0,
+  kit: null, defs: null, dirty: new Set(), bins: [], binKit: null, heap: null, heapMat: null, binDirty: true, binT: 0,
+  bagG: null, bagBody: null, bagLocal: null, bagF: -1, held: null, tip: 0, over: 0, overBin: null,
+  pour: null, pourAcc: 0, sndT: 0, pk: { n: 0, empty: false, k: 0, F: 0 },
+  scoop: new Map(), cand: [], res: { n: 0, hot: 0, full: 0, c: -1 }, cnt: [0, 0, 0, 0, 0, 0], cur: [0, 0, 0, 0, 0, 0],
+  v: new THREE.Vector3(), v2: new THREE.Vector3(), d: new THREE.Vector3(), p: new THREE.Vector3(), hp: new THREE.Vector3(), hq: new THREE.Quaternion(),
+  q: new THREE.Quaternion(), m: new THREE.Matrix4(), m2: new THREE.Matrix4(), s: new THREE.Vector3(1, 1, 1), e: new THREE.Euler(),
+  box: new THREE.Box3(), ray: new THREE.Ray(), neck: new THREE.Vector3(0, -0.03, -0.045)
+};
+try {
+  const o = JSON.parse(localStorage.getItem(BRASS.key) || 'null');
+  if (o && typeof o === 'object') {
+    for (const k of ['bag', 'bin']) if (Array.isArray(o[k])) for (let i = 0; i < 6; i++) { const n = o[k][i]; if (Number.isFinite(n) && n >= 0) BRASS[k][i] = Math.floor(n); }
+    if (Number.isFinite(o.cents) && o.cents >= 0 && o.cents < 100) BRASS.cents = Math.floor(o.cents);
+    if (Number.isFinite(o.sold) && o.sold >= 0) BRASS.sold = Math.floor(o.sold);
+  }
+} catch (e) { /* an empty bag */ }
+function brassSave() { try { localStorage.setItem(BRASS.key, JSON.stringify({ v: 1, bag: BRASS.bag, bin: BRASS.bin, cents: BRASS.cents, sold: BRASS.sold })); } catch (e) { /* this visit only */ } }
+const brassSum = (a) => a[0] + a[1] + a[2] + a[3] + a[4] + a[5];
+function brassVol(a) { let v = 0; for (let i = 0; i < 6; i++) v += a[i] * BRASS_CAL[i].bulk; return v; }   // cm3, loose
+const brassCents = (n) => Math.round(n * CONFIG.brass.price * 100) + BRASS.cents;
+const brassMoney = (n) => `$${(brassCents(n) / 100).toFixed(2)}`;
+function brassList(a) { const s = []; for (let i = 0; i < 6; i++) if (a[i]) s.push(`${BRASS_SHORT[i]} ${a[i]}`); return s.join(' · '); }
+function brassChanged() {                                           // bag or bin counts: save, redraw the screens and the watch
+  brassSave();
+  TERM.dirty = true; WORKSHOP.dirty = true;
+  if (WATCH.faceCv && WATCH.faceTex) watchDrawFace();
+}
+const brassWatch = () => (BRASS.on && brassSum(BRASS.bag) ? `BRASS ${brassSum(BRASS.bag)}` : '');
+
+// --- casings in flight (the step 5 pools): calibre, size, the moment they rest ---
+function brassCalOf(g) {
+  let k = g && g.type;
+  if (!k && g && g.def) {                                           // his gun: the def tells the type
+    if (!BRASS.defs) { BRASS.defs = new Map(); for (const [n, d] of Object.entries(WEAPON_DEFS)) BRASS.defs.set(d, n); }
+    for (let d = g.def; d && !k; d = Object.getPrototypeOf(d)) k = BRASS.defs.get(d);
+  }
+  const c = BRASS_TYPE[k];
+  return c !== undefined ? c : g && g.def && g.def.cls === 'pistol' ? 0 : 2;
+}
+// spawnCasing: calibre and time; the 9 mm pool's body takes the case's real size and mass (drawn scaled while it flies).
+function brassSpawned(P, e, g, type) {
+  if (!BRASS.on) return;
+  const c = type === 'hull' ? 5 : brassCalOf(g), C = BRASS_CAL[c];
+  e.cal = c; e.t0 = performance.now() / 1000;
+  if (C.hull) return;
+  e.bx = C.rb / P.r; e.by = C.L / (2 * P.hh);
+  if (e.bcal === c) return;
+  e.bcal = c;
+  try { const col = e.body.collider(0); col.setHalfHeight(C.L / 2); col.setRadius(C.rb); col.setMass(C.m); } catch (err) { /* keeps the 9 mm body */ }
+}
+// At rest (asleep, or slow after BRASS settle s), or forced (pool slot reused, room unloading): into room memory.
+function brassSettle(P, e, force) {
+  const now = performance.now() / 1000, C = CONFIG.brass;
+  if (!force && !e.body.isSleeping()) {
+    if (now - (e.t0 || 0) < C.settle) return false;
+    const v = e.body.linvel();
+    if (v.x * v.x + v.y * v.y + v.z * v.z > 0.0025) return false;
+  }
+  const t = e.body.translation(), r = e.body.rotation(), room = roomContaining(t.x, t.z, 0.3, t.y);
+  if (room && room.active && t.y > room.origin.y - 0.5) {
+    const c = e.cal !== undefined ? e.cal : P === WEAPON.debris.hull ? 5 : 0, K = BRASS_CAL[c];
+    const lx = rLX(room, t.x), lz = rLZ(room, t.z);
+    let ly = t.y - room.origin.y;
+    BRASS.q.set(r.x, r.y, r.z, r.w);
+    const fy = roomFloorAt(room, lx, lz, ly);
+    if (force && ly - fy > K.L / 2 + 0.03) {                        // caught in the air: down on the floor, lying
+      ly = fy + K.rb;
+      BRASS.q.setFromEuler(BRASS.e.set(0, Math.random() * Math.PI * 2, Math.PI / 2, 'YXZ'));
+    } else rWQ(room, BRASS.q);
+    brassAdd(room, lx, ly, lz, BRASS.q, c, 1, e.t0 || now);
+  }
+  parkCasing(P, e);
+  return true;
+}
+function brassAdd(room, x, y, z, q, c, n, t) {
+  const m = roomMem(room), L = m.brass || (m.brass = []);
+  L.push([x, y, z, q.x, q.y, q.z, q.w, c, n, t]);
+  if (L.length > CONFIG.brass.cap) brassMerge(L, CONFIG.brass.cap);
+  BRASS.dirty.add(room);
+}
+// Over the cap: the oldest goes onto the nearest case of its calibre (a table top counts as far from the floor under it).
+function brassMerge(L, cap) {
+  let i = 0;
+  while (L.length > cap && i < L.length) {
+    const a = L[i];
+    let best = -1, bd = Infinity;
+    for (let j = 0; j < L.length; j++) {
+      const b = L[j];
+      if (j === i || b[7] !== a[7]) continue;
+      const d = (b[0] - a[0]) ** 2 + (b[2] - a[2]) ** 2 + 4 * (b[1] - a[1]) ** 2;
+      if (d < bd) { bd = d; best = j; }
+    }
+    if (best < 0) { i++; continue; }                               // the only one of its calibre: the next oldest
+    L[best][8] += a[8]; L[best][9] = Math.min(L[best][9], a[9]);
+    L.splice(i, 1);
+  }
+}
+
+// --- drawing: one InstancedMesh per calibre and room (hulls: tube + head), rebuilt on a change ---
+function brassLathe(C) {
+  const h = C.L / 2, b = C.rb, P = [[0.0001, -h], [b * 0.93, -h], [b, -h + 0.0004], [b, -h + 0.0013], [b * 0.84, -h + 0.0018], [b * 0.84, -h + 0.0026], [b * 0.98, -h + 0.0034]];
+  if (C.neck) { const [rs, ys, rn, yn] = C.neck; P.push([rs, -h + ys], [rn, -h + yn], [rn, h], [rn * 0.86, h], [rn * 0.86, h - 0.005], [0.0001, h - 0.005]); }
+  else P.push([C.rm, h], [C.rm * 0.9, h], [C.rm * 0.9, h - 0.004], [0.0001, h - 0.004]);
+  return new THREE.LatheGeometry(P.map(([r, y]) => new THREE.Vector2(r, y)), 10);
+}
+function brassKit() {
+  if (BRASS.kit) return BRASS.kit;
+  if (!WM.brass || !WEAPON.debris.hull) return null;
+  BRASS.kit = BRASS_CAL.map((C) => (C.hull ? WEAPON.debris.hull.im.map((m) => [m.geometry, m.material]) : [[brassLathe(C), WM.brass]]));
+  return BRASS.kit;
+}
+// Instance j of entry e: the first as it came to rest; a pile's others lie round it, from the 5th on top.
+function brassPileMat(e, j, C, out) {
+  const B = BRASS;
+  if (!j) return out.compose(B.p.set(e[0], e[1], e[2]), B.q.set(e[3], e[4], e[5], e[6]), B.s.set(1, 1, 1));
+  const ay = Math.abs(1 - 2 * (e[3] * e[3] + e[5] * e[5]));         // its axis' height share: the floor under its centre
+  const floor = e[1] - (ay * C.L / 2 + Math.sqrt(Math.max(0, 1 - ay * ay)) * C.rb);
+  const s = e[0] * 97.3 + e[2] * 61.7, a = j * 2.39996 + s, top = j >= 5 ? C.rb * 1.7 : 0;
+  const r = (0.007 + 0.006 * Math.sqrt(j)) * Math.sqrt(C.L / 0.02) * (1 + 0.12 * Math.log2(e[8]));
+  B.p.set(e[0] + Math.cos(a) * r, floor + C.rb + top, e[2] + Math.sin(a) * r);
+  B.q.setFromEuler(B.e.set(top ? 0.25 * Math.sin(s + j) : 0, a * 1.7 + s, Math.PI / 2, 'YXZ'));
+  return out.compose(B.p, B.q, B.s.set(1, 1, 1));
+}
+function brassBuild(room) {
+  const K = brassKit();
+  if (!K) return false;
+  const mm = roomMemory.get(memKey(room)), L = (mm && mm.brass) || [], V = room.brassIm || (room.brassIm = []), need = BRASS.cnt, P = CONFIG.brass.pile;
+  need.fill(0);
+  for (const e of L) need[e[7]] += Math.min(e[8], P);
+  for (let c = 0; c < 6; c++) {
+    let A = V[c];
+    if (A && (!need[c] || A[0].instanceMatrix.count < need[c])) { for (const im of A) { room.group.remove(im); im.dispose(); } A = V[c] = null; }
+    if (!need[c]) continue;
+    if (!A) {
+      const cap = Math.ceil((need[c] * 1.25 + 8) / 16) * 16;
+      A = V[c] = K[c].map(([g, mat]) => { const im = new THREE.InstancedMesh(g, mat, cap); im.frustumCulled = false; im.castShadow = false; im.receiveShadow = true; room.group.add(im); return im; });
+    }
+    for (const im of A) im.count = need[c];
+  }
+  const at = BRASS.cur;
+  at.fill(0);
+  for (const e of L) {
+    const c = e[7], A = V[c], k = Math.min(e[8], P);
+    for (let j = 0; j < k; j++) { brassPileMat(e, j, BRASS_CAL[c], BRASS.m); for (const im of A) im.setMatrixAt(at[c], BRASS.m); at[c]++; }
+  }
+  for (const A of V) if (A) for (const im of A) im.instanceMatrix.needsUpdate = true;
+  return true;
+}
+function brassRoomOn(room) {                                        // weaponsRoomActivated
+  if (!BRASS.on) return;
+  BRASS.dirty.add(room);
+  if (room.kind === 'safe') { try { brassBinSpawn(room); } catch (e) { console.warn('step 116: brass bin not built', e); } }
+}
+function brassRoomOff(room) {                                       // weaponsRoomUnloaded, before its casings are parked
+  if (!BRASS.on) return;
+  for (const P of Object.values(WEAPON.debris)) for (const e of P.list) {
+    if (!e.active || !e.body) continue;
+    const t = e.body.translation();
+    if (insideRoom(room, t.x, t.z, 0.2, t.y)) brassSettle(P, e, true);
+  }
+  BRASS.dirty.delete(room);
+  if (room.brassIm) { for (const A of room.brassIm) if (A) for (const im of A) { room.group.remove(im); im.dispose(); } room.brassIm = null; }
+  const b = room.brassBin;
+  if (b) {
+    for (const A of b.tops || []) for (const im of A) { b.g.remove(im); im.dispose(); }
+    BRASS.bins.splice(BRASS.bins.indexOf(b), 1); room.brassBin = null;
+    if (BRASS.pour && BRASS.pour.bin === b) brassPourEnd();
+  }
+}
+// Underfoot (ufBrass): bit 1 brass, 2 a hull lying under the sole at P (world), radius r, floor fy.
+function brassUf(P, r, fy) {
+  const room = roomContaining(P.x, P.z, 0.3, fy + 0.5), mm = room && roomMemory.get(memKey(room)), L = mm && mm.brass;
+  if (!L || !L.length) return 0;
+  const lx = rLX(room, P.x), lz = rLZ(room, P.z), ly = fy - room.origin.y;
+  let m = 0;
+  for (let i = 0; i < L.length && m !== 3; i++) {
+    const e = L[i], R = r + BRASS_CAL[e[7]].rb + (e[8] > 1 ? 0.02 : 0), dx = e[0] - lx, dz = e[2] - lz;
+    if (dx * dx + dz * dz > R * R || Math.abs(e[1] - ly) > 0.06) continue;
+    m |= e[7] === 5 ? 2 : 1;
+  }
+  return m;
+}
+
+// --- collecting ---
+// Cases near P (world): VR (hand) within r of the palm, nearest first; computer within r across the floor at the dot.
+// Up to max cases (a pile gives several), never a hot one, never past the bag's volume. Plays the pick and the bag.
+function brassCollectAt(P, r, max, hand) {
+  const B = BRASS, res = B.res, now = performance.now() / 1000, C = CONFIG.brass, cand = B.cand;
+  res.n = res.hot = res.full = 0; res.c = -1; cand.length = 0;
+  for (const room of stream.rooms.values()) {
+    const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
+    if (!L || !L.length) continue;
+    for (let i = 0; i < L.length; i++) {
+      const e = L[i], dx = rWX(room, e[0]) - P.x, dz = rWZ(room, e[2]) - P.z, dy = room.origin.y + e[1] - P.y, h2 = dx * dx + dz * dz;
+      if (hand ? h2 + dy * dy > r * r : h2 > r * r || Math.abs(dy) > 0.35) continue;
+      cand.push([h2 + dy * dy, L, i, room]);
+    }
+  }
+  if (!cand.length) return res;
+  cand.sort((a, b) => a[0] - b[0]);
+  let vol = brassVol(B.bag);
+  for (const [, L, i, room] of cand) {
+    if (res.n >= max) break;
+    const e = L[i], K = BRASS_CAL[e[7]];
+    if (now - e[9] < C.hot) { res.hot++; continue; }
+    const want = Math.min(e[8], max - res.n), take = Math.min(want, Math.floor((C.bag - vol) / K.bulk));
+    if (take < want) res.full = 1;                                  // the bag cannot take them all
+    if (take <= 0) break;
+    e[8] -= take; vol += take * K.bulk; B.bag[e[7]] += take; res.n += take;
+    if (res.c < 0) res.c = e[7];
+    B.dirty.add(room);
+  }
+  for (const L of new Set(cand.map((q) => q[1]))) for (let i = L.length - 1; i >= 0; i--) if (L[i][8] <= 0) L.splice(i, 1);   // emptied entries
+  if (res.n) { brassPickSfx(res.c, res.n); brassChanged(); }
+  if (hand) {
+    if (res.n) pulse(hand, 0.22, 14);
+    else if (res.hot) pulse(hand, 0.9, 40);                         // a fresh case: a sting, nothing more
+    else if (res.full) pulse(hand, 0.5, 60);
+  }
+  return res;
+}
+function brassNear(P, r) {                                          // a palm low over brass: start a sweep
+  for (const room of stream.rooms.values()) {
+    const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
+    if (!L) continue;
+    for (const e of L) {
+      const dx = rWX(room, e[0]) - P.x, dz = rWZ(room, e[2]) - P.z, dy = P.y - room.origin.y - e[1];
+      if (dx * dx + dz * dz < r * r && dy > -0.03 && dy < 0.15) return true;
+    }
+  }
+  return false;
+}
+// VR grip (squeezeStart, nothing else in reach): the bag off your hip, or a case (then the sweep goes on in brassTick).
+function brassGrab(hand) {
+  const B = BRASS;
+  if (!B.on || !renderer.xr.isPresenting || hand.prop) return false;
+  handPose(hand, B.hp, B.hq);
+  if (!B.held && B.bagG && B.bagG.visible && B.v.set(0, -0.13, -0.045).applyMatrix4(B.bagG.matrix).distanceTo(B.hp) < 0.1) {
+    B.held = hand; B.over = 0; B.overBin = null; brassRustle(); pulse(hand, 0.3, 20);
+    return true;
+  }
+  const r = brassCollectAt(B.hp, 0.09, 1, hand);                    // the fist's centre: a case under the fingers
+  if (!r.n && !r.hot && !r.full && !brassNear(B.hp, 0.2)) return false;
+  let s = B.scoop.get(hand);
+  if (!s) B.scoop.set(hand, s = { n: 0, cool: 0, last: new THREE.Vector3() });
+  s.n = r.full ? CONFIG.brass.scoop : r.n; s.cool = r.hot && !r.n ? 0.5 : 0; s.last.copy(B.hp);
+  return true;
+}
+function brassRelease(hand) {                                       // squeezeEnd
+  const B = BRASS;
+  if (!B.on) return;
+  B.scoop.delete(hand);
+  if (B.held !== hand) return;
+  B.held = null;
+  if (B.pour && B.pour.hand === hand) brassPourEnd();
+  brassRustle();
+}
+// Computer E (deskToggleGrab, first): the dot on the bin pours the bag; on a floor or a top near brass picks it up.
+function brassDesk() {
+  const B = BRASS;
+  if (!B.on || renderer.xr.isPresenting || !world) return false;
+  camera.getWorldPosition(B.v); camera.getWorldDirection(B.d);
+  const bin = brassBinAimed(B.v, B.d);
+  if (bin) { brassPourStart(bin, null); return true; }
+  if (deskHand.prop && !gunOf(deskHand)) return false;              // a box in your hand: E drops it, as before
+  const hit = p10Ray(B.v, B.d, CONFIG.physics.deskReach, RAY_GROUPS, deskHand.prop ? deskHand.prop.body : undefined);
+  if (!hit || hit.normal.y < 0.5 || propByCollider.has(hit.collider.handle)) return false;   // on a prop or a wall: not brass
+  B.p.copy(B.d).multiplyScalar(p10Toi(hit)).add(B.v);
+  const r = brassCollectAt(B.p, CONFIG.brass.reach, Infinity, null);
+  if (r.n) toast(`Brass +${r.n}: ${brassSum(B.bag)} in the bag${r.full ? ' (full)' : ''}${r.hot ? '. Some are still hot' : ''}`);
+  else if (r.full) toast('Brass bag full. Empty it into the brass bin in the safe room');
+  else if (r.hot) toast('Hot brass. Give it a few seconds');
+  return !!(r.n || r.full || r.hot);
+}
+
+// --- sounds: tinks from the baked brass takes, a muffled bag, a pour into steel ---
+function brassTinks(n, g, rate, lp, at, spread, hull) {
+  const L = hull ? baked.thud : (baked.tinkBounce.length ? baked.tinkBounce : baked.tink);
+  if (!L || !L.length) return;
+  const d0 = audio.delay || 0;
+  try {
+    for (let i = 0; i < n; i++) {
+      audio.delay = d0 + at + (i ? Math.random() * spread : 0);
+      playBaked(L, g * (0.55 + Math.random() * 0.45), 0.18, rate * (0.9 + Math.random() * 0.2), 0, lp);
+    }
+  } finally { audio.delay = d0; }
+}
+function brassPickSfx(c, n) {                                       // cases off the floor, then into the bag
+  const F = foleyK('tink');
+  if (!F || !audio.ctx || audio.ctx.state !== 'running') return;
+  const C = BRASS_CAL[c] || BRASS_CAL[0];
+  brassTinks(Math.min(3, n), (C.hull ? 0.12 : 0.07 * GUN_MIX.brass) * F, C.rate * 1.05, C.hull ? 0 : GUN_MIX.tone * 1.4, 0, 0.05, C.hull);
+  brassRattle(n, 0.26);
+}
+function brassRattle(n, at) {                                       // through canvas: duller as the bag fills
+  const F = foleyK('tink');
+  if (!F || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  const f = Math.min(1, brassVol(BRASS.bag) / CONFIG.brass.bag);
+  brassTinks(Math.min(7, 2 + Math.round(Math.sqrt(n) * 1.4)), 0.06 * GUN_MIX.brass * F * CONFIG.brass.gain, 0.8 + 0.25 * (1 - f), 1500 + 1600 * (1 - f), at, 0.14, false);
+  nBurst(audio.ctx.currentTime + at, 0.16, 'bandpass', 1250, 0.8, 0.03 * F * CONFIG.brass.gain, 0.12, 0.1);
+}
+function brassRustle() {                                            // the bag taken off the belt or hung back
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  if (!clothRec(0.1 * CONFIG.brass.gain, { dur: 0.22, verb: 0.1 })) nBurst(audio.ctx.currentTime, 0.14, 'bandpass', 1500, 0.7, 0.03 * CONFIG.brass.gain, 0.1, 0.1);
+  if (brassSum(BRASS.bag)) brassRattle(Math.min(12, brassSum(BRASS.bag)), 0.03);
+}
+function brassPourSfx(R, n) {
+  const F = foleyK('tink');
+  if (!F || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  R.bin.g.updateWorldMatrix(true, false);
+  BRASS.v2.set(0, BRASS_BIN.skid + BRASS_BIN.H * 0.6, 0).applyMatrix4(R.bin.g.matrixWorld);
+  const S = BRASS.pk;
+  S.n = n; S.empty = brassSum(BRASS.bin) < 40; S.k = Math.min(1, n / 6); S.F = F * CONFIG.brass.gain;
+  soundAt(BRASS.v2, brassPourPlay, { occlude: false });
+}
+function brassPourPlay() {                                          // inside soundAt: the bin's voice
+  const S = BRASS.pk, t = audio.ctx.currentTime;
+  brassTinks(Math.min(5, 1 + Math.ceil(S.n * 0.4)), 0.11 * GUN_MIX.brass * S.F, 1, S.empty ? 0 : 5200, 0, 0.07, false);
+  if (S.empty) KNOCK_SND.can(t + Math.random() * 0.04, 1.3 + Math.random() * 0.4, 0.22 * S.F, 0.7);   // onto the steel bottom
+  nBurst(t, 0.1, 'highpass', 3400, 0.6, 0.014 * S.k * S.F, 0.08, 0.3);                               // cases sliding over cases
+}
+
+// --- the bag on your left hip ---
+function brassBagBuild() {
+  if (!BODY.ready || !BODY.restInv || !BODY.restInv[BB.pelvis]) return;
+  const B = BRASS;
+  B.bagLocal = rigLocal(BB.pelvis, new THREE.Vector3(-0.148, 0.99, 0.072), new THREE.Vector3(-0.62, 0, 0.78), new THREE.Vector3(0, 1, 0));
+  const tex = canvasTex(128, (c, S) => {                             // coyote cotton duck: weave, grime, a seam
+    c.fillStyle = '#7d6a4a'; c.fillRect(0, 0, S, S);
+    for (let y = 0; y < S; y += 2) { c.fillStyle = y % 4 ? 'rgba(255, 240, 210, 0.07)' : 'rgba(30, 20, 8, 0.1)'; c.fillRect(0, y, S, 1); }
+    for (let x = 0; x < S; x += 2) { c.fillStyle = x % 4 ? 'rgba(255, 240, 210, 0.05)' : 'rgba(30, 20, 8, 0.08)'; c.fillRect(x, 0, 1, S); }
+    const R = mulberry32(1163);
+    for (let i = 0; i < 40; i++) { c.fillStyle = `rgba(40, 28, 12, ${(0.03 + R() * 0.06).toFixed(3)})`; c.beginPath(); c.arc(R() * S, R() * S, 3 + R() * 14, 0, Math.PI * 2); c.fill(); }
+    c.fillStyle = 'rgba(40, 30, 16, 0.5)'; c.fillRect(S / 2 - 1, 0, 2, S);
+  });
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(3, 2);
+  const cloth = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.93, metalness: 0 }), cord = new THREE.MeshStandardMaterial({ color: 0x23201c, roughness: 0.8 });
+  const prof = [[0.0005, -0.1], [0.03, -0.097], [0.052, -0.086], [0.064, -0.062], [0.068, -0.02], [0.066, 0.028], [0.056, 0.058], [0.036, 0.077], [0.023, 0.086], [0.027, 0.094], [0.031, 0.1], [0.026, 0.104], [0.0005, 0.099]];
+  const body = mesh(new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), 18).scale(1, 1, 0.55), cloth);   // a gathered sack, flat against you
+  body.position.set(0, -0.13, -0.045);
+  body.add(mesh(placed(new THREE.TorusGeometry(0.024, 0.0022, 6, 20), 0, 0.086, 0, Math.PI / 2).scale(1, 1, 0.55), cord, false));   // drawstring
+  body.add(mesh(placed(new THREE.CylinderGeometry(0.0055, 0.0055, 0.014, 10), 0, 0.074, -0.016), cord, false));                       // cord lock
+  body.add(mesh(placed(new THREE.CylinderGeometry(0.0016, 0.0016, 0.045, 5), -0.003, 0.05, -0.016, 0, 0, 0.12), cord, false));
+  body.add(mesh(placed(new THREE.CylinderGeometry(0.0016, 0.0016, 0.04, 5), 0.003, 0.052, -0.016, 0, 0, -0.1), cord, false));
+  const g = new THREE.Group();
+  g.matrixAutoUpdate = false; g.visible = false;
+  g.add(body, mesh(placed(rbox(0.042, 0.075, 0.006, 0.002), 0, -0.012, -0.004), cloth, false));   // belt loop over the belt
+  scene.add(g);
+  B.bagG = g; B.bagBody = body;
+}
+// The bin under the bag (VR): the bag's middle over its opening, from just under the rim to 0.5 m above it.
+function brassBinUnder(P) {
+  const Bn = BRASS_BIN, top = Bn.skid + Bn.H;
+  for (const b of BRASS.bins) {
+    if (!b.room.active || !b.room.group.visible) continue;
+    b.g.updateWorldMatrix(true, false);
+    const l = BRASS.v2.copy(P).applyMatrix4(BRASS.m2.copy(b.g.matrixWorld).invert());
+    if (Math.abs(l.x) < Bn.L / 2 + 0.03 && Math.abs(l.z) < Bn.W / 2 + 0.03 && l.y > top - 0.06 && l.y < top + 0.5) return b;
+  }
+  return null;
+}
+function brassBagTick(dt) {
+  const B = BRASS;
+  if (!B.bagG) { brassBagBuild(); if (!B.bagG) return; }
+  if (B.held && (!renderer.xr.isPresenting || playerState.dead || B.held.prop)) brassRelease(B.held);
+  const f = Math.min(1, brassVol(B.bag) / CONFIG.brass.bag);
+  if (Math.abs(f - B.bagF) > 0.002) {                               // fuller = rounder and heavier at the bottom
+    B.bagF = f;
+    const s = Math.pow(f, 0.6), sz = 0.42 + 0.58 * s;
+    B.bagBody.scale.set(0.82 + 0.18 * s, 0.9 + 0.1 * s, sz); B.bagBody.position.z = -(0.006 + 0.04 * sz);
+  }
+  if (!B.held) {
+    B.tip = 0; B.over = 0; B.overBin = null;
+    const live = BODY.ready && CONFIG.body.on && BODY.init && !playerState.dead;
+    B.bagG.visible = live;
+    if (live) { B.bagG.matrix.multiplyMatrices(BODY.M[BB.pelvis], B.bagLocal); B.bagG.matrixWorldNeedsUpdate = true; }
+    return;
+  }
+  // in your hand by the neck: it hangs, yawed with the hand; held over the bin it tips over and pours
+  handPose(B.held, B.hp, B.hq);
+  B.d.set(0, 0, -1).applyQuaternion(B.hq);
+  const yaw = Math.atan2(-B.d.x, -B.d.z);
+  B.v.copy(B.hp); B.v.y -= 0.1;
+  const bin = brassSum(B.bag) ? brassBinUnder(B.v) : null;
+  B.over = bin ? B.over + dt : 0; B.overBin = bin;
+  B.tip += ((B.over > 0.35 ? 2.4 : 0) - B.tip) * (1 - Math.exp(-dt / 0.12));
+  if (bin && B.tip > 1.6 && !B.pour) brassPourStart(bin, B.held);
+  B.q.setFromEuler(B.e.set(-B.tip, yaw, 0, 'YXZ'));
+  B.m.compose(B.hp, B.q, B.s.set(1, 1, 1)).multiply(B.m2.makeTranslation(-B.neck.x, -B.neck.y, -B.neck.z));
+  B.bagG.matrix.copy(B.m); B.bagG.matrixWorldNeedsUpdate = true; B.bagG.visible = true;
+}
+
+// --- the brass bin (safe room) ---
+function brassBinKit() {
+  if (BRASS.binKit) return BRASS.binKit;
+  const Bn = BRASS_BIN, { L, W, H, t, skid } = Bn, top = skid + H;
+  let paint = null;
+  const ammo = KIT.props.ammo && KIT.props.ammo.proto;                // the ammo can's worn olive (same program)
+  if (ammo) ammo.traverse((o) => { if (!paint && o.isMesh) paint = o.material; });
+  paint = paint || new THREE.MeshStandardMaterial({ color: 0x5b5d3e, roughness: 0.62, metalness: 0.25 });
+  const steel = KIT.mat.steel || new THREE.MeshStandardMaterial({ color: 0x8a8d90, roughness: 0.4, metalness: 1 });
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.9 });
+  const body = [placed(rbox(L, 0.008, W, 0.003), 0, skid + 0.004, 0)];                                     // bottom
+  for (const s of [-1, 1]) {
+    body.push(placed(rbox(L, H, 2 * t, 0.003), 0, skid + H / 2, s * (W / 2 - t)));                         // front, back
+    body.push(placed(rbox(2 * t, H, W - 4 * t, 0.003), s * (L / 2 - t), skid + H / 2, 0));                 // ends
+    body.push(placed(rbox(L + 0.01, 0.014, 0.014, 0.006), 0, top - 0.007, s * (W / 2 - 0.002)));           // rolled rim
+    body.push(placed(rbox(0.014, 0.014, W + 0.01, 0.006), s * (L / 2 - 0.002), top - 0.007, 0));
+    for (const y of [0.12, 0.26]) body.push(placed(rbox(L - 0.07, 0.016, 0.006, 0.003), 0, skid + y, s * (W / 2 + 0.001)));   // pressed ribs
+    body.push(placed(rbox(0.006, 0.016, W - 0.07, 0.003), s * (L / 2 + 0.001), skid + 0.19, 0));
+    body.push(placed(rbox(L - 0.03, skid, 0.035, 0.003), 0, skid / 2, s * (W / 2 - 0.04)));                // skids
+  }
+  const st = [
+    placed(new THREE.CylinderGeometry(0.006, 0.006, L - 0.04, 12), 0, top, -W / 2, 0, 0, Math.PI / 2),    // lid hinge
+    placed(rbox(0.05, 0.07, 0.012, 0.004), 0, top - 0.042, W / 2 + 0.008)                                    // cam latch, hanging open
+  ];
+  for (const s of [-1, 1]) {                                                                                   // end handles on brackets
+    st.push(placed(rbox(0.012, 0.014, 0.13, 0.004), s * (L / 2 + 0.016), top - 0.07, 0));
+    for (const z of [-0.07, 0.07]) st.push(placed(rbox(0.018, 0.02, 0.012, 0.003), s * (L / 2 + 0.008), top - 0.07, z));
+  }
+  const lidPaint = [placed(rbox(L + 0.014, 0.028, W + 0.014, 0.006), 0, 0.014, W / 2), placed(rbox(0.06, 0.02, 0.01, 0.003), 0, 0.004, W + 0.012)];
+  const lidSteel = [placed(rbox(0.14, 0.008, 0.018, 0.003), 0, 0.032, W / 2)];
+  for (const x of [-0.075, 0.075]) lidSteel.push(placed(rbox(0.012, 0.012, 0.016, 0.003), x, 0.03, W / 2));
+  const tex = new THREE.CanvasTexture((() => {                       // stencil: BRASS / SPENT CASES ONLY
+    const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
+    const c = cv.getContext('2d');
+    c.fillStyle = 'rgba(222, 204, 120, 0.9)'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = '900 66px Impact, "Arial Black", sans-serif'; c.fillText('BRASS', 128, 52);
+    c.font = '700 19px Impact, "Arial Black", sans-serif'; c.fillText('SPENT CASES ONLY', 128, 104);
+    c.globalCompositeOperation = 'destination-out';                 // stencil bridges and wear
+    const R = mulberry32(1164);
+    for (let i = 0; i < 6; i++) c.fillRect(20 + i * 40, 18, 3, 70);
+    for (let i = 0; i < 90; i++) { c.globalAlpha = 0.2 + R() * 0.5; c.fillRect(R() * 256, R() * 128, 1 + R() * 4, 1 + R() * 3); }
+    return cv;
+  })());
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sten = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.13), new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthWrite: false, roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  sten.position.set(0, skid + 0.19, W / 2 + 0.0008);
+  BRASS.binKit = { parts: [merged(body, paint), merged(st, steel), sten], lid: [merged(lidPaint, paint), merged(lidSteel, steel), merged([placed(rbox(L - 0.012, 0.006, W - 0.012, 0.002), 0, -0.003, W / 2)], rubber, false)] };
+  return BRASS.binKit;
+}
+// The heap inside: one grid (shared by every bin, they hold the same brass), a cone at the angle of repose, flat when it fills.
+function brassHeapGeo() {
+  if (BRASS.heap) return BRASS.heap;
+  const Bn = BRASS_BIN, nx = Bn.nx, nz = Bn.nz, ix = Bn.L / 2 - 2 * Bn.t - 0.002, iz = Bn.W / 2 - 2 * Bn.t - 0.002;
+  const pos = new Float32Array(nx * nz * 3), uv = new Float32Array(nx * nz * 2), idx = [];
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i, x = -ix + 2 * ix * i / (nx - 1), z = -iz + 2 * iz * j / (nz - 1);
+    pos[k * 3] = x; pos[k * 3 + 2] = z; uv[k * 2] = x / 0.12; uv[k * 2 + 1] = z / 0.12;
+    if (i < nx - 1 && j < nz - 1) idx.push(k, k + nx, k + 1, k + 1, k + nx, k + nx + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  BRASS.heap = g; BRASS.heapIx = ix; BRASS.heapIz = iz;
+  return g;
+}
+function brassHeapMat() {
+  if (BRASS.heapMat) return BRASS.heapMat;
+  const map = canvasTex(256, (c, S) => {                              // a tile of loose cases: brass bodies, dark mouths, gaps
+    const R = mulberry32(1161);
+    c.fillStyle = '#2a1d0c'; c.fillRect(0, 0, S, S);
+    for (let i = 0; i < 230; i++) {
+      const x = R() * S, y = R() * S, a = R() * Math.PI, l = 14 + R() * 26, w = 7 + R() * 5, sh = 0.7 + R() * 0.5;
+      for (let ox = -S; ox <= S; ox += S) for (let oy = -S; oy <= S; oy += S) {
+        if (Math.abs(x + ox - S / 2) > S / 2 + l || Math.abs(y + oy - S / 2) > S / 2 + l) continue;
+        c.save(); c.translate(x + ox, y + oy); c.rotate(a);
+        const g = c.createLinearGradient(0, -w / 2, 0, w / 2);
+        g.addColorStop(0, `rgb(${(110 * sh) | 0}, ${(78 * sh) | 0}, ${(32 * sh) | 0})`);
+        g.addColorStop(0.35, `rgb(${Math.min(255, 235 * sh) | 0}, ${Math.min(255, 188 * sh) | 0}, ${(100 * sh) | 0})`);
+        g.addColorStop(1, `rgb(${(84 * sh) | 0}, ${(56 * sh) | 0}, ${(22 * sh) | 0})`);
+        c.fillStyle = g; c.fillRect(-l / 2, -w / 2, l, w);
+        c.fillStyle = 'rgba(36, 24, 9, 0.85)'; c.fillRect(l / 2 - 2, -w / 2 + 1, 2, w - 2);
+        c.restore();
+      }
+    }
+  });
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  BRASS.heapMat = new THREE.MeshStandardMaterial({ map, metalness: 0.7, roughness: 0.4 });
+  return BRASS.heapMat;
+}
+const brassHeapH = (x, z, pk) => Math.min(BRASS_BIN.hMax, Math.max(0, pk - BRASS_BIN.slope * Math.hypot(x, z)));
+function brassHeapVol(pk) {                                          // m3 under the heap at peak pk (44 x 24 cells)
+  const ix = BRASS.heapIx, iz = BRASS.heapIz, nx = 44, nz = 24, dx = 2 * ix / nx, dz = 2 * iz / nz;
+  let v = 0;
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) v += brassHeapH(-ix + (i + 0.5) * dx, -iz + (j + 0.5) * dz, pk);
+  return v * dx * dz;
+}
+const brassBinCap = () => { brassHeapGeo(); return 4 * BRASS.heapIx * BRASS.heapIz * BRASS_BIN.hMax * 1e6; };   // cm3
+function brassHeapPeak(V) {
+  if (V <= 0) return 0;
+  brassHeapGeo();
+  let lo = 0, hi = BRASS_BIN.hMax + BRASS_BIN.slope * Math.hypot(BRASS.heapIx, BRASS.heapIz);
+  if (brassHeapVol(hi) <= V) return hi;
+  for (let k = 0; k < 24; k++) { const m = (lo + hi) / 2; if (brassHeapVol(m) < V) lo = m; else hi = m; }
+  return (lo + hi) / 2;
+}
+function brassBinSpawn(room) {
+  if (room.brassBin) return;
+  const Bn = BRASS_BIN, K = brassBinKit(), g = new THREE.Group();
+  for (const m of K.parts) g.add(m.clone());
+  const lid = new THREE.Group();
+  lid.position.set(0, Bn.skid + Bn.H, -Bn.W / 2); lid.rotation.x = -Bn.open;   // hinged at the back, leaning on the wall
+  for (const m of K.lid) lid.add(m.clone());
+  const heap = new THREE.Mesh(brassHeapGeo(), brassHeapMat());
+  heap.castShadow = false; heap.receiveShadow = true; heap.visible = false;
+  g.add(lid, heap);
+  g.position.set(Bn.x, 0, Bn.z);
+  room.group.add(g);
+  const bin = { room, g, heap, tops: null };
+  room.brassBin = bin; BRASS.bins.push(bin); BRASS.binDirty = true;
+  if (room.body) {                                                    // bottom and four walls (cases are not physics once in it)
+    const box = (hx, hy, hz, x, y, z) => {
+      const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(Bn.x + x, y, Bn.z + z)
+        .setFriction(0.5).setRestitution(0.1).setCollisionGroups(COLL.static), room.body);
+      colliderInfo.set(col.handle, { room, kind: 'metal' }); room.colliderHandles.push(col.handle);
+    };
+    box(Bn.L / 2, (Bn.skid + 0.008) / 2, Bn.W / 2, 0, (Bn.skid + 0.008) / 2, 0);
+    for (const s of [-1, 1]) {
+      box(Bn.L / 2, Bn.H / 2, Bn.t, 0, Bn.skid + Bn.H / 2, s * (Bn.W / 2 - Bn.t));
+      box(Bn.t, Bn.H / 2, Bn.W / 2, s * (Bn.L / 2 - Bn.t), Bn.skid + Bn.H / 2, 0);
+    }
+  }
+  if (room.walkLocal) room.walkLocal.push({ x: Bn.x, z: Bn.z, a: 0, hx: Bn.L / 2, hz: Bn.W / 2, top: Bn.skid + Bn.H });   // activateRoom rebuilds the walk boxes after this
+  dirtyShadows();
+}
+// The heap at the bin's count and up to BRASS_BIN.tops real cases lying on it (calibres in the bin's shares; seeded, so they stay put).
+function brassBinFill() {
+  BRASS.binDirty = false;
+  if (!BRASS.bins.length) return;
+  const B = BRASS, Bn = BRASS_BIN, K = brassKit(), V = brassVol(B.bin) * 1e-6, pk = brassHeapPeak(V), geo = brassHeapGeo(), pos = geo.attributes.position.array;
+  const y0 = Bn.skid + 0.008, ix = B.heapIx, iz = B.heapIz;
+  for (let k = 0; k < pos.length; k += 3) {
+    const x = pos[k], z = pos[k + 2], h = brassHeapH(x, z, pk);
+    pos[k + 1] = h > 0 ? y0 + h + 0.003 * Math.sin(x * 91 + z * 57) * Math.min(1, h / 0.01) : y0 - 0.004;
+  }
+  geo.attributes.position.needsUpdate = true; geo.computeVertexNormals(); geo.computeBoundingSphere();
+  const tot = brassSum(B.bin), n = Math.min(Bn.tops, tot), R = mulberry32(1162), cnt = B.cnt;
+  cnt.fill(0);
+  const spread = Math.max(Math.min(0.26, pk / Bn.slope) * 0.85, 0.03 + 0.006 * Math.sqrt(n));
+  for (const b of B.bins) {
+    b.heap.visible = pk > 0.012;
+    if (!b.tops && K) b.tops = K.map((A) => A.map(([gg, mat]) => { const im = new THREE.InstancedMesh(gg, mat, Bn.tops); im.count = 0; im.frustumCulled = false; im.castShadow = false; b.g.add(im); return im; }));
+  }
+  if (!K) { BRASS.binDirty = true; return; }                       // the casings' kit is not made yet: again shortly
+  for (let i = 0; i < n; i++) {
+    let u = R() * tot, c = 0;
+    while (c < 5 && u >= B.bin[c]) { u -= B.bin[c]; c++; }
+    const C = BRASS_CAL[c], a = R() * Math.PI * 2, r = Math.sqrt(R()) * spread;
+    const x = clamp(Math.cos(a) * r, -ix + 0.012, ix - 0.012), z = clamp(Math.sin(a) * r, -iz + 0.012, iz - 0.012);
+    B.p.set(x, y0 + brassHeapH(x, z, pk) + C.rb * 0.85, z);
+    B.q.setFromEuler(B.e.set((R() - 0.5) * 0.5, R() * Math.PI * 2, Math.PI / 2, 'YXZ'));
+    B.m.compose(B.p, B.q, B.s.set(1, 1, 1));
+    for (const b of B.bins) if (b.tops) for (const im of b.tops[c]) im.setMatrixAt(cnt[c], B.m);
+    cnt[c]++;
+  }
+  for (const b of B.bins) if (b.tops) b.tops.forEach((A, c) => { for (const im of A) { im.count = cnt[c]; im.instanceMatrix.needsUpdate = true; } });
+}
+function brassBinAimed(eye, dir) {                                   // computer: the dot on a bin within reach
+  const Bn = BRASS_BIN, B = BRASS;
+  for (const b of B.bins) {
+    if (!b.room.active || !b.room.group.visible) continue;
+    b.g.updateWorldMatrix(true, false);
+    B.box.min.set(-Bn.L / 2 - 0.04, 0, -Bn.W / 2 - 0.04); B.box.max.set(Bn.L / 2 + 0.04, Bn.skid + Bn.H + 0.08, Bn.W / 2 + 0.04);
+    B.box.applyMatrix4(b.g.matrixWorld);
+    B.ray.set(eye, dir);
+    if (B.ray.intersectBox(B.box, B.v2) && B.v2.distanceTo(eye) < CONFIG.physics.deskReach) return b;
+  }
+  return null;
+}
+// Pouring: the bag into the bin at about the whole bag in 2.2 s (a trickle at first); stops when the bag is empty or the bin full.
+function brassPourStart(bin, hand) {
+  const n = brassSum(BRASS.bag);
+  if (!n) { if (!hand) toast('The brass bag is empty. Pick up spent cases first (E with the dot on them)'); return; }
+  if (brassVol(BRASS.bin) + 2.5 > brassBinCap()) { if (!hand) toast('The brass bin is full. Sell it at the GUNSMITH computer'); return; }
+  BRASS.pour = { bin, hand, n0: n, t: 0, rate: Math.max(60, n / 2.2), snd: 0, full: false };
+  BRASS.pourAcc = 0; BRASS.sndT = 0;
+  brassRattle(Math.min(n, 30), 0);
+}
+function brassPourTick(dt) {
+  const B = BRASS, R = B.pour;
+  if (!R) return;
+  if (!R.bin.room.active || (R.hand && (B.held !== R.hand || B.tip < 1.4 || B.overBin !== R.bin))) { brassPourEnd(); return; }
+  R.t += dt; B.pourAcc += R.rate * dt * Math.min(1, R.t / 0.25);
+  const cap = brassBinCap();
+  let vol = brassVol(B.bin), moved = 0;
+  while (B.pourAcc >= 1) {
+    const n = brassSum(B.bag);
+    if (!n) break;
+    let u = Math.random() * n, c = 0;
+    while (c < 5 && u >= B.bag[c]) { u -= B.bag[c]; c++; }
+    if (vol + BRASS_CAL[c].bulk > cap) { R.full = true; break; }
+    B.bag[c]--; B.bin[c]++; B.pourAcc--; moved++; vol += BRASS_CAL[c].bulk;
+  }
+  if (moved) { R.snd += moved; B.binDirty = true; }
+  B.sndT -= dt;
+  if (B.sndT <= 0 && R.snd) { B.sndT = 0.07; brassPourSfx(R, R.snd); R.snd = 0; }
+  if (R.hand && moved) pulseSoft(R.hand, 0.12, 20);
+  if (!brassSum(B.bag) || R.full) brassPourEnd();
+}
+function brassPourEnd() {
+  const R = BRASS.pour;
+  BRASS.pour = null;
+  if (!R) return;
+  const moved = R.n0 - brassSum(BRASS.bag), b = brassSum(BRASS.bin);
+  if (moved) brassChanged();
+  if (R.full) toast('The brass bin is full. Sell it at the GUNSMITH computer');
+  else if (moved && !R.hand) toast(`Emptied ${moved} case${moved === 1 ? '' : 's'} into the brass bin: ${b} in it, ${brassMoney(b)} at the GUNSMITH`);
+  BRASS.binDirty = true;
+}
+// The store's SELL BRASS: the whole bin at CONFIG.brass.price a case; part cents carry over to the next sale.
+function brassSell() {
+  const n = brassSum(BRASS.bin);
+  if (!n) { wsMsg('The brass bin is empty. Pick up your spent cases and empty the bag into the bin'); wsDeny(); return false; }
+  const cents = brassCents(n), pay = Math.floor(cents / 100);
+  BRASS.cents = cents % 100; BRASS.sold += n; BRASS.bin.fill(0);
+  if (pay > 0) walletEarn(pay);
+  playBuy(); brassChanged(); BRASS.binDirty = true;
+  wsMsg(`Sold ${n} case${n === 1 ? '' : 's'} of brass: ${fmtMoney(pay)}${BRASS.cents ? ` (+${BRASS.cents}¢ toward the next sale)` : ''}. ${fmtMoney(WALLET.money)} in the wallet`);
+  return true;
+}
+// SUPPLIES with a fourth row: the three restocks (same text as wsDrawSupplies, rows shorter) and SELL BRASS.
+function brassSupplies(now) {
+  if (!BRASS.on) return false;
+  const W = WORKSHOP, x0 = 320, pw = WS_LW - 16 - 320, I = CONFIG.weapons.inventory;
+  tText('Supplies', x0, 96, 36, TC.text, 'left', 700, TC.sans, 560);
+  tText('Restocks cost money from your wallet. Spent brass from the bin sells here. Entering the safe room still refills you.', x0, 132, 19, TC.dim, 'left', 600, TC.sans, pw);
+  const [mags, full] = wsMagStats();
+  const status = {
+    ammo: `${mags} magazines in your pouches, ${full} full${inv.shells ? `  ·  ${inv.shells} shells` : ''}`,
+    nades: `Pouches: frag ${inv.frag} / ${I.frag ?? 2}, flashbang ${inv.flash} / ${I.flash ?? 2}  ·  bench: ${nadeCount('frag')} + ${nadeCount('flash')}`,
+    med: `Auto-injectors ${inv.med} / 2`
+  };
+  const rows = W.supplies.length + 1, top = 152, gap = 8, h = Math.floor((WS_LH - 56 - top - gap * (rows - 1)) / rows);
+  const row = (i, name, desc, stat, price, pcol, sub, scol, id, label, sel, fn) => {
+    const y = top + i * (h + gap);
+    tBox(x0, y, pw, h, TC.faint, TC.line);
+    tText(name, x0 + 22, y + 28, 27, TC.text, 'left', 700, TC.sans, pw - 420);
+    tText(desc, x0 + 22, y + 58, 18, TC.dim, 'left', 600, TC.sans, pw - 420);
+    tText(stat, x0 + 22, y + h - 22, 18, TC.text, 'left', 600, TC.mono, pw - 480);
+    tText(price, x0 + pw - 250, y + 40, 34, pcol, 'right', 700, TC.mono, 180);
+    if (sub) tText(sub, x0 + pw - 250, y + 78, 17, scol, 'right', 600, TC.sans, 200);
+    tBtn(id, x0 + pw - 226, y + 16, 204, h - 32, label, { size: 28, sel, fn });
+  };
+  W.supplies.forEach((s, i) => {
+    const rich = WALLET.money >= s.price;
+    row(i, s.name, s.desc, status[s.id] || '', fmtMoney(s.price), rich ? TC.hi : TC.warn, rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`, TC.warn, `sup:${s.id}`, 'BUY', rich, () => wsBuySupply(s.id));
+  });
+  const n = brassSum(BRASS.bin), bag = brassSum(BRASS.bag);
+  row(W.supplies.length, 'Sell brass', `The scrap dealer pays $${CONFIG.brass.price.toFixed(2)} a case for what is in the brass bin`,
+    n ? `Bin: ${brassList(BRASS.bin)}${bag ? `  ·  bag ${bag}` : ''}` : bag ? `Bin empty  ·  ${bag} in your bag: empty it into the bin` : 'Bin empty  ·  pick up your spent cases',
+    brassMoney(n), n ? TC.ok : TC.dim, `${n} case${n === 1 ? '' : 's'}`, TC.dim, 'sup:brass', 'SELL', n > 0, brassSell);
+  return true;
+}
+function brassTermDraw() {                                          // the terminal's GEAR page
+  if (!BRASS.on) return;
+  const n = brassSum(BRASS.bag), b = brassSum(BRASS.bin), vf = Math.round(100 * Math.min(1, brassVol(BRASS.bag) / CONFIG.brass.bag));
+  tHead('Brass', 28, 512);
+  tText(n ? `Bag: ${brassList(BRASS.bag)}  ·  ${n} case${n === 1 ? '' : 's'}, ${vf}% full` : 'Bag: empty. Pick up spent cases (headset: grip by them, sweep to scoop; computer: E on them)',
+    28, 542, 21, n ? TC.text : TC.dim, 'left', 600, n ? TC.mono : TC.sans, 960);
+  tText(b ? `Brass bin (safe room, back right): ${b} case${b === 1 ? '' : 's'}, ${brassMoney(b)} at the GUNSMITH` : 'Brass bin: empty',
+    28, 570, 21, b ? TC.hi : TC.dim, 'left', 600, TC.sans, 960);
+}
+// Per frame after updateCasings: the bag, the sweeps, the pour, rebuilt room brass and the bin's heap.
+function brassTick(dt) {
+  const B = BRASS;
+  if (!B.on) return;
+  brassBagTick(dt);
+  for (const [hand, s] of B.scoop) {
+    if (!renderer.xr.isPresenting || hand.prop) { B.scoop.delete(hand); continue; }
+    handPose(hand, B.hp, B.hq);
+    const sp = dt > 0 ? B.hp.distanceTo(s.last) / dt : 0;
+    s.last.copy(B.hp);
+    if (s.cool > 0) { s.cool -= dt; continue; }
+    if (s.n >= CONFIG.brass.scoop || sp < 0.15) continue;           // a still pinch keeps its one
+    const r = brassCollectAt(B.hp, 0.075, CONFIG.brass.scoop - s.n, hand);
+    s.n += r.n;
+    if (r.full) s.n = CONFIG.brass.scoop; else if (r.hot && !r.n) s.cool = 0.5;
+  }
+  brassPourTick(dt);
+  if (B.dirty.size) for (const r of B.dirty) if (!r.active || brassBuild(r)) B.dirty.delete(r);
+  B.binT -= dt;
+  if (B.binDirty && B.binT <= 0) { B.binT = 0.12; brassBinFill(); }
 }
 
 /* ---------------------------------------------------------------------------
@@ -25171,6 +25897,7 @@ function spawnSafeItems(room) {
   }
 }
 function weaponsRoomActivated(room) {
+  brassRoomOn(room);                   // step 116: brass from last visit; the safe room's brass bin
   restoreRoomHoles(room);
   fixturesRestore(room);               // step 87: tubes shot out last visit
   if (room.kind === 'safe') {
@@ -25194,6 +25921,7 @@ function weaponsRoomUnloaded(room) {
   if (room.door && room.door.colHandle !== undefined) doorByCollider.delete(room.door.colHandle);
   for (const L of Object.values(room.decals || {})) L.im.dispose();
   room.decals = null;
+  brassRoomOff(room);                  // step 116: its casings into room memory first
   for (const P of Object.values(WEAPON.debris)) for (const e of P.list) {
     if (!e.active) continue;
     const t = e.body.translation();
@@ -26445,6 +27173,7 @@ function termLoadout(W, H, now) {
     tText(fmtMoney(WALLET.money), 988, 342, 28, TC.ok, 'right', 700, TC.mono, 216);
   } else tBtn('restock', 16, 304, 992, 76, 'RESTOCK', { size: 28, fn: termRestock });
   tHead('Guns', 28, 410);
+  brassTermDraw();                                               // step 116: the brass bag and bin
   tWrap(`M1911, .45 ACP, 7+1: on the bench beside the locker, with two magazines. ${WORKSHOP.on ? 'Restock ammo at the GUNSMITH brings it back' : 'Restock brings it back'} if it is lost. More guns go here.`, 28, 440, 960, 22, TC.dim, 30);   // step 59
 }
 
@@ -27364,6 +28093,7 @@ function wsDrawStats(k) {
 }
 // SUPPLIES: the restocks, each with a price.
 function wsDrawSupplies(now) {
+  if (brassSupplies(now)) return;                               // step 116: the same three rows, shorter, and SELL BRASS
   const W = WORKSHOP, x0 = 320, pw = WS_LW - 16 - 320, I = CONFIG.weapons.inventory;
   tText('Supplies', x0, 100, 38, TC.text, 'left', 700, TC.sans, 560);
   tText('Restocks cost money from your wallet. Entering the safe room still refills you as before.', x0, 140, 20, TC.dim, 'left', 600, TC.sans, pw);
@@ -28807,7 +29537,7 @@ function watchDrawFace() {
   c.fillText('AUTOMATIC', 0, -46); c.font = '500 10px Helvetica, Arial, sans-serif'; c.fillText('CHRONOMETER CERTIFIED', 0, -32);
   c.font = '700 12px Helvetica, Arial, sans-serif'; c.fillStyle = on ? '#ffc46b' : '#e8e6de';
   c.fillText(WATCH.open ? 'CLOSE' : on ? 'MODS ON' : '300m · TAP', 0, 44);
-  c.font = '500 10px Helvetica, Arial, sans-serif'; c.fillStyle = '#e8e6de'; c.fillText('1000ft = 300m', 0, 60);
+  c.font = '500 10px Helvetica, Arial, sans-serif'; c.fillStyle = '#e8e6de'; c.fillText(brassWatch() || '1000ft = 300m', 0, 60);   // step 116: brass in the bag
   WATCH.faceTex.needsUpdate = true; WATCH.minute = d.getMinutes();
 }
 function watchDrawPanel() {
@@ -32182,7 +32912,7 @@ function ufBrass(P, r, fy, dx, dz, kk, max) {
       if (U.kick > 0) ufKick(c, dx, dz, kk * (p ? 0.6 : 1) * U.kick);
     }
   }
-  return m;
+  return m | (BRASS.on ? brassUf(P, r, fy) : 0);                    // step 116: brass at rest
 }
 function ufGlassAt(room, lx, ly, lz) {
   const m = roomMemory.get(memKey(room)), L = m && m.glass;
@@ -36187,10 +36917,11 @@ for (let i = 0; i < 2; i++) {
     if (p) { grab(hand, p); return; }
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
     if (d) { grabDoor(hand, d); return; }
+    if (brassGrab(hand)) return;                                     // step 116: the brass bag off your hip, spent cases off the floor
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { release(hand); releaseDoor(hand); };
+  const squeezeEnd = () => { brassRelease(hand); release(hand); releaseDoor(hand); };   // step 116: the bag back on your hip
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
@@ -37407,6 +38138,7 @@ function tick(timeMs) {
   wbUpdate();            // step 73: the gunsmith bench
   profMark('physics');
   updateCasings();       // step 5: brass and hulls
+  brassTick(dt);         // step 116: brass bag, scooping, pouring, room brass, the bin's heap
   updateImpactFx(dtW);
   g90Update(dtW);        // step 90: blood pouring from his wounds, tissue bits
   updateFlicker(t);
@@ -43308,6 +44040,8 @@ function railSyncType(t) {
 if (window.__cqcDev) Object.assign(window.__cqcDev, { RAIL, RAIL_DEV, RAIL_WRAP, RAIL_ROWS, RAIL_PL2_SPOTS, railFaces, railSpots, railCloud, railSection, railCutGeo, railSlotsOf,
   railWrapKit, railRingKit, railPistolKit, railM19Kit, railHw, railBenchFit, railClash, railBump, railMakePl2, railLead, railLasers, railWire, railUnwire, railToggleLight,
   railToggleLaser, railFx, railTick, railSync, railWant, railSaveGun, railSyncType, railZones, railObstacles, railXBox });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { BRASS, BRASS_CAL, BRASS_BIN, BRASS_TYPE, brassCalOf, brassSettle, brassAdd, brassMerge, brassBuild, brassCollectAt, brassGrab, brassRelease,
+  brassDesk, brassUf, brassBinSpawn, brassBinFill, brassHeapPeak, brassHeapVol, brassBinCap, brassPourStart, brassSell, brassSupplies, brassTick, brassVol, brassSum });   // step 116
 </script>
 </body>
 </html>
