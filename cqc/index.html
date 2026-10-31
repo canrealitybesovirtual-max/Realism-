@@ -12887,6 +12887,7 @@ function setDynamic(p) {
   p.kinematic = false;
   if (p.extraColl && p.extra) for (const c of p.extra) c.setCollisionGroups(p.extraColl);   // step 59.1
   p.body.setGravityScale(1, true);
+  if (ATC.on && p.item && p.item.kind === 'gun') { p.item.atcAt = 0; atcEnsure(p.item); }   // attclip: a gun let go / dropped carries its current parts
 }
 function setCast(root, v) {
   let changed = false;
@@ -15118,6 +15119,7 @@ function makeGunProbe(g) {
 function updateGunProbe(g, on, pos, quat) {
   if (!g.probe) g.probe = makeGunProbe(g);
   const pr = g.probe;
+  if (ATC.on) atcProbe(g);                                          // attclip: the parts push leaves too
   if (on) {
     _gpp.copy(pos);
     const now = performance.now() / 1000;
@@ -15125,10 +15127,10 @@ function updateGunProbe(g, on, pos, quat) {
     else { pr.body.setNextKinematicTranslation(_gpp); pr.body.setNextKinematicRotation(quat); }                                      // real motion: pushes
     // Step 59.1: a moment after the grab (so it doesn't fling what lay beside it) the probe pushes loose props too.
     const wantProps = GUN_PROBE_PROPS.on && now - pr.since > GUN_PROBE_PROPS.delay;
-    if (wantProps !== pr.props && pr.col) { pr.col.setCollisionGroups(wantProps ? COLL.gunProbeProps : COLL.gunProbe); pr.props = wantProps; }
+    if (wantProps !== pr.props && pr.col) { pr.col.setCollisionGroups(wantProps ? COLL.gunProbeProps : COLL.gunProbe); pr.props = wantProps; atcProbeGroups(pr); }
     pr.last.copy(_gpp); pr.on = true;
   } else if (pr.on) {
-    if (pr.props && pr.col) { pr.col.setCollisionGroups(COLL.gunProbe); pr.props = false; }
+    if (pr.props && pr.col) { pr.col.setCollisionGroups(COLL.gunProbe); pr.props = false; atcProbeGroups(pr); }
     pr.body.setTranslation(GUN_PROBE_PARK, true);
     pr.last.set(GUN_PROBE_PARK.x, GUN_PROBE_PARK.y, GUN_PROBE_PARK.z);
     pr.on = false;
@@ -17757,6 +17759,7 @@ function updateHeldItem(p, dt) {
     _ip.lerpVectors(it.fromPos, _ip, t);
     _iq.copy(it.fromQuat).slerp(_bq.copy(_iq), t);
   }
+  if (ATC.on && it.kind === 'att') atcItemClip(p, hand, dt, _ip, _iq);   // attclip: a held part stops on walls and leaves
   p.root.position.copy(_ip); p.root.quaternion.copy(_iq);
   p.root.updateMatrixWorld(true);
   p.body.setNextKinematicTranslation(_ip); p.body.setNextKinematicRotation(_iq);
@@ -19087,6 +19090,7 @@ function wbGrabbed(it) {
 // Step 100 / 102 / 105 / 108: a gun with its own build (Glock, AKM, M4A1-S, M1911) redoes its hardware, sight line, muzzle and effects after a part came or went.
 function attRefresh(g) {
   if (!g || !g.prop) return;
+  atcDirty(g);                                                      // attclip
   if (g.type === 'g17') g17Refresh(g);
   else if (g.type === 'akmn') akmRefresh(g);                        // step 102
   else if (g.type === 'm1911') m19Refresh(g);                       // step 108
@@ -34540,7 +34544,7 @@ function knockSfx(p, dv) {
   soundAt(at, () => KNOCK_SND[kind](audio.ctx.currentTime + 0.003, j, g, 1 / j));
 }
 function knockTick(p, now) {
-  if (p.item) return;                                          // guns, mags, shells: no record fields, no sound
+  if (p.item) { if (ATC.on && p.item.kind === 'att') atcKnock(p, now); return; }   // guns, mags, shells: no record fields, no sound (attclip: a part's side hit knocks)
   const K = CONFIG.polish.audio.knocks;
   p.knJ = 0;
   if (!K || !K.on) return;
@@ -35504,6 +35508,7 @@ function gunClipShape(g) {
 function gunFreeAt(g, e, P, Q, off) {
   CL_c.copy(e.c).add(off).applyQuaternion(Q).add(P);
   if (!clipFree(CL_c, Q, e.shape, g.prop.body)) return false;
+  if (ATC.on && !atcFree(g, e, P, Q, off)) return false;           // attclip: fitted parts, and door leaves
   const m = g.muzClip;                                              // step 103: a muzzle chain clips too (its own box, as long as the chain)
   if (!m) return true;
   CL_c.copy(m.c).add(off).applyQuaternion(Q).add(P);
@@ -35585,7 +35590,7 @@ function gunTouch(g, e, dt, P, Q, need) {
   const s = g.gtc || (g.gtc = { t: -9, p: new THREE.Vector3(), q: new THREE.Quaternion(), on: false, at: -9, scr: -9, kind: 'plaster' });
   const live = now - s.t < 0.1 && dt > 1e-4 && !(g.blend > 0), was = s.on;   // held last frame too, not still carried in from a pick-up
   s.on = !!need;
-  if (need && !was) { GT_P.copy(e.c).applyQuaternion(Q).add(P); s.kind = gtKind(gtHit(GT_P, Q, e.shape, g.prop.body)); }   // what it touched
+  if (need && !was) { GT_P.copy(e.c).applyQuaternion(Q).add(P); s.kind = gtKind(gtHit(GT_P, Q, e.shape, g.prop.body) || (ATC.on ? ATC.hit : null)); }   // attclip: or what a part / the leaf touched   // what it touched
   const nl = need ? need.length() : 0;
   if (live && nl > 1e-6) {
     const D = GT_L.copy(need).multiplyScalar(1 / nl), h = g.def.col.half;
@@ -39732,6 +39737,7 @@ function createGun(type) {
       .setCollisionGroups(COLL.gunRest), p.body));   // step 59.1: rests on floors, benches and tables (tables are props), props bump it
   }
   p.extraColl = COLL.gunRest;                                      // step 59.1: setKinematic / setDynamic switch these parts too
+  if (ATC.on) atcFactory(p);                                       // attclip: what is built now is the gun; later parts collide
   p.half.set(...F.pick.h); p.center.set(...F.pick.c);
   if (!CONTACT.fits.has(type)) CONTACT.fits.set(type, { boxes: F.boxes.map((x) => ({ c: x.c, h: x.h, th: x.th })), com: F.com });
   seatMag(item, createMag(d.magType, MAG_DEFS[d.magType].capacity), 0, true);
@@ -42037,6 +42043,7 @@ function muzFx(g, chain, out) {
 }
 // The clip's second box: as long and as wide as the chain, from the base muzzle to the tip.
 function muzClipSet(g, chain) {
+  atcDirty(g);                                                      // attclip
   if (!chain.length || typeof RAPIER === 'undefined') { g.muzClip = null; return; }
   const b = muzBase(g, _mzB), t = muzTip(g, chain, _mzT), L = b.z - t.z;
   if (!(L > 0.01)) { g.muzClip = null; return; }
@@ -45385,6 +45392,7 @@ function railWant(t) {
 }
 // Make one gun's rail devices match the layout (not while it is in the vise: the bench owns it until RELEASE).
 function railSync(g) {
+  atcDirty(g);                                                      // attclip
   if (!RAIL.on || !g || g.kind !== 'gun' || !g.prop || g.prop.removing || (WB.open && WB.gun === g) || !railReady(g)) return;
   railHw(g);
   const faces = railFaces(g), R = RAIL_ROWS[g.type] && wsReal(g.type) ? RAIL_ROWS[g.type] : null;
@@ -45463,6 +45471,282 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { RAIL, RAIL_DEV, RAIL_WRAP,
   railToggleLaser, railFx, railTick, railSync, railWant, railSaveGun, railSyncType, railZones, railObstacles, railXBox });
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BRASS, BRASS_CAL, BRASS_BIN, BRASS_TYPE, brassCalOf, brassSettle, brassAdd, brassMerge, brassBuild, brassCollectAt, brassGrab, brassRelease,
   brassDesk, brassUf, brassBinSpawn, brassBinFill, brassHeapPeak, brassHeapVol, brassBinCap, brassPourStart, brassSell, brassSupplies, brassTick, brassVol, brassSum });   // step 116
+/* ===========================================================================
+ *  ATTACHMENTS COLLIDE (doors, walls; ?attclip=off = exactly as before)
+ *  The step 30 clip tested a held gun's own box (def.col) and, since step 103, its muzzle chain (g.muzClip); the step 8.1
+ *  probe that pushes door leaves was the same box. Rail lights, lasers, optics, kits, stocks, grips and the AWM's 10x stuck
+ *  out past both, so they went through walls and leaves; a held loose part touched nothing (COLL.item); a loose gun's parts
+ *  had no collider. Now:
+ *  - atcBuild: the gun's fitted parts (every visible mesh under g.model not tagged factory at createGun; the magazine,
+ *    slings and bipod legs left out) as up to ATC.max boxes from their drawn vertices, in gun-root space. Rebuilt only
+ *    when the build changes (attRefresh / muzClipSet / railSync mark it; a cheap signature every ATC.every ms catches the rest).
+ *  - gunFreeAt (hook): those boxes against the room shell, cover and heavy props (the step 30 filter), and every box plus
+ *    the gun's own against door leaves (ATC.doorGroups). For a gun the leaf test uses each box's core (ATC.tol in from
+ *    its faces): the probe, now carrying the same boxes (atcProbe, ATC.pad bigger), pushes a leaf that can swing; one
+ *    that cannot (at its stop) holds the gun within ATC.tol of its face. The step 30 offset blend does the rest.
+ *  - A loose gun's body carries the boxes as zero-density colliders in p.extra (setKinematic / setDynamic switch them
+ *    with the step 59.1 parts, which now also meet door leaves: ATC.rest).
+ *  - A held loose part (att, light; VR or carried on the computer): atcItemClip, the same search in its own frame
+ *    (six directions) against walls, cover, heavy props and leaves (full box: it has no probe). gunTouch knocks / buzzes.
+ *  - Loose parts already hit leaves and walls (COLL.prop / COLL.held include DOOR, CCD on); their side hits now knock
+ *    too (atcKnock from knockTick; landings stay dropKnock's).
+ *  No per-frame allocation (boxes, shapes and colliders are made when the build changes).
+ * ========================================================================= */
+const ATC = {
+  on: !/[?&]attclip=off\b/.test(location.search),
+  max: 8,              // boxes per gun
+  tol: 0.012,          // m a held gun's box may sink into a leaf before the clip holds it (the probe pushes it first)
+  pad: 0.004,          // m the probe's boxes are bigger than the clip's
+  inside: 0.003,       // m a part's box this far inside the gun's own clip box adds nothing
+  big: 1.2,            // m a box longer than this is not a part (a beam, a glow)
+  every: 300,          // ms between build checks on a held gun
+  itemSide: 0.1,       // m a held part may be pushed out, any way
+  hit: null, doorGroups: 0, rest: 0, base: new Map(), n: { build: 0, knock: 0, item: 0 }
+};
+const ATC_DIRS = [[0, 0, 1], [0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]];
+const ATC_M = new THREE.Matrix4(), ATC_INV = new THREE.Matrix4(), ATC_V = new THREE.Vector3(), ATC_B = new THREE.Box3(), ATC_U = new THREE.Box3();
+const ATC_POOL = [];
+let ATC_N = 0;
+function atcGroups() {
+  if (!ATC.doorGroups) { ATC.doorGroups = groups(GROUP.PROP, GROUP.DOOR); ATC.rest = groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR); }
+}
+// createGun: everything the gun is built with is factory; what the workshop, the bench and the syncs add later is a part.
+function atcFactory(p) {
+  if (!ATC.on || !p) return;
+  atcGroups();
+  p.root.traverse((o) => { o.userData.atcF = true; });
+  p.extraColl = ATC.rest;                                          // the gun's grip / guard parts lying in the world meet leaves too
+}
+function atcDirty(g) { if (ATC.on && g) g.atcDirty = true; }
+function atcSkips(g) {                                             // slings hang and bipod legs fold: neither blocks the gun
+  const A = g.akm, M = g.m4, W = g.awm;
+  if (A && A.slings) for (const k in A.slings) A.slings[k].userData.atcSkip = true;
+  if (M && M.sling) M.sling.userData.atcSkip = true;
+  if (W && W.H && W.H.sling) W.H.sling.userData.atcSkip = true;
+  if (W && W.bipod && W.bipod.legs) for (const l of W.bipod.legs) if (l) l.userData.atcSkip = true;   // g.awm.bipod is the bipod item
+}
+function atcSkipMesh(o) {
+  const m = o.material;
+  return !!(o.isInstancedMesh || o.isSkinnedMesh || !o.geometry || !o.geometry.attributes.position
+    || (m && !Array.isArray(m) && (m.blending === THREE.AdditiveBlending || (m.transparent && m.depthWrite === false))));
+}
+// The build's signature: what is shown and where (local positions of the non-factory nodes). No allocation.
+function atcSig(o, skip) {
+  if (!o.visible || o === skip || o.userData.atcSkip) return 0;
+  let s = 0;
+  if (!o.userData.atcF) s += 1 + (o.id % 997) * 0.001 + o.position.x * 3.1 + o.position.y * 5.3 + o.position.z * 7.7 + (o.isMesh && o.geometry ? o.geometry.id * 0.01 : 0);
+  const ch = o.children;
+  for (let i = 0; i < ch.length; i++) s += atcSig(ch[i], skip);
+  return s;
+}
+function atcSigOf(g) {
+  const skip = g.mag ? g.mag.root : null, ch = g.model.children;
+  let s = 0;
+  for (let i = 0; i < ch.length; i++) s += atcSig(ch[i], skip);
+  return s;
+}
+function atcMeshBox(m, out) {                                      // drawn vertices (index, draw range) in gun-root space
+  const geo = m.geometry, pos = geo.attributes.position, idx = geo.index, dr = geo.drawRange;
+  ATC_M.multiplyMatrices(ATC_INV, m.matrixWorld);
+  out.makeEmpty();
+  const s = Math.max(0, dr.start), cnt = Math.min((idx ? idx.count : pos.count) - s, dr.count);
+  for (let i = s; i < s + cnt; i++) { ATC_V.fromBufferAttribute(pos, idx ? idx.getX(i) : i).applyMatrix4(ATC_M); out.expandByPoint(ATC_V); }
+  return !out.isEmpty();
+}
+function atcCollect(o, skip) {
+  if (!o.visible || o === skip || o.userData.atcSkip) return;
+  if (o.isMesh && !o.userData.atcF && !atcSkipMesh(o)) {
+    const b = ATC_POOL[ATC_N] || (ATC_POOL[ATC_N] = new THREE.Box3());
+    if (atcMeshBox(o, b) && b.max.x - b.min.x < ATC.big && b.max.y - b.min.y < ATC.big && b.max.z - b.min.z < ATC.big) ATC_N++;
+  }
+  const ch = o.children;
+  for (let i = 0; i < ch.length; i++) atcCollect(ch[i], skip);
+}
+const atcVol = (b) => (b.max.x - b.min.x + 0.004) * (b.max.y - b.min.y + 0.004) * (b.max.z - b.min.z + 0.004);
+function atcBuild(g) {
+  const root = g.prop.root;
+  atcSkips(g);
+  root.updateMatrixWorld(true);
+  ATC_INV.copy(root.matrixWorld).invert();
+  ATC_N = 0;
+  const skip = g.mag ? g.mag.root : null, ch = g.model.children;
+  for (let i = 0; i < ch.length; i++) atcCollect(ch[i], skip);
+  // inside the gun's own clip box (def.col about wr.center): nothing to add
+  const h = g.def.col.half, c = g.wr.center, k = ATC.inside;
+  ATC_U.min.set(c.x - h[0] - k, c.y - h[1] - k, c.z - h[2] - k); ATC_U.max.set(c.x + h[0] + k, c.y + h[1] + k, c.z + h[2] + k);
+  let n = 0;
+  for (let i = 0; i < ATC_N; i++) if (!ATC_U.containsBox(ATC_POOL[i])) { const t = ATC_POOL[n]; ATC_POOL[n] = ATC_POOL[i]; ATC_POOL[i] = t; n++; }
+  // merge: first pairs whose union is hardly bigger than both, then the cheapest pairs down to ATC.max
+  for (let pass = 0; pass < 2; pass++) {
+    for (;;) {
+      let bi = -1, bj = -1, bc = Infinity;
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const vi = atcVol(ATC_POOL[i]), vj = atcVol(ATC_POOL[j]), vu = atcVol(ATC_B.copy(ATC_POOL[i]).union(ATC_POOL[j]));
+        const cost = pass === 0 ? vu / (vi + vj) : vu - vi - vj;
+        if (cost < bc) { bc = cost; bi = i; bj = j; }
+      }
+      if (bi < 0 || (pass === 0 ? bc > 1.15 : n <= ATC.max)) break;
+      ATC_POOL[bi].union(ATC_POOL[bj]);
+      const t = ATC_POOL[bj]; ATC_POOL[bj] = ATC_POOL[n - 1]; ATC_POOL[n - 1] = t; n--;
+    }
+  }
+  let key = '';
+  for (let i = 0; i < n; i++) { const b = ATC_POOL[i]; key += [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].map((v) => Math.round(v * 2000)).join(',') + ';'; }
+  ATC.n.build++;
+  if ((g.attClip ? g.attClip.key : '') === key) return;
+  if (!n) { g.attClip = null; atcBody(g); return; }
+  const A = { key, n, c: [], h: [], shape: [], dshape: [] }, s = CLIP.shrink;
+  for (let i = 0; i < n; i++) {
+    const b = ATC_POOL[i], hc = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+    A.c.push(b.getCenter(new THREE.Vector3())); A.h.push(hc);
+    A.shape.push(new RAPIER.Cuboid(Math.max(0.004, hc.x - s), Math.max(0.004, hc.y - s), Math.max(0.004, hc.z - s)));
+    A.dshape.push(new RAPIER.Cuboid(Math.max(0.004, hc.x - ATC.tol), Math.max(0.004, hc.y - ATC.tol), Math.max(0.004, hc.z - ATC.tol)));
+  }
+  g.attClip = A;
+  atcBody(g);
+}
+function atcEnsure(g) {
+  if (!g.model || !g.prop || g.prop.removing) return;
+  const now = performance.now();
+  if (!g.atcDirty && now - (g.atcAt || 0) < ATC.every) return;
+  g.atcAt = now;
+  const s = atcSigOf(g);
+  if (!g.atcDirty && s === g.atcSig) return;
+  g.atcSig = s; g.atcDirty = false;
+  try { atcBuild(g); } catch (e) { console.warn('attclip: build', e); g.attClip = null; }
+}
+// A loose gun's body: the parts as zero-density colliders beside the step 59.1 parts (p.extra), so they rest, roll and stop.
+function atcBody(g) {
+  const p = g.prop, A = g.attClip;
+  if (!p || !p.body || !world || p.removing) return;
+  if (p.atcEx) for (const c of p.atcEx) { const i = p.extra ? p.extra.indexOf(c) : -1; if (i >= 0) p.extra.splice(i, 1); propByCollider.delete(c.handle); world.removeCollider(c, false); }
+  p.atcEx = [];
+  if (!A || !p.extra) return;
+  for (let i = 0; i < A.n; i++) {
+    const c = A.c[i], h = A.h[i];
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(Math.max(0.003, h.x), Math.max(0.003, h.y), Math.max(0.003, h.z)).setTranslation(c.x, c.y, c.z)
+      .setDensity(0).setFriction(0.6).setRestitution(0.1).setCollisionGroups(p.kinematic ? COLL.item : (p.extraColl || ATC.rest)), p.body);
+    p.extra.push(col); p.atcEx.push(col);
+    if (p.inWorld) propByCollider.set(col.handle, p);
+  }
+}
+// The probe (step 8.1) carries the parts too, so a held gun's light or can pushes a leaf (and props, with the probe).
+function atcProbe(g) {
+  const pr = g.probe, A = g.attClip, key = A ? A.key : '';
+  if (!pr || pr.atcKey === key) return;
+  if (pr.ex) for (const c of pr.ex) { CL_skip.delete(c.handle); world.removeCollider(c, false); }
+  pr.ex = [];
+  if (A) for (let i = 0; i < A.n; i++) {
+    const c = A.c[i], h = A.h[i];
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(h.x + ATC.pad, h.y + ATC.pad, h.z + ATC.pad).setTranslation(c.x, c.y, c.z)
+      .setCollisionGroups(pr.props ? COLL.gunProbeProps : COLL.gunProbe), pr.body);
+    CL_skip.add(col.handle); pr.ex.push(col);
+  }
+  pr.atcKey = key;
+}
+function atcProbeGroups(pr) { if (pr && pr.ex) for (const c of pr.ex) c.setCollisionGroups(pr.props ? COLL.gunProbeProps : COLL.gunProbe); }
+function atcHit(pos, rot, shape, grp, exBody, pred) {
+  try { return world.intersectionWithShape(pos, rot, shape, undefined, grp, undefined, exBody, pred); } catch (e) { return null; }
+}
+const ATC_C = new THREE.Vector3();
+// gunFreeAt's second half: the parts against walls / cover / heavy props, and everything against door leaves.
+function atcFree(g, e, P, Q, off) {
+  if (CL_failed) return true;
+  atcGroups();
+  const zero = off.x === 0 && off.y === 0 && off.z === 0, item = !!g.atcItem;
+  if (zero) ATC.hit = null;
+  if (!item) atcEnsure(g);
+  let ds = e.shape;
+  if (!item) { ds = ATC.base.get(g.type); if (!ds) { const h = g.def.col.half; ds = new RAPIER.Cuboid(Math.max(0.004, h[0] - ATC.tol), Math.max(0.004, h[1] - ATC.tol), Math.max(0.004, h[2] - ATC.tol)); ATC.base.set(g.type, ds); } }
+  ATC_C.copy(e.c).add(off).applyQuaternion(Q).add(P);
+  let hit = atcHit(ATC_C, Q, ds, ATC.doorGroups, g.prop.body, undefined);
+  const A = item ? null : g.attClip;
+  if (!hit && A) for (let i = 0; i < A.n; i++) {
+    ATC_C.copy(A.c[i]).add(off).applyQuaternion(Q).add(P);
+    hit = atcHit(ATC_C, Q, A.shape[i], CL_groups, g.prop.body, clipPred) || atcHit(ATC_C, Q, A.dshape[i], ATC.doorGroups, g.prop.body, undefined);
+    if (hit) break;
+  }
+  if (hit && zero) ATC.hit = hit;
+  return !hit;
+}
+// A loose part in a hand (VR, or carried on the computer). Like the step 30 empty hand: it stops between its last free
+// point (held in rig space, so walking and turning carry it) and where the hand is, however far the hand goes in; turned
+// into a surface on the spot, the step 30 search in its own frame (six ways, ATC.itemSide).
+const ATC_O = new THREE.Vector3(), ATC_BEST = new THREE.Vector3(), ATC_W = new THREE.Vector3(), ATC_A = new THREE.Vector3(), ATC_T = new THREE.Vector3();
+const ATC_QI = new THREE.Quaternion(), ATC_RI = new THREE.Matrix4();
+function atcItemClip(p, hand, dt, P, Q) {
+  if (!clipReady() || !hand) return;
+  const it = p.item;
+  let G = it.atcG;
+  if (!G) {
+    G = it.atcG = { type: 'atc:' + [p.half.x, p.half.y, p.half.z, p.center.x, p.center.y, p.center.z].map((v) => Math.round(v * 10000)).join(','), kind: 'atc', atcItem: true,
+      def: { col: { half: [p.half.x, p.half.y, p.half.z] }, cls: 'att' }, wr: { center: p.center.clone(), muzzle: null },
+      prop: p, primary: null, support: null, blend: 0, at: -9, muzClip: null, attClip: null, clip: { off: new THREE.Vector3(), last: new THREE.Vector3(), has: false }, gtc: null };
+  }
+  const nowS = performance.now() / 1000;
+  if (G.primary !== hand || nowS - G.at > 0.2) { G.clip.has = false; G.clip.off.set(0, 0, 0); }   // a new grab: no last free point, no old offset
+  G.at = nowS; G.primary = hand; G.blend = it.blend || 0;
+  const e = gunClipShape(G), st = G.clip;
+  rig.updateWorldMatrix(true, false);
+  let need = null;
+  if (gunFreeAt(G, e, P, Q, CL_zero)) { st.last.copy(P).applyMatrix4(ATC_RI.copy(rig.matrixWorld).invert()); st.has = true; }
+  else {
+    ATC_A.copy(st.last).applyMatrix4(rig.matrixWorld);
+    if (st.has && ATC_A.distanceToSquared(P) < 0.36 && gunFreeAt(G, e, ATC_A, Q, CL_zero)) {
+      let lo = 0, hi = 1;
+      for (let n = 0; n < CLIP.iters + 2; n++) { const m = (lo + hi) / 2; ATC_T.lerpVectors(ATC_A, P, m); if (gunFreeAt(G, e, ATC_T, Q, CL_zero)) lo = m; else hi = m; }
+      ATC_T.lerpVectors(ATC_A, P, lo);
+      st.last.copy(ATC_T).applyMatrix4(ATC_RI.copy(rig.matrixWorld).invert());
+      need = ATC_BEST.subVectors(ATC_T, P).applyQuaternion(ATC_QI.copy(Q).invert());   // in the part's frame, like the gun's
+    } else {
+      let best = Infinity;
+      for (let i = 0; i < ATC_DIRS.length; i++) {
+        const D = ATC_DIRS[i], max = ATC.itemSide;
+        if (max >= best || !gunFreeAt(G, e, P, Q, ATC_O.set(D[0], D[1], D[2]).multiplyScalar(max))) continue;
+        let lo = 0, hi = 1;
+        for (let n = 0; n < CLIP.iters; n++) {
+          const m = (lo + hi) / 2;
+          if (gunFreeAt(G, e, P, Q, ATC_O.set(D[0], D[1], D[2]).multiplyScalar(max * m))) hi = m; else lo = m;
+        }
+        if (max * hi < best) { best = max * hi; ATC_BEST.set(D[0], D[1], D[2]).multiplyScalar(best); }
+      }
+      if (best < Infinity) need = ATC_BEST;
+    }
+    if (need) ATC.n.item++;
+  }
+  if (GT_ON) gunTouch(G, e, dt, P, Q, need);                       // step 88: heard and felt
+  if (need) { if (need.lengthSq() >= st.off.lengthSq()) st.off.copy(need); else st.off.lerp(need, 1 - Math.exp(-CLIP.ease * dt)); }
+  else st.off.multiplyScalar(Math.exp(-CLIP.ease * dt));
+  if (st.off.lengthSq() > 1e-8) P.add(ATC_W.copy(st.off).applyQuaternion(Q));
+}
+// A loose part hitting a wall or a leaf side on knocks like a small can (dropKnock's voice; landings stay dropKnock's).
+function atcKnock(p, now) {
+  const it = p.item;
+  if (p.kinematic || it.stuck || it.hook || it.gun) { if (p.atcK) p.atcK.t = -9; return; }   // on a gun, a peg or posed by code: not flying
+  const K = CONFIG.polish.audio.knocks, v = p.body.linvel();
+  const s = p.atcK || (p.atcK = { x: 0, y: 0, z: 0, t: -9 });
+  const fresh = now - s.t < 0.1, dx = s.x - v.x, dy = s.y - v.y, dz = s.z - v.z;
+  s.x = v.x; s.y = v.y; s.z = v.z; s.t = now;
+  if (!fresh || !K || !K.on) return;
+  const dh = Math.hypot(dx, dz);
+  if (dh < K.minDv || dh < Math.abs(dy)) return;
+  ATC.n.knock++;
+  const F = foleyK('magLand');
+  if (!F || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  const S = DROP_SND, t = audio.ctx.currentTime, A = CONFIG.polish.audio, at = p.body.translation();
+  if (t - S.at < S.gap || t - (p.dkAt || 0) < S.each) return;
+  S.p.set(at.x, at.y, at.z);
+  if (headWorld(_p10.h).distanceToSquared(S.p) > A.impactRange * A.impactRange) return;
+  const m = p.mass || 0.3;
+  S.rec = null; S.list = null;
+  S.rate = clamp(Math.cbrt(2.5 / m), 0.6, 1.6) * (0.94 + Math.random() * 0.12);
+  S.g = Math.pow(clamp((dh - 0.4) / 3.5), 0.8) * clamp(0.35 + 0.25 * Math.cbrt(m)) * F * (K.gain ?? 1);
+  if (S.g < 0.03) return;
+  S.at = p.dkAt = t;
+  soundAt(S.p, dropPlay);
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty, atcBuild, atcEnsure, atcSigOf, atcBody, atcProbe, atcFree, atcItemClip, atcKnock,
+  gunClipWorld, gunFreeAt, gunClipShape, updateGunProbe, updateHeldItem, clipReady, updateDoorsPre, updateDoorsPost, stepPhysics, CLIP, COLL, GROUP });
 </script>
 </body>
 </html>
