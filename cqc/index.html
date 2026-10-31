@@ -2498,6 +2498,21 @@ const CONFIG = {
     peekTime: [1.2, 2.4], coverTime: [1.0, 2.4], peekCrouch: 0.15,
     castShadow: true,          // first thing to switch off if the Quest drops frames in fights
     downed: true,              // step 91: a lethal round not to the head / neck puts him down alive (falls, clutches, crawls, bleeds out; DOWNED); head shots drop limp and silent. false or ?downed=off = the old instant deaths
+    // Step 117: surrender (SURR). Close in with your bore on his head and he may give up; rarely on his own. on false or ?surrender=off = they never do
+    surrender: {
+      on: true,
+      near: 3.5, headR: 0.25, bodyR: 0.6, hold: [0.6, 1.2], cool: 2.5,   // m your head to his; m bore line to his head; m bore to head / chest that still covers him; s on his head before a roll; s before the next roll
+      base: 0.04, low: 0.5, hurt: 0.4, alone: 0.35, reload: 0.45, dry: 0.6, max: 0.92,   // chance per roll: base, then each reason as an independent chance; x1.15 (timid) .. x0.7 (pushy)
+      morale: 0.5, hurtHp: 0.8,                     // morale under this is low; health under this share is hurt
+      rand: { every: 1, p: 0.02, range: 10, surprise: 2, flash: 3 },   // on his own: a check every s, his squad down and he hurt or surprised (saw you under surprise s ago, or flashed within flash s)
+      upTime: 0.55, kneelAim: 1.6, kneelTime: 1.1,  // s hands up; s covered (hands up) before he kneels; s to kneel / stand
+      back: 1.1, backV: 0.55, backNear: 2.6,        // m he steps back at most, m/s, while you are closer than this
+      calls: [3, 6], callMax: 4, voice: 1,          // s between calls while covered, most calls, gain
+      mates: 0.15,                                  // morale his teammates lose when he gives up
+      rearm: { away: 10, look: 1.0, reach: 1.4, p: 0.015, every: 1 },   // s you turned away (not covering him, looking over look rad off him), m his gun from him, chance per check
+      detain: { reach: 0.22, desk: 1.7, pts: 150, pay: 50, time: 1.2 },   // m hand to his wrist (VR), m reach (E), points (x streak), $ to the wallet, s hands behind his back
+      haptic: 0.16
+    },
     playerHealth: 100, playerDmg: { body: 30, head: 70 }, regenDelay: 6, regen: 9
   },
 
@@ -10675,6 +10690,7 @@ function toast(text, ms = 1800) {
 }
 function deskToggleGrab() {
   if (renderer.xr.isPresenting) return;
+  if (SURR.on && surrDetainDesk()) { syncButtons(); return; }      // step 117: E on a man who gave up ties his hands
   if (deskHand.prop) {
     // Step 22.1: with a gun in your hand, E on a magazine, shell or weapon light picks it up (pouch / rail).
     // Before, E always dropped the gun, so attachments and spares could never be taken with a gun out.
@@ -23034,6 +23050,7 @@ function enemyShot(hit, dir, d, E) {
     if (d === FRAG_D && e.downAt >= NADE.blastT) return;          // step 115: not the blast that put him down (its other fragments)
     enemyDie(e, h.seg, dir, hit.p, d.impulse * E); return;
   }
+  if (e.surr) surrShot(e);                                      // step 117: a man who gave up dies from this round (scored as a kill)
   e.hp -= MOD.oneShot ? 1e4 : dmg * clamp(E, 0.2, 1.2);         // step 57: one-shot kills
   e.hitT = now;
   e.suppress = Math.min(3, e.suppress + 1);
@@ -23215,6 +23232,7 @@ function enemyDropType(e) {
   return GUN_BUILD[t] && WEAPON_DEFS[t] ? t : null;
 }
 function enemyDropGun(e, dir) {
+  if (e.unarmed) return;                                          // step 117: he dropped it when he gave up
   const old = e.gun && e.gun.root;
   let wp = null, wq = null;
   if (old) { old.updateWorldMatrix(true, false); wp = old.getWorldPosition(new THREE.Vector3()); wq = old.getWorldQuaternion(new THREE.Quaternion()); }
@@ -24261,16 +24279,423 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
   updatePlayerVitals(dtP, nowP);
   enemiesDyingUpdate(dt);                                       // step 19: death motion, drips and bleeding
   if (AI_ON()) aiDoors();                                       // step 11: a door opening into a room is heard
+  if (SURR.on) surrFrame();                                     // step 117: your bore lines, once a frame
   for (const e of ENEMY.list) {
     if (e.dead || !e.room.active) continue;
     if (!(e.room.visible || e.room === stream.current) || !e.room.group.visible || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
+    if (e.surr) { surrTick(e, dt, now); continue; }             // step 117: he has given up (his own brain, move and pose)
     enemyThink(e, dt, now);
+    if (SURR.on && surrCheck(e, dt, now)) { surrTick(e, dt, now); continue; }   // step 117: he gives up now
     enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
     // Step 25.2: a man you can't see is posed at CONFIG.enemy.offscreenPoseHz (time adds up, nothing is skipped).
     e.poseAcc = (e.poseAcc || 0) + dt;
     if (!enemyOffscreen(e) || e.poseAcc >= 1 / CONFIG.enemy.offscreenPoseHz) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
     enemyFire(e, dt, now);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ *  STEP 117 — SURRENDER (CONFIG.enemy.surrender, ?surrender=off)
+ *  WHEN   you are within near m, your bore line passes within headR of his head for hold s and he sees you:
+ *         one roll (surrChance), much likelier when his morale is low or he is hurt, alone, reloading or dry.
+ *         Rarely on his own (rand): his squad is down and he is hurt or caught by surprise.
+ *  THEN   his gun drops (enemyDropGun, its rounds left in it), hands up and open, palms to you, a step back
+ *         from you, he kneels if you keep him covered, calls out (the grunt takes pitched up, two at a time).
+ *         He is out of the fight (plan.dead: leaving him alive clears the room); his teammates lose morale.
+ *         Turn away long enough with his gun in reach and he may go for it (rearm): up, over to it, picks it up
+ *         and fights again. A round kills him (surrShot: scored as a kill).
+ *  DETAIN E with the dot on him / an empty hand gripping his wrist: hands zip-tied behind his back, kneeling,
+ *         head down; detain.pts x streak and detain.pay $ to the wallet.
+ *  Posed on the DRIVER (surrPose), so the skin and the hit capsules follow. Per frame no allocation; the
+ *  events (start, calls, detain) allocate a little.
+ * ------------------------------------------------------------------------- */
+const SURR = {
+  on: !/[?&]surrender=off\b/.test(location.search) && !!(CONFIG.enemy.surrender && CONFIG.enemy.surrender.on),
+  C: CONFIG.enemy.surrender,
+  guns: [0, 1, 2].map(() => ({ o: new THREE.Vector3(), d: new THREE.Vector3() })), n: 0,   // your bore lines this frame
+  h: new THREE.Vector3(), f: new THREE.Vector3(),                                          // your head, your view direction
+  stat: { surr: 0, rand: 0, rolls: 0, det: 0, rearm: 0, calls: 0, shot: 0 }               // counts (tests)
+};
+const SURR_SIDES = ['L', 'R'];
+const _sr = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), p: new THREE.Vector3(), t: new THREE.Vector3(), w: new THREE.Vector3(), w2: new THREE.Vector3(),
+  x: new THREE.Vector3(), y: new THREE.Vector3(), pole: new THREE.Vector3(), pole2: new THREE.Vector3(),
+  cF: new THREE.Vector3(), cU: new THREE.Vector3(), cR: new THREE.Vector3(), fF: new THREE.Vector3(), fR: new THREE.Vector3(),
+  q: new THREE.Quaternion(), q2: new THREE.Quaternion(), cq: new THREE.Quaternion(), yq: new THREE.Quaternion(),
+  X: new THREE.Vector3(1, 0, 0), Y: new THREE.Vector3(0, 1, 0), aim: { head: 99, body: 99, dist: 99 },
+  why: { low: false, hurt: false, alone: false, reload: false, dry: false } };
+
+// Your bore lines (chamber, -z of the gun), your head and view, once a frame.
+function surrFrame() {
+  SURR.n = 0;
+  headWorld(SURR.h); camera.getWorldDirection(SURR.f);
+  if (!renderer.xr.isPresenting) surrGun(gunOf(deskHand));
+  else for (const h of vrHands) surrGun(gunOf(h));
+}
+function surrGun(g) {
+  if (!g || !g.prop || !g.prop.root || !g.wr || SURR.n >= SURR.guns.length) return;
+  const m = g.prop.root.matrixWorld, s = SURR.guns[SURR.n++];
+  s.o.copy(g.wr.chamber).applyMatrix4(m); s.d.set(0, 0, -1).transformDirection(m);
+}
+// Distance from P to the nearest bore line, in front of the muzzle only (99 = none).
+function surrBoreDist(P) {
+  let best = 99;
+  for (let i = 0; i < SURR.n; i++) {
+    const s = SURR.guns[i], v = _sr.t.subVectors(P, s.o), t = v.dot(s.d);
+    if (t < 0.05) continue;
+    const d = Math.sqrt(Math.max(0, v.lengthSq() - t * t));
+    if (d < best) best = d;
+  }
+  return best;
+}
+function surrHead(e, out) { return e.B.head.getWorldPosition(out).add(_sr.y.set(0, 0.08, 0)); }   // the middle of his head
+function surrAim(e) {
+  const A = _sr.aim;
+  A.head = surrBoreDist(surrHead(e, _sr.a));
+  A.dist = _sr.a.distanceTo(SURR.h);
+  A.body = Math.min(A.head, surrBoreDist(e.B.chest.getWorldPosition(_sr.b)));
+  return A;
+}
+// Teammates still in the fight (not dead, not down, not given up).
+function surrMates(e) { for (const m of e.room.enemies || []) if (m !== e && !m.dead && !m.surr) return true; return false; }
+function surrWhy(e, out) {
+  const Q = SURR.C;
+  out.low = e.morale !== undefined && e.morale < Q.morale;
+  out.hurt = e.hp < CONFIG.enemy.health * Q.hurtHp;
+  out.alone = !surrMates(e);
+  out.reload = e.reloadT > 0;
+  out.dry = e.ammo <= 0;
+  return out;
+}
+// One roll: base, plus each reason as an independent chance; his temperament scales it.
+function surrChance(w, aggr) {
+  const Q = SURR.C;
+  let q = 1 - Q.base;
+  if (w.low) q *= 1 - Q.low;
+  if (w.hurt) q *= 1 - Q.hurt;
+  if (w.alone) q *= 1 - Q.alone;
+  if (w.reload) q *= 1 - Q.reload;
+  if (w.dry) q *= 1 - Q.dry;
+  return Math.min(Q.max, (1 - q) * mix(1.15, 0.7, clamp(aggr ?? 0.4)));
+}
+// After enemyThink: does he give up now? true = he has (surrStart ran).
+function surrCheck(e, dt, now) {
+  const Q = SURR.C, R = e.sr || (e.sr = { a: 0, T: rnd2(Q.hold[0], Q.hold[1]), cd: 0, chk: Math.random() * Q.rand.every, seen: -99, vis: false, fl: -99 });
+  if (e.visible && !R.vis) R.seen = now;                         // the moment he picked you up (surprise)
+  R.vis = e.visible;
+  if (e.state === 'flashed') { R.fl = now; R.a = 0; return false; }
+  if (playerState.dead) { R.a = 0; return false; }
+  // Your bore on his head, close, while he sees you.
+  let on = false;
+  if (SURR.n && e.visible && now >= R.cd) { const A = surrAim(e); on = A.dist <= Q.near && A.head <= Q.headR; }
+  R.a = on ? R.a + dt : Math.max(0, R.a - dt * 1.5);
+  if (R.a >= R.T) {
+    R.a = 0; R.T = rnd2(Q.hold[0], Q.hold[1]); R.cd = now + Q.cool; SURR.stat.rolls++;
+    if (Math.random() < surrChance(surrWhy(e, _sr.why), e.aggr)) { surrStart(e, now, 'aim'); return true; }
+  }
+  // Rarely on his own: his squad is down and he is hurt or caught by surprise.
+  R.chk -= dt;
+  if (R.chk > 0) return false;
+  R.chk = Q.rand.every;
+  const N = Q.rand;
+  if (!e.engaged || !e.los || (e.room.enemies || []).length < 2 || surrMates(e)) return false;
+  if (!(e.hp < CONFIG.enemy.health * Q.hurtHp || now - R.seen < N.surprise || now - R.fl < N.flash)) return false;
+  if (surrHead(e, _sr.a).distanceTo(SURR.h) > N.range || Math.random() >= N.p) return false;
+  SURR.stat.rand++;
+  surrStart(e, now, 'rand');
+  return true;
+}
+function surrStart(e, now, why) {
+  const B = e.B, Q = SURR.C;
+  SURR.stat.surr++;
+  e.root.updateWorldMatrix(true, true);
+  const S = e.surr = { t: 0, why, up: 0, kn: 0, kneel: false, aimed: 0, det: false, detK: 0, pick: 0, calls: 0, callAt: now + rnd2(0.1, 0.3),
+    back: Q.back, away: 0, rck: 0, rearm: null, drop: null, poseAcc: 0, nav: navGrid(e.room), gw: new THREE.Vector3(),
+    w0: { L: new THREE.Vector3(), R: new THREE.Vector3() }, q0: { L: new THREE.Quaternion(), R: new THREE.Quaternion() } };
+  // Where his hands were (chest space), so they leave the gun from there.
+  B.chest.getWorldQuaternion(_sr.cq).invert();
+  for (const s of SURR_SIDES) { B['hand' + s].getWorldPosition(S.w0[s]); B.chest.worldToLocal(S.w0[s]); B['hand' + s].getWorldQuaternion(S.q0[s]).premultiply(_sr.cq); }
+  // The gun goes: let go, pushed aside to his right and back a little.
+  _sr.yq.setFromAxisAngle(_sr.Y, e.yaw + rYaw(e.room));
+  _sr.c.set(1, 0, 0.4).applyQuaternion(_sr.yq).multiplyScalar(0.7);
+  e.dropType = null;
+  enemyDropGun(e, _sr.c);
+  e.unarmed = true;
+  const p = e.dropType ? DROP.list[DROP.list.length - 1] : null;
+  S.drop = p && p.enemyDrop ? p : null;
+  // Out of the fight.
+  e.state = 'surr'; e.engaged = false; e.heard = false; e.path = null; e.cover = null; e.search = null; e.watch = null;
+  e.burst = 0; e.aimT = 0; e.reloadT = 0; e.crouchT = 0; e.peekT = 0; e.anchor.copy(e.pos);
+  enemyOut(e);                                                   // plan.dead: he no longer holds the room
+  const plan = roomMem(e.room).plan;
+  if (plan && !plan.cleared && plan.dead.every(Boolean)) loopRoomCleared(e.room, plan);
+  for (const m of e.room.enemies || []) if (m !== e && !m.dead && !m.surr && m.morale !== undefined) m.morale = Math.max(0, m.morale - Q.mates * (1 - m.aggr * 0.5));
+  toast('Surrendering', 1400);
+  for (const h of vrHands) if (gunOf(h)) pulseSoft(h, Q.haptic, 30);
+  loopUi();
+}
+// A round into a man who gave up: he dies (enemyShot's death path, a kill like any other).
+function surrShot(e) {
+  e.surr = null; e.hp = 0; SURR.stat.shot++;
+}
+function surrTick(e, dt, now) {
+  const S = e.surr, Q = SURR.C;
+  S.t += dt;
+  e.state = 'surr'; e.engaged = false; e.aimT = 0; e.aim = 0; e.reloadT = 0;
+  // He still watches you (enemyThink is not run).
+  e.losT -= dt;
+  if (e.losT <= 0) { e.losT = 0.15 + Math.random() * 0.05; e.los = !playerState.dead && enemySees(e); }
+  e.visible = e.los;
+  if (e.los) { e.lastKnown.set(rLX(e.room, SURR.h.x), SURR.h.y - 0.35, rLZ(e.room, SURR.h.z)); e.hasKnown = true; }
+  let covered = false;
+  if (SURR.n) { const A = surrAim(e); covered = A.body <= Q.bodyR && A.dist <= Q.near * 2; }
+  if (S.det) S.detK = Math.min(1, S.detK + dt / Q.detain.time);
+  if (S.rearm) surrRearmTick(e, S, dt);
+  else {
+    S.up = Math.min(1, S.up + dt / Q.upTime);
+    S.pick = Math.max(0, S.pick - dt / 0.4);
+    if (!S.det && now >= S.callAt && S.calls < Q.callMax && (S.calls === 0 || covered)) { surrCall(e, S.calls ? 'plead' : 'give'); S.calls++; S.callAt = now + rnd2(Q.calls[0], Q.calls[1]); }
+    if (!S.kneel && S.t > Q.upTime && covered) { S.aimed += dt; if (S.aimed >= Q.kneelAim) S.kneel = true; }
+    if (S.det) S.kneel = true;
+    if (S.back > 0 && !S.kneel && S.t > 0.25) surrBack(e, S, dt);
+    if (!S.det) surrRearmCheck(e, S, dt, covered);
+  }
+  const was = S.kn;
+  S.kn = S.kneel ? Math.min(1, S.kn + dt / Q.kneelTime) : Math.max(0, S.kn - dt / Q.kneelTime);
+  if (was < 0.85 && S.kn >= 0.85) ebfKneel(e);                   // knees on the floor (pad, carrier)
+  if (S.kn <= 0 && !S.det) {
+    const y0 = e.yaw;
+    enemyMove(e, dt);                                            // walls, teammates, you; faces you
+    if (S.rearm) { e.yaw = y0; surrTurnTo(e, S.rearm.lx, S.rearm.lz, dt); }   // going for the gun: facing it
+  } else { e.vel.set(0, 0); e.speed = 0; e.turning = false; }
+  if (!e.surr) return;                                           // he took the gun back (surrRearm)
+  S.poseAcc += dt;
+  if (!enemyOffscreen(e) || S.poseAcc >= 1 / CONFIG.enemy.offscreenPoseHz) { surrPose(e, S.poseAcc, now); S.poseAcc = 0; }
+}
+function surrTurnTo(e, lx, lz, dt) {
+  const want = Math.atan2(-(lx - e.pos.x), -(lz - e.pos.y));
+  let d = want - e.yaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+  e.yaw += clamp(d, -CONFIG.enemy.turn * dt, CONFIG.enemy.turn * dt);
+  e.twist *= 1 - Math.min(1, dt * 8);
+}
+// A step or two back from you, while you are close (the anchor walks away; enemyMove follows it).
+function surrBack(e, S, dt) {
+  const Q = SURR.C, r = e.room;
+  const hx = rLX(r, SURR.h.x) - e.pos.x, hz = rLZ(r, SURR.h.z) - e.pos.y, d = Math.hypot(hx, hz);
+  if (d > Q.backNear || d < 1e-3) return;
+  if (Math.hypot(e.anchor.x - e.pos.x, e.anchor.y - e.pos.y) > 0.25) return;   // he is not keeping up: blocked
+  const st = Math.min(S.back, Q.backV * dt), nx = e.anchor.x - hx / d * st, nz = e.anchor.y - hz / d * st;
+  if (!navFree(S.nav, nx, nz)) { S.back = 0; return; }           // a wall or furniture behind him
+  e.anchor.set(nx, nz); S.back -= st;
+}
+// Back to the fight: you turned away long enough (not covering him, not looking his way) and his gun lies in reach.
+function surrRearmCheck(e, S, dt, covered) {
+  const Q = SURR.C.rearm, P = S.drop;
+  if (!P || !P.inWorld || P.removing || P.holders.length) { S.away = 0; return; }
+  let away = !covered;
+  if (away && e.los) { surrHead(e, _sr.a).sub(SURR.h); const l = _sr.a.length(); away = l > 1e-3 && _sr.a.dot(SURR.f) / l < Math.cos(Q.look); }
+  S.away = away ? S.away + dt : 0;
+  if (S.away < Q.away) return;
+  S.rck -= dt;
+  if (S.rck > 0) return;
+  S.rck = Q.every;
+  const r = e.room;
+  P.root.getWorldPosition(_sr.p);
+  const lx = rLX(r, _sr.p.x), lz = rLZ(r, _sr.p.z);
+  if (Math.hypot(lx - e.pos.x, lz - e.pos.y) > Q.reach || Math.abs(_sr.p.y - r.origin.y) > 1.2) return;
+  if (Math.random() >= Q.p * mix(0.6, 1.4, clamp(e.aggr ?? 0.4)) * (S.kn > 0.5 ? 0.6 : 1)) return;
+  S.rearm = { t: 0, lx, lz }; S.kneel = false; SURR.stat.rearm++;
+}
+function surrRearmTick(e, S, dt) {
+  const R = S.rearm, P = S.drop;
+  R.t += dt;
+  S.up = Math.max(0, S.up - dt / 0.35);                          // hands come down
+  if (!P || !P.inWorld || P.removing || P.holders.length || R.t > 6) { surrRearmAbort(e, S); return; }   // you took it, it went, or he can't get to it
+  if (S.kn > 0) return;                                          // off his knees first
+  const r = e.room;
+  P.root.getWorldPosition(S.gw);
+  R.lx = rLX(r, S.gw.x); R.lz = rLZ(r, S.gw.z);
+  const dx = R.lx - e.pos.x, dz = R.lz - e.pos.y, d = Math.hypot(dx, dz);
+  if (d > 0.55 && S.pick <= 0) { e.anchor.set(R.lx - dx / d * 0.45, R.lz - dz / d * 0.45); return; }   // over to it
+  e.anchor.copy(e.pos);
+  S.pick = Math.min(1, S.pick + dt / 0.45);                      // stoop, right hand to it
+  if (S.pick >= 1) surrRearm(e, S);
+}
+function surrRearmAbort(e, S) {
+  S.rearm = null; S.away = 0; S.rck = 2; e.anchor.copy(e.pos);
+}
+// He has it: his own gun back in his hands, with what was left in it.
+function surrRearm(e, S) {
+  const P = S.drop, g = P.item, md = g && g.def && MAG_DEFS[g.def.magType], cap = md ? md.capacity : 0;
+  const rounds = g && g.mag && g.mag.item ? g.mag.item.rounds : 0, now = wnow();
+  e.ammo = cap ? clamp(Math.round(e.w.ammo * rounds / cap), 0, e.w.ammo) : 0;
+  const i = DROP.list.indexOf(P); if (i >= 0) DROP.list.splice(i, 1);
+  removeProp(P);
+  e.root.add(e.gun.root); e.unarmed = false;
+  e.surr = null;
+  e.state = 'react'; e.stateT = rnd2(0.3, 0.6); e.engaged = true; e.heard = false; e.seen = 1; e.anchor.copy(e.pos);
+  e.acquire = now + rnd2(0.5, 0.9); e.err = CONFIG.enemy.errBase * e.errK * 1.4;
+  if (e.morale !== undefined) e.morale = Math.max(e.morale, e.moraleBase * 0.6);
+  if (e.ammo <= 0) e.reloadT = enemyReloadTime(e);
+  if (e.sr) e.sr.cd = now + 8;
+  enemyCurl(e, 1);
+  const plan = roomMem(e.room).plan;
+  if (plan) plan.dead[e.idx] = false;                           // he holds the room again (a clear already scored stays scored)
+  loopUi();
+}
+// Detain: an empty VR hand gripping either wrist, or E with the dot on him (computer).
+function surrDetainable(e) { return !!e.surr && !e.dead && !e.surr.det && !e.surr.rearm && e.surr.t > 0.4 && e.room.active; }
+function surrDetainGrab(hand) {
+  if (hand.prop || (hand.hover && hand.hover.holders && hand.hover.holders.length)) return false;   // not when reaching for your own gun
+  hand.source.getWorldPosition(_sr.w);
+  let best = null, bd = SURR.C.detain.reach;
+  for (const e of ENEMY.list) {
+    if (!surrDetainable(e)) continue;
+    for (const s of SURR_SIDES) { const d = e.B['hand' + s].getWorldPosition(_sr.w2).distanceTo(_sr.w); if (d < bd) { bd = d; best = e; } }
+  }
+  if (!best) return false;
+  surrDetain(best, hand);
+  return true;
+}
+function surrDetainDesk() {
+  camera.getWorldPosition(_sr.w); camera.getWorldDirection(_sr.c);
+  let best = null, bd = SURR.C.detain.desk;
+  for (const e of ENEMY.list) {
+    if (!surrDetainable(e)) continue;
+    const v = _sr.t.subVectors(e.B.chest.getWorldPosition(_sr.p), _sr.w), d = v.length(), t = v.dot(_sr.c);
+    if (d > bd || t <= 0 || Math.sqrt(Math.max(0, d * d - t * t)) > 0.45) continue;   // the dot on his upper body
+    bd = d; best = e;
+  }
+  if (!best) return false;
+  surrDetain(best, null);
+  return true;
+}
+function surrDetain(e, hand) {
+  const S = e.surr, Q = SURR.C.detain, r = loop.run;
+  S.det = true; S.kneel = true; S.detK = 0; SURR.stat.det++;
+  const pts = Math.round(Q.pts * r.mult * MENU_FX.scoreK);
+  r.pending += pts;
+  walletEarn(Q.pay);
+  surrZip(e); surrCall(e, 'det');
+  if (hand) pulse(hand, 0.35, 40);
+  toast(`Detained  +${pts}${WORKSHOP.on && Q.pay > 0 ? `  ·  wallet +${fmtMoney(Q.pay)}` : ''}`, 2200);
+  loopUi();
+}
+// His voice: the step 69 grunt takes pitched up and cut short, two at a time ("no, no"); a ragged breath when tied.
+// No takes loaded: two breathy band-passed bursts.
+function surrCall(e, kind) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !e.B.head) return;
+  SURR.stat.calls++;
+  const pre = kind === 'det' ? 'dbreath' : 'grunt', list = VOX_FILES.filter((n) => n.startsWith(pre) && VOX.bufs[n]), k = SURR.C.voice;
+  soundAt(e.B.head.getWorldPosition(_sr.p), () => {
+    const c = audio.ctx;
+    if (!list.length) {
+      if (!audio.noise) return;
+      const tn = c.currentTime + 0.04;
+      nBurst(tn, 0.22, 'bandpass', 620, 2.2, 0.1 * k, 0.2, 0.3);
+      if (kind !== 'det') nBurst(tn + 0.36, 0.2, 'bandpass', 680, 2.2, 0.08 * k, 0.18, 0.3);
+      return;
+    }
+    const t = c.currentTime + (audio.delay || 0) + 0.04, reps = kind === 'give' ? 2 : 1;
+    let at = t;
+    for (let i = 0; i < reps; i++) {
+      const buf = VOX.bufs[list[(Math.random() * list.length) | 0]], src = c.createBufferSource(), g = c.createGain();
+      const rate = kind === 'det' ? rnd2(0.92, 1.02) : rnd2(1.16, 1.32), len = Math.min(buf.duration / rate, kind === 'det' ? 0.9 : 0.42);
+      const lv = (kind === 'plead' ? 0.75 : kind === 'det' ? 0.6 : 0.95) * k * (i ? 0.8 : 1);
+      src.buffer = buf; src.playbackRate.value = rate;
+      g.gain.setValueAtTime(lv, at); g.gain.setValueAtTime(lv, at + len * 0.7); g.gain.linearRampToValueAtTime(0, at + len);
+      src.connect(g); g.connect(audio.dest || audio.out);
+      src.start(at); src.stop(at + len + 0.02);
+      at += len + rnd2(0.06, 0.14);
+    }
+  });
+}
+function surrZip(e) {                                            // the tie ratcheting shut, then pulled tight
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  soundAt(e.B.handR.getWorldPosition(_sr.p), () => {
+    const t = audio.ctx.currentTime + SURR.C.detain.time * 0.7;
+    for (let i = 0; i < 9; i++) nBurst(t + i * 0.034 + Math.random() * 0.006, 0.02, 'highpass', 3200, 0.7, 0.07, 0.014, 0.2);
+    nBurst(t + 0.34, 0.05, 'bandpass', 1800, 1.2, 0.05, 0.04, 0.2);
+  });
+}
+// The pose, on the driver. Weights: up (hands up), kn (kneel; right knee first), detK (hands behind his back),
+// pick (stoop, right hand to his gun). Hands leave the gun hold (w0, chest space) in the first 0.25 s.
+function surrPose(e, dt, now) {
+  const B = e.B, S = e.surr, sk = e.sk, V = _sr, r = e.room, fy = r.origin.y;
+  const up = smoothstep(0, 1, S.up), det = smoothstep(0, 1, S.detK), pick = smoothstep(0, 1, S.pick);
+  const kR = smoothstep(0, 1, clamp(S.kn * 1.7)), kL = smoothstep(0, 1, clamp(S.kn * 1.7 - 0.7)), kn = (kR + kL) / 2;
+  // --- root, hips, spine ---
+  e.root.position.set(e.pos.x, 0, e.pos.y); e.root.rotation.y = e.yaw;
+  const sp = e.speed;
+  e.phase += dt * sp / 0.36 * Math.PI * 0.5;
+  const gait = clamp(sp / 1.2) * (1 - kn), stride = Math.min(0.5, 0.16 + sp * 0.2);
+  const hipD = Math.max(0, -B.thighL.position.y), kneelHip = 0.05 + hipD + sk.thigh * 0.96;   // knee joint 5 cm up, thigh near upright
+  const hip = mix(sk.hipY, kneelHip, kn) - (sk.hipY - sk.crouchHip) * 0.8 * pick * (1 - kn) - gait * 0.02;
+  B.pelvis.position.set(0, hip, 0.03 * pick);
+  B.pelvis.rotation.set(-0.06 * kn - 0.15 * pick, 0, Math.sin(e.phase) * 0.04 * gait);
+  B.spine.rotation.set(0.07 * up * (1 - det) - 0.1 * det - 0.45 * pick, e.twist * 0.4, 0, 'YXZ');
+  B.chest.rotation.set(0.04 * up - 0.06 * det - 0.25 * pick, e.twist * 0.4, Math.sin(now * 2.3 + e.idx) * 0.012 * up * (1 - det), 'YXZ');
+  B.clavL.rotation.set(0, 0, 0); B.clavR.rotation.set(0, 0, 0);
+  e.root.updateWorldMatrix(true, true);
+  // --- head: on you (on his gun while he goes for it), down once tied ---
+  if (S.rearm) V.p.copy(S.gw); else V.p.copy(SURR.h);
+  B.neck.getWorldPosition(V.a);
+  V.c.subVectors(V.p, V.a).normalize();
+  B.chest.getWorldQuaternion(V.cq);
+  V.c.applyQuaternion(V.q.copy(V.cq).invert());
+  let hy = clamp(Math.atan2(-V.c.x, -V.c.z), -1.0, 1.0), hp = clamp(Math.asin(clamp(V.c.y, -1, 1)), -0.7, 0.7);
+  hy *= 1 - det; hp = mix(hp, -0.55, det);
+  B.neck.rotation.set(hp * 0.4, hy * 0.4, 0, 'YXZ');
+  B.head.rotation.set(hp * 0.6, hy * 0.6, 0, 'YXZ');
+  // --- legs: standing (stepping back) or kneeling (knees down, toes tucked), IK hips -> ankles ---
+  V.yq.setFromAxisAngle(V.Y, e.yaw + rYaw(r));
+  V.fF.set(0, 0, -1).applyQuaternion(V.yq); V.fR.set(1, 0, 0).applyQuaternion(V.yq);
+  const ox = rWX(r, e.pos.x), oz = rWZ(r, e.pos.y);
+  const kneeF = Math.sqrt(Math.max(0, sk.thigh * sk.thigh - (kneelHip - hipD - 0.05) ** 2)), ankY = 0.13, ankB = Math.sqrt(Math.max(0, sk.shin * sk.shin - (ankY - 0.05) ** 2));
+  for (let i = 0; i < 2; i++) {
+    const s = i ? 1 : -1, side = SURR_SIDES[i], k = i ? kR : kL;
+    const ph = e.phase + (s < 0 ? 0 : Math.PI);
+    const fwdS = Math.sin(ph) * stride * 0.5 * gait + (1 - gait) * (s < 0 ? 0.05 : -0.03) + pick * (s < 0 ? 0.12 : -0.1);
+    const lift = Math.max(0, Math.cos(ph)) * 0.08 * gait;
+    V.t.set(ox, fy + mix(sk.ankle + lift, ankY, k), oz).addScaledVector(V.fF, mix(fwdS, kneeF - ankB, k)).addScaledVector(V.fR, s * mix(0.11, 0.13, k));
+    V.q.copy(V.yq).multiply(V.q2.setFromAxisAngle(V.X, -1.15 * k));
+    V.pole.copy(V.fF).addScaledVector(V.Y, 0.05 - 0.3 * k);
+    solveIK(B['thigh' + side], B['shin' + side], sk.thigh, sk.shin, V.t, V.pole, V.fF, B['foot' + side], V.q);
+  }
+  // --- arms ---
+  B.chest.getWorldQuaternion(V.cq);
+  V.cF.set(0, 0, -1).applyQuaternion(V.cq); V.cU.set(0, 1, 0).applyQuaternion(V.cq); V.cR.set(1, 0, 0).applyQuaternion(V.cq);
+  const relax = smoothstep(0, 1, S.t / 0.25), shake = 0.006 * up * (1 - det);
+  for (let i = 0; i < 2; i++) {
+    const s = i ? 1 : -1, side = SURR_SIDES[i];
+    const sh = B['upperArm' + side].getWorldPosition(V.a);
+    // the gun hold he let go of -> hanging by his sides (palms in)
+    V.w.copy(S.w0[side]).applyMatrix4(B.chest.matrixWorld);
+    V.q.copy(V.cq).multiply(S.q0[side]);
+    V.w2.copy(sh).addScaledVector(V.cU, -0.44).addScaledVector(V.cF, 0.06).addScaledVector(V.cR, s * 0.03);
+    V.w.lerp(V.w2, relax); V.q.slerp(frameQ(V.cR, V.cU, V.q2), relax);
+    V.pole.copy(V.cR).multiplyScalar(s * 0.6).addScaledVector(V.cU, -0.2).addScaledVector(V.cF, -0.6);
+    // hands up and open, palms to you, elbows out; a little shake
+    V.w2.copy(sh).addScaledVector(V.cU, 0.27).addScaledVector(V.cR, s * 0.1).addScaledVector(V.cF, 0.1)
+      .addScaledVector(V.cR, Math.sin(now * 17 + i * 2.1) * shake).addScaledVector(V.cU, Math.sin(now * 13.3 + i) * shake);
+    V.w.lerp(V.w2, up); V.q.slerp(frameQ(V.x.copy(V.cF).multiplyScalar(-s), V.y.copy(V.cU).negate().addScaledVector(V.cF, 0.15), V.q2), up);
+    V.pole2.copy(V.cR).multiplyScalar(s * 0.9).addScaledVector(V.cU, -0.4).addScaledVector(V.cF, 0.1); V.pole.lerp(V.pole2, up);
+    // tied: wrists crossed at the small of his back, fingers down, elbows back
+    B.pelvis.getWorldPosition(V.w2).addScaledVector(V.Y, 0.16).addScaledVector(V.fF, -0.16).addScaledVector(V.fR, s * 0.035);
+    V.w.lerp(V.w2, det); V.q.slerp(frameQ(V.fR, V.Y, V.q2), det);
+    V.pole2.copy(V.fF).multiplyScalar(-0.8).addScaledVector(V.fR, s * 0.5).addScaledVector(V.Y, -0.2); V.pole.lerp(V.pole2, det);
+    // going for his gun: the right hand to it, palm down
+    if (s > 0 && pick > 0) {
+      V.w2.copy(S.gw).addScaledVector(V.Y, 0.06);
+      V.w.lerp(V.w2, pick); V.q.slerp(frameQ(V.Y, V.y.copy(V.fF).multiplyScalar(-0.5).addScaledVector(V.Y, 0.8), V.q2), pick);
+      V.pole2.copy(V.fR).multiplyScalar(0.7).addScaledVector(V.Y, -0.3).addScaledVector(V.fF, -0.3); V.pole.lerp(V.pole2, pick);
+    }
+    solveIK(B['upperArm' + side], B['foreArm' + side], sk.upper, sk.fore, V.w, V.pole, V.cF, B['hand' + side], V.q);
+  }
+  // fingers: off the gun, spread open with the hands up, half closed when tied, closing on the gun
+  enemyCurl(e, Math.round(mix(mix(mix(0.6, 0.12, up), 0.5, det), 1, pick) * 20) / 20);
+  e.root.updateWorldMatrix(false, true);
+  enemySkinSync(e);
+  if (CONFIG.enemy.castShadow && (e.speed > 0.15 || (S.kn > 0 && S.kn < 1) || up < 1 || (S.det && det < 1) || pick > 0)) motionShadows();
 }
 
 /* ---------------------------------------------------------------------------
@@ -35300,6 +35725,7 @@ for (let i = 0; i < 2; i++) {
   vrHands.push(hand);
   const squeezeStart = () => {
     if (!renderer.xr.isPresenting) return;
+    if (SURR.on && surrDetainGrab(hand)) return;                     // step 117: grip a surrendered man's wrist: zip-tied
     grip.getWorldPosition(_cur);
     const p = hand.hover || nearestProp(_cur, CONFIG.physics.reach) || slungNear(_cur);   // animated sling: anywhere on the rifle on your chest
     if (p) { grab(hand, p); return; }
@@ -38822,6 +39248,7 @@ if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, rendere
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
+if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose });   // step 117
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI, bvSlotOf, bvRows, bvGunPage, bvPick, bvSync, bvAnchors, bvRender, bvLines, bvTick, bvFinger, bvTurn });   // step 114
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, RETICLE, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
