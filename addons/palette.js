@@ -69,6 +69,13 @@
         add("Enemies", "Remove all enemies", function () { EN.clear(); }, "enemy delete clear", EN.count() > 0);
         add("Enemies", (EN.getUp ? "Enemies stay down when shot" : "Enemies get back up after a fall"), function () { EN.setGetUp(!EN.getUp); }, "enemy dummy respawn");
       }
+      var RG = window.__studioRange;
+      if (RG && RG.ready) {
+        RG.types.forEach(function (t) { add("Range", "Spawn the " + t.label, function () { RG.spawn(t.id); }, "gun weapon range shoot " + t.cart); });
+        add("Range", "Set up the targets (paper + steel, 5-300 m)", function () { RG.setup(); }, "range targets steel paper shooting");
+        add("Range", "Reset targets and score", function () { RG.resetTargets(); }, "range score clear");
+        add("Range", "Put the guns away", function () { RG.clearGuns(); }, "range remove guns", RG.guns.length > 0);
+      }
       var RS = window.__studioReset;
       if (RS) add("Studio", RS.armed() ? "Yes, reset the whole studio now" : "Reset the whole studio\u2026 (asks again)", function () { RS.press(); }, "reset clear wipe factory default start over new");
       if (!UI.safe) {

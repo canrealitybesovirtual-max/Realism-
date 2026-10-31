@@ -58,6 +58,7 @@ ENUMS = {
  "level": ["low","medium","high"],
  "category": ["spawn","move","shape","look","material","physics","presets","lights","rooms","travel","scene","project","view","help","range","shooting"],
  "fog": ["off","none","light","thin","dense","heavy","thick"],
+ "gun": ["glock","glock 17","pistol","1911","m1911","colt","akm","ak","ak47","ak-47","kalashnikov","m4","m4a1","m4a1-s","carbine","awm","awp","sniper","sniper rifle"],
 }
 PRESETS = {  # Appendix B. mass is x a medium prop (2 kg); gravity null = static
  "heavy metal":{"mass":5,"friction":0.6,"bounce":0.05,"gravity":1.0},
@@ -209,9 +210,12 @@ c("text_smaller", G, ["text smaller","smaller text","zoom out"], "text smaller",
 c("contrast", G, ["high contrast [onoff]"], "high contrast on", "", {"onoff":T(type="enum",of="onoff")}, status="planned", planned=P8)
 c("look_at", G, ["look at [object]","face [object]"], "look at the monitor", "Facing {object}.", {"object":OBJ}, undo=False)
 G = "Range"
-c("reset_targets", G, ["reset targets","reset range","reset score","stand targets up","clear score"], "reset targets", "Targets are fresh and the score is zero.", undo=False, status="planned", planned="arrives with the shooting targets (next step)")
-c("score", G, ["score","show score","my score","what is my score","how did i do","accuracy"], "what is my score", "{score}", undo=False, status="planned", planned="arrives with the shooting targets (next step)")
-c("range_setup", G, ["set up range","set up shooting range","build range","build shooting range","make shooting range","shooting range"], "set up a shooting range", "Set up a range: {count} targets and a scoreboard.", cost="Med", status="planned", planned="arrives with the shooting targets (next step)")
+c("spawn_gun", G, ["spawn [gun]","give me [gun]","get [gun]","add [gun]","bring out [gun]"], "spawn the AKM", "The {gun} is on the bench by the window lane. Pick it up.", {"gun":T(type="enum",of="gun")}, undo=False)
+c("range_setup", G, ["set up range","set up shooting range","build range","build shooting range","make shooting range","shooting range","spawn targets","add targets","put up targets"], "set up a shooting range", "Range set up: {count} targets from 5 to 300 m down the lane through the open window pane.", cost="Med", undo=False)
+c("reset_targets", G, ["reset targets","reset range","reset score","stand targets up","clear score"], "reset targets", "Targets are fresh and the score is zero.", undo=False)
+c("score", G, ["score","show score","my score","what is my score","how did i do","accuracy"], "what is my score", "{score}", undo=False)
+c("clear_guns", G, ["put guns away","remove guns","clear guns","put away guns"], "put the guns away", "Put {count} guns away.", undo=False)
+c("start_clays", G, ["start clays","pull","clays on","start trap","start skeet"], "start clays", "", status="planned", planned="arrives with the clay thrower (next range step)")
 G = "Help"
 c("list", G, ["list commands","what can i say","help","commands","show commands"], "what can I say", "Here is what you can say.", undo=False)
 c("list_group", G, ["commands for [category]","help [category]","[category] commands"], "commands for physics", "Commands for {category}.", {"category":T(type="enum",of="category")}, undo=False)

@@ -22,8 +22,8 @@
 
   waitForStudio().then(function (ctx) {
     var S = ctx.S, os = ctx.os, LIB = window.__studioPropLib, C = window.__studioCommands, FONT = os.fonts.ui;
-    var GROUPS = ["All", "Enemies", "Office", "Driving", "Building", "Interactive", "Toys", "Lights"];
-    var TINT = { Office: "#b8916a", Driving: "#e2672d", Building: "#a9a59d", Interactive: "#4f8fd6", Toys: "#c64a57", Lights: "#e9c46a", Enemies: "#5b4a3a" };
+    var GROUPS = ["All", "Range", "Enemies", "Office", "Driving", "Building", "Interactive", "Toys", "Lights"];
+    var TINT = { Range: "#3b3d42", Office: "#b8916a", Driving: "#e2672d", Building: "#a9a59d", Interactive: "#4f8fd6", Toys: "#c64a57", Lights: "#e9c46a", Enemies: "#5b4a3a" };
     var MATS = ["wood", "dark wood", "steel", "painted metal", "concrete", "fabric", "plastic", "rubber", "glass", "cardboard"];
     var PRESETS = ["heavy metal", "bouncy rubber", "zero-g", "static lock", "ice", "wood", "stone", "foam", "glass", "balloon"];
     // the word the command runner knows for each library prop
@@ -44,6 +44,9 @@
           { name: "enemy getup", label: "Get back up: " + (EN.getUp ? "on" : "off"), group: "Enemies", info: EN.getUp ? "they stand up after 6 s" : "they stay down", tint: "#4a4f5a", act: function () { EN.setGetUp(!EN.getUp); } }
         );
       }
+      // the range (addons/range.js): CQC guns and targets, its own actions
+      var RG = window.__studioRange;
+      if (RG && RG.ready && RG.cards) list = RG.cards().concat(list);
       return group === "All" ? list : list.filter(function (c) { return c.group === group; });
     }
 
@@ -125,7 +128,7 @@
         c.textBaseline = "alphabetic";
         this.sig = this.state();
       }
-      state() { var e = S.editor, EN = window.__studioEnemies; return (EN && EN.count ? EN.count() + "|" + EN.getUp + "|" : "") + this.group + "|" + this.scroll + "|" + this.hover + "|" + this.reply + "|" + (e ? e.selectionVersion : 0) + "|" + LIB.list().filter(function (d) { return LIB.swatch(d.name); }).length; }
+      state() { var e = S.editor, EN = window.__studioEnemies, RG = window.__studioRange; return (RG && RG.ready ? RG.guns.length + "|" + RG.stats.shots + "|" : "") + (EN && EN.count ? EN.count() + "|" + EN.getUp + "|" : "") + this.group + "|" + this.scroll + "|" + this.hover + "|" + this.reply + "|" + (e ? e.selectionVersion : 0) + "|" + LIB.list().filter(function (d) { return LIB.swatch(d.name); }).length; }
       animating() { return this.state() !== this.sig; }
       cursor(x, y) { return this.hits.some(function (h) { return inRect(x, y, h); }) ? "pointer" : "arrow"; }
       pointerMove(x, y) { var h = this.hits.find(function (h) { return h.card !== undefined && inRect(x, y, h); }); var v = h ? h.card : -1; if (v !== this.hover) { this.hover = v; this.os.invalidate(); } }
