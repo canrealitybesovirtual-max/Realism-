@@ -2481,6 +2481,43 @@ const CONFIG = {
     shove: 1.6                 // desktop shove impulse per kg (capped)
   },
 
+  // --- STEP 119: bullet penetration (?pen=off) ---
+  // Rooms' walls, doors and loose props now let a round through when it has the energy for what is in its
+  // path (cover keeps its step 6 rules). Small clean hole in, big torn hole out, dust thrown along the path.
+  ballistics: {
+    penetrate: true,           // false or ?pen=off = rounds stop at walls, doors and props as before
+    maxPen: 3,                 // things one round goes through (cover, walls, doors, props, bodies); the next one stops it
+    // The cartridges: m g, v m/s at the muzzle, d mm, form (1 = FMJ spitzer / round nose; a ball or a fragment less),
+    // e = its energy in the game's 9 mm units (CONFIG.cover.energy wins where it lists the gun), defl deg it turns going
+    // through something (pistol rounds yaw easily), tum how readily it starts to tumble (5.56 the most).
+    rounds: {
+      '9mm': { m: 8.0, v: 360, d: 9.0, form: 1, e: 1, defl: 4, tum: 0.6 },
+      '380': { m: 6.2, v: 290, d: 9.0, form: 1, e: 0.7, defl: 5, tum: 0.6 },
+      '45': { m: 14.9, v: 255, d: 11.5, form: 1, e: 1.1, defl: 4, tum: 0.5 },
+      '556': { m: 4.0, v: 930, d: 5.7, form: 0.8, e: 1.9, defl: 2.5, tum: 1 },
+      '762': { m: 7.9, v: 715, d: 7.9, form: 1, e: 2.3, defl: 2, tum: 0.8 },
+      '338': { m: 16.2, v: 900, d: 8.6, form: 1.1, e: 4.5, defl: 1, tum: 0.35 },
+      buck: { m: 3.5, v: 400, d: 8.4, form: 0.55, e: 0.45, defl: 7, tum: 0 },     // one 00 pellet: a lead ball
+      frag: { m: 0.6, v: 1000, d: 6.0, form: 0.35, e: 0.8, defl: 10, tum: 0 }      // a grenade fragment
+    },
+    gun: { pistol: '9mm', smg: '9mm', fn509: '9mm', g17: '9mm', ppk: '380', m1911: '45', rifle: '556', m4a1s: '556', akm: '762', akmn: '762', awp: '338', shotgun: 'buck', frag: 'frag' },
+    // Materials: J a 9 mm FMJ loses per cm; x (calibre area / 9 mm's) ^ a, / form. Hard media care less about the area.
+    mat: { gypsum: { r: 14, a: 1 }, wood: { r: 22, a: 1 }, steel: { r: 1100, a: 0.5 }, glass: { r: 60, a: 1 }, concrete: { r: 330, a: 0.5 }, water: { r: 4.5, a: 1 } },
+    board: 1.25,               // cm of one gypsum board: a stud wall (the walls between rooms) is two of them and air
+    studHit: 0.1, stud: 0.1,   // chance a round meets a steel stud in the wall, cm of its steel in the way
+    studMax: 0.14,             // m: thicker plaster than this (outer walls, clad columns) is plaster over block, not a stud wall
+    skins: 0.24,               // cm of steel in a hollow metal door (two skins); doorMax m thick at most
+    doorMax: 0.07,
+    woodFill: 0.35,            // share of a wooden carcass's depth that is wood
+    graze: 0.2,                // |cos| of the angle of incidence under which a round skids off instead
+    look: 0.8,                 // m: thicker than this along the path = it stops (never measured further)
+    tumbleCost: 1.2,           // a tumbling round loses x (1 + this x tumble) in the next thing it meets
+    tumbleWound: 0.6,          // ... and its wound is x (1 + this x tumble) (damage x half of that)
+    exitSize: { plaster: 0.11, wood: 0.085, metal: 0.045, concrete: 0.13 },   // m: the exit decals (x calibre, x tumble)
+    fxRate: 24, fxCap: 10,     // exit puffs a second / at once (a grenade's 70 fragments share them)
+    ai: { malus: 2.2, memory: 120 }   // men who saw rounds come through soft cover score it down (x your gun: rifles 1, pistols 0.55, buckshot 0.35); s to forget
+  },
+
   // --- STEP 7: the enemy ---
   enemy: {
     offscreenPoseHz: 20,       // step 25.2: pose rate (Hz) for a man outside your view and over 3 m away; 0 = every frame
@@ -12696,6 +12733,7 @@ function buildWeaponKit() {
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4
     });
   }
+  penKit();                                        // step 119: torn exit holes (warmed with the holes below)
 
   // --- Spent casings / hulls: physics bodies on demand, drawn as instances ---
   // Step 17: turned 9 mm case (lathe about y, mouth up): rim, extraction groove, taper, open mouth.
@@ -15815,7 +15853,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   if (door) {
     door.body.applyImpulseAtPoint(imp, _fp, true);
     door.drive = null;
-    addDoorHole(door, _fp, _hn, true);
+    addDoorHole(door, _fp, _hn, true, 'metal', PEN.live ? PEN.holeS : 1);   // step 119: sized to the calibre
     impactFx('metal', _fp, _hn);
     return;
   }
@@ -15823,7 +15861,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   if (info) {
     if (FIX_ON && _hn.y < -0.7 && fixtureShot(info.room, _fp, dir)) return;   // step 87: a round into a troffer
     if (SPLASH.on && CONFIG.splash.bullets && info.kind === 'concrete' && _hn.y > 0.7 && splashShot(info.room, _fp)) return;   // step 94: into standing water
-    addRoomHole(info.room, info.kind, _fp, _hn, true);
+    addRoomHole(info.room, info.kind, _fp, _hn, true, undefined, PEN.live ? PEN.holeS : 1);   // step 119: sized to the calibre
     impactFx(info.kind, _fp, _hn);
     if (TRICKLE.on) trickleAdd(info.room, info.kind, _fp, _hn);   // step 88: the hole keeps shedding
   }
@@ -16003,10 +16041,10 @@ function roomRoll(room, wn, roll) {
   _rrV.set(1, 0, 0).applyQuaternion(_rrB);
   return Math.atan2(_rrV.y, _rrV.x);
 }
-function addRoomHole(room, kind, wp, wn, save, tag) {   // tag: which crate / drywall cell it's on (step 6)
+function addRoomHole(room, kind, wp, wn, save, tag, sc = 1) {   // tag: which crate / drywall cell it's on (step 6); sc: size (step 119: calibre, exit)
   if (!room.active) return;
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83: in the room's frame
-  const roll = Math.random() * Math.PI * 2, s = 0.85 + Math.random() * 0.3;   // random: no need to turn it
+  const roll = Math.random() * Math.PI * 2, s = (0.85 + Math.random() * 0.3) * sc;   // random: no need to turn it
   putDecal(decalLayer(room, room.group, kind), kind, lx, ly, lz, nx, wn.y, nz, roll, s);
   if (save) {
     const m = roomMem(room);
@@ -16015,21 +16053,21 @@ function addRoomHole(room, kind, wp, wn, save, tag) {   // tag: which crate / dr
   }
 }
 const _dinv = new THREE.Quaternion();
-function addDoorHole(door, wp, wn, save) {
+function addDoorHole(door, wp, wn, save, kind = 'metal', sc = 1) {   // step 119: kind (metalX = an exit), sc: size
   door.group.updateWorldMatrix(true, false);
   _dp.copy(wp); door.group.worldToLocal(_dp);
   door.group.getWorldQuaternion(_dinv).invert();
   _fn.copy(wn).applyQuaternion(_dinv);
-  const roll = Math.random() * Math.PI * 2, s = 0.85 + Math.random() * 0.3;
+  const roll = Math.random() * Math.PI * 2, s = (0.85 + Math.random() * 0.3) * sc;
   const lx = _dp.x, ly = _dp.y, lz = _dp.z, nx = _fn.x, ny = _fn.y, nz = _fn.z;
-  putDecal(decalLayer(door, door.group, 'metal'), 'metal', lx, ly, lz, nx, ny, nz, roll, s);
-  if (save) roomMem(door.room).doorHoles.push([lx, ly, lz, nx, ny, nz, roll, s]);
+  putDecal(decalLayer(door, door.group, kind), kind, lx, ly, lz, nx, ny, nz, roll, s);
+  if (save) roomMem(door.room).doorHoles.push(kind === 'metal' ? [lx, ly, lz, nx, ny, nz, roll, s] : [lx, ly, lz, nx, ny, nz, roll, s, kind]);
 }
 function restoreRoomHoles(room) {
   const m = roomMemory.get(memKey(room));
   if (!m) return;
   for (const h of m.holes) putDecal(decalLayer(room, room.group, h[0]), h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
-  if (room.door) for (const h of m.doorHoles) putDecal(decalLayer(room.door, room.door.group, 'metal'), 'metal', h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+  if (room.door) for (const h of m.doorHoles) { const k = h[8] || 'metal'; putDecal(decalLayer(room.door, room.door.group, k), k, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]); }   // step 119: h[8] = exit kind
 }
 
 /* ---------------------------------------------------------------------------
@@ -20982,9 +21020,10 @@ function obbExit(P, dir, center, quat, hx, hy, hz, outP, outN) {
 // Step 7: opts.enemy = his round (skips the enemy hit test), opts.range = stop there.
 // Returns true if the round reached the end of its range still flying (that's how his
 // shots know they reached you). _tbE = energy left, _tbTravel = metres flown.
+// Step 119: called through traceBullet (below), which gives the round its penetration state.
 let _tbE = 1, _tbTravel = 0;
-function traceBullet(origin, dir, d, type, opts = null) {
-  let E = CONFIG.cover.energy[type] !== undefined ? CONFIG.cover.energy[type] : 1;
+function traceBullet0(origin, dir, d, type, opts = null) {
+  let E = CONFIG.cover.energy[type] !== undefined ? CONFIG.cover.energy[type] : PEN.live ? PEN.e0 : 1;   // step 119: guns not listed there use their cartridge
   let range = opts && opts.range !== undefined ? opts.range : CONFIG.weapons.rayRange;
   const fromEnemy = !!(opts && opts.enemy);
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
@@ -21005,7 +21044,8 @@ function traceBullet(origin, dir, d, type, opts = null) {
     _cv.n.set(hit.normal.x, hit.normal.y, hit.normal.z);
     if (_cv.n.lengthSq() < 0.25) _cv.n.copy(dir).negate();     // started inside something (stacked cover): face the shooter
     else if (_cv.n.dot(dir) > 0) _cv.n.negate();
-    const r = coverHit(hit, _cv.p, _cv.n, dir, d, E);
+    const Eb = E;                                                // step 119: what it had going in
+    const r = coverHit(hit, _cv.p, _cv.n, dir, d, E) || (PEN.live ? penHit(hit, toi, _cv.p, _cv.n, dir, d, E) : null);   // step 119: walls, doors, props
     if (!r) { bulletHit(hit, dir, d, E); return false; }
     if (r.stop) return false;
     E = r.E; _tbE = E;
@@ -21014,9 +21054,421 @@ function traceBullet(origin, dir, d, type, opts = null) {
     if (E <= 0.02) return false;
     if (range <= 0) return true;
     _tbo.copy(r.exit).addScaledVector(dir, 0.002);
+    if (PEN.live && (range = penOn(Eb, E, range, fromEnemy)) < 0) return false;   // step 119: counted, tumbling, turned a little
   }
   return false;
 }
+
+/* ---------------------------------------------------------------------------
+ *  STEP 119 — BULLET PENETRATION (CONFIG.ballistics, ?pen=off)
+ *  traceBullet wraps the trace (traceBullet0) so a round's state lives only while
+ *  it flies: its cartridge, what one energy unit is worth in joules, how many
+ *  things it went through, how far it tumbles. penHit takes walls, doors and loose
+ *  props once cover (coverHit) has said no: the thickness along the path is the
+ *  collider's own (an oriented box, else a ray cast back from beyond it), what is
+ *  inside comes from what the surface is (a wall between rooms is two boards and
+ *  air, an outer wall plaster over block, a door two steel skins). If the round
+ *  has the joules: a small hole in (bulletHit, its usual sound muted), a big torn
+ *  one out (kind + 'X'), dust and bits thrown along the path, punch + crumble at
+ *  the entry, a flat crack on the far side. penOn runs after anything it went
+ *  through (cover and bodies too): counts it, tumbles it, turns it a little; his
+ *  rounds aimed at you are re-aimed (they can now miss, or hit another part).
+ * ------------------------------------------------------------------------- */
+const PEN_ON = !/[?&]pen=off\b/.test(location.search) && !!CONFIG.ballistics && CONFIG.ballistics.penetrate !== false;
+const PEN = {
+  live: false, R: null, n: 0, tumble: 0, j: 518, e0: 1, holeS: 1, rc: {},
+  aim: false, miss: false, part: null, youK: 0.6, fxT: 0, fxAt: 0, sndAt: 0, sk: 'plaster', sg: 1,
+  d: new THREE.Vector3(), ex: new THREE.Vector3(), en: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Quaternion(),
+  a: new THREE.Vector3(), b: new THREE.Vector3(), ray: null, lay: [], res: { E: 0, exit: null, through: 0 }
+};
+PEN.res.exit = PEN.ex;
+// A cartridge with its muzzle energy (J) and frontal area relative to a 9 mm bullet, worked out once.
+function penRound(type) {
+  const B = CONFIG.ballistics, key = B.gun[type] || '9mm';
+  let R = PEN.rc[key];
+  if (!R) {
+    const s = B.rounds[key] || B.rounds['9mm'];
+    R = PEN.rc[key] = Object.assign({ key, J: 0.5 * s.m / 1000 * s.v * s.v, area: (s.d / 9) * (s.d / 9) }, s);
+  }
+  return R;
+}
+function traceBullet(origin, dir, d, type, opts = null) {
+  if (!PEN_ON) return traceBullet0(origin, dir, d, type, opts);
+  penStart(type, opts);
+  try { return traceBullet0(origin, PEN.d.copy(dir), d, type, opts); } finally { PEN.live = false; }   // its own copy of the path: it may turn
+}
+function penStart(type, opts) {
+  const enemy = !!(opts && opts.enemy), R = PEN.R = penRound(type);
+  const E0 = CONFIG.cover.energy[type] !== undefined ? CONFIG.cover.energy[type] : R.e;
+  PEN.live = true; PEN.e0 = R.e; PEN.j = R.J / E0; PEN.n = 0; PEN.tumble = 0;
+  PEN.holeS = clamp(R.d / 9, 0.7, 1.35);
+  PEN.aim = enemy && opts.range !== undefined && opts.range < CONFIG.weapons.rayRange;   // enemyShoot traced it only as far as you
+  PEN.miss = false; PEN.part = null;
+  if (!enemy && type !== 'frag') PEN.youK = R.key === 'buck' ? 0.35 : R.J > 1200 ? 1 : 0.55;   // what the men think you carry
+}
+// Layers of what is in the path: material, cm.
+function penLay(m, cm) { if (cm > 0) PEN.lay.push(m, cm); }
+function penCost() {
+  const B = CONFIG.ballistics, R = PEN.R, tk = 1 + B.tumbleCost * PEN.tumble, L = PEN.lay;
+  let c = 0;
+  for (let i = 0; i < L.length; i += 2) { const m = B.mat[L[i]]; c += m.r * L[i + 1] * Math.pow(R.area, m.a) / R.form * tk; }
+  return c;
+}
+// m of the collider along dir from P (P on its surface); writes the exit point and its outward normal. -1 = deeper than we look.
+function penThick(col, P, dir, outP, outN) {
+  const he = col.halfExtents ? col.halfExtents() : null;
+  if (he) {
+    const t = col.translation(), q = col.rotation();
+    PEN.c.set(t.x, t.y, t.z); PEN.q.set(q.x, q.y, q.z, q.w);
+    return obbExit(P, dir, PEN.c, PEN.q, he.x, he.y, he.z, outP, outN);
+  }
+  const L = CONFIG.ballistics.look;                                // any other shape: a ray from beyond it, back along the path
+  if (!PEN.ray) PEN.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
+  PEN.ray.origin = { x: P.x + dir.x * L, y: P.y + dir.y * L, z: P.z + dir.z * L };
+  PEN.ray.dir = { x: -dir.x, y: -dir.y, z: -dir.z };
+  const h = col.castRayAndGetNormal(PEN.ray, L, true);
+  if (!h) return 0;
+  const t = h.timeOfImpact !== undefined ? h.timeOfImpact : h.toi;
+  if (t <= 1e-4) return -1;
+  outP.copy(P).addScaledVector(dir, L - t);
+  outN.set(h.normal.x, h.normal.y, h.normal.z);
+  if (outN.dot(dir) < 0) outN.negate();
+  return L - t;
+}
+// Room surfaces. A wall between two rooms (the end wall slab) or thin plaster is a stud wall: two boards and air,
+// now and then a steel stud. Thicker plaster is an outer wall or a clad column: plaster over block. Floors, ceilings
+// and treads are the slab. Returns the surface kind for the marks, or null = it stops.
+function penRoomLayers(info, P, N, th, cosI, inside) {
+  const B = CONFIG.ballistics, room = info.room, k = info.kind, w = th * cosI;   // w: the thing's own thickness
+  if (Math.abs(N.y) > 0.6) return null;
+  if (k === 'plaster') {
+    if ((Math.abs(N.z) > 0.7 && Math.abs(rLZ(room, P.z)) >= room.d / 2 - 0.01) || w <= B.studMax) {   // the face of an end wall, or thin
+      if (!inside) { penLay('gypsum', 2 * B.board / cosI); if (Math.random() < B.studHit) penLay('steel', B.stud / cosI); }
+      return 'plaster';
+    }
+    penLay('gypsum', B.board / cosI); penLay('concrete', th * 100 - B.board / cosI);
+    return 'concrete';
+  }
+  if (k === 'concrete') { penLay('concrete', th * 100); return 'concrete'; }
+  if (k === 'metal') { if (w > B.doorMax) return null; penLay('steel', B.skins / cosI); return 'metal'; }   // a door stand-in; machines stop it
+  if (k === 'wood') { penLay('wood', th * 100 * (w <= 0.06 ? 1 : B.woodFill)); return 'wood'; }
+  if (k === 'glass') { penLay('glass', th * 100); return 'glass'; }
+  return null;
+}
+function penDoorLayers(th, cosI) {                                 // a hollow metal door: two skins, a paper core
+  const B = CONFIG.ballistics;
+  if (th * cosI > B.doorMax) return null;
+  penLay('steel', B.skins / cosI); penLay('wood', 0.3 / cosI);
+  return 'metal';
+}
+function penPropLayers(p, th, cosI) {                              // loose props by what they are (KNOCK_MAT); anything else stops it
+  const cm = th * 100;
+  switch (p.item ? null : KNOCK_MAT[p.name]) {
+    case 'card': penLay('wood', 0.5 / cosI); return 'wood';
+    case 'wood': penLay('wood', p.name === 'small crate' ? cm * 0.3 : cm); return 'wood';
+    case 'can': if (p.name === 'ammo can') return null; penLay('steel', 0.08 / cosI); penLay('water', cm * 0.9); return 'metal';
+    case 'drum': penLay('steel', 0.2 / cosI); penLay('water', cm * 0.8); return 'metal';
+    case 'block': penLay('concrete', cm); return 'concrete';
+    case 'plaster': penLay('gypsum', cm); return 'plaster';
+    case 'glass': penLay('glass', 0.6 / cosI); penLay('water', cm * 0.6); return 'glass';
+    case 'pipe': penLay('steel', 0.7 / cosI); return 'metal';
+  }
+  return null;
+}
+// After coverHit said no. Null = it stops here (the caller makes the ordinary hole); else { E, exit, through } like cover.
+function penHit(hit, toi, P, N, dir, d, E) {
+  const B = CONFIG.ballistics, col = hit.collider, h = col.handle;
+  if (PEN.n >= B.maxPen || E <= 0.02) return null;
+  const prop = propByCollider.get(h), door = prop ? null : doorByCollider.get(h), info = prop || door ? null : colliderInfo.get(h);
+  if (!prop && !door && !info) return null;
+  const cosI = Math.abs(N.dot(dir));
+  if (cosI < B.graze) return null;                                 // glancing: it skids off
+  const th = penThick(col, P, dir, PEN.ex, PEN.en);
+  if (th < 0 || th > B.look) return null;
+  const inside = toi < 0.003 && PEN.n > 0;                         // still in the slab it just left (two rooms' end walls overlap)
+  PEN.lay.length = 0;
+  const kind = prop ? penPropLayers(prop, th, cosI) : door ? penDoorLayers(th, cosI) : penRoomLayers(info, P, N, th, cosI, inside);
+  if (!kind) return null;
+  const J = E * PEN.j, cost = penCost();
+  if (J <= cost) return null;
+  const E2 = (J - cost) / PEN.j, k = clamp(cost / 120, 0.4, 1.4);
+  if (!inside) {                                                   // the way in: the ordinary small hole, its sound swapped for ours
+    const was = P10.muteImpact;
+    P10.muteImpact = true; bulletHit(hit, dir, d, E - E2); P10.muteImpact = was;
+  }
+  const ex = PEN.ex, en = PEN.en;
+  if (!inside || th > 0.01) {                                      // the way out: a torn hole, the bits, the crack
+    if (info) {
+      const r = penExitRoom(info.room, ex, dir), xk = penX(kind);
+      if (WEAPON.decalMat[xk]) addRoomHole(r, xk, ex, en, true, undefined, penXS());
+      if (TRICKLE.on) trickleAdd(r, kind, ex, en);
+    } else if (door) addDoorHole(door, ex, en, true, penX('metal'), penXS());
+    penExitFx(kind, ex, dir, k);
+    penSound(kind, P, ex, k, !inside);
+  }
+  const res = PEN.res;
+  res.E = E2; res.through = th;
+  return res;
+}
+// The exit hole belongs to the room it shows in (the far side of a wall between rooms), saved there.
+function penExitRoom(room, ex, dir) {
+  const x = ex.x + dir.x * 0.05, y = ex.y + dir.y * 0.05, z = ex.z + dir.z * 0.05;
+  const r = roomContaining(x, z, 0, y);
+  return r && r.active && insideRoom(r, x, z, 0, y) ? r : room;
+}
+// Anything it went through (cover, bodies, penHit). -1 = spent (too many); else the range left (his rounds: re-aimed at you).
+function penOn(Eb, E, range, fromEnemy) {
+  const B = CONFIG.ballistics, R = PEN.R, frac = clamp(1 - E / Math.max(Eb, 1e-6)), dir = PEN.d;
+  if (++PEN.n > B.maxPen) return -1;
+  PEN.tumble = Math.min(1, PEN.tumble + R.tum * (0.35 + frac));
+  const g = Math.random() + Math.random() - 1;                     // -1..1, most near 0
+  const ang = R.defl * Math.PI / 180 * (0.35 + frac) * (1 + 0.5 * PEN.tumble) * g * 1.4, ph = Math.random() * Math.PI * 2;
+  PEN.a.set(Math.abs(dir.x) < 0.9 ? 1 : 0, Math.abs(dir.x) < 0.9 ? 0 : 1, 0).cross(dir).normalize();
+  PEN.b.crossVectors(dir, PEN.a);
+  const tn = Math.tan(ang);
+  dir.addScaledVector(PEN.a, Math.cos(ph) * tn).addScaledVector(PEN.b, Math.sin(ph) * tn).normalize();
+  if (!fromEnemy) penWarn(_tbo);
+  if (!PEN.aim || PEN.miss) return range;
+  const p = playerRayHit(_tbo, dir);
+  if (!p) { PEN.miss = true; return Math.max(range, CONFIG.weapons.rayRange - _tbTravel); }   // turned off you: it flies on to the wall
+  PEN.part = p.part;
+  return p.t;
+}
+// Inside a trace: a tumbling round tears a bigger wound (step 90 holes; damage half as much more).
+const penWoundK = () => (PEN.live ? 1 + CONFIG.ballistics.tumbleWound * PEN.tumble : 1);
+const penDmgK = () => (PEN.live ? 1 + 0.5 * CONFIG.ballistics.tumbleWound * PEN.tumble : 1);
+// After his trace (enemyShoot): the same for you.
+const penYouK = () => (PEN_ON ? 1 + 0.5 * CONFIG.ballistics.tumbleWound * PEN.tumble : 1);
+// Exit marks: the torn kind where one exists, sized by calibre and tumble.
+const penX = (kind) => (PEN_ON && WEAPON.decalMat[kind + 'X'] ? kind + 'X' : kind);
+const penXS = () => (PEN.live ? PEN.holeS * (1 + 0.25 * PEN.R.tum + 0.4 * PEN.tumble) : 1);
+// Cover's own exits (crates, lockers, tables, partitions): the dust out of the far side and the crack.
+function penCoverExit(kind, ex, dir) {
+  if (!PEN.live) return;
+  penExitFx(kind, ex, dir, 1);
+  penSound(kind, ex, ex, 0.8, false);
+}
+
+// --- what the men learn: soft cover does not stop your rounds ---
+function penMem(room, t) { return room && room.penK ? room.penK * Math.exp(-(t - room.penAt) / CONFIG.ballistics.ai.memory) : 0; }
+function penLearn(room, k) { if (!room) return; const t = wnow(); room.penK = Math.min(1, penMem(room, t) + k); room.penAt = t; }
+function penWarn(P) {                                              // your round came out near them
+  for (const e of ENEMY.list) {
+    if (e.dead || !e.room || !e.room.active) continue;
+    const dx = rWX(e.room, e.pos.x) - P.x, dz = rWZ(e.room, e.pos.y) - P.z;
+    if (dx * dx + dz * dz < 6.25) penLearn(e.room, 0.5);
+  }
+}
+// Score taken off a cover point (chooseCover, aiDecide): partitions most, then lockers / tables, crates; columns never.
+function penCoverMalus(e, c) {
+  if (!PEN_ON || !c.source) return 0;
+  const k = penMem(e.room, wnow());
+  if (k < 0.02) return 0;
+  const s = c.source, soft = s.type === 'part' ? 1 : s.type === 'soft' ? 0.8 : s.table ? 0.8 : s.type === 'crate' ? 0.6 : 0;
+  return k * soft * PEN.youK * CONFIG.ballistics.ai.malus;
+}
+
+// --- exit side: dust and bits along the path, a haze puff; rationed (a grenade's fragments share it) ---
+const PEN_FX = {
+  plaster: { nd: 10, nb: 7, haze: 'plaster', dust: { c: [0.87, 0.86, 0.82], a: 0.6, sp: [1.2, 4.2], life: [0.5, 1.1], size: [0.01, 0.022], grow: 0.06, drag: 3.2, grav: 0.8 },
+    bits: { c: [0.9, 0.88, 0.84], a: 0.95, sp: [1.0, 3.2], life: [0.5, 1.0], size: [0.003, 0.007], grow: 0, drag: 0.8, grav: 9.8 } },
+  wood: { nd: 5, nb: 9, haze: 'wood', dust: { c: [0.6, 0.47, 0.32], a: 0.45, sp: [1.0, 3.5], life: [0.4, 0.9], size: [0.008, 0.016], grow: 0.03, drag: 3, grav: 1 },
+    bits: { c: [0.8, 0.64, 0.43], a: 1, sp: [1.6, 4.8], life: [0.5, 1.0], size: [0.003, 0.008], grow: 0, drag: 1.2, grav: 7 } },
+  metal: { nd: 3, nb: 6, haze: null, dust: { c: [0.42, 0.42, 0.42], a: 0.5, sp: [0.8, 2.5], life: [0.3, 0.6], size: [0.006, 0.012], grow: 0.02, drag: 3, grav: 0.4 },
+    bits: { c: [7, 4.2, 1.8], a: 1, sp: [3, 7], life: [0.12, 0.3], size: [0.003, 0.004], grow: 0, drag: 0.6, grav: 9.8 } },   // sparks: hot, self-lit
+  concrete: { nd: 9, nb: 8, haze: 'concrete', dust: { c: [0.62, 0.6, 0.57], a: 0.6, sp: [1.2, 4], life: [0.5, 1], size: [0.01, 0.02], grow: 0.05, drag: 3.2, grav: 1 },
+    bits: { c: [0.55, 0.53, 0.5], a: 1, sp: [1.5, 4], life: [0.5, 1], size: [0.004, 0.009], grow: 0, drag: 0.6, grav: 9.8 } },
+  glass: { nd: 3, nb: 12, haze: null, dust: { c: [0.6, 0.62, 0.64], a: 0.3, sp: [1, 3], life: [0.3, 0.6], size: [0.005, 0.01], grow: 0.02, drag: 3, grav: 1 },
+    bits: { c: [1.6, 1.5, 1.3], a: 1, sp: [2, 4.5], life: [0.5, 0.9], size: [0.004, 0.006], grow: 0, drag: 0.8, grav: 9.8 } }
+};
+const PEN_HAZE = {
+  plaster: { n: 3, c: CONFIG.polish.haze.plaster, a: 0.2, sp: [0.5, 1.6], life: [1.8, 3.6], size: [0.05, 0.09], grow: 0.3, drag: 2.2, buoy: -0.02 },
+  concrete: { n: 3, c: CONFIG.polish.haze.concrete, a: 0.18, sp: [0.5, 1.6], life: [1.6, 3.2], size: [0.05, 0.08], grow: 0.26, drag: 2.2, buoy: -0.03 },
+  wood: { n: 1, c: CONFIG.polish.haze.wood, a: 0.1, sp: [0.4, 1.2], life: [1.0, 2.0], size: [0.03, 0.05], grow: 0.15, drag: 2.6, buoy: -0.02 }
+};
+function penExitFx(kind, ex, dir, k) {
+  const F = PEN_FX[kind], B = CONFIG.ballistics;
+  if (!F || !WEAPON.fx) return;
+  const t = wnow();
+  PEN.fxT = Math.min(B.fxCap, PEN.fxT + Math.max(0, t - PEN.fxAt) * B.fxRate); PEN.fxAt = t;
+  if (PEN.fxT < 1) return;
+  PEN.fxT -= 1;
+  fxEmit(ex, dir, 0.32, Math.round(F.nd * k), F.dust);
+  fxEmit(ex, dir, 0.45, Math.round(F.nb * k), F.bits);
+  if (F.haze) hazeEmit(ex, dir, PEN_HAZE[F.haze]);
+}
+
+// --- sound: punch + crumble where it went in (entry), a flat crack where it came out ---
+function penSound(kind, P, ex, k, entry) {
+  const A = CONFIG.polish.audio;
+  if (!A.impacts || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  const now = audio.ctx.currentTime;
+  if (now - PEN.sndAt < 0.04) return;                              // nine pellets, a fragment spray: one sound
+  headWorld(_p10.h);
+  const r2 = A.impactRange * A.impactRange, nearIn = entry && _p10.h.distanceToSquared(P) <= r2, nearOut = _p10.h.distanceToSquared(ex) <= r2;
+  if (!nearIn && !nearOut) return;
+  PEN.sndAt = now; PEN.sk = kind; PEN.sg = clamp(k, 0.35, 1);
+  if (nearIn) soundAt(P, penPunchPlay);
+  if (nearOut) soundAt(ex, penCrackPlay);
+}
+function penPunchPlay() {
+  const t = audio.ctx.currentTime + 0.003, g = PEN.sg, j = 0.9 + Math.random() * 0.2;
+  switch (PEN.sk) {
+    case 'wood':                                                   // a hollow punch, splinters cracking
+      nBurst(t, 0.05, 'bandpass', 650 * j, 1.3, 0.4 * g, 0.04, 0.3); tone(t, 180 * j, 95, 0.06, 0.1 * g, 'sine', 0.2);
+      for (let i = 0; i < 4; i++) nBurst(t + 0.012 + Math.random() * 0.09, 0.015, 'bandpass', 2400 + Math.random() * 2600, 3, 0.07 * g, 0.012, 0.15);
+      break;
+    case 'metal':                                                  // the skin punched and torn
+      nBurst(t, 0.03, 'bandpass', 1500 * j, 1.6, 0.36 * g, 0.022, 0.25); tone(t, 1250 * j, 820 * j, 0.09, 0.05 * g, 'triangle', 0.25);
+      nBurst(t + 0.008, 0.05, 'bandpass', 3200 * j, 2.2, 0.08 * g, 0.04, 0.2);
+      break;
+    case 'concrete':                                               // a heavy thud, grit
+      nBurst(t, 0.06, 'lowpass', 420 * j, 0.9, 0.5 * g, 0.05, 0.3);
+      for (let i = 0; i < 5; i++) nBurst(t + 0.015 + Math.random() * 0.15, 0.02, 'bandpass', 1500 + Math.random() * 1800, 1.6, 0.06 * g, 0.015, 0.2);
+      break;
+    case 'glass':
+      nBurst(t, 0.03, 'bandpass', 1800 * j, 1.2, 0.25 * g, 0.02, 0.25);
+      for (let i = 0; i < 4; i++) nBurst(t + 0.01 + Math.random() * 0.12, 0.02, 'bandpass', 4000 + Math.random() * 3000, 4, 0.06 * g, 0.015, 0.2);
+      break;
+    default:                                                       // plaster: a dull punch, the gypsum crumbling, dust settling
+      nBurst(t, 0.05, 'lowpass', 520 * j, 0.9, 0.45 * g, 0.04, 0.3); tone(t, 150 * j, 70, 0.07, 0.12 * g, 'sine', 0.2);
+      for (let i = 0; i < 5; i++) nBurst(t + 0.02 + Math.random() * 0.18, 0.025, 'bandpass', 1600 + Math.random() * 2200, 1.3, 0.055 * g, 0.02, 0.2);
+      nBurst(t + 0.03, 0.25, 'highpass', 2600, 0.6, 0.035 * g, 0.2, 0.3);
+  }
+}
+function penCrackPlay() {
+  const t = audio.ctx.currentTime + 0.003, g = PEN.sg;
+  nBurst(t, 0.012, 'bandpass', 2600, 0.5, 0.38 * g, 0.008, 0.3);  // flat and short: the far skin blowing out
+  nBurst(t, 0.03, 'highpass', 5200, 0.7, 0.1 * g, 0.02, 0.1);
+  if (PEN.sk === 'plaster' || PEN.sk === 'concrete') for (let i = 0; i < 3; i++) nBurst(t + 0.05 + Math.random() * 0.25, 0.02, 'bandpass', 1200 + Math.random() * 1600, 1.4, 0.04 * g, 0.016, 0.2);   // bits landing
+}
+
+// --- exit decals (plasterX, woodX, metalX, concreteX): a colour canvas and a height canvas made into a normal map.
+// The hole materials' features (map + normalMap + transparent): no new program. Called right after the hole materials.
+function penKit() {
+  if (!PEN_ON) return;
+  const S = CONFIG.ballistics.exitSize;
+  let seed = 11901;
+  for (const k of ['plaster', 'wood', 'metal', 'concrete']) {
+    const { map, h } = penExitCanvas(k, seed++);
+    DECAL_SIZE[k + 'X'] = S[k];
+    WEAPON.decalMat[k + 'X'] = new THREE.MeshStandardMaterial({
+      map, normalMap: bloodNormalTex(h, k === 'metal' ? 4 : 3), normalScale: new THREE.Vector2(1.2, 1.2), transparent: true, depthWrite: false,
+      roughness: k === 'metal' ? 0.4 : 0.93, metalness: k === 'metal' ? 0.6 : 0,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4
+    });
+  }
+}
+// An irregular closed outline: n points (angle, radius) between r0 and r1.
+function penBlob(R, n, r0, r1) { const p = []; for (let i = 0; i < n; i++) p.push((i + R() * 0.6) / n * Math.PI * 2, r0 + R() * (r1 - r0)); return p; }
+function penPoly(g, c, p, sx = 1, sy = 1) {
+  g.beginPath();
+  for (let i = 0; i < p.length; i += 2) { const x = c + Math.cos(p[i]) * p[i + 1] * sx, y = c + Math.sin(p[i]) * p[i + 1] * sy; if (i) g.lineTo(x, y); else g.moveTo(x, y); }
+  g.closePath();
+}
+// A torn spike from radius r0 out to r1 at angle a, half-width w (rad) at its base, ragged edges.
+function penSpike(g, c, R, a, w, r0, r1) {
+  const n = 4, at = (aa, rr) => [c + Math.cos(aa) * rr, c + Math.sin(aa) * rr];
+  g.beginPath(); g.moveTo(...at(a - w, r0));
+  for (let i = 1; i < n; i++) { const f = i / n; g.lineTo(...at(a - w * (1 - f) + (R() - 0.5) * w * 0.4, r0 + (r1 - r0) * f)); }
+  g.lineTo(...at(a, r1));
+  for (let i = n - 1; i >= 1; i--) { const f = i / n; g.lineTo(...at(a + w * (1 - f) + (R() - 0.5) * w * 0.4, r0 + (r1 - r0) * f)); }
+  g.lineTo(...at(a + w, r0));
+  g.closePath();
+}
+function penExitCanvas(kind, seed) {
+  const S = 256, c = S / 2, R = mulberry32(seed);
+  const hc = document.createElement('canvas'); hc.width = hc.height = S;
+  const h = hc.getContext('2d'), hv = (v) => { const u = Math.round(clamp(v) * 255); return `rgb(${u},${u},${u})`; };
+  h.fillStyle = hv(0.55); h.fillRect(0, 0, S, S);                  // height: the wall's own surface
+  const dot = (g, x, y, r) => { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
+  // One shape on both canvases: colour on the map, a height on the bump (spikes carry their own seed, so both draws match).
+  let g0 = null;                                                   // the colour canvas, while canvasTex draws it
+  const both = (fill, hgt, draw) => { g0.fillStyle = fill; draw(g0); g0.fill(); h.fillStyle = hv(hgt); draw(h); h.fill(); };
+  const map = canvasTex(S, (g) => {
+    g0 = g;
+    g.clearRect(0, 0, S, S);
+    if (kind === 'plaster') {
+      // Loose gypsum dust, the crumbled core ring, torn paper facing bent out toward you, the hole.
+      for (let i = 0; i < 120; i++) { const a = R() * Math.PI * 2, r = 60 + R() * 62; g.fillStyle = `rgba(236,233,226,${(0.12 + R() * 0.3).toFixed(2)})`; dot(g, c + Math.cos(a) * r, c + Math.sin(a) * r, 1 + R() * 2.5); }
+      const ring = penBlob(R, 22, 50, 74);
+      both('#d6d0c2', 0.36, (x) => penPoly(x, c, ring));
+      for (let i = 0; i < 260; i++) {
+        const a = R() * Math.PI * 2, r = Math.sqrt(R()) * 70, x = c + Math.cos(a) * r, y = c + Math.sin(a) * r, rr = 0.6 + R() * 1.6;
+        g.fillStyle = R() < 0.5 ? '#c4bdae' : '#e6e1d6'; dot(g, x, y, rr);
+        h.fillStyle = hv(0.3 + R() * 0.14); dot(h, x, y, rr);
+      }
+      const nF = 5 + Math.floor(R() * 4);
+      for (let i = 0; i < nF; i++) {
+        const a = (i + R() * 0.5) / nF * Math.PI * 2, w = 0.22 + R() * 0.3, r1 = 52 + R() * 36, sd = R() * 1e9 | 0;
+        both('#efebe2', 0.95, (x) => penSpike(x, c, mulberry32(sd), a, w, 33, r1));
+        g.strokeStyle = 'rgba(60,55,48,0.35)'; g.lineWidth = 1.5; g.stroke();
+      }
+      const hole = penBlob(R, 16, 26, 38);
+      g.strokeStyle = 'rgba(80,74,66,0.4)'; g.lineWidth = 5; penPoly(g, c, hole, 1.12, 1.12); g.stroke();
+      const gr = g.createRadialGradient(c, c, 0, c, c, 38); gr.addColorStop(0, 'rgba(5,5,5,1)'); gr.addColorStop(0.8, 'rgba(14,13,12,1)'); gr.addColorStop(1, 'rgba(30,28,26,0.95)');
+      both(gr, 0, (x) => penPoly(x, c, hole));
+    } else if (kind === 'wood') {
+      // Torn fibres round a hole stretched along the grain, splinters standing out of the face.
+      const zone = penBlob(R, 18, 44, 62);
+      both('rgba(215,185,138,0.85)', 0.62, (x) => penPoly(x, c, zone, 1.5, 0.75));
+      const nS = 16 + Math.floor(R() * 9);
+      for (let i = 0; i < nS; i++) {
+        const a = (R() < 0.5 ? 0 : Math.PI) + (R() - 0.5) * 0.9, r1 = 40 + R() * 75, w = 0.03 + R() * 0.07, sd = R() * 1e9 | 0;
+        both(R() < 0.6 ? '#e6cfa3' : '#cfae7b', 0.8 + R() * 0.2, (x) => penSpike(x, c, mulberry32(sd), a, w, 22, r1));
+        g.strokeStyle = 'rgba(70,48,25,0.5)'; g.lineWidth = 0.8; g.stroke();
+      }
+      const hole = penBlob(R, 14, 20, 28);
+      const gr = g.createRadialGradient(c, c, 0, c, c, 34); gr.addColorStop(0, 'rgba(6,5,4,1)'); gr.addColorStop(1, 'rgba(28,20,12,1)');
+      both(gr, 0, (x) => penPoly(x, c, hole, 1.25, 0.8));
+    } else if (kind === 'metal') {
+      // Paint blown off a bulge, the skin torn into petals bent out toward you.
+      const scuff = penBlob(R, 20, 54, 66);
+      g.fillStyle = 'rgba(159,163,168,0.55)'; penPoly(g, c, scuff); g.fill();
+      for (let i = 0; i < 40; i++) {
+        const a = R() * Math.PI * 2, r0 = 30 + R() * 10, r1 = r0 + 10 + R() * 22;
+        g.strokeStyle = `rgba(215,218,222,${(0.2 + R() * 0.4).toFixed(2)})`; g.lineWidth = 0.6 + R();
+        g.beginPath(); g.moveTo(c + Math.cos(a) * r0, c + Math.sin(a) * r0); g.lineTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1); g.stroke();
+      }
+      const hg = h.createRadialGradient(c, c, 24, c, c, 66); hg.addColorStop(0, hv(0.95)); hg.addColorStop(0.5, hv(0.8)); hg.addColorStop(1, hv(0.55));
+      h.fillStyle = hg; dot(h, c, c, 66);
+      const nP = 5 + Math.floor(R() * 3);
+      for (let i = 0; i < nP; i++) {
+        const a = (i + R() * 0.3) / nP * Math.PI * 2, w = Math.PI / nP * (0.7 + R() * 0.2), r1 = 40 + R() * 14, sd = R() * 1e9 | 0;
+        const pg = g.createRadialGradient(c, c, 22, c, c, r1); pg.addColorStop(0, '#8e9297'); pg.addColorStop(1, '#d4d7db');
+        both(pg, 1, (x) => penSpike(x, c, mulberry32(sd), a, w, 23, r1));
+        g.strokeStyle = 'rgba(30,30,32,0.6)'; g.lineWidth = 1.2; g.stroke();
+      }
+      const hole = penBlob(R, 14, 20, 26);
+      both('#060606', 0, (x) => penPoly(x, c, hole));
+    } else {
+      // Concrete: a spall cone, terraced, aggregate showing, cracks running out; the hole itself small.
+      const rim = penBlob(R, 24, 70, 105);
+      both('#a7a299', 0.42, (x) => penPoly(x, c, rim));
+      for (const [s, col, hh] of [[0.72, '#9a958b', 0.3], [0.46, '#8d887f', 0.18]]) both(col, hh, (x) => penPoly(x, c, rim, s, s));
+      for (let i = 0; i < 120; i++) {
+        const a = R() * Math.PI * 2, r = Math.sqrt(R()) * 95, x = c + Math.cos(a) * r, y = c + Math.sin(a) * r, rr = 1 + R() * 2.5;
+        g.fillStyle = ['#7d776c', '#bbb5aa', '#6f6a62'][Math.floor(R() * 3)]; dot(g, x, y, rr);
+        h.fillStyle = hv(0.2 + R() * 0.3 * r / 95); dot(h, x, y, rr);
+      }
+      const nC = 6 + Math.floor(R() * 4);
+      for (let i = 0; i < nC; i++) {
+        let a = R() * Math.PI * 2, r = 70 + R() * 20;
+        g.strokeStyle = 'rgba(55,52,48,0.6)'; g.lineWidth = 1 + R() * 0.6; h.strokeStyle = hv(0.45); h.lineWidth = 1.5;
+        g.beginPath(); h.beginPath(); g.moveTo(c + Math.cos(a) * r, c + Math.sin(a) * r); h.moveTo(c + Math.cos(a) * r, c + Math.sin(a) * r);
+        while (r < 118) { r += 6 + R() * 8; a += (R() - 0.5) * 0.25; const x = c + Math.cos(a) * r, y = c + Math.sin(a) * r; g.lineTo(x, y); h.lineTo(x, y); }
+        g.stroke(); h.stroke();
+      }
+      const hole = penBlob(R, 12, 8, 14);
+      both('#080808', 0, (x) => penPoly(x, c, hole));
+    }
+  });
+  const id = h.getImageData(0, 0, S, S), px = id.data;            // grey -> alpha: bloodNormalTex reads the alpha as height
+  for (let i = 0; i < px.length; i += 4) px[i + 3] = px[i];
+  h.putImageData(id, 0, 0);
+  return { map, h: hc };
+}
+
 
 function coverHit(hit, P, N, dir, d, E) {
   const h = hit.collider.handle;
@@ -21038,8 +21490,9 @@ function softHit(rec, P, N, dir, E) {                     // lockers: two skins 
   const through = obbExit(P, dir, _cv.c, _cv.q, half[0], half[1], half[2], _cv.ex, _cv.en);
   const left = E - rec.resist;
   if (left <= 0) return STOP;
-  addRoomHole(rec.room, rec.kind, _cv.ex, _cv.en, true);
+  addRoomHole(rec.room, penX(rec.kind), _cv.ex, _cv.en, true, undefined, penXS());   // step 119: the torn exit
   impactFx(rec.kind, _cv.ex, _cv.en);
+  penCoverExit(rec.kind, _cv.ex, dir);
   return { E: left, exit: _cv.ex, through };
 }
 
@@ -21056,7 +21509,7 @@ function crateHit(rec, P, N, dir, E) {
   if (rec.hp <= 0) breakCrate(rec, dir, P);
   else {
     saveCrate(rec);
-    if (left > 0) { addRoomHole(room, 'wood', _cv.ex, _cv.en, true, rec.tag); impactFx('wood', _cv.ex, _cv.en); }
+    if (left > 0) { addRoomHole(room, penX('wood'), _cv.ex, _cv.en, true, rec.tag, penXS()); impactFx('wood', _cv.ex, _cv.en); penCoverExit('wood', _cv.ex, dir); }   // step 119: the torn exit
   }
   if (left <= 0) return STOP;
   return { E: left, exit: _cv.ex, through };
@@ -21134,18 +21587,19 @@ function partHit(rec, P, N, dir, E) {
   }
   if (E <= 0) return STOP;
   if (Math.sign(oz) === Math.sign(lz) || Math.abs(oz) < PART_T / 2 - 0.002) return STOP;   // left through the end or the top
-  E = partSheet(rec, oz > 0 ? 0 : 1, ox, oy, _cv.ex, _cv.en, E, dir);
+  E = partSheet(rec, oz > 0 ? 0 : 1, ox, oy, _cv.ex, _cv.en, E, dir, true);   // step 119: the far sheet is the exit
   if (E <= 0) return STOP;
   return { E, exit: _cv.ex, through };
 }
 // One drywall face. An open cell lets the round straight through.
-function partSheet(rec, face, lx, ly, wp, wn, E, dir) {
+function partSheet(rec, face, lx, ly, wp, wn, E, dir, exit = false) {   // step 119: exit = the far sheet (a torn hole, dust out along the path)
   const L2 = rec.sp.len / 2, per = rec.cols * rec.rows;
   const col = clamp(Math.floor((lx + L2) / rec.cw), 0, rec.cols - 1), row = clamp(Math.floor(ly / rec.ch), 0, rec.rows - 1);
   const b = face * per + row * rec.cols + col;
   if (rec.hp[b] <= 0) return E;
-  addRoomHole(rec.room, 'plaster', wp, wn, true, `p${rec.pi}:${b}`);
+  addRoomHole(rec.room, exit ? penX('plaster') : 'plaster', wp, wn, true, `p${rec.pi}:${b}`, exit ? penXS() : PEN.live ? PEN.holeS : 1);
   impactFx('plaster', wp, wn);
+  if (exit) penCoverExit('plaster', wp, dir);
   coverSfx('plaster', E);
   damageCell(rec, b, E, dir);
   const sp = E * CONFIG.cover.splash;                    // a little of the blow cracks the cells around it
@@ -21200,12 +21654,12 @@ function destroyCell(rec, b, dir) {
 }
 
 const _phI = new THREE.Quaternion(), _phP = new THREE.Vector3(), _phN = new THREE.Vector3();
-function propHole(prop, kind, wp, wn) {                  // a hole that rides on a moving prop (the table)
+function propHole(prop, kind, wp, wn, sc = 1) {          // a hole that rides on a moving prop (the table); sc: size (step 119)
   prop.root.updateMatrixWorld(true);
   _phP.copy(wp); prop.root.worldToLocal(_phP);
   prop.root.getWorldQuaternion(_phI).invert();
   _phN.copy(wn).applyQuaternion(_phI);
-  putDecal(decalLayer(prop, prop.root, kind), kind, _phP.x, _phP.y, _phP.z, _phN.x, _phN.y, _phN.z, Math.random() * Math.PI * 2, 0.85 + Math.random() * 0.3);
+  putDecal(decalLayer(prop, prop.root, kind), kind, _phP.x, _phP.y, _phP.z, _phN.x, _phN.y, _phN.z, Math.random() * Math.PI * 2, (0.85 + Math.random() * 0.3) * sc);
 }
 function tableHit(prop, collider, P, N, dir, d, E) {
   const k0 = d.impulse * E;
@@ -21219,7 +21673,7 @@ function tableHit(prop, collider, P, N, dir, d, E) {
   const through = obbExit(P, dir, _cv.c, _cv.q, prop.half.x, prop.half.y, prop.half.z, _cv.ex, _cv.en);
   const left = E - CONFIG.cover.resist.table;
   if (left <= 0) return STOP;
-  propHole(prop, 'wood', _cv.ex, _cv.en); impactFx('wood', _cv.ex, _cv.en);
+  propHole(prop, penX('wood'), _cv.ex, _cv.en, penXS()); impactFx('wood', _cv.ex, _cv.en); penCoverExit('wood', _cv.ex, dir);   // step 119: the torn exit
   return { E: left, exit: _cv.ex, through };
 }
 
@@ -22316,6 +22770,7 @@ function chooseCover(e) {
     if (loopCoverClaimed(e, lx, lz)) continue;                   // step 9: a teammate is there
     const travel = Math.hypot(lx - e.pos.x, lz - e.pos.y);
     let s = facing * 2.5 - travel * 0.35 - Math.abs(l - e.w.pref) * (e.w.rush ? 0.35 : 0.15);   // step 9: each gun has its range
+    s -= penCoverMalus(e, c);                                    // step 119: soft cover your rounds came through
     if (e.cover && Math.hypot(e.cover.lx - lx, e.cover.lz - lz) < 0.3) s -= 1.5;   // move somewhere new
     // Does it actually hide him from where you are standing now?
     _ev.p.set(c.x, c.height === 'low' ? 0.95 : 1.55, c.z);
@@ -22813,7 +23268,7 @@ function enemyShoot(e, now) {
     // Where would this round meet you? Trace only that far; anything in between (cover) gets its say.
     const pt = playerRayHit(_es.o, _es.d);
     const reached = traceBullet(_es.o, _es.d, d, W.gun, { enemy: true, range: pt ? pt.t : CONFIG.weapons.rayRange });
-    if (pt && reached) playerHit(pt.part, _es.d, _tbE, W.pellets > 1 ? CONFIG.loop.pellet : 1);
+    if (pt && reached && !PEN.miss) playerHit(PEN.part || pt.part, _es.d, _tbE, (W.pellets > 1 ? CONFIG.loop.pellet : 1) * penYouK());   // step 119: through a wall it may have turned
     else if (!missed) { missed = true; nearMiss(_es.o, _es.d); }
   }
   _es.d.copy(_es.b);
@@ -23034,7 +23489,8 @@ function enemyShot(hit, dir, d, E) {
     if (d === FRAG_D && e.downAt >= NADE.blastT) return;          // step 115: not the blast that put him down (its other fragments)
     enemyDie(e, h.seg, dir, hit.p, d.impulse * E); return;
   }
-  e.hp -= MOD.oneShot ? 1e4 : dmg * clamp(E, 0.2, 1.2);         // step 57: one-shot kills
+  e.hp -= MOD.oneShot ? 1e4 : dmg * clamp(E, 0.2, 1.2) * penDmgK();   // step 57: one-shot kills; step 119: a tumbling round hurts more
+  if (PEN.live && PEN.n) penLearn(e.room, 1);                   // step 119: hit through something: they learn it is not cover
   e.hitT = now;
   e.suppress = Math.min(3, e.suppress + 1);
   aiHurt(e, plate, now);                                        // step 11: morale
@@ -25003,7 +25459,7 @@ function aiDecide(e) {
     const hidden = !clearLine(_ai.a, _ai.p, 0.05);
     const pref = Math.abs(l - e.w.pref) * (e.w.rush ? 0.35 : 0.15);
     const spot = { lx, lz, nx: c.nx, nz: c.nz, low: c.height === 'low', peek: c.peek, source: c.source };
-    let s = facing * 2.5 - travel * 0.35 - pref + (hidden ? 1.5 : 0);
+    let s = facing * 2.5 - travel * 0.35 - pref + (hidden ? 1.5 : 0) - penCoverMalus(e, c);   // step 119: soft cover your rounds came through
     if (e.cover && Math.hypot(e.cover.lx - lx, e.cover.lz - lz) < 0.3) s -= 1.5;   // somewhere new
     if (s > sC) { sC = s; bestC = spot; }
     if (A.flank && bear.length && hidden && travel > 1.2) {   // crossfire: a bearing on you his teammates don't have
@@ -30637,7 +31093,7 @@ function g90Hole(w, dir, h0, cap) {
 const g90Through = (d, part, E) => E >= 0.3 && (part === 'head' || ((d.impulse || 0) >= 2.9 && (d.pellets || 1) === 1));
 // A hit that bled (enemyShot, ragdollHit). wIn / wOut: the wounds it left (wOut may be null).
 function g90Hit(e, part, wIn, wOut, P, dir, d, E) {
-  const K = g90K();
+  const K = g90K() * penWoundK();                                          // step 119: a round tumbling after a wall tears a bigger hole
   if (!K || !wIn || !e.room || !e.room.active) return;
   const X = CONFIG.gore.x, pel = d.pellets || 1, head = part === 'head', now = wnow();
   const heavy = pel > 1 ? 0.5 : clamp(((d.impulse || 2.2) - 1.6) / 4.4);   // 9 mm 0.14, 5.56 0.32, 7.62 0.55, AWP 1; buckshot (a blast) 0.5
@@ -38822,6 +39278,7 @@ if (/[?&]dev\b/.test(location.search)) window.__cqcDev = { THREE, scene, rendere
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
+if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI, bvSlotOf, bvRows, bvGunPage, bvPick, bvSync, bvAnchors, bvRender, bvLines, bvTick, bvFinger, bvTurn });   // step 114
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, RETICLE, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
