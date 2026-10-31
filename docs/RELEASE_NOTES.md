@@ -44,9 +44,10 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 ## Known issues
 - Built and tested mostly with automated headless checks; frame rate on Quest 2 and 3 with every effect on has not been fully measured. Lower the graphics mode (B / terminal GRAPHICS) if frames drop.
 - Entering VR loads controller models from cdn.jsdelivr.net (needs an internet connection).
-- Things drawn without tone mapping (muzzle flash sprite, enemy lens glow) keep their colour under night vision in the headset; scopes are not intensified.
-- A surrendered man still counts as present for his teammates; a room unloaded with him alive does not bring him back.
-- A suppressor that got hot keeps its heat look until it cools, even after a finish change.
+- Night vision does not intensify the picture inside magnified scopes (ACOG, AWM scopes, the AKM 2x).
+- Attachment finishes (FINISH, ATTACHMENTS) paint the procedural parts (weapon lights, lasers, rifle can); the model-based parts (red dots, holo sights, the ACOG, the M4 and pistol cans) keep their factory finish.
+- A weapon light or laser bought for an M4A1-S without a rail (quad rail or handguard clamp rail) is not fitted by the store; buy a rail first, or clamp it on at the gunsmith vise.
+- A man who surrendered and was left in a room that unloads comes back unarmed where he was (his dropped gun goes with the room).
 - First-time compile hitches: a new gun finish or a new part can stall a frame the first time it shows.
 - The Studio office: `/__studio/session` returns 404 on a static host (expected).
 
