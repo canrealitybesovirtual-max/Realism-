@@ -1141,7 +1141,7 @@
     <tr><td>Pick up or drop</td><td>Aim at an object, press E</td></tr>
     <tr><td>Use / throw</td><td>Click: opens or shuts the door the dot is on, presses screens, picks up what the dot is on. Click while holding an object throws it</td></tr>
     <tr><td>Fire / aim</td><td>Click fires. Hold Space (or right mouse) to aim down the sights; while you aim, a click always fires</td></tr>
-    <tr><td>Reload / rack</td><td>R reloads (with empty hands: resets loose objects in loaded rooms). V racks the slide, works the bolt or pumps</td></tr>
+    <tr><td>Reload / rack</td><td>R reloads (with empty hands: resets loose objects in loaded rooms). V racks the slide, works the bolt or pumps. Shift+V checks the chamber (headset: pull the slide or bolt back a little)</td></tr>
     <tr><td>Fire selector</td><td>X</td></tr>
     <tr><td>Holster / sling</td><td>1 holsters a pistol at the hip, 2 slings a rifle on the chest. Again to draw</td></tr>
     <tr><td>Weapon light / laser</td><td>F / T. Hold them to switch to infrared (seen only through night vision)</td></tr>
@@ -9711,7 +9711,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyB' && !e.repeat && WB.room && WB.room.active) { headWorld(_wbV); if (WB.open || Math.hypot(_wbV.x - rWX(WB.room, WB.vise.x), _wbV.z - rWZ(WB.room, WB.vise.z)) < 2) { wbToggle(); bBench = true; } }   // step 73 (sweep 2: rWX / rWZ, right in a turned safe room)
   if (e.code === 'KeyE' && !e.repeat) { if (!termDeskPress()) deskToggleGrab(); }   // step 11: E presses the terminal when aimed at it
   if (e.code === 'KeyR' && !e.repeat) { if (!deskReload() && !gunOf(deskHand)) props.forEach(resetProp); }   // polish 2: R during a reload never resets the room's objects
-  if (e.code === 'KeyV' && !e.repeat) deskRack();
+  if (e.code === 'KeyV' && !e.repeat) { if (e.shiftKey) deskCheck(); else deskRack(); }   // polish 3: Shift+V = press check
   if (e.code === 'KeyX' && !e.repeat) { const g = gunOf(deskHand); if (g) cycleSelector(g); }
   if (e.code === 'Digit1' && !e.repeat && !renderer.xr.isPresenting) deskSlot('hip');
   if (e.code === 'Digit2' && !e.repeat && !renderer.xr.isPresenting) deskSlot('chest');
@@ -10987,7 +10987,7 @@ const WEAPON_DEFS = {
     flash: 0.07, flashShape: { star: 1.1, width: 1.0, length: 0.8 }, flashLight: 24, sound: 'pistol', casing: 'c9', oneHand: null
   },
   smg: {
-    label: '9 mm MPX', cls: 'smg', grips: { primary: 'smg', support: 'smg_sup', rack: 'smg_rack', rot: -0.17 }, action: 'bolt', mass: 2.7, capacity: 60, magType: 'smg',
+    label: '9 mm MPX', cls: 'smg', grips: { primary: 'smg', support: 'smg_sup', rack: 'smg_rack', rot: -0.17 }, action: 'bolt', mass: 2.7, capacity: 60, magType: 'smg', lockOpen: true,
     palm: [0, -0.087, 0.004],
     col: { half: [0.026, 0.136, 0.36], center: [0, -0.07, -0.108] },
     muzzle: [0, 0, -0.468], chamber: [0, 0, -0.15], eject: [0.016, 0.006, -0.09], ejectVel: [2.4, 0.8, 0.5],
@@ -11000,6 +11000,7 @@ const WEAPON_DEFS = {
   },
   rifle: {
     label: '5.56 mm M16A1', cls: 'smg', grips: { primary: 'smg', support: 'smg_sup', rack: 'smg_rack', rot: -0.17 }, action: 'bolt', mass: 3.2, capacity: 40, magType: 'rifle',
+    lockOpen: true,                                               // release polish 3: the bolt catch holds it open on an empty magazine (M4A1-S and AWM inherit it)
     palm: [0, -0.088, 0.004],
     col: { half: [0.026, 0.119, 0.51], center: [0, -0.045, -0.2555] },
     muzzle: [0, 0, -0.722], chamber: [0, 0, -0.17], eject: [0.016, 0.004, -0.088], ejectVel: [2.6, 0.9, 0.7],
@@ -15324,7 +15325,7 @@ function itemGrab(hand, p) {
     const needs = g.def.action !== 'pump' && (!g.chambered || g.slideLocked);
     if (rd < rackReachOf(g) && (rd < sd || (needs && rd < sd + 0.03))) {
       g.rack = hand; hand.role = 'rack';
-      g.rackStart = local.z; g.rackBase = g.slideOff; g.racked = g.slideLocked;   // a locked slide counts as already back
+      g.rackStart = local.z; g.rackBase = g.slideOff; g.racked = g.slideLocked && g.slideOff > g.def.travel * 0.5;   // a locked slide counts as already back (polish 3: an M4's handle is forward: pull it all the way)
       pulse(hand, 0.3, 20);
     } else if (!g.support) {
       g.support = hand; hand.role = 'support';
@@ -15574,6 +15575,9 @@ function tryPouch(hand) {
 /* ---------------------------------------------------------------------------
  *  MECHANISM
  * ------------------------------------------------------------------------- */
+// Release polish 3: which actions stay open on an empty magazine (the follower lifts the slide stop / bolt catch): every
+// pistol, the M16 / M4A1-S and MPX (bolt catch), the AWM (its bolt stays back when worked on an empty magazine). Not the AKM.
+const locksOpen = (d) => d.cls === 'pistol' || !!d.lockOpen;
 function chamberFromMag(g) {
   if (g.mag && g.mag.item.rounds > 0) { if (!MOD.ammo) g.mag.item.rounds--; updateMagVisual(g.mag.item); g.chambered = true; return true; }   // step 76: the unlimited ammo mod never empties it
   return false;
@@ -15590,7 +15594,7 @@ function rackBackEvent(g) { g.racked = true; ejectChambered(g); if (g.spent) { g
   mechPulse(g.rack, 0.55, 22); mechPulse(g.primary, 0.25, 14); }   // step 87: slide / handle / bolt hits its rear stop
 function finishRack(g) {
   g.racked = false; g.slideLocked = false;
-  if (!chamberFromMag(g) && g.def.cls === 'pistol' && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;   // empty magazine: slide stop catches it
+  if (!chamberFromMag(g) && locksOpen(g.def) && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;   // empty magazine: slide stop / bolt catch holds it (polish 3: rifles too)
   gunSfx(g, g.def.cls === 'pistol' && g.slideLocked ? 'lockBack' : 'rackFwd', g.def.cls === 'pistol' ? (g.slideLocked ? 'pLockBack' : 'pRackFwd') : 'rackFwd');   // step 99 (step 101: caught by the slide stop)
   mechPulse(g.primary, g.def.manual ? 0.4 : g.slideLocked ? 0.45 : 0.75, 26); mechPulse(g.rack, g.def.manual ? 0.5 : 0.35, 16);   // step 87: home (a bolt is pushed, not slammed); g.rack is null once let go
 }
@@ -15627,7 +15631,7 @@ function cycleSelector(g) {
 // on either hand work it, so your support hand's X / Y drop the magazine like the gun hand's A / B.
 function gunTouched(hand) { const p = hand && hand.prop; return p && p.item && p.item.kind === 'gun' ? p.item : null; }
 function gunButtonA(g) { if (g.def.magType && g.mag) { g.thumbCatchUntil = performance.now() / 1000 + 0.3; mechPulse(g.primary, 0.28, 12); ejectMag(g, 1.1); } }   // magazine release (step 59.2: thumb shown on the catch)
-function gunButtonB(g) { if (g.def.cls === 'pistol') slideRelease(g); else if (g.def.cls === 'smg') cycleSelector(g); }
+function gunButtonB(g) { if (g.def.cls === 'pistol' || (g.slideLocked && !g.def.manual)) slideRelease(g); else if (g.def.cls === 'smg') cycleSelector(g); }   // polish 3: a locked-open M4 / MPX: the bolt catch
 function canFire(g) {
   if (g.free && g.free.primary && !g.free.onGrip) return false;   // step 65: your finger is not at the trigger
   if (g.mode === 'safe') return false;
@@ -15781,7 +15785,7 @@ function fireGun(g, now) {
   else if (d.action !== 'pump') {
     g.cycleT = 0;
     spawnCasing(g, d.casing);
-    if (!chamberFromMag(g) && g.def.cls === 'pistol' && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;
+    if (!chamberFromMag(g) && locksOpen(g.def) && g.mag && g.mag.item.rounds === 0) g.slideLocked = true;   // polish 3: an M4 locks open too, an AKM does not
     if (MECH_HAP.on && CONFIG.polish.haptics && CONFIG.polish.haptics.cycle && g.primary && g.primary.ctrl && !((d.auto || g.sw) && g.mode === 'auto')) { g.batAt = now + 0.055; g.batK = g.slideLocked ? 0.12 : 0.3; }   // step 87: back in battery after the 45 ms shot pulse; locked open = no slam, just the stop
   }
   panel.dirty = true;
@@ -17305,11 +17309,12 @@ function updateGun(g, dt, now) {
     if (t >= 1) { g.rackAuto = -1; g.slideOff = 0; }
   } else if (d.action !== 'pump') {
     g.cycleT += dt;
-    if (g.slideLocked) g.slideOff = d.travel;
+    if (g.slideLocked) g.slideOff = d.action === 'slide' || d.recip || d.manual ? d.travel : 0;   // polish 3: an M4's carrier locks back inside; its charging handle stays forward
     else if ((d.action === 'slide' || d.recip) && g.cycleT < 0.055) g.slideOff = d.travel * (g.cycleT < 0.015 ? g.cycleT / 0.015 : 1 - (g.cycleT - 0.015) / 0.04);
     else g.slideOff = 0;
   }
   if (d.action !== 'pump' && g.parts.slide) g.parts.slide.position.z = g.slideOff;
+  chkRoundTick(g);                              // release polish 3: the round in the port while you hold the action part way back
 
   // --- Pump ---
   if (d.action === 'pump') {
@@ -18158,6 +18163,59 @@ function* rackTask(g) {
   yield 0.05;
   if (!(yield* rackMotion(g))) { lhAbort(g); return; }
   yield* lhEnd(g);
+}
+// Release polish 3: a press check (computer: Shift+V). The slide / handle / bolt comes back CHK.desk of its travel (a bolt:
+// lifted and just started back), well short of extracting: the round shows in the port (chkRoundTick), the HUD says what
+// is there, then it goes home. Nothing is ejected or chambered. Locked open or a pump gun: the HUD line only.
+const CHK = { min: 0.06, desk: 0.22, hold: 0.5 };
+const chkSay = (g) => (g.def.action === 'pump' ? (g.chamber === 'live' ? 'Chambered' : g.chamber ? 'Spent shell in the chamber' : 'Empty')
+  : g.slideLocked ? 'Empty: locked open' : g.chambered ? 'Chambered' : g.spent ? 'Spent case in the chamber' : 'Empty');
+function* chamberCheckTask(g) {
+  const d = g.def, lh = lhStart(g, LH_RACK_CANT);
+  yield 0.05;
+  lhGo(g, 'rack', 0.2, 'reach'); yield 0.13;
+  if (!deskHeld(g)) { lhAbort(g); return; }
+  lh.fingers = 'rack'; yield 0.07;
+  lhSlide(g, d.manual ? Math.min(d.travel * 0.4, d.lift + 0.012) : d.travel * CHK.desk, 0.12);
+  lhGo(g, 'rack', 0.001, 'rack');
+  yield 0.12;
+  toast(chkSay(g), 1500);
+  yield CHK.hold;
+  if (!deskHeld(g)) { lhAbort(g); return; }
+  lhSlide(g, 0, 0.08);
+  lhGo(g, 'rackOff', 0.2, 'rackOff');
+  yield 0.1;
+  g.slideHold = -1;
+  yield* lhEnd(g);
+}
+// The round seen in the port while the action is held part way back by hand (VR rack hand, desktop check / rack). The
+// M1911 has its own (parts.round). A brass case of the gun's calibre (step 116's lathe) under g.model, so the desktop
+// viewmodel mirror shows it and vmHideGun hides it with the gun; made the first time it is needed.
+function chkRound(g) {
+  if (g.chk !== undefined) return g.chk;
+  const K = brassKit(), c = brassCalOf(g), C = BRASS_CAL[c], w = g.wr;
+  if (!K || C.hull) return null;                                   // no brass kit yet: try again next time
+  const m = g.chk = new THREE.Mesh(K[c][0][0], K[c][0][1]);
+  m.castShadow = m.receiveShadow = false; m.visible = false;
+  // root space: along the bore, its head at the port's z (cases leave from there), a little toward the port; into g.model
+  const M = new THREE.Matrix4().compose(new THREE.Vector3(w.eject.x * 0.35, w.eject.y * 0.35, w.eject.z - C.L / 2),
+    new THREE.Quaternion().setFromAxisAngle(_XAXIS, -Math.PI / 2), new THREE.Vector3(1, 1, 1));   // the lathe's +y (mouth) forward
+  g.prop.root.updateMatrixWorld(true);
+  M.premultiply(g.prop.root.matrixWorld).premultiply(new THREE.Matrix4().copy(g.model.matrixWorld).invert());
+  M.decompose(m.position, m.quaternion, m.scale);
+  g.model.add(m);
+  return m;
+}
+function chkRoundTick(g) {
+  const d = g.def;
+  if (g.parts.round || d.action === 'pump') return;
+  const show = (g.chambered || (d.manual && g.spent)) && !g.racked && !g.slideLocked && (!!g.rack || g.slideHold >= 0)
+    && g.slideOff > (d.manual ? d.lift + 0.004 : d.travel * CHK.min);
+  if (!show && !g.chk) return;
+  const m = chkRound(g);
+  if (!m) return;
+  if (show && !m.visible && g.rack) pulseSoft(g.rack, 0.12, 14);  // the headset: a tick as the brass comes into sight
+  m.visible = show;
 }
 function* reloadMagTask(g) {
   const type = g.def.magType;
@@ -21361,6 +21419,12 @@ function deskReload(smart = false) {
     g.task = loadShellTask(g); g.taskWait = 0;
   } else { g.task = reloadMagTask(g); g.task.k = g.afx ? g.afx.rel : 1; g.taskWait = 0; }   // step 100: k = reload time
   return true;
+}
+function deskCheck() {                                           // release polish 3: a press check (chamberCheckTask)
+  const g = gunOf(deskHand);
+  if (!g || g.task || DNADE.active) return;
+  if (g.def.action === 'pump' || g.slideLocked || g.rackAuto >= 0 || g.slideHold >= 0) { toast(chkSay(g), 1500); return; }
+  g.task = chamberCheckTask(g); g.taskWait = 0;
 }
 function deskRack() {
   const g = gunOf(deskHand);
@@ -29580,8 +29644,27 @@ function paintPartMap(t) {
 function paintMatch(groups, part, mat) {
   return (part && groups.find((G) => G.parts && G.parts.includes(part))) || groups.find((G) => G.mats && G.mats.includes(mat)) || null;
 }
-const paintAttOk = (m) => !!m && m.isMeshStandardMaterial && !m.transparent && !m.emissiveMap && m.emissiveIntensity * Math.max(m.emissive.r, m.emissive.g, m.emissive.b) < 0.01
-  && m.roughness >= PAINT.attRough[0] && m.roughness <= PAINT.attRough[1] && !(m.metalness > 0.95 && m.roughness < 0.4);
+// Release polish 3: a model part (GLB optics, cans, comps) keeps its roughness and metal in a map with factors of 1, so
+// the test reads the map's mean (channel ch of a 64 px copy, cached per texture; null while the image is not decoded).
+const PAINT_MEAN = new Map();
+function paintMapMean(tex, ch) {
+  let v = PAINT_MEAN.get(tex);
+  if (!v) {
+    const P = paintPixels(tex.image, 64);
+    if (P === null) return null;
+    v = [1, 1, 1];
+    if (P) { v = [0, 0, 0]; for (let i = 0; i < P.a.length; i += 4) for (let c = 0; c < 3; c++) v[c] += P.a[i + c]; for (let c = 0; c < 3; c++) v[c] /= 255 * P.a.length / 4; }
+    PAINT_MEAN.set(tex, v);
+  }
+  return v[ch];
+}
+function paintAttOk(m) {
+  if (!m || !m.isMeshStandardMaterial || m.transparent || m.emissiveMap || m.emissiveIntensity * Math.max(m.emissive.r, m.emissive.g, m.emissive.b) >= 0.01) return false;
+  const rk = m.roughnessMap ? paintMapMean(m.roughnessMap, 1) : 1, mk = m.metalnessMap ? paintMapMean(m.metalnessMap, 2) : 1, ck = m.map ? paintMapMean(m.map, 1) : 1;
+  if (rk === null || mk === null || ck === null) return false;
+  const r = m.roughness * rk, mt = m.metalness * mk, lum = (0.2126 * m.color.r + 0.7152 * m.color.g + 0.0722 * m.color.b) * Math.pow(ck, 2.2);
+  return r >= PAINT.attRough[0] && r <= PAINT.attRough[1] && !(mt > 0.95 && r < 0.4 && lum > 0.25);   // no glass, chrome or rubber (dark blued steel takes it)
+}
 
 /* --- guns and attachments ------------------------------------------------------------------------- */
 // createGun (before the magazine goes in): the model's meshes by group, then the finishes.
@@ -40881,7 +40964,7 @@ const X64BYMAG = { akmn: 'akmn', awp: 'awp' };
 const X64_THUMB = { thumbAt: [-0.019, 0.07, -0.035], thumbSide: 0.012 };
 WEAPON_DEFS.akmn = Object.assign({}, WEAPON_DEFS.rifle, X64_THUMB, {
   label: '7.62 mm AKM', capacity: 30, magType: 'akmn', mass: 3.6, sound: 'akm',
-  recip: true, modes: ['safe', 'auto', 'semi'], selAngles: { safe: 0, auto: -0.17, semi: -0.34 },
+  recip: true, lockOpen: false,                                   // release polish 3: no bolt hold-open on an AKM modes: ['safe', 'auto', 'semi'], selAngles: { safe: 0, auto: -0.17, semi: -0.34 },
   col: { half: [0.027, 0.13, 0.45], center: [0, -0.05, -0.17] },
   muzzle: [0, 0, -0.615], chamber: [0, 0, -0.2], eject: [0.02, 0.01, -0.15], ejectVel: [2.8, 1.2, -0.3],
   support: [0, -0.045, -0.3], rackPoint: [0.036, 0.01, -0.192], rackTo: [0.036, 0.01, -0.082], rackReach: 0.1, travel: 0.11,
@@ -41575,6 +41658,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
+if (window.__cqcDev) Object.assign(window.__cqcDev, { locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
 if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI, bvSlotOf, bvRows, bvGunPage, bvPick, bvSync, bvAnchors, bvRender, bvLines, bvTick, bvFinger, bvTurn });   // step 114
