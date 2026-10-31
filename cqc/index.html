@@ -2749,6 +2749,35 @@ const CONFIG = {
     flashMemory: 0.35,         // s after your shot that the muzzle flash gives you away
     score: 1.2                 // score multiplier at night
   },
+  // --- STEP 118: night vision goggles and IR (NVG, ?nvg=off = none of it: no store row, no locker item, no shader text) ---
+  nvg: {
+    on: true,
+    price: 1500,               // $ at the GUNSMITH computer (SUPPLIES), then in your personal locker
+    fov: 40,                   // deg, each tube's round field of view
+    overlap: 0.3,              // computer: the two tubes' axes apart, x the tube radius each side (the binocular double circle)
+    edge: 0.035,               // share of the radius the field stop takes to go black
+    response: [0.36, 0.48, 0.16],   // photocathode weights (r, g, b): leans red / near infrared
+    phosphor: { green: [0.26, 1.0, 0.1], white: [0.7, 0.84, 1.0] },   // linear screen colours (P43 green, P45 white)
+    target: 0.9,               // auto gain: tube gain = target / scene light, held to [gainMin, gainMax]
+    gainMin: 0.5, gainMax: 30,
+    srcK: 1 / 800,             // light at your eyes from weapon lights (lux, the dazzle model's sources) -> scene light
+    srcFallback: 60,           // lux assumed for your own lit light when the dazzle model is off
+    flashK: 0.02,              // muzzle / blast light (cd / m^2) -> scene light
+    bangK: 40,                 // a flashbang's white-out -> scene light
+    attack: 0.03, release: 0.4,   // s: the gate closing on a bright source, opening again
+    washK: 0.0005, washTau: 0.09, // a flash washes the screen by its light x the gain the tube had, fading over washTau s
+    flip: 0.38,                // s to flip the mount down or up
+    upAngle: 1.62,             // rad the mount turns up about its hinge
+    powerOn: 0.25,             // s for the picture to come up after it is down
+    grain: 0.07, sparkle: 0.012, honey: 0.045, // scintillation (more at high gain), bright speckle share, fibre bundle pattern depth
+    distort: 0.06,             // computer: the rim drawn from this much further out (slight barrel)
+    glow: 0.16, glowR: 0.014,  // computer: the image's own bloom round bright pixels (gain, rad)
+    haloK: 0.002, haloFlash: 0.004, haloCore: 0.012, haloRing: 0.035,   // halos round bright sources (strength per lux x gain, core / ring rad)
+    reach: 0.13,               // m: headset grip within this of the mount (or the tubes) flips it
+    hold: 0.6,                 // s: a long press on a laser / light switch (computer: hold T / F) switches IR mode
+    irLight: 0.25,             // IR flood intensity x the white light (only the tubes see it)
+    irLaser: { base: 0.35, max: 1.0, dot: 2.6 }   // IR laser through the tubes: beam in clean air, cap in smoke, dot brightness
+  },
   // --- STEP 12: stairwells (a room that changes floor) ---
   stairs: {
     on: true,                  // false = every room on one floor, as before step 12
@@ -4524,7 +4553,8 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = CONFIG.exposure;
-renderer.shadowMap.enabled = REAL_LIGHT;          // step 58: Real lighting off = no shadow maps
+nvgToneChunk();                                   // step 118: the night vision tone map, before anything compiles
+renderer.shadowMap.enabled = REAL_LIGHT;         // step 58: Real lighting off = no shadow maps
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // STEP 2 PERFORMANCE: the room and its lights never move, so shadow maps are rendered
 // once and reused. Performance pass: shadows are scheduled per light by flushShadows()
@@ -9627,7 +9657,7 @@ function syncButtons() {
 }
 window.addEventListener('keydown', (e) => {
   keys.add(e.code);
-  if (e.code === 'KeyF') deskLightToggle();
+  if (e.code === 'KeyF' && !e.repeat) deskLightToggle();   // step 118: held = IR mode (nvgKeys), so key repeat no longer flickers it
   if (e.code === 'KeyT' && !e.repeat) deskLaserToggle();     // step 16: laser master switch
   if (e.code === 'KeyP') { postEnabled = !postEnabled; ui.post.textContent = BOOST.on ? `off (${EXTREME.on ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off'; }
   if (e.code === 'KeyL') flicker.enabled = !flicker.enabled;
@@ -9649,7 +9679,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') { e.preventDefault(); if (!e.repeat && !renderer.xr.isPresenting) { DESK_ADS.key = true; deskAdsSync(); } }   // step 89: hold Space = aim down the sights (was crouch)
   if (e.code === 'CapsLock' && !e.repeat && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn;   // step 89: crouch (toggle) moved here from Space
   if (e.code === 'KeyG' && !e.repeat) deskShove();
-  if (e.code === 'KeyN' && !e.repeat) kickStart();             // step 24: kick (right leg, where you look)
+  if (e.code === 'KeyN' && !e.repeat && !nvgKey(e)) kickStart();   // step 24: kick (right leg, where you look); step 118: N flips worn night vision (Shift+N kicks)
   if (e.code === 'KeyJ' && !e.repeat) deskJump();              // step 24: hop
   if (e.code === 'KeyM' && !e.repeat && !renderer.xr.isPresenting) modPanelToggle();   // step 57: the watch mod menu
   if (e.code === 'Escape' && document.body.classList.contains('modOpen')) modPanelToggle(false);
@@ -17635,6 +17665,7 @@ function updateLasers() {
   for (; n < LASER.slots.length; n++) LASER.slots[n].dot.visible = LASER.slots[n].beam.visible = false;
 }
 function laserCast(g, S, L = g.wr.laser) {   // step 112: L = one laser module of the gun
+  if (NVG.on && nvgLaserHide(S)) return;     // step 118: an IR laser shows only through night vision
   const root = g.prop.root;
   root.updateMatrixWorld(true);
   _lzO.copy(L.emit).applyMatrix4(root.matrixWorld);
@@ -18815,12 +18846,13 @@ function wearApply() {
   }
   for (const p of WEAR.items) {                                   // what is still in the locker
     const it = p.item;
-    const show = it.sub === 'gloves' ? !WEAR.gloves : it.sub !== WEAR.uniform;
+    const show = it.sub === 'gloves' ? !WEAR.gloves : it.sub === 'nvg' ? nvgOnShelf() : it.sub !== WEAR.uniform;   // step 118: night vision
     for (const c of p.root.children) c.visible = show;               // the root's own visibility belongs to the room streaming
   }
 }
 function wearTake(p) {
   const it = p.item;
+  if (it.sub === 'nvg') { nvgTake(); return; }                     // step 118: on your helmet / back on the shelf
   if (it.sub === 'gloves') { WEAR.gloves = !WEAR.gloves; toast(WEAR.gloves ? 'Gloves on' : 'Gloves off'); }
   else if (WEAR.uniform !== it.sub) { WEAR.uniform = it.sub; toast(`Changed into the ${UNIFORMS[it.sub].label}`); }
   sfx('pouch');
@@ -18835,8 +18867,8 @@ function safeSetHere(list, owner, room, entered) {
   return !entered && owner && owner !== room && owner.active && owner === stream.current && list.some((p) => p.inWorld && !p.removing);   // you are in the old one: it moves when you enter this one
 }
 function safeSetClear(list, free) { for (const p of list) { if (!p.removing) removeProp(p); if (!p.freed) { p.freed = true; free(p); } } list.length = 0; }   // free: its own GPU buffers (made per set; also a set its room took away)
-function wearFree(p) {                                             // all its geometry and materials are its own but the hanger steel
-  p.root.traverse((o) => { if (!o.isMesh) return; DISPOSE_Q.push(o.geometry); if (o.material !== KIT.mat.steel) { DISPOSE_Q.push(o.material); if (o.material.map) DISPOSE_Q.push(o.material.map); } });
+function wearFree(p) {                                             // all its geometry and materials are its own but the hanger steel (step 118: and night vision's shared kit)
+  p.root.traverse((o) => { if (!o.isMesh || o.userData.shared) return; DISPOSE_Q.push(o.geometry); if (o.material !== KIT.mat.steel) { DISPOSE_Q.push(o.material); if (o.material.map) DISPOSE_Q.push(o.material.map); } });
 }
 function extFree(p) { const it = p.item; DISPOSE_Q.push(it.tag.geometry, it.tagOn, it.tagOn.map, it.tagOff, it.tagOff.map); }   // the card; the magazine / sear models are shared
 // The locker and what is in it (room-local: back to the left wall, open toward +x).
@@ -18899,6 +18931,7 @@ function wearSpawn(room, entered = false) {
     return g;
   };
   [['black', -0.26], ['fsb', 0], ['ranger', 0.26]].forEach(([uk, z]) => put(shirt(uk), uk, UNIFORMS[uk].label, 0.25, 1.47, z, Math.PI / 2 + 0.75, [0.2, 0.28, 0.03], new THREE.Vector3(0, -0.22, 0)));
+  if (NVG.on) nvgLockerPut(put);                                     // step 118: night vision on the shelf (shows once bought)
   wearApply();
 }
 
@@ -20485,9 +20518,11 @@ function switchTips() {
     if (st.prop !== vh.prop) { st.prop = vh.prop; st[0].armed = st[1].armed = false; }   // a grab never presses what the fitted hand lands on
     for (let k = 0; k < 2; k++) {
       const S = switchNear(vh, T, k, k ? T.t : T.i);
+      if (NVG.on) nvgSwitchHold(vh, k, S);                              // step 118: held down = IR mode
       if (!S.g) { st[k].armed = false; continue; }
       if (!tipCross(st[k], S.z, true, B.press, B.rearm)) continue;
       if (S.laser) toggleGunLaser(S.g, S.ent); else toggleGunLight(S.g, S.ent);   // step 112: the one pressed
+      if (NVG.on) nvgSwitchDown(vh, k, S);
       pulse(vh, 0.3, 20);
     }
   }
@@ -26187,6 +26222,7 @@ function wsRestock(id) {
 function wsBuySupply(id) {
   const s = WORKSHOP.supplies.find((q) => q.id === id);
   if (!s) return false;
+  if (s.buy) return s.buy(s);                                   // step 118: gear with its own purchase (night vision)
   if (WALLET.money < s.price) { wsMsg(`Not enough money: ${s.name} costs ${fmtMoney(s.price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
   if (!wsRestock(id)) { wsMsg(`${s.name}: already full, nothing charged`); return false; }
   walletSpend(s.price); playBuy();
@@ -26492,15 +26528,17 @@ function wsDrawSupplies(now) {
     nades: `Pouches: frag ${inv.frag} / ${I.frag ?? 2}, flashbang ${inv.flash} / ${I.flash ?? 2}  ·  bench: ${nadeCount('frag')} + ${nadeCount('flash')}`,
     med: `Auto-injectors ${inv.med} / 2`
   };
+  const n = W.supplies.length, tight = n > 3, step = tight ? Math.floor(498 / n) : 166, h = tight ? step - 12 : 150, k = h / 150;   // step 118: a 4th row (night vision) packs them
   W.supplies.forEach((s, i) => {
-    const y = 166 + i * 166, h = 150, rich = WALLET.money >= s.price;
+    const y = 166 + i * step, rich = WALLET.money >= s.price;
+    if (s.draw) { s.draw(s, x0, y, pw, h); return; }                // step 118: a row that draws itself
     tBox(x0, y, pw, h, TC.faint, TC.line);
-    tText(s.name, x0 + 22, y + 34, 30, TC.text, 'left', 700, TC.sans, pw - 420);
-    tText(s.desc, x0 + 22, y + 74, 20, TC.dim, 'left', 600, TC.sans, pw - 420);
-    tText(status[s.id] || '', x0 + 22, y + 112, 20, TC.text, 'left', 600, TC.mono, pw - 420);
-    tText(fmtMoney(s.price), x0 + pw - 250, y + 46, 38, rich ? TC.hi : TC.warn, 'right', 700, TC.mono, 160);
-    tText(rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`, x0 + pw - 250, y + 92, 18, TC.warn, 'right', 600, TC.sans, 200);
-    tBtn(`sup:${s.id}`, x0 + pw - 226, y + 24, 204, h - 48, 'BUY', { size: 30, sel: rich, fn: () => wsBuySupply(s.id) });
+    tText(s.name, x0 + 22, y + 34 * k, tight ? 26 : 30, TC.text, 'left', 700, TC.sans, pw - 420);
+    tText(s.desc, x0 + 22, y + 74 * k, tight ? 17 : 20, TC.dim, 'left', 600, TC.sans, pw - 420);
+    tText(status[s.id] || '', x0 + 22, y + 112 * k, tight ? 17 : 20, TC.text, 'left', 600, TC.mono, pw - 420);
+    tText(fmtMoney(s.price), x0 + pw - 250, y + 46 * k, tight ? 32 : 38, rich ? TC.hi : TC.warn, 'right', 700, TC.mono, 160);
+    tText(rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`, x0 + pw - 250, y + 92 * k, 18, TC.warn, 'right', 600, TC.sans, 200);
+    tBtn(`sup:${s.id}`, x0 + pw - 226, y + 24 * k, 204, h - 48 * k, 'BUY', { size: tight ? 26 : 30, sel: rich, fn: () => wsBuySupply(s.id) });
   });
 }
 
@@ -28708,8 +28746,8 @@ function nightCanSee(e) {
   enemyEye(e, _nt.m); headWorld(_nt.h);
   const dist = _nt.m.distanceTo(_nt.h);
   if (dist < N.bare) return true;                                   // a shape right there
-  if (flashlightOn || now - NIGHT.shotT < N.flashMemory) return true;   // your light, your muzzle flash
-  if (dist < (N.laserSee ?? 16)) for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.laserOn && g.wr.laser) return true; }   // step 100: a visible laser in the dark shows where you are
+  if ((flashlightOn && !nvgIr('light')) || now - NIGHT.shotT < N.flashMemory) return true;   // your light (step 118: not an IR one), your muzzle flash
+  if (dist < (N.laserSee ?? 16)) for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.laserOn && g.wr.laser && !nvgIr('laser')) return true; }   // step 100 (step 118: he has no night vision: an IR laser is invisible to him): a visible laser in the dark shows where you are
   if (AWMA.ready && awmGlint(e, _nt.m, true)) return true;         // step 113: his torch back off your scope's glass
   const pr = roomContaining(_nt.h.x, _nt.h.z, 0, _nt.h.y);
   if (pr && !nightDark(pr)) return true;                            // you're backlit by a lit room
@@ -28720,6 +28758,498 @@ function nightCanSee(e) {
     if (L < N.torchRange && _nt.v.normalize().dot(_nt.d) > Math.cos(N.torchAngle * 1.15)) return true;
   }
   return false;
+}
+
+/* ===========================================================================
+ *  STEP 118 — NIGHT VISION AND IR (NVG; CONFIG.nvg, ?nvg=off)
+ *  A dual-tube PVS-31 class goggle on a helmet mount: bought at the GUNSMITH
+ *  computer (SUPPLIES, with the phosphor and IR choices), then on the shelf of
+ *  your personal locker; take it (grip / E) and it rides on your head, flipped
+ *  up. Flip it down: headset = reach to your brow and squeeze the grip (an
+ *  empty hand; the mount swings on its hinge); computer = N (Shift+N kicks).
+ *  THE PICTURE. No extra scene render. The tube is a tone map: three's ACES
+ *  function is patched once at load (nvgToneChunk) with a branch taken only
+ *  while the exposure is negative, so turning it on recompiles nothing. Down,
+ *  nvgPre sets exposure = -(gain, + 100 for white phosphor): every lit material
+ *  (headset), the desktop OutputPass and the viewmodel turn the scene's
+ *  luminance (red / near-infrared weighted) into a softly saturating phosphor
+ *  screen (P43 green or P45 white) over a faint background glow. Auto gain:
+ *  target / (room light + weapon light at your eyes + flash), held to
+ *  [gainMin, gainMax]: dark rooms come up grainy, lit rooms gate down. The gate
+ *  closes in ~30 ms and opens over ~0.4 s, a frame late, so a muzzle flash
+ *  washes the screen once, then the picture dips and recovers.
+ *  Over it: the tubes' field stops (two overlapping 40° circles on a computer,
+ *  one centred per eye in the headset), a darker rim, the fibre bundles' faint
+ *  hexagonal pattern, scintillation (grain + bright speckle, more as the gain
+ *  climbs), wash, and halos round bright point sources (lights at your eyes
+ *  from the dazzle model, the muzzle flash). Headset: one eye-locked triangle
+ *  in the scene (DZ's way: layers 1-2, premultiplied, an early out outside the
+ *  tube). Computer: the finished frame (viewmodel included) is copied and
+ *  redrawn through the same core with a slight barrel at the rim, the image's
+ *  own bloom, everything re-tinted to the phosphor (sprites that skip tone
+ *  mapping turn green too).
+ *  IR. One mode for lasers, one for weapon lights (store chips; or hold the
+ *  device's switch: fingertip on it for CONFIG.nvg.hold s, computer hold T / F).
+ *  IR laser: dot and beam hidden unless the tubes are down; then bright, the
+ *  beam showing even in clean air. IR light: the same flashlight (no light is
+ *  added or removed): intensity 0 to the naked eye (no haze beam, dark lens, no
+ *  glare), an IR flood (x irLight) with the tubes down. The men have no night
+ *  vision: nightCanSee ignores an IR laser and an IR light.
+ *  No light count change, no per-frame allocation, no program compiled mid-game
+ *  (the overlay, the copy pass and the tone-map branch are built at load).
+ *  Saved: cqc.nvg.v1 (owned, worn, phosphor, IR modes).
+ * ========================================================================= */
+function nvgEnabled() { return !!(CONFIG.nvg && CONFIG.nvg.on !== false) && !/[?&]nvg=off\b/.test(location.search); }
+// At load, right after the renderer (no program exists yet). Phosphor colours and the response come from CONFIG.nvg.
+function nvgToneChunk() {
+  if (!nvgEnabled()) return;
+  const at = 'vec3 ACESFilmicToneMapping( vec3 color ) {', ch = THREE.ShaderChunk.tonemapping_pars_fragment;
+  if (!ch.includes(at)) { console.warn('Step 118: tone mapping chunk not found, night vision off'); CONFIG.nvg.on = false; return; }
+  const C = CONFIG.nvg, v3 = (a) => `vec3( ${a.map((x) => (+x).toFixed(4)).join(', ')} )`;
+  THREE.ShaderChunk.tonemapping_pars_fragment = ch.replace(at, `vec3 nvgTone( vec3 color, float e ) {   // step 118: the image intensifier (negative exposure = night vision down)
+	float w = step( 100.0, e );                                   // white phosphor rides on +100
+	e -= 100.0 * w;
+	float L = max( dot( color, ${v3(C.response)} ), 0.0 ) * e;   // photocathode: leans red / near infrared
+	float y = 0.012 + 0.988 * ( 1.0 - exp( - 1.35 * L ) );        // soft saturation over a faint background glow
+	vec3 ph = mix( ${v3(C.phosphor.green)}, ${v3(C.phosphor.white)}, w );
+	return mix( ph * y, vec3( y ), 0.3 * y * y * y * y );          // a saturated screen burns toward white
+}
+${at}
+	if ( toneMappingExposure < 0.0 ) return nvgTone( color, - toneMappingExposure );`);
+}
+const NVG_C = CONFIG.nvg || {};
+const NVG_H = new THREE.Vector3(0, 0.072, -0.056);               // the mount's hinge, head space (camera: eyes at 0, -z ahead)
+const NVG_NORAY = () => {};
+const NVG = {
+  on: nvgEnabled(), key: 'cqc.nvg.v1',
+  owned: false, worn: false, phos: 'green', irLaser: false, irLight: false,   // saved
+  down: false, t: 0, view: false, pow: 0, G: 1, Gr: 1, wash: 0, f: 0, hinted: false,
+  kit: null, mount: null, flip: null, applied: false, base: 1, beamIr: false, lzKey: -1, sweepT: 0, kF: 0, kT: 0,
+  dotMat: null, bc0: null, U: null, vr: null, mat: null, pmat: null, post: null, postScene: null, fbt: null,
+  pl: new THREE.Color(), ps: new THREE.Color(),                  // phosphor: linear (tone map, lasers) / display (overlays)
+  h: new THREE.Vector3(), v: new THREE.Vector3(), w: new THREE.Vector3(), q: new THREE.Quaternion(), sz: new THREE.Vector2()
+};
+if (NVG.on) try {
+  const o = JSON.parse(localStorage.getItem(NVG.key) || 'null');
+  if (o) { NVG.owned = !!o.owned; NVG.worn = NVG.owned && !!o.worn; NVG.phos = o.phos === 'white' ? 'white' : 'green'; NVG.irLaser = !!o.irLaser; NVG.irLight = !!o.irLight; }
+} catch (e) { /* defaults */ }
+function nvgSave() { try { localStorage.setItem(NVG.key, JSON.stringify({ v: 1, owned: NVG.owned, worn: NVG.worn, phos: NVG.phos, irLaser: NVG.irLaser, irLight: NVG.irLight })); } catch (e) { /* this visit only */ } }
+const nvgIr = (kind) => NVG.on && (kind === 'laser' ? NVG.irLaser : NVG.irLight);
+const nvgOnShelf = () => NVG.on && NVG.owned && !NVG.worn;
+const nvgEase = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+// The auto gain the tube wants: scene light (room estimate), light at your eyes (lux), flash (cd / m^2), a flashbang's white-out.
+function nvgGainTarget(Ls, Es, F, white, C) {
+  return clamp(C.target / Math.max(1e-4, Ls + Es * C.srcK + F * C.flashK + white * C.bangK), C.gainMin, C.gainMax);
+}
+// Scintillation by gain: 0 at gainMin, 1 at gainMax (log).
+const nvgNoiseK = (G, C) => clamp(Math.log(G / C.gainMin) / Math.log(C.gainMax / C.gainMin));
+function nvgPhosphor() {
+  const P = NVG_C.phosphor[NVG.phos] || NVG_C.phosphor.green;
+  NVG.pl.setRGB(P[0], P[1], P[2]);
+  NVG.ps.copy(NVG.pl).convertLinearToSRGB();
+  if (NVG.U) NVG.U.uPs.value.copy(NVG.ps);
+  NVG.lzKey = -1;
+}
+if (NVG.on) nvgPhosphor();
+
+/* --- the picture: one core for the headset overlay and the computer's copy pass --- */
+const NVG_FS_CORE = `uniform vec4 uM; uniform vec4 uL; uniform vec3 uPs; uniform vec4 uH[4]; uniform vec2 uHs;
+varying vec3 vV; varying vec3 vW;
+// uM: tube radius (rad), tube axes +-x (rad), field stop softness (share of the radius), frame
+// uL: grain, speckle share, honeycomb depth, wash. uH: halo sources (world, strength); uHs: core / ring size (rad)
+float nvgHash(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+vec4 nvgCell(vec2 p) {                                     // offset from the nearest hexagonal cell centre (xy), the cell (zw)
+  const vec2 s = vec2(1.0, 1.7320508);
+  vec4 c = floor(vec4(p, p - vec2(0.5, 1.0)) / s.xyxy) + 0.5;
+  vec4 h = vec4(p - c.xy * s, p - (c.zw + 0.5) * s);
+  return dot(h.xy, h.xy) < dot(h.zw, h.zw) ? vec4(h.xy, c.xy) : vec4(h.zw, c.zw + 0.5);
+}
+// rgb: phosphor light to add (speckle, wash, halos); a: what of the scene stays (field stop, rim, bundles, grain). ax: the nearer tube's axis.
+vec4 nvgCore(vec3 rv, vec3 rw, vec2 px, out vec3 ax) {
+  vec3 cA = vec3(sin(uM.y), 0.0, -cos(uM.y)), cB = vec3(-cA.x, 0.0, cA.z);
+  float dA = dot(rv, cA), dB = dot(rv, cB);
+  ax = dA > dB ? cA : cB;
+  float s = acos(clamp(max(dA, dB), -1.0, 1.0)) / uM.x;   // 0 on the axis, 1 at the field stop
+  float m = 1.0 - smoothstep(1.0 - uM.z, 1.0, s);
+  if (m <= 0.0) return vec4(0.0);
+  float keep = m * (1.0 - 0.42 * s * s * s);               // the tube darkens toward its rim
+  vec4 h = nvgCell(rv.xy / max(-rv.z, 0.2) / 0.021);        // fibre-optic bundles (~1.2 deg), fixed to the tube
+  vec2 a = abs(h.xy);
+  float edge = 0.5 - max(dot(a, vec2(0.5, 0.8660254)), a.x);  // 0 on a bundle boundary
+  keep *= 1.0 - uL.z * (1.0 - smoothstep(0.0, 0.05 + 1.5 * fwidth(edge), edge)) - uL.z * 0.5 * (nvgHash(h.zw) - 0.5);
+  vec2 g = floor(px / 1.5);                                  // scintillation: a new pattern every frame
+  float n = nvgHash(g + vec2(uM.w * 7.13, uM.w * 3.31)) - 0.5;
+  float sp = step(1.0 - uL.y, nvgHash(g.yx * 1.31 + vec2(uM.w * 5.7, uM.w * 1.9)));
+  keep *= 1.0 + n * uL.x * 1.6;
+  float add = max(n, 0.0) * uL.x * 0.35 + sp * (0.35 + 0.5 * nvgHash(g + 9.1)) + uL.w;
+  for (int i = 0; i < 4; i++) {                              // halos: a soft core and the ring round a bright point
+    if (uH[i].w > 0.0) {
+      float d = acos(clamp(dot(rw, normalize(uH[i].xyz - cameraPosition)), -1.0, 1.0)), r = (d - uHs.y) / (uHs.y * 0.35);
+      add += uH[i].w * (exp(-d * d / (uHs.x * uHs.x)) + 0.35 * exp(-r * r));
+    }
+  }
+  return vec4(uPs * (add * m), keep);
+}`;
+const NVG_FS_VR = `${NVG_FS_CORE}
+void main() {
+  vec3 ax;
+  vec4 c = nvgCore(normalize(vV), normalize(vW), gl_FragCoord.xy, ax);
+  gl_FragColor = vec4(c.rgb, 1.0 - clamp(c.a, 0.0, 1.0));   // premultiplied: light + scene x what stays
+}`;
+const NVG_FS_DESK = `${NVG_FS_CORE}
+uniform sampler2D tDiffuse; uniform vec2 uRes; uniform vec3 uD; uniform mat4 uProj;   // uD: rim barrel, glow radius (px), glow gain; uProj: the camera's projection
+float nvgLum(vec2 uv) { vec3 c = texture2D(tDiffuse, uv).rgb; return max(c.r, max(c.g, c.b)); }
+void main() {
+  vec3 rv = normalize(vV), ax;
+  vec4 c = nvgCore(rv, normalize(vW), gl_FragCoord.xy, ax);
+  if (c.a <= 0.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  float s = acos(clamp(dot(rv, ax), -1.0, 1.0)) / uM.x;
+  vec3 rs = normalize(rv + (rv - ax * dot(rv, ax)) * uD.x * s * s);   // the rim comes from a little further out
+  vec4 cp = uProj * vec4(rs, 1.0);
+  vec2 uv = cp.xy / cp.w * 0.5 + 0.5, o = uD.y / uRes;
+  float l = nvgLum(uv), gw = 0.0;
+  for (int i = 0; i < 8; i++) { float a = float(i) * 0.7853982; gw += max(nvgLum(uv + vec2(cos(a), sin(a)) * o) - 0.75, 0.0); }
+  gl_FragColor = vec4(uPs * ((l + gw * uD.z) * c.a) + c.rgb, 1.0);   // everything re-tinted to the phosphor
+}`;
+if (NVG.on) {
+  const C = NVG_C, geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));   // one triangle over the whole view
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e5);
+  NVG.U = { uM: { value: new THREE.Vector4(C.fov * Math.PI / 360, 0, C.edge, 0) }, uL: { value: new THREE.Vector4() }, uPs: { value: NVG.ps.clone() },
+    uH: { value: [0, 1, 2, 3].map(() => new THREE.Vector4()) }, uHs: { value: new THREE.Vector2(C.haloCore, C.haloRing) } };
+  NVG.mat = new THREE.ShaderMaterial({
+    uniforms: NVG.U, vertexShader: DZ_VS, fragmentShader: NVG_FS_VR,
+    transparent: true, depthTest: false, depthWrite: false, toneMapped: false,
+    blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor
+  });
+  NVG.vr = new THREE.Mesh(geo, NVG.mat);
+  NVG.vr.frustumCulled = false; NVG.vr.renderOrder = 100001; NVG.vr.layers.mask = 6; NVG.vr.visible = false;   // the headset's eye cameras only
+  scene.add(NVG.vr);
+  NVG.pmat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ tDiffuse: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uD: { value: new THREE.Vector3(C.distort, 4, C.glow) }, uProj: { value: camera.projectionMatrix } }, NVG.U),
+    vertexShader: DZ_VS, fragmentShader: NVG_FS_DESK, depthTest: false, depthWrite: false, toneMapped: false
+  });
+  NVG.post = new THREE.Mesh(geo, NVG.pmat); NVG.post.frustumCulled = false;
+  NVG.postScene = new THREE.Scene(); NVG.postScene.add(NVG.post);
+  try {
+    const warm = new THREE.Scene(), m = new THREE.Mesh(geo, NVG.mat); m.frustumCulled = false; warm.add(m);
+    renderer.compile(warm, camera); renderer.compile(NVG.postScene, camera);   // both programs now, never mid-game
+  } catch (e) { console.warn('Step 118: night vision precompile', e); }
+  WORKSHOP.supplies.push({ id: 'nvg', name: 'Night vision goggles', price: C.price, draw: nvgStoreRow, buy: nvgBuy,
+    desc: 'Dual-tube PVS-31 class on a helmet mount: auto-gated, 40° view. Then in your personal locker' });
+  addEventListener('keydown', (e) => { if (e.repeat) return; if (e.code === 'KeyF') NVG.kF = wnow(); if (e.code === 'KeyT') NVG.kT = wnow(); });   // held: IR mode (nvgKeys)
+  addEventListener('keyup', (e) => { if (e.code === 'KeyF') NVG.kF = 0; if (e.code === 'KeyT') NVG.kT = 0; });
+}
+
+/* --- the goggle: one kit of shared geometry, worn on your head and on the locker shelf --- */
+function nvgKit() {
+  if (NVG.kit) return NVG.kit;
+  const M = KIT.mat, H = NVG_H, poly = [], glass = [], steel = [];
+  const at = (geo, x, y, z, rx = 0, ry = 0, rz = 0) => placed(geo, x - H.x, y - H.y, z - H.z, rx, ry, rz);   // the swinging part: hinge-relative
+  const cyl = (r0, r1, h, open = false) => new THREE.CylinderGeometry(r0, r1, h, 20, 1, open);
+  for (const sx of [-1, 1]) {                                     // two tubes, 64 mm apart, eyecups 2.5 cm from your eyes (down)
+    const x = sx * 0.032;
+    poly.push(at(cyl(0.0165, 0.0165, 0.07), x, 0, -0.074, Math.PI / 2));          // housing
+    poly.push(at(cyl(0.0188, 0.0176, 0.016), x, 0, -0.115, Math.PI / 2));         // objective bell (focus ring)
+    poly.push(at(cyl(0.0175, 0.0168, 0.012), x, 0, -0.034, Math.PI / 2));         // eyepiece
+    poly.push(at(cyl(0.0196, 0.018, 0.009, true), x, 0, -0.0245, Math.PI / 2));  // rubber eyecup
+    glass.push(at(new THREE.CircleGeometry(0.0142, 20), x, 0, -0.1232, 0, Math.PI));   // objective lens, facing out
+  }
+  poly.push(at(rbox(0.034, 0.026, 0.05, 0.004), 0, 0.006, -0.072));                // bridge (battery, electronics)
+  poly.push(at(cyl(0.0062, 0.0062, 0.008), 0, 0.022, -0.09));                      // power knob
+  poly.push(at(rbox(0.016, 0.058, 0.011, 0.003), 0, 0.045, -0.06));                // mount arm, bridge to hinge
+  steel.push(at(new THREE.CylinderGeometry(0.0055, 0.0055, 0.034, 14), 0, H.y, H.z, 0, 0, Math.PI / 2));   // hinge barrel
+  const fixed = [placed(rbox(0.052, 0.034, 0.008, 0.003), 0, 0.086, -0.046, -0.3), placed(rbox(0.028, 0.018, 0.016, 0.003), 0, 0.074, -0.05)];   // helmet shroud, receiver
+  const g = (parts, mat) => [merged(parts, mat, false).geometry, mat];
+  NVG.kit = { flip: [g(poly, M.blackPlastic), g(glass, M.screen), g(steel, M.steel)], fixed: [g(fixed, M.blackPlastic)] };
+  return NVG.kit;
+}
+function nvgModel(worn) {
+  const K = nvgKit(), root = new THREE.Group(), flip = new THREE.Group();
+  flip.position.copy(NVG_H); root.add(flip);
+  const add = (to, [geo, mat]) => { const m = mesh(geo, mat, false, !worn); m.userData.shared = true; if (worn) m.raycast = NVG_NORAY; to.add(m); };
+  for (const p of K.flip) add(flip, p);
+  for (const p of K.fixed) add(root, p);
+  return { root, flip };
+}
+function nvgBuild() {
+  if (NVG.mount) return;
+  const { root, flip } = nvgModel(true);
+  NVG.mount = root; NVG.flip = flip;
+  camera.add(root);
+}
+// wearSpawn: on the shelf beside the gloves, objectives out (wearApply shows it once bought, while not worn).
+function nvgLockerPut(put) {
+  const { root } = nvgModel(false);
+  put(root, 'nvg', 'night vision goggles', 0.22, 1.6245, 0.18, -Math.PI / 2, [0.052, 0.055, 0.05], new THREE.Vector3(0, 0.035, -0.075));
+}
+function nvgTake() {
+  if (!NVG.owned) { toast(`Night vision: buy it at the GUNSMITH computer (${fmtMoney(NVG_C.price)})`, 2600); return; }
+  NVG.worn = !NVG.worn;
+  if (!NVG.worn) NVG.down = false;
+  toast(!NVG.worn ? 'Night vision back on the shelf' : renderer.xr.isPresenting ? 'Night vision on your helmet: reach to your brow and squeeze the grip to flip it down' : 'Night vision on your helmet: N flips it down (Shift+N kicks)', 3200);
+  sfx('pouch');
+  nvgSave(); wearApply(); WORKSHOP.dirty = true;
+}
+function nvgFlip() {
+  if (!NVG.worn) return false;
+  NVG.down = !NVG.down;
+  nvgSnd('flip'); WORKSHOP.dirty = true;
+  return true;
+}
+// Computer: N (from the main key handler). False = not ours (the kick).
+function nvgKey(e) {
+  if (!NVG.on || !NVG.worn || e.shiftKey || renderer.xr.isPresenting) return false;
+  nvgFlip();
+  if (!NVG.hinted) { NVG.hinted = true; toast('Night vision: N flips it, Shift+N kicks while you wear it', 3000); }
+  return true;
+}
+// Headset: an empty hand squeezing the grip at your brow (the hinge) or on the tubes swings the mount.
+function nvgGrip() {
+  const C = NVG_C;
+  for (let i = 0; i < vrHands.length; i++) {
+    const h = vrHands[i], gp = h.ctrl && h.ctrl.userData.gamepad, b = gp && gp.buttons[1], on = !!b && (b.pressed || b.value > 0.75);
+    const edge = on && !h.nvgGr; h.nvgGr = on;
+    if (!edge || h.prop) continue;
+    handPose(h, NVG.v, NVG.q);
+    NVG.flip.getWorldPosition(NVG.h);
+    NVG.flip.localToWorld(NVG.w.set(0, -NVG_H.y, -0.074 - NVG_H.z));   // the tubes' middle
+    if (Math.min(NVG.v.distanceTo(NVG.h), NVG.v.distanceTo(NVG.w)) > C.reach) continue;
+    nvgFlip(); pulse(h, 0.35, 25);
+    return;
+  }
+}
+function nvgSnd(kind) {
+  if (!audio.ctx || audio.ctx.state !== 'running') return;
+  if (kind === 'flip') { if (!btnSfx('stock', null, 0.7)) sfx('selector', 0.5); }                 // the latch lets go
+  else if (kind === 'seat') { if (!btnSfx('sel', null, 0.9)) sfx('selector', 0.7); }             // the detent at either end
+  else if (kind === 'on') tone(audio.ctx.currentTime + 0.03, 9000, 15500, 0.6, 0.0035, 'sine', 0);   // the power supply's faint whine
+}
+
+/* --- per frame --- */
+// After handShadowTick, before dazzleTick: the mount, the tube's gain, IR on the weapon light, the lasers' look.
+function nvgTick(dt) {
+  if (!NVG.on) return;
+  const C = NVG_C, d = clamp(dt || 0, 0, 0.1);
+  if (NVG.worn) { nvgBuild(); if (renderer.xr.isPresenting) nvgGrip(); }
+  nvgKeys(wnow());
+  const want = NVG.worn && NVG.down ? 1 : 0;
+  if (NVG.t !== want) {
+    NVG.t = want > NVG.t ? Math.min(1, NVG.t + d / C.flip) : Math.max(0, NVG.t - d / C.flip);
+    if (NVG.t === want && NVG.worn) nvgSnd('seat');
+  }
+  if (NVG.mount) {
+    NVG.mount.visible = NVG.worn;
+    NVG.flip.visible = NVG.t < 0.9;                                 // down, you look through it (it sits inside the near plane)
+    NVG.flip.rotation.x = C.upAngle * (1 - nvgEase(NVG.t));
+  }
+  const view = NVG.worn && NVG.t >= 1;
+  if (view !== NVG.view) {
+    NVG.view = view; NVG.pow = 0; NVG.wash = 0; NVG.lzKey = -1;
+    if (view) { NVG.G = NVG.Gr = nvgGainTarget(eyeLight(stream.current), 0, 0, 0, C); nvgSnd('on'); }
+    nvgLensSweep();
+  }
+  if (view) { NVG.pow = Math.min(1, NVG.pow + d / C.powerOn); nvgGain(d); }
+  nvgBeam();
+  nvgLaserLook();
+  nvgLenses(d);
+}
+// The gate: this frame draws with the gain as it stood (a flash washes the screen once), then it moves toward the target.
+function nvgGain(d) {
+  const C = NVG_C;
+  let Es = 0, F = 0;
+  if (DZ.on) for (let i = 0; i < DZ.n; i++) Es += DZ.src[i].E;    // last frame's lights at your eyes (your own splash, his lights)
+  else if (flashlight.intensity > 0) Es = C.srcFallback;
+  if (pool.muzzleT > 0 && pool.muzzle.intensity > 0) { headWorld(NVG.h); F = pool.muzzle.intensity / Math.max(0.09, NVG.h.distanceToSquared(pool.muzzle.position)); }
+  const Gt = nvgGainTarget(eyeLight(stream.current), Es, F, NADE.white, C);
+  NVG.Gr = NVG.G;
+  const lg = Math.log(NVG.G);
+  NVG.G = Math.exp(lg + (Math.log(Gt) - lg) * (1 - Math.exp(-d / (Gt > NVG.G ? C.release : C.attack))));
+  NVG.wash = Math.max(NVG.wash * Math.exp(-d / C.washTau), Math.min(1, F * C.washK * NVG.Gr + NADE.white));
+}
+// IR weapon light: the same flashlight (no light added or removed), dark to the eye, a flood to the tubes.
+function nvgBeam() {
+  if (!NVG.irLight) { if (NVG.beamIr) { NVG.beamIr = false; setFlashlight(flashlightOn); } return; }
+  NVG.beamIr = true;
+  const k = NVG.view ? NVG_C.irLight : 0;
+  if (flashlightOn) {
+    const raw = CONFIG.light.flashlight * (FLASH_BEAM.on ? FLASH_BEAM.gain : 1);
+    HS.base = raw * k;                                              // the dazzle model sees what your eyes can
+    flashlight.intensity = raw * (HS.on ? HS.A : 1) * k;
+    if (!k) P10U.uLOn.value = 0;                                    // no beam in the haze
+  }
+  if (!k && RAIL.on) for (let i = 0; i < RAIL.glow.length; i++) RAIL.glow[i].visible = false;
+  if (VM.vis && VM.lamp) VM.lamp.intensity = flashlightOn ? 1.6 * k : 0;
+}
+// laserCast: an IR laser draws nothing unless the tubes are down (and casts no ray).
+function nvgLaserHide(S) {
+  if (!NVG.irLaser || NVG.view) return false;
+  S.dot.visible = S.beam.visible = false;
+  return true;
+}
+// Through the tubes every laser is phosphor coloured; an IR one is bright, its beam showing even in clean air.
+function nvgLaserLook() {
+  const L = LASER.slots, C = NVG_C;
+  if (!L.length) return;
+  const key = (NVG.view ? 1 : 0) | (NVG.irLaser ? 2 : 0) | (NVG.phos === 'white' ? 4 : 0);
+  if (key === NVG.lzKey) return;
+  NVG.lzKey = key;
+  const v = NVG.view, ir = NVG.irLaser;
+  for (let i = 0; i < L.length; i++) {
+    const S = L[i], o = S.nvg0 || (S.nvg0 = { dot: S.dot.material, col: null, base: 0, max: 0 });
+    if (v && !NVG.dotMat) NVG.dotMat = o.dot.clone();             // same features: same program
+    if (NVG.dotMat) NVG.dotMat.color.copy(NVG.pl).multiplyScalar(ir ? C.irLaser.dot : 1.6);
+    S.dot.material = v ? NVG.dotMat : o.dot;
+    const B = S.beam.material, U = B.uniforms;
+    if (U && U.uCol) {                                              // step 98's ribbon: one material per slot
+      if (!o.col) { o.col = U.uCol.value.clone(); o.base = U.uBase.value; o.max = U.uMax.value; }
+      U.uCol.value.copy(v ? NVG.pl : o.col);
+      U.uBase.value = v && ir ? C.irLaser.base : o.base; U.uMax.value = v && ir ? C.irLaser.max : o.max;
+    } else if (B.color) {                                           // the old tube (?laserbeam=off): one shared material
+      if (!NVG.bc0) NVG.bc0 = B.color.clone();
+      B.color.copy(v ? NVG.pl : NVG.bc0);
+    }
+  }
+}
+// A lit IR light's lens is dark to the eye. Hand guns every frame, every gun twice a second (and on every change).
+function nvgLens(it) {
+  if (!it || !it.lens || !it.on || !WM.lensOn) return;
+  const want = NVG.irLight && !NVG.view ? WM.lensOff : WM.lensOn;
+  if (it.lens.material !== want) it.lens.material = want;
+}
+function nvgEachLight(g) {
+  if (RAIL.on && g.lights && g.lights.length) for (let i = 0; i < g.lights.length; i++) nvgLens(g.lights[i]);
+  else if (g.light) nvgLens(g.light);
+}
+function nvgLensSweep() { for (let i = 0; i < props.length; i++) { const g = props[i].item; if (g && g.kind === 'gun' && !props[i].removing) nvgEachLight(g); } }
+function nvgLenses(d) {
+  if ((NVG.sweepT -= d) <= 0) { NVG.sweepT = 0.5; nvgLensSweep(); return; }
+  for (let i = 0; i < vrHands.length; i++) { const g = gunOf(vrHands[i]); if (g) nvgEachLight(g); }
+  const g = gunOf(deskHand); if (g) nvgEachLight(g);
+}
+
+/* --- IR mode: a long press on the device's own switch, held T / F on a computer, or the store --- */
+function nvgModeHold(kind, g, ent, hand) {
+  if (!NVG.on || !g) return;
+  if (kind === 'laser') {
+    if (!(ent ? ent.it.on : g.laserOn)) toggleGunLaser(g, ent);    // the press switched it off: a hold leaves it on
+    NVG.irLaser = !NVG.irLaser;
+  } else {
+    const it = ent || g.light;
+    if (it && !it.on) toggleGunLight(g, ent);
+    NVG.irLight = !NVG.irLight;
+  }
+  nvgModeChanged();
+  if (hand) pulse(hand, 0.55, 35);                                  // a firmer detent than the press
+  if (!btnSfx('sel')) sfx('selector');
+  toast(kind === 'laser' ? (NVG.irLaser ? 'Laser: IR (seen only through night vision)' : 'Laser: visible red')
+    : (NVG.irLight ? 'Weapon light: IR illuminator (seen only through night vision)' : 'Weapon light: white'), 2400);
+}
+function nvgModeChanged() { nvgSave(); NVG.lzKey = -1; nvgLensSweep(); WORKSHOP.dirty = true; }
+function nvgKeys(now) {
+  const C = NVG_C;
+  if (NVG.kF && now - NVG.kF >= C.hold) { NVG.kF = 0; const g = gunOf(deskHand); if (g && g.light) nvgModeHold('light', g, null, null); }
+  if (NVG.kT && now - NVG.kT >= C.hold) { NVG.kT = 0; const g = gunOf(deskHand); if (g && g.wr.laser) nvgModeHold('laser', g, null, null); }
+}
+// switchTips: a press starts the clock; the same switch still under the tip (not lifted past re-arm) after hold s switches mode.
+function nvgSwitchDown(vh, k, S) {
+  const H = (vh.nvgSw || (vh.nvgSw = [{ g: null }, { g: null }]))[k];
+  H.g = S.g; H.laser = S.laser; H.ent = S.ent; H.t = wnow();
+}
+function nvgSwitchHold(vh, k, S) {
+  const H = vh.nvgSw && vh.nvgSw[k];
+  if (!H || !H.g) return;
+  if (S.g !== H.g || S.laser !== H.laser || S.ent !== H.ent || S.z > CONFIG.vrInput.button.rearm) { H.g = null; return; }
+  if (wnow() - H.t < NVG_C.hold) return;
+  const g = H.g; H.g = null;
+  nvgModeHold(H.laser ? 'laser' : 'light', g, H.ent, vh);
+}
+
+/* --- the draw --- */
+// Before the frame's draw: the tube's exposure (negative = the night vision branch), the overlay's uniforms.
+function nvgPre() {
+  if (!NVG.on) return;
+  if (!NVG.view) { NVG.vr.visible = false; return; }
+  const C = NVG_C, xr = renderer.xr.isPresenting, U = NVG.U, k = smoothstep(0, 1, NVG.pow);
+  if (DZ.on) DZ.vr.visible = DZ.desk.visible = false;               // your eye sees the phosphor screen; the tube gates the glare
+  if (!NVG.applied) { NVG.base = renderer.toneMappingExposure; NVG.applied = true; }
+  renderer.toneMappingExposure = -(clamp(CONFIG.exposure * NVG.Gr * k, 1e-3, 90) + (NVG.phos === 'white' ? 100 : 0));
+  const R = C.fov * Math.PI / 360, q = nvgNoiseK(NVG.Gr, C);
+  NVG.f = (NVG.f + 1) % 4096;
+  U.uM.value.set(R, xr ? 0 : R * C.overlap, C.edge, NVG.f);
+  U.uL.value.set(C.grain * (0.3 + 0.7 * q), C.sparkle * q * q, C.honey, NVG.wash * k);
+  const H = U.uH.value;
+  let n = 0;
+  if (DZ.on) for (let i = 0; i < DZ.n && n < 3; i++) {             // point sources at your eyes (a lit patch is not a point)
+    const S = DZ.src[i];
+    if (S.s > 0) continue;
+    const a = Math.min(2, S.E * NVG.Gr * C.haloK) * k;
+    if (a > 0.01) H[n++].set(S.p.x, S.p.y, S.p.z, a);
+  }
+  if (pool.muzzleT > 0 && pool.muzzle.intensity > 0) {
+    headWorld(NVG.h);
+    const p = pool.muzzle.position, a = Math.min(2, pool.muzzle.intensity / Math.max(0.09, NVG.h.distanceToSquared(p)) * NVG.Gr * C.haloFlash) * k;
+    if (a > 0.01) H[n++].set(p.x, p.y, p.z, a);
+  }
+  for (; n < 4; n++) H[n].w = 0;
+  if (!xr) NVG.pmat.uniforms.uD.value.y = renderer.getDrawingBufferSize(NVG.sz).y / 2 / Math.tan(camera.fov * Math.PI / 360) * C.glowR;
+  NVG.vr.visible = xr;
+}
+// Computer, after the viewmodel and the dazzle pass: the finished frame through the tubes.
+function nvgRender() {
+  if (!NVG.on || !NVG.view || renderer.xr.isPresenting) return;
+  const sz = renderer.getDrawingBufferSize(NVG.sz), U = NVG.pmat.uniforms;
+  if (!NVG.fbt || NVG.fbt.image.width !== sz.x || NVG.fbt.image.height !== sz.y) {   // a resize only
+    if (NVG.fbt) NVG.fbt.dispose();
+    const t = NVG.fbt = new THREE.FramebufferTexture(sz.x, sz.y);
+    t.minFilter = t.magFilter = THREE.LinearFilter;
+    U.tDiffuse.value = t; U.uRes.value.copy(sz);
+  }
+  const ac = renderer.autoClear;
+  renderer.setRenderTarget(null);
+  renderer.copyFramebufferToTexture(NVG.fbt);
+  renderer.autoClear = false;
+  renderer.render(NVG.postScene, camera);
+  renderer.autoClear = ac;
+}
+function nvgPost() {
+  if (!NVG.on) return;
+  if (NVG.vr) NVG.vr.visible = false;
+  if (!NVG.applied) return;
+  renderer.toneMappingExposure = NVG.base; NVG.applied = false;
+}
+
+/* --- the store row (GUNSMITH computer, SUPPLIES) --- */
+function nvgBuy(s) {
+  if (NVG.owned) { wsMsg(NVG.worn ? 'Night vision: you are wearing it' : 'Night vision: already yours, on your personal locker shelf'); return false; }
+  if (!walletSpend(s.price)) { wsMsg(`Not enough money: ${s.name} cost ${fmtMoney(s.price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
+  NVG.owned = true; nvgSave(); playBuy();
+  wsMsg(`${s.name}: ${fmtMoney(s.price)} paid. On your personal locker shelf (${fmtMoney(WALLET.money)} left)`);
+  try { wearApply(); } catch (e) { /* shows when the locker is built */ }
+  return true;
+}
+function nvgSetPhos(v) { NVG.phos = v; nvgPhosphor(); nvgSave(); wsMsg(v === 'white' ? 'White phosphor: a grey-white picture' : 'Green phosphor: the classic picture'); }
+function nvgSetIr(kind, v) {
+  if (kind === 'laser') NVG.irLaser = v; else NVG.irLight = v;
+  nvgModeChanged();
+  wsMsg(kind === 'laser' ? (v ? 'Lasers: IR. Only night vision sees them (he has none)' : 'Lasers: visible red') : (v ? 'Weapon lights: IR illuminator. Only night vision sees it' : 'Weapon lights: white'));
+}
+function nvgStoreRow(s, x0, y, pw, h) {
+  const rich = WALLET.money >= s.price, own = NVG.owned, cx = x0 + 400, cw = pw - 400 - 244, rh = 28;
+  tBox(x0, y, pw, h, own ? TC.hiBg : TC.faint, own ? TC.hi : TC.line);
+  tText(s.name, x0 + 22, y + 27, 26, TC.text, 'left', 700, TC.sans, 360);
+  tText(s.desc, x0 + 22, y + 56, 16, TC.dim, 'left', 600, TC.sans, 360);
+  tText(NVG.worn ? `Worn, flipped ${NVG.down ? 'down' : 'up'}` : own ? 'On your personal locker shelf' : rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`,
+    x0 + 22, y + 86, 17, own ? TC.ok : TC.warn, 'left', 600, TC.mono, 360);
+  [['TUBE', 'nvg:ph', [['green', 'GREEN'], ['white', 'WHITE']], NVG.phos, nvgSetPhos],
+    ['LASER', 'nvg:lz', [[false, 'VISIBLE'], [true, 'IR']], NVG.irLaser, (v) => nvgSetIr('laser', v)],
+    ['LIGHT', 'nvg:lt', [[false, 'WHITE'], [true, 'IR']], NVG.irLight, (v) => nvgSetIr('light', v)]].forEach(([lab, id, opts, cur, pick], i) => {
+    const ry = y + 8 + i * (rh + 6);
+    tText(lab, cx, ry + rh / 2 + 1, 15, TC.dim, 'left', 700, TC.mono);
+    tSeg(id, cx + 64, ry, cw - 64, rh, opts, cur, pick, { size: 15 });
+  });
+  tBtn('sup:nvg', x0 + pw - 226, y + 12, 204, h - 24, own ? (NVG.worn ? 'WORN' : 'OWNED') : `BUY ${fmtMoney(s.price)}`,
+    { size: own ? 22 : 24, sel: !own && rich, disabled: own, fn: () => wsBuySupply('nvg') });
 }
 
 loopUi();                                          // after step 11's TERM exists (loopUi marks the terminal dirty)
@@ -36475,7 +37005,7 @@ function tickSafe(timeMs, frame) {
     // black (a blink, often on the frame a room is entered or built). Draw what there is instead.
     if (renderer.xr.isPresenting && !FRAME_ERR.drawn) {
       try { renderer.render(scene, camera); } catch (e2) { /* nothing more to show */ }
-      try { eyeAdaptPost(); bodyCamLivePost(); } catch (e3) { /* flags only */ }
+      try { nvgPost(); eyeAdaptPost(); bodyCamLivePost(); } catch (e3) { /* flags only */ }
     }
   }
 }
@@ -36537,6 +37067,7 @@ function tick(timeMs) {
   profMark('fx');
   lightMountCheck();     // entry blackout fix: the flashlight never sits under a hidden parent (a light count change recompiles everything)
   handShadowTick();      // step 110: your hands against the lens and in the light maps
+  nvgTick(dt);           // step 118: night vision mount, tube gain, IR light and lasers (before the dazzle sees your light)
   dazzleTick(dt);        // step 110: weapon lights in your eyes
   flushShadows();        // performance pass: per-light shadow redraws, throttled while things move
   handShadowFlush();     // step 110: the room spot over your hands keeps up with them
@@ -36546,6 +37077,7 @@ function tick(timeMs) {
   scopeTick(dt);         // step 74: the view through the AWP scope
   bodyCamLivePre(dt, performance.now() / 1000);   // step 23.3: live body cam (off / BOOST / headset: uBody = 0, no motion)
   eyeAdaptPre(dt);       // step 96: eye adaptation (computer, outside body cam mode)
+  nvgPre();              // step 118: night vision down: the tube's tone map and gain for this frame's draw
   if (renderer.xr.isPresenting || !postEnabled || BOOST.on || !composer) {   // step 12: boost bypasses the post chain
     renderer.render(scene, camera);
     FRAME_ERR.drawn = true;
@@ -36555,6 +37087,8 @@ function tick(timeMs) {
   }
   vmRender();            // step 82: the viewmodel over the finished frame
   dazzleRender();        // step 110: glare over everything (computer; the headset draws it in the scene)
+  nvgRender();           // step 118: the tubes over the finished frame (computer; the headset draws them in the scene)
+  nvgPost();             // step 118: your exposure back
   eyeAdaptPost();        // step 96: the user's own exposure back
   probeTick(performance.now() / 1000);   // step 37: a room's own reflections, once, when there is headroom
   bodyCamLivePost();     // step 23.3: the true camera back before the replay captures
@@ -38826,6 +39360,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTic
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI, bvSlotOf, bvRows, bvGunPage, bvPick, bvSync, bvAnchors, bvRender, bvLines, bvTick, bvFinger, bvTurn });   // step 114
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, RETICLE, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HS, DZ, dzProf, hsRays, hsSpheres, hsSeg, hsBeam, hsHook, hsScan, hsGuns, hsLights, handShadowTick, handShadowFlush, dazzleTick, dazzleRender, dzOwn, dzLux, dzAft });   // step 110
+if (window.__cqcDev) Object.assign(window.__cqcDev, { NVG, NVG_C, nvgTick, nvgGain, nvgGainTarget, nvgNoiseK, nvgPre, nvgPost, nvgRender, nvgFlip, nvgTake, nvgBuy, nvgModeHold, nvgSetIr, nvgSetPhos, nvgBeam, nvgLaserLook, nvgLaserHide, nvgIr, nvgKit, nvgModel });   // step 118
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 /* ===========================================================================
