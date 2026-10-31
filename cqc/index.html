@@ -2500,7 +2500,7 @@ const CONFIG = {
       buck: { m: 3.5, v: 400, d: 8.4, form: 0.55, e: 0.45, defl: 7, tum: 0 },     // one 00 pellet: a lead ball
       frag: { m: 0.6, v: 1000, d: 6.0, form: 0.35, e: 0.8, defl: 10, tum: 0 }      // a grenade fragment
     },
-    gun: { pistol: '9mm', smg: '9mm', fn509: '9mm', g17: '9mm', ppk: '380', m1911: '45', rifle: '556', m4a1s: '556', akm: '762', akmn: '762', awp: '338', shotgun: 'buck', frag: 'frag' },
+    gun: { pistol: '9mm', smg: '9mm', fn509: '9mm', g17: '9mm', b92: '9mm', ppk: '380', m1911: '45', rifle: '556', m4a1s: '556', akm: '762', akmn: '762', awp: '338', shotgun: 'buck', frag: 'frag' },
     // Materials: J a 9 mm FMJ loses per cm; x (calibre area / 9 mm's) ^ a, / form. Hard media care less about the area.
     mat: { gypsum: { r: 14, a: 1 }, wood: { r: 22, a: 1 }, steel: { r: 1100, a: 0.5 }, glass: { r: 60, a: 1 }, concrete: { r: 330, a: 0.5 }, water: { r: 4.5, a: 1 } },
     board: 1.25,               // cm of one gypsum board: a stud wall (the walls between rooms) is two of them and air
@@ -4785,6 +4785,7 @@ async function buildKit() {
   setLoad('Loading the M1911', 0.942);
   try { await m1911Load(); } catch (e) { console.warn('step 59: M1911 not loaded', e); }   // step 59
   for (const t of ['g17', 'm4a1s']) { try { await extLoad(t); } catch (e) { console.warn('step 60: ' + t + ' not loaded', e); } }   // step 60
+  try { await b92Load(); } catch (e) { console.warn('step 120: Beretta 92X not loaded', e); }   // step 120
   try { await g17AttLoad(); } catch (e) { console.warn('step 100: Glock attachments not loaded', e); }   // step 100
   try { await m19AttLoad(); } catch (e) { console.warn('step 108: M1911 attachments not loaded', e); }   // step 108
   for (const t of ['akmn', 'awp']) { try { await x64Load(t); } catch (e) { console.warn('step 64: ' + t + ' not loaded', e); } }   // step 64
@@ -12419,6 +12420,7 @@ function buildShotgunModel() {
 function buildMagModel(type) {
   if (type === 'm1911') return m1911MagModel();   // step 59
   if (type === 'g17') return g17MagModel();       // step 98: modelled (the GLB's floated its top round)
+  if (type === 'b92') return b92MagModel();       // step 120: the 92X's own
   if (type === 'm4') return extMagModel(type);   // step 60
   if (X64BYMAG[type]) return x64MagModel(type);   // step 64
   const S = MAG_SPECS[type](), root = new THREE.Group(), round = new THREE.Group();
@@ -12901,6 +12903,7 @@ function createMag(type, rounds) {
   else if (type === 'm4' && M4A.mag20) magStretch(m, type, M4_MAG20.k);   // step 105: the 20-round one
   if (type === 'awp' && AWMA.ready) awmMagDress(m);               // step 113: the 10-round body
   if (type === 'm1911') m19MagDress(m);                            // step 108: 8 / 10 rounds (base pad, longer body)
+  if (type === 'b92') b92MagDress(m);                              // step 120: the 20-round body
   if (GUNPHYS.phys || GUNPHYS.contact) contactCloud('mag:' + type, m.root, null);   // step 26
   const item = { kind: 'mag', type, label: md.label, rounds, roundMesh: m.round };
   const p = makeItem(m.root, item, { mass: md.mass, half: md.half, center: new THREE.Vector3(...md.center), restitution: 0.08 });
@@ -15155,6 +15158,7 @@ function refillInventory() {
   for (const t of Object.keys(MAG_DEFS)) inv[t] = [];   // step 58: no guns, so no magazines or shells
   inv.m1911 = new Array(I.m1911 ?? 3).fill(MAG_DEFS.m1911.capacity);   // step 59: full .45 magazines
   inv.g17 = new Array(I.g17 ?? 3).fill(MAG_DEFS.g17.capacity); inv.m4 = new Array(I.m4 ?? 3).fill(MAG_DEFS.m4.capacity);   // step 60
+  if (MAG_DEFS.b92) inv.b92 = new Array(I.b92 ?? 3).fill(MAG_DEFS.b92.capacity);   // step 120: 92X magazines in the 9 mm pouches
   for (const t of ['akmn', 'awp']) inv[t] = new Array(I[t] ?? 3).fill(MAG_DEFS[t].capacity);   // step 64
   inv.shells = 0;
   inv.frag = I.frag ?? 2; inv.flash = I.flash ?? 2;   // step 23
@@ -15170,7 +15174,7 @@ function takeMag(type) {
   panel.dirty = true;
   return a.splice(bi, 1)[0];
 }
-function invLabel() { return `.45 ${inv.m1911.length} · 9mm ${inv.g17.length} · 5.56 ${inv.m4.length} · AKM ${inv.akmn.length} · .338 ${inv.awp.length} · Frag ${inv.frag} · Bang ${inv.flash}`; }   // step 59: + M1911 magazines
+function invLabel() { return `.45 ${inv.m1911.length} · 9mm ${inv.g17.length + (inv.b92 ? inv.b92.length : 0)} · 5.56 ${inv.m4.length} · AKM ${inv.akmn.length} · .338 ${inv.awp.length} · Frag ${inv.frag} · Bang ${inv.flash}`; }   // step 59: + M1911 magazines
 function invCount() { return Object.keys(MAG_DEFS).reduce((s, t) => s + inv[t].length, inv.shells + inv.frag + inv.flash); }
 
 /* ---------------------------------------------------------------------------
@@ -16292,7 +16296,7 @@ const BRASS_CAL = [
   { k: 'sg', name: '12 ga hulls', L: 0.0674, rb: 0.0108, m: 0.012, bulk: 47, rate: 1, hull: true }
 ];
 const BRASS_SHORT = ['9mm', '.45', '5.56', '7.62', '.338', '12ga'];
-const BRASS_TYPE = { pistol: 0, smg: 0, fn509: 0, ppk: 0, g17: 0, m1911: 1, rifle: 2, m4a1s: 2, akm: 3, akmn: 3, awp: 4, shotgun: 5 };
+const BRASS_TYPE = { pistol: 0, smg: 0, fn509: 0, ppk: 0, g17: 0, b92: 0, m1911: 1, rifle: 2, m4a1s: 2, akm: 3, akmn: 3, awp: 4, shotgun: 5 };
 // The bin (safe room local, back right corner between the exit door and the gun locker): body L x W x H on skids, lid open against the wall.
 const BRASS_BIN = { x: 3.1, z: -2.74, L: 0.5, W: 0.3, H: 0.38, t: 0.004, skid: 0.012, open: 1.75, hMax: 0.355, slope: 0.53, tops: 40, nx: 28, nz: 16 };
 const BRASS = {
@@ -17378,7 +17382,7 @@ function gunWisp(g, dt) {
 // Only hot things are ticked (HEAT.list); nothing allocated per frame.
 const HEAT_CFG = CONFIG.polish.canHeat || {};
 const HEAT = { on: HEAT_CFG.on !== false && !/[?&]canheat=off\b/.test(location.search), amb: 20, cold: 1.5,
-  E: { pistol: 460, g17: 460, fn509: 460, smg: 520, ppk: 250, m1911: 540, rifle: 2200, m4a1s: 2200, akm: 2500, akmn: 2500, awp: 5200, shotgun: 1800 },   // J of gas heat per round
+  E: { pistol: 460, g17: 460, b92: 460, fn509: 460, smg: 520, ppk: 250, m1911: 540, rifle: 2200, m4a1s: 2200, akm: 2500, akmn: 2500, awp: 5200, shotgun: 1800 },   // J of gas heat per round
   bore: 0.4, Cb: { pistol: 80, long: 420, awp: 900, shotgun: 650 }, tauB: 260,          // barrel: x E, J/K (pistol class / the rest), cooling s
   hand: { k: 0.55, tau: 45 },                                                             // the handguard toward k x the barrel's rise
   take: { sup: 0.62, comp: 0.25, ext: 0.12 },                                             // share of the gas heat reaching a device that it keeps
@@ -18890,6 +18894,7 @@ function wbClose(why) {
   if (g.type === 'g17') g17FromGun(g);                             // step 100: the Glock's parts are the build now (store + every Glock)
   if (g.type === 'akmn') akmFromGun(g);                            // step 102: so are the AKM's
   if (g.type === 'm1911') m19FromGun(g);                           // step 108: the same for the 1911
+  if (g.type === 'b92') b92FromGun(g);                             // step 120: the 92X's
   if (g.type === 'awp') awmFromGun(g);                             // step 113: the AWM's
   if (g.type === 'm4a1s') m4FromGun(g);                            // step 105: the M4A1-S's too
   railSyncType(g);                                                  // step 112: every gun of the type takes the layout
@@ -18988,6 +18993,7 @@ function attRefresh(g) {
   if (g.type === 'g17') g17Refresh(g);
   else if (g.type === 'akmn') akmRefresh(g);                        // step 102
   else if (g.type === 'm1911') m19Refresh(g);                       // step 108
+  else if (g.type === 'b92') b92Refresh(g);                         // step 120
   else if (g.type === 'm4a1s' && M4A.ready) m4Refresh(g);
   else if (g.type === 'awp' && AWMA.ready) awmRefresh(g);           // step 113
 }
@@ -19189,7 +19195,7 @@ function wbUpdate() {
  *  materials made once. Colliders (shell, shelves, pad) on the room body, one walk
  *  box over the footprint, as the terminal does.
  * ========================================================================= */
-const GL = { types: ['akmn', 'm4a1s', 'awp'], pistols: ['m1911', 'g17'], tag: { akmn: 'AKM', m4a1s: 'M4A1-S', awp: 'AWP', m1911: 'M1911', g17: 'G17' },
+const GL = { types: ['akmn', 'm4a1s', 'awp'], pistols: ['m1911', 'g17', 'b92'], tag: { akmn: 'AKM', m4a1s: 'M4A1-S', awp: 'AWP', m1911: 'M1911', g17: 'G17', b92: '92X' },   // step 120: a third pistol peg
   W: 1.3, D: 0.45, H: 1.85, t: 0.015, off: 0.025, Z: -2.2, bayX: 0.17, padTop: 0.125, pShelf: 1.02, mShelf: 0.6, mz: 0.25, clr: 0.006,
   fit: null, kit: null, room: null, guns: {}, spare: {}, plates: null,
   M: new THREE.Matrix4(), M2: new THREE.Matrix4(), v: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(), one: new THREE.Vector3(1, 1, 1), b: new THREE.Box3(),
@@ -20207,7 +20213,7 @@ const VM = {
   },
   // step 89: every gun has a rig (the g17 moved to the M1911 take: life-size hands and a solved fit, VMH_FIT)
   byType: { akmn: 'ak', akm: 'ak', m4a1s: 'ak', smg: 'ak', rifle: 'ak', shotgun: 'ak', awp: 'sniper',
-    g17: 'pistol2', m1911: 'pistol2', pistol: 'pistol2', fn509: 'pistol2', ppk: 'pistol2' },
+    g17: 'pistol2', m1911: 'pistol2', pistol: 'pistol2', fn509: 'pistol2', ppk: 'pistol2', b92: 'pistol2' },
   // the reload clips' moments: the old magazine leaves, the new one is seated (fractions of the clip)
   marks: { out: 0.3, in: 0.62 },
   cache: {}, cur: null, gun: null, vis: false, scene: null, cam: null, flash: null, flashT: 0, light: null, lamp: null,
@@ -20628,7 +20634,7 @@ const VMH = {
   on: !/[?&]vmh=off\b/.test(location.search),
   // The AK and M1911 takes have life-size hands (the other packs' hands are ~1.5x their guns, which only works on a
   // screen). Not fitted: the AWP (thumbhole stock: the AK hand lands on the receiver); it keeps your hands.
-  byType: { akmn: 'ak', m4a1s: 'ak', g17: 'pistol2', m1911: 'pistol2' },
+  byType: { akmn: 'ak', m4a1s: 'ak', g17: 'pistol2', m1911: 'pistol2', b92: 'pistol2' },
   bakes: {}, fits: {}, gs: {}, meshes: new Set(), taken: new Set(), busy: false,
   contactTol: 0.012,   // m: VM hand skin this close to the VM gun is the grip it makes
   sample: 0.0025       // m between surface samples
@@ -20639,6 +20645,7 @@ const VMH_FIT = {
   akmn: { R: [-0.99909, -0.01442, 0.04013, 0, -0.01208, 0.99825, 0.05789, 0, -0.04089, 0.05735, -0.99752, 0, 0.00043, -0.03616, 0.0056, 1], L: [-0.99544, 0.01272, 0.09454, 0, 0.01665, 0.99903, 0.04087, 0, -0.09393, 0.04226, -0.99468, 0, 0.02544, -0.0524, 0.01758, 1] },
   m4a1s: { R: [-0.99994, -0.00727, 0.00772, 0, -0.00799, 0.99522, -0.09729, 0, -0.00698, -0.09734, -0.99523, 0, 0.00378, -0.01989, -0.00144, 1], L: [-0.98512, -0.05358, 0.16332, 0, -0.08073, 0.98309, -0.16439, 0, -0.15175, -0.17513, -0.97278, 0, 0.05821, 0.02293, 0.03952, 1] },
   g17: { R: [-0.99947, -0.0285, 0.01591, 0, -0.03076, 0.98558, -0.1664, 0, -0.01094, -0.1668, -0.98593, 0, 0.00557, -0.04342, 0.16426, 1], L: null },
+  b92: { R: [-0.99947, -0.030441, 0.011777, 0, -0.03076, 0.99916, -0.027241, 0, -0.01094, -0.027588, -0.99956, 0, 0.00557, -0.072353, 0.15343, 1], L: null },   // step 120: the Glock's, turned 0.14 rad about the web (HAND_FIT.b92)
   m1911: { R: [-0.99831, -0.04725, 0.03378, 0, -0.04689, 0.99883, 0.01145, 0, -0.03428, 0.00984, -0.99936, 0, 0.00864, -0.06692, 0.14489, 1], L: null }
 };
 function vmhRng(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -20909,6 +20916,7 @@ const VMH_FIT98 = {
   m4a4: { s: 0.9, R: [-0.89657, 0.0362, 0.06968, 0, 0.03909, 0.89842, 0.03622, 0, -0.06811, 0.03911, -0.89657, 0, -0.00214, -0.03507, 0.00492, 1], L: [-0.89927, 0.03303, -0.01518, 0, 0.03295, 0.89938, 0.00481, 0, 0.01534, 0.00426, -0.89986, 0, -0.00751, -0.04065, 0.01967, 1] },
   m4a1s: { s: 0.9, R: [-0.89785, -0.05693, 0.02481, 0, -0.05836, 0.89641, -0.05503, 0, -0.02124, -0.0565, -0.89798, 0, 0.00331, -0.02517, 0.00306, 1], L: [-0.89225, -0.02859, 0.11433, 0, -0.0454, 0.88912, -0.13195, 0, -0.10875, -0.13659, -0.8829, 0, 0.04197, 0.01939, 0.00421, 1] },
   g17: { s: 0.9, R: [-0.89547, -0.06849, 0.0587, 0, -0.07532, 0.89001, -0.11051, 0, -0.04964, -0.11486, -0.89126, 0, 0.0115, -0.04071, 0.14358, 1], L: null },
+  b92: { s: 0.9, R: [-0.89547, -0.076011, 0.048568, 0, -0.07532, 0.89672, 0.014766, 0, -0.04964, 0.010633, -0.89857, 0, 0.0115, -0.066784, 0.13333, 1], L: null },   // step 120: the same turn
   m1911: { s: 0.9, R: [-0.89937, -0.02985, 0.01544, 0, -0.02886, 0.89786, 0.05482, 0, -0.01722, 0.05428, -0.89819, 0, 0.00605, -0.06203, 0.1252, 1], L: null },
   awp: { s: 0.9, R: [-0.8983, 0.02605, -0.0488, 0, 0.01583, 0.88182, 0.17927, 0, 0.05301, 0.17808, -0.88062, 0, -0.00102, -0.05675, -0.00575, 1], L: [-0.89668, -0.01706, 0.07532, 0, -0.00634, 0.89108, 0.1263, 0, -0.07697, 0.12531, -0.8879, 0, 0.02448, -0.0957, -0.13562, 1] }
 };
@@ -24410,7 +24418,7 @@ function enemyDie(e, hitSeg, dir, P, impulse) {
 const DROP = { max: 6, list: [] };
 function enemyDropType(e) {
   const g = e.w && e.w.gun;
-  const t = g === 'pistol' ? 'g17' : g === 'shotgun' ? 'm4a1s' : (e.spec && e.spec.look === 1 ? 'm4a1s' : 'akmn');
+  const t = g === 'pistol' ? (EXTG.b92 && EXTG.b92.ready && Math.random() < B92.drop ? 'b92' : 'g17') : g === 'shotgun' ? 'm4a1s' : (e.spec && e.spec.look === 1 ? 'm4a1s' : 'akmn');   // step 120: now and then a 92X
   return GUN_BUILD[t] && WEAPON_DEFS[t] ? t : null;
 }
 function enemyDropGun(e, dir) {
@@ -27482,6 +27490,10 @@ const WS_GUNS = {
     slots: ['optic', 'muzzle', 'tactical', 'mag', 'sights'],
     factory: { optic: 'iron sights, slide not optic-ready', muzzle: 'bare muzzle', tactical: 'PL-2 class light on the frame rail', mag: '17-round magazine', sights: 'factory polymer sights' },
     multi: ['tactical'] },   // step 112: the PL-2, lights and lasers stack
+  b92: { name: 'Beretta 92X', cal: '9×19 mm Parabellum', identity: 'Full-size steel-framed sidearm: double / single action, soft to shoot; the wrap-around rail carries its optic and its light.',   // step 120
+    slots: ['optic', 'muzzle', 'tactical', 'mag', 'grip'],
+    factory: { optic: 'iron sights (no slide cut: an optic rides the wrap rail)', muzzle: 'threaded barrel, bare', tactical: 'frame rail', mag: '17-round magazine', grip: 'factory panels' },
+    multi: ['tactical'] },   // lights and lasers stack on the rail
   rifle: { name: 'M16A1', cal: '5.56×45 mm NATO', identity: 'Full-length service rifle: reach, accuracy, a 40-round magazine.',
     slots: ['muzzle', 'tactical', 'mag'],
     factory: { muzzle: 'three-prong flash hider', tactical: 'barrel-clamp laser and light', mag: '40-round extended magazine' },
@@ -27499,7 +27511,7 @@ const WS_GUNS = {
     slots: ['optic', 'muzzle', 'bipod', 'stock', 'mag', 'sling'],   // step 113: + magazine
     factory: { optic: 'no optic (rail and rings)', muzzle: 'muzzle brake', bipod: 'none', stock: 'folding stock, fixed comb', mag: '5-round magazine', sling: 'none' } }
 };
-const WS_GUN_ORDER = ['g17', 'm1911', 'akmn', 'rifle', 'awp', 'm4a1s'];  // list order; other bench guns are added after
+const WS_GUN_ORDER = ['g17', 'b92', 'm1911', 'akmn', 'rifle', 'awp', 'm4a1s'];  // list order; other bench guns are added after
 const WS_SKIP = ['m4a4', 'k98'];                               // being deleted
 // The 12 stats (docs/ATTACHMENTS.md section 10): [key, label, better (+1 more is better, -1 less is better)]
 const WS_STATS = [['dmg', 'Damage', 1], ['acc', 'Accuracy', 1], ['rec', 'Recoil', -1], ['sway', 'Weapon sway', -1], ['ads', 'ADS speed', 1], ['hip', 'Hip-fire accuracy', 1],
@@ -27537,6 +27549,19 @@ const WS_ITEMS = [
   { id: 'g17.wrap', gun: 'g17', cat: 'hardware', hw: true, name: 'Wrap-around accessory rail', price: 110, desc: 'Clamps round the dust cover: a longer bottom rail and side rails, so lights and lasers stack', requires: [], model: 'wrap', fx: {} },
   { id: 'g17.mag33', gun: 'g17', cat: 'mag', name: '33-round magazine', price: 45, desc: '+16 rounds; heavier, slower to seat', requires: [], model: 'ext-g17', fx: {}, owned: true },
   { id: 'g17.sights', gun: 'g17', cat: 'sights', name: 'Suppressor-height sights', price: 130, desc: 'Tall night sights, co-witness over a can or a dot', requires: [], model: 'sights', fx: {} },
+  // --- Beretta 92X (step 120): threaded barrel and frame rail from the factory; the wrap-around rail carries the dot and a longer bottom rail ---
+  // B92_FX holds what each part does; fx below is derived from it at load
+  { id: 'b92.wrap', gun: 'b92', cat: 'hardware', hw: true, name: 'Wrap-around accessory rail', price: 160, desc: 'Clamps the frame rail and wraps the slide: a bottom rail for lights and lasers, an optic plate on top', requires: [], model: 'wrap', fx: {}, owned: true },
+  { id: 'b92.dot', gun: 'b92', cat: 'optic', name: 'Red dot (on the wrap rail, 3 MOA)', price: 380, desc: 'Fast acquisition; on the rail, not the slide: it holds still while the slide runs', requires: ['b92.wrap'], model: 'dot', fx: {}, owned: true },
+  { id: 'b92.sup', gun: 'b92', cat: 'muzzle', name: 'Pistol suppressor (full size)', price: 650, desc: '34 x 148 mm on the 1/2x28 barrel; quieter, never silent; no flash; longer', requires: [], model: 'sup-pistol', fx: {}, owned: true },
+  { id: 'b92.sup2', gun: 'b92', cat: 'muzzle', name: 'Compact suppressor', price: 520, desc: '34 x 114 mm; lighter and handier, a little louder', requires: [], model: 'sup-compact', fx: {} },
+  { id: 'b92.comp', gun: 'b92', cat: 'muzzle', name: 'Compensator', price: 140, desc: 'Ports up: less muzzle rise, quicker follow-ups; more flash', requires: [], model: 'comp', fx: {} },
+  { id: 'b92.light', gun: 'b92', cat: 'tactical', name: 'Weapon light (X300 class)', price: 300, desc: 'On the rail (the wrap\'s bottom rail when fitted); lights dark rooms, shows you when on', requires: [], model: 'light', fx: {}, owned: true },
+  { id: 'b92.laser', gun: 'b92', cat: 'tactical', name: 'Laser module (DBAL class)', price: 260, desc: 'On the rail; hip-fire reference, shows you when on', requires: [], model: 'laser', fx: {}, owned: true },
+  { id: 'b92.mag20', gun: 'b92', cat: 'mag', name: '20-round magazine', price: 50, desc: '+3 rounds; 2.2 cm longer, heavier, slower to seat', requires: [], model: 'mag20', fx: {} },
+  { id: 'b92.walnut', gun: 'b92', cat: 'grip', cosmetic: true, name: 'Walnut panels', price: 90, desc: 'Cosmetic: oiled walnut over the factory panels\' checkering', requires: [], model: 'grip', fx: {} },
+  { id: 'b92.g10', gun: 'b92', cat: 'grip', cosmetic: true, name: 'Black G10 panels', price: 80, desc: 'Cosmetic: matte black G10', requires: [], model: 'grip', fx: {} },
+  { id: 'b92.od', gun: 'b92', cat: 'grip', cosmetic: true, name: 'OD green G10 panels', price: 80, desc: 'Cosmetic: olive drab G10', requires: [], model: 'grip', fx: {} },
   // --- M1911 (GI: round-top slide, no optic cut, no rail) ---
   // Step 108: every 1911 row has its real part (M1911_FX holds what each one does; fx below is derived from it at load)
   { id: 'm1911.plate', gun: 'm1911', cat: 'hardware', hw: true, name: 'Optic cut + plate', price: 160, desc: 'Pocket milled in the round slide top, RMR-footprint plate ahead of the rear sight', requires: [], model: 'plate', fx: {} },
@@ -27862,6 +27887,7 @@ function wsAddFx(out, it, sign) {
  * and the bench follow (each hook checks its own kit). */
 const WS_REAL = {
   g17: { name: 'Glock 17', on: () => G17A.on, ready: () => G17A.on && G17A.ready, stats: (ids, out) => g17Stats(ids, out), ids: (t) => g17StoreIds(t), changed: (it, b) => g17StoreChanged(it, b) },
+  b92: { name: 'Beretta 92X', on: () => B92.on, ready: () => B92.on && B92.ready, stats: (ids, out) => b92Stats(ids, out), ids: (t) => wsStoreIds('b92', t), changed: (it, b) => b92StoreChanged(it, b) },   // step 120
   akmn: { name: 'AKM', on: () => AKMA.ready, ready: () => AKMA.ready, stats: (ids, out) => akmStats(ids, out), ids: (t) => wsStoreIds('akmn', t), changed: (it, b) => { if (AKMA.ready) akmStoreChanged(it, b); } },
   m4a1s: { name: 'M4A1-S', on: () => M4A.on, ready: () => M4A.on && M4A.ready, stats: (ids, out) => m4Stats(ids, out), ids: (t) => m4StoreIds(t), changed: (it, b) => m4StoreChanged(it, b) },
   m1911: { name: 'M1911', on: () => M1911A.on, ready: () => M1911A.ready, stats: (ids, out) => m19Stats(ids, out), ids: (t) => m19StoreIds(t), changed: (it, b) => { if (M1911A.on) m19StoreChanged(it, b); } },
@@ -28859,6 +28885,9 @@ const CAMO_KIND = { holo: 1, metal: 2, candy: 3, matte: 4, rust: 5, woodland: 6,
 const GUN_PAINT_GROUPS = {
   g17: [{ id: 'frame', name: 'Frame and controls', price: 100, parts: ['frame'] },           // the controls are moulded into the frame mesh
     { id: 'slide', name: 'Slide', price: 120, parts: ['slide'] }],
+  b92: [{ id: 'frame', name: 'Frame and controls', price: 100, parts: ['frame', 'hammer', 'trigger', 'slideStop'] },   // step 120: one texture atlas, split by part
+    { id: 'slide', name: 'Slide and barrel', price: 120, parts: ['slide', 'barrel'] },
+    { id: 'grips', name: 'Grip panels', price: 60, parts: ['grips'] }],
   m1911: [{ id: 'frame', name: 'Frame and grips', price: 100, parts: ['Frame'] },             // one texture: the walnut grips are in the frame
     { id: 'slide', name: 'Slide', price: 120, parts: ['Slide'] },
     { id: 'controls', name: 'Controls', price: 60, parts: ['Hammer', 'Trigger', 'SlideStop', 'MagCatch'] },
@@ -30937,7 +30966,7 @@ const HREC_SET = {
     lockBack: [['glkRackBack1', 1.06, 0.8], ['glkRackBack2', 1.08, 0.8], ['glkRackBack1', 1.1, 0.8]] }
 };
 // step 101: one recorded Glock for every pistol: polymer frames a few % apart, the steel PPK small and higher, the 1911 lower
-const PIST_RATE = { g17: 1, pistol: 0.96, fn509: 1.05, ppk: 1.09, m1911: 0.91 };
+const PIST_RATE = { g17: 1, pistol: 0.96, fn509: 1.05, ppk: 1.09, m1911: 0.91, b92: 0.97 };   // step 120: the 92X, the Glock takes a touch lower
 const PIST_LS = { ppk: 1, m1911: 2.5 };                            // dB more body (low shelf) for the steel slides
 const HREC_ALT = { slideRel: 'rackFwd', lockBack: 'rackFwd' };    // a family without the event plays this one
 const HREC_FAM = { akm: 'ak', akmn: 'ak', m4a1s: 'm4', rifle: 'm4', smg: 'smg' };   // + every cls 'pistol'
@@ -38561,7 +38590,7 @@ function createGun(type) {
     trigger: 0, triggerReset: true, dry: false, nextShot: 0, mode: 'semi', flashT: 0, ads: 0,
     rec: { z: 0, vz: 0, p: 0, vp: 0, y: 0, vy: 0 }, hasBase: false, basePos: new THREE.Vector3(), baseQuat: new THREE.Quaternion(),
     task: null, taskWait: 0, lh: null, sgAnim: null, light: null, laserOn: false, aimD: 0, hinted: false, probe: null,
-    anim: type === 'm1911' ? m1911Anim : X64[type] ? x64Anim : null   // step 64
+    anim: type === 'm1911' ? m1911Anim : X64[type] ? x64Anim : type === 'b92' ? b92Anim : null   // step 64 (step 120: the 92X's hammer, trigger, slide stop)
   };
   paintGunInit(item);                                              // step 106: the workshop's finishes (before the magazine goes in)
   if (GUNPHYS.contact || GUNPHYS.phys) contactCloud('gun:' + type, b.root, b.parts);   // before the magazine goes in
@@ -38585,6 +38614,7 @@ function createGun(type) {
   if (type === 'g17') { try { g17SyncGun(item); } catch (e) { console.warn('step 100: Glock parts not fitted', e); } }   // step 100: the workshop's build
   if (type === 'akmn') { try { akmSyncGun(item); } catch (e) { console.warn('step 102: AKM parts not fitted', e); } }   // step 102: the workshop's build
   if (type === 'm1911') { try { m19SyncGun(item); } catch (e) { console.warn('step 108: M1911 parts not fitted', e); } }   // step 108: the workshop's build
+  if (type === 'b92') { try { b92SyncGun(item); } catch (e) { console.warn('step 120: 92X parts not fitted', e); } }   // step 120: the workshop's build
   if (type === 'awp' && AWMA.ready) { try { awmNewGun(item); } catch (e) { console.warn('step 113: AWM parts not fitted', e); } }   // step 113: the workshop's build
   if (type === 'm4a1s' && M4A.ready) { try { m4NewGun(item); } catch (e) { console.warn('step 105: M4A1-S parts not fitted', e); } }   // step 105: its own def, the workshop's build
   try { muzSync(item); } catch (e) { console.warn('step 103: muzzle chain not fitted', e); }   // step 103: the saved muzzle chain
@@ -38727,7 +38757,7 @@ async function extLoad(type) {
   const gltf = await gltfParse(GLTFLoader, bin.buffer);   // step 70: embedded textures without blob URLs
   gltf.scene.updateMatrixWorld(true);
   // GLB world -> design: x' = -S x, y' = S (y - yb), z' = -S (z - z0)   (a turn of pi about y, uniform scale)
-  const D = new THREE.Matrix4().set(-X.S, 0, 0, 0, 0, X.S, 0, -X.S * X.yb, 0, 0, -X.S, X.S * X.z0, 0, 0, 0, 1);
+  const D = X.baked ? new THREE.Matrix4() : new THREE.Matrix4().set(-X.S, 0, 0, 0, 0, X.S, 0, -X.S * X.yb, 0, 0, -X.S, X.S * X.z0, 0, 0, 0, 1);   // step 120: baked = packed in design space already
   for (const [k, name] of Object.entries(X.keep)) {
     const o = gltf.scene.getObjectByName(name);
     if (!o || !o.isMesh) throw new Error('step 60: ' + type + ' has no ' + name);
@@ -38796,6 +38826,251 @@ function extMagModel(type) {
   if (X.geo.rounds) { const r = new THREE.Mesh(X.geo.rounds, X.magMat); r.receiveShadow = true; round.add(r); }
   return { root, round };
 }
+
+/* ===========================================================================
+ *  STEP 120 — THE BERETTA 92X (your GLB; ?b92=off)
+ *  models/beretta92x.glb from tools/pack_beretta.py (Sketchfab "Beretta 92X - 9mm Pistol" by KaL-ABIZZARE, CC-BY-4.0):
+ *  baked into design space (bore on y = 0, muzzle -z, metres, real size), so EXTG.b92 is loaded with no transform
+ *  (baked). Its grip's web sits where the Glock's does (the pack aligns them), so the Glock's hand fits are the start:
+ *  HAND_FIT.b92 and VMH_FIT(98).b92 are the Glock's turned 0.14 rad (8 deg) about the web, the 92's grip being that
+ *  much more upright, and lowered with it (the 92's bore stands 11 mm higher over the hand).
+ *  Parts: frame, grips, threaded barrel; the slide (sights and decocker on it) runs; hammer (DA/SA: down until the
+ *  slide cocks it, rides back with a double-action pull and falls at the break), trigger (rests back when cocked)
+ *  and slide stop (rises when the slide locks back) turn about their measured pivots (b92Anim). Its own magazine
+ *  (body, base plate, follower) with the top round in the lips; a 20-round one from the store (b92MagDress).
+ *  The wrap-around accessory rail (the model's mount, store hardware, on by default): clamps the frame rail, wraps
+ *  the slide (the slide runs inside it), a Picatinny rail under the dust cover and an optic plate over the slide
+ *  with the model's red dot (its lens drawn by the reticle shader, RETICLE brightness). The 92X has no optic cut and
+ *  no plate here: the dot rides the wrap rail (frame-mounted, so it holds still while the slide runs).
+ *  Step 112 stacking: one rail face (the wrap's bottom rail, else the frame's own), 3 recoil slots each, measured
+ *  from the packed GLB. Muzzle: the step 103 chain on the threaded barrel (the Glock's 9 mm cans and comp; a rifle
+ *  can only in front of a device). Store: WS_GUNS / WS_ITEMS b92 rows, WS_REAL.b92 on B92_FX (afxOf / afxStats).
+ * ========================================================================= */
+const B92 = {
+  on: !/[?&]b92=off\b/.test(location.search), ready: false, key: 'cqc.b92.v1', drop: 0.2,   // drop: a pistol man's chance to carry one
+  pivot: { hammer: [0, -0.0223, 0.0363], trigger: [0, -0.0233, -0.0292], slideStop: [0, -0.0209, -0.0293] },   // design space, measured on the GLB (slide stop: its front pin)
+  cock: 1.0, trigPull: -0.34, trigSA: 0.45, catchUp: -0.065,  // rad: hammer at full cock; trigger at full pull; where a cocked trigger rests (share); slide stop's rear up
+  winY: 0.0307,                                                // the red dot's window centre over the bore (its sight line)
+  rail: { frame: { y: -0.0219, z: [-0.1291, -0.0772], slots: [-0.1222, -0.1116, -0.1007] },    // base plane (underside + 8.4 mm), [front, rear], recoil slots
+    wrap: { y: -0.0285, z: [-0.1279, -0.0902], slots: [-0.1203, -0.1091, -0.0981] } },
+  mag20: { ext: 0.022, m: 0.05 }, cap: 17, mag0: null, glass: null, fc: {}, panelMat: {}, v: new THREE.Vector3()
+};
+if (B92.on) {
+  EXTG.b92 = { el: 'beretta92x', baked: true, ready: false, mat: {}, geo: {}, magRot: 0.272,   // the magazine's rake: 15.6 deg
+    keep: { frame: 'frame', grips: 'grips', slide: 'slide', barrel: 'barrel', hammer: 'hammer', trigger: 'trigger', slideStop: 'catch', mag: 'mag', rounds: 'rounds', wrap: 'wrap', dot: 'dot', glass: 'glass' } };
+  WEAPON_DEFS.b92 = Object.assign({}, WEAPON_DEFS.pistol, {
+    label: '9 mm Beretta 92X', capacity: 17, magType: 'b92', mass: 0.95, da: true,
+    col: { half: [0.02, 0.078, 0.112], center: [0, -0.058, -0.042] },
+    muzzle: [0, 0, -0.1531], chamber: [0, 0, -0.04], eject: [0.012, 0.01, -0.032],   // out of the open-top slide, right
+    rackPoint: [0, 0.004, 0.042], rackTo: [0, 0.005, -0.04], travel: 0.032,
+    light: null, thumbAt: [-0.017, 0.015, -0.05], thumbSide: 0.013,   // (root space) the Glock's thumb rest, lowered with the hand
+    eye: [0, 0.0166, 0.473],                                    // front sight top (rear notch level with it)
+    recoil: { kick: 0.8, climb: 9.5, yaw: 1.4, twoHand: 0.55 }, deskKick: 0.012, spread: 0.0014,   // a steel-framed 0.95 kg gun: softer than the Glock
+    phys: {                                                      // root space (design minus palm)
+      boxes: [
+        { c: [0, 0.0498, -0.0516], h: [0.017, 0.0268, 0.1115], th: 0, m: 0.6, f: 0.4 },   // slide, frame top, the wrap's rail
+        { c: [0, -0.029, 0.014], h: [0.017, 0.049, 0.028], th: -0.27, m: 0.35, f: 0.8 }    // grip and magazine
+      ],
+      pick: { c: [0, 0.01, -0.045], h: [0.02, 0.078, 0.112] }, com: [0, 0.025, -0.035]
+    }
+  });
+  HAND_FIT.b92 = Object.assign({}, HAND_FIT.pistol, { shift: [0, -0.00644, -0.00316], rot: 0.14 });   // the Glock's fit turned about the web (see the header)
+  MAG_DEFS.b92 = { label: '17-round magazine', capacity: 17, mass: 0.27, top: [0, 0.065, 0], half: [0.0106, 0.065, 0.017], center: [0, 0, 0], hold: 'pistol' };   // half / top from the mesh at load
+  LH_MAG_DOWN.b92 = 0.055;
+  inv.b92 = []; CONFIG.weapons.inventory.b92 = 3;
+  GUN_BUILD.b92 = () => b92Build();
+}
+// What each part does on the 92X (step 105's engine: afxOf / afxStats); store rows' fx are derived from it at load.
+const B92_FX = {
+  'b92.wrap': { m: 0.085, sway: 1.01, lever: 0.08 },
+  'b92.dot': { m: 0.06, ads: 0.86, aim: 0.62, lever: 0.05, stat: { acc: 8 } },
+  'b92.sup': { can: true, m: 0.19, kick: 0.93, climb: 0.85, dkick: 0.86, snd: 1, ads: 1.1, sway: 1.12, aim: 1.07, lever: 0.23, stat: { vis: -4 } },
+  'b92.sup2': { can: true, m: 0.15, kick: 0.95, climb: 0.89, dkick: 0.89, snd: 1.2, ads: 1.07, sway: 1.08, aim: 1.04, lever: 0.21, stat: { vis: -3 } },
+  'b92.comp': { m: 0.045, kick: 0.94, climb: 0.72, dkick: 0.77, flash: 1.35, light: 1.25, snd: 1.08, ads: 1.02, sway: 1.03, lever: 0.18 },
+  'b92.light': { m: 0.115, ads: 1.04, sway: 1.04, lever: 0.11, stat: { acc: 2, vis: 12 } },
+  'b92.laser': { m: 0.08, ads: 1.03, sway: 1.03, lever: 0.11, stat: { hip: 12, vis: 8 } },
+  'b92.mag20': { m: 0.05, rel: 1.08, sway: 1.02, lever: 0.03 }
+};
+const B92_FX_VR = { k: 1.45, max: 0.025 };
+const B92_PARTS = { 'b92.sup': 'sup', 'b92.sup2': 'sup', 'b92.comp': 'comp', 'b92.light': 'light', 'b92.laser': 'laser' };   // rows that are parts on the gun
+const B92_MUZ = { 'b92.sup': 'md3', 'b92.sup2': 'sb100', 'b92.comp': 'comp' };   // the store's muzzle row = the chain's first device
+const B92_GRIPS = { 'b92.walnut': { color: 0x4a2c18, rough: 0.5 }, 'b92.g10': { color: 0x18191b, rough: 0.8 }, 'b92.od': { color: 0x3a4028, rough: 0.76 } };   // cosmetic panels (overlays)
+const b92Owned = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
+const b92Fitted = (id) => b92Owned(id) && WORKSHOP.fitted.has(id);
+const b92Stats = (ids, out) => afxStats('b92', B92_FX, ids, out);
+if (B92.on) {                                                    // first visit: the model as it came (the dot on the wrap rail)
+  let seen = false;
+  try { seen = !!(JSON.parse(localStorage.getItem(B92.key) || 'null') || {}).seen; } catch (e) { /* a fresh start */ }
+  if (!seen) { WORKSHOP.fitted.add('b92.dot'); wsSave(); try { localStorage.setItem(B92.key, JSON.stringify({ v: 1, seen: true })); } catch (e) { /* this visit only */ } }
+}
+async function b92Load() {
+  if (!B92.on) return;
+  B92.glass = g17GlassMat(3); RETICLE.mats.push(B92.glass);     // the dot's lens: the reticle shader, one room brightness
+  await extLoad('b92');
+  const X = EXTG.b92;
+  for (const k of ['frame', 'wrap']) X.mat[k].side = THREE.DoubleSide;   // the source is double-sided (open-top slide, thin walls)
+  const D = MAG_DEFS.b92;
+  B92.mag0 = { half: D.half.slice(), center: D.center.slice(), mass: D.mass };
+  b92MagApply(false);
+  B92.ready = true;
+  afxDeriveFx('b92', b92Stats);
+  for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'b92' && !q.removing) b92SyncGun(q.item);
+}
+function b92Build() {
+  const X = EXTG.b92, d = WEAPON_DEFS.b92, { root, model, parts } = gunShell(d);
+  const mesh = (k, at = null) => { const o = new THREE.Mesh(X.geo[k], X.mat[k]); o.receiveShadow = true; o.castShadow = false; if (at) o.position.set(-at[0], -at[1], -at[2]); return o; };
+  model.add(mesh('frame'), mesh('grips'), mesh('barrel'));
+  parts.slide = new THREE.Group(); parts.slide.add(mesh('slide')); model.add(parts.slide);
+  for (const k of ['hammer', 'trigger', 'slideStop']) { const p = B92.pivot[k], gr = new THREE.Group(); gr.position.set(p[0], p[1], p[2]); gr.add(mesh(k, p)); model.add(gr); parts[k] = gr; }
+  parts.triggerPull = B92.trigPull;
+  const wrap = mesh('wrap'), dot = new THREE.Group(), body = mesh('dot'), glass = new THREE.Mesh(X.geo.glass, B92.glass || X.mat.glass);
+  glass.castShadow = false; glass.renderOrder = 2;
+  for (const o of [wrap, body, glass]) o.userData.noContact = true;   // shown and hidden by the store: never in the hand-contact cloud
+  dot.add(body, glass); model.add(wrap, dot);
+  parts.b92wrap = wrap; parts.b92dot = dot;
+  addFlash(model, d, parts);
+  return { root, model, parts };
+}
+// DA/SA: the slide cocks the hammer; a shot (cycleT reset) or a dry break drops it; uncocked, a double-action pull draws it back.
+function b92Anim(g, dt) {
+  const P = g.parts, A = g.b92a || (g.b92a = { h: 0, cocked: false, cyc: 1 }), tr = g.trigger || 0, W = CONFIG.weapons;
+  if (g.cycleT < A.cyc) { A.cocked = false; A.h = 0; A.fell = true; }   // fired: the hammer fell (the slide recocks it below)
+  A.cyc = g.cycleT;
+  if (A.cocked && g.dry) { A.cocked = false; A.h = 0; A.fell = true; }  // single-action click on an empty chamber
+  if (g.slideOff > 0.004) A.cocked = true;                        // the slide rides back over it
+  if (tr < W.triggerReset) A.fell = false;                        // a fallen hammer stays down until the trigger resets
+  let want = A.cocked ? B92.cock : A.fell || g.dry ? 0 : B92.cock * 0.9 * clamp(tr / W.triggerPull);
+  want = Math.max(want, B92.cock * clamp(g.slideOff / 0.012));
+  A.h += (want - A.h) * (dt > 0 ? 1 - Math.exp(-70 * dt) : 1);
+  P.hammer.rotation.x = A.h;
+  P.trigger.rotation.x = B92.trigPull * (A.cocked ? B92.trigSA + (1 - B92.trigSA) * tr : tr);
+  P.slideStop.rotation.x += ((g.slideLocked ? B92.catchUp : 0) - P.slideStop.rotation.x) * (dt > 0 ? 1 - Math.exp(-30 * dt) : 1);
+}
+function b92MagModel() {
+  const X = EXTG.b92, root = new THREE.Group(), round = new THREE.Group();
+  if (!X.magMat) { X.magMat = X.mat.mag.clone(); X.magMat.side = THREE.DoubleSide; }
+  const body = new THREE.Mesh(X.geo.mag, X.magMat), r = new THREE.Mesh(X.geo.rounds, X.magMat);
+  body.receiveShadow = true; r.receiveShadow = true;
+  root.add(body); round.add(r); root.add(round);
+  return { root, round };
+}
+// 17 rounds (factory) or 20 (the store's: the body stretched down 22 mm from its lips, magStretch); MAG_DEFS follows.
+function b92MagApply(restock) {
+  const D = MAG_DEFS.b92, B = B92.mag0;
+  if (!D || !B) return;
+  const cap = b92Fitted('b92.mag20') ? 20 : 17, ext = cap === 20 ? B92.mag20.ext : 0, changed = B92.cap !== cap;
+  B92.cap = cap;
+  D.capacity = cap; D.label = `${cap}-round magazine`;
+  D.half = [B.half[0], B.half[1] + ext / 2, B.half[2]]; D.center = [B.center[0], B.center[1] - ext / 2, B.center[2]];
+  D.mass = B.mass + (cap === 20 ? B92.mag20.m : 0);
+  if (changed && restock && inv.b92) inv.b92 = inv.b92.map(() => cap);
+  panel.dirty = true;
+}
+function b92MagDress(m) {
+  if (B92.cap !== 20 || !B92.mag0) return m;
+  const h = 2 * B92.mag0.half[1];
+  return magStretch(m, 'b92', (h + B92.mag20.ext) / h);
+}
+// Its parts (a can / comp / light / laser on it) as store rows.
+function b92PartId(it) {
+  if (!it || it.kind !== 'att' || it.pl2 || it.k45 || it.muz || it.akKey || it.awm) return null;
+  if (it.sub === 'sup') return it.big ? null : it.can === 'sb100' ? 'b92.sup2' : 'b92.sup';
+  return { comp: 'b92.comp', light: 'b92.light', laser: 'b92.laser' }[it.sub] || null;
+}
+// What is on this 92X now: the wrap, the dot, the magazine, its parts (a chain's first device; the rest: muzFx; extra rail devices: railFx).
+function b92GunIds(g, out = new Set()) {
+  out.clear();
+  const wrap = b92Owned('b92.wrap');
+  if (wrap) out.add('b92.wrap');
+  if (wrap && b92Fitted('b92.dot')) out.add('b92.dot');
+  if (b92Fitted('b92.mag20')) out.add('b92.mag20');
+  const ch = muzChain(g);
+  for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== ch[0]) continue; const id = b92PartId(p.item); if (id) out.add(id); }
+  return out;
+}
+// Step 112: the one rail face: the wrap's bottom rail, else the frame's own (the wrap clamps it).
+function b92RailFace() {
+  const k = b92Owned('b92.wrap') ? 'wrap' : 'frame', R = B92.rail[k];
+  return B92.fc[k] || (B92.fc[k] = railFace('b92:' + k, 'bottom', 0, 0, R.y, 0, R.slots, R.z));
+}
+function b92MuzRefuse(g, it, chain) {
+  return g.type === 'b92' && !chain.length && it.sub === 'sup' && it.big ? 'A rifle can: wrong thread. The 92X barrel takes 1/2x28 pistol cans (or a device in front)' : null;
+}
+// Cosmetic panels: an overlay on the grip triangles (polygon offset), one material per look, no texture; the factory panels stay under it.
+function b92Grips(g) {
+  const H = g.b92hw || (g.b92hw = { look: null, panel: null });
+  let look = null;
+  for (const id of Object.keys(B92_GRIPS)) if (b92Fitted(id)) { look = id; break; }
+  if (look === H.look) return;
+  if (H.panel && H.panel.parent) H.panel.parent.remove(H.panel);
+  H.panel = null; H.look = look;
+  if (!look) return;
+  let m = B92.panelMat[look];
+  if (!m) {
+    const L = B92_GRIPS[look];
+    m = B92.panelMat[look] = EXTG.b92.mat.grips.clone();
+    Object.assign(m, { map: null, roughnessMap: null, metalnessMap: null, emissiveMap: null, color: new THREE.Color(L.color), roughness: L.rough, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+    m.emissive.setRGB(0, 0, 0);
+  }
+  const o = new THREE.Mesh(EXTG.b92.geo.grips, m); o.receiveShadow = true; o.castShadow = false; o.userData.noContact = true;
+  g.model.add(o); H.panel = o;
+}
+// After a part came on or off: wrap and dot shown, grips, muzzle point, sight line, the effects.
+function b92Refresh(g) {
+  if (!g || g.type !== 'b92' || !B92.ready || !g.prop) return;
+  const d = g.def, P = g.parts, pm = d.palm, wrap = b92Owned('b92.wrap'), dot = wrap && b92Fitted('b92.dot');
+  if (P.b92wrap) P.b92wrap.visible = wrap;
+  if (P.b92dot) P.b92dot.visible = dot;
+  b92Grips(g);
+  const chain = muzState(g), muz = chain.length > 0;
+  const mz = muz ? muzTip(g, chain, B92.v).z - g.model.position.z : d.muzzle[2];
+  if (P.flash) P.flash.position.z = mz;
+  g.sightY = dot ? B92.winY : d.eye[1];
+  g.wr = Object.assign({}, WR.b92, g.laserAtt && g.wr.laser ? { laser: g.wr.laser } : {}, {
+    muzzle: new THREE.Vector3(d.muzzle[0] - pm[0], d.muzzle[1] - pm[1], mz - pm[2]),
+    eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], d.eye[2] - pm[2]) });
+  g.afx = afxOf(B92_FX, b92GunIds(g, g.afxIds || (g.afxIds = new Set())), g.afx || {}, B92_FX_VR);
+  muzFx(g, chain, g.afx); muzClipSet(g, chain);
+  railFx(g);
+  g.muzEnd = muz ? g.wr.muzzle : null;
+  updateLightMount();
+}
+// Make one 92X match the store's build (not while it is in the vise: the bench owns it until RELEASE).
+function b92SyncGun(g) {
+  if (!B92.ready || !g || g.type !== 'b92' || !g.prop || g.prop.removing || (WB.open && WB.gun === g)) return;
+  muzSync(g);
+  railSync(g);
+  b92Refresh(g);
+}
+function b92ApplyStore() { for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'b92' && !q.removing) b92SyncGun(q.item); }
+// The vise let a 92X go: its parts are the build now (the store's fitted rows), for every 92X.
+function b92FromGun(g) {
+  if (!B92.ready || !g || g.type !== 'b92') return;
+  const have = new Set(b92GunIds(g));
+  for (const id of Object.keys(B92_PARTS)) {
+    const it = WORKSHOP.byId.get(id); if (!it) continue;
+    if (have.has(id)) { it.owned = true; WORKSHOP.fitted.add(id); } else WORKSHOP.fitted.delete(id);
+  }
+  wsSave(); WORKSHOP.dirty = true;
+  b92Refresh(g);
+  for (const q of props) if (q.item && q.item !== g && q.item.kind === 'gun' && q.item.type === 'b92' && !q.removing) b92SyncGun(q.item);
+}
+// A 92X row changed in the store: the muzzle chain, the magazines, every 92X, new parts on the bench table.
+function b92StoreChanged(it, bought = false) {
+  if (B92_MUZ[it.id]) {
+    const k = B92_MUZ[it.id], C = MUZ.saved.b92 || [];
+    if (WORKSHOP.fitted.has(it.id)) MUZ.saved.b92 = [k];
+    else { const i = C.indexOf(k); MUZ.saved.b92 = i < 0 ? C : C.slice(0, i); }
+    muzSave();
+  }
+  if (it.id === 'b92.mag20') b92MagApply(true);
+  if (!B92.ready) return;
+  b92ApplyStore();
+  if (bought) wbTableFill();
+  g17Sfx(B92_MUZ[it.id] ? 'thread' : B92_GRIPS[it.id] ? 'cover' : it.id === 'b92.dot' || it.hw ? 'dot' : B92_PARTS[it.id] ? 'rail' : 'off', WORKSHOP.screen ? WORKSHOP.screen.getWorldPosition(B92.v) : null);
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { B92, B92_FX, B92_PARTS, B92_MUZ, B92_GRIPS, b92Load, b92Build, b92Anim, b92MagModel, b92MagApply, b92MagDress, b92PartId,
+  b92GunIds, b92RailFace, b92MuzRefuse, b92Grips, b92Refresh, b92SyncGun, b92FromGun, b92StoreChanged, b92Stats });   // step 120
 
 /* ===========================================================================
  *  STEP 98 — THE GLOCK 17 MAGAZINE AND ITS STOCK LIGHT, MODELLED
@@ -40562,7 +40837,7 @@ function muzBenchFit(g, p, reach) {
     : g.type === 'g17' && G17A.ready && !g17Owned('g17.thread') ? 'Needs the threaded barrel (gunsmith store)'
     : g.type === 'g17' && !chain.length && it.sub === 'sup' && it.big ? 'A rifle can: wrong thread for the barrel (it goes on a device in front)'
     : muzIsBase(p) && (chain.length || g.type !== 'm4a1s') ? (g.type !== 'm4a1s' ? 'Made for the M4A1-S barrel shoulder' : 'It goes on the bare barrel: take the devices off first')   // step 105
-    : akmMuzRefuse(g, it, chain) || m19MuzRefuse(g, it, chain) || awmMuzRefuse(g, it, chain);   // step 102 / 108
+    : akmMuzRefuse(g, it, chain) || m19MuzRefuse(g, it, chain) || awmMuzRefuse(g, it, chain) || b92MuzRefuse(g, it, chain);   // step 102 / 108 / 120
   if (why) { toast(why, 2600); wsClick(420, 300); return false; }
   muzPlace(g, p, chain);
   it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
@@ -40608,7 +40883,7 @@ function muzFx(g, chain, out) {
   const Lm = Math.max(0.08, -muzBase(g, _mzB).z), Ig = (d.mass || 1) * Lm * Lm / 4;   // the gun's own inertia about the grip, roughly
   root.updateMatrixWorld(true);
   chain.forEach((p, i) => {
-    const it = p.item, D = MUZ_DEV[muzKind(it)], F = muzFace(p), can = it.sub === 'sup', counted = i === 0 && ((glock && !!g17PartId(it)) || (akm && !!akmPartId(it)) || (g.type === 'm1911' && M1911A.ready && !!it.k45) || (g.type === 'm4a1s' && M4A.ready && !!m4PartId(it)) || (g.type === 'awp' && AWMA.ready && !!awmPartId(it)));   // step 102: AKM_FX / M1911_FX / M4_FX have the first
+    const it = p.item, D = MUZ_DEV[muzKind(it)], F = muzFace(p), can = it.sub === 'sup', counted = i === 0 && ((glock && !!g17PartId(it)) || (akm && !!akmPartId(it)) || (g.type === 'm1911' && M1911A.ready && !!it.k45) || (g.type === 'm4a1s' && M4A.ready && !!m4PartId(it)) || (g.type === 'awp' && AWMA.ready && !!awmPartId(it)) || (g.type === 'b92' && B92.ready && !!b92PartId(it)));   // step 102 (step 120: B92_FX): AKM_FX / M1911_FX / M4_FX have the first
     if (can) { if (cans > 0) out.snd *= Math.pow(10, MUZ.db1 * MUZ.w[Math.min(cans, MUZ.w.length - 1)] / 20); cans++; }
     if (!counted) {
       p.root.updateMatrixWorld(true); _mzI.copy(root.matrixWorld).invert();
@@ -40645,6 +40920,7 @@ function muzRefresh(g) {
   if (g.type === 'g17' && G17A.ready) { g17Refresh(g); return; }   // the Glock builds its own g.wr (calls muzFx / muzClipSet)
   if (g.type === 'akmn' && AKMA.ready) { akmRefresh(g); return; }   // step 102: so does the AKM
   if (g.type === 'm1911' && M1911A.ready) { m19Refresh(g); return; }   // step 108: so does the 1911
+  if (g.type === 'b92' && B92.ready) { b92Refresh(g); return; }   // step 120: so does the 92X
   if (g.type === 'awp' && AWMA.ready) { awmRefresh(g); return; }   // step 113: so does the AWM (calls muzApply)
   if (g.type === 'm4a1s' && M4A.ready) { m4Refresh(g); return; }    // step 105: so does the M4A1-S (calls muzApply)
   g.afx = muzApply(g, muzState(g), null);
@@ -43388,7 +43664,7 @@ const RAIL_DEV = {
 };
 const RAIL_PREF = { light: ['bottom', 'right', 'left', 'top'], laser: ['right', 'left', 'top', 'bottom'], pl2: ['bottom', 'right', 'left'] };
 // Store rows per gun and kind (only guns whose rows are real parts: WS_REAL).
-const RAIL_ROWS = { g17: { light: 'g17.light', laser: 'g17.laser', pl2: 'g17.pl2' }, m1911: { light: 'm1911.light', laser: 'm1911.laser' },
+const RAIL_ROWS = { g17: { light: 'g17.light', laser: 'g17.laser', pl2: 'g17.pl2' }, m1911: { light: 'm1911.light', laser: 'm1911.laser' }, b92: { light: 'b92.light', laser: 'b92.laser' },
   akmn: { light: 'akmn.light', laser: 'akmn.laser' }, m4a1s: { light: 'm4a1s.light', laser: 'm4a1s.laser' } };
 const RAIL_ROW_IDS = new Set(Object.values(RAIL_ROWS).flatMap((R) => Object.values(R)));
 // The clamp-on rail each gun can take (z: the ring's band, rear and front, design space).
@@ -43398,7 +43674,7 @@ const RAIL_WRAP = {
   rifle: { id: 'rifle.wrap', kind: 'ring', z: [-0.430, -0.485] }, awp: { id: 'awp.wrap', kind: 'ring', z: [-0.520, -0.575] }
 };
 const RAIL_SUPZ = { m4a1s: -0.25 };                                   // the M4's support hand on its handguard (def.support is the M16A1's)
-const RAIL_FXT = { g17: () => GLOCK_FX, m1911: () => M1911_FX, akmn: () => AKM_FX, m4a1s: () => M4_FX };
+const RAIL_FXT = { g17: () => GLOCK_FX, m1911: () => M1911_FX, akmn: () => AKM_FX, m4a1s: () => M4_FX, b92: () => B92_FX };
 // The PL-2's places on the bench table once it came off: [sub, big, x, z, yaw, variant, store id]
 const RAIL_PL2_SPOTS = [['light', false, 3.56, 2.66, Math.PI, 'pl2', 'g17.pl2'], ['light', false, 3.56, 2.765, Math.PI, 'pl2', 'g17.pl2']];
 try {
@@ -43439,6 +43715,7 @@ function railFaces(g) {
   if (t === 'g17' && EXTG.g17.ready && !wrap) F.push(railG17Factory());
   if (t === 'akmn' && AKMA.ready && g.akm && g.akm.kit) F.push(...railAkmKit());
   if (t === 'm4a1s' && M4A.on && M4A.ready && m4Owned('m4a1s.ras')) F.push(...railM4Ras());
+  if (t === 'b92' && B92.ready) F.push(b92RailFace());                 // step 120: the wrap's bottom rail, else the frame's
   if (wrap) { const K = railWrapKit(g); if (K) F.push(...K.faces); }
   return F;
 }
