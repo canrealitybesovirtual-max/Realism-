@@ -74,6 +74,7 @@
         RG.types.forEach(function (t) { add("Range", "Spawn the " + t.label, function () { RG.spawn(t.id); }, "gun weapon range shoot " + t.cart); });
         add("Range", "Set up the targets (paper + steel, 5-300 m)", function () { RG.setup(); }, "range targets steel paper shooting");
         add("Range", "Reset targets and score", function () { RG.resetTargets(); }, "range score clear");
+        add("Range", "Guns back on the bench", function () { RG.returnGuns(); }, "range return guns recover", RG.guns.length > 0);
         add("Range", "Put the guns away", function () { RG.clearGuns(); }, "range remove guns", RG.guns.length > 0);
       }
       var RS = window.__studioReset;
