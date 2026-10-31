@@ -13654,11 +13654,13 @@ function nadeSmoke(P) {
   if (!S || !S.on) return false;
   const hazeOn = CONFIG.polish.haze.on, force = !hazeOn && IS_HEADSET && S.headset > 0;
   const n = Math.max(6, Math.round(S.n * (hazeOn ? 1 : force ? S.headset : 1))), at = P.clone(), dir = new THREE.Vector3();
+  const rc = roomContaining(P.x, P.z, 0.3, P.y), lx = rc ? rLX(rc, P.x) : 0, ly = rc ? P.y - rc.origin.y : 0, lz = rc ? rLZ(rc, P.z) : 0;   // bug check 3: later waves follow a world shift
   for (const [delay, share, up, out, sp, sz, buoy, ck, ak] of NSMOKE_WAVES) {
     const m = Math.max(1, Math.round(n * share)), puffs = out > 0.6 ? 6 : 1;
     const o = { n: Math.max(1, Math.round(m / puffs)), c: [S.c[0] * ck, S.c[1] * ck, S.c[2] * ck], a: S.alpha * ak, sp, life: S.life,
       size: [S.size[0] * sz, S.size[1] * sz], grow: 0.32, drag: 1.4, buoy, force };
     const fn = () => {
+      if (rc) { if (!rc.active) return; at.set(rWX(rc, lx), rc.origin.y + ly, rWZ(rc, lz)); }   // the room went: no cloud in the void
       const a0 = Math.random() * Math.PI * 2;
       for (let i = 0; i < puffs; i++) {
         const a = a0 + i / puffs * Math.PI * 2, r = out * (puffs > 1 ? 1 : Math.random());
@@ -18468,6 +18470,71 @@ function glPlate(txt, w, h) {
   m.map.repeat.set(1, h / w); m.map.offset.set(0, 0.5 - h / w / 2);
   return mesh(new THREE.PlaneGeometry(w, h), m, false, true);
 }
+// Shelf light (?shelflight=off): warm-white LED strips in aluminium channels under the locker's top (one per bay, behind
+// the header) and under the pistol shelf (lighting the magazine shelf). No light object: the scene's light count stays
+// fixed (a new light recompiles every program). What they light is baked on as additive light cards: the pistol and
+// magazine shelf pads and the back panel of each bay, from a Lambertian line source per strip (E = cos emit x cos
+// incidence / r, finite ends dimmer), x the surface's reflectance x gain. Built once with the kit, cloned per safe
+// room (children of room.group, so a turned room is right).
+const SHELF_LIGHT = { on: !/[?&]shelflight=off\b/.test(location.search), warm: [1, 0.69, 0.4], glow: 2.4, gain: 0.2, rho: { pad: 0.2, panel: 0.4 }, N: 128, mat: null };
+function glShelfE(px, py, pz, nz, S) {                             // relative light at a point (normal up when nz 0, +z when nz 1) from strip S
+  const dy = S.y - py, dz = S.z - pz;
+  if (dy <= 0.002) return 0;
+  const r = Math.hypot(dy, dz), ce = dy / r, ci = nz ? dz / r : dy / r;
+  if (ci <= 0) return 0;
+  const e = Math.min(px - S.x0, S.x1 - px);                         // toward a strip end: half at the end, full 6 cm in
+  return ce * ci / r * (0.45 + 0.55 * clamp(e / 0.06));
+}
+function glShelfCard(meshes, w, h, x, y, z, vertical, strips, rho) {
+  const L = SHELF_LIGHT, N = L.N, val = new Float32Array(N * N);
+  let mx = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {          // row 0 = the texture's top: the back edge (flat) / the top edge (on the back panel)
+    const px = x - w / 2 + (i + 0.5) / N * w;
+    let e = 0;
+    for (const S of strips) e += vertical ? glShelfE(px, y + h / 2 - (j + 0.5) / N * h, z, 1, S) : glShelfE(px, y, z - h / 2 + (j + 0.5) / N * h, 0, S);
+    val[j * N + i] = e; if (e > mx) mx = e;
+  }
+  if (mx <= 0) return;
+  const cv = document.createElement('canvas'); cv.width = cv.height = N;
+  const g = cv.getContext('2d'), im = g.createImageData(N, N);
+  for (let k = 0; k < N * N; k++) { const v = Math.round(255 * val[k] / mx); im.data[k * 4] = im.data[k * 4 + 1] = im.data[k * 4 + 2] = v; im.data[k * 4 + 3] = 255; }
+  g.putImageData(im, 0, 0);
+  const tx = new THREE.CanvasTexture(cv); tx.colorSpace = THREE.NoColorSpace;   // linear light, normalised to its brightest point
+  const k = L.gain * mx * rho;
+  const m = new THREE.MeshBasicMaterial({ map: tx, color: new THREE.Color(L.warm[0] * k, L.warm[1] * k, L.warm[2] * k), transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
+  const geo = new THREE.PlaneGeometry(w, h);
+  if (!vertical) geo.rotateX(-Math.PI / 2);
+  const c = new THREE.Mesh(geo, m);
+  c.position.set(x, y, z); c.castShadow = false; c.receiveShadow = false; c.renderOrder = 2;
+  meshes.push(c);
+}
+function glShelfLight(F, meshes) {
+  const L = SHELF_LIGHT;
+  if (!L.on) return;
+  const { W, D, H, t } = GL;
+  const lx0 = -W / 2 + t, lx1 = GL.bayX - t / 2, px0 = GL.bayX + t / 2, px1 = W / 2 - t, lm = (lx0 + lx1) / 2, pm = (px0 + px1) / 2;
+  const yTop = H - t, yUnder = GL.pShelf - 0.015;                   // the top panel's and the pistol shelf's undersides
+  const sL = { x0: lx0 + 0.012, x1: lx1 - 0.012, y: yTop - 0.0078, z: D - 0.045 }, sR = { x0: px0 + 0.012, x1: px1 - 0.012, y: yTop - 0.0078, z: D - 0.045 };
+  const sM = { x0: px0 + 0.012, x1: px1 - 0.012, y: yUnder - 0.0078, z: D - 0.035 };
+  const chan = [], diff = [];
+  for (const S of [sL, sR, sM]) {                                   // channel 12 x 7 mm, end caps, opal diffuser 9 mm wide on its underside
+    const len = S.x1 - S.x0, xm = (S.x0 + S.x1) / 2, yc = S.y + 0.0043;
+    chan.push(placed(rbox(len, 0.007, 0.012, 0.0012), xm, yc, S.z));
+    for (const e of [S.x0, S.x1]) chan.push(placed(rbox(0.003, 0.0074, 0.0124, 0.0008), e, yc, S.z));
+    diff.push(placed(new THREE.BoxGeometry(len - 0.004, 0.0014, 0.009), xm, S.y, S.z));
+  }
+  meshes.push(merged(chan, KIT.mat.steel, false));
+  L.mat = L.mat || new THREE.MeshStandardMaterial({ color: 0xfff3e4, roughness: 0.4, metalness: 0, emissive: new THREE.Color(1, 0.84, 0.66), emissiveIntensity: L.glow });
+  const dm = merged(diff, L.mat, false); dm.receiveShadow = false; meshes.push(dm);
+  const lift = 0.0012, dIn = D - t - 0.02;
+  glShelfCard(meshes, px1 - px0 - 0.006, dIn, pm, GL.pShelf + 0.006 + lift, t + dIn / 2, false, [sR], L.rho.pad);   // pistol shelf (from the top strip)
+  glShelfCard(meshes, px1 - px0 - 0.006, dIn, pm, GL.mShelf + 0.006 + lift, t + dIn / 2, false, [sM], L.rho.pad);   // magazine shelf
+  const wash = (x0, x1, y0, y1, S) => glShelfCard(meshes, x1 - x0, y1 - y0, (x0 + x1) / 2, (y0 + y1) / 2, t + lift, true, [S], L.rho.panel);
+  wash(px0, px1, GL.pShelf + 0.006, yTop, sR);                      // back panel, right bay over the pistol shelf
+  wash(px0, px1, GL.mShelf + 0.006, yUnder, sM);                    // ...between the two shelves
+  wash(lx0, lx1, Math.min(yTop - 0.3, (F.rest || 0.9) + 0.012), yTop, sL);   // left bay, down to the barrel rest
+}
 // The cabinet, built once from the fit.
 function glKit(F) {
   if (GL.kit) return GL.kit;
@@ -18512,6 +18579,7 @@ function glKit(F) {
     pl.position.set(S.x, lg ? 0.045 : GL.pShelf, lg ? D - 0.03 + 0.0012 : D + 0.0012); meshes.push(pl);
   }
   const ar = glPlate('ARMORY', 0.22, 0.045); ar.position.set(0, H - t - 0.03, D + 0.0012); meshes.push(ar);
+  glShelfLight(F, meshes);                                                            // shelf light: LED strips + their light baked on
   GL.kit = meshes;
   return meshes;
 }
@@ -22467,7 +22535,12 @@ function enemyMove(e, dt) {
   // Never stand inside you: you get pushed, gently (only on your floor: stacked wings share x and z).
   headWorld(_ev.h);
   const dx = _ev.h.x - _mp.x, dz = _ev.h.z - _mp.z, dd = Math.hypot(dx, dz);
-  if (dd < 0.45 && dd > 1e-4 && !playerState.dead && Math.abs(fy - level.floor) < 1.2) { rig.position.x += dx / dd * (0.45 - dd); rig.position.z += dz / dd * (0.45 - dd); }
+  if (dd < 0.45 && dd > 1e-4 && !playerState.dead && Math.abs(fy - level.floor) < 1.2) {   // bug check 3: the push is resolved against the walls (it used to shove you into / through one)
+    const P = _ev.push || (_ev.push = new THREE.Vector3());
+    P.copy(_ev.h); P.x += dx / dd * (0.45 - dd); P.z += dz / dd * (0.45 - dd);
+    resolveBody(P);
+    rig.position.x += P.x - _ev.h.x; rig.position.z += P.z - _ev.h.z;
+  }
   // Facing: where he walks when running, otherwise toward the threat (or his post when idle).
   let want = e.yaw;
   if (e.state === 'idle') want = e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;
@@ -35336,6 +35409,129 @@ function xrSysReset(reason) {
   for (const q of props) q.hasPrev = false;
   X.last.has = false; X.area.has = false;
 }
+/* ---------------------------------------------------------------------------
+ *  RECENTRE / OUT-OF-MAP GUARD (?headguard=off)
+ *  Holding the Quest's system button recentres: the reference space fires 'reset' and the head pose jumps in the play
+ *  space, which carried you through walls or out of the map. headGuard (tick, after xrSysFrame, before anything moves
+ *  you) remembers the last head position that was in a room's interior with its centre outside every walk box
+ *  (room-local, so shiftWorld is safe) and:
+ *    jump    a recentre ('reset' in the last 0.6 s, then a move over 5 cm / 0.15 rad) or a tracking jump (xrsys.jump
+ *            or 0.5 rad of yaw in one frame): the rig turns back by the yaw jump (you keep facing where you faced)
+ *            and moves so the head is where it was a frame ago (or the last good spot if that was bad);
+ *    out     the head outside every active room (its walls included; doorways count: rooms meet at the door plane) for 0.35 s;
+ *    deep    its centre over a body radius inside a walk box for 0.35 s;
+ *    through back to good after being in a box or out, on a line from the last good spot that crosses a walk box
+ *            (walked physically through a wall, a door leaf, a crate): at once.
+ *  Each: the head goes back to the good spot (floor too), the body and hand histories are re-seated (xrSysReset).
+ *  Leaning into a wall and back is untouched (headPenetration's fade stays). Computer: the same net (out / deep /
+ *  through); the moves there all resolve against the walls already.
+ * ------------------------------------------------------------------------- */
+const HG = { on: !/[?&]headguard=off\b/.test(location.search), has: false, room: null, lx: 0, lz: 0, fl: 0, bad: false, out: 0, deep: 0,
+  pend: 0, vr: false, camHas: false, cam: new THREE.Vector3(), cy: 0, n: 0, last: '',
+  h: new THREE.Vector3(), t: new THREE.Vector3(), p: new THREE.Vector3(), e: new THREE.Euler() };
+function hgReset() { HG.pend = performance.now() / 1000 + 0.6; }  // the recentre's pose arrives in the next frames
+const hgIn = (r, h, T) => r.active && Math.abs(h.x - r.origin.x) <= r.w / 2 + T && Math.abs(h.z - r.origin.z) <= r.d / 2 + T
+  && h.y > r.origin.y - 0.8 && h.y < r.origin.y + r.h + 0.5;
+function hgRoom(h) {                                               // the active room whose interior or walls hold h, or null
+  const c = stream.current, T = CONFIG.stream.wallT;               // a head leaning into a wall is still in its room (in a box, not out)
+  if (c && hgIn(c, h, T)) return c;
+  for (const r of stream.rooms.values()) if (hgIn(r, h, T)) return r;
+  return null;
+}
+function hgDepth(h) {                                              // a body at h in your floor's walk boxes: <= radius = its centre is clear
+  const r = CONFIG.player.radius;
+  let d = 0;
+  for (const col of colliders) {
+    if (h.y >= col.top || !colOnFloor(col, level.floor)) continue;      // the boxes your head is inside the height of (not cover you peek over)
+    HG.p.copy(h); d = Math.max(d, pushOutOf(col, HG.p, r));
+  }
+  return d;
+}
+function hgCrosses(a, b) {                                         // does the line a -> b (x, z) pass through a walk box at head height?
+  const y = Math.min(a.y, b.y);
+  for (const col of colliders) {
+    if (y >= col.top || !colOnFloor(col, level.floor)) continue;
+    let dx = a.x - col.x, dz = a.z - col.z;
+    const x0 = dx * col.c - dz * col.s, z0 = dx * col.s + dz * col.c;
+    dx = b.x - col.x; dz = b.z - col.z;
+    const ux = dx * col.c - dz * col.s - x0, uz = dx * col.s + dz * col.c - z0;
+    let t0 = 0, t1 = 1;
+    const clip = (p, q) => { if (Math.abs(p) < 1e-9) return q >= 0; const t = q / p; if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; } return true; };
+    const hx = col.hx - 0.003, hz = col.hz - 0.003;                 // through it, not along its face
+    if (hx > 0 && hz > 0 && clip(-ux, x0 + hx) && clip(ux, hx - x0) && clip(-uz, z0 + hz) && clip(uz, hz - z0) && t0 <= t1) return true;
+  }
+  return false;
+}
+// Put the head back: at `at` (world, in the current floor) when given, else the last good spot (its floor), else the
+// nearest point well inside the room you are in. dYaw first turns the rig about the head.
+function hgRestore(why, dYaw = 0, at = null) {
+  const vr = renderer.xr.isPresenting;
+  rig.updateMatrixWorld(true);
+  if (vr && Math.abs(dYaw) > 1e-4) rotateRigAroundHead(dYaw);
+  headWorld(HG.h);
+  let tx, tz;
+  if (at) { tx = at.x; tz = at.z; }
+  else if (HG.has && HG.room && HG.room.active) {
+    tx = rWX(HG.room, HG.lx); tz = rWZ(HG.room, HG.lz);
+    const fy = HG.room.origin.y + HG.fl;
+    if (Math.abs(fy - level.floor) > 1e-4) { level.floor = fy; applyHeight(); }
+    HG.t.set(tx, HG.h.y, tz);
+    if (hgDepth(HG.t) > CONFIG.player.radius) { resolveBody(HG.t); tx = HG.t.x; tz = HG.t.z; }   // something moved onto it since (a shoved table)
+  } else {
+    const c = stream.current, m = 0.5;
+    if (!c || !c.active) return;
+    tx = rWX(c, clamp(rLX(c, HG.h.x), -c.w / 2 + m, c.w / 2 - m)); tz = rWZ(c, clamp(rLZ(c, HG.h.z), -c.d / 2 + m, c.d / 2 - m));
+    HG.t.set(tx, HG.h.y, tz); resolveBody(HG.t); tx = HG.t.x; tz = HG.t.z;
+  }
+  const mx = tx - HG.h.x, mz = tz - HG.h.z;
+  rig.position.x += mx; rig.position.z += mz;
+  rig.updateMatrixWorld(true);
+  for (const p of props) {                                         // a held loose prop comes along (its hold drive would drag it through the walls)
+    if (!p.holders.length || p.item || !p.body) continue;
+    const q = p.body.translation(); p.body.setTranslation({ x: q.x + mx, y: q.y, z: q.z + mz }, true); p.hasPrev = false;
+  }
+  _vel.set(0, 0, 0); playerState.hasPrev = false;
+  if (vr) xrSysReset('head guard: ' + why);
+  else { BODY.init = false; BODY.hasLast = false; }
+  HG.bad = false; HG.out = HG.deep = 0; HG.n++; HG.last = why;
+  console.info(`[head guard] ${why}: head put back ${Math.hypot(tx - HG.h.x, tz - HG.h.z).toFixed(2)} m`);
+}
+function headGuard(dt) {
+  if (!HG.on || !ready || !stream.current) return;
+  const vr = renderer.xr.isPresenting, now = performance.now() / 1000, r = CONFIG.player.radius;
+  if (vr !== HG.vr) { HG.vr = vr; HG.camHas = false; HG.bad = false; HG.out = HG.deep = 0; }
+  HG.e.setFromQuaternion(camera.quaternion, 'YXZ');
+  const cy = HG.e.y;
+  if (playerState.dead) { HG.bad = false; HG.out = HG.deep = 0; HG.camHas = false; return; }   // respawn puts you somewhere good
+  rig.updateMatrixWorld(true);
+  if (vr && HG.camHas) {                                           // 1. a recentre or a tracking jump in the play space
+    const C = CONFIG.xrsys, d = camera.position.distanceTo(HG.cam), dy = bwrap(cy - HG.cy);
+    const jump = d > Math.max(C.jump, C.jumpV * dt) || Math.abs(dy) > 0.5;
+    if (jump || (HG.pend > now && (d > 0.05 || Math.abs(dy) > 0.15))) {
+      HG.t.copy(HG.cam).applyMatrix4(rig.matrixWorld);             // where the head was a frame ago (the camera is the rig's child)
+      const ok = !!hgRoom(HG.t) && hgDepth(HG.t) <= r + 1e-4;
+      hgRestore(HG.pend > now ? 'recentre' : 'tracking jump', -dy, ok ? HG.t.clone() : null);
+      HG.pend = 0;
+    }
+  }
+  // 2. the safety net: where is the head now
+  headWorld(HG.h);
+  const room = hgRoom(HG.h), dep = hgDepth(HG.h);
+  const good = room && dep <= r + 1e-4;
+  const crossed = (good ? HG.bad : !room) && dep <= r + 1e-4 && HG.has && HG.room && HG.room.active   // clear again (or out of the rooms) on the far side of a box
+    && hgCrosses(HG.t.set(rWX(HG.room, HG.lx), HG.h.y, rWZ(HG.room, HG.lz)), HG.h);
+  if (crossed) hgRestore(good ? 'through a wall' : 'out through a wall');
+  else if (good) {
+    HG.room = room; HG.lx = rLX(room, HG.h.x); HG.lz = rLZ(room, HG.h.z); HG.fl = level.floor - room.origin.y; HG.has = true;
+    HG.bad = false; HG.out = HG.deep = 0;
+  } else {
+    HG.bad = true;
+    HG.out = room ? 0 : HG.out + dt;
+    HG.deep = dep > 2 * r ? HG.deep + dt : 0;
+    if (HG.out > 0.35 || HG.deep > 0.35) hgRestore(room ? 'in a wall' : 'outside the map');
+  }
+  HG.cam.copy(camera.position); HG.cy = cy; HG.camHas = vr;
+}
 function xrSysHand(S, side, st, now) {
   if (st === S.state) return;
   if (st === 'tracked') {                                       // back (or new): no throw at the speed of the jump
@@ -35451,7 +35647,7 @@ renderer.xr.addEventListener('sessionstart', () => {
   xrState.calibrateAt = performance.now() / 1000 + 1.0;   // let tracking settle, then check height
   BODY.cal = !!HEIGHT.eye; if (HEIGHT.eye) BODY.standEye = HEIGHT.eye;   // step 21: a saved calibration fits the body at once
   handsLocoReset();
-  { const rs = renderer.xr.getReferenceSpace(); if (rs && rs.addEventListener) rs.addEventListener('reset', handsLocoReset); rs.addEventListener('reset', () => xrSysReset('recenter')); }   // headset recenter
+  { const rs = renderer.xr.getReferenceSpace(); if (rs && rs.addEventListener) { rs.addEventListener('reset', handsLocoReset); rs.addEventListener('reset', () => { xrSysReset('recenter'); hgReset(); }); } }   // headset recenter (head guard: you stay where you stood)
   ui.hud.classList.add('hidden'); ui.hint.classList.add('hidden');
   if (document.pointerLockElement) document.exitPointerLock();
   // Step 33: the refresh rate starts where it held last time and climbs while the frame rate holds (RATE).
@@ -36298,6 +36494,7 @@ function tick(timeMs) {
   updateStance(dt);      // step 6: desktop lean / crouch
   trackedSourcePoses();  // step 25.5: tracked hands drive the grip and aim (three.js leaves them frozen)
   xrSysFrame(dt);        // step 32: how well the headset tracks right now (before anything reads your head)
+  headGuard(dt);         // recentre / out-of-map guard: the head never ends up outside the rooms or through a wall
   updateXRInput(dt);
   updateJump(dt);        // step 24: your real jump (headset) or the J hop
   updateKick(dt);        // step 24: the kick, its strike
