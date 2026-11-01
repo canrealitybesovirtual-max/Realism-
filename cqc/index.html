@@ -2062,7 +2062,10 @@ const PROJECT_RULES = {
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';   // step 66: enemy characters
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { buildTreeLods } from './forest/TreeGenerator.js';   // forest map (MIT, Token Gremlin realistic-forest)
+import { SPECIES as FOREST_SPECIES } from './forest/TreeSpecies.js';
+import { Rng as ForRng, hash2i as forHash } from './forest/rng.js';   // step 66: enemy characters
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -7357,6 +7360,7 @@ function stairFloor(S, lx, lz, hint = 0) {
 function stairFlat(S, lx, lz) { return S.u ? (lz >= S.zc || S.side * (S.xp - lx) <= 0) : (Math.abs(S.zs * lz) >= S.uLo || S.side * (S.xp - lx) <= 0); }
 function roomFloorAt(r, lx, lz, hint = 0) { return r.stair ? stairFloor(r.stair, lx, lz, hint) : 0; }
 function updateFloor() {
+  if (FOR.on) return;                         // forest map: forestUpdate sets the ground under you
   rig.updateMatrixWorld(true);
   headWorld(_fl);
   const c = stream.current;
@@ -7517,6 +7521,7 @@ function activateRoom(room) {
   enemiesRoomActivated(room);          // step 7: one man per combat room (unless you killed him)
   termRoomActivated(room);             // step 11: the terminal screen, its collider and walk box
   try { wsRoomActivated(room); } catch (e) { console.warn('gunsmith workshop computer not placed', e); }
+  try { forestDoorRoom(room); } catch (e) { console.warn('forest door not placed', e); }   // forest map door
   try { benchLampRoom(room); } catch (e) { console.warn('bench lamp not placed', e); }   // the lamp over the gunsmith bench
   nightApplyRoom(room);                // step 11: tubes off in combat rooms at night
   rebuildWalk();
@@ -7733,6 +7738,7 @@ function roomWarm(r) {
 
 const safeRoomOther = (r) => [...stream.rooms.values()].some((q) => q !== r && q.kind === 'safe' && q.active);
 function updateStreaming() {
+  if (FOR.on) { forestUpdate(); return; }   // forest map: no rooms stream while you are out there
   const S = CONFIG.stream;
   rig.updateMatrixWorld(true);
   updateViewFrustum();
@@ -9789,7 +9795,8 @@ const _probe = new THREE.Vector3(), _probe2 = new THREE.Vector3();
 // How far the real head has pushed into geometry (VR only: you can lean through things physically).
 function headPenetration(head) {
   const r = CONFIG.comfort.headRadius;
-  const cr = stream.current;                 // step 12: the ceiling of the room you're in (stairwells are tall)
+  const cr = FOR.on ? null : stream.current;   // forest: open sky
+  if (FOR.on) { let dd = 0; for (const col of colliders) { _probe2.copy(head); dd = Math.max(dd, pushOutOf(col, _probe2, r)); } return dd; }   // step 12: the ceiling of the room you're in (stairwells are tall)
   let depth = Math.max(0, r - ((cr ? cr.origin.y + cr.h : CONFIG.room.h) - head.y));
   for (const col of colliders) {
     if (head.y > col.top + r || !colOnFloor(col, level.floor)) continue;   // stair door fix: the floor rule too (the box over a U well's low doorway, the room above, blacked out the doorframe)
@@ -16050,7 +16057,7 @@ function fixturesRestore(room) {
 const colliderInfo = new Map();     // collider handle -> { room, kind }
 const doorByCollider = new Map();
 const roomMemory = new Map();       // `${kind}:${slot}` -> { holes: [], doorHoles: [] }
-const memKey = (room) => `${room.kind}:${room.slot}`;
+const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;   // forest zones carry their own id
 function roomMem(room) {
   let m = roomMemory.get(memKey(room));
   if (!m) { m = { holes: [], doorHoles: [] }; roomMemory.set(memKey(room), m); }
@@ -23916,6 +23923,7 @@ function tableBoxes(room) {
   return out;
 }
 function navGrid(room) {
+  if (room.navCache) return room.navCache;   // forest zones: built once
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
   const boxes = (room.walkLocal || []).concat(tableBoxes(room));
@@ -24030,6 +24038,7 @@ function enemySees(e) {
  * nudged a crack, or still latching shut, doesn't count). Opening the door is how they find out. */
 const _rs = new THREE.Vector3();
 function roomCanSense(room) {
+  if (room && room.kind === 'forest') return room.active;   // forest: open ground, no doors
   if (!room || !room.active) return false;
   headWorld(_rs);
   if (insideRoom(room, _rs.x, _rs.z, 0, _rs.y)) return true;
@@ -24712,6 +24721,7 @@ function updatePlayerVitals(dt, now) {
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
 function respawnPlayer() {
+  if (FOR.on) forestLeave();                  // forest map: you wake up in the safe room
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
   // pulled back to it so it stays the safe room.
   const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
@@ -38268,7 +38278,7 @@ function hgRestore(why, dYaw = 0, at = null) {
   console.info(`[head guard] ${why}: head put back ${Math.hypot(tx - HG.h.x, tz - HG.h.z).toFixed(2)} m`);
 }
 function headGuard(dt) {
-  if (!HG.on || !ready || !stream.current) return;
+  if (!HG.on || !ready || !stream.current || FOR.on) return;   // forest: no rooms to guard
   const vr = renderer.xr.isPresenting, now = performance.now() / 1000, r = CONFIG.player.radius;
   if (vr !== HG.vr) { HG.vr = vr; HG.camHas = false; HG.bad = false; HG.out = HG.deep = 0; }
   HG.e.setFromQuaternion(camera.quaternion, 'YXZ');
@@ -39283,7 +39293,9 @@ function tick(timeMs) {
   termUpdate(dt);        // step 11: the safe room terminal (touch / aim, redraw only on change)
   wsUpdate(dt);          // the gunsmith workshop computer (the store; same touch / aim, redraw only on change)
   profMark('stream');
-  enemiesUpdate(dtW, tW, dt, t);   // step 7: sight, decisions, movement, pose, his shots; your health
+  enemiesUpdate(dtW, tW, dt, t);   // step 7
+  if (FOR.on) forestEnemyY(); else forestSafeTick();   // forest map: men stand on the terrain; the FOREST door
+  //: sight, decisions, movement, pose, his shots; your health
   loopUpdate(dtW);       // step 9: director stress
   stressUpdate(dt);      // step 41: your breathing, heartbeat, tremor
   goreUpdate(dtW);       // step 41: pools drying, you dripping
@@ -39385,6 +39397,7 @@ function stillsSave(item) {
 }
 function stillsWhere(room) {
   if (!room) return 'Room';
+  if (room.kind === 'forest') return 'Forest';
   if (room.kind === 'safe') return 'Safe room 00';
   const p = roomPlan(room.slot);
   return (p && p.number) || `Room ${room.slot}`;
@@ -45978,6 +45991,337 @@ function atcKnock(p, now) {
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty, atcBuild, atcEnsure, atcSigOf, atcBody, atcProbe, atcFree, atcItemClip, atcKnock,
   gunClipWorld, gunFreeAt, gunClipShape, updateGunProbe, updateHeldItem, clipReady, updateDoorsPre, updateDoorsPost, stepPhysics, CLIP, COLL, GROUP });
+
+
+/* ---------------------------------------------------------------------------
+ *  FOREST MAP (?forest=off removes the door)
+ *  A FOREST door in the safe room takes you to a procedural forest on the same page
+ *  (same body, guns, VR). Terrain and trees stream in 32 m chunks round you,
+ *  deterministic per seed. Trees: the MIT realistic-forest TreeGenerator (cqc/forest/),
+ *  coarsest LOD, instanced per species. Each chunk can hold a squad (2-3 men) planned
+ *  like a room: a pseudo-room per chunk (kind 'forest', own nav grid round its trees).
+ *  An EXIT door by the spawn takes you back to the safe room (points bank there).
+ * ------------------------------------------------------------------------- */
+const FOR = {
+  on: false, door: !/[?&]forest=off/.test(location.search), seed: 1337, C: 32, R: 2, N: 16,
+  base: new THREE.Vector3(), S: { x: 16, z: 16 }, chunks: new Map(), queue: [], zones: new Map(),
+  vars: null, inst: [], mats: null, light: null, sun: null, bg: null, cool: 0, pc: null, dirty: false,
+  doorGrp: null, doorRoom: null, kit: [], kitBody: null, exitGrp: null, v: new THREE.Vector3(), m: new THREE.Matrix4(),
+  q: new THREE.Quaternion(), s3: new THREE.Vector3(), e: new THREE.Euler()
+};
+const FOR_SP = [['beech', 3], ['oak', 2], ['fir', 3], ['pine', 2], ['birch', 1.5], ['hazel', 1.5], ['snag', 0.6]];
+function forN(x, z) {                                   // value noise, -1..1
+  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+  const h = (a, b) => (forHash(a + FOR.seed * 31, b) & 0xffff) / 32767.5 - 1;
+  const u = fx * fx * (3 - 2 * fx), w = fz * fz * (3 - 2 * fz);
+  const a = h(ix, iz), b = h(ix + 1, iz), c = h(ix, iz + 1), d = h(ix + 1, iz + 1);
+  return a + (b - a) * u + (c - a) * w + (a - b - c + d) * u * w;
+}
+// Ground height (forest-local x, z), metres over the base: gentle banks and hollows (the men walk it too)
+function fH(x, z) {
+  const d = Math.hypot(x - FOR.S.x, z - FOR.S.z), k = 0.35 + 0.65 * Math.min(1, d / 18);
+  return k * (3.0 * forN(x / 95 + 7.1, z / 95 - 3.3) + 1.0 * forN(x / 31 + 1.7, z / 31 + 9.2) + 0.2 * forN(x / 8, z / 8));
+}
+function forMats() {
+  if (FOR.mats) return FOR.mats;
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const g = cv.getContext('2d'); g.fillStyle = '#5b4a35'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2600; i++) {                        // litter: needles, leaves, moss, grit
+    const r = Math.random(); g.fillStyle = r < 0.3 ? '#3d4a26' : r < 0.55 ? '#7a5a34' : r < 0.8 ? '#45382a' : '#8a7a5c';
+    g.globalAlpha = 0.35 + Math.random() * 0.5; g.save(); g.translate(Math.random() * 256, Math.random() * 256); g.rotate(Math.random() * 6.3);
+    g.fillRect(-Math.random() * 5, -1, 2 + Math.random() * 8, 1 + Math.random() * 2.5); g.restore();
+  }
+  const gt = new THREE.CanvasTexture(cv); gt.wrapS = gt.wrapT = THREE.RepeatWrapping; gt.colorSpace = THREE.SRGBColorSpace; gt.anisotropy = 4;
+  const lc = document.createElement('canvas'); lc.width = lc.height = 128;
+  const l = lc.getContext('2d');
+  for (let i = 0; i < 46; i++) {                          // a cluster of leaves on a card (alpha cut)
+    const a = Math.random() * 6.3, rr = Math.random() * 46;
+    l.fillStyle = `hsl(${85 + Math.random() * 25},${35 + Math.random() * 25}%,${28 + Math.random() * 22}%)`;
+    l.save(); l.translate(64 + Math.cos(a) * rr, 64 + Math.sin(a) * rr); l.rotate(Math.random() * 6.3);
+    l.beginPath(); l.ellipse(0, 0, 9, 4, 0, 0, 6.3); l.fill(); l.restore();
+  }
+  const lt = new THREE.CanvasTexture(lc); lt.colorSpace = THREE.SRGBColorSpace;
+  FOR.mats = {
+    ground: new THREE.MeshStandardMaterial({ map: gt, vertexColors: true, roughness: 0.95, metalness: 0 }),
+    leafTex: lt, wood: new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 0.9 }),
+    door: new THREE.MeshStandardMaterial({ color: 0x3e4a3c, roughness: 0.55, metalness: 0.3 }),
+    frame: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 })
+  };
+  return FOR.mats;
+}
+function forVariants() {
+  if (FOR.vars) return FOR.vars;
+  const M = forMats();
+  FOR.vars = FOR_SP.map(([k, w]) => {
+    const sp = FOREST_SPECIES[k], b = buildTreeLods(sp, forHash(k.length * 7919, 13), { age: 0.8 }), L = b.lods[2];
+    const avg = (c) => [0, 1, 2].map((i) => (c[0][i] + c[1][i]) / 2);
+    const bc = avg(sp.barkColor), bark = new THREE.MeshStandardMaterial({ roughness: 0.92 });
+    bark.color.setRGB(bc[0] * 2, bc[1] * 2, bc[2] * 2);
+    let leaf = null;
+    if (L.leafGeometry) {
+      const lc = avg(sp.leafColor);
+      leaf = new THREE.MeshStandardMaterial({ map: M.leafTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.8 });
+      leaf.color.setRGB(lc[0] * 9, lc[1] * 6, lc[2] * 9);
+    }
+    const mk = (geo, mat) => { if (!geo) return null; const im = new THREE.InstancedMesh(geo, mat, 900); im.count = 0; im.frustumCulled = false; im.castShadow = false; im.receiveShadow = false; scene.add(im); return im; };
+    return { k, w, r: Math.max(0.12, b.radius * 0.8), small: b.height < 6, bark: mk(L.branchGeometry, bark), leaf: mk(L.leafGeometry, leaf) };
+  });
+  return FOR.vars;
+}
+function forPick(rng) {
+  let t = 0; for (const [, w] of FOR_SP) t += w;
+  let r = rng.f() * t;
+  for (let i = 0; i < FOR_SP.length; i++) { r -= FOR_SP[i][1]; if (r <= 0) return i; }
+  return 0;
+}
+function forChunkBuild(cx, cz) {
+  const C = FOR.C, N = FOR.N, ox = cx * C, oz = cz * C, M = forMats();
+  const pos = new Float32Array((N + 1) * (N + 1) * 3), col = new Float32Array(pos.length), uv = new Float32Array((N + 1) * (N + 1) * 2), idx = [];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+    const n = j * (N + 1) + i, x = i * C / N, z = j * C / N, h = fH(ox + x, oz + z), m = 0.5 + 0.5 * forN((ox + x) / 7, (oz + z) / 7);
+    pos[n * 3] = x; pos[n * 3 + 1] = h; pos[n * 3 + 2] = z;
+    col[n * 3] = 0.75 + 0.25 * (1 - m); col[n * 3 + 1] = 0.8 + 0.2 * m; col[n * 3 + 2] = 0.7;
+    uv[n * 2] = (ox + x) / 3; uv[n * 2 + 1] = (oz + z) / 3;
+    if (i < N && j < N) idx.push(n, n + N + 1, n + 1, n + 1, n + N + 1, n + N + 2);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); geo.setIndex(idx); geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, M.ground);
+  mesh.position.set(FOR.base.x + ox, FOR.base.y, FOR.base.z + oz); mesh.receiveShadow = false;
+  scene.add(mesh);
+  const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(mesh.position.x, mesh.position.y, mesh.position.z));
+  world.createCollider(RAPIER.ColliderDesc.trimesh(pos, new Uint32Array(idx)).setFriction(0.8).setCollisionGroups(COLL.static), body);
+  // trees: dense near the spawn, thinning out; never on the spawn clearing or the exit door
+  const rng = new ForRng(forHash(cx * 92821 + FOR.seed, cz * 68917 + 7)), trees = [];
+  const dS = Math.hypot(ox + C / 2 - FOR.S.x, oz + C / 2 - FOR.S.z), want = Math.round(30 - 14 * Math.min(1, dS / 250));
+  for (let a = 0; a < want * 4 && trees.length < want; a++) {
+    const x = ox + rng.f() * C, z = oz + rng.f() * C;
+    if (Math.hypot(x - FOR.S.x, z - FOR.S.z) < 7.5) continue;
+    if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 2.4)) continue;
+    const vi = forPick(rng), V = FOR.vars[vi], s = 0.75 + rng.f() * 0.4;
+    const t = { x, z, y: fH(x, z), vi, s, yaw: rng.f() * 6.283, r: V.r * s, col: !V.small };
+    if (t.col) world.createCollider(RAPIER.ColliderDesc.cylinder(3, t.r).setTranslation(x - ox, t.y + 2.8, z - oz).setCollisionGroups(COLL.static), body);
+    trees.push(t);
+  }
+  return { cx, cz, mesh, body, trees };
+}
+function forChunkDrop(ch) {
+  scene.remove(ch.mesh); ch.mesh.geometry.dispose();
+  world.removeRigidBody(ch.body);
+  forZoneOff(ch.cx, ch.cz);
+}
+function forInstances() {
+  for (const V of FOR.vars) { if (V.bark) V.bark.count = 0; if (V.leaf) V.leaf.count = 0; }
+  const { m, q, s3, e, v } = FOR;
+  for (const ch of FOR.chunks.values()) for (const t of ch.trees) {
+    const V = FOR.vars[t.vi];
+    if (V.bark && V.bark.count >= 900) continue;
+    q.setFromEuler(e.set(0, t.yaw, 0)); s3.setScalar(t.s); v.set(FOR.base.x + t.x, FOR.base.y + t.y - 0.15, FOR.base.z + t.z);
+    m.compose(v, q, s3);
+    if (V.bark) V.bark.setMatrixAt(V.bark.count++, m);
+    if (V.leaf) V.leaf.setMatrixAt(V.leaf.count++, m);
+  }
+  for (const V of FOR.vars) { if (V.bark) V.bark.instanceMatrix.needsUpdate = true; if (V.leaf) V.leaf.instanceMatrix.needsUpdate = true; }
+}
+function forWalk(pcx, pcz) {                             // your body (and the men) round the trunks near you
+  colliders.length = 0;
+  for (const ch of FOR.chunks.values()) {
+    if (Math.max(Math.abs(ch.cx - pcx), Math.abs(ch.cz - pcz)) > 1) continue;
+    for (const t of ch.trees) if (t.col) colliders.push({ x: FOR.base.x + t.x, z: FOR.base.z + t.z, c: 1, s: 0, hx: t.r * 0.85, hz: t.r * 0.85, top: FOR.base.y + t.y + 20, bot: FOR.base.y + t.y - 3 });
+  }
+  colliders.push({ x: FOR.base.x + FOR.S.x + 2.2, z: FOR.base.z + FOR.S.z - 0.6, c: 1, s: 0, hx: 1.25, hz: 0.6, top: FOR.base.y + fH(FOR.S.x, FOR.S.z) + 0.5, bot: FOR.base.y - 10 });   // the kit pallet
+}
+// A squad per chunk, planned once (roomMem keeps who died), spawned while you are within one chunk of it
+function forZoneOn(ch) {
+  const C = FOR.C, lx = (ch.cx + 0.5) * C, lz = (ch.cz + 0.5) * C, key = `${ch.cx},${ch.cz}`;
+  if (FOR.zones.has(key)) return;
+  const room = {
+    kind: 'forest', slot: stream.current ? stream.current.slot : 0, memId: `forest:${FOR.seed}:${key}`, w: C, d: C, h: 30,
+    origin: new THREE.Vector3(FOR.base.x + lx, FOR.base.y + fH(lx, lz), FOR.base.z + lz), f: 1, entryX: 0, exitX: 99, entryY: 0, exitY: 0,
+    stair: null, plan: null, layout: null, cover: null, group: new THREE.Group(), doorGroup: new THREE.Group(), walkLocal: [],
+    ownGeo: [], ownMat: [], troffers: [], colliderHandles: [], active: true, visible: true, enemies: [], ch
+  };
+  for (const t of ch.trees) if (t.col) room.walkLocal.push({ x: t.x - lx, z: t.z - lz, a: 0, hx: t.r, hz: t.r, top: 20 });
+  const m = roomMem(room);
+  if (!m.plan) {
+    const rng = new ForRng(forHash(ch.cx * 7 + 3 + FOR.seed, ch.cz * 13 + 1)), list = [];
+    const n = Math.max(Math.abs(ch.cx), Math.abs(ch.cz)) <= 1 || rng.f() > 0.38 ? 0 : 2 + (rng.f() < 0.45 ? 1 : 0);
+    for (let i = 0; i < n; i++) {
+      const r = rng.f();
+      list.push({ gun: r < 0.2 ? 'pistol' : r < 0.35 ? 'shotgun' : 'smg', skill: 0.35 + rng.f() * 0.3, aggr: 0.3 + rng.f() * 0.4, torch: false, look: rng.f() < 0.5 ? 0 : 1 });
+    }
+    if (list.length) aiAssignRoles(list);
+    m.plan = { list, dead: list.map(() => false), cleared: !list.length, threat: 0.5, enteredT: 0, dmg: 0 };
+  }
+  FOR.zones.set(key, room);
+  if (!m.plan.list.length || m.plan.dead.every(Boolean)) return;
+  room.group.position.copy(room.origin); scene.add(room.group);
+  room.navCache = navGrid(room);
+  const taken = [];
+  m.plan.list.forEach((s, i) => { if (!m.plan.dead[i]) { try { spawnEnemy(room, s, i, taken); } catch (err) { console.warn('forest: man not spawned', err); } } });
+}
+function forZoneOff(cx, cz) {
+  const key = `${cx},${cz}`, room = FOR.zones.get(key);
+  if (!room) return;
+  for (const e of [...ENEMY.list]) if (e.room === room) removeEnemy(e);
+  room.active = false;
+  if (room.group.parent) scene.remove(room.group);
+  FOR.zones.delete(key);
+}
+function forestEnemyY() {                                 // men stand on the terrain (their room floor follows the squad)
+  for (const room of FOR.zones.values()) {
+    const live = room.enemies.filter((e) => !e.dead);
+    if (!live.length) continue;
+    let s = 0;
+    for (const e of live) s += fH(room.origin.x - FOR.base.x + e.pos.x, room.origin.z - FOR.base.z + e.pos.y);
+    room.origin.y = FOR.base.y + s / live.length; room.group.position.y = room.origin.y;
+    for (const e of live) e.root.position.y = FOR.base.y + fH(room.origin.x - FOR.base.x + e.pos.x, room.origin.z - FOR.base.z + e.pos.y) - room.origin.y;
+  }
+}
+function forDoorMesh(label, M) {
+  const g = new THREE.Group(), D = CONFIG.door;
+  const box = (w, h, d, x, y, z, mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); g.add(m); return m; };
+  box(0.06, D.height + 0.06, 0.12, -D.width / 2 - 0.03, (D.height + 0.06) / 2, 0, M.frame);
+  box(0.06, D.height + 0.06, 0.12, D.width / 2 + 0.03, (D.height + 0.06) / 2, 0, M.frame);
+  box(D.width + 0.12, 0.06, 0.12, 0, D.height + 0.03, 0, M.frame);
+  box(D.width - 0.01, D.height - 0.01, 0.045, 0, D.height / 2, 0, M.door);
+  box(0.03, 0.12, 0.05, D.width / 2 - 0.1, 1.02, 0.04, M.frame);
+  const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+  const c = cv.getContext('2d'); c.fillStyle = '#123018'; c.fillRect(0, 0, 256, 64); c.fillStyle = '#d8f0d0'; c.font = 'bold 40px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(label, 128, 34);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), new THREE.MeshBasicMaterial({ map: t }));
+  sign.position.set(0, D.height + 0.2, 0.065); g.add(sign);
+  return g;
+}
+// The FOREST door: on the safe room's right wall, between the terminal and the gunsmith bench
+function forestDoorRoom(room) {
+  if (!FOR.door || room.kind !== 'safe') return;
+  if (!FOR.doorGrp) FOR.doorGrp = forDoorMesh('FOREST', forMats());
+  FOR.doorGrp.position.set(room.w / 2 - 0.07, 0, 1.4); FOR.doorGrp.rotation.y = -Math.PI / 2;
+  room.group.add(FOR.doorGrp); FOR.doorRoom = room;
+}
+const _ft = new THREE.Vector3();
+function forTeleport(x, z, floorY, yaw) {
+  stance.crouchOn = false; xrState.crouchOn = false; xrState.crouchCur = 0;
+  level.floor = floorY; level.flat = true; applyHeight(); rig.updateMatrixWorld(true);
+  if (renderer.xr.isPresenting) rotateRigAroundHead(yaw - yawOf(camera)); else { look.yaw = yaw; look.pitch = 0; applyLook(); }
+  rig.updateMatrixWorld(true); headWorld(_ft);
+  rig.position.x += x - _ft.x; rig.position.z += z - _ft.z; rig.updateMatrixWorld(true);
+  _vel.set(0, 0, 0); playerState.hasPrev = false;
+}
+function forestSafeTick() {                               // walk into the FOREST door
+  const R = FOR.doorRoom, now = performance.now() / 1000;
+  if (!FOR.door || !R || !R.active || stream.current !== R || playerState.dead || now < FOR.cool) return;
+  headWorld(_ft);
+  const lx = rLX(R, _ft.x), lz = rLZ(R, _ft.z);
+  if (lx > R.w / 2 - 0.5 && Math.abs(lz - 1.4) < 0.42 && Math.abs(_ft.y - R.origin.y - 1.3) < 1.2) forestEnter();
+}
+function forKitPlace() {                                  // every locker gun on a pallet by the spawn, magazines by the exit door
+  const M = forMats(), S = FOR.S, y0 = FOR.base.y + fH(S.x, S.z);
+  const pal = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.5, 1.2), M.wood);
+  pal.position.set(FOR.base.x + S.x + 2.2, y0 + 0.0, FOR.base.z + S.z - 0.6); scene.add(pal);
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.6), M.wood);
+  crate.position.set(FOR.base.x + S.x - 1.4, y0 + 0.0, FOR.base.z + S.z + 3.2); scene.add(crate);
+  FOR.kitMeshes = [pal, crate];
+  FOR.kitBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
+  world.createCollider(RAPIER.ColliderDesc.cuboid(1.25, 0.25, 0.6).setTranslation(pal.position.x, pal.position.y, pal.position.z).setCollisionGroups(COLL.static), FOR.kitBody);
+  world.createCollider(RAPIER.ColliderDesc.cuboid(0.4, 0.25, 0.3).setTranslation(crate.position.x, crate.position.y, crate.position.z).setCollisionGroups(COLL.static), FOR.kitBody);
+  const types = GL.types.concat(GL.pistols).filter((k) => { try { return glReady(k); } catch (e) { return false; } });
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2, Math.PI / 2)), mags = [];
+  types.forEach((k, i) => {
+    try {
+      const p = createGun(k);
+      itemToWorld(p, FOR.v.set(pal.position.x - 1.0 + i * 2.0 / Math.max(1, types.length - 1), y0 + 0.35, pal.position.z), q);
+      FOR.kit.push(p);
+      const mt = WEAPON_DEFS[k].magType;
+      if (mt && MAG_DEFS[mt] && !mags.includes(mt)) mags.push(mt);
+    } catch (e) { console.warn('forest: gun not placed', k, e); }
+  });
+  let n = 0;
+  for (const mt of mags) for (let j = 0; j < 2; j++) {
+    try {
+      const p = createMag(mt, MAG_DEFS[mt].capacity);
+      itemToWorld(p, FOR.v.set(crate.position.x - 0.3 + (n % 6) * 0.12, y0 + 0.32 + Math.floor(n / 6) * 0.06, crate.position.z - 0.15 + (n % 2) * 0.3), new THREE.Quaternion());
+      FOR.kit.push(p); n++;
+    } catch (e) { console.warn('forest: magazine not placed', mt, e); }
+  }
+}
+function forestEnter() {
+  FOR.cool = performance.now() / 1000 + 2;
+  const R = FOR.doorRoom;
+  FOR.base.set(R.origin.x + 4000, R.origin.y, R.origin.z);   // far from every room
+  forVariants();
+  for (const r of stream.rooms.values()) { r.group.visible = false; r.doorGroup.visible = false; r.visible = false; }
+  if (!FOR.light) {
+    FOR.light = new THREE.HemisphereLight(0xcfe0ff, 0x3a3020, 0); FOR.sun = new THREE.DirectionalLight(0xfff2dc, 0);
+    FOR.sun.position.set(0.5, 1, 0.3); scene.add(FOR.light, FOR.sun, FOR.sun.target);
+  }
+  FOR.light.intensity = 1.6; FOR.sun.intensity = 2.4;
+  FOR.bg = scene.background; scene.background = new THREE.Color(0x9fb0b8);
+  FOR.on = true; FOR.pc = null;
+  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) FOR.chunks.set(`${i},${j}`, forChunkBuild(i, j));   // the spawn ring at once
+  forKitPlace();
+  if (!FOR.exitGrp) FOR.exitGrp = forDoorMesh('EXIT', forMats());
+  FOR.exitGrp.position.set(FOR.base.x + FOR.S.x, FOR.base.y + fH(FOR.S.x, FOR.S.z + 3.5) - 0.05, FOR.base.z + FOR.S.z + 3.5);
+  FOR.exitGrp.rotation.y = Math.PI; scene.add(FOR.exitGrp);
+  forTeleport(FOR.base.x + FOR.S.x, FOR.base.z + FOR.S.z, FOR.base.y + fH(FOR.S.x, FOR.S.z), 0);   // facing away from the exit, into the trees
+  forestUpdate();
+  if (!renderer.xr.isPresenting) toast('Forest. Your guns are on the pallet; the EXIT door is behind you', 3200);
+}
+function forestLeave() {
+  FOR.on = false; FOR.cool = performance.now() / 1000 + 2;
+  for (const ch of FOR.chunks.values()) forChunkDrop(ch);
+  FOR.chunks.clear(); FOR.queue.length = 0;
+  for (const room of [...FOR.zones.values()]) forZoneOff(room.ch.cx, room.ch.cz);
+  for (const V of FOR.vars || []) { if (V.bark) V.bark.count = 0; if (V.leaf) V.leaf.count = 0; }
+  for (const p of FOR.kit) { try { if (p.inWorld && !p.removing && !p.holders.length && !(p.item && (p.item.slot || p.item.cradle))) removeProp(p); } catch (e) { /* already gone */ } }
+  FOR.kit.length = 0;
+  for (const m of FOR.kitMeshes || []) { scene.remove(m); m.geometry.dispose(); }
+  if (FOR.kitBody) { world.removeRigidBody(FOR.kitBody); FOR.kitBody = null; }
+  if (FOR.exitGrp) scene.remove(FOR.exitGrp);
+  if (FOR.light) { FOR.light.intensity = 0; FOR.sun.intensity = 0; }
+  scene.background = FOR.bg || scene.background;
+  for (const r of stream.rooms.values()) if (r === stream.current) { r.group.visible = true; r.doorGroup.visible = true; r.visible = true; }
+  rebuildWalk();
+}
+function forestExit() {                                   // back through the EXIT door, beside the FOREST door
+  const R = FOR.doorRoom;
+  forestLeave();
+  if (!R || !R.active) { respawnPlayer(); return; }
+  stream.current = R;
+  forTeleport(rWX(R, R.w / 2 - 1.1), rWZ(R, 1.4), R.origin.y, rYaw(R) + Math.PI / 2);
+  loopEnterRoom(R);                                       // points bank as in any safe room visit
+  roomUi();
+}
+function forestUpdate() {
+  const C = FOR.C, now = performance.now() / 1000;
+  rig.updateMatrixWorld(true); headWorld(_ft);
+  const lx = _ft.x - FOR.base.x, lz = _ft.z - FOR.base.z, pcx = Math.floor(lx / C), pcz = Math.floor(lz / C);
+  const fy = FOR.base.y + fH(lx, lz);
+  if (Math.abs(fy - level.floor) > 1e-4) { level.floor = fy; applyHeight(); rig.updateMatrixWorld(true); }
+  const key = `${pcx},${pcz}`;
+  if (key !== FOR.pc) {
+    FOR.pc = key;
+    for (const ch of [...FOR.chunks.values()]) if (Math.max(Math.abs(ch.cx - pcx), Math.abs(ch.cz - pcz)) > FOR.R + 1) { forChunkDrop(ch); FOR.chunks.delete(`${ch.cx},${ch.cz}`); }
+    FOR.queue.length = 0;
+    for (let j = -FOR.R; j <= FOR.R; j++) for (let i = -FOR.R; i <= FOR.R; i++) if (!FOR.chunks.has(`${pcx + i},${pcz + j}`)) FOR.queue.push([pcx + i, pcz + j, Math.max(Math.abs(i), Math.abs(j))]);
+    FOR.queue.sort((a, b) => a[2] - b[2]);
+    for (const [k, room] of [...FOR.zones]) if (Math.max(Math.abs(room.ch.cx - pcx), Math.abs(room.ch.cz - pcz)) > 1) forZoneOff(room.ch.cx, room.ch.cz);
+    FOR.dirty = true;
+  }
+  if (FOR.queue.length) {                                 // one chunk a frame, nearest first
+    const [cx, cz] = FOR.queue.shift();
+    FOR.chunks.set(`${cx},${cz}`, forChunkBuild(cx, cz)); FOR.dirty = true;
+  }
+  if (FOR.dirty) {
+    FOR.dirty = false; forInstances(); forWalk(pcx, pcz);
+    for (const ch of FOR.chunks.values()) if (Math.max(Math.abs(ch.cx - pcx), Math.abs(ch.cz - pcz)) <= 1) forZoneOn(ch);
+  }
+  const zr = FOR.zones.get(key);
+  if (zr) { const pl = roomMem(zr).plan; if (pl && !pl.enteredT) pl.enteredT = now; }
+  if (now > FOR.cool && Math.hypot(lx - FOR.S.x, lz - FOR.S.z - 3.5) < 0.55) forestExit();
+}
 
 </script>
 </body>
