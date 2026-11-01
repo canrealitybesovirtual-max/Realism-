@@ -2063,9 +2063,7 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { buildTreeLods } from './forest/TreeGenerator.js';   // forest map (MIT, Token Gremlin realistic-forest)
-import { SPECIES as FOREST_SPECIES } from './forest/TreeSpecies.js';
-import { Rng as ForRng, hash2i as forHash } from './forest/rng.js';   // step 66: enemy characters
+import { treeAtlasCanvas } from './city/trees.js';   // city map (the user's Brutalist Complex); step 66: enemy characters
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -7360,7 +7358,7 @@ function stairFloor(S, lx, lz, hint = 0) {
 function stairFlat(S, lx, lz) { return S.u ? (lz >= S.zc || S.side * (S.xp - lx) <= 0) : (Math.abs(S.zs * lz) >= S.uLo || S.side * (S.xp - lx) <= 0); }
 function roomFloorAt(r, lx, lz, hint = 0) { return r.stair ? stairFloor(r.stair, lx, lz, hint) : 0; }
 function updateFloor() {
-  if (FOR.on) return;                         // forest map: forestUpdate sets the ground under you
+  if (CITY.on) return;                        // city map: cityUpdate sets the ground under you
   rig.updateMatrixWorld(true);
   headWorld(_fl);
   const c = stream.current;
@@ -7521,7 +7519,7 @@ function activateRoom(room) {
   enemiesRoomActivated(room);          // step 7: one man per combat room (unless you killed him)
   termRoomActivated(room);             // step 11: the terminal screen, its collider and walk box
   try { wsRoomActivated(room); } catch (e) { console.warn('gunsmith workshop computer not placed', e); }
-  try { forestDoorRoom(room); } catch (e) { console.warn('forest door not placed', e); }   // forest map door
+  try { cityDoorRoom(room); } catch (e) { console.warn('city door not placed', e); }   // city map door
   try { benchLampRoom(room); } catch (e) { console.warn('bench lamp not placed', e); }   // the lamp over the gunsmith bench
   nightApplyRoom(room);                // step 11: tubes off in combat rooms at night
   rebuildWalk();
@@ -7738,7 +7736,7 @@ function roomWarm(r) {
 
 const safeRoomOther = (r) => [...stream.rooms.values()].some((q) => q !== r && q.kind === 'safe' && q.active);
 function updateStreaming() {
-  if (FOR.on) { forestUpdate(); return; }   // forest map: no rooms stream while you are out there
+  if (CITY.on) { cityUpdate(); return; }   // city map: no rooms stream while you are out there
   const S = CONFIG.stream;
   rig.updateMatrixWorld(true);
   updateViewFrustum();
@@ -9795,8 +9793,8 @@ const _probe = new THREE.Vector3(), _probe2 = new THREE.Vector3();
 // How far the real head has pushed into geometry (VR only: you can lean through things physically).
 function headPenetration(head) {
   const r = CONFIG.comfort.headRadius;
-  const cr = FOR.on ? null : stream.current;   // forest: open sky
-  if (FOR.on) { let dd = 0; for (const col of colliders) { _probe2.copy(head); dd = Math.max(dd, pushOutOf(col, _probe2, r)); } return dd; }   // step 12: the ceiling of the room you're in (stairwells are tall)
+  const cr = CITY.on ? null : stream.current;   // city: open sky
+  if (CITY.on) { let dd = 0; for (const col of colliders) { _probe2.copy(head); dd = Math.max(dd, pushOutOf(col, _probe2, r)); } return dd; }   // step 12: the ceiling of the room you're in (stairwells are tall)
   let depth = Math.max(0, r - ((cr ? cr.origin.y + cr.h : CONFIG.room.h) - head.y));
   for (const col of colliders) {
     if (head.y > col.top + r || !colOnFloor(col, level.floor)) continue;   // stair door fix: the floor rule too (the box over a U well's low doorway, the room above, blacked out the doorframe)
@@ -16057,7 +16055,7 @@ function fixturesRestore(room) {
 const colliderInfo = new Map();     // collider handle -> { room, kind }
 const doorByCollider = new Map();
 const roomMemory = new Map();       // `${kind}:${slot}` -> { holes: [], doorHoles: [] }
-const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;   // forest zones carry their own id
+const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;   // city zones carry their own id
 function roomMem(room) {
   let m = roomMemory.get(memKey(room));
   if (!m) { m = { holes: [], doorHoles: [] }; roomMemory.set(memKey(room), m); }
@@ -23923,7 +23921,7 @@ function tableBoxes(room) {
   return out;
 }
 function navGrid(room) {
-  if (room.navCache) return room.navCache;   // forest zones: built once
+  if (room.navCache) return room.navCache;   // city zones: built once
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
   const boxes = (room.walkLocal || []).concat(tableBoxes(room));
@@ -24038,7 +24036,7 @@ function enemySees(e) {
  * nudged a crack, or still latching shut, doesn't count). Opening the door is how they find out. */
 const _rs = new THREE.Vector3();
 function roomCanSense(room) {
-  if (room && room.kind === 'forest') return room.active;   // forest: open ground, no doors
+  if (room && room.kind === 'city') return room.active;   // city: open streets, no doors
   if (!room || !room.active) return false;
   headWorld(_rs);
   if (insideRoom(room, _rs.x, _rs.z, 0, _rs.y)) return true;
@@ -24721,7 +24719,7 @@ function updatePlayerVitals(dt, now) {
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
 function respawnPlayer() {
-  if (FOR.on) forestLeave();                  // forest map: you wake up in the safe room
+  if (CITY.on) cityLeave();                   // city map: you wake up in the safe room
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
   // pulled back to it so it stays the safe room.
   const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
@@ -38278,7 +38276,7 @@ function hgRestore(why, dYaw = 0, at = null) {
   console.info(`[head guard] ${why}: head put back ${Math.hypot(tx - HG.h.x, tz - HG.h.z).toFixed(2)} m`);
 }
 function headGuard(dt) {
-  if (!HG.on || !ready || !stream.current || FOR.on) return;   // forest: no rooms to guard
+  if (!HG.on || !ready || !stream.current || CITY.on) return;   // city: no rooms to guard
   const vr = renderer.xr.isPresenting, now = performance.now() / 1000, r = CONFIG.player.radius;
   if (vr !== HG.vr) { HG.vr = vr; HG.camHas = false; HG.bad = false; HG.out = HG.deep = 0; }
   HG.e.setFromQuaternion(camera.quaternion, 'YXZ');
@@ -39294,7 +39292,7 @@ function tick(timeMs) {
   wsUpdate(dt);          // the gunsmith workshop computer (the store; same touch / aim, redraw only on change)
   profMark('stream');
   enemiesUpdate(dtW, tW, dt, t);   // step 7
-  if (FOR.on) forestEnemyY(); else forestSafeTick();   // forest map: men stand on the terrain; the FOREST door
+  if (CITY.on) cityEnemyY(); else citySafeTick();   // city map: men stand on the city ground; the CITY door
   //: sight, decisions, movement, pose, his shots; your health
   loopUpdate(dtW);       // step 9: director stress
   stressUpdate(dt);      // step 41: your breathing, heartbeat, tremor
@@ -39397,7 +39395,7 @@ function stillsSave(item) {
 }
 function stillsWhere(room) {
   if (!room) return 'Room';
-  if (room.kind === 'forest') return 'Forest';
+  if (room.kind === 'city') return 'City';
   if (room.kind === 'safe') return 'Safe room 00';
   const p = roomPlan(room.slot);
   return (p && p.number) || `Room ${room.slot}`;
@@ -45994,333 +45992,553 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty,
 
 
 /* ---------------------------------------------------------------------------
- *  FOREST MAP (?forest=off removes the door)
- *  A FOREST door in the safe room takes you to a procedural forest on the same page
- *  (same body, guns, VR). Terrain and trees stream in 32 m chunks round you,
- *  deterministic per seed. Trees: the MIT realistic-forest TreeGenerator (cqc/forest/),
- *  coarsest LOD, instanced per species. Each chunk can hold a squad (2-3 men) planned
- *  like a room: a pseudo-room per chunk (kind 'forest', own nav grid round its trees).
+ *  CITY MAP (?city=off removes the door)
+ *  A CITY door in the safe room takes you to the user's "Brutalist Complex" on the same page
+ *  (same body, guns, VR, menus). cqc/city/gen.js is the map's own generator, unchanged; it runs
+ *  in a worker (cqc/city/worker.js) started when the door is first placed, then everything it
+ *  makes is drawn here: buildings, interiors, roads, river, terrain, trees, lamps (atlas tiles
+ *  and baked indoor light), window and door kits, water, ladders. Meshes stream in by 40 m
+ *  bucket round you; Rapier colliders (its boxes and ramps + terrain triangles) stream round you.
+ *  Its own UI (compass, minimap, Places, Map, Settings: time of day, weather, quality,
+ *  flashlight) shows on a computer while you are there. Squads: a pseudo-room per 40 m zone.
  *  An EXIT door by the spawn takes you back to the safe room (points bank there).
  * ------------------------------------------------------------------------- */
-const FOR = {
-  on: false, door: !/[?&]forest=off/.test(location.search), seed: 1337, C: 32, R: 2, N: 16,
-  base: new THREE.Vector3(), S: { x: 16, z: 16 }, chunks: new Map(), queue: [], zones: new Map(),
-  vars: null, inst: [], mats: null, light: null, sun: null, bg: null, cool: 0, pc: null, dirty: false,
-  doorGrp: null, doorRoom: null, kit: [], kitBody: null, exitGrp: null, v: new THREE.Vector3(), m: new THREE.Matrix4(),
-  q: new THREE.Quaternion(), s3: new THREE.Vector3(), e: new THREE.Euler()
+const CITY = {
+  on: false, door: !/[?&]city=off/.test(location.search), Z: 40, data: null, worker: null, status: '',
+  base: new THREE.Vector3(), S: null, cells: new Map(), solidGrid: new Map(), body: null, cols: new Map(),
+  terrBody: null, terrAt: null, pc: null, zones: new Map(), mats: null, light: null, sun: null, hemi: null, torch: null,
+  bg: null, cool: 0, doorGrp: null, doorRoom: null, kit: [], kitBody: null, kitMeshes: [], exitGrp: null,
+  tod: 13, todRate: 1 / 60, weather: 'clear', draw: 400, rain: null, ui: null, walkT: 0,
+  v: new THREE.Vector3(), m: new THREE.Matrix4(), q: new THREE.Quaternion(), e: new THREE.Euler()
 };
-const FOR_SP = [['beech', 3], ['oak', 2], ['fir', 3], ['pine', 2], ['birch', 1.5], ['hazel', 1.5], ['snag', 0.6]];
-function forN(x, z) {                                   // value noise, -1..1
-  const ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
-  const h = (a, b) => (forHash(a + FOR.seed * 31, b) & 0xffff) / 32767.5 - 1;
-  const u = fx * fx * (3 - 2 * fx), w = fz * fz * (3 - 2 * fz);
-  const a = h(ix, iz), b = h(ix + 1, iz), c = h(ix, iz + 1), d = h(ix + 1, iz + 1);
-  return a + (b - a) * u + (c - a) * w + (a - b - c + d) * u * w;
+// collision box from the generator's flat solid list (cx, cz, c, s, hx, hz, y0, y1, ramp)
+const citySol = (i) => { const a = CITY.data.solids, o = i * 9; return { cx: a[o], cz: a[o + 1], c: a[o + 2], s: a[o + 3], hx: a[o + 4], hz: a[o + 5], y0: a[o + 6], y1: a[o + 7], ramp: a[o + 8] > 0.5 }; };
+function cityStart() {                                    // build the map in the background (once)
+  if (CITY.worker || CITY.data) return;
+  try {
+    CITY.status = 'Building the city';
+    CITY.worker = new Worker(new URL('./city/worker.js', import.meta.url));
+    CITY.worker.onmessage = (ev) => {
+      const d = ev.data;
+      if (d.type === 'progress') { CITY.status = d.msg; return; }
+      CITY.data = d; CITY.worker.terminate(); CITY.worker = null; CITY.status = 'ready';
+      const n = d.solids.length / 9;                       // 8 m grid of solid indices
+      for (let i = 0; i < n; i++) {
+        const o = citySol(i), ex = Math.abs(o.c) * o.hx + Math.abs(o.s) * o.hz, ez = Math.abs(o.s) * o.hx + Math.abs(o.c) * o.hz;
+        for (let x = Math.floor((o.cx - ex) / 8); x <= Math.floor((o.cx + ex) / 8); x++) for (let z = Math.floor((o.cz - ez) / 8); z <= Math.floor((o.cz + ez) / 8); z++) {
+          const k = x * 100003 + z; let L = CITY.solidGrid.get(k); if (!L) CITY.solidGrid.set(k, L = []); L.push(i);
+        }
+      }
+    };
+    CITY.worker.onerror = (e) => { console.warn('city: generator failed', e); CITY.status = 'failed'; };
+    CITY.worker.postMessage('go');
+  } catch (e) { console.warn('city: worker not started', e); CITY.status = 'failed'; }
 }
-// Ground height (forest-local x, z), metres over the base: gentle banks and hollows (the men walk it too)
-function fH(x, z) {
-  const d = Math.hypot(x - FOR.S.x, z - FOR.S.z), k = 0.35 + 0.65 * Math.min(1, d / 18);
-  return k * (3.0 * forN(x / 95 + 7.1, z / 95 - 3.3) + 1.0 * forN(x / 31 + 1.7, z / 31 + 9.2) + 0.2 * forN(x / 8, z / 8));
+// ground height (city-local), the highest surface at or below yMax: terrain triangles + boxes / ramps
+function cityTerrH(x, z) {
+  const T = CITY.data.terrain, i = Math.floor((x - T.O) / T.CS), k = Math.floor((z - T.O) / T.CS);
+  if (i < 0 || k < 0 || i >= T.G || k >= T.G) return -1e9;
+  const c = i * T.G + k, P = T.P, I = T.I;
+  for (let j = T.cnt[c]; j < T.cnt[c + 1]; j++) {
+    const t = T.list[j], a = I[t * 3] * 3, b = I[t * 3 + 1] * 3, d = I[t * 3 + 2] * 3;
+    const x1 = P[a], z1 = P[a + 2], x2 = P[b], z2 = P[b + 2], x3 = P[d], z3 = P[d + 2];
+    const det = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3); if (Math.abs(det) < 1e-9) continue;
+    const l1 = ((z2 - z3) * (x - x3) + (x3 - x2) * (z - z3)) / det, l2 = ((z3 - z1) * (x - x3) + (x1 - x3) * (z - z3)) / det, l3 = 1 - l1 - l2;
+    if (l1 >= -1e-4 && l2 >= -1e-4 && l3 >= -1e-4) return l1 * P[a + 1] + l2 * P[b + 1] + l3 * P[d + 1];
+  }
+  return -1e9;
 }
-function forMats() {
-  if (FOR.mats) return FOR.mats;
-  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
-  const g = cv.getContext('2d'); g.fillStyle = '#5b4a35'; g.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 2600; i++) {                        // litter: needles, leaves, moss, grit
-    const r = Math.random(); g.fillStyle = r < 0.3 ? '#3d4a26' : r < 0.55 ? '#7a5a34' : r < 0.8 ? '#45382a' : '#8a7a5c';
-    g.globalAlpha = 0.35 + Math.random() * 0.5; g.save(); g.translate(Math.random() * 256, Math.random() * 256); g.rotate(Math.random() * 6.3);
-    g.fillRect(-Math.random() * 5, -1, 2 + Math.random() * 8, 1 + Math.random() * 2.5); g.restore();
+function cityGround(x, z, yMax) {
+  let best = cityTerrH(x, z); if (best > yMax) best = -1e9;
+  for (const i of CITY.solidGrid.get(Math.floor(x / 8) * 100003 + Math.floor(z / 8)) || []) {
+    const o = citySol(i), dx = x - o.cx, dz = z - o.cz, u = dx * o.c + dz * o.s, v = -dx * o.s + dz * o.c;
+    if (u < -o.hx || u > o.hx || v < -o.hz || v > o.hz) continue;
+    const top = o.ramp ? o.y0 + (o.y1 - o.y0) * (u / o.hx + 1) / 2 : o.y1;
+    if (top <= yMax && top > best) best = top;
   }
-  const gt = new THREE.CanvasTexture(cv); gt.wrapS = gt.wrapT = THREE.RepeatWrapping; gt.colorSpace = THREE.SRGBColorSpace; gt.anisotropy = 4;
-  const lc = document.createElement('canvas'); lc.width = lc.height = 128;
-  const l = lc.getContext('2d');
-  for (let i = 0; i < 46; i++) {                          // a cluster of leaves on a card (alpha cut)
-    const a = Math.random() * 6.3, rr = Math.random() * 46;
-    l.fillStyle = `hsl(${85 + Math.random() * 25},${35 + Math.random() * 25}%,${28 + Math.random() * 22}%)`;
-    l.save(); l.translate(64 + Math.cos(a) * rr, 64 + Math.sin(a) * rr); l.rotate(Math.random() * 6.3);
-    l.beginPath(); l.ellipse(0, 0, 9, 4, 0, 0, 6.3); l.fill(); l.restore();
-  }
-  const lt = new THREE.CanvasTexture(lc); lt.colorSpace = THREE.SRGBColorSpace;
-  FOR.mats = {
-    ground: new THREE.MeshStandardMaterial({ map: gt, vertexColors: true, roughness: 0.95, metalness: 0 }),
-    leafTex: lt, wood: new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 0.9 }),
-    door: new THREE.MeshStandardMaterial({ color: 0x3e4a3c, roughness: 0.55, metalness: 0.3 }),
-    frame: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 })
+  return best;
+}
+function cityMats() {
+  if (CITY.mats) return CITY.mats;
+  const at = new THREE.DataTexture(CITY.data.atlas, 2048, 1024, THREE.RGBAFormat);
+  at.colorSpace = THREE.SRGBColorSpace; at.wrapS = at.wrapT = THREE.ClampToEdgeWrapping; at.generateMipmaps = true;
+  at.minFilter = THREE.LinearMipmapLinearFilter; at.magFilter = THREE.LinearFilter; at.anisotropy = 4; at.needsUpdate = true;
+  const U = { uAtlas: { value: at }, uTexS: { value: 0.25 }, uEye: { value: new THREE.Vector3() }, uFogC: { value: new THREE.Color(0x9aa4aa) },
+    uFogN: { value: 120 }, uFogF: { value: 400 }, uLampK: { value: 0.2 } };
+  const world = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 });
+  world.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = 'attribute float aLit;\nattribute float aTile;\nvarying float vLit;\nvarying float vTile;\nvarying vec3 vCW;\nvarying vec3 vCN;\n' +
+      sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvLit = aLit; vTile = aTile; vCW = position; vCN = normal;');
+    sh.fragmentShader = 'uniform sampler2D uAtlas;\nuniform float uTexS, uFogN, uFogF, uLampK;\nuniform vec3 uEye, uFogC;\nvarying float vLit;\nvarying float vTile;\nvarying vec3 vCW;\nvarying vec3 vCN;\n' +
+      sh.fragmentShader
+        .replace('#include <color_fragment>', `#include <color_fragment>
+  if (vTile < 254.5) {
+    vec2 uv = abs(vCN.y) > 0.6 ? vCW.xz : (abs(vCN.x) > 0.6 ? vCW.zy : vCW.xy); uv *= uTexS;
+    float t = floor(vTile + 0.5); vec2 g = vec2(8.0, 4.0), o = vec2(mod(t, 8.0), floor(t / 8.0));
+    vec2 tc = (o + 0.004 + fract(uv) * 0.992) / g;
+    diffuseColor.rgb *= textureGrad(uAtlas, tc, dFdx(uv) / g, dFdy(uv) / g).rgb * 1.8 * mix(0.3, 1.0, vLit);
+  }`)
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  if (vTile > 254.5) totalEmissiveRadiance = vColor * (0.6 + uLampK * 3.0);')
+        .replace('#include <dithering_fragment>', '#include <dithering_fragment>\n  gl_FragColor.rgb = mix(gl_FragColor.rgb, uFogC, clamp((length(vCW - uEye) - uFogN) / max(1.0, uFogF - uFogN), 0.0, 1.0));');
   };
-  return FOR.mats;
+  world.customProgramCacheKey = () => 'city-world';
+  const tt = new THREE.CanvasTexture(treeAtlasCanvas()); tt.flipY = false; tt.colorSpace = THREE.SRGBColorSpace;
+  CITY.mats = {
+    U, world, tree: new THREE.MeshLambertMaterial({ map: tt, alphaTest: 0.5, side: THREE.DoubleSide, vertexColors: true }),
+    frame: new THREE.MeshStandardMaterial({ roughness: 0.7 }),
+    glass: new THREE.MeshStandardMaterial({ color: 0x31393d, roughness: 0.08, metalness: 0.4, transparent: true, opacity: 0.55 }),
+    leaf: new THREE.MeshStandardMaterial({ roughness: 0.6 }),
+    water: new THREE.MeshStandardMaterial({ color: 0x23302f, roughness: 0.05, metalness: 0.2, transparent: true, opacity: 0.8 }),
+    steel: new THREE.MeshStandardMaterial({ color: 0x5c5e60, roughness: 0.5, metalness: 0.7 }),
+    wood: new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 0.9 }),
+    door: new THREE.MeshStandardMaterial({ color: 0x4a4c48, roughness: 0.55, metalness: 0.3 }),
+    dframe: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 })
+  };
+  return CITY.mats;
 }
-function forVariants() {
-  if (FOR.vars) return FOR.vars;
-  const M = forMats();
-  FOR.vars = FOR_SP.map(([k, w]) => {
-    const sp = FOREST_SPECIES[k], b = buildTreeLods(sp, forHash(k.length * 7919, 13), { age: 0.8 }), L = b.lods[2];
-    const avg = (c) => [0, 1, 2].map((i) => (c[0][i] + c[1][i]) / 2);
-    const bc = avg(sp.barkColor), bark = new THREE.MeshStandardMaterial({ roughness: 0.92 });
-    bark.color.setRGB(bc[0] * 2, bc[1] * 2, bc[2] * 2);
-    let leaf = null;
-    if (L.leafGeometry) {
-      const lc = avg(sp.leafColor);
-      leaf = new THREE.MeshStandardMaterial({ map: M.leafTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.8 });
-      leaf.color.setRGB(lc[0] * 9, lc[1] * 6, lc[2] * 9);
-    }
-    const mk = (geo, mat) => { if (!geo) return null; const im = new THREE.InstancedMesh(geo, mat, 900); im.count = 0; im.frustumCulled = false; im.castShadow = false; im.receiveShadow = false; scene.add(im); return im; };
-    return { k, w, r: Math.max(0.12, b.radius * 0.8), small: b.height < 6, bark: mk(L.branchGeometry, bark), leaf: mk(L.leafGeometry, leaf) };
+function cityBucketMesh(b) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(b.P, 3));
+  const nb = new THREE.InterleavedBuffer(b.N, 4), cb = new THREE.InterleavedBuffer(b.C, 4);
+  g.setAttribute('normal', new THREE.InterleavedBufferAttribute(nb, 3, 0, true)); g.setAttribute('aLit', new THREE.InterleavedBufferAttribute(nb, 1, 3, true));
+  g.setAttribute('color', new THREE.InterleavedBufferAttribute(cb, 3, 0, true)); g.setAttribute('aTile', new THREE.InterleavedBufferAttribute(cb, 1, 3, false));
+  g.setIndex(new THREE.BufferAttribute(b.I, 1));
+  g.boundingBox = new THREE.Box3(new THREE.Vector3(...b.min), new THREE.Vector3(...b.max)); g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
+  const m = new THREE.Mesh(g, CITY.mats.world); m.position.copy(CITY.base); m.matrixAutoUpdate = false; m.updateMatrix();
+  return m;
+}
+function cityTreeMesh(t) {
+  const g = new THREE.BufferGeometry(), nq = t.n / 4, I = new Uint32Array(nq * 6);
+  for (let q = 0; q < nq; q++) { const v = q * 4; I.set([v, v + 1, v + 2, v, v + 2, v + 3], q * 6); }
+  g.setAttribute('position', new THREE.BufferAttribute(t.P, 3)); g.setAttribute('uv', new THREE.BufferAttribute(t.U, 2));
+  g.setAttribute('color', new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(t.C, 4), 3, 0, true));
+  g.setIndex(new THREE.BufferAttribute(I, 1)); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, CITY.mats.tree); m.position.copy(CITY.base); m.matrixAutoUpdate = false; m.updateMatrix();
+  return m;
+}
+// window and door kits, instanced per 100 m cell: frame bars + glass pane (windows), frame + open leaf (doors)
+let _cityWinGeo = null;
+function cityKitCell(list) {
+  if (!_cityWinGeo) {
+    const bar = (w, h, x, y) => new THREE.BoxGeometry(w, h, 1).translate(x, y, 0), f = 0.07;
+    _cityWinGeo = {
+      frame: mergeGeometries([bar(1, f, 0.5, f / 2), bar(1, f, 0.5, 1 - f / 2), bar(f, 1, f / 2, 0.5), bar(f, 1, 1 - f / 2, 0.5), bar(1, 0.05, 0.5, 0.7), bar(0.05, 1, 0.5, 0.5)]),
+      glass: new THREE.PlaneGeometry(1, 1).translate(0.5, 0.5, 0), leaf: new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0.5, 0)
+    };
+  }
+  const M = CITY.mats, D = CITY.data, out = [], m = CITY.m, c = new THREE.Color();
+  const put = (im, i, x, y, z, ux, uz, sx, sy, sz) => {
+    m.set(ux * sx, 0, -uz * sz, x, 0, sy, 0, y, uz * sx, 0, ux * sz, z, 0, 0, 0, 1); im.setMatrixAt(i, m);
+  };
+  const W = list.w, Dd = list.d;
+  if (W.length) {
+    const fr = new THREE.InstancedMesh(_cityWinGeo.frame, M.frame, W.length), gl = new THREE.InstancedMesh(_cityWinGeo.glass, M.glass, W.length);
+    W.forEach((j, i) => {
+      const k = D.KW, o = j * 15, yaw = k[o + 3], ux = Math.cos(yaw), uz = Math.sin(yaw), t = Math.max(0.08, k[o + 6] * 0.4);
+      const x = CITY.base.x + k[o], y = CITY.base.y + k[o + 1], z = CITY.base.z + k[o + 2];
+      put(fr, i, x, y, z, ux, uz, k[o + 4], k[o + 5], t); put(gl, i, x, y, z, ux, uz, k[o + 4], k[o + 5], 1);
+      fr.setColorAt(i, c.setRGB(k[o + 11], k[o + 12], k[o + 13]));
+    });
+    out.push(fr, gl);
+  }
+  if (Dd.length) {
+    const lf = new THREE.InstancedMesh(_cityWinGeo.leaf, M.leaf, Dd.length);
+    Dd.forEach((j, i) => {
+      const k = D.KD, o = j * 16, a = k[o + 3] + k[o + 15], ux = Math.cos(a), uz = Math.sin(a);
+      put(lf, i, CITY.base.x + k[o], CITY.base.y + k[o + 1], CITY.base.z + k[o + 2], ux, uz, k[o + 4], k[o + 5] - 0.02, 0.045);
+      lf.setColorAt(i, c.setRGB(k[o + 11], k[o + 12], k[o + 13]));
+    });
+    out.push(lf);
+  }
+  for (const im of out) { im.frustumCulled = false; if (im.instanceColor) im.instanceColor.needsUpdate = true; }
+  return out;
+}
+function cityStatics() {                                   // water and ladders (few: built once)
+  const M = CITY.mats, D = CITY.data, g = new THREE.Group(); g.position.copy(CITY.base);
+  for (const w of D.water) {
+    const q = w.q || [[w.x0, w.y, w.z0], [w.x1, w.y, w.z0], [w.x1, w.y, w.z1], [w.x0, w.y, w.z1]];
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(q.flat()), 3));
+    geo.setIndex([0, 2, 1, 0, 3, 2]); geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, M.water); mesh.material.side = THREE.DoubleSide; g.add(mesh);
+  }
+  for (const L of D.ladders) {
+    const h = L.y1 - L.y0;
+    for (const s of [-0.22, 0.22]) { const r = new THREE.Mesh(new THREE.BoxGeometry(0.04, h, 0.04), M.steel); r.position.set(L.x + s, L.y0 + h / 2, L.z); g.add(r); }
+    for (let y = 0.3; y < h; y += 0.3) { const r = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.03, 0.03), M.steel); r.position.set(L.x, L.y0 + y, L.z); g.add(r); }
+  }
+  scene.add(g); return g;
+}
+// streaming: bucket and tree meshes within the draw distance, kit cells within 160 m, colliders round you
+function cityStream(lx, lz) {
+  const D = CITY.data, R = CITY.draw, dist = (mn, mx) => Math.hypot(Math.max(mn[0] - lx, 0, lx - mx[0]), Math.max(mn[2] - lz, 0, lz - mx[2]));
+  const sets = [['b', D.buckets, cityBucketMesh, R], ['t', D.trees, cityTreeMesh, Math.min(R, 350)]];
+  for (const [p, arr, mk, r] of sets) arr.forEach((b, i) => {
+    const key = p + i, d = dist(b.min, b.max), have = CITY.cells.get(key);
+    if (d < r && !have) { const m = mk(b); scene.add(m); CITY.cells.set(key, [m]); }
+    else if (d > r + 60 && have) { for (const m of have) { scene.remove(m); m.geometry.dispose(); } CITY.cells.delete(key); }
   });
-  return FOR.vars;
-}
-function forPick(rng) {
-  let t = 0; for (const [, w] of FOR_SP) t += w;
-  let r = rng.f() * t;
-  for (let i = 0; i < FOR_SP.length; i++) { r -= FOR_SP[i][1]; if (r <= 0) return i; }
-  return 0;
-}
-function forChunkBuild(cx, cz) {
-  const C = FOR.C, N = FOR.N, ox = cx * C, oz = cz * C, M = forMats();
-  const pos = new Float32Array((N + 1) * (N + 1) * 3), col = new Float32Array(pos.length), uv = new Float32Array((N + 1) * (N + 1) * 2), idx = [];
-  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
-    const n = j * (N + 1) + i, x = i * C / N, z = j * C / N, h = fH(ox + x, oz + z), m = 0.5 + 0.5 * forN((ox + x) / 7, (oz + z) / 7);
-    pos[n * 3] = x; pos[n * 3 + 1] = h; pos[n * 3 + 2] = z;
-    col[n * 3] = 0.75 + 0.25 * (1 - m); col[n * 3 + 1] = 0.8 + 0.2 * m; col[n * 3 + 2] = 0.7;
-    uv[n * 2] = (ox + x) / 3; uv[n * 2 + 1] = (oz + z) / 3;
-    if (i < N && j < N) idx.push(n, n + N + 1, n + 1, n + 1, n + N + 1, n + N + 2);
+  if (!D.kitCells) {
+    D.kitCells = new Map();
+    const add = (K, n, w) => { for (let j = 0; j < K.length / n; j++) { const key = Math.floor(K[j * n] / 100) * 1000 + Math.floor(K[j * n + 2] / 100); let c = D.kitCells.get(key); if (!c) D.kitCells.set(key, c = { w: [], d: [], x: (Math.floor(K[j * n] / 100) + 0.5) * 100, z: (Math.floor(K[j * n + 2] / 100) + 0.5) * 100 }); c[w].push(j); } };
+    add(D.KW, 15, 'w'); add(D.KD, 16, 'd');
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); geo.setIndex(idx); geo.computeVertexNormals();
-  const mesh = new THREE.Mesh(geo, M.ground);
-  mesh.position.set(FOR.base.x + ox, FOR.base.y, FOR.base.z + oz); mesh.receiveShadow = false;
-  scene.add(mesh);
-  const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(mesh.position.x, mesh.position.y, mesh.position.z));
-  world.createCollider(RAPIER.ColliderDesc.trimesh(pos, new Uint32Array(idx)).setFriction(0.8).setCollisionGroups(COLL.static), body);
-  // trees: dense near the spawn, thinning out; never on the spawn clearing or the exit door
-  const rng = new ForRng(forHash(cx * 92821 + FOR.seed, cz * 68917 + 7)), trees = [];
-  const dS = Math.hypot(ox + C / 2 - FOR.S.x, oz + C / 2 - FOR.S.z), want = Math.round(30 - 14 * Math.min(1, dS / 250));
-  for (let a = 0; a < want * 4 && trees.length < want; a++) {
-    const x = ox + rng.f() * C, z = oz + rng.f() * C;
-    if (Math.hypot(x - FOR.S.x, z - FOR.S.z) < 7.5) continue;
-    if (trees.some((t) => Math.hypot(t.x - x, t.z - z) < 2.4)) continue;
-    const vi = forPick(rng), V = FOR.vars[vi], s = 0.75 + rng.f() * 0.4;
-    const t = { x, z, y: fH(x, z), vi, s, yaw: rng.f() * 6.283, r: V.r * s, col: !V.small };
-    if (t.col) world.createCollider(RAPIER.ColliderDesc.cylinder(3, t.r).setTranslation(x - ox, t.y + 2.8, z - oz).setCollisionGroups(COLL.static), body);
-    trees.push(t);
+  for (const [k, c] of D.kitCells) {
+    const key = 'k' + k, d = Math.hypot(c.x - lx, c.z - lz), have = CITY.cells.get(key);
+    if (d < 180 && !have) { const ms = cityKitCell(c); for (const m of ms) scene.add(m); CITY.cells.set(key, ms); }
+    else if (d > 230 && have) { for (const m of have) { scene.remove(m); m.dispose(); } CITY.cells.delete(key); }
   }
-  return { cx, cz, mesh, body, trees };
 }
-function forChunkDrop(ch) {
-  scene.remove(ch.mesh); ch.mesh.geometry.dispose();
-  world.removeRigidBody(ch.body);
-  forZoneOff(ch.cx, ch.cz);
-}
-function forInstances() {
-  for (const V of FOR.vars) { if (V.bark) V.bark.count = 0; if (V.leaf) V.leaf.count = 0; }
-  const { m, q, s3, e, v } = FOR;
-  for (const ch of FOR.chunks.values()) for (const t of ch.trees) {
-    const V = FOR.vars[t.vi];
-    if (V.bark && V.bark.count >= 900) continue;
-    q.setFromEuler(e.set(0, t.yaw, 0)); s3.setScalar(t.s); v.set(FOR.base.x + t.x, FOR.base.y + t.y - 0.15, FOR.base.z + t.z);
-    m.compose(v, q, s3);
-    if (V.bark) V.bark.setMatrixAt(V.bark.count++, m);
-    if (V.leaf) V.leaf.setMatrixAt(V.leaf.count++, m);
+function cityColliders(lx, lz, fy) {
+  const cx = Math.floor(lx / 8), cz = Math.floor(lz / 8), want = new Set(), B = CITY.base;
+  for (let i = cx - 3; i <= cx + 3; i++) for (let k = cz - 3; k <= cz + 3; k++) for (const s of CITY.solidGrid.get(i * 100003 + k) || []) want.add(s);
+  for (const [s, col] of CITY.cols) if (!want.has(s)) { world.removeCollider(col, false); CITY.cols.delete(s); }
+  for (const s of want) {
+    if (CITY.cols.has(s)) continue;
+    const o = citySol(s), yaw = -Math.atan2(o.s, o.c);
+    if (o.y1 < fy - 40 || o.y0 > fy + 40) continue;
+    let desc;
+    if (o.ramp) {
+      const ang = Math.atan2(o.y1 - o.y0, 2 * o.hx), L = Math.hypot(2 * o.hx, o.y1 - o.y0) / 2;
+      CITY.q.setFromEuler(CITY.e.set(0, yaw, ang, 'YXZ'));
+      desc = RAPIER.ColliderDesc.cuboid(L, 0.1, o.hz).setTranslation(B.x + o.cx, B.y + (o.y0 + o.y1) / 2 - 0.1, B.z + o.cz);
+    } else {
+      CITY.q.setFromEuler(CITY.e.set(0, yaw, 0));
+      desc = RAPIER.ColliderDesc.cuboid(Math.max(0.01, o.hx), Math.max(0.01, (o.y1 - o.y0) / 2), Math.max(0.01, o.hz)).setTranslation(B.x + o.cx, B.y + (o.y0 + o.y1) / 2, B.z + o.cz);
+    }
+    desc.setRotation({ x: CITY.q.x, y: CITY.q.y, z: CITY.q.z, w: CITY.q.w }).setCollisionGroups(COLL.static);
+    CITY.cols.set(s, world.createCollider(desc, CITY.body));
   }
-  for (const V of FOR.vars) { if (V.bark) V.bark.instanceMatrix.needsUpdate = true; if (V.leaf) V.leaf.instanceMatrix.needsUpdate = true; }
+  if (!CITY.terrAt || Math.hypot(CITY.terrAt[0] - lx, CITY.terrAt[1] - lz) > 12) {   // terrain triangles within 30 m
+    CITY.terrAt = [lx, lz];
+    if (CITY.terrBody) world.removeRigidBody(CITY.terrBody);
+    const T = CITY.data.terrain, tri = new Set(), pos = [], idx = [];
+    for (let i = Math.floor((lx - 30 - T.O) / T.CS); i <= Math.floor((lx + 30 - T.O) / T.CS); i++) for (let k = Math.floor((lz - 30 - T.O) / T.CS); k <= Math.floor((lz + 30 - T.O) / T.CS); k++) {
+      if (i < 0 || k < 0 || i >= T.G || k >= T.G) continue;
+      const c = i * T.G + k; for (let j = T.cnt[c]; j < T.cnt[c + 1]; j++) tri.add(T.list[j]);
+    }
+    for (const t of tri) for (let a = 0; a < 3; a++) { const v = T.I[t * 3 + a] * 3; idx.push(pos.length / 3); pos.push(T.P[v], T.P[v + 1], T.P[v + 2]); }
+    CITY.terrBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(B.x, B.y, B.z));
+    if (idx.length) world.createCollider(RAPIER.ColliderDesc.trimesh(new Float32Array(pos), new Uint32Array(idx)).setFriction(0.8).setCollisionGroups(COLL.static), CITY.terrBody);
+  }
 }
-function forWalk(pcx, pcz) {                             // your body (and the men) round the trunks near you
+function cityWalk(lx, lz, fy) {                           // your body (and the men) round the walls near you
   colliders.length = 0;
-  for (const ch of FOR.chunks.values()) {
-    if (Math.max(Math.abs(ch.cx - pcx), Math.abs(ch.cz - pcz)) > 1) continue;
-    for (const t of ch.trees) if (t.col) colliders.push({ x: FOR.base.x + t.x, z: FOR.base.z + t.z, c: 1, s: 0, hx: t.r * 0.85, hz: t.r * 0.85, top: FOR.base.y + t.y + 20, bot: FOR.base.y + t.y - 3 });
+  const cx = Math.floor(lx / 8), cz = Math.floor(lz / 8), B = CITY.base, seen = new Set();
+  for (let i = cx - 2; i <= cx + 2; i++) for (let k = cz - 2; k <= cz + 2; k++) for (const s of CITY.solidGrid.get(i * 100003 + k) || []) {
+    if (seen.has(s)) continue; seen.add(s);
+    const o = citySol(s); if (o.ramp || o.y1 < fy + 0.45 || o.y0 > fy + 1.9) continue;
+    colliders.push({ x: B.x + o.cx, z: B.z + o.cz, c: o.c, s: -o.s, hx: o.hx, hz: o.hz, top: B.y + o.y1, bot: B.y + o.y0 });
   }
-  colliders.push({ x: FOR.base.x + FOR.S.x + 2.2, z: FOR.base.z + FOR.S.z - 0.6, c: 1, s: 0, hx: 1.25, hz: 0.6, top: FOR.base.y + fH(FOR.S.x, FOR.S.z) + 0.5, bot: FOR.base.y - 10 });   // the kit pallet
+  const S = CITY.S;
+  colliders.push({ x: B.x + S.x + 2.2, z: B.z + S.z - 0.6, c: 1, s: 0, hx: 1.25, hz: 0.6, top: B.y + S.y + 0.5, bot: B.y + S.y - 10 });   // the kit pallet
 }
-// A squad per chunk, planned once (roomMem keeps who died), spawned while you are within one chunk of it
-function forZoneOn(ch) {
-  const C = FOR.C, lx = (ch.cx + 0.5) * C, lz = (ch.cz + 0.5) * C, key = `${ch.cx},${ch.cz}`;
-  if (FOR.zones.has(key)) return;
+// A squad per 40 m zone, planned once (roomMem keeps who died), spawned while you are within one zone of it
+function cityZoneOn(zx, zz) {
+  const Z = CITY.Z, lx = (zx + 0.5) * Z, lz = (zz + 0.5) * Z, key = `${zx},${zz}`;
+  if (CITY.zones.has(key)) return;
+  const gy = cityGround(lx, lz, 1e4);
   const room = {
-    kind: 'forest', slot: stream.current ? stream.current.slot : 0, memId: `forest:${FOR.seed}:${key}`, w: C, d: C, h: 30,
-    origin: new THREE.Vector3(FOR.base.x + lx, FOR.base.y + fH(lx, lz), FOR.base.z + lz), f: 1, entryX: 0, exitX: 99, entryY: 0, exitY: 0,
+    kind: 'city', slot: stream.current ? stream.current.slot : 0, memId: `city:${key}`, w: Z, d: Z, h: 30,
+    origin: new THREE.Vector3(CITY.base.x + lx, CITY.base.y + gy, CITY.base.z + lz), f: 1, entryX: 0, exitX: 99, entryY: 0, exitY: 0,
     stair: null, plan: null, layout: null, cover: null, group: new THREE.Group(), doorGroup: new THREE.Group(), walkLocal: [],
-    ownGeo: [], ownMat: [], troffers: [], colliderHandles: [], active: true, visible: true, enemies: [], ch
+    ownGeo: [], ownMat: [], troffers: [], colliderHandles: [], active: true, visible: true, enemies: [], zx, zz
   };
-  for (const t of ch.trees) if (t.col) room.walkLocal.push({ x: t.x - lx, z: t.z - lz, a: 0, hx: t.r, hz: t.r, top: 20 });
+  const seen = new Set();
+  for (let i = Math.floor((lx - Z / 2) / 8); i <= Math.floor((lx + Z / 2) / 8); i++) for (let k = Math.floor((lz - Z / 2) / 8); k <= Math.floor((lz + Z / 2) / 8); k++) for (const s of CITY.solidGrid.get(i * 100003 + k) || []) {
+    if (seen.has(s)) continue; seen.add(s);
+    const o = citySol(s); if (o.ramp || o.y1 < gy + 0.4 || o.y0 > gy + 1.8) continue;
+    room.walkLocal.push({ x: o.cx - lx, z: o.cz - lz, a: -Math.atan2(o.s, o.c), hx: o.hx, hz: o.hz, top: o.y1 - gy });
+  }
   const m = roomMem(room);
   if (!m.plan) {
-    const rng = new ForRng(forHash(ch.cx * 7 + 3 + FOR.seed, ch.cz * 13 + 1)), list = [];
-    const n = Math.max(Math.abs(ch.cx), Math.abs(ch.cz)) <= 1 || rng.f() > 0.38 ? 0 : 2 + (rng.f() < 0.45 ? 1 : 0);
+    let h = (zx * 73856093) ^ (zz * 19349663) ^ 0x5eed; const rng = mulberry32(h >>> 0), list = [];
+    const near = Math.hypot(lx - CITY.S.x, lz - CITY.S.z) < 60;
+    const n = near || rng() > 0.38 || gy < -50 ? 0 : 2 + (rng() < 0.45 ? 1 : 0);
     for (let i = 0; i < n; i++) {
-      const r = rng.f();
-      list.push({ gun: r < 0.2 ? 'pistol' : r < 0.35 ? 'shotgun' : 'smg', skill: 0.35 + rng.f() * 0.3, aggr: 0.3 + rng.f() * 0.4, torch: false, look: rng.f() < 0.5 ? 0 : 1 });
+      const r = rng();
+      list.push({ gun: r < 0.2 ? 'pistol' : r < 0.35 ? 'shotgun' : 'smg', skill: 0.35 + rng() * 0.3, aggr: 0.3 + rng() * 0.4, torch: false, look: rng() < 0.5 ? 0 : 1 });
     }
     if (list.length) aiAssignRoles(list);
     m.plan = { list, dead: list.map(() => false), cleared: !list.length, threat: 0.5, enteredT: 0, dmg: 0 };
   }
-  FOR.zones.set(key, room);
+  CITY.zones.set(key, room);
   if (!m.plan.list.length || m.plan.dead.every(Boolean)) return;
   room.group.position.copy(room.origin); scene.add(room.group);
   room.navCache = navGrid(room);
   const taken = [];
-  m.plan.list.forEach((s, i) => { if (!m.plan.dead[i]) { try { spawnEnemy(room, s, i, taken); } catch (err) { console.warn('forest: man not spawned', err); } } });
+  m.plan.list.forEach((s, i) => { if (!m.plan.dead[i]) { try { spawnEnemy(room, s, i, taken); } catch (err) { console.warn('city: man not spawned', err); } } });
 }
-function forZoneOff(cx, cz) {
-  const key = `${cx},${cz}`, room = FOR.zones.get(key);
+function cityZoneOff(key) {
+  const room = CITY.zones.get(key);
   if (!room) return;
   for (const e of [...ENEMY.list]) if (e.room === room) removeEnemy(e);
   room.active = false;
   if (room.group.parent) scene.remove(room.group);
-  FOR.zones.delete(key);
+  CITY.zones.delete(key);
 }
-function forestEnemyY() {                                 // men stand on the terrain (their room floor follows the squad)
-  for (const room of FOR.zones.values()) {
+function cityEnemyY() {                                   // men stand on the city ground (their room floor follows the squad)
+  for (const room of CITY.zones.values()) {
     const live = room.enemies.filter((e) => !e.dead);
     if (!live.length) continue;
-    let s = 0;
-    for (const e of live) s += fH(room.origin.x - FOR.base.x + e.pos.x, room.origin.z - FOR.base.z + e.pos.y);
-    room.origin.y = FOR.base.y + s / live.length; room.group.position.y = room.origin.y;
-    for (const e of live) e.root.position.y = FOR.base.y + fH(room.origin.x - FOR.base.x + e.pos.x, room.origin.z - FOR.base.z + e.pos.y) - room.origin.y;
+    const y0 = room.origin.y - CITY.base.y;
+    for (const e of live) {
+      const g = cityGround(room.origin.x - CITY.base.x + e.pos.x, room.origin.z - CITY.base.z + e.pos.y, y0 + 1.2);
+      e.root.position.y = (g > -1e8 ? g : y0) - y0;
+    }
   }
 }
-function forDoorMesh(label, M) {
-  const g = new THREE.Group(), D = CONFIG.door;
+function cityDoorMesh(label) {
+  const M = cityMatsLite(), g = new THREE.Group(), D = CONFIG.door;
   const box = (w, h, d, x, y, z, mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); g.add(m); return m; };
-  box(0.06, D.height + 0.06, 0.12, -D.width / 2 - 0.03, (D.height + 0.06) / 2, 0, M.frame);
-  box(0.06, D.height + 0.06, 0.12, D.width / 2 + 0.03, (D.height + 0.06) / 2, 0, M.frame);
-  box(D.width + 0.12, 0.06, 0.12, 0, D.height + 0.03, 0, M.frame);
+  box(0.06, D.height + 0.06, 0.12, -D.width / 2 - 0.03, (D.height + 0.06) / 2, 0, M.dframe);
+  box(0.06, D.height + 0.06, 0.12, D.width / 2 + 0.03, (D.height + 0.06) / 2, 0, M.dframe);
+  box(D.width + 0.12, 0.06, 0.12, 0, D.height + 0.03, 0, M.dframe);
   box(D.width - 0.01, D.height - 0.01, 0.045, 0, D.height / 2, 0, M.door);
-  box(0.03, 0.12, 0.05, D.width / 2 - 0.1, 1.02, 0.04, M.frame);
+  box(0.03, 0.12, 0.05, D.width / 2 - 0.1, 1.02, 0.04, M.dframe);
   const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
-  const c = cv.getContext('2d'); c.fillStyle = '#123018'; c.fillRect(0, 0, 256, 64); c.fillStyle = '#d8f0d0'; c.font = 'bold 40px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(label, 128, 34);
+  const c = cv.getContext('2d'); c.fillStyle = '#1c2024'; c.fillRect(0, 0, 256, 64); c.fillStyle = '#e4e8ec'; c.font = 'bold 40px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(label, 128, 34);
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
   const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), new THREE.MeshBasicMaterial({ map: t }));
   sign.position.set(0, D.height + 0.2, 0.065); g.add(sign);
   return g;
 }
-// The FOREST door: on the safe room's right wall, between the terminal and the gunsmith bench
-function forestDoorRoom(room) {
-  if (!FOR.door || room.kind !== 'safe') return;
-  if (!FOR.doorGrp) FOR.doorGrp = forDoorMesh('FOREST', forMats());
-  FOR.doorGrp.position.set(room.w / 2 - 0.07, 0, 1.4); FOR.doorGrp.rotation.y = -Math.PI / 2;
-  room.group.add(FOR.doorGrp); FOR.doorRoom = room;
+let _cityLite = null;
+function cityMatsLite() {                                 // door / kit materials (before the city data exists)
+  return _cityLite || (_cityLite = {
+    wood: new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 0.9 }),
+    door: new THREE.MeshStandardMaterial({ color: 0x4a4c48, roughness: 0.55, metalness: 0.3 }),
+    dframe: new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 })
+  });
 }
-const _ft = new THREE.Vector3();
-function forTeleport(x, z, floorY, yaw) {
+// The CITY door: on the safe room's right wall, between the terminal and the gunsmith bench
+function cityDoorRoom(room) {
+  if (!CITY.door || room.kind !== 'safe') return;
+  cityStart();
+  if (!CITY.doorGrp) CITY.doorGrp = cityDoorMesh('CITY');
+  CITY.doorGrp.position.set(room.w / 2 - 0.07, 0, 1.4); CITY.doorGrp.rotation.y = -Math.PI / 2;
+  room.group.add(CITY.doorGrp); CITY.doorRoom = room;
+}
+const _ct = new THREE.Vector3();
+function cityTeleport(x, z, floorY, yaw) {
   stance.crouchOn = false; xrState.crouchOn = false; xrState.crouchCur = 0;
   level.floor = floorY; level.flat = true; applyHeight(); rig.updateMatrixWorld(true);
   if (renderer.xr.isPresenting) rotateRigAroundHead(yaw - yawOf(camera)); else { look.yaw = yaw; look.pitch = 0; applyLook(); }
-  rig.updateMatrixWorld(true); headWorld(_ft);
-  rig.position.x += x - _ft.x; rig.position.z += z - _ft.z; rig.updateMatrixWorld(true);
+  rig.updateMatrixWorld(true); headWorld(_ct);
+  rig.position.x += x - _ct.x; rig.position.z += z - _ct.z; rig.updateMatrixWorld(true);
   _vel.set(0, 0, 0); playerState.hasPrev = false;
 }
-function forestSafeTick() {                               // walk into the FOREST door
-  const R = FOR.doorRoom, now = performance.now() / 1000;
-  if (!FOR.door || !R || !R.active || stream.current !== R || playerState.dead || now < FOR.cool) return;
-  headWorld(_ft);
-  const lx = rLX(R, _ft.x), lz = rLZ(R, _ft.z);
-  if (lx > R.w / 2 - 0.5 && Math.abs(lz - 1.4) < 0.42 && Math.abs(_ft.y - R.origin.y - 1.3) < 1.2) forestEnter();
+function citySafeTick() {                                 // walk into the CITY door
+  const R = CITY.doorRoom, now = performance.now() / 1000;
+  if (!CITY.door || !R || !R.active || stream.current !== R || playerState.dead || now < CITY.cool) return;
+  headWorld(_ct);
+  const lx = rLX(R, _ct.x), lz = rLZ(R, _ct.z);
+  if (lx > R.w / 2 - 0.5 && Math.abs(lz - 1.4) < 0.42 && Math.abs(_ct.y - R.origin.y - 1.3) < 1.2) {
+    if (!CITY.data) { CITY.cool = now + 3; toast(CITY.status === 'failed' ? 'The city could not be built' : `City not ready yet: ${CITY.status}…`, 2500); return; }
+    cityEnter();
+  }
 }
-function forKitPlace() {                                  // every locker gun on a pallet by the spawn, magazines by the exit door
-  const M = forMats(), S = FOR.S, y0 = FOR.base.y + fH(S.x, S.z);
+function cityKitPlace() {                                 // every locker gun on a pallet by the spawn, magazines on a crate by the exit door
+  const M = cityMatsLite(), S = CITY.S, B = CITY.base, y0 = B.y + S.y;
   const pal = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.5, 1.2), M.wood);
-  pal.position.set(FOR.base.x + S.x + 2.2, y0 + 0.0, FOR.base.z + S.z - 0.6); scene.add(pal);
+  pal.position.set(B.x + S.x + 2.2, y0, B.z + S.z - 0.6); scene.add(pal);
   const crate = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.6), M.wood);
-  crate.position.set(FOR.base.x + S.x - 1.4, y0 + 0.0, FOR.base.z + S.z + 3.2); scene.add(crate);
-  FOR.kitMeshes = [pal, crate];
-  FOR.kitBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
-  world.createCollider(RAPIER.ColliderDesc.cuboid(1.25, 0.25, 0.6).setTranslation(pal.position.x, pal.position.y, pal.position.z).setCollisionGroups(COLL.static), FOR.kitBody);
-  world.createCollider(RAPIER.ColliderDesc.cuboid(0.4, 0.25, 0.3).setTranslation(crate.position.x, crate.position.y, crate.position.z).setCollisionGroups(COLL.static), FOR.kitBody);
+  crate.position.set(B.x + S.x - 1.4, y0, B.z + S.z + 3.2); scene.add(crate);
+  CITY.kitMeshes = [pal, crate];
+  CITY.kitBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
+  world.createCollider(RAPIER.ColliderDesc.cuboid(1.25, 0.25, 0.6).setTranslation(pal.position.x, pal.position.y, pal.position.z).setCollisionGroups(COLL.static), CITY.kitBody);
+  world.createCollider(RAPIER.ColliderDesc.cuboid(0.4, 0.25, 0.3).setTranslation(crate.position.x, crate.position.y, crate.position.z).setCollisionGroups(COLL.static), CITY.kitBody);
   const types = GL.types.concat(GL.pistols).filter((k) => { try { return glReady(k); } catch (e) { return false; } });
   const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI / 2, Math.PI / 2)), mags = [];
   types.forEach((k, i) => {
     try {
       const p = createGun(k);
-      itemToWorld(p, FOR.v.set(pal.position.x - 1.0 + i * 2.0 / Math.max(1, types.length - 1), y0 + 0.35, pal.position.z), q);
-      FOR.kit.push(p);
+      itemToWorld(p, CITY.v.set(pal.position.x - 1.0 + i * 2.0 / Math.max(1, types.length - 1), y0 + 0.35, pal.position.z), q);
+      CITY.kit.push(p);
       const mt = WEAPON_DEFS[k].magType;
       if (mt && MAG_DEFS[mt] && !mags.includes(mt)) mags.push(mt);
-    } catch (e) { console.warn('forest: gun not placed', k, e); }
+    } catch (e) { console.warn('city: gun not placed', k, e); }
   });
   let n = 0;
   for (const mt of mags) for (let j = 0; j < 2; j++) {
     try {
       const p = createMag(mt, MAG_DEFS[mt].capacity);
-      itemToWorld(p, FOR.v.set(crate.position.x - 0.3 + (n % 6) * 0.12, y0 + 0.32 + Math.floor(n / 6) * 0.06, crate.position.z - 0.15 + (n % 2) * 0.3), new THREE.Quaternion());
-      FOR.kit.push(p); n++;
-    } catch (e) { console.warn('forest: magazine not placed', mt, e); }
+      itemToWorld(p, CITY.v.set(crate.position.x - 0.3 + (n % 6) * 0.12, y0 + 0.32 + Math.floor(n / 6) * 0.06, crate.position.z - 0.15 + (n % 2) * 0.3), new THREE.Quaternion());
+      CITY.kit.push(p); n++;
+    } catch (e) { console.warn('city: magazine not placed', mt, e); }
   }
 }
-function forestEnter() {
-  FOR.cool = performance.now() / 1000 + 2;
-  const R = FOR.doorRoom;
-  FOR.base.set(R.origin.x + 4000, R.origin.y, R.origin.z);   // far from every room
-  forVariants();
+function cityEnter() {
+  CITY.cool = performance.now() / 1000 + 2;
+  const R = CITY.doorRoom, D = CITY.data;
+  CITY.S = D.spawn;
+  CITY.base.set(R.origin.x + 4000, R.origin.y - CITY.S.y, R.origin.z);   // far from every room, spawn at the safe room's floor height
+  cityMats();
+  if (!CITY.body) CITY.body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
   for (const r of stream.rooms.values()) { r.group.visible = false; r.doorGroup.visible = false; r.visible = false; }
-  if (!FOR.light) {
-    FOR.light = new THREE.HemisphereLight(0xcfe0ff, 0x3a3020, 0); FOR.sun = new THREE.DirectionalLight(0xfff2dc, 0);
-    FOR.sun.position.set(0.5, 1, 0.3); scene.add(FOR.light, FOR.sun, FOR.sun.target);
+  if (!CITY.hemi) {
+    CITY.hemi = new THREE.HemisphereLight(0xcfd8e0, 0x4a4438, 0); CITY.sun = new THREE.DirectionalLight(0xfff2dc, 0);
+    CITY.torch = new THREE.SpotLight(0xfff4e0, 0, 40, 0.5, 0.5, 1.5); camera.add(CITY.torch, CITY.torch.target); CITY.torch.target.position.set(0, 0, -1);
+    scene.add(CITY.hemi, CITY.sun, CITY.sun.target);
   }
-  FOR.light.intensity = 1.6; FOR.sun.intensity = 2.4;
-  FOR.bg = scene.background; scene.background = new THREE.Color(0x9fb0b8);
-  FOR.on = true; FOR.pc = null;
-  for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) FOR.chunks.set(`${i},${j}`, forChunkBuild(i, j));   // the spawn ring at once
-  forKitPlace();
-  if (!FOR.exitGrp) FOR.exitGrp = forDoorMesh('EXIT', forMats());
-  FOR.exitGrp.position.set(FOR.base.x + FOR.S.x, FOR.base.y + fH(FOR.S.x, FOR.S.z + 3.5) - 0.05, FOR.base.z + FOR.S.z + 3.5);
-  FOR.exitGrp.rotation.y = Math.PI; scene.add(FOR.exitGrp);
-  forTeleport(FOR.base.x + FOR.S.x, FOR.base.z + FOR.S.z, FOR.base.y + fH(FOR.S.x, FOR.S.z), 0);   // facing away from the exit, into the trees
-  forestUpdate();
-  if (!renderer.xr.isPresenting) toast('Forest. Your guns are on the pallet; the EXIT door is behind you', 3200);
+  CITY.bg = scene.background; scene.background = new THREE.Color(0x9aa4aa);
+  CITY.on = true; CITY.pc = null; CITY.walkT = 0;
+  CITY.statics = cityStatics();
+  cityKitPlace();
+  if (!CITY.exitGrp) CITY.exitGrp = cityDoorMesh('EXIT');
+  CITY.exitGrp.position.set(CITY.base.x + CITY.S.x, CITY.base.y + cityGround(CITY.S.x, CITY.S.z + 3.5, CITY.S.y + 1) - 0.02, CITY.base.z + CITY.S.z + 3.5);
+  CITY.exitGrp.rotation.y = Math.PI; scene.add(CITY.exitGrp);
+  cityTeleport(CITY.base.x + CITY.S.x, CITY.base.z + CITY.S.z, CITY.base.y + CITY.S.y, 0);   // facing away from the exit
+  cityUiShow(true);
+  cityUpdate();
+  if (!renderer.xr.isPresenting) toast('City. Your guns are on the pallet; the EXIT door is behind you', 3200);
 }
-function forestLeave() {
-  FOR.on = false; FOR.cool = performance.now() / 1000 + 2;
-  for (const ch of FOR.chunks.values()) forChunkDrop(ch);
-  FOR.chunks.clear(); FOR.queue.length = 0;
-  for (const room of [...FOR.zones.values()]) forZoneOff(room.ch.cx, room.ch.cz);
-  for (const V of FOR.vars || []) { if (V.bark) V.bark.count = 0; if (V.leaf) V.leaf.count = 0; }
-  for (const p of FOR.kit) { try { if (p.inWorld && !p.removing && !p.holders.length && !(p.item && (p.item.slot || p.item.cradle))) removeProp(p); } catch (e) { /* already gone */ } }
-  FOR.kit.length = 0;
-  for (const m of FOR.kitMeshes || []) { scene.remove(m); m.geometry.dispose(); }
-  if (FOR.kitBody) { world.removeRigidBody(FOR.kitBody); FOR.kitBody = null; }
-  if (FOR.exitGrp) scene.remove(FOR.exitGrp);
-  if (FOR.light) { FOR.light.intensity = 0; FOR.sun.intensity = 0; }
-  scene.background = FOR.bg || scene.background;
+function cityLeave() {
+  CITY.on = false; CITY.cool = performance.now() / 1000 + 2;
+  for (const ms of CITY.cells.values()) for (const m of ms) { scene.remove(m); if (m.isInstancedMesh) m.dispose(); else m.geometry.dispose(); }
+  CITY.cells.clear();
+  for (const col of CITY.cols.values()) world.removeCollider(col, false);
+  CITY.cols.clear();
+  if (CITY.terrBody) { world.removeRigidBody(CITY.terrBody); CITY.terrBody = null; } CITY.terrAt = null;
+  for (const key of [...CITY.zones.keys()]) cityZoneOff(key);
+  if (CITY.statics) { scene.remove(CITY.statics); CITY.statics.traverse((o) => { if (o.geometry) o.geometry.dispose(); }); CITY.statics = null; }
+  for (const p of CITY.kit) { try { if (p.inWorld && !p.removing && !p.holders.length && !(p.item && (p.item.slot || p.item.cradle))) removeProp(p); } catch (e) { /* already gone */ } }
+  CITY.kit.length = 0;
+  for (const m of CITY.kitMeshes) { scene.remove(m); m.geometry.dispose(); }
+  if (CITY.kitBody) { world.removeRigidBody(CITY.kitBody); CITY.kitBody = null; }
+  if (CITY.exitGrp) scene.remove(CITY.exitGrp);
+  if (CITY.hemi) { CITY.hemi.intensity = 0; CITY.sun.intensity = 0; CITY.torch.intensity = 0; }
+  if (CITY.rain) CITY.rain.visible = false;
+  scene.background = CITY.bg || scene.background;
+  cityUiShow(false);
   for (const r of stream.rooms.values()) if (r === stream.current) { r.group.visible = true; r.doorGroup.visible = true; r.visible = true; }
   rebuildWalk();
 }
-function forestExit() {                                   // back through the EXIT door, beside the FOREST door
-  const R = FOR.doorRoom;
-  forestLeave();
+function cityExit() {                                     // back through the EXIT door, beside the CITY door
+  const R = CITY.doorRoom;
+  cityLeave();
   if (!R || !R.active) { respawnPlayer(); return; }
   stream.current = R;
-  forTeleport(rWX(R, R.w / 2 - 1.1), rWZ(R, 1.4), R.origin.y, rYaw(R) + Math.PI / 2);
+  cityTeleport(rWX(R, R.w / 2 - 1.1), rWZ(R, 1.4), R.origin.y, rYaw(R) + Math.PI / 2);
   loopEnterRoom(R);                                       // points bank as in any safe room visit
   roomUi();
 }
-function forestUpdate() {
-  const C = FOR.C, now = performance.now() / 1000;
-  rig.updateMatrixWorld(true); headWorld(_ft);
-  const lx = _ft.x - FOR.base.x, lz = _ft.z - FOR.base.z, pcx = Math.floor(lx / C), pcz = Math.floor(lz / C);
-  const fy = FOR.base.y + fH(lx, lz);
-  if (Math.abs(fy - level.floor) > 1e-4) { level.floor = fy; applyHeight(); rig.updateMatrixWorld(true); }
-  const key = `${pcx},${pcz}`;
-  if (key !== FOR.pc) {
-    FOR.pc = key;
-    for (const ch of [...FOR.chunks.values()]) if (Math.max(Math.abs(ch.cx - pcx), Math.abs(ch.cz - pcz)) > FOR.R + 1) { forChunkDrop(ch); FOR.chunks.delete(`${ch.cx},${ch.cz}`); }
-    FOR.queue.length = 0;
-    for (let j = -FOR.R; j <= FOR.R; j++) for (let i = -FOR.R; i <= FOR.R; i++) if (!FOR.chunks.has(`${pcx + i},${pcz + j}`)) FOR.queue.push([pcx + i, pcz + j, Math.max(Math.abs(i), Math.abs(j))]);
-    FOR.queue.sort((a, b) => a[2] - b[2]);
-    for (const [k, room] of [...FOR.zones]) if (Math.max(Math.abs(room.ch.cx - pcx), Math.abs(room.ch.cz - pcz)) > 1) forZoneOff(room.ch.cx, room.ch.cz);
-    FOR.dirty = true;
+// sky, sun, day cycle and weather (the map's Settings: time of day, weather, quality)
+const CITY_WX = { clear: [1, 0, 420], overcast: [0.55, 0, 300], rain: [0.4, 1, 200], fog: [0.6, 0, 90] };
+function citySky(dt) {
+  CITY.tod = (CITY.tod + dt * CITY.todRate) % 24;
+  const t = CITY.tod, el = Math.sin((t - 6) / 12 * Math.PI), day = THREE.MathUtils.clamp(el * 3 + 0.3, 0, 1), W = CITY_WX[CITY.weather] || CITY_WX.clear;
+  const az = (t / 24) * Math.PI * 2;
+  CITY.sun.position.set(CITY.base.x + Math.cos(az) * 100, CITY.base.y + Math.max(0.05, el) * 100, CITY.base.z + Math.sin(az) * 100);
+  CITY.sun.target.position.copy(CITY.base);
+  CITY.sun.intensity = 2.6 * day * W[0]; CITY.hemi.intensity = 0.15 + 1.4 * day * (0.6 + 0.4 * W[0]);
+  const U = CITY.mats.U, fc = U.uFogC.value.setRGB(0.04, 0.05, 0.07).lerp(CITY.v.set(0.6, 0.65, 0.7), day);
+  if (CITY.weather !== 'clear') fc.lerp(CITY.v.set(0.5, 0.52, 0.54), 0.5 * day);
+  scene.background.copy(fc);
+  U.uLampK.value = 1 - day; U.uFogF.value = Math.min(CITY.draw, W[2]); U.uFogN.value = U.uFogF.value * 0.3;
+  if (W[1]) {
+    if (!CITY.rain) {
+      const n = 3000, p = new Float32Array(n * 3); for (let i = 0; i < n; i++) p.set([(Math.random() - 0.5) * 40, Math.random() * 20, (Math.random() - 0.5) * 40], i * 3);
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+      CITY.rain = new THREE.Points(g, new THREE.PointsMaterial({ color: 0xaab4bc, size: 0.04, transparent: true, opacity: 0.6 })); CITY.rain.frustumCulled = false; scene.add(CITY.rain);
+    }
+    CITY.rain.visible = true; headWorld(_ct);
+    const a = CITY.rain.geometry.attributes.position;
+    for (let i = 0; i < a.count; i++) { let y = a.getY(i) - dt * 9; if (y < 0) y += 20; a.setY(i, y); }
+    a.needsUpdate = true; CITY.rain.position.set(_ct.x, _ct.y - 10, _ct.z);
+  } else if (CITY.rain) CITY.rain.visible = false;
+}
+// the map's own UI on a computer: compass, minimap, Places, Map, Settings, flashlight
+function cityUiShow(on) {
+  if (on && !CITY.ui && !renderer.xr.isPresenting) {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;top:10px;right:10px;z-index:50;font:13px sans-serif;color:#e8eaec;display:flex;flex-direction:column;gap:6px;align-items:flex-end';
+    d.innerHTML = `<div id="cyC" style="background:#0009;padding:4px 10px;border-radius:4px">N</div>
+      <canvas id="cyM" width="180" height="180" style="background:#0009;border-radius:4px"></canvas>
+      <div style="display:flex;gap:4px"><button id="cyP">Places</button><button id="cyV">Map</button><button id="cyS">Settings</button><button id="cyF">Flashlight</button></div>
+      <div id="cyPanel" style="display:none;background:#000c;padding:8px;border-radius:4px;max-height:60vh;overflow:auto"></div>
+      <canvas id="cyBig" width="640" height="640" style="display:none;background:#000d;border-radius:4px;cursor:crosshair"></canvas>`;
+    document.body.appendChild(d); CITY.ui = d;
+    const $ = (id) => d.querySelector('#' + id), panel = $('cyPanel'), big = $('cyBig');
+    const jump = (x, z, y) => { const g = cityGround(x, z, (y ?? 1e4) + 1.5); cityTeleport(CITY.base.x + x, CITY.base.z + z, CITY.base.y + (g > -1e8 ? g : y || 0), look.yaw); };
+    $('cyP').onclick = () => {
+      panel.style.display = panel.style.display === 'none' || panel.dataset.k !== 'p' ? 'block' : 'none'; panel.dataset.k = 'p'; big.style.display = 'none';
+      panel.innerHTML = '<div><button data-i="-1">Spawn</button></div>' + CITY.data.places.map((p, i) => `<div><button data-i="${i}">${p[0].replace(/</g, '&lt;')}</button></div>`).join('');
+      panel.querySelectorAll('button').forEach((b) => { b.onclick = () => { const i = +b.dataset.i; if (i < 0) jump(CITY.S.x, CITY.S.z, CITY.S.y); else { const p = CITY.data.places[i]; jump(p[1], p[3], p[2]); } }; });
+    };
+    $('cyS').onclick = () => {
+      panel.style.display = panel.style.display === 'none' || panel.dataset.k !== 's' ? 'block' : 'none'; panel.dataset.k = 's'; big.style.display = 'none';
+      panel.innerHTML = `<div>Time of day <input id="cyT" type="range" min="0" max="24" step="0.25" value="${CITY.tod}"></div>
+        <div>Day speed <select id="cyR"><option value="0">stopped</option><option value="0.0167">1 h / min</option><option value="0.1">6 h / min</option></select></div>
+        <div>Weather <select id="cyW">${Object.keys(CITY_WX).map((k) => `<option ${k === CITY.weather ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
+        <div>Quality (draw distance) <select id="cyQ">${[250, 400, 700].map((v) => `<option value="${v}" ${v === CITY.draw ? 'selected' : ''}>${v} m</option>`).join('')}</select></div>`;
+      $('cyR').value = String(CITY.todRate > 0.05 ? 0.1 : CITY.todRate > 0 ? 0.0167 : 0);
+      $('cyT').oninput = (e) => { CITY.tod = +e.target.value; }; $('cyR').onchange = (e) => { CITY.todRate = +e.target.value; };
+      $('cyW').onchange = (e) => { CITY.weather = e.target.value; }; $('cyQ').onchange = (e) => { CITY.draw = +e.target.value; CITY.pc = null; };
+    };
+    $('cyF').onclick = () => { CITY.torch.intensity = CITY.torch.intensity > 0 ? 0 : 60; };
+    $('cyV').onclick = () => { panel.style.display = 'none'; big.style.display = big.style.display === 'none' ? 'block' : 'none'; if (big.style.display === 'block') cityMapDraw(big, 1300, true); };
+    big.onclick = (e) => {                                 // map view: click a destination (or anywhere) to go there
+      const r = big.getBoundingClientRect(), x = ((e.clientX - r.left) / r.width - 0.5) * 1300, z = ((e.clientY - r.top) / r.height - 0.5) * 1300;
+      let best = null, bd = 25;
+      for (const p of CITY.data.places) { const dd = Math.hypot(p[1] - x, p[3] - z); if (dd < bd) { bd = dd; best = p; } }
+      if (best) jump(best[1], best[3], best[2]); else jump(x, z);
+    };
   }
-  if (FOR.queue.length) {                                 // one chunk a frame, nearest first
-    const [cx, cz] = FOR.queue.shift();
-    FOR.chunks.set(`${cx},${cz}`, forChunkBuild(cx, cz)); FOR.dirty = true;
+  if (CITY.ui) CITY.ui.style.display = on && !renderer.xr.isPresenting ? 'flex' : 'none';
+}
+function cityMapBase() {                                   // top-down plan of every tall box, drawn once (1 px = 1.27 m)
+  if (CITY.mapCv) return CITY.mapCv;
+  const cv = document.createElement('canvas'); cv.width = cv.height = 1024; const c = cv.getContext('2d'), k = 1024 / 1300;
+  c.fillStyle = '#3a4036'; c.fillRect(0, 0, 1024, 1024); c.fillStyle = '#9a9890';
+  const n = CITY.data.solids.length / 9;
+  for (let i = 0; i < n; i++) {
+    const o = citySol(i); if (o.ramp || o.y1 - o.y0 < 2.5 || o.hx * o.hz < 2) continue;
+    c.save(); c.translate((o.cx + 650) * k, (o.cz + 650) * k); c.rotate(Math.atan2(o.s, o.c)); c.fillRect(-o.hx * k, -o.hz * k, o.hx * 2 * k, o.hz * 2 * k); c.restore();
   }
-  if (FOR.dirty) {
-    FOR.dirty = false; forInstances(); forWalk(pcx, pcz);
-    for (const ch of FOR.chunks.values()) if (Math.max(Math.abs(ch.cx - pcx), Math.abs(ch.cz - pcz)) <= 1) forZoneOn(ch);
+  c.fillStyle = '#3b6a9a'; for (const w of CITY.data.water) { const q = w.q || [[w.x0, 0, w.z0], [w.x1, 0, w.z1]]; c.fillRect((q[0][0] + 650) * k, (q[0][2] + 650) * k, Math.max(2, (q[2] ? q[2][0] - q[0][0] : q[1][0] - q[0][0]) * k), Math.max(2, (q[2] ? q[2][2] - q[0][2] : q[1][2] - q[0][2]) * k)); }
+  return CITY.mapCv = cv;
+}
+function cityMapDraw(cv, span, full) {
+  const c = cv.getContext('2d'), W = cv.width, base = cityMapBase(), k = 1024 / 1300;
+  headWorld(_ct); const lx = _ct.x - CITY.base.x, lz = _ct.z - CITY.base.z;
+  c.clearRect(0, 0, W, W);
+  if (full) c.drawImage(base, 0, 0, W, W);
+  else { const s = span * k; c.drawImage(base, (lx + 650) * k - s / 2, (lz + 650) * k - s / 2, s, s, 0, 0, W, W); }
+  const P = (x, z) => full ? [(x + 650) / 1300 * W, (z + 650) / 1300 * W] : [(x - lx) / span * W + W / 2, (z - lz) / span * W + W / 2];
+  c.fillStyle = '#ffd34d'; for (const p of CITY.data.places) { const [x, y] = P(p[1], p[3]); c.fillRect(x - 2, y - 2, 4, 4); if (full) { c.font = '10px sans-serif'; c.fillText(p[0], x + 4, y + 3); } }
+  c.fillStyle = '#d33'; for (const room of CITY.zones.values()) for (const e of room.enemies) if (!e.dead) { const [x, y] = P(room.origin.x - CITY.base.x + e.pos.x, room.origin.z - CITY.base.z + e.pos.y); c.fillRect(x - 2, y - 2, 4, 4); }
+  const [px, py] = P(lx, lz), yw = yawOf(camera);
+  c.fillStyle = '#4df'; c.beginPath(); c.moveTo(px - Math.sin(yw) * 8, py - Math.cos(yw) * 8); c.lineTo(px + Math.cos(yw) * 4, py - Math.sin(yw) * 4); c.lineTo(px - Math.cos(yw) * 4, py + Math.sin(yw) * 4); c.fill();
+}
+function cityUiTick() {
+  const d = CITY.ui; if (!d || d.style.display === 'none') return;
+  if ((CITY.uiT = (CITY.uiT || 0) + 1) % 6) return;
+  const yw = yawOf(camera), deg = ((-yw * 180 / Math.PI) % 360 + 360) % 360;
+  d.querySelector('#cyC').textContent = `${['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8]} ${Math.round(deg)}°  ${String(Math.floor(CITY.tod)).padStart(2, '0')}:${String(Math.floor(CITY.tod % 1 * 60)).padStart(2, '0')}`;
+  cityMapDraw(d.querySelector('#cyM'), 160, false);
+  const big = d.querySelector('#cyBig'); if (big.style.display === 'block' && CITY.uiT % 30 === 0) cityMapDraw(big, 1300, true);
+}
+let _cityLastT = 0;
+function cityUpdate() {
+  const now = performance.now() / 1000, dt = Math.min(0.1, _cityLastT ? now - _cityLastT : 0); _cityLastT = now;
+  rig.updateMatrixWorld(true); headWorld(_ct);
+  const lx = _ct.x - CITY.base.x, lz = _ct.z - CITY.base.z, curF = level.floor - CITY.base.y;
+  const g = cityGround(lx, lz, curF + 0.55);
+  if (g > -1e8) { const fy = CITY.base.y + g; if (Math.abs(fy - level.floor) > 1e-4) { level.floor = fy; applyHeight(); rig.updateMatrixWorld(true); } }
+  CITY.mats.U.uEye.value.set(lx, _ct.y - CITY.base.y, lz);
+  const key = `${Math.floor(lx / 20)},${Math.floor(lz / 20)}`;
+  if (key !== CITY.pc) {
+    CITY.pc = key; cityStream(lx, lz);
+    const zx = Math.floor(lx / CITY.Z), zz = Math.floor(lz / CITY.Z);
+    for (const [k, room] of [...CITY.zones]) if (Math.max(Math.abs(room.zx - zx), Math.abs(room.zz - zz)) > 1) cityZoneOff(k);
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) cityZoneOn(zx + i, zz + j);
   }
-  const zr = FOR.zones.get(key);
+  if ((CITY.walkT -= dt) <= 0) { CITY.walkT = 0.2; const fl = level.floor - CITY.base.y; cityColliders(lx, lz, fl); cityWalk(lx, lz, fl); }
+  citySky(dt); cityUiShow(true); cityUiTick();
+  const zr = CITY.zones.get(`${Math.floor(lx / CITY.Z)},${Math.floor(lz / CITY.Z)}`);
   if (zr) { const pl = roomMem(zr).plan; if (pl && !pl.enteredT) pl.enteredT = now; }
-  if (now > FOR.cool && Math.hypot(lx - FOR.S.x, lz - FOR.S.z - 3.5) < 0.55) forestExit();
+  if (now > CITY.cool && Math.hypot(lx - CITY.S.x, lz - CITY.S.z - 3.5) < 0.55) cityExit();
 }
 
 </script>
