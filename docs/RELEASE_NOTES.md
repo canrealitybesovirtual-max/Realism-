@@ -46,6 +46,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 - Detailed sound: recorded gun handling, room acoustics, foley, ambience.
 - Also included: the Studio office (`index.html`, a WebXR office with a game editor) and Interstate (`interstate/index.html`, a winter highway driving game).
 - Apartment start: pick "Start: Apartment" on the title screen (or open `cqc/index.html?start=apartment`) to begin in a furnished apartment; its OFFICE door returns to the Studio, its CQC RUN door takes you to the safe room.
+- Apartment "Swatted": the apartment's doors open, close, take kicks and breaches like the building's; a tablet by the front door (or M on a computer) starts waves of 2-3 operators who stack outside, breach (they open it on Easy) and clear room by room toward you. Difficulty Easy / Normal / Hard, a round timer per wave (off, 30-120 s), team size 2, 3 or random; points and wallet bank after each wave.
 
 ## Known issues
 - Built and tested mostly with automated headless checks; frame rate on Quest 2 and 3 with every effect on has not been fully measured. Lower the graphics mode (B / terminal GRAPHICS) if frames drop.
