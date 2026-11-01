@@ -45,6 +45,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 - Night vision with infrared lasers and lights; brass collection and selling; grenades with recorded sound, smoke and scorch.
 - Detailed sound: recorded gun handling, room acoustics, foley, ambience.
 - Also included: the Studio office (`index.html`, a WebXR office with a game editor) and Interstate (`interstate/index.html`, a winter highway driving game).
+- Apartment start: pick "Start: Apartment" on the title screen (or open `cqc/index.html?start=apartment`) to begin in a furnished apartment; its OFFICE door returns to the Studio, its CQC RUN door takes you to the safe room.
 
 ## Known issues
 - Built and tested mostly with automated headless checks; frame rate on Quest 2 and 3 with every effect on has not been fully measured. Lower the graphics mode (B / terminal GRAPHICS) if frames drop.
@@ -57,6 +58,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 
 ## Credits
 - Beretta 92X model: "Beretta 92X - 9mm Pistol" by KaL-ABIZZARE, CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/).
+- Apartment model: "Appartement" by SrMonteiro (https://sketchfab.com/3d-models/appartement-6a7a5fe208344b2e8123a88923dbd5b3), CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/).
 - three.js (MIT), Rapier (Apache-2.0), fonts (SIL Open Font License).
 - Sound effects from freesound.org (licences being confirmed; CC-BY sounds will be credited here): 841313 takareads, 874593 samrad20, 812821 beyercreative, 90967 department64, 402791, 675008, 677160, 855656 serutonin-deprivd, 142892 ceremonialchapstick, 184438 capslok, 762911 ienba, 369604 evanboyerman, 121765 / 121766 kno-sfx, 486226 ruben_uitenweerde, 174058 pjkasinski3, 395541 alayan, 712564 newlocknew, 528808 garuda1982, 161622 ryanconway, 172334 knova.
 - Interstate radio: royalty-free tracks (artists listed in `interstate/radio/radio.json` and the game's Credits page).

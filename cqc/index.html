@@ -7604,6 +7604,7 @@ function rebuildWalk() {
       bot: b.bot !== undefined ? r.origin.y + b.bot : (r.stair ? undefined : r.origin.y), lvTop: b.lvTop !== undefined ? r.origin.y + b.lvTop : undefined });   // step 83: level-bound boxes (U-turn stairwells); step 89: a plain room's boxes start at its floor
   }
   for (const dr of doors) colliders.push(dr.walk);
+  if (APT.active) for (const b of APT.walk) colliders.push(b);   // apartment walk boxes
 }
 
 function headRoom() {
@@ -7736,6 +7737,7 @@ function updateStreaming() {
   const S = CONFIG.stream;
   rig.updateMatrixWorld(true);
   updateViewFrustum();
+  if (APT.active) return;   // apartment: the run waits (no rooms, no rebase)
   const here = headRoom();
   if (here && here !== stream.current) {
     stream.current = here;
@@ -38266,6 +38268,7 @@ function hgRestore(why, dYaw = 0, at = null) {
   console.info(`[head guard] ${why}: head put back ${Math.hypot(tx - HG.h.x, tz - HG.h.z).toFixed(2)} m`);
 }
 function headGuard(dt) {
+  if (APT.active) return;   // apartment: outside every room on purpose
   if (!HG.on || !ready || !stream.current) return;
   const vr = renderer.xr.isPresenting, now = performance.now() / 1000, r = CONFIG.player.radius;
   if (vr !== HG.vr) { HG.vr = vr; HG.camHas = false; HG.bad = false; HG.out = HG.deep = 0; }
@@ -38763,7 +38766,7 @@ function startGame(mode) {
     renderer.setAnimationLoop(tickSafe);   // step 54.4
     syncButtons();
     entering.then((ok) => {
-      if (ok) return;
+      if (ok) { if (APT.want) aptEnter(); return; }   // apartment start
       gameStarted = false;                         // back to the title with the reason (step 30.1: still, no demo)
       renderer.setAnimationLoop(null);
       if (title) title.show(VRSTART.error || 'Could not start VR');
@@ -38778,6 +38781,7 @@ function startGame(mode) {
   renderer.setAnimationLoop(tickSafe);             // step 54.4
   syncButtons();
   VRSTART.show();
+  if (APT.want) aptEnter();   // apartment start
   if (IS_TOUCH) {
     ui.hint.textContent = 'Left thumb moves, right side looks. Settings top right';
     ui.hint.classList.remove('hidden');
@@ -39270,6 +39274,7 @@ function tick(timeMs) {
   updateKick(dt);        // step 24: the kick, its strike
   updateBreach(dt);      // step 54: the run-in gun / object shove
   updateDoorUse(dt);     // step 54: levers, push or pull
+  aptTick(dt);           // apartment doors
   profMark('input');
   updateStreaming();     // step 4: which room you're in, build/unload rooms, visibility, light pool
   disposeDrain();        // step 25.3: a few GPU frees per frame from unloaded rooms
@@ -45976,6 +45981,205 @@ function atcKnock(p, now) {
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty, atcBuild, atcEnsure, atcSigOf, atcBody, atcProbe, atcFree, atcItemClip, atcKnock,
   gunClipWorld, gunFreeAt, gunClipShape, updateGunProbe, updateHeldItem, clipReady, updateDoorsPre, updateDoorsPost, stepPhysics, CLIP, COLL, GROUP });
+
+/* ============================================================================
+ *  APARTMENT (user GLB): a special start. cqc/models/apartment.glb (tools/pack_apartment.py; "Appartement" by
+ *  SrMonteiro, CC-BY-4.0). Placed APT.at away from the run (no world rebase, no head guard, room streaming paused while
+ *  you are in it). Rapier trimesh colliders from all its meshes; walk boxes from a 10 cm occupancy grid (anything
+ *  between 0.25 and 1.7 m over the floor). Baked unlit materials: no light added (light count unchanged).
+ *  Two door leaves with levers on walls: OFFICE (fades, ../index.html) and RUN (back to the safe room).
+ *  Start: title "Start: Apartment" toggle (cqc.start.v1) or ?start=apartment. ?apartment=off = old behaviour.
+ * ========================================================================== */
+const APT_ON = !/[?&]apartment=off/.test(location.search);
+const APT = { on: APT_ON, active: false, want: false, group: null, body: null, walk: [], doors: [], spawn: null,
+  at: new THREE.Vector3(500, 0, 0), cell: 0.1, hidden: [], busy: false, loading: null };
+try { APT.want = APT_ON && (/[?&]start=apartment/.test(location.search) || localStorage.getItem('cqc.start.v1') === 'apartment'); } catch (e) { /* default */ }
+function aptTitleUi() {
+  const pc = document.getElementById('playPC');
+  if (!APT_ON || !pc || document.getElementById('aptStart')) return;
+  const b = document.createElement('button'); b.type = 'button'; b.id = 'aptStart'; b.className = 'big';
+  const draw = () => { b.innerHTML = '<b>Start: ' + (APT.want ? 'Apartment' : 'Safe room') + '</b><span>Where PLAY puts you (tap to change)</span>'; };
+  b.onclick = () => { APT.want = !APT.want; try { localStorage.setItem('cqc.start.v1', APT.want ? 'apartment' : 'run'); } catch (e) { /* this visit */ } draw(); };
+  draw(); pc.parentNode.insertBefore(b, pc.nextSibling);
+}
+aptTitleUi();
+function aptLoad() {
+  if (APT.loading) return APT.loading;
+  APT.loading = (async () => {
+    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+    const g = await new GLTFLoader().loadAsync('./models/apartment.glb');
+    const root = new THREE.Group(); root.name = 'apartment'; root.add(g.scene); root.position.copy(APT.at); root.visible = false;
+    scene.add(root); root.updateMatrixWorld(true);
+    APT.group = root;
+    // Colliders and the occupancy grid from every triangle (world space)
+    let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
+    const tris = [];
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      o.frustumCulled = false; o.castShadow = o.receiveShadow = false;
+      const P = o.geometry.attributes.position, I = o.geometry.index, v = new Float32Array(P.count * 3), t = new THREE.Vector3();
+      for (let i = 0; i < P.count; i++) { t.fromBufferAttribute(P, i).applyMatrix4(o.matrixWorld); v[3 * i] = t.x; v[3 * i + 1] = t.y; v[3 * i + 2] = t.z;
+        x0 = Math.min(x0, t.x); x1 = Math.max(x1, t.x); z0 = Math.min(z0, t.z); z1 = Math.max(z1, t.z); }
+      const idx = new Uint32Array(I.array);
+      tris.push([v, idx]);
+    });
+    APT.bounds = { x0, z0, x1, z1 };
+    const C = APT.cell, nx = Math.ceil((x1 - x0) / C) + 1, nz = Math.ceil((z1 - z0) / C) + 1;
+    const block = new Uint8Array(nx * nz), floor = new Uint8Array(nx * nz), fy = APT.at.y;
+    for (const [v, idx] of tris) for (let k = 0; k < idx.length; k += 3) {
+      const a = idx[k] * 3, b = idx[k + 1] * 3, c = idx[k + 2] * 3;
+      const ex = Math.max(Math.hypot(v[b] - v[a], v[b + 2] - v[a + 2]), Math.hypot(v[c] - v[a], v[c + 2] - v[a + 2]), Math.hypot(v[c] - v[b], v[c + 2] - v[b + 2]));
+      const n = Math.min(60, Math.max(1, Math.ceil(ex / (C * 0.5))));
+      for (let i = 0; i <= n; i++) for (let j = 0; j <= n - i; j++) {
+        const u = i / n, w = j / n, s = 1 - u - w;
+        const px = s * v[a] + u * v[b] + w * v[c], py = s * v[a + 1] + u * v[b + 1] + w * v[c + 1] - fy, pz = s * v[a + 2] + u * v[b + 2] + w * v[c + 2];
+        const ci = Math.floor((px - x0) / C) + nx * Math.floor((pz - z0) / C);
+        if (py > 0.25 && py < 1.7) block[ci] = 1; else if (py < 0.12) floor[ci] = 1;
+      }
+    }
+    // Walk boxes: greedy rectangles over blocked cells
+    const used = new Uint8Array(nx * nz), W = APT.walk;
+    for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
+      if (!block[x + nx * z] || used[x + nx * z]) continue;
+      let w = 1; while (x + w < nx && block[x + w + nx * z] && !used[x + w + nx * z]) w++;
+      let h = 1; grow: while (z + h < nz) { for (let i = 0; i < w; i++) if (!block[x + i + nx * (z + h)] || used[x + i + nx * (z + h)]) break grow; h++; }
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) used[x + i + nx * (z + j)] = 1;
+      W.push({ x: x0 + (x + w / 2) * C, z: z0 + (z + h / 2) * C, c: 1, s: 0, hx: w * C / 2, hz: h * C / 2, top: fy + 2.4, bot: fy });
+    }
+    // Clearance (BFS from blocked / no floor) -> spawn = most open floor cell; doors on walls far from it
+    const dist = new Int16Array(nx * nz).fill(-1), q = [];
+    for (let i = 0; i < nx * nz; i++) if (block[i] || !floor[i]) { dist[i] = 0; q.push(i); }
+    for (let h = 0; h < q.length; h++) { const i = q[h], x = i % nx, z = (i / nx) | 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Z = z + dz; if (X < 0 || Z < 0 || X >= nx || Z >= nz) continue; const k = X + nx * Z; if (dist[k] < 0) { dist[k] = dist[i] + 1; q.push(k); } } }
+    let best = 0; for (let i = 0; i < nx * nz; i++) if (dist[i] > dist[best]) best = i;
+    APT.spawn = new THREE.Vector3(x0 + (best % nx + 0.5) * C, fy, z0 + (((best / nx) | 0) + 0.5) * C);
+    // reachable cells from the spawn (clearance >= 3 cells: a body fits)
+    const seen = new Uint8Array(nx * nz), r2 = [best]; seen[best] = 1;
+    for (let h = 0; h < r2.length; h++) { const i = r2[h], x = i % nx, z = (i / nx) | 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Z = z + dz; if (X < 0 || Z < 0 || X >= nx || Z >= nz) continue; const k = X + nx * Z; if (!seen[k] && dist[k] >= 3) { seen[k] = 1; r2.push(k); } } }
+    // door spots: reachable cells with a straight wall 5 cells away along an axis and 5 free cells either side of it
+    const cand = [];
+    for (const i of r2) { if (dist[i] !== 3) continue; const x = i % nx, z = (i / nx) | 0;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        let ok = true; for (let s = -5; s <= 5 && ok; s++) { const X = x + dx * 3 + dz * s, Z = z + dz * 3 + dx * s; if (X < 0 || Z < 0 || X >= nx || Z >= nz || !block[X + nx * Z]) ok = false; }
+        if (ok) cand.push({ i, x, z, dx, dz, d: Math.hypot(x - best % nx, z - ((best / nx) | 0)) });
+      } }
+    cand.sort((a, b) => b.d - a.d);
+    const picks = [];
+    for (const c of cand) { if (picks.every((p) => Math.hypot(p.x - c.x, p.z - c.z) > 15)) picks.push(c); if (picks.length === 2) break; }
+    const mk = (p, label, col, act) => {
+      const g = new THREE.Group(), leaf = new THREE.Group(), cx = x0 + (p.x + 0.5 + p.dx * 2.6) * C, cz = z0 + (p.z + 0.5 + p.dz * 2.6) * C;
+      g.position.set(cx, fy, cz); g.rotation.y = Math.atan2(-p.dx, -p.dz);   // local +z toward the room
+      const m = new THREE.MeshBasicMaterial({ color: 0x6b5a48 }), fr = new THREE.MeshBasicMaterial({ color: 0xd8d2c6 }), mt = new THREE.MeshBasicMaterial({ color: 0xb8b8b8 });
+      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.02, 2.1, 0.03), fr); frame.position.set(0, 1.05, 0.005); g.add(frame);
+      leaf.position.set(-0.45, 0, 0.03); g.add(leaf);                     // hinge on the left edge
+      const slab = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.03, 0.04), m); slab.position.set(0.45, 1.015, 0.02); leaf.add(slab);
+      const lever = new THREE.Group(); lever.position.set(0.82, 1.02, 0.06); leaf.add(lever);
+      const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.01, 16), mt); rose.rotation.x = Math.PI / 2; lever.add(rose);
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.018, 0.018), mt); bar.position.set(-0.05, 0, 0.03); lever.add(bar);
+      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64; const x2 = cv.getContext('2d');
+      x2.fillStyle = col; x2.fillRect(0, 0, 256, 64); x2.fillStyle = '#fff'; x2.font = 'bold 34px sans-serif'; x2.textAlign = 'center'; x2.fillText(label, 128, 45);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.125), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }));
+      sign.position.set(0.45, 1.6, 0.045); leaf.add(sign);
+      APT.group.add(g); g.updateMatrixWorld(true);
+      APT.doors.push({ g, leaf, lever, act, open: 0, opening: false, p: new THREE.Vector3() });
+    };
+    // the group has its own transform; door positions above are world: undo it
+    const inv = APT.group.matrixWorld.clone().invert();
+    if (picks[0]) mk(picks[0], 'OFFICE', '#7a1f1f', aptGoOffice);
+    if (picks[1]) mk(picks[1], 'CQC RUN', '#1f5a2a', aptGoRun);
+    for (const d of APT.doors) { d.g.applyMatrix4(inv); d.g.updateMatrixWorld(true); }
+    // Rapier: one fixed body, a trimesh per mesh
+    APT.body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    APT.cols = [];
+    for (const [v, idx] of tris) {
+      const c = world.createCollider(RAPIER.ColliderDesc.trimesh(v, idx).setFriction(0.7).setCollisionGroups(COLL.static), APT.body);
+      colliderInfo.set(c.handle, { room: null, kind: 'plaster' }); c.setEnabled(false); APT.cols.push(c);
+    }
+    return true;
+  })().catch((e) => { console.warn('apartment load failed', e); APT.loading = null; return false; });
+  return APT.loading;
+}
+function aptPlace(p, yaw) {
+  level.floor = APT.at.y; level.flat = true; stance.crouchOn = false; xrState.crouchOn = false; xrState.crouchCur = 0;
+  applyHeight(); rig.updateMatrixWorld(true);
+  if (renderer.xr.isPresenting) rotateRigAroundHead(yaw - yawOf(camera)); else { look.yaw = yaw; look.pitch = 0; applyLook(); }
+  rig.updateMatrixWorld(true); headWorld(_aptH);
+  rig.position.x += p.x - _aptH.x; rig.position.z += p.z - _aptH.z; rig.updateMatrixWorld(true);
+  _vel.set(0, 0, 0); playerState.hasPrev = false;
+}
+const _aptH = new THREE.Vector3();
+async function aptEnter() {
+  if (!APT_ON || APT.active || APT.busy) return;
+  APT.busy = true;
+  toast('Apartment: loading', 1500);
+  const ok = await aptLoad(); APT.busy = false;
+  if (!ok) { toast('Apartment did not load'); return; }
+  APT.active = true; APT.group.visible = true;
+  for (const c of APT.cols) c.setEnabled(true);
+  APT.hidden.length = 0;
+  for (const r of stream.rooms.values()) for (const g of [r.group, r.doorGroup]) if (g && g.visible) { g.visible = false; APT.hidden.push(g); }
+  rebuildWalk();
+  const d0 = APT.doors[0];
+  aptPlace(APT.spawn, d0 ? Math.atan2(-(d0.g.position.x + APT.at.x - APT.spawn.x), -(d0.g.position.z + APT.at.z - APT.spawn.z)) : 0);
+  toast('Apartment. Doors: OFFICE, CQC RUN (E / grip on the lever)', 3500);
+}
+function aptLeave() {
+  APT.active = false; APT.group.visible = false;
+  for (const c of APT.cols) c.setEnabled(false);
+  for (const g of APT.hidden) g.visible = true; APT.hidden.length = 0;
+  for (const d of APT.doors) { d.open = 0; d.opening = false; d.leaf.rotation.y = 0; d.lever.rotation.z = 0; }
+  rebuildWalk();
+  let safe = null; for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active && (!safe || r.slot > safe.slot)) safe = r;
+  if (safe) { const s = CONFIG.player.start; aptPlace({ x: rWX(safe, s.x), z: rWZ(safe, s.z) }, rYaw(safe)); level.floor = safe.origin.y; applyHeight(); }
+}
+function aptFade(then) {
+  let f = document.getElementById('aptFade');
+  if (!f) { f = document.createElement('div'); f.id = 'aptFade'; f.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;transition:opacity .6s;pointer-events:none;z-index:99'; document.body.appendChild(f); }
+  requestAnimationFrame(() => { f.style.opacity = '1'; });
+  setTimeout(then, 650);
+}
+function aptGoOffice() {
+  const go = () => { location.href = '../index.html'; };
+  const s = renderer.xr.getSession && renderer.xr.getSession();
+  if (s) s.end().catch(() => {}).finally(() => aptFade(go)); else aptFade(go);
+}
+function aptGoRun() { aptLeave(); toast('Safe room'); }
+function aptUse(d) { if (d.opening) return; d.opening = true; btnSfx && btnSfx('term'); }
+const _aptP = new THREE.Vector3();
+function aptTick(dt) {
+  if (!APT.active) return;
+  for (const d of APT.doors) {
+    d.lever.getWorldPosition(d.p);
+    if (d.opening) {
+      d.open = Math.min(1, d.open + dt / 0.7);
+      d.lever.rotation.z = d.open < 0.2 ? -d.open * 3 : -0.6 * (1 - d.open);
+      d.leaf.rotation.y = -1.3 * Math.max(0, d.open - 0.15) / 0.85;
+      if (d.open >= 1) { d.opening = false; d.act(); return; }
+    }
+    if (renderer.xr.isPresenting) for (const h of vrHands) {
+      const gp = h.ctrl && h.ctrl.userData.gamepad, gr = h.ctrl && h.ctrl.userData.grip;
+      if (!gp || !gr || !gp.buttons[1] || !gp.buttons[1].pressed) continue;
+      gr.getWorldPosition(_aptP);
+      if (_aptP.distanceTo(d.p) < 0.18) aptUse(d);
+    }
+  }
+}
+function aptNearDoor() {
+  headWorld(_aptH); let best = null, bd = 1.4;
+  for (const d of APT.doors) { d.lever.getWorldPosition(d.p); const k = _aptH.distanceTo(d.p); if (k < bd) { bd = k; best = d; } }
+  return best;
+}
+addEventListener('keydown', (e) => {
+  if (!APT.active || e.code !== 'KeyE' || e.repeat) return;
+  const d = aptNearDoor(); if (!d) return;
+  e.stopImmediatePropagation(); e.preventDefault(); aptUse(d);
+}, true);
+canvas.addEventListener('mousedown', (e) => {
+  if (!APT.active || e.button !== 0 || !document.pointerLockElement) return;
+  const d = aptNearDoor(); if (d) { e.stopImmediatePropagation(); aptUse(d); }
+}, true);
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptEnter, aptLeave, aptTick, aptLoad, aptProbe: () => { headWorld(_aptH); return { head: _aptH.toArray(), floor: level.floor, walk: colliders.length }; } });
 </script>
 </body>
 </html>

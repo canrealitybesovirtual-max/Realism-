@@ -65,7 +65,8 @@
       { id: "none", title: "Keep it shut", text: "The door stays locked." },
       { id: "rally", title: "Snowy Mountain Rally", text: "5.5 km of snowy mountain road, with a shortcut through the pass. A car waits at the service park." },
       { id: "interstate", title: "Interstate", text: "A 25 km highway loop in live traffic. Opens as its own page; press Drive in VR there." },
-      { id: "cqc", title: "CQC Loop", text: "Close-quarters room clearing. Opens as its own page; press Play in VR there." }
+      { id: "cqc", title: "CQC Loop", text: "Close-quarters room clearing. Opens as its own page; press Play in VR there." },
+      { id: "cqcapt", title: "CQC Apartment", text: "CQC Loop, starting in an apartment. Its OFFICE door brings you back." }
     ];
     var dest = os.storage.get("door.dest") || "none";
     // a saved door from a removed room (range, highway, home) falls back to the locked door
@@ -84,7 +85,7 @@
         var lx = x + w / 2, ly = y + h * 0.42;
         c.strokeStyle = "#ffd36b"; c.lineWidth = h * 0.035; c.beginPath(); c.arc(lx, ly - h * 0.05, h * 0.07, Math.PI, 0); c.stroke();
         c.fillStyle = "#ffd36b"; rr(c, lx - h * 0.1, ly - h * 0.05, h * 0.2, h * 0.16, 8); c.fill();
-      } else if (id === "cqc") {
+      } else if (id === "cqc" || id === "cqcapt") {
         // a concrete corridor lit by one fluorescent tube, an open doorway at the end
         var cg = c.createLinearGradient(0, y, 0, y + h); cg.addColorStop(0, "#2a2b2d"); cg.addColorStop(1, "#151617");
         c.fillStyle = cg; c.fillRect(x, y, w, h);
@@ -438,7 +439,7 @@
     function act() {
       if (busy || !hintAction) return;
       var a = hintAction;
-      if (a === "door-open") { if (dest === "interstate") goPage("./interstate/index.html", "Heading out to the interstate\u2026"); else if (dest === "cqc") goPage("./cqc/index.html", "Heading to the safe room\u2026"); else enterMap("rally"); }
+      if (a === "door-open") { if (dest === "interstate") goPage("./interstate/index.html", "Heading out to the interstate\u2026"); else if (dest === "cqc") goPage("./cqc/index.html", "Heading to the safe room\u2026"); else if (dest === "cqcapt") goPage("./cqc/index.html?start=apartment", "Heading to the apartment\u2026"); else enterMap("rally"); }
       else if (a === "door-back") leaveMap();
       else if (a === "car") enterCar();
     }
