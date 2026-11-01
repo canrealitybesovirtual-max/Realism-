@@ -7322,6 +7322,7 @@ function roomContaining(x, z, m = 0.3, y) {
     const d = yy < r.origin.y - 0.8 ? r.origin.y - 0.8 - yy : yy > r.origin.y + r.h + 0.5 ? yy - r.origin.y - r.h - 0.5 : 0;
     if (d < bd) { bd = d; best = r; }
   }
+  if (!best && APT.active && APT.room && APT.room.active && insideRoom(APT.room, x, z, m, yy)) best = APT.room;   // apartment armory: holes, brass, pen exits find APT.room
   return best;
 }
 
@@ -16524,7 +16525,7 @@ function brassUf(P, r, fy) {
 function brassCollectAt(P, r, max, hand) {
   const B = BRASS, res = B.res, now = performance.now() / 1000, C = CONFIG.brass, cand = B.cand;
   res.n = res.hot = res.full = 0; res.c = -1; cand.length = 0;
-  for (const room of stream.rooms.values()) {
+  for (const room of brassRooms()) {                                 // apartment armory: + APT.room
     const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
     if (!L || !L.length) continue;
     for (let i = 0; i < L.length; i++) {
@@ -16556,8 +16557,10 @@ function brassCollectAt(P, r, max, hand) {
   }
   return res;
 }
+const _brR = [];
+function brassRooms() { _brR.length = 0; for (const r of stream.rooms.values()) _brR.push(r); if (APT.active && APT.room) _brR.push(APT.room); return _brR; }   // apartment armory: brass lying in the apartment can be picked up
 function brassNear(P, r) {                                          // a palm low over brass: start a sweep
-  for (const room of stream.rooms.values()) {
+  for (const room of brassRooms()) {
     const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
     if (!L) continue;
     for (const e of L) {
@@ -17581,7 +17584,7 @@ function heatBarrelAt(g, t0, t1, up, out) {
 }
 // Wetness by P: the room you stand in (step 93 wet), the floor under P within steam.near m (pools, damp).
 function heatWet(P) {
-  const S = HEAT.steam, cur = stream.current, rw = cur && cur.wear93 ? (cur.wear93.wet || 0) * S.roomWet : 0;
+  const S = HEAT.steam, cur = APT.active ? null : stream.current, rw = cur && cur.wear93 ? (cur.wear93.wet || 0) * S.roomWet : 0;
   const room = roomContaining(P.x, P.z, 0, P.y), h = room ? P.y - room.origin.y : 9;
   if (!room || !room.wear93 || h > S.near) return rw;
   return Math.max(rw, wearWetAt(room, rLX(room, P.x), rLZ(room, P.z)) * (1 - Math.max(0, h) / S.near));
@@ -24715,6 +24718,7 @@ function updatePlayerVitals(dt, now) {
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
 function respawnPlayer() {
+  if (APT.active && APT.spawn) { aptRespawn(); return; }       // apartment armory: dying in the apartment wakes you there
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
   // pulled back to it so it stays the safe room.
   const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
@@ -30347,6 +30351,7 @@ function restartToSafe() {
   for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active) safe = r;
   if (!safe) { toast('The safe room is still being built. Try again in a moment'); modDomSync(); return; }
   if (playerState.dead) { modDomSync(); return; }                 // already on the way back
+  if (APT.active) aptLeave();                                      // apartment armory: a restart is the safe room's
   respawnPlayer();                                                 // newest safe room, run over, men reset
   refillInventory(); panel.dirty = true;
   playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0; hpUi();
@@ -46091,6 +46096,7 @@ function aptLoad() {
     cand.sort((a, b) => b.d - a.d);
     const picks = [];
     for (const c of cand) { if (picks.every((p) => Math.hypot(p.x - c.x, p.z - c.z) > 15)) picks.push(c); if (picks.length === 2) break; }
+    if (APTI.on) APT.lockSpot = aptLockerPick(cand, picks, block, band, nx, nz, x0, z0, C, best, fy);   // apartment armory: the gun locker's wall
     const mk = (p, label, col, act) => {
       const g = new THREE.Group(), leaf = new THREE.Group(), cx = x0 + (p.x + 0.5 + p.dx * 2.6) * C, cz = z0 + (p.z + 0.5 + p.dz * 2.6) * C;
       g.position.set(cx, fy, cz); g.rotation.y = Math.atan2(-p.dx, -p.dz);   // local +z toward the room
@@ -46146,10 +46152,11 @@ async function aptEnter() {
   APT.hidden.length = 0;
   for (const r of stream.rooms.values()) for (const g of [r.group, r.doorGroup]) if (g && g.visible) { g.visible = false; APT.hidden.push(g); }
   if (APTI.on && APT.room) aptiEnter();                          // the apartment's own doors, its men, the tablet
+  if (APTI.on && APT.room) aptArmoryEnter();                     // apartment armory: gun locker + pouches
   rebuildWalk();
   const d0 = APT.doors[0];
   aptPlace(APT.spawn, d0 ? Math.atan2(-(d0.g.position.x + APT.at.x - APT.spawn.x), -(d0.g.position.z + APT.at.z - APT.spawn.z)) : 0);
-  toast('Apartment. Doors: OFFICE, CQC RUN (E / grip on the lever)' + (APTI.on && APT.room ? '. Swatted: the tablet by the front door' + (renderer.xr.isPresenting ? '' : ' or M') : ''), 3500);
+  toast('Apartment. Doors: OFFICE, CQC RUN (E / grip on the lever)' + (APTI.on && APT.room ? '. Swatted: the tablet by the front door' + (renderer.xr.isPresenting ? '' : ' or J') : ''), 3500);
 }
 function aptLeave() {
   APT.active = false; APT.group.visible = false;
@@ -46157,6 +46164,7 @@ function aptLeave() {
   for (const g of APT.hidden) g.visible = true; APT.hidden.length = 0;
   for (const d of APT.doors) { d.open = 0; d.opening = false; d.leaf.rotation.y = 0; d.lever.rotation.z = 0; }
   if (APTI.on && APT.room) aptiLeave();
+  aptArmoryLeave();                                              // apartment armory: the locker is the safe room's again
   rebuildWalk();
   let safe = null; for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active && (!safe || r.slot > safe.slot)) safe = r;
   if (safe) { const s = CONFIG.player.start; aptPlace({ x: rWX(safe, s.x), z: rWZ(safe, s.z) }, rYaw(safe)); level.floor = safe.origin.y; applyHeight(); }
@@ -46451,7 +46459,8 @@ function aptNavBuild(block, floor, nx, nz) {
   const grp = new THREE.Group(), origin = new THREE.Vector3(B.x0 + G.w / 2, APT.at.y, B.z0 + G.d / 2);
   grp.position.copy(origin).sub(APT.at); APT.group.add(grp);
   APT.room = { apt: true, kind: 'apt', slot: -7, origin, f: 1, w: G.w, d: G.d, h: 2.5, group: grp, doorGroup: APT.group, body: APT.body,
-    walkLocal: [], enemies: [], active: false, visible: false, plan: { number: 'Apartment', type: 'apt' }, entryX: null, exitX: 0, navG: G };
+    walkLocal: [], enemies: [], active: false, visible: false, plan: { number: 'Apartment', type: 'apt' }, entryX: null, exitX: 0, navG: G, colliderHandles: [] };
+  for (const c of APT.cols) { const ci = colliderInfo.get(c.handle); if (ci) ci.room = APT.room; }   // apartment armory: holes and decals land in APT.room (was null: addRoomHole threw)
   // regions: free cells split at the doorways (cells within 0.5 m of a doorway centre)
   const reg = new Int16Array(gx * gz).fill(-1), q = [], cen = [];
   for (const d of APTI.doors) for (let k = 0; k < gx * gz; k++) {
@@ -46647,6 +46656,7 @@ function aptiTick(dt) {
       if (alive) { for (const e of APTI.men) if (!e.dead && !e.surr) removeEnemy(e); toast(`Time. Wave ${APTI.wave}: the rest pulled back`, 2600); }
       else toast(`Wave ${APTI.wave} down. Next in ${APTI.breakT} s`, 2600);
       aptiBank();
+      aptRestockPouches('Pouches refilled');                     // apartment armory: ammo, grenades, injectors at each break
       APTI.phase = 'break'; APTI.t = APTI.breakT;
     }
   } else if (APTI.phase === 'break') {
@@ -46675,6 +46685,93 @@ function aptHud(force) {
 }
 
 /* --- menu: wall tablet + overlay (M) ------------------------------------------ */
+/* --- apartment armory: gun locker, pouches, respawn --------------------------- */
+// A straight tall wall (1.5 m of it) for the gun locker: far from the spawn, the OFFICE / RUN doors, the doorways and the tablet.
+function aptLockerPick(cand, picks, block, band, nx, nz, x0, z0, C, best, fy) {
+  const bx = best % nx, bz = (best / nx) | 0, cell = (X, Z) => (X >= 0 && Z >= 0 && X < nx && Z < nz ? X + nx * Z : -1);
+  for (const c of cand) {
+    if (Math.hypot(c.x - bx, c.z - bz) < 15 || picks.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < 17)) continue;
+    let ok = true;
+    for (let s = -7; s <= 7 && ok; s++) {
+      const w = cell(c.x + c.dx * 3 + c.dz * s, c.z + c.dz * 3 + c.dx * s);
+      if (w < 0 || !block[w] || !(band[w] & 4)) ok = false;                     // wall up past 1.6 m all along
+      for (let r = -2; r <= 2 && ok; r++) { const k = cell(c.x - c.dx * r + c.dz * s, c.z - c.dz * r + c.dx * s); if (k < 0 || block[k]) ok = false; }   // floor in front clear
+    }
+    if (!ok) continue;
+    const cx = x0 + (c.x + 0.5) * C, cz = z0 + (c.z + 0.5) * C, wx = cx + c.dx * (2.5 * C - 0.03), wz = cz + c.dz * (2.5 * C - 0.03);
+    if (aptNearMenu(wx, wz) || APTI.dw.some((d) => Math.hypot(d.cx - wx, d.cz - wz) < 1.5)) continue;
+    return { x: wx, y: fy, z: wz, yaw: Math.atan2(-c.dx, -c.dz) };
+  }
+  return null;
+}
+// The safe room's cabinet (shared GL kit), its colliders on APT.body (world frame), a walk box, the men's nav grid blocked.
+function aptLockerBuild(R, S, F) {
+  const kit = glKit(F), g = new THREE.Group(), { W, D, H, t } = GL, cy = Math.cos(S.yaw), sy = Math.sin(S.yaw);
+  for (const m of kit) g.add(m.clone());
+  g.position.set(S.x - R.origin.x, 0, S.z - R.origin.z); g.rotation.y = S.yaw;           // +z out of the cabinet = into the room
+  R.group.add(g); R.glGrp = g;
+  const q = { x: 0, y: Math.sin(S.yaw / 2), z: 0, w: Math.cos(S.yaw / 2) };
+  const lx0 = -W / 2 + t, lx1 = GL.bayX - t / 2, px0 = GL.bayX + t / 2, px1 = W / 2 - t;
+  const box = (cx, by, cz, hx, hy, hz) => {                                                 // cabinet frame -> world (APT.body sits at the origin)
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(S.x + cx * cy + cz * sy, S.y + by, S.z - cx * sy + cz * cy).setRotation(q)
+      .setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.static), APT.body);
+    colliderInfo.set(col.handle, { room: R, kind: 'metal' }); R.colliderHandles.push(col.handle); APT.lockCols.push(col);
+  };
+  box(0, H / 2, t / 2, W / 2, H / 2, t / 2); box(-W / 2 + t / 2, H / 2, D / 2, t / 2, H / 2, D / 2); box(W / 2 - t / 2, H / 2, D / 2, t / 2, H / 2, D / 2);
+  box(0, H - t / 2, D / 2, W / 2, t / 2, D / 2); box(0, 0.04, D / 2, W / 2, 0.04, D / 2); box(GL.bayX, H / 2, D / 2, t / 2, H / 2, D / 2);
+  box((lx0 + lx1) / 2, (0.08 + GL.padTop) / 2, D / 2, (lx1 - lx0) / 2, (GL.padTop - 0.08) / 2, D / 2);
+  for (const y of [GL.pShelf, GL.mShelf]) box((px0 + px1) / 2, y - 0.0045, D / 2, (px1 - px0) / 2, 0.0105, D / 2);
+  // walk box (the wall runs along x or z, so axis aligned) and the men's nav grid
+  const cxw = S.x + (D / 2) * sy, czw = S.z + (D / 2) * cy, hx = Math.abs(cy) * W / 2 + Math.abs(sy) * D / 2, hz = Math.abs(sy) * W / 2 + Math.abs(cy) * D / 2;
+  APT.walk.push({ x: cxw, z: czw, c: 1, s: 0, hx, hz, top: S.y + H, bot: S.y });
+  const G = R.navG;
+  if (G) for (let j = 0; j < G.nz; j++) for (let i = 0; i < G.nx; i++) {
+    const [lx, lz] = navCenter(G, i, j);
+    if (Math.abs(lx + R.origin.x - cxw) < hx + 0.18 && Math.abs(lz + R.origin.z - czw) < hz + 0.18) G.g[j * G.nx + i] = 1;
+  }
+  dirtyShadows();
+}
+function aptArmoryEnter() {
+  const R = APT.room;
+  try {
+    if (R && APT.lockSpot) {
+      APT.lockCols = APT.lockCols || [];
+      if (GL.room !== R) APT.glPrev = GL.room;                   // the safe room's locker, given back on leaving
+      GL.room = R;
+      const F = glFit();
+      if (F.long.length || F.pist.length) {
+        if (!R.glGrp) aptLockerBuild(R, APT.lockSpot, F);
+        for (const c of APT.lockCols) c.setEnabled(true);
+        gunLockerRestock(R);                                     // every gun, each with its store build (createGun / the sync functions)
+      }
+    }
+  } catch (e) { console.warn('apartment armory: locker not placed', e); }
+  aptRestockPouches('');
+}
+function aptArmoryLeave() {
+  if (APT.lockCols) for (const c of APT.lockCols) c.setEnabled(false);
+  if (APT.room && GL.room === APT.room) {
+    GL.room = APT.glPrev || null; APT.glPrev = null;
+    try { if (GL.room) gunLockerRestock(GL.room); } catch (e) { console.warn('apartment armory: safe-room locker not restocked', e); }
+  }
+}
+// Magazines, shells, grenades, injectors full (as the safe room's refill).
+function aptRestockPouches(msg) {
+  refillInventory();
+  if (msg) toast(msg, 1800);
+}
+// Down in the apartment: the invasion stops, you wake at its spawn, pouches and locker restocked, the run ends as usual.
+function aptRespawn() {
+  if (APTI.on) aptiStop('');
+  for (const h of [deskHand, ...vrHands]) if (h && h.prop && !gunOf(h)) release(h, new THREE.Vector3());
+  aptPlace(APT.spawn, renderer.xr.isPresenting ? yawOf(camera) : look.yaw);
+  try { if (APT.room && GL.room === APT.room) gunLockerRestock(APT.room); } catch (e) { console.warn('apartment armory: locker not restocked', e); }
+  refillInventory();
+  playerState.dead = false; playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0;
+  xrState.crouchOn = false;
+  hpUi();
+  loopPlayerDown();
+}
 const APTM = { cv: null, ctx: null, tex: null, mesh: null, btn: [], arm: [true, true], open: false, ov: null, ovB: [],
   W: 640, H: 400, w: 0.4, h: 0.25, c: new THREE.Vector3(), sig: '' };
 function aptMenuBuild() {
@@ -46688,7 +46785,8 @@ function aptMenuBuild() {
   APT.group.add(bez);
   M.c.set(a.x + cx, a.y + cy, a.z + cz);
   const B = M.btn, chip = (y, n, id, vals) => { const w = (600 - (n - 1) * 10) / n; for (let i = 0; i < n; i++) B.push({ x: 20 + i * (w + 10), y, w, h: 44, id, val: vals[i] }); };
-  B.push({ x: 20, y: 74, w: 600, h: 54, id: 'go', val: 0 });
+  B.push({ x: 20, y: 74, w: 440, h: 54, id: 'go', val: 0 });
+  B.push({ x: 470, y: 74, w: 150, h: 54, id: 'mods', val: 0 });   // apartment armory: opens the watch mod panel
   chip(170, 3, 'diff', [0, 1, 2]);
   chip(256, 5, 'timer', APTI.TIMERS);
   chip(342, 3, 'team', APTI.TEAMS);
@@ -46708,15 +46806,20 @@ function aptMenuDraw() {
   c.font = '600 14px ui-monospace, Menlo, monospace'; c.textAlign = 'left'; c.fillStyle = '#8b919c';
   c.fillText('DIFFICULTY', 20, 156); c.fillText('ROUND TIMER (PER WAVE)', 20, 242); c.fillText('TEAM SIZE', 20, 328);
   for (const b of M.btn) {
-    const sel = b.id === 'go' ? on : APTI.set[b.id] === b.val;
-    c.fillStyle = b.id === 'go' ? (on ? '#7a1f1f' : '#1f5a2a') : sel ? '#2e6fd8' : '#262a31'; c.fillRect(b.x, b.y, b.w, b.h);
-    c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = b.id === 'go' ? '700 24px ui-monospace, Menlo, monospace' : '600 18px ui-monospace, Menlo, monospace';
-    c.fillText(b.id === 'go' ? (on ? 'STOP INVASION' : 'START INVASION') : aptLabel(b), b.x + b.w / 2, b.y + b.h / 2);
+    const sel = b.id === 'go' ? on : APTI.set[b.id] === b.val, big = b.id === 'go' || b.id === 'mods';
+    c.fillStyle = b.id === 'mods' ? '#4b3f7a' : b.id === 'go' ? (on ? '#7a1f1f' : '#1f5a2a') : sel ? '#2e6fd8' : '#262a31'; c.fillRect(b.x, b.y, b.w, b.h);
+    c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = big ? '700 24px ui-monospace, Menlo, monospace' : '600 18px ui-monospace, Menlo, monospace';
+    c.fillText(b.id === 'mods' ? 'MODS' : b.id === 'go' ? (on ? 'STOP INVASION' : 'START INVASION') : aptLabel(b), b.x + b.w / 2, b.y + b.h / 2);
   }
   M.tex.needsUpdate = true;
   aptOverlaySync();
 }
 function aptMenuAct(b) {
+  if (b.id === 'mods') {                                        // apartment armory: the same mod panel as everywhere (watch in VR, M panel on a computer)
+    btnSfx('term', APTM.c);
+    if (renderer.xr.isPresenting) watchOpen(true); else { aptOverlay(false); modPanelToggle(true); }
+    return;
+  }
   if (b.id === 'go') { if (APTI.phase === 'off') aptiStart(); else aptiStop('Invasion stopped'); }
   else { APTI.set[b.id] = b.val; aptiSave(); }
   btnSfx('term', APTM.c);
@@ -46768,14 +46871,15 @@ function aptOverlayBuild() {
   const mk = (b) => { const e = document.createElement('button'); e.type = 'button'; e.style.cssText = 'flex:1;margin:3px;padding:9px 4px;border:0;border-radius:4px;color:#fff;font:inherit;cursor:pointer'; e.onclick = () => aptMenuAct(b); M.ovB.push([e, b]); return e; };
   let row = null, last = '';
   for (const b of M.btn) {
-    if (b.id !== last) {
-      last = b.id;
+    const gid = b.id === 'mods' ? 'go' : b.id;                  // MODS shares the START row
+    if (gid !== last) {
+      last = gid;
       if (b.id !== 'go') { const l = document.createElement('div'); l.style.cssText = 'margin:10px 3px 2px;color:#8b919c'; l.textContent = b.id === 'diff' ? 'DIFFICULTY' : b.id === 'timer' ? 'ROUND TIMER (PER WAVE)' : 'TEAM SIZE'; d.appendChild(l); }
       row = document.createElement('div'); row.style.cssText = 'display:flex'; d.appendChild(row);
     }
     row.appendChild(mk(b));
   }
-  const close = document.createElement('div'); close.style.cssText = 'margin-top:10px;color:#8b919c;text-align:center;cursor:pointer'; close.textContent = 'M or Esc closes · click the game to look around again';
+  const close = document.createElement('div'); close.style.cssText = 'margin-top:10px;color:#8b919c;text-align:center;cursor:pointer'; close.textContent = 'J or Esc closes · click the game to look around again';
   close.onclick = () => aptOverlay(false); d.appendChild(close);
   document.body.appendChild(d); M.ov = d;
 }
@@ -46785,8 +46889,8 @@ function aptOverlaySync() {
   M.ovInfo.textContent = aptLine() || 'Ready';
   for (const [e, b] of M.ovB) {
     const sel = b.id === 'go' ? on : APTI.set[b.id] === b.val;
-    e.textContent = b.id === 'go' ? (on ? 'STOP INVASION' : 'START INVASION') : aptLabel(b);
-    e.style.background = b.id === 'go' ? (on ? '#7a1f1f' : '#1f5a2a') : sel ? '#2e6fd8' : '#262a31';
+    e.textContent = b.id === 'mods' ? 'MODS' : b.id === 'go' ? (on ? 'STOP INVASION' : 'START INVASION') : aptLabel(b);
+    e.style.background = b.id === 'mods' ? '#4b3f7a' : b.id === 'go' ? (on ? '#7a1f1f' : '#1f5a2a') : sel ? '#2e6fd8' : '#262a31';
   }
 }
 function aptOverlay(show) {
@@ -46796,7 +46900,7 @@ function aptOverlay(show) {
 }
 addEventListener('keydown', (e) => {
   if (!APTI.on || !APT.active || renderer.xr.isPresenting || e.repeat) return;
-  if (e.code === 'KeyM' || (e.code === 'Escape' && APTM.open)) { e.stopImmediatePropagation(); e.preventDefault(); aptOverlay(e.code === 'KeyM' ? !APTM.open : false); }
+  if (e.code === 'KeyJ' || (e.code === 'Escape' && APTM.open)) { e.stopImmediatePropagation(); e.preventDefault(); aptOverlay(e.code === 'KeyJ' ? !APTM.open : false); }   // apartment armory: J (M stays the mod panel; J is the hop elsewhere)
 }, true);
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APTI, APTM, aptiStart, aptiStop, aptiWave, aptiTick, aptRegion, aptFindDoorways, aptCutLeaves, aptDoorMake, aptMenuAct, aptOverlay });
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptEnter, aptLeave, aptTick, aptLoad, aptProbe: () => { headWorld(_aptH); return { head: _aptH.toArray(), floor: level.floor, walk: colliders.length }; } });
