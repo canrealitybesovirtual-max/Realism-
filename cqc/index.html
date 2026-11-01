@@ -7322,7 +7322,6 @@ function roomContaining(x, z, m = 0.3, y) {
     const d = yy < r.origin.y - 0.8 ? r.origin.y - 0.8 - yy : yy > r.origin.y + r.h + 0.5 ? yy - r.origin.y - r.h - 0.5 : 0;
     if (d < bd) { bd = d; best = r; }
   }
-  if (!best && APT.active && APT.room && APT.room.active && insideRoom(APT.room, x, z, m, yy)) best = APT.room;   // apartment armory: holes, brass, pen exits find APT.room
   return best;
 }
 
@@ -7605,7 +7604,6 @@ function rebuildWalk() {
       bot: b.bot !== undefined ? r.origin.y + b.bot : (r.stair ? undefined : r.origin.y), lvTop: b.lvTop !== undefined ? r.origin.y + b.lvTop : undefined });   // step 83: level-bound boxes (U-turn stairwells); step 89: a plain room's boxes start at its floor
   }
   for (const dr of doors) colliders.push(dr.walk);
-  if (APT.active) for (const b of APT.walk) colliders.push(b);   // apartment walk boxes
 }
 
 function headRoom() {
@@ -7738,7 +7736,6 @@ function updateStreaming() {
   const S = CONFIG.stream;
   rig.updateMatrixWorld(true);
   updateViewFrustum();
-  if (APT.active) return;   // apartment: the run waits (no rooms, no rebase)
   const here = headRoom();
   if (here && here !== stream.current) {
     stream.current = here;
@@ -8093,7 +8090,6 @@ function activateDoor(room) {
   doors.push(door);
 }
 const doorHinge = (door, out) => {
-  if (door.room.hinge) return out.copy(door.room.hinge);         // apartment leaves: their world hinge
   const r = door.room, E = exitLeaf(r);
   return out.set(rWX(r, E.x - E.s * door.sw / 2), rWZ(r, E.z));
 };
@@ -8158,10 +8154,10 @@ const paceBusy = (now) => PACE_ON && (now < PACE.moveUntil || now < PACE.revealU
 function updateDoorsPre(now) {
   const P = CONFIG.doorPhys;
   for (const door of doors) {
-    let target = 0, k = door.closerK ?? P.closerStiffness, c = P.closerDamping, mode = 'closer';   // apartment: interior leaves have no closer
+    let target = 0, k = P.closerStiffness, c = P.closerDamping, mode = 'closer';
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
     const next = stream.rooms.get(door.room.slot + 1);
-    if (!door.room.apt && (!next || !next.active)) {
+    if (!next || !next.active) {
       if (door.holder) { const hl = door.holder; releaseDoor(hl); if (now - (door.rattleAt || 0) > 0.4) { door.rattleAt = now; doorSfx(door, 'rattle'); pulse(hl, 0.45, 35); } }   // step 86: it won't give
       door.drive = null; k = 60; c = 15; mode = 'locked';
     }
@@ -16525,7 +16521,7 @@ function brassUf(P, r, fy) {
 function brassCollectAt(P, r, max, hand) {
   const B = BRASS, res = B.res, now = performance.now() / 1000, C = CONFIG.brass, cand = B.cand;
   res.n = res.hot = res.full = 0; res.c = -1; cand.length = 0;
-  for (const room of brassRooms()) {                                 // apartment armory: + APT.room
+  for (const room of brassRooms()) {
     const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
     if (!L || !L.length) continue;
     for (let i = 0; i < L.length; i++) {
@@ -16558,7 +16554,7 @@ function brassCollectAt(P, r, max, hand) {
   return res;
 }
 const _brR = [];
-function brassRooms() { _brR.length = 0; for (const r of stream.rooms.values()) _brR.push(r); if (APT.active && APT.room) _brR.push(APT.room); return _brR; }   // apartment armory: brass lying in the apartment can be picked up
+function brassRooms() { _brR.length = 0; for (const r of stream.rooms.values()) _brR.push(r); return _brR; }
 function brassNear(P, r) {                                          // a palm low over brass: start a sweep
   for (const room of brassRooms()) {
     const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
@@ -17584,7 +17580,7 @@ function heatBarrelAt(g, t0, t1, up, out) {
 }
 // Wetness by P: the room you stand in (step 93 wet), the floor under P within steam.near m (pools, damp).
 function heatWet(P) {
-  const S = HEAT.steam, cur = APT.active ? null : stream.current, rw = cur && cur.wear93 ? (cur.wear93.wet || 0) * S.roomWet : 0;
+  const S = HEAT.steam, cur = stream.current, rw = cur && cur.wear93 ? (cur.wear93.wet || 0) * S.roomWet : 0;
   const room = roomContaining(P.x, P.z, 0, P.y), h = room ? P.y - room.origin.y : 9;
   if (!room || !room.wear93 || h > S.near) return rw;
   return Math.max(rw, wearWetAt(room, rLX(room, P.x), rLZ(room, P.z)) * (1 - Math.max(0, h) / S.near));
@@ -23920,7 +23916,6 @@ function tableBoxes(room) {
   return out;
 }
 function navGrid(room) {
-  if (room.navG) return room.navG;                                // apartment: prebuilt from its occupancy grid
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
   const boxes = (room.walkLocal || []).concat(tableBoxes(room));
@@ -24036,7 +24031,6 @@ function enemySees(e) {
 const _rs = new THREE.Vector3();
 function roomCanSense(room) {
   if (!room || !room.active) return false;
-  if (room.apt) return aptSense();                                // apartment: nothing reaches the men at the front door until the breach
   headWorld(_rs);
   if (insideRoom(room, _rs.x, _rs.z, 0, _rs.y)) return true;
   const C = CONFIG.ai.doorSense;
@@ -24054,7 +24048,7 @@ function roomCanSense(room) {
 function enemiesHear(worldPos) {
   const cur = stream.current;
   for (const e of ENEMY.list) {
-    if (e.dead || (e.room.apt ? !APT.active : (!cur || Math.abs(e.room.slot - cur.slot) > 1))) continue;   // apartment men hear you while you are there
+    if (e.dead || (!cur || Math.abs(e.room.slot - cur.slot) > 1)) continue;
     if (Math.hypot(rLX(e.room, worldPos.x) - e.pos.x, rLZ(e.room, worldPos.z) - e.pos.y) > CONFIG.enemy.hear) continue;
     if (!roomCanSense(e.room)) continue;                         // step 22.3: a shut door keeps it in
     e.lastKnown.set(rLX(e.room, worldPos.x), 1.3, rLZ(e.room, worldPos.z)); e.hasKnown = true;
@@ -24718,7 +24712,6 @@ function updatePlayerVitals(dt, now) {
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
 function respawnPlayer() {
-  if (APT.active && APT.spawn) { aptRespawn(); return; }       // apartment armory: dying in the apartment wakes you there
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
   // pulled back to it so it stays the safe room.
   const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
@@ -30188,7 +30181,7 @@ function watchDrawFace() {
   c.fillText('AUTOMATIC', 0, -46); c.font = '500 10px Helvetica, Arial, sans-serif'; c.fillText('CHRONOMETER CERTIFIED', 0, -32);
   c.font = '700 12px Helvetica, Arial, sans-serif'; c.fillStyle = on ? '#ffc46b' : '#e8e6de';
   c.fillText(WATCH.open ? 'CLOSE' : on ? 'MODS ON' : '300m · TAP', 0, 44);
-  c.font = '500 10px Helvetica, Arial, sans-serif'; c.fillStyle = '#e8e6de'; c.fillText((window.__aptWatch && window.__aptWatch()) || brassWatch() || '1000ft = 300m', 0, 60);   // step 116: brass in the bag
+  c.font = '500 10px Helvetica, Arial, sans-serif'; c.fillStyle = '#e8e6de'; c.fillText(brassWatch() || '1000ft = 300m', 0, 60);   // step 116: brass in the bag
   WATCH.faceTex.needsUpdate = true; WATCH.minute = d.getMinutes();
 }
 function watchDrawPanel() {
@@ -30351,7 +30344,6 @@ function restartToSafe() {
   for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active) safe = r;
   if (!safe) { toast('The safe room is still being built. Try again in a moment'); modDomSync(); return; }
   if (playerState.dead) { modDomSync(); return; }                 // already on the way back
-  if (APT.active) aptLeave();                                      // apartment armory: a restart is the safe room's
   respawnPlayer();                                                 // newest safe room, run over, men reset
   refillInventory(); panel.dirty = true;
   playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0; hpUi();
@@ -38276,7 +38268,6 @@ function hgRestore(why, dYaw = 0, at = null) {
   console.info(`[head guard] ${why}: head put back ${Math.hypot(tx - HG.h.x, tz - HG.h.z).toFixed(2)} m`);
 }
 function headGuard(dt) {
-  if (APT.active) return;   // apartment: outside every room on purpose
   if (!HG.on || !ready || !stream.current) return;
   const vr = renderer.xr.isPresenting, now = performance.now() / 1000, r = CONFIG.player.radius;
   if (vr !== HG.vr) { HG.vr = vr; HG.camHas = false; HG.bad = false; HG.out = HG.deep = 0; }
@@ -38774,7 +38765,7 @@ function startGame(mode) {
     renderer.setAnimationLoop(tickSafe);   // step 54.4
     syncButtons();
     entering.then((ok) => {
-      if (ok) { if (APT.want) aptEnter(); return; }   // apartment start
+      if (ok) return;
       gameStarted = false;                         // back to the title with the reason (step 30.1: still, no demo)
       renderer.setAnimationLoop(null);
       if (title) title.show(VRSTART.error || 'Could not start VR');
@@ -38789,7 +38780,6 @@ function startGame(mode) {
   renderer.setAnimationLoop(tickSafe);             // step 54.4
   syncButtons();
   VRSTART.show();
-  if (APT.want) aptEnter();   // apartment start
   if (IS_TOUCH) {
     ui.hint.textContent = 'Left thumb moves, right side looks. Settings top right';
     ui.hint.classList.remove('hidden');
@@ -39282,7 +39272,6 @@ function tick(timeMs) {
   updateKick(dt);        // step 24: the kick, its strike
   updateBreach(dt);      // step 54: the run-in gun / object shove
   updateDoorUse(dt);     // step 54: levers, push or pull
-  aptTick(dt);           // apartment doors
   profMark('input');
   updateStreaming();     // step 4: which room you're in, build/unload rooms, visibility, light pool
   disposeDrain();        // step 25.3: a few GPU frees per frame from unloaded rooms
@@ -39396,7 +39385,6 @@ function stillsSave(item) {
 }
 function stillsWhere(room) {
   if (!room) return 'Room';
-  if (room.apt) return 'Apartment';
   if (room.kind === 'safe') return 'Safe room 00';
   const p = roomPlan(room.slot);
   return (p && p.number) || `Room ${room.slot}`;
@@ -45991,919 +45979,6 @@ function atcKnock(p, now) {
 if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty, atcBuild, atcEnsure, atcSigOf, atcBody, atcProbe, atcFree, atcItemClip, atcKnock,
   gunClipWorld, gunFreeAt, gunClipShape, updateGunProbe, updateHeldItem, clipReady, updateDoorsPre, updateDoorsPost, stepPhysics, CLIP, COLL, GROUP });
 
-/* ============================================================================
- *  APARTMENT (user GLB): a special start. cqc/models/apartment.glb (tools/pack_apartment.py; "Appartement" by
- *  SrMonteiro, CC-BY-4.0). Placed APT.at away from the run (no world rebase, no head guard, room streaming paused while
- *  you are in it). Rapier trimesh colliders from all its meshes; walk boxes from a 10 cm occupancy grid (anything
- *  between 0.25 and 1.7 m over the floor). Baked unlit materials: no light added (light count unchanged).
- *  Two door leaves with levers on walls: OFFICE (fades, ../index.html) and RUN (back to the safe room).
- *  Start: title "Start: Apartment" toggle (cqc.start.v1) or ?start=apartment. ?apartment=off = old behaviour.
- * ========================================================================== */
-const APT_ON = !/[?&]apartment=off/.test(location.search);
-const APT = { on: APT_ON, active: false, want: false, group: null, body: null, walk: [], doors: [], spawn: null,
-  at: new THREE.Vector3(500, 0, 0), cell: 0.1, hidden: [], busy: false, loading: null };
-try { APT.want = APT_ON && (/[?&]start=apartment/.test(location.search) || localStorage.getItem('cqc.start.v1') === 'apartment'); } catch (e) { /* default */ }
-function aptTitleUi() {
-  const pc = document.getElementById('playPC');
-  if (!APT_ON || !pc || document.getElementById('aptStart')) return;
-  const b = document.createElement('button'); b.type = 'button'; b.id = 'aptStart'; b.className = 'big';
-  const draw = () => { b.innerHTML = '<b>Start: ' + (APT.want ? 'Apartment' : 'Safe room') + '</b><span>Where PLAY puts you (tap to change)</span>'; };
-  b.onclick = () => { APT.want = !APT.want; try { localStorage.setItem('cqc.start.v1', APT.want ? 'apartment' : 'run'); } catch (e) { /* this visit */ } draw(); };
-  draw(); pc.parentNode.insertBefore(b, pc.nextSibling);
-}
-aptTitleUi();
-function aptLoad() {
-  if (APT.loading) return APT.loading;
-  APT.loading = (async () => {
-    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-    const g = await new GLTFLoader().loadAsync('./models/apartment.glb');
-    const root = new THREE.Group(); root.name = 'apartment'; root.add(g.scene); root.position.copy(APT.at); root.visible = false;
-    scene.add(root); root.updateMatrixWorld(true);
-    APT.group = root;
-    // Every triangle in world space, with the mesh it belongs to (doors: leaf triangles are cut out of its index)
-    let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
-    const tris = [];
-    root.traverse((o) => {
-      if (!o.isMesh) return;
-      o.frustumCulled = false; o.castShadow = o.receiveShadow = false;
-      const P = o.geometry.attributes.position, I = o.geometry.index, v = new Float32Array(P.count * 3), t = new THREE.Vector3();
-      for (let i = 0; i < P.count; i++) { t.fromBufferAttribute(P, i).applyMatrix4(o.matrixWorld); v[3 * i] = t.x; v[3 * i + 1] = t.y; v[3 * i + 2] = t.z;
-        x0 = Math.min(x0, t.x); x1 = Math.max(x1, t.x); z0 = Math.min(z0, t.z); z1 = Math.max(z1, t.z); }
-      tris.push([v, new Uint32Array(I.array), o]);
-    });
-    // doors and invasion (?aptinvasion=off: none of it): the landing outside the front door widens the grid
-    const L = APTI.on ? aptLandingBox() : null;
-    if (L) { x0 = Math.min(x0, L.x0); x1 = Math.max(x1, L.x1); z0 = Math.min(z0, L.z0); z1 = Math.max(z1, L.z1); }
-    APT.bounds = { x0, z0, x1, z1 };
-    const C = APT.cell, nx = Math.ceil((x1 - x0) / C) + 1, nz = Math.ceil((z1 - z0) / C) + 1;
-    const blockN = new Uint32Array(nx * nz), floorN = new Uint32Array(nx * nz), band = new Uint8Array(nx * nz), fy = APT.at.y;
-    // k = +1 adds a triangle's samples, -1 takes them away again (a cut-out leaf); bands only while adding the model
-    const samp = (v, a, b, c, k, bands) => {
-      const ex = Math.max(Math.hypot(v[b] - v[a], v[b + 2] - v[a + 2]), Math.hypot(v[c] - v[a], v[c + 2] - v[a + 2]), Math.hypot(v[c] - v[b], v[c + 2] - v[b + 2]));
-      const n = Math.min(60, Math.max(1, Math.ceil(ex / (C * 0.5))));
-      for (let i = 0; i <= n; i++) for (let j = 0; j <= n - i; j++) {
-        const u = i / n, w = j / n, s = 1 - u - w;
-        const px = s * v[a] + u * v[b] + w * v[c], py = s * v[a + 1] + u * v[b + 1] + w * v[c + 1] - fy, pz = s * v[a + 2] + u * v[b + 2] + w * v[c + 2];
-        const ci = Math.floor((px - x0) / C) + nx * Math.floor((pz - z0) / C);
-        if (py > 0.25 && py < 1.7) blockN[ci] += k; else if (py < 0.12) floorN[ci] += k;
-        if (bands) band[ci] |= py < 0.12 ? 16 : py < 0.25 ? 0 : py < 0.9 ? 1 : py < 1.6 ? 2 : py < 2.0 ? 4 : py > 2.12 && py < 2.3 ? 8 : 0;
-      }
-    };
-    for (const [v, idx] of tris) for (let k = 0; k < idx.length; k += 3) samp(v, idx[k] * 3, idx[k + 1] * 3, idx[k + 2] * 3, 1, true);
-    if (APTI.on) {
-      const G = { x0, z0, nx, nz, C, band };
-      aptFindDoorways(G);                                        // gaps in the walls with a lintel over them
-      for (const t of tris) aptLeafScan(t[0], t[1]);
-      aptLeafPick();
-      for (const t of tris) {                                    // baked open leaves out of the mesh, the front panel too
-        const keep = aptCutLeaves(t[0], t[1], samp);
-        if (keep !== t[1]) { t[2].geometry.setIndex(new THREE.BufferAttribute(keep, 1)); t[1] = keep; }
-      }
-      const extra = aptLandingBuild(root);                       // jambs, lintel, landing (world triangles)
-      for (const [v, idx] of extra) { for (let k = 0; k < idx.length; k += 3) samp(v, idx[k] * 3, idx[k + 1] * 3, idx[k + 2] * 3, 1, false); tris.push([v, idx, null]); }
-    }
-    const block = new Uint8Array(nx * nz), floor = new Uint8Array(nx * nz);
-    for (let i = 0; i < nx * nz; i++) { block[i] = blockN[i] > 0 ? 1 : 0; floor[i] = floorN[i] > 0 ? 1 : 0; }
-    // Walk boxes: greedy rectangles over blocked cells
-    const used = new Uint8Array(nx * nz), W = APT.walk;
-    for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
-      if (!block[x + nx * z] || used[x + nx * z]) continue;
-      let w = 1; while (x + w < nx && block[x + w + nx * z] && !used[x + w + nx * z]) w++;
-      let h = 1; grow: while (z + h < nz) { for (let i = 0; i < w; i++) if (!block[x + i + nx * (z + h)] || used[x + i + nx * (z + h)]) break grow; h++; }
-      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) used[x + i + nx * (z + j)] = 1;
-      W.push({ x: x0 + (x + w / 2) * C, z: z0 + (z + h / 2) * C, c: 1, s: 0, hx: w * C / 2, hz: h * C / 2, top: fy + 2.4, bot: fy });
-    }
-    // Clearance (BFS from blocked / no floor) -> spawn = most open floor cell; doors on walls far from it. The landing outside
-    // the front door counts as blocked here (no spawn, no OFFICE / RUN door out there).
-    const outZ = APT.at.z + APTI.F.z - 0.04, dist = new Int16Array(nx * nz).fill(-1), q = [];
-    for (let i = 0; i < nx * nz; i++) if (block[i] || !floor[i] || (L && z0 + (((i / nx) | 0) + 0.5) * C < outZ)) { dist[i] = 0; q.push(i); }
-    for (let h = 0; h < q.length; h++) { const i = q[h], x = i % nx, z = (i / nx) | 0;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Z = z + dz; if (X < 0 || Z < 0 || X >= nx || Z >= nz) continue; const k = X + nx * Z; if (dist[k] < 0) { dist[k] = dist[i] + 1; q.push(k); } } }
-    let best = 0; for (let i = 0; i < nx * nz; i++) if (dist[i] > dist[best]) best = i;
-    APT.spawn = new THREE.Vector3(x0 + (best % nx + 0.5) * C, fy, z0 + (((best / nx) | 0) + 0.5) * C);
-    // reachable cells from the spawn (clearance >= 3 cells: a body fits)
-    const seen = new Uint8Array(nx * nz), r2 = [best]; seen[best] = 1;
-    for (let h = 0; h < r2.length; h++) { const i = r2[h], x = i % nx, z = (i / nx) | 0;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Z = z + dz; if (X < 0 || Z < 0 || X >= nx || Z >= nz) continue; const k = X + nx * Z; if (!seen[k] && dist[k] >= 3) { seen[k] = 1; r2.push(k); } } }
-    // door spots: reachable cells with a straight wall 5 cells away along an axis and 5 free cells either side of it
-    const cand = [];
-    for (const i of r2) { if (dist[i] !== 3) continue; const x = i % nx, z = (i / nx) | 0;
-      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        let ok = true; for (let s = -5; s <= 5 && ok; s++) { const X = x + dx * 3 + dz * s, Z = z + dz * 3 + dx * s; if (X < 0 || Z < 0 || X >= nx || Z >= nz || !block[X + nx * Z]) ok = false; }
-        if (ok && APTI.on && aptNearMenu(x0 + (x + 0.5 + dx * 3) * C, z0 + (z + 0.5 + dz * 3) * C)) ok = false;   // not over the tablet or the front door
-        if (ok) cand.push({ i, x, z, dx, dz, d: Math.hypot(x - best % nx, z - ((best / nx) | 0)) });
-      } }
-    cand.sort((a, b) => b.d - a.d);
-    const picks = [];
-    for (const c of cand) { if (picks.every((p) => Math.hypot(p.x - c.x, p.z - c.z) > 15)) picks.push(c); if (picks.length === 2) break; }
-    if (APTI.on) APT.lockSpot = aptLockerPick(cand, picks, block, band, nx, nz, x0, z0, C, best, fy);   // apartment armory: the gun locker's wall
-    const mk = (p, label, col, act) => {
-      const g = new THREE.Group(), leaf = new THREE.Group(), cx = x0 + (p.x + 0.5 + p.dx * 2.6) * C, cz = z0 + (p.z + 0.5 + p.dz * 2.6) * C;
-      g.position.set(cx, fy, cz); g.rotation.y = Math.atan2(-p.dx, -p.dz);   // local +z toward the room
-      const m = new THREE.MeshBasicMaterial({ color: 0x6b5a48 }), fr = new THREE.MeshBasicMaterial({ color: 0xd8d2c6 }), mt = new THREE.MeshBasicMaterial({ color: 0xb8b8b8 });
-      const frame = new THREE.Mesh(new THREE.BoxGeometry(1.02, 2.1, 0.03), fr); frame.position.set(0, 1.05, 0.005); g.add(frame);
-      leaf.position.set(-0.45, 0, 0.03); g.add(leaf);                     // hinge on the left edge
-      const slab = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.03, 0.04), m); slab.position.set(0.45, 1.015, 0.02); leaf.add(slab);
-      const lever = new THREE.Group(); lever.position.set(0.82, 1.02, 0.06); leaf.add(lever);
-      const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.01, 16), mt); rose.rotation.x = Math.PI / 2; lever.add(rose);
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.018, 0.018), mt); bar.position.set(-0.05, 0, 0.03); lever.add(bar);
-      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64; const x2 = cv.getContext('2d');
-      x2.fillStyle = col; x2.fillRect(0, 0, 256, 64); x2.fillStyle = '#fff'; x2.font = 'bold 34px sans-serif'; x2.textAlign = 'center'; x2.fillText(label, 128, 45);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.125), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(cv) }));
-      sign.position.set(0.45, 1.6, 0.045); leaf.add(sign);
-      APT.group.add(g); g.updateMatrixWorld(true);
-      APT.doors.push({ g, leaf, lever, act, open: 0, opening: false, p: new THREE.Vector3() });
-    };
-    // the group has its own transform; door positions above are world: undo it
-    const inv = APT.group.matrixWorld.clone().invert();
-    if (picks[0]) mk(picks[0], 'OFFICE', '#7a1f1f', aptGoOffice);
-    if (picks[1]) mk(picks[1], 'CQC RUN', '#1f5a2a', aptGoRun);
-    for (const d of APT.doors) { d.g.applyMatrix4(inv); d.g.updateMatrixWorld(true); }
-    // Rapier: one fixed body, a trimesh per mesh
-    APT.body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
-    APT.cols = [];
-    for (const [v, idx] of tris) {
-      if (!idx.length) continue;
-      const c = world.createCollider(RAPIER.ColliderDesc.trimesh(v, idx).setFriction(0.7).setCollisionGroups(COLL.static), APT.body);
-      colliderInfo.set(c.handle, { room: null, kind: 'plaster' }); c.setEnabled(false); APT.cols.push(c);
-    }
-    if (APTI.on) { aptDoorsBuild(); aptNavBuild(block, floor, nx, nz); aptMenuBuild(); }
-    return true;
-  })().catch((e) => { console.warn('apartment load failed', e); APT.loading = null; return false; });
-  return APT.loading;
-}
-function aptPlace(p, yaw) {
-  level.floor = APT.at.y; level.flat = true; stance.crouchOn = false; xrState.crouchOn = false; xrState.crouchCur = 0;
-  applyHeight(); rig.updateMatrixWorld(true);
-  if (renderer.xr.isPresenting) rotateRigAroundHead(yaw - yawOf(camera)); else { look.yaw = yaw; look.pitch = 0; applyLook(); }
-  rig.updateMatrixWorld(true); headWorld(_aptH);
-  rig.position.x += p.x - _aptH.x; rig.position.z += p.z - _aptH.z; rig.updateMatrixWorld(true);
-  _vel.set(0, 0, 0); playerState.hasPrev = false;
-}
-const _aptH = new THREE.Vector3();
-async function aptEnter() {
-  if (!APT_ON || APT.active || APT.busy) return;
-  APT.busy = true;
-  toast('Apartment: loading', 1500);
-  const ok = await aptLoad(); APT.busy = false;
-  if (!ok) { toast('Apartment did not load'); return; }
-  APT.active = true; APT.group.visible = true;
-  for (const c of APT.cols) c.setEnabled(true);
-  APT.hidden.length = 0;
-  for (const r of stream.rooms.values()) for (const g of [r.group, r.doorGroup]) if (g && g.visible) { g.visible = false; APT.hidden.push(g); }
-  if (APTI.on && APT.room) aptiEnter();                          // the apartment's own doors, its men, the tablet
-  if (APTI.on && APT.room) aptArmoryEnter();                     // apartment armory: gun locker + pouches
-  rebuildWalk();
-  const d0 = APT.doors[0];
-  aptPlace(APT.spawn, d0 ? Math.atan2(-(d0.g.position.x + APT.at.x - APT.spawn.x), -(d0.g.position.z + APT.at.z - APT.spawn.z)) : 0);
-  toast('Apartment. Doors: OFFICE, CQC RUN (E / grip on the lever)' + (APTI.on && APT.room ? '. Swatted: the tablet by the front door' + (renderer.xr.isPresenting ? '' : ' or J') : ''), 3500);
-}
-function aptLeave() {
-  APT.active = false; APT.group.visible = false;
-  for (const c of APT.cols) c.setEnabled(false);
-  for (const g of APT.hidden) g.visible = true; APT.hidden.length = 0;
-  for (const d of APT.doors) { d.open = 0; d.opening = false; d.leaf.rotation.y = 0; d.lever.rotation.z = 0; }
-  if (APTI.on && APT.room) aptiLeave();
-  aptArmoryLeave();                                              // apartment armory: the locker is the safe room's again
-  rebuildWalk();
-  let safe = null; for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active && (!safe || r.slot > safe.slot)) safe = r;
-  if (safe) { const s = CONFIG.player.start; aptPlace({ x: rWX(safe, s.x), z: rWZ(safe, s.z) }, rYaw(safe)); level.floor = safe.origin.y; applyHeight(); }
-}
-function aptFade(then) {
-  let f = document.getElementById('aptFade');
-  if (!f) { f = document.createElement('div'); f.id = 'aptFade'; f.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0;transition:opacity .6s;pointer-events:none;z-index:99'; document.body.appendChild(f); }
-  requestAnimationFrame(() => { f.style.opacity = '1'; });
-  setTimeout(then, 650);
-}
-function aptGoOffice() {
-  const go = () => { location.href = '../index.html'; };
-  const s = renderer.xr.getSession && renderer.xr.getSession();
-  if (s) s.end().catch(() => {}).finally(() => aptFade(go)); else aptFade(go);
-}
-function aptGoRun() { aptLeave(); toast('Safe room'); }
-function aptUse(d) { if (d.opening) return; d.opening = true; btnSfx && btnSfx('term'); }
-const _aptP = new THREE.Vector3();
-function aptTick(dt) {
-  if (!APT.active) return;
-  if (APTI.on && APT.room) { aptiTick(dt); aptMenuVr(); }        // Swatted waves, the tablet under a fingertip
-  for (const d of APT.doors) {
-    d.lever.getWorldPosition(d.p);
-    if (d.opening) {
-      d.open = Math.min(1, d.open + dt / 0.7);
-      d.lever.rotation.z = d.open < 0.2 ? -d.open * 3 : -0.6 * (1 - d.open);
-      d.leaf.rotation.y = -1.3 * Math.max(0, d.open - 0.15) / 0.85;
-      if (d.open >= 1) { d.opening = false; d.act(); return; }
-    }
-    if (renderer.xr.isPresenting) for (const h of vrHands) {
-      const gp = h.ctrl && h.ctrl.userData.gamepad, gr = h.ctrl && h.ctrl.userData.grip;
-      if (!gp || !gr || !gp.buttons[1] || !gp.buttons[1].pressed) continue;
-      gr.getWorldPosition(_aptP);
-      if (_aptP.distanceTo(d.p) < 0.18) aptUse(d);
-    }
-  }
-}
-function aptNearDoor() {
-  headWorld(_aptH); let best = null, bd = 1.4;
-  for (const d of APT.doors) { d.lever.getWorldPosition(d.p); const k = _aptH.distanceTo(d.p); if (k < bd) { bd = k; best = d; } }
-  return best;
-}
-addEventListener('keydown', (e) => {
-  if (!APT.active || e.code !== 'KeyE' || e.repeat) return;
-  if (APTI.on && aptMenuDesk()) { e.stopImmediatePropagation(); e.preventDefault(); return; }   // the Swatted tablet
-  const d = aptNearDoor(); if (!d) return;
-  e.stopImmediatePropagation(); e.preventDefault(); aptUse(d);
-}, true);
-canvas.addEventListener('mousedown', (e) => {
-  if (!APT.active || e.button !== 0 || !document.pointerLockElement) return;
-  if (APTI.on && aptMenuDesk()) { e.stopImmediatePropagation(); return; }   // the Swatted tablet
-  const d = aptNearDoor(); if (d) { e.stopImmediatePropagation(); aptUse(d); }
-}, true);
-/* ============================================================================
- *  APARTMENT DOORS AND "SWATTED" (?aptinvasion=off = the apartment as before: no doors, no men, no tablet)
- *  Doors   The model has no door nodes (6 merged meshes). aptFindDoorways reads the 10 cm band grid aptLoad already
- *          makes: a doorway = cells with a lintel (2.12-2.3 m) and nothing from 0.25 to 2.0 m, 0.5-1.3 m long,
- *          floor on both sides. The model's leaves stand open against the next wall; aptCutLeaves takes their
- *          triangles out of the mesh index (and out of the colliders and the occupancy grid) and the hinge goes on
- *          the jamb they were hung from. The model has no front door: its corridor-side panel in the north wall of
- *          the big room (a 1.82 x 2.11 m filled panel under its own lintel strip, APTI.F) is cut out and rebuilt as
- *          jambs, a lintel and a 0.9 m doorway onto a small landing (aptLandingBuild). Every leaf is a real game
- *          door (doors[]): Rapier body on a revolute joint to the apartment's fixed body, lever, closer (front door
- *          only), push / pull / kick / breach, sounds, holes. Pseudo room per leaf (room.apt, room.hinge).
- *  Nav     APT.room: a room-like record (kind 'apt', origin at the grid's centre, f 1) with a prebuilt 20 cm nav
- *          grid (room.navG; navGrid returns it) from the occupancy (anything 0.25-1.7 m, or no floor, within the
- *          enemy radius blocks). findPath / navLine / enemyMove run on it unchanged. Regions: the grid split at the
- *          doorways (APTI.reg / regC), for clearing room by room.
- *  Waves   2-3 men (spawnEnemy into APT.room) stack on the landing, breach (Easy: the lever, else a kick), then hunt
- *          you region by region (aptiDrive: next region on the path to you, the rest is the step 7-11 brain).
- *          A wave ends when every man is down, dead or has given up, or when the round timer runs out (the rest pull
- *          back); points bank (score and wallet as at a safe room), a break, the next wave.
- *  Menu    Tablet on the wall by the front door (canvas, VR index tip, desktop E / click) and M on a computer
- *          (overlay). Settings in cqc.apt.v1. HUD line (computer) and the watch line while a wave runs.
- *  No light added; per frame only number maths on prebuilt objects (paths are found on events, as the AI does).
- * ========================================================================== */
-const APTI = {
-  on: APT_ON && !/[?&]aptinvasion=off/.test(location.search),
-  F: { x: -4.71, z: -5.06, w: 0.9, p0: -5.63, p1: -3.794, t: 0.12 },   // front door (model coordinates): centre x, wall face z, width, the cut panel
-  dw: [], doors: [], front: null, tb: new Float32Array(6),
-  phase: 'off', wave: 0, t: 0, waveT: 0, kills: 0, men: [], downAt: 0,
-  reg: null, regC: null, hud: null, hudT: 0, hudS: '',
-  set: { diff: 1, timer: 60, team: 0 },                          // team 0 = random 2-3
-  DIFF: [
-    { name: 'Easy', hp: 0.75, react: 1.4, err: 1.45, skill: 0.25, kick: false, stack: 4.5 },
-    { name: 'Normal', hp: 1, react: 1, err: 1, skill: 0.5, kick: true, stack: 3 },
-    { name: 'Hard', hp: 1.3, react: 0.7, err: 0.7, skill: 0.8, kick: true, stack: 2 }
-  ],
-  TIMERS: [0, 30, 60, 90, 120], TEAMS: [2, 3, 0], breakT: 8,
-  v: new THREE.Vector3(), v2: new THREE.Vector3(), o: new THREE.Vector3(), dir: new THREE.Vector3(), kp: new THREE.Vector3()
-};
-try { const s = JSON.parse(localStorage.getItem('cqc.apt.v1') || 'null'); if (s) { if (s.diff >= 0 && s.diff < 3) APTI.set.diff = s.diff | 0; if (APTI.TIMERS.includes(s.timer)) APTI.set.timer = s.timer; if (APTI.TEAMS.includes(s.team)) APTI.set.team = s.team; } } catch (e) { /* defaults */ }
-function aptiSave() { try { localStorage.setItem('cqc.apt.v1', JSON.stringify(APTI.set)); } catch (e) { /* this visit */ } }
-
-/* --- doors: find, cut, build ------------------------------------------------ */
-function aptLandingBox() {
-  const F = APTI.F, a = APT.at;
-  return { x0: a.x + F.x - 1.4, x1: a.x + F.x + 1.4, z0: a.z + F.z - 3.3, z1: a.z + F.z };
-}
-function aptNearMenu(wx, wz) { const F = APTI.F; return Math.abs(wx - APT.at.x - F.x) < 0.9 && Math.abs(wz - APT.at.z - F.z) < 0.35; }   // the front door and its tablet
-// Doorways on the 10 cm band grid (bits: 1 0.25-0.9, 2 0.9-1.6, 4 1.6-2.0, 8 2.12-2.3, 16 floor).
-function aptFindDoorways(G) {
-  const { nx, nz, C, band } = G, lab = new Int32Array(nx * nz).fill(-1), q = [];
-  const cand = (i) => (band[i] & 8) && !(band[i] & 7);
-  const open = (x, z) => { const i = Math.floor((x - G.x0) / C) + nx * Math.floor((z - G.z0) / C); return i >= 0 && i < nx * nz && (band[i] & 16) && !(band[i] & 3); };
-  for (let s = 0; s < nx * nz; s++) {
-    if (!cand(s) || lab[s] >= 0) continue;
-    let n = 0, ix0 = 1e9, ix1 = -1, iz0 = 1e9, iz1 = -1;
-    q.length = 0; q.push(s); lab[s] = s;
-    for (let h = 0; h < q.length; h++) {
-      const i = q[h], x = i % nx, z = (i / nx) | 0; n++;
-      ix0 = Math.min(ix0, x); ix1 = Math.max(ix1, x); iz0 = Math.min(iz0, z); iz1 = Math.max(iz1, z);
-      for (const k of [i - 1, i + 1, i - nx, i + nx]) if (k >= 0 && k < nx * nz && Math.abs((k % nx) - x) <= 1 && lab[k] < 0 && cand(k)) { lab[k] = s; q.push(k); }
-    }
-    const ex = (ix1 - ix0 + 1) * C, ez = (iz1 - iz0 + 1) * C, spanX = ex > ez, L = spanX ? ex : ez, t = spanX ? ez : ex;
-    if (n < 4 || L < 0.5 || L > 1.3 || t > 0.3) continue;
-    const cx = G.x0 + (ix0 + ix1 + 1) / 2 * C, cz = G.z0 + (iz0 + iz1 + 1) / 2 * C;
-    if (spanX ? !(open(cx, cz - 0.45) && open(cx, cz + 0.45)) : !(open(cx - 0.45, cz) && open(cx + 0.45, cz))) continue;
-    if (aptNearMenu(cx, cz)) continue;
-    APTI.dw.push({ cx, cz, spanX, L, t, cut: 0, hinge: 0, leaf: null, scan: [0, 1].map(() => ({ n: 0, x: 0, z: 0, ux: 0, uz: 0, len: 0 })) });
-  }
-}
-// Triangle bounds into APTI.tb (no allocation per triangle): x, y (over the floor), z ranges.
-function aptTriBox(v, A, B, Cc) {
-  const t = APTI.tb, fy = APT.at.y;
-  t[0] = Math.min(v[A], v[B], v[Cc]); t[1] = Math.max(v[A], v[B], v[Cc]);
-  t[2] = Math.min(v[A + 1], v[B + 1], v[Cc + 1]) - fy; t[3] = Math.max(v[A + 1], v[B + 1], v[Cc + 1]) - fy;
-  t[4] = Math.min(v[A + 2], v[B + 2], v[Cc + 2]); t[5] = Math.max(v[A + 2], v[B + 2], v[Cc + 2]);
-  return t;
-}
-// Pass 1 (every mesh): where does each doorway's leaf stand? The model's leaves hang open from a jamb, at any angle: a big
-// vertical face (1.5 m tall or more) whose plan is a thin segment (under 4 cm across) at least 0.4 m long, its near end
-// within 15 cm of one end of the doorway's span. Near ends and directions add up per doorway end.
-function aptLeafScan(v, idx) {
-  for (let k = 0; k < idx.length; k += 3) {
-    const A = idx[k] * 3, B = idx[k + 1] * 3, Cc = idx[k + 2] * 3, t = aptTriBox(v, A, B, Cc);
-    if (t[3] > 2.16 || t[2] < -0.02 || t[3] - t[2] < 1.5) continue;
-    // the two vertices furthest apart in plan
-    let p = A, q = B, best = -1;
-    for (const [i, j] of [[A, B], [A, Cc], [B, Cc]]) { const l = Math.hypot(v[j] - v[i], v[j + 2] - v[i + 2]); if (l > best) { best = l; p = i; q = j; } }
-    if (best < 0.4) continue;
-    const ux = (v[q] - v[p]) / best, uz = (v[q + 2] - v[p + 2]) / best, r = A + B + Cc - p - q;
-    if (Math.abs((v[r] - v[p]) * uz - (v[r + 2] - v[p + 2]) * ux) > 0.04) continue;   // not thin in plan
-    for (const d of APTI.dw) {
-      if (Math.abs(d.spanX ? ux : uz) > 0.95) continue;          // along the doorway's own wall: not a leaf
-      for (let e = 0; e < 2; e++) {
-        const hx = d.spanX ? d.cx + (e ? 1 : -1) * d.L / 2 : d.cx, hz = d.spanX ? d.cz : d.cz + (e ? 1 : -1) * d.L / 2;
-        const dp = Math.hypot(v[p] - hx, v[p + 2] - hz), dq = Math.hypot(v[q] - hx, v[q + 2] - hz);
-        if (Math.min(dp, dq) > 0.15 || best > d.L + 0.35) continue;
-        const near = dp < dq ? p : q, sg = near === p ? 1 : -1, S = d.scan[e];
-        S.n++; S.x += v[near]; S.z += v[near + 2]; S.ux += ux * sg; S.uz += uz * sg; S.len = Math.max(S.len, best);
-      }
-    }
-  }
-}
-// Between the passes: one leaf per doorway (the end with most faces), as a hinge point, a direction and a length.
-function aptLeafPick() {
-  for (const d of APTI.dw) {
-    const S = d.scan[0].n >= d.scan[1].n ? d.scan[0] : d.scan[1];
-    d.hinge = S === d.scan[1] ? 1 : 0;
-    if (S.n < 2) { d.leaf = null; continue; }
-    const l = Math.hypot(S.ux, S.uz) || 1;
-    d.leaf = { x: S.x / S.n, z: S.z / S.n, ux: S.ux / l, uz: S.uz / l, len: S.len };
-  }
-}
-// Pass 2 (per mesh): the picked leaves (faces, edges, a lever up to 7.5 cm off them) and the front panel out of the index.
-// Small pieces right at the hinge (casings) stay. Removed triangles also leave the occupancy (samp -1). Returns idx
-// itself when nothing was cut.
-function aptCutLeaves(v, idx, samp) {
-  const F = APTI.F, a = APT.at, keep = [];
-  let cut = 0;
-  for (let k = 0; k < idx.length; k += 3) {
-    const A = idx[k] * 3, B = idx[k + 1] * 3, Cc = idx[k + 2] * 3, t = aptTriBox(v, A, B, Cc);
-    let hit = t[0] >= a.x + F.p0 && t[1] <= a.x + F.p1 && t[4] >= a.z + F.z - 0.03 && t[5] <= a.z + F.z + 0.025 && t[3] <= 2.125;   // the front panel
-    if (!hit && t[3] <= 2.16 && t[2] >= -0.02) for (const d of APTI.dw) {
-      const L = d.leaf;
-      if (!L) continue;
-      const m = t[2] > 0.75 && t[3] < 1.3 ? 0.075 : 0.025;
-      let ok = true, far = 0;
-      for (const i of [A, B, Cc]) {
-        const dx = v[i] - L.x, dz = v[i + 2] - L.z, al = dx * L.ux + dz * L.uz;
-        if (al < -0.05 || al > L.len + 0.03 || Math.abs(dx * L.uz - dz * L.ux) > m) { ok = false; break; }
-        far = Math.max(far, al);
-      }
-      if (ok && far > 0.06) { hit = true; d.cut++; break; }
-    }
-    if (hit) { cut++; samp(v, A, B, Cc, -1, false); } else keep.push(idx[k], idx[k + 1], idx[k + 2]);
-  }
-  return cut ? new Uint32Array(keep) : idx;
-}
-// Shaded unlit box (the apartment is baked and unlit): per-face grey from its normal.
-function aptBox(x0, y0, z0, x1, y1, z1, col) {
-  const g = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0).toNonIndexed(), N = g.attributes.normal, c = new Float32Array(N.count * 3), k = new THREE.Color(col);
-  for (let i = 0; i < N.count; i++) { const s = N.getY(i) > 0.5 ? 1 : N.getY(i) < -0.5 ? 0.7 : Math.abs(N.getX(i)) > 0.5 ? 0.86 : 0.93; c[3 * i] = k.r * s; c[3 * i + 1] = k.g * s; c[3 * i + 2] = k.b * s; }
-  g.setAttribute('color', new THREE.BufferAttribute(c, 3)); g.deleteAttribute('normal'); g.deleteAttribute('uv');
-  g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
-  return g;
-}
-// Jambs, lintel and a landing outside the front door. Returns world triangles ([v, idx]) for the colliders and the grid.
-function aptLandingBuild(root) {
-  const F = APTI.F, a = APT.at, fx0 = F.x - F.w / 2, fx1 = F.x + F.w / 2, zo = F.z - F.t, zi = F.z + 0.005, X0 = F.x - 1.3, X1 = F.x + 1.3, Z0 = F.z - 3.2;
-  const wall = 0xc9c2b4, parts = [
-    aptBox(F.p0, 0, zo, fx0, 2.11, zi, wall), aptBox(fx1, 0, zo, F.p1, 2.11, zi, wall),        // jambs where the panel was
-    aptBox(X0, 0, zo, F.p0, 2.5, F.z - 0.01, wall), aptBox(F.p1, 0, zo, X1, 2.5, F.z - 0.01, wall),
-    aptBox(fx0, 2.11, zo, fx1, 2.5, F.z - 0.01, wall),                                          // lintel (outside the model's strip)
-    aptBox(fx0 - 0.04, 0, zi, fx0, 2.15, zi + 0.012, 0xeeeae2), aptBox(fx1, 0, zi, fx1 + 0.04, 2.15, zi + 0.012, 0xeeeae2),
-    aptBox(fx0 - 0.04, 2.11, zi, fx1 + 0.04, 2.15, zi + 0.012, 0xeeeae2),                        // casing on the room side
-    aptBox(X0, -0.1, Z0, X1, -0.002, F.z + 0.03, 0x5d5953),                                     // landing floor (on under the threshold)
-    aptBox(X0 - 0.1, -0.1, Z0, X0, 2.6, zo, wall), aptBox(X1, -0.1, Z0, X1 + 0.1, 2.6, zo, wall),
-    aptBox(X0 - 0.1, -0.1, Z0 - 0.1, X1 + 0.1, 2.6, Z0, wall), aptBox(X0, 2.5, Z0, X1, 2.6, zo, 0xdedad2)
-  ];
-  const mat = new THREE.MeshBasicMaterial({ vertexColors: true }), out = [];
-  for (const g of parts) {
-    const m = new THREE.Mesh(g, mat); m.frustumCulled = false; root.add(m);
-    const P = g.attributes.position, v = new Float32Array(P.count * 3), idx = new Uint32Array(P.count);
-    for (let i = 0; i < P.count; i++) { v[3 * i] = P.getX(i) + a.x; v[3 * i + 1] = P.getY(i) + a.y; v[3 * i + 2] = P.getZ(i) + a.z; idx[i] = i; }
-    out.push([v, idx]);
-  }
-  return out;
-}
-// A leaf: slab, edge band, lever on both faces (pivots in userData.levers, as the run's doors).
-function aptLeafVisual(sw, h, front) {
-  const g = new THREE.Group(), m = new THREE.MeshBasicMaterial({ vertexColors: true }), mt = new THREE.MeshBasicMaterial({ color: 0xb9b9b4 });
-  g.add(new THREE.Mesh(aptBox(-sw / 2, -h / 2, -0.02, sw / 2, h / 2, 0.02, front ? 0x4a3a2c : 0xe9e5dc), m));
-  for (const s of [-1, 1]) g.add(new THREE.Mesh(aptBox(-sw / 2 + 0.08, -h / 2 + 0.1, s > 0 ? 0.02 : -0.024, sw / 2 - 0.08, h / 2 - 0.1, s > 0 ? 0.024 : -0.02, front ? 0x55443a : 0xdcd7cc), m));
-  const levers = [];
-  for (const s of [-1, 1]) {
-    const pv = new THREE.Group(); pv.position.set(sw / 2 - 0.07, 1.0 - (h / 2 + 0.008), s * 0.03); g.add(pv);
-    const rose = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.012, 16), mt); rose.rotation.x = Math.PI / 2; pv.add(rose);
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.018, 0.018), mt); bar.position.set(-0.055, 0, s * 0.028); pv.add(bar);
-    pv.matrixAutoUpdate = false; pv.updateMatrix(); levers.push(pv);
-  }
-  g.userData.levers = levers;
-  return g;
-}
-function aptDoorMake(i, cx, cz, dx, dz, sw, h, front) {
-  const P = CONFIG.doorPhys, D = CONFIG.door, fy = APT.at.y, cy = h / 2 + 0.008, base = Math.atan2(-dz, dx);
-  const hx = cx - dx * sw / 2, hz = cz - dz * sw / 2, lim = front ? P.maxOpen : 1.5, back = front ? P.maxBack : 1.5;
-  const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(cx, fy + cy, cz)
-    .setRotation({ x: 0, y: Math.sin(base / 2), z: 0, w: Math.cos(base / 2) }).setLinearDamping(0.4).setAngularDamping(0.9));
-  const col = world.createCollider(RAPIER.ColliderDesc.cuboid(sw / 2, h / 2, 0.0225).setMass(front ? P.mass : 18).setFriction(0.5)
-    .setRestitution(0.05).setCollisionGroups(COLL.door), body);
-  const jd = RAPIER.JointData.revolute({ x: hx, y: fy + cy, z: hz }, { x: -sw / 2, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
-  jd.limitsEnabled = true; jd.limits = [-back, lim];
-  const joint = world.createImpulseJoint(jd, APT.body, body, true);
-  if (joint.setLimits) joint.setLimits(-back, lim);
-  if (joint.configureMotorModel && RAPIER.MotorModel) joint.configureMotorModel(RAPIER.MotorModel.AccelerationBased);
-  const room = { apt: true, kind: 'aptdoor', slot: 9000 + i, origin: APT.at, f: 1, doorGroup: APT.group, body: APT.body, hinge: new THREE.Vector2(hx, hz), active: true, visible: true };
-  const group = aptLeafVisual(sw, h, front); APT.group.add(group);
-  const door = {
-    room, body, joint, group, sw, cy, base, vis: 0,
-    angle: 0, prevAngle: 0, mode: '', target: -1, drive: null, holder: null, grabOffset: 0, grabR: 0, grabY: 0, settled: false,
-    walk: { x: cx, z: cz, c: Math.cos(base), s: Math.sin(base), hx: sw / 2, hz: 0.033, top: fy + D.height, bot: fy },
-    closerK: front ? undefined : 0, apt: true, front
-  };
-  group.userData.door = door;
-  door.colHandle = col.handle; door.col = col; door.latching = false;
-  doorByCollider.set(col.handle, door);
-  doorCreak(door);
-  if (body.setEnabled) body.setEnabled(false);
-  APTI.doors.push(door);
-  return door;
-}
-function aptDoorsBuild() {
-  const a = APT.at, F = APTI.F;
-  APTI.dw.forEach((d, i) => {
-    // hinge on the jamb the model's leaf hung from, as wide as that leaf (the 10 cm grid reads the gap a little short)
-    const sg = d.hinge ? -1 : 1, L = d.leaf, sw = clamp(L ? L.len - 0.04 : d.L - 0.04, 0.55, 1.0);
-    const hs = L ? (d.spanX ? L.x : L.z) : (d.spanX ? d.cx : d.cz) - sg * d.L / 2, cs = hs + sg * sw / 2;
-    aptDoorMake(i, d.spanX ? cs : d.cx, d.spanX ? d.cz : cs, d.spanX ? sg : 0, d.spanX ? 0 : sg, sw, 2.04, false);
-  });
-  APTI.front = aptDoorMake(APTI.dw.length, a.x + F.x, a.z + F.z - F.t / 2, 1, 0, F.w - 0.02, 2.08, true);
-}
-
-/* --- nav grid and regions ---------------------------------------------------- */
-function aptNavBuild(block, floor, nx, nz) {
-  const C = APT.cell, B = APT.bounds, cs = 0.2, r = CONFIG.enemy.radius;
-  // paths keep rn off anything (cell boxes, not centres), a little under his radius so a 0.7 m doorway always has a free cell;
-  // enemyMove still keeps his full radius off the walk boxes
-  const rn = Math.min(r, 0.18), gx = Math.ceil(nx * C / cs), gz = Math.ceil(nz * C / cs), g = new Uint8Array(gx * gz), R = Math.ceil(rn / C) + 2;
-  for (let j = 0; j < gz; j++) for (let i = 0; i < gx; i++) {
-    const wx = B.x0 + (i + 0.5) * cs, wz = B.z0 + (j + 0.5) * cs, ci = Math.floor((wx - B.x0) / C), cj = Math.floor((wz - B.z0) / C);
-    let bl = 0;
-    for (let b = cj - R; b <= cj + R && !bl; b++) for (let a = ci - R; a <= ci + R; a++) {
-      const px = B.x0 + (a + 0.5) * C, pz = B.z0 + (b + 0.5) * C;
-      if (Math.hypot(Math.max(Math.abs(px - wx) - C / 2, 0), Math.max(Math.abs(pz - wz) - C / 2, 0)) >= rn) continue;
-      if (a < 0 || b < 0 || a >= nx || b >= nz || block[a + nx * b] || !floor[a + nx * b]) { bl = 1; break; }
-    }
-    g[j * gx + i] = bl;
-  }
-  const G = { g, nx: gx, nz: gz, cs, w: gx * cs, d: gz * cs };
-  const grp = new THREE.Group(), origin = new THREE.Vector3(B.x0 + G.w / 2, APT.at.y, B.z0 + G.d / 2);
-  grp.position.copy(origin).sub(APT.at); APT.group.add(grp);
-  APT.room = { apt: true, kind: 'apt', slot: -7, origin, f: 1, w: G.w, d: G.d, h: 2.5, group: grp, doorGroup: APT.group, body: APT.body,
-    walkLocal: [], enemies: [], active: false, visible: false, plan: { number: 'Apartment', type: 'apt' }, entryX: null, exitX: 0, navG: G, colliderHandles: [] };
-  for (const c of APT.cols) { const ci = colliderInfo.get(c.handle); if (ci) ci.room = APT.room; }   // apartment armory: holes and decals land in APT.room (was null: addRoomHole threw)
-  // regions: free cells split at the doorways (cells within 0.5 m of a doorway centre)
-  const reg = new Int16Array(gx * gz).fill(-1), q = [], cen = [];
-  for (const d of APTI.doors) for (let k = 0; k < gx * gz; k++) {
-    const [x, z] = navCenter(G, k % gx, (k / gx) | 0);
-    if (Math.hypot(x + origin.x - d.walk.x, z + origin.z - d.walk.z) < 0.5) reg[k] = -2;
-  }
-  for (let s = 0; s < gx * gz; s++) {
-    if (g[s] || reg[s] !== -1) continue;
-    const id = cen.length; let sx = 0, sz = 0;
-    q.length = 0; q.push(s); reg[s] = id;
-    for (let h = 0; h < q.length; h++) {
-      const k = q[h], x = k % gx; sx += x; sz += (k / gx) | 0;
-      for (const n of [k - 1, k + 1, k - gx, k + gx]) if (n >= 0 && n < gx * gz && Math.abs((n % gx) - x) <= 1 && !g[n] && reg[n] === -1) { reg[n] = id; q.push(n); }
-    }
-    let bk = s, bd = 1e9; sx /= q.length; sz /= q.length;           // the region's cell nearest its centroid
-    for (const k of q) { const dd = (k % gx - sx) ** 2 + (((k / gx) | 0) - sz) ** 2; if (dd < bd) { bd = dd; bk = k; } }
-    cen.push(navCenter(G, bk % gx, (bk / gx) | 0));
-  }
-  APTI.reg = reg; APTI.regC = cen;
-}
-function aptRegion(lx, lz) { const G = APT.room.navG, [i, j] = navCell(G, lx, lz); return APTI.reg[j * G.nx + i]; }
-
-/* --- enter / leave ----------------------------------------------------------- */
-function aptiEnter() {
-  for (const d of APTI.doors) { if (!doors.includes(d)) doors.push(d); if (d.body.setEnabled) d.body.setEnabled(true); d.settled = false; d.body.wakeUp(); }
-  APT.room.active = APT.room.visible = true;
-  aptMenuDraw();
-}
-function aptiLeave() {
-  aptiStop('');
-  for (const d of APTI.doors) {
-    if (d.holder) releaseDoor(d.holder);
-    const i = doors.indexOf(d); if (i >= 0) doors.splice(i, 1);
-    if (d.body.setEnabled) d.body.setEnabled(false);
-  }
-  APT.room.active = APT.room.visible = false;
-  if (APTM.open) aptOverlay(false);
-}
-// Men in the apartment notice nothing while they wait outside the front door.
-function aptSense() { return APTI.phase === 'clear'; }
-
-/* --- waves ------------------------------------------------------------------- */
-function aptiStart() {
-  if (!APTI.on || !APT.active || APTI.phase !== 'off' || !APT.room) return;
-  if (!ENEMY.models[0]) { toast('Swatted: the men are still loading'); return; }
-  APTI.wave = 0; APTI.kills = 0;
-  aptiWave();
-  aptMenuDraw();
-}
-function aptiClear(all) {
-  for (const e of [...APT.room.enemies]) if (all || e.dead) removeEnemy(e);
-}
-function aptiStop(msg) {
-  if (APTI.phase === 'off') return;
-  aptiBank();
-  APTI.phase = 'off';
-  aptiClear(true);
-  if (msg) toast(msg, 2600);
-  aptHud(true); aptMenuDraw();
-}
-function aptiBank() {
-  const r = loop.run;
-  if (!r || !r.pending) return;
-  const got = r.pending;
-  r.banked += got; r.pending = 0;
-  walletEarn(got);
-  loopSaveBest();
-  loopUi();
-}
-function aptiWave() {
-  const D = APTI.DIFF[APTI.set.diff], F = APTI.F, a = APT.at;
-  aptiClear(true);
-  APTI.wave++;
-  const n = APTI.set.team || (Math.random() < 0.5 ? 2 : 3), list = [];
-  for (let i = 0; i < n; i++) {
-    const q = Math.random(), gun = q < 0.6 ? 'smg' : q < 0.8 ? 'shotgun' : 'pistol';
-    list.push({ gun, skill: clamp(D.skill + rnd2(-0.1, 0.1)), aggr: clamp(0.5 + rnd2(-0.15, 0.25) + (gun === 'shotgun' ? 0.25 : 0)), torch: false });
-  }
-  aiAssignRoles(list);
-  roomMem(APT.room).plan = { list, dead: list.map(() => false), cleared: false, threat: D.skill, enteredT: performance.now() / 1000, dmg: 0 };
-  const spots = [[0.62, -0.6], [0.62, -1.3], [-0.62, -0.65]], taken = [];
-  APTI.men.length = 0;
-  list.forEach((spec, i) => {
-    const e = spawnEnemy(APT.room, spec, i, taken);
-    if (!e) return;
-    const sp = spots[i % 3], wx = a.x + F.x + sp[0], wz = a.z + F.z - F.t + sp[1], lx = rLX(APT.room, wx), lz = rLZ(APT.room, wz);
-    const yaw = Math.atan2(-(a.x + F.x - wx), -(a.z + F.z - wz));
-    e.pos.set(lx, lz); e.home.set(lx, lz); e.anchor.set(lx, lz); e.yaw = e.homeYaw = yaw; e.idleYaw = yaw;
-    e.root.position.set(lx, 0, lz); e.root.rotation.y = yaw;
-    e.hp = CONFIG.enemy.health * D.hp; e.reactK *= D.react; e.errK *= D.err; e.err = CONFIG.enemy.errBase * e.errK;
-    e.aptDead = false; e.aptT = i * 0.45;
-    APTI.men.push(e);
-  });
-  // the front door shuts for them (the closer) before they breach
-  const fd = APTI.front;
-  if (fd && Math.abs(fd.angle) > 0.05) fd.drive = { target: 0, k: 10, c: 6.5, until: performance.now() / 1000 + 1.5 };
-  APTI.phase = 'stack'; APTI.t = D.stack; APTI.waveT = APTI.set.timer;
-  toast(`Wave ${APTI.wave}: ${APTI.men.length} men at the front door`, 2600);
-  aptHud(true); aptMenuDraw();
-}
-function aptiBreach() {
-  const D = APTI.DIFF[APTI.set.diff], door = APTI.front, lead = APTI.men.find((e) => !e.dead && !e.surr);
-  const nowS = performance.now() / 1000, K = CONFIG.kick, P = CONFIG.doorPhys, V = APTI.kp;
-  if (!door || !lead) return;
-  const lx = rWX(APT.room, lead.pos.x), lz = rWZ(APT.room, lead.pos.y), side = doorSide(door, lx, lz);
-  if (door.holder) releaseDoor(door.holder);
-  if (D.kick) {
-    V.set(door.walk.x, APT.at.y + 1.0, door.walk.z);
-    APTI.dir.set(-door.walk.s * side, 0, -door.walk.c * side);   // from him into the leaf
-    door.drive = null;
-    door.body.applyImpulseAtPoint({ x: APTI.dir.x * K.doorImpulse * 1.3, y: 0, z: APTI.dir.z * K.doorImpulse * 1.3 }, { x: V.x, y: V.y, z: V.z }, true);
-    door.kickUntil = nowS + K.doorFree; door.kickDir = side;
-    kickSfx('door', V, 1);
-    lead.stumble = Math.min(0.9, (lead.stumble || 0) + 0.25);    // the kick's follow-through
-  } else {
-    door.drive = { target: side > 0 ? P.maxOpen * 0.88 : -P.maxBack * 0.88, k: 9, c: 6, from: nowS + CONFIG.doorUse.latchDelay, until: nowS + 5.2, cap: CONFIG.doorUse.pace };
-    leverHold(door, nowS + 0.6);
-  }
-}
-// The men go: everyone knows, each heads for the next region on the way to you.
-function aptiGo() {
-  APTI.phase = 'clear';
-  for (const e of APTI.men) if (!e.dead && !e.surr) { e.aptT = 0; aptiDrive(e, 0); e.heard = true; e.aptT = Math.random() * 0.4; }   // where to go first, then the brain engages
-}
-function aptiDrive(e, dt) {
-  e.aptT -= dt;
-  if (e.aptT > 0) return;
-  e.aptT = 1.3 + Math.random() * 0.4;
-  if (e.visible || wnow() - e.lastSeenT < 2.5 || e.reloadT > 0) return;
-  if (e.state === 'react' || e.state === 'flashed' || e.state === 'peek') return;
-  const R = APT.room, H = APTI.v;
-  headWorld(H);
-  const px = rLX(R, H.x), pz = rLZ(R, H.z), r0 = aptRegion(e.pos.x, e.pos.y), rp = aptRegion(px, pz);
-  let tx = px, tz = pz;
-  if (r0 >= 0 && rp >= 0 && r0 !== rp) {
-    const way = findPath(R, e.pos.x, e.pos.y, px, pz);
-    if (way) {                                                     // the first other region along the way: clear that one first
-      let ax = e.pos.x, az = e.pos.y, found = false;
-      for (const w of way) {
-        const n = Math.ceil(Math.hypot(w.x - ax, w.y - az) / 0.2);
-        for (let k = 1; k <= n && !found; k++) {
-          const sx = ax + (w.x - ax) * k / n, sz = az + (w.y - az) * k / n, rr = aptRegion(sx, sz);
-          if (rr >= 0 && rr !== r0) { found = true; if (rr !== rp) { tx = APTI.regC[rr][0]; tz = APTI.regC[rr][1]; } }
-        }
-        if (found) break;
-        ax = w.x; az = w.y;
-      }
-    }
-  }
-  e.lastKnown.set(tx, 1.3, tz); e.hasKnown = true;
-  if (!e.engaged) { e.heard = true; return; }
-  const path = findPath(R, e.pos.x, e.pos.y, tx, tz);
-  if (!path) return;
-  e.path = path; e.pathI = 0; e.cover = null; e.search = null; e.watch = null;
-  e.intent = 'push'; e.state = 'move';
-}
-// A man at a shut leaf opens it, away from himself.
-function aptiManDoors() {
-  const nowS = performance.now() / 1000, P = CONFIG.doorPhys;
-  for (const d of APTI.doors) {
-    if (d.front && APTI.phase !== 'clear') continue;
-    if (Math.abs(d.angle) > 0.5 || d.holder || (d.drive && nowS < d.drive.until) || d.kickUntil > nowS) continue;
-    for (const e of APTI.men) {
-      if (e.dead || e.surr) continue;
-      const wx = rWX(APT.room, e.pos.x), wz = rWZ(APT.room, e.pos.y);
-      if (Math.hypot(wx - d.walk.x, wz - d.walk.z) > 0.8) continue;
-      const side = doorSide(d, wx, wz);
-      d.drive = { target: side > 0 ? P.maxOpen * 0.88 : -P.maxBack * 0.88, k: 9, c: 6, from: nowS + CONFIG.doorUse.latchDelay, until: nowS + 3, cap: CONFIG.doorUse.pace * 1.4 };
-      leverHold(d, nowS + 0.5);
-      break;
-    }
-  }
-}
-function aptiTick(dt) {
-  if (APTI.phase === 'off') return;
-  if (playerState.dead) { aptiStop('Swatted: you are down. Invasion stopped'); return; }
-  let alive = 0;
-  for (const e of APTI.men) {
-    if (e.dead && !e.aptDead) { e.aptDead = true; APTI.kills++; }
-    if (!e.dead && !e.surr) alive++;
-  }
-  if (APTI.phase === 'stack') {
-    APTI.t -= dt;
-    if (APTI.t <= 0) { aptiBreach(); APTI.phase = 'breach'; APTI.t = APTI.DIFF[APTI.set.diff].kick ? 0.35 : 1.2; }
-  } else if (APTI.phase === 'breach') {
-    APTI.t -= dt;
-    if (APTI.t <= 0) aptiGo();
-  } else if (APTI.phase === 'clear') {
-    for (const e of APTI.men) if (!e.dead && !e.surr) aptiDrive(e, dt);
-    aptiManDoors();
-    if (APTI.set.timer) APTI.waveT -= dt;
-    if (!alive || (APTI.set.timer && APTI.waveT <= 0)) {
-      if (alive) { for (const e of APTI.men) if (!e.dead && !e.surr) removeEnemy(e); toast(`Time. Wave ${APTI.wave}: the rest pulled back`, 2600); }
-      else toast(`Wave ${APTI.wave} down. Next in ${APTI.breakT} s`, 2600);
-      aptiBank();
-      aptRestockPouches('Pouches refilled');                     // apartment armory: ammo, grenades, injectors at each break
-      APTI.phase = 'break'; APTI.t = APTI.breakT;
-    }
-  } else if (APTI.phase === 'break') {
-    APTI.t -= dt;
-    if (APTI.t <= 0) aptiWave();
-  }
-  aptHud(false);
-  if ((APTI.mT = (APTI.mT || 0) - dt) <= 0) { APTI.mT = 0.5; aptMenuDraw(); }
-}
-function aptLine() {
-  if (APTI.phase === 'off') return '';
-  const s = APTI.phase === 'break' ? `NEXT ${Math.ceil(APTI.t)}s` : APTI.phase === 'clear' && APTI.set.timer ? `${Math.max(0, Math.ceil(APTI.waveT))}s LEFT` : APTI.phase === 'clear' ? 'NO TIMER' : 'AT THE DOOR';
-  return `WAVE ${APTI.wave} · ${s} · KILLS ${APTI.kills}`;
-}
-window.__aptWatch = () => (APTI.on && APT.active ? aptLine() : '');
-// Computer HUD line, at most 4 times a second.
-function aptHud(force) {
-  if (renderer.xr.isPresenting && !APTI.hud) return;
-  if (!APTI.hud) { const d = document.createElement('div'); d.id = 'aptHud'; d.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);font:600 13px ui-monospace,Menlo,monospace;color:#f3e9d2;background:rgba(0,0,0,.45);padding:4px 10px;border-radius:4px;z-index:40;pointer-events:none;display:none'; document.body.appendChild(d); APTI.hud = d; }
-  const now = performance.now();
-  if (!force && now < APTI.hudT) return;
-  APTI.hudT = now + 250;
-  const s = APT.active && !renderer.xr.isPresenting ? aptLine() : '';
-  if (s === APTI.hudS) return;
-  APTI.hudS = s; APTI.hud.textContent = s; APTI.hud.style.display = s ? 'block' : 'none';
-}
-
-/* --- menu: wall tablet + overlay (M) ------------------------------------------ */
-/* --- apartment armory: gun locker, pouches, respawn --------------------------- */
-// A straight tall wall (1.5 m of it) for the gun locker: far from the spawn, the OFFICE / RUN doors, the doorways and the tablet.
-function aptLockerPick(cand, picks, block, band, nx, nz, x0, z0, C, best, fy) {
-  const bx = best % nx, bz = (best / nx) | 0, cell = (X, Z) => (X >= 0 && Z >= 0 && X < nx && Z < nz ? X + nx * Z : -1);
-  for (const c of cand) {
-    if (Math.hypot(c.x - bx, c.z - bz) < 15 || picks.some((p) => Math.hypot(p.x - c.x, p.z - c.z) < 17)) continue;
-    let ok = true;
-    for (let s = -7; s <= 7 && ok; s++) {
-      const w = cell(c.x + c.dx * 3 + c.dz * s, c.z + c.dz * 3 + c.dx * s);
-      if (w < 0 || !block[w] || !(band[w] & 4)) ok = false;                     // wall up past 1.6 m all along
-      for (let r = -2; r <= 2 && ok; r++) { const k = cell(c.x - c.dx * r + c.dz * s, c.z - c.dz * r + c.dx * s); if (k < 0 || block[k]) ok = false; }   // floor in front clear
-    }
-    if (!ok) continue;
-    const cx = x0 + (c.x + 0.5) * C, cz = z0 + (c.z + 0.5) * C, wx = cx + c.dx * (2.5 * C - 0.03), wz = cz + c.dz * (2.5 * C - 0.03);
-    if (aptNearMenu(wx, wz) || APTI.dw.some((d) => Math.hypot(d.cx - wx, d.cz - wz) < 1.5)) continue;
-    return { x: wx, y: fy, z: wz, yaw: Math.atan2(-c.dx, -c.dz) };
-  }
-  return null;
-}
-// The safe room's cabinet (shared GL kit), its colliders on APT.body (world frame), a walk box, the men's nav grid blocked.
-function aptLockerBuild(R, S, F) {
-  const kit = glKit(F), g = new THREE.Group(), { W, D, H, t } = GL, cy = Math.cos(S.yaw), sy = Math.sin(S.yaw);
-  for (const m of kit) g.add(m.clone());
-  g.position.set(S.x - R.origin.x, 0, S.z - R.origin.z); g.rotation.y = S.yaw;           // +z out of the cabinet = into the room
-  R.group.add(g); R.glGrp = g;
-  const q = { x: 0, y: Math.sin(S.yaw / 2), z: 0, w: Math.cos(S.yaw / 2) };
-  const lx0 = -W / 2 + t, lx1 = GL.bayX - t / 2, px0 = GL.bayX + t / 2, px1 = W / 2 - t;
-  const box = (cx, by, cz, hx, hy, hz) => {                                                 // cabinet frame -> world (APT.body sits at the origin)
-    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(S.x + cx * cy + cz * sy, S.y + by, S.z - cx * sy + cz * cy).setRotation(q)
-      .setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.static), APT.body);
-    colliderInfo.set(col.handle, { room: R, kind: 'metal' }); R.colliderHandles.push(col.handle); APT.lockCols.push(col);
-  };
-  box(0, H / 2, t / 2, W / 2, H / 2, t / 2); box(-W / 2 + t / 2, H / 2, D / 2, t / 2, H / 2, D / 2); box(W / 2 - t / 2, H / 2, D / 2, t / 2, H / 2, D / 2);
-  box(0, H - t / 2, D / 2, W / 2, t / 2, D / 2); box(0, 0.04, D / 2, W / 2, 0.04, D / 2); box(GL.bayX, H / 2, D / 2, t / 2, H / 2, D / 2);
-  box((lx0 + lx1) / 2, (0.08 + GL.padTop) / 2, D / 2, (lx1 - lx0) / 2, (GL.padTop - 0.08) / 2, D / 2);
-  for (const y of [GL.pShelf, GL.mShelf]) box((px0 + px1) / 2, y - 0.0045, D / 2, (px1 - px0) / 2, 0.0105, D / 2);
-  // walk box (the wall runs along x or z, so axis aligned) and the men's nav grid
-  const cxw = S.x + (D / 2) * sy, czw = S.z + (D / 2) * cy, hx = Math.abs(cy) * W / 2 + Math.abs(sy) * D / 2, hz = Math.abs(sy) * W / 2 + Math.abs(cy) * D / 2;
-  APT.walk.push({ x: cxw, z: czw, c: 1, s: 0, hx, hz, top: S.y + H, bot: S.y });
-  const G = R.navG;
-  if (G) for (let j = 0; j < G.nz; j++) for (let i = 0; i < G.nx; i++) {
-    const [lx, lz] = navCenter(G, i, j);
-    if (Math.abs(lx + R.origin.x - cxw) < hx + 0.18 && Math.abs(lz + R.origin.z - czw) < hz + 0.18) G.g[j * G.nx + i] = 1;
-  }
-  dirtyShadows();
-}
-function aptArmoryEnter() {
-  const R = APT.room;
-  try {
-    if (R && APT.lockSpot) {
-      APT.lockCols = APT.lockCols || [];
-      if (GL.room !== R) APT.glPrev = GL.room;                   // the safe room's locker, given back on leaving
-      GL.room = R;
-      const F = glFit();
-      if (F.long.length || F.pist.length) {
-        if (!R.glGrp) aptLockerBuild(R, APT.lockSpot, F);
-        for (const c of APT.lockCols) c.setEnabled(true);
-        gunLockerRestock(R);                                     // every gun, each with its store build (createGun / the sync functions)
-      }
-    }
-  } catch (e) { console.warn('apartment armory: locker not placed', e); }
-  aptRestockPouches('');
-}
-function aptArmoryLeave() {
-  if (APT.lockCols) for (const c of APT.lockCols) c.setEnabled(false);
-  if (APT.room && GL.room === APT.room) {
-    GL.room = APT.glPrev || null; APT.glPrev = null;
-    try { if (GL.room) gunLockerRestock(GL.room); } catch (e) { console.warn('apartment armory: safe-room locker not restocked', e); }
-  }
-}
-// Magazines, shells, grenades, injectors full (as the safe room's refill).
-function aptRestockPouches(msg) {
-  refillInventory();
-  if (msg) toast(msg, 1800);
-}
-// Down in the apartment: the invasion stops, you wake at its spawn, pouches and locker restocked, the run ends as usual.
-function aptRespawn() {
-  if (APTI.on) aptiStop('');
-  for (const h of [deskHand, ...vrHands]) if (h && h.prop && !gunOf(h)) release(h, new THREE.Vector3());
-  aptPlace(APT.spawn, renderer.xr.isPresenting ? yawOf(camera) : look.yaw);
-  try { if (APT.room && GL.room === APT.room) gunLockerRestock(APT.room); } catch (e) { console.warn('apartment armory: locker not restocked', e); }
-  refillInventory();
-  playerState.dead = false; playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0;
-  xrState.crouchOn = false;
-  hpUi();
-  loopPlayerDown();
-}
-const APTM = { cv: null, ctx: null, tex: null, mesh: null, btn: [], arm: [true, true], open: false, ov: null, ovB: [],
-  W: 640, H: 400, w: 0.4, h: 0.25, c: new THREE.Vector3(), sig: '' };
-function aptMenuBuild() {
-  const F = APTI.F, M = APTM, a = APT.at;
-  M.cv = document.createElement('canvas'); M.cv.width = M.W; M.cv.height = M.H; M.ctx = M.cv.getContext('2d');
-  M.tex = new THREE.CanvasTexture(M.cv); M.tex.colorSpace = THREE.SRGBColorSpace;
-  const cx = F.x + F.w / 2 + (F.p1 - F.x - F.w / 2) / 2 + 0.02, cz = F.z + 0.012, cy = 1.45;   // on the latch-side jamb, clear of the casing
-  M.mesh = new THREE.Mesh(new THREE.PlaneGeometry(M.w, M.h), new THREE.MeshBasicMaterial({ map: M.tex, toneMapped: false }));
-  M.mesh.position.set(cx, cy, cz); APT.group.add(M.mesh);
-  const bez = new THREE.Mesh(aptBox(cx - M.w / 2 - 0.015, cy - M.h / 2 - 0.015, cz - 0.01, cx + M.w / 2 + 0.015, cy + M.h / 2 + 0.015, cz - 0.001, 0x1c1d20), new THREE.MeshBasicMaterial({ vertexColors: true }));
-  APT.group.add(bez);
-  M.c.set(a.x + cx, a.y + cy, a.z + cz);
-  const B = M.btn, chip = (y, n, id, vals) => { const w = (600 - (n - 1) * 10) / n; for (let i = 0; i < n; i++) B.push({ x: 20 + i * (w + 10), y, w, h: 44, id, val: vals[i] }); };
-  B.push({ x: 20, y: 74, w: 440, h: 54, id: 'go', val: 0 });
-  B.push({ x: 470, y: 74, w: 150, h: 54, id: 'mods', val: 0 });   // apartment armory: opens the watch mod panel
-  chip(170, 3, 'diff', [0, 1, 2]);
-  chip(256, 5, 'timer', APTI.TIMERS);
-  chip(342, 3, 'team', APTI.TEAMS);
-  aptOverlayBuild();
-  aptMenuDraw();
-}
-const aptLabel = (b) => b.id === 'diff' ? APTI.DIFF[b.val].name : b.id === 'timer' ? (b.val ? b.val + ' s' : 'Off') : b.id === 'team' ? (b.val ? String(b.val) : '2-3') : '';
-function aptMenuDraw() {
-  const M = APTM, c = M.ctx;
-  if (!c) return;
-  const on = APTI.phase !== 'off', line = aptLine(), sig = `${on}|${line}|${APTI.set.diff}|${APTI.set.timer}|${APTI.set.team}`;
-  if (sig === M.sig) return;
-  M.sig = sig;
-  c.fillStyle = '#121418'; c.fillRect(0, 0, M.W, M.H);
-  c.textBaseline = 'middle'; c.textAlign = 'left'; c.fillStyle = '#f2c14e'; c.font = '700 30px ui-monospace, Menlo, monospace'; c.fillText('SWATTED', 20, 30);
-  c.textAlign = 'right'; c.fillStyle = '#cfd3da'; c.font = '600 17px ui-monospace, Menlo, monospace'; c.fillText(line || 'Ready', 620, 30);
-  c.font = '600 14px ui-monospace, Menlo, monospace'; c.textAlign = 'left'; c.fillStyle = '#8b919c';
-  c.fillText('DIFFICULTY', 20, 156); c.fillText('ROUND TIMER (PER WAVE)', 20, 242); c.fillText('TEAM SIZE', 20, 328);
-  for (const b of M.btn) {
-    const sel = b.id === 'go' ? on : APTI.set[b.id] === b.val, big = b.id === 'go' || b.id === 'mods';
-    c.fillStyle = b.id === 'mods' ? '#4b3f7a' : b.id === 'go' ? (on ? '#7a1f1f' : '#1f5a2a') : sel ? '#2e6fd8' : '#262a31'; c.fillRect(b.x, b.y, b.w, b.h);
-    c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = big ? '700 24px ui-monospace, Menlo, monospace' : '600 18px ui-monospace, Menlo, monospace';
-    c.fillText(b.id === 'mods' ? 'MODS' : b.id === 'go' ? (on ? 'STOP INVASION' : 'START INVASION') : aptLabel(b), b.x + b.w / 2, b.y + b.h / 2);
-  }
-  M.tex.needsUpdate = true;
-  aptOverlaySync();
-}
-function aptMenuAct(b) {
-  if (b.id === 'mods') {                                        // apartment armory: the same mod panel as everywhere (watch in VR, M panel on a computer)
-    btnSfx('term', APTM.c);
-    if (renderer.xr.isPresenting) watchOpen(true); else { aptOverlay(false); modPanelToggle(true); }
-    return;
-  }
-  if (b.id === 'go') { if (APTI.phase === 'off') aptiStart(); else aptiStop('Invasion stopped'); }
-  else { APTI.set[b.id] = b.val; aptiSave(); }
-  btnSfx('term', APTM.c);
-  aptMenuDraw();
-}
-// Canvas pixel -> button.
-function aptMenuHit(px, py) { for (const b of APTM.btn) if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) return b; return null; }
-// A point on the glass (world) -> canvas pixel; null off the glass. The tablet faces +z.
-function aptMenuPx(p, out) {
-  const M = APTM, u = (p.x - (M.c.x - M.w / 2)) / M.w, v = ((M.c.y + M.h / 2) - p.y) / M.h;
-  if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-  out.x = u * M.W; out.y = v * M.H; return out;
-}
-const _amp = { x: 0, y: 0 };
-// Computer: E / click with the view centre on the glass, within 1.8 m.
-function aptMenuDesk() {
-  if (!APTM.mesh || renderer.xr.isPresenting) return false;
-  const M = APTM, o = APTI.o, d = APTI.dir;
-  camera.getWorldPosition(o); camera.getWorldDirection(d);
-  if (o.distanceTo(M.c) > 1.8 || d.z > -0.05 || o.z < M.c.z) return false;
-  const t = (M.c.z - o.z) / d.z, p = APTI.v2.copy(o).addScaledVector(d, t);
-  const px = aptMenuPx(p, _amp), b = px && aptMenuHit(px.x, px.y);
-  if (!b) return !!px;                                          // on the glass but between buttons: swallow the press
-  aptMenuAct(b);
-  return true;
-}
-// Headset: an index tip pressing the glass (re-arms 12 mm off it).
-function aptMenuVr() {
-  if (!APTM.mesh || !renderer.xr.isPresenting) return;
-  const M = APTM;
-  vrHands.forEach((vh, i) => {
-    if (i > 1) return;
-    const T = vrTips(vh);
-    if (!T) return;
-    const p = T.i, dz = p.z - M.c.z;
-    if (dz > 0.012) { M.arm[i] = true; return; }
-    if (!M.arm[i] || dz < -0.03 || dz > 0.004) return;
-    const px = aptMenuPx(p, _amp), b = px && aptMenuHit(px.x, px.y);
-    if (!px) return;
-    M.arm[i] = false;
-    if (b) { aptMenuAct(b); pulse(vh, 0.25, 15); }
-  });
-}
-function aptOverlayBuild() {
-  const M = APTM, d = document.createElement('div');
-  d.id = 'aptMenu'; d.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(560px,92vw);background:#121418;color:#e8e8ea;font:600 14px ui-monospace,Menlo,monospace;padding:16px 18px;border-radius:8px;z-index:60;display:none;box-shadow:0 8px 40px rgba(0,0,0,.6)';
-  const head = document.createElement('div'); head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:10px';
-  head.innerHTML = '<b style="color:#f2c14e;font-size:22px">SWATTED</b>'; const info = document.createElement('span'); head.appendChild(info); d.appendChild(head); M.ovInfo = info;
-  const mk = (b) => { const e = document.createElement('button'); e.type = 'button'; e.style.cssText = 'flex:1;margin:3px;padding:9px 4px;border:0;border-radius:4px;color:#fff;font:inherit;cursor:pointer'; e.onclick = () => aptMenuAct(b); M.ovB.push([e, b]); return e; };
-  let row = null, last = '';
-  for (const b of M.btn) {
-    const gid = b.id === 'mods' ? 'go' : b.id;                  // MODS shares the START row
-    if (gid !== last) {
-      last = gid;
-      if (b.id !== 'go') { const l = document.createElement('div'); l.style.cssText = 'margin:10px 3px 2px;color:#8b919c'; l.textContent = b.id === 'diff' ? 'DIFFICULTY' : b.id === 'timer' ? 'ROUND TIMER (PER WAVE)' : 'TEAM SIZE'; d.appendChild(l); }
-      row = document.createElement('div'); row.style.cssText = 'display:flex'; d.appendChild(row);
-    }
-    row.appendChild(mk(b));
-  }
-  const close = document.createElement('div'); close.style.cssText = 'margin-top:10px;color:#8b919c;text-align:center;cursor:pointer'; close.textContent = 'J or Esc closes · click the game to look around again';
-  close.onclick = () => aptOverlay(false); d.appendChild(close);
-  document.body.appendChild(d); M.ov = d;
-}
-function aptOverlaySync() {
-  const M = APTM; if (!M.ov) return;
-  const on = APTI.phase !== 'off';
-  M.ovInfo.textContent = aptLine() || 'Ready';
-  for (const [e, b] of M.ovB) {
-    const sel = b.id === 'go' ? on : APTI.set[b.id] === b.val;
-    e.textContent = b.id === 'mods' ? 'MODS' : b.id === 'go' ? (on ? 'STOP INVASION' : 'START INVASION') : aptLabel(b);
-    e.style.background = b.id === 'mods' ? '#4b3f7a' : b.id === 'go' ? (on ? '#7a1f1f' : '#1f5a2a') : sel ? '#2e6fd8' : '#262a31';
-  }
-}
-function aptOverlay(show) {
-  const M = APTM; if (!M.ov) return;
-  M.open = show; M.ov.style.display = show ? 'block' : 'none';
-  if (show) { M.sig = ''; aptMenuDraw(); if (document.pointerLockElement) document.exitPointerLock(); }
-}
-addEventListener('keydown', (e) => {
-  if (!APTI.on || !APT.active || renderer.xr.isPresenting || e.repeat) return;
-  if (e.code === 'KeyJ' || (e.code === 'Escape' && APTM.open)) { e.stopImmediatePropagation(); e.preventDefault(); aptOverlay(e.code === 'KeyJ' ? !APTM.open : false); }   // apartment armory: J (M stays the mod panel; J is the hop elsewhere)
-}, true);
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APTI, APTM, aptiStart, aptiStop, aptiWave, aptiTick, aptRegion, aptFindDoorways, aptCutLeaves, aptDoorMake, aptMenuAct, aptOverlay });
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptEnter, aptLeave, aptTick, aptLoad, aptProbe: () => { headWorld(_aptH); return { head: _aptH.toArray(), floor: level.floor, walk: colliders.length }; } });
 </script>
 </body>
 </html>
