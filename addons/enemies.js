@@ -1,4 +1,4 @@
-// Training enemies: the CQC Loop's two characters (cqc/models/enemy-fsb.glb, enemy-soldier.glb) standing
+// Training enemies: the CQC Loop's two characters (cqc/models/enemy-soldier.glb; the FSB model was removed) standing
 // in the studio as shootable targets. Not the CQC AI: they stand in a relaxed pose, flinch when hit and
 // fall over when "killed" (a scripted fall, not a physics ragdoll), then get back up after a few seconds
 // (Props app switch "Get back up"). Bullets hit invisible capsules on head / torso /
@@ -12,7 +12,6 @@
   "use strict";
   var MAX = 6, HEIGHT = 1.8, GET_UP_AFTER = 6;
   var LOOKS = {
-    fsb: { label: "FSB operator", url: "cqc/models/enemy-fsb.glb" },
     soldier: { label: "Soldier", url: "cqc/models/enemy-soldier.glb" }
   };
   var LOADER_URL = "assets/GLTFLoader-d80uIKQK.js";
@@ -216,7 +215,7 @@
     }
     var nextLook = 0;
     api.spawn = function (look, pos, yaw) {
-      if (!look || !LOOKS[look]) look = ["fsb", "soldier"][nextLook++ % 2];
+      if (!look || !LOOKS[look]) look = "soldier";
       if (api.list.length >= MAX) { if (S.log) S.log.warn("Enemy limit: " + MAX + " in the room. Remove some first."); return Promise.resolve(null); }
       if (S.log) S.log.info("Bringing in an enemy (" + LOOKS[look].label + ")…");
       return load(look).then(function (tpl) {
