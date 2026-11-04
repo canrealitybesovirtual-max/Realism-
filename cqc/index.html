@@ -8409,7 +8409,8 @@ function updateStreaming() {
   if (stream.building) {
     const t0 = performance.now();
     const nowB = performance.now() / 1000;                     // step 52: little background work while the action needs the frame
-    const budget = PACE.moveStart && nowB - PACE.moveStart < 0.05 ? 0 : S.buildBudgetMs * (paceBusy(nowB) ? CONFIG.pace.buildBusyK : 1);
+    const budget = PACE.moveStart && nowB - PACE.moveStart < 0.05 ? 0 : S.buildBudgetMs * (paceBusy(nowB) ? CONFIG.pace.buildBusyK : 1)
+      * (stream.building.plan && stream.building.plan.type === 'yard' && stream.current && stream.current.kind === 'safe' ? 2.5 : 1);   // outdoor start: the big yard builds faster while you wait in the safe room
     while (performance.now() - t0 < budget) {
       if (stream.building.builder.next().done) { stream.ready.push(stream.building); stream.building = null; break; }
     }
@@ -47142,6 +47143,7 @@ const YU = {
   uYTime: { value: 0 }, uYWet: { value: 1 }, uYInv: { value: new THREE.Matrix4() }, uYNoise: { value: null },
   uYLampP: { value: Array.from({ length: YARD_NL }, () => new THREE.Vector4()) }, uYLampD: { value: Array.from({ length: YARD_NL }, () => new THREE.Vector4(0, -1, 0, 0.5)) },
   uYLampC: { value: new THREE.Color(1.0, 0.82, 0.62) }, uYFogC: { value: new THREE.Color() }, uYFog: { value: new THREE.Vector4(0.022, 0.12, 0, 0.9) }, uYScat: { value: 1 },
+  uYLampN: { value: YARD_NL },                                      // lamps the shaders loop over (nearest first; yardTick sorts them)
   uYLampZ: { value: new Float32Array(YARD_NL).fill(-1) },          // -1 outdoor (not inside an interior), k = only inside interior k
   uYRoomR: { value: Array.from({ length: YARD_NR }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoomTop: { value: new Float32Array(YARD_NR) },
   uYRoof: { value: Array.from({ length: YARD_NF }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoofH: { value: new Float32Array(YARD_NF) },
@@ -47153,7 +47155,7 @@ const YU = {
 const YARD_GLSL_COMMON = `
 uniform float uYTime; uniform float uYWet; uniform mat4 uYInv; uniform sampler2D uYNoise;
 uniform vec4 uYLampP[${YARD_NL}]; uniform vec4 uYLampD[${YARD_NL}]; uniform vec3 uYLampC; uniform vec3 uYFogC; uniform vec4 uYFog; uniform float uYScat;
-uniform float uYLampZ[${YARD_NL}]; uniform vec4 uYRoomR[${YARD_NR}]; uniform float uYRoomTop[${YARD_NR}];
+uniform float uYLampZ[${YARD_NL}]; uniform int uYLampN; uniform vec4 uYRoomR[${YARD_NR}]; uniform float uYRoomTop[${YARD_NR}];
 // Which interior a room-local point is in (-1 = outdoors).
 int yRoomOf(vec3 lp) {
   int k0 = -1;
@@ -47172,6 +47174,7 @@ vec3 yFog(vec3 col, vec3 wp){
   float f = (1.0 - exp(-d * uYFog.x * hf)) * uYFog.w;
   vec3 rd = v / max(d, 1e-3), sc = vec3(0.0);
   for (int i = 0; i < ${YARD_NL}; i++) {
+    if (i >= uYLampN) break;
     vec4 P = uYLampP[i]; if (P.w <= 0.0 || uYLampZ[i] > -0.5) continue;
     vec3 c = P.xyz - cameraPosition; float t = clamp(dot(c, rd), 0.0, d); vec3 q = cameraPosition + rd * t - P.xyz;
     float h2 = dot(q, q); sc += uYLampC * (P.w * 0.0009 / (h2 + 0.35)) * (1.0 - exp(-d * 0.08));
@@ -47363,6 +47366,7 @@ roughnessFactor = mix(roughnessFactor, 0.05, max(yRiv, yBead));`)
 }`)
     .replace('#include <lights_fragment_maps>', `{
   for (int i = 0; i < ${YARD_NL}; i++) {
+    if (i >= uYLampN) break;
     vec4 P = uYLampP[i]; if (P.w <= 0.0 || !yLampFor(i, yRoomI)) continue;
     vec3 Lw = P.xyz - vYW; float d2 = dot(Lw, Lw); if (d2 > 1600.0) continue;   // past 40 m a lamp adds nothing visible (and the fog has it)
     vec3 Ln = Lw * inversesqrt(d2);
@@ -47473,6 +47477,7 @@ const YRAIN_LIGHT = `
 vec3 yRainLight(vec3 wp, vec3 vd) {
   vec3 c = uYFogC * 3.0;
   for (int i = 0; i < ${YARD_NL}; i++) {
+    if (i >= uYLampN) break;
     vec4 P = uYLampP[i]; if (P.w <= 0.0 || uYLampZ[i] > -0.5) continue;
     vec3 L = P.xyz - wp; float d2 = dot(L, L); vec3 Ln = L * inversesqrt(d2);
     float sp = smoothstep(uYLampD[i].w - 0.1, uYLampD[i].w + 0.1, dot(-Ln, uYLampD[i].xyz));
@@ -48313,13 +48318,19 @@ function yardTick(dt, t) {
     YU.uYInv.value.copy(yard.group.matrixWorld).invert();
     YU.uYFog.value.set(renderer.xr.isPresenting ? YC.fog.densXR : YC.fog.dens, YC.fog.fall, yard.origin.y, YC.fog.max);
     const dark = nightDark(yard);
-    for (let i = 0; i < YARD_NL; i++) {
-      const l = Y.lampsL[i], P = YU.uYLampP.value[i], Dv = YU.uYLampD.value[i];
-      if (!l) { P.w = 0; continue; }
+    // Lamps nearest you first, so the shaders only loop over the ones that matter (uYLampN: 10 computer, 5 headset).
+    const ord = Y.lampOrd || (Y.lampOrd = Array.from({ length: YARD_NL }, (_, i) => i)), dist = Y.lampDist || (Y.lampDist = new Float32Array(YARD_NL));
+    camera.getWorldPosition(_yt.v);
+    for (let i = 0; i < YARD_NL; i++) { const l = Y.lampsL[i]; dist[i] = !l || l.I <= 0 ? 1e9 : (rWX(yard, l.p[0]) - _yt.v.x) ** 2 + (yard.origin.y + l.p[1] - _yt.v.y) ** 2 + (rWZ(yard, l.p[2]) - _yt.v.z) ** 2; }
+    ord.sort((a, b) => dist[a] - dist[b]);
+    for (let j = 0; j < YARD_NL; j++) {
+      const l = Y.lampsL[ord[j]], P = YU.uYLampP.value[j], Dv = YU.uYLampD.value[j];
+      if (!l) { P.w = 0; YU.uYLampZ.value[j] = -1; continue; }
       P.set(rWX(yard, l.p[0]), yard.origin.y + l.p[1], rWZ(yard, l.p[2]), dark ? 0 : l.I);
-      YU.uYLampZ.value[i] = l.zone === undefined ? -1 : l.zone;
+      YU.uYLampZ.value[j] = l.zone === undefined ? -1 : l.zone;
       Dv.set(rF(yard) * l.d[0], l.d[1], rF(yard) * l.d[2], l.cos);
     }
+    YU.uYLampN.value = renderer.xr.isPresenting ? 5 : 10;
     if (Y.shaftMat) Y.shaftMat.uniforms.uK.value = dark ? 0 : 0.05;
     if (yard.yardShafts) yard.yardShafts.visible = !renderer.xr.isPresenting;   // headset: no light-shaft cones (big additive overdraw)
     if (yard.active) yardDoorsTick(yard, performance.now() / 1000);
@@ -49056,7 +49067,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
   } catch (e) { /* no title */ }
 })();
 yardFogColour();                                                  // the default fog until sky/sky.json arrives
-if (window.__cqcDev) Object.assign(window.__cqcDev, { YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+if (window.__cqcDev) Object.assign(window.__cqcDev, { restartToSafe, respawnPlayer, playerState, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
