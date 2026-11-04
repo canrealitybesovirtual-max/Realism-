@@ -925,3 +925,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: brass auto-counted, bigger workshop screen
 - Brass: no hand / E pickup, no hip bag, no pour. Every case you fire (brassSpawned with a player gun) adds 1 to BRASS.bin; saved every 2 s (brassTick). Cases still fly, land and lie as visuals. Old cqc.brass.v1 bag counts go into the bin on load. Bin, heap and SELL BRASS unchanged.
 - Workshop glass 1.4 x 0.7875 m (was 0.88 x 0.495), at x 1.95, y 1.82; same 1280 x 720 layout, so all text, rows and touch targets are 1.6x larger. No desktop zoom added. Syntax parse only.
+- Workshop follow-up: glass 1.6 x 0.9 m at x 1.85, y 1.9; text x1.3 (WS_FONT via TERM.wsK in tFont, workshop only); 4 rows per slot page / build list; canvas fully cleared each redraw, scanlines removed and glass roughness 0.6 (the faint doubled letters: scanline aliasing in the mipmaps / glossy glass). Not seen by eye.
+- City map removed (CITY section, cqc/city/, watch / M panel buttons, hooks).
+- NVG: tube fov 95 deg, softer field stop (edge 0.12), grain / sparkle / hex pattern / bloom / halos about a quarter of before.
+- Safe-room bench walk box depth 0.31 -> 0.17 m half (you stand against the front edge).
