@@ -32227,6 +32227,7 @@ function tfillChunk() {
   for (const k of ['standard', 'physical', 'lambert', 'phong', 'toon']) if (L[k]) L[k].uniforms.uTfP = { value: TFILL.P };
 }
 function tfillTick() {
+  vrNoteTick();
   SURF.u.uSfK.value.y = renderer.xr.isPresenting ? 1 : 0;           // surfaces: the headset's lighter path
   if (!TFILL.on) return;
   const P = TFILL.P, cur = stream.current, xr = renderer.xr.isPresenting;
@@ -32293,7 +32294,7 @@ if (NVG.on) try {
   if (o) { NVG.owned = !!o.owned; NVG.worn = NVG.owned && !!o.worn; NVG.phos = o.phos === 'white' ? 'white' : 'green'; NVG.irLaser = !!o.irLaser; NVG.irLight = !!o.irLight; }
 } catch (e) { /* defaults */ }
 function nvgSave() { try { localStorage.setItem(NVG.key, JSON.stringify({ v: 1, owned: NVG.owned, worn: NVG.worn, phos: NVG.phos, irLaser: NVG.irLaser, irLight: NVG.irLight })); } catch (e) { /* this visit only */ } }
-const nvgIr = (kind) => NVG.on && (kind === 'laser' ? NVG.irLaser : NVG.irLight);
+const nvgIr = (kind) => NVG.on && NVG.owned && (kind === 'laser' ? NVG.irLaser : NVG.irLight);   // IR modes only with night vision you own (a saved IR mode without it read as a dead laser)
 const nvgOnShelf = () => NVG.on && NVG.owned && !NVG.worn;
 const nvgEase = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 // The auto gain the tube wants: scene light (room estimate), light at your eyes (lux), flash (cd / m^2), a flashbang's white-out.
@@ -32529,7 +32530,7 @@ function nvgGain(d) {
 }
 // IR weapon light: the same flashlight (no light added or removed), dark to the eye, a flood to the tubes.
 function nvgBeam() {
-  if (!NVG.irLight) { if (NVG.beamIr) { NVG.beamIr = false; setFlashlight(flashlightOn); } return; }
+  if (!NVG.irLight || !NVG.owned) { if (NVG.beamIr) { NVG.beamIr = false; setFlashlight(flashlightOn); } return; }
   NVG.beamIr = true;
   const k = NVG.view ? NVG_C.irLight : 0;
   if (flashlightOn) {
@@ -32543,7 +32544,7 @@ function nvgBeam() {
 }
 // laserCast: an IR laser draws nothing unless the tubes are down (and casts no ray).
 function nvgLaserHide(S) {
-  if (!NVG.irLaser || NVG.view) return false;
+  if (!NVG.irLaser || !NVG.owned || NVG.view) return false;
   S.dot.visible = S.beam.visible = false;
   return true;
 }
@@ -32554,7 +32555,7 @@ function nvgLaserLook() {
   const key = (NVG.view ? 1 : 0) | (NVG.irLaser ? 2 : 0) | (NVG.phos === 'white' ? 4 : 0);
   if (key === NVG.lzKey) return;
   NVG.lzKey = key;
-  const v = NVG.view, ir = NVG.irLaser;
+  const v = NVG.view, ir = NVG.irLaser && NVG.owned;
   for (let i = 0; i < L.length; i++) {
     const S = L[i], o = S.nvg0 || (S.nvg0 = { dot: S.dot.material, col: null, base: 0, max: 0 });
     if (v && !NVG.dotMat) NVG.dotMat = o.dot.clone();             // same features: same program
@@ -32574,7 +32575,7 @@ function nvgLaserLook() {
 // A lit IR light's lens is dark to the eye. Hand guns every frame, every gun twice a second (and on every change).
 function nvgLens(it) {
   if (!it || !it.lens || !it.on || !WM.lensOn) return;
-  const want = NVG.irLight && !NVG.view ? WM.lensOff : WM.lensOn;
+  const want = NVG.irLight && NVG.owned && !NVG.view ? WM.lensOff : WM.lensOn;
   if (it.lens.material !== want) it.lens.material = want;
 }
 function nvgEachLight(g) {
@@ -32590,7 +32591,7 @@ function nvgLenses(d) {
 
 /* --- IR mode: a long press on the device's own switch, held T / F on a computer, or the store --- */
 function nvgModeHold(kind, g, ent, hand) {
-  if (!NVG.on || !g) return;
+  if (!NVG.on || !g || !NVG.owned) return;                          // no night vision: a long press is just a press (the laser stays visible red)
   if (kind === 'laser') {
     if (!(ent ? ent.it.on : g.laserOn)) toggleGunLaser(g, ent);    // the press switched it off: a hold leaves it on
     NVG.irLaser = !NVG.irLaser;
@@ -32602,9 +32603,30 @@ function nvgModeHold(kind, g, ent, hand) {
   nvgModeChanged();
   if (hand) pulse(hand, 0.55, 35);                                  // a firmer detent than the press
   if (!btnSfx('sel')) sfx('selector');
-  toast(kind === 'laser' ? (NVG.irLaser ? 'Laser: IR (seen only through night vision)' : 'Laser: visible red')
-    : (NVG.irLight ? 'Weapon light: IR illuminator (seen only through night vision)' : 'Weapon light: white'), 2400);
+  const msg = kind === 'laser' ? (NVG.irLaser ? 'Laser: IR (seen only through night vision)' : 'Laser: visible red')
+    : (NVG.irLight ? 'Weapon light: IR illuminator (seen only through night vision)' : 'Weapon light: white');
+  toast(msg, 2400); vrNote(msg, 2.4);                               // the headset sees it too
 }
+/* A short message in front of your eyes in the headset (toast() is a page element the headset never shows). One canvas panel,
+ * camera child, drawn on top; made and compiled on first use. */
+const VRNOTE = { mesh: null, ctx: null, tex: null, until: 0 };
+function vrNote(text, secs = 2) {
+  if (!renderer.xr.isPresenting) return;
+  if (!VRNOTE.mesh) {
+    const cv = document.createElement('canvas'); cv.width = 640; cv.height = 96;
+    VRNOTE.ctx = cv.getContext('2d'); VRNOTE.tex = new THREE.CanvasTexture(cv); VRNOTE.tex.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.MeshBasicMaterial({ map: VRNOTE.tex, transparent: true, depthTest: false, depthWrite: false, fog: false, toneMapped: false });
+    VRNOTE.mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.06), m);
+    VRNOTE.mesh.position.set(0, -0.16, -0.85); VRNOTE.mesh.renderOrder = 100003; VRNOTE.mesh.frustumCulled = false;
+    camera.add(VRNOTE.mesh);
+  }
+  const c = VRNOTE.ctx; c.clearRect(0, 0, 640, 96);
+  c.fillStyle = 'rgba(8,10,12,0.85)'; c.fillRect(0, 0, 640, 96);
+  c.fillStyle = '#ece8de'; c.font = '600 30px "Inter", sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'center';
+  c.fillText(String(text).slice(0, 48), 320, 48);
+  VRNOTE.tex.needsUpdate = true; VRNOTE.mesh.visible = true; VRNOTE.until = performance.now() / 1000 + secs;
+}
+function vrNoteTick() { if (VRNOTE.mesh && VRNOTE.mesh.visible && (!renderer.xr.isPresenting || performance.now() / 1000 > VRNOTE.until)) VRNOTE.mesh.visible = false; }
 function nvgModeChanged() { nvgSave(); NVG.lzKey = -1; nvgLensSweep(); WORKSHOP.dirty = true; }
 function nvgKeys(now) {
   const C = NVG_C;
@@ -32620,7 +32642,7 @@ function nvgSwitchHold(vh, k, S) {
   const H = vh.nvgSw && vh.nvgSw[k];
   if (!H || !H.g) return;
   if (S.g !== H.g || S.laser !== H.laser || S.ent !== H.ent || S.z > CONFIG.vrInput.button.rearm) { H.g = null; return; }
-  if (wnow() - H.t < NVG_C.hold) return;
+  if (wnow() - H.t < Math.max(NVG_C.hold, 1.5)) return;           // headset: 1.5 s (a fingertip resting on the pad after a press used to flip it to IR)
   const g = H.g; H.g = null;
   nvgModeHold(H.laser ? 'laser' : 'light', g, H.ent, vh);
 }
