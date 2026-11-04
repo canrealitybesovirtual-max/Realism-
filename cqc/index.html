@@ -19020,6 +19020,9 @@ function foreignGrip(g, own) {
   g.def = Object.assign(Object.create(Object.getPrototypeOf(g.def)), g.def, { vfg });
   g.wr = Object.assign({}, g.wr, { vfg: new THREE.Vector3(vfg[0] - pm[0], vfg[1] - pm[1], vfg[2] - pm[2]) });
 }
+// QA fix: the inertia factors of added parts are capped (a pistol with every bench part and a six-can chain took 650x
+// longer to aim and swayed 2000x, which threw the held gun metres out of the hand).
+const FX_CAP = { ads: 2.5, sway: 3, aim: 2.5, climb: 0.3 };
 function foreignFx(g, own) {
   foreignGrip(g, own);
   if (!g || !g.prop) return;
@@ -19038,7 +19041,7 @@ function foreignFx(g, own) {
     m += pm; I += pm * L * L;
   }
   const Lg = Math.max(0.08, -((d.muzzle && d.muzzle[2]) || -0.2)), r = I / ((d.mass || 1) * Lg * Lg / 4);
-  const k = M0 / (M0 + m), N = { m, kick: k, climb: 1 / (1 + 0.1 * r), dkick: k, sway: 1 + 0.09 * r, aim: 1 + 0.05 * r, ads: 1 + 0.07 * r };
+  const C = FX_CAP, k = M0 / (M0 + m), N = { m, kick: k, climb: Math.max(C.climb, 1 / (1 + 0.1 * r)), dkick: k, sway: Math.min(C.sway, 1 + 0.09 * r), aim: Math.min(C.aim, 1 + 0.05 * r), ads: Math.min(C.ads, 1 + 0.07 * r) };
   A.mass = (A.mass || 0) + m; for (const q of ['kick', 'climb', 'dkick', 'sway', 'aim', 'ads']) A[q] = (A[q] ?? 1) * N[q];
   g._ffx = N;
 }
@@ -42287,7 +42290,7 @@ function muzState(g) {
 // Effects of the chain on out (g.afx). On the Glock the first device is GLOCK_FX already (g17GunIds).
 function muzFx(g, chain, out) {
   const d = g.def, glock = g.type === 'g17' && G17A.ready, akm = g.type === 'akmn' && AKMA.ready, root = g.prop.root;
-  let M = (d.mass || 1) + out.mass, I = 0, gas = false, cans = 0;
+  let M = (d.mass || 1) + out.mass, I = 0, gas = false, cans = 0, rS = 0;   // rS: the chain's inertia over the gun's (summed, applied once)
   const Lm = Math.max(0.08, -muzBase(g, _mzB).z), Ig = (d.mass || 1) * Lm * Lm / 4;   // the gun's own inertia about the grip, roughly
   root.updateMatrixWorld(true);
   chain.forEach((p, i) => {
@@ -42297,8 +42300,8 @@ function muzFx(g, chain, out) {
       p.root.updateMatrixWorld(true); _mzI.copy(root.matrixWorld).invert();
       const lever = Math.max(0.03, -(_mzV.set(0, 0, F.tip / 2).applyMatrix4(p.root.matrixWorld).applyMatrix4(_mzI).z)), Ii = D.m * lever * lever, r = Ii / Ig;
       out.mass += D.m; I += Ii;
-      out.ads *= 1 + 0.07 * r; out.sway *= 1 + 0.09 * r; out.aim *= 1 + 0.05 * r;
-      out.kick *= M / (M + D.m); out.climb *= 1 / (1 + 0.1 * r); M += D.m;
+      rS += r;
+      out.kick *= M / (M + D.m); M += D.m;
       if (it.sub === 'comp' || D.vent) {                            // vents only with nothing gassy behind it (step 102: the AKM's comp too)
         const k = gas ? 0.2 : 1;
         out.climb *= 1 - 0.3 * k; out.kick *= 1 - 0.07 * k; out.dkick *= 1 - 0.25 * k;
@@ -42308,6 +42311,7 @@ function muzFx(g, chain, out) {
     }
     if (can || it.sub === 'comp' || it.sub === 'fh' || D.vent) gas = true;
   });
+  if (rS > 0) { const C = FX_CAP; out.ads *= Math.min(C.ads, 1 + 0.07 * rS); out.sway *= Math.min(C.sway, 1 + 0.09 * rS); out.aim *= Math.min(C.aim, 1 + 0.05 * rS); out.climb *= Math.max(C.climb, 1 / (1 + 0.1 * rS)); }
   if (g.muzCompLast) out.flash *= 0.5;                              // a comp after a can: little gas left to burn
   out.lag = Math.min(MUZ.lagMax, (out.lag || 0) + GLOCK_FX_VR.k * I);
   return out;
