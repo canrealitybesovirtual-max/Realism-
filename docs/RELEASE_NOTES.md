@@ -37,7 +37,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 ## Features
 - An endless building streamed room by room (warehouse, storage, records, office, plant room, lockers, stairwells, a long range for the AWM), day or night.
 - Squad AI: roles, suppression, flanking, hearing, morale, surrender (keep him covered, then tie his hands).
-- Five player guns in the safe room's gun locker: Glock 17, M1911, AKM, M4A1-S, AWM. Real handling: chamber, magazines, press checks, slides and bolts that lock open on the last round (pistols, M4A1-S, AWM; the AKM closes), recoil, ballistics with penetration through drywall and doors.
+- Six player guns in the safe room's gun locker: Glock 17, Beretta 92X, M1911, AKM, M4A1-S, AWM. Real handling: chamber, magazines, press checks, slides and bolts that lock open on the last round (pistols, M4A1-S, AWM; the AKM closes), recoil, ballistics with penetration through drywall and doors.
 - Gunsmith: buy parts with banked points (optics, suppressors and muzzle chains, lights, lasers, grips, stocks, magazines, rails), fit them at the vise or from the store, see the build turn in the live BUILD view, and paint guns in solid finishes or camos.
 - Extended magazines and the Glock's auto sear are store parts (FIT / REMOVE on the gun's page; no more bench cards); a switchable LED lamp over the gunsmith vise; weapon lights now throw like a real X300 (useful at 30-50 m in the long range).
 - Fitted attachments (lights, lasers, optics, cans, stocks, grips) stop on walls and push or stop door leaves like the gun itself; a loose part held or thrown hits doors and walls with a knock (`?attclip=off` = old behaviour).
@@ -56,6 +56,7 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 - The Studio office: `/__studio/session` returns 404 on a static host (expected).
 
 ## Credits
+- Beretta 92X model: "Beretta 92X - 9mm Pistol" by KaL-ABIZZARE, CC-BY-4.0 (https://creativecommons.org/licenses/by/4.0/).
 - three.js (MIT), Rapier (Apache-2.0), fonts (SIL Open Font License).
 - Sound effects from freesound.org (licences being confirmed; CC-BY sounds will be credited here): 841313 takareads, 874593 samrad20, 812821 beyercreative, 90967 department64, 402791, 675008, 677160, 855656 serutonin-deprivd, 142892 ceremonialchapstick, 184438 capslok, 762911 ienba, 369604 evanboyerman, 121765 / 121766 kno-sfx, 486226 ruben_uitenweerde, 174058 pjkasinski3, 395541 alayan, 712564 newlocknew, 528808 garuda1982, 161622 ryanconway, 172334 knova.
 - Interstate radio: royalty-free tracks (artists listed in `interstate/radio/radio.json` and the game's Credits page).

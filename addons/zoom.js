@@ -5,10 +5,9 @@
 // - Wraps the engine's desktop controller: desk.update (pose) and targets.computer.physicalKey (walk keys).
 //   On the computer the mouse drives the screen's own cursor, not a ray, so clicks land the same.
 // - VR is untouched: nothing runs while presenting, and entering VR snaps the camera back.
-// - UI Settings switch "Zoom to the computer screen" (key zoomScreen, default on); ?zoom=off disables it.
+// - UI Settings switch "Zoom to the computer screen" (key zoomScreen, default on).
 (function () {
   "use strict";
-  if (/[?&]zoom=off\b/.test(location.search)) { window.__studioZoom = { off: true }; return; }
 
   var DUR = 0.4, MAX_FOV = 40, MARGIN = 1.04;
   var WALK = { KeyW: 1, KeyA: 1, KeyS: 1, KeyD: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 };

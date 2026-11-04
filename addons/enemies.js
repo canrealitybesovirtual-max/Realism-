@@ -213,7 +213,6 @@
       p.y = floorAt(p.x, p.z);
       return { p: p, yaw: Math.atan2(head.x - p.x, head.z - p.z) };
     }
-    var nextLook = 0;
     api.spawn = function (look, pos, yaw) {
       if (!look || !LOOKS[look]) look = "soldier";
       if (api.list.length >= MAX) { if (S.log) S.log.warn("Enemy limit: " + MAX + " in the room. Remove some first."); return Promise.resolve(null); }
