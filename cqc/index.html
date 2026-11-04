@@ -8368,6 +8368,7 @@ function updateStreaming() {
     weaponsEnterRoom(here);
     loopEnterRoom(here);               // step 9: bank in the safe room, start a combat room's clock
   }
+  if (YARD && YARD.again) yardSafeEnter(stream.current);          // outdoor start: a new run after a respawn starts outside again
 
   // Floating origin: far from (0, 0), shift the whole world back.
   headWorld(_sh);
@@ -25518,6 +25519,7 @@ function respawnPlayer() {
   if (!safe && nowR - playerState.waitFrom < 8) { playerState.deadT = 2.2; return; }   // still building: stay down (screen dark) and try next frame, 8 s at most
   playerState.waitFrom = 0;
   if (safe) stream.frontier = Math.min(stream.frontier, safe.slot + CONFIG.stream.safeBehind);
+  if (safe) yardRespawned();                                       // outdoor start: the next door leads outside again
   if (safe) {
     for (const h of [deskHand, ...vrHands]) if (h && h.prop && !gunOf(h)) release(h, new THREE.Vector3());
     // Respawn fix: only x and z were moved, so dying on another floor (a U-turn wing runs over / under the last; the
@@ -46656,7 +46658,7 @@ function yardMode() {
 }
 function yardModeNow() { return yardState().mode; }
 function yardState() {
-  if (!YARD) YARD = { mode: yardMode(), built: false, room: null, mats: null, tex: null, env: null, envOld: null, sky: null, lampsL: [], lampsW: [], prev: null, rain: null, camFar: 0 };
+  if (!YARD) YARD = { mode: yardMode(), base: 1, built: false, room: null, mats: null, tex: null, env: null, envOld: null, sky: null, lampsL: [], lampsW: [], prev: null, rain: null, camFar: 0 };
   return YARD;
 }
 function yardRegister() {
@@ -46668,17 +46670,28 @@ function yardRegister() {
 // roomPlan hook: slot 1 the yard, slot 2 a stairwell down into the block (OUTDOOR + CQC).
 function yardPlanAt(s, wing, k, level0) {
   const mode = yardModeNow();
-  if (mode === 'cqc' || s > 2 || s < 1) return null;
+  const b = yardState().base;                                     // the yard's slot: 1, or the slot after the safe room it was chosen in
+  if (mode === 'cqc' || s > b + 1 || s < b) return null;
   yardRegister();
-  if (s === 1) return { slot: 1, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` };
+  if (s === b) return { slot: s, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` };
   if (mode !== 'outdoor' || !CONFIG.stairs.on) return null;
   const SC = CONFIG.stairs, dir = level0 - 1 >= SC.levels[0] ? -1 : 1;
-  return { slot: 2, wing, k, type: 'stair', dir, entryLevel: level0, level: level0 + dir, number: `${wing.letter}-${floorDigit(level0)}00` };
+  return { slot: s, wing, k, type: 'stair', dir, entryLevel: level0, level: level0 + dir, number: `${wing.letter}-${floorDigit(level0)}00` };
 }
 function yardParams(i, plan) {
   return { w: YC.w, d: YC.d, h: YC.h, entryX: YC.entryX, exitX: YC.exitX, seed: (roomSeed(i) ^ 0x17F00D) >>> 0, plan, officeSide: 0 };
 }
-const yardStop = (s) => yardModeNow() === 'outonly' && s >= 2;   // updateStreaming: nothing past the yard
+// A respawn (death or restart) starts a new run: with an outdoor start chosen, the door out of that safe room leads to the yard.
+function yardRespawned() { const Y = yardState(); if (Y.mode !== 'cqc') Y.again = true; }
+function yardSafeEnter(here) {
+  const Y = yardState();
+  if (!here || here.kind !== 'safe') return;
+  Y.again = false;
+  if (Y.mode === 'cqc') return;
+  const p = _plans[here.slot + 1]; if (p && p.type === 'yard') return;
+  yardReplan(Y.mode);
+}
+const yardStop = (s) => yardModeNow() === 'outonly' && s >= yardState().base + 1;   // updateStreaming: nothing past the yard
 // The start choice. Re-plans slot 1 on (before you have walked into it).
 function yardSetMode(m) {
   if (!YC.modes.includes(m)) return;
@@ -46687,24 +46700,28 @@ function yardSetMode(m) {
   const ok = yardReplan(m);
   if (ok) Y.mode = m;
   yardUiSync();
-  toast(ok ? `Start: ${YC.label[m]}` : `Start: ${YC.label[m]}. Applies from the first safe room: reload the game`, 2600);
+  toast(ok ? `Start: ${YC.label[m]}` : `Start: ${YC.label[m]}. Choose it in a safe room before the next fight`, 2600);
 }
 function yardReplan(m) {
+  const Y = yardState();
   if (!stream.current) {                                          // still loading
     if (stream.rooms.size || stream.building || stream.ready.length) return false;
-    yardState().mode = m; _plans.length = 1; _facing.length = 2; _paramCache.clear(); anchors.length = 0; anchorY.length = 0;
+    Y.mode = m; Y.base = 1; _plans.length = 1; _facing.length = 2; _paramCache.clear(); anchors.length = 0; anchorY.length = 0;
     return true;
   }
-  if (stream.current.slot !== 0 || stream.frontier > 0) return false;
-  for (const r of stream.rooms.values()) if (r.slot >= 1 && r.enemies && r.enemies.some((e) => e.engaged || e.dead)) return false;
-  if (stream.building && stream.building.slot >= 1) { try { unloadRoom(stream.building); } catch (e) { /* half built */ } stream.building = null; }
-  for (let i = stream.ready.length - 1; i >= 0; i--) if (stream.ready[i].slot >= 1) { try { unloadRoom(stream.ready[i]); } catch (e) { /* */ } stream.ready.splice(i, 1); }
-  for (const r of [...stream.rooms.values()]) if (r.slot >= 1 && r.kind !== 'safe') unloadRoom(r);
-  yardState().mode = m;
-  _plans.length = 1; _facing.length = 2;
-  for (const k of [..._paramCache.keys()]) if (k >= 1) _paramCache.delete(k);
-  anchors.length = Math.min(anchors.length, 1); anchorY.length = Math.min(anchorY.length, 1);
-  for (const k of [...roomMemory.keys()]) { const n = +k.split(':')[1]; if (n >= 1 && !k.startsWith('safe')) roomMemory.delete(k); }
+  // From any safe room (the first one, after a restart, or later in a run): the room past its door is planned again.
+  const cur = stream.current;
+  if (cur.kind !== 'safe' || stream.frontier > cur.slot + CONFIG.stream.safeBehind) return false;
+  const s = cur.slot + 1;
+  for (const r of stream.rooms.values()) if (r.slot >= s && r.enemies && r.enemies.some((e) => e.engaged || e.dead)) return false;   // a fight ahead already started
+  if (stream.building && stream.building.slot >= s) { try { unloadRoom(stream.building); } catch (e) { /* half built */ } stream.building = null; }
+  for (let i = stream.ready.length - 1; i >= 0; i--) if (stream.ready[i].slot >= s) { try { unloadRoom(stream.ready[i]); } catch (e) { /* */ } stream.ready.splice(i, 1); }
+  for (const r of [...stream.rooms.values()]) if (r.slot >= s && r.kind !== 'safe') unloadRoom(r);
+  Y.mode = m; Y.base = s;
+  _plans.length = Math.min(_plans.length, s); _facing.length = Math.min(_facing.length, s + 1);
+  for (const k of [..._paramCache.keys()]) if (k >= s) _paramCache.delete(k);
+  anchors.length = Math.min(anchors.length, s); anchorY.length = Math.min(anchorY.length, s);
+  for (const k of [...roomMemory.keys()]) { const n = +k.split(':')[1]; if (n >= s && !k.startsWith('safe')) roomMemory.delete(k); }
   return true;
 }
 
