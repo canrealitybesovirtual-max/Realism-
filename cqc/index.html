@@ -25045,6 +25045,7 @@ function enemyThink(e, dt, now) {
       e.aimT = 0.08; e.crouchT = 0.6; e.peekT = 0;
       break;
     case 'idle':
+      if (e.room.yard && yardIdle(e, dt)) break;                 // outdoor start: patrols, sentries looking round, the sniper's sweep
       e.crouchT = 0; e.aimT = 0; e.peekT = 0;
       e.idleT -= dt;
       if (e.idleT <= 0) { e.idleT = rnd2(2.5, 6); e.idleYaw = e.homeYaw + rnd2(-0.7, 0.7); }
@@ -25155,17 +25156,17 @@ function enemyHunt(e) {
  * ------------------------------------------------------------------------- */
 const _mv = new THREE.Vector2(), _mp = { x: 0, z: 0 };
 function enemyMove(e, dt) {
-  if (e.stairHold) { e.pos.copy(e.home); e.vel.set(0, 0); e.speed = 0; e.path = null; return; }   // stairwell man: holds his spot on the top half, turns and shoots
+  if (e.stairHold) { e.pos.copy(e.home); e.vel.set(0, 0); e.speed = 0; e.path = null; enemyFace(e, dt); return; }   // he still turns (the tower sniper's sweep, turning to you)   // stairwell man: holds his spot on the top half, turns and shoots
   const C = CONFIG.enemy;
   let tx, tz, maxV;
-  if ((e.state === 'move' || e.state === 'hunt' || e.state === 'search') && e.path && e.pathI < e.path.length) {
+  if ((e.state === 'move' || e.state === 'hunt' || e.state === 'search' || (e.state === 'idle' && e.yardRole)) && e.path && e.pathI < e.path.length) {
     const wp = e.path[e.pathI];
     if (Math.hypot(wp.x - e.pos.x, wp.y - e.pos.y) < 0.18) e.pathI++;
     const w2 = e.path[Math.min(e.pathI, e.path.length - 1)];
     tx = w2.x; tz = w2.y;
     // step 11: a push slows to a walk (gun up) for the last few metres; a search is a careful walk
     maxV = e.state === 'move' ? (e.intent === 'push' && Math.hypot(e.lastKnown.x - e.pos.x, e.lastKnown.z - e.pos.y) < 3.5 ? C.walk : C.run)
-      : e.state === 'search' ? C.walk * 0.85 : C.walk;
+      : e.state === 'search' ? C.walk * 0.85 : e.state === 'idle' ? C.walk * 0.55 : C.walk;   // a patrol is a slow walk
     _mv.set(tx - e.pos.x, tz - e.pos.y);
     const L = _mv.length();
     if (L > 1e-4) _mv.multiplyScalar(Math.min(maxV, L * 6 + 0.3) / L);
@@ -25206,9 +25207,13 @@ function enemyMove(e, dt) {
     resolveBody(P);
     rig.position.x += P.x - _ev.h.x; rig.position.z += P.z - _ev.h.z;
   }
+  enemyFace(e, dt);
+}
+function enemyFace(e, dt) {   // facing (shared with the stair / tower men, who hold their spot but still turn)
+  const C = CONFIG.enemy;
   // Facing: where he walks when running, otherwise toward the threat (or his post when idle).
   let want = e.yaw;
-  if (e.state === 'idle') want = e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;
+  if (e.state === 'idle') want = e.yardRole && e.path && e.speed > 0.25 ? Math.atan2(-e.vel.x, -e.vel.y) : e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;   // a patrol faces where he walks
   else if ((e.state === 'move' || e.state === 'hunt') && e.speed > 0.6 && !e.visible) want = Math.atan2(-e.vel.x, -e.vel.y);
   else if (e.hasKnown || e.los || e.watch) { threatLocal(e, _ev.c); want = Math.atan2(-(_ev.c.x - e.pos.x), -(_ev.c.z - e.pos.y)); }
   if (e.state === 'flashed') want = (e.flashYaw ?? e.yaw) + Math.sin(wnow() * 1000 / 650 + (e.idx || 0)) * 0.45;   // step 23: turned away from it
@@ -27662,9 +27667,9 @@ function loopEnemyDied(e) {
     m.morale = Math.max(0, m.morale - CONFIG.ai.morale.mateDown * (1 - m.aggr * 0.5));   // step 11: shaken, unless he's the pushy kind
     m.aggr = clamp(m.aggr + 0.1);
     m.suppress = Math.min(3, m.suppress + 1);
-    if (!m.engaged) m.heard = true;
+    if (!m.engaged && (!e.room.yard || Math.hypot(m.pos.x - e.pos.x, m.pos.y - e.pos.y) < 10)) m.heard = true;   // outdoors only the men close by hear him drop; the rest find him (yardBodyCheck) or hear the shot
   }
-  aiManDown(e);                                   // step 11: "man down" on the radio
+  if (!e.room.yard || (e.room.enemies || []).some((m) => m !== e && !m.dead && m.engaged)) aiManDown(e);   // outdoors no 'man down' call from a quiet kill                                   // step 11: "man down" on the radio
   const plan = roomMem(e.room).plan;
   if (plan && !plan.cleared && plan.dead.every(Boolean)) loopRoomCleared(e.room, plan);
   loopUi();
@@ -48237,7 +48242,65 @@ function yardBoltTick(e, now) {
     e.boltPh = 0; e.boltAt = 0;
   }
 }
+// Unengaged yard men (from the 'idle' case): roles from the plan index (0 = the tower sniper; 1 and 3 hold the block door
+// as sentries; the rest patrol). Sniper: a slow sweep across the yard. Sentry: looks round his post, turning up to ~90 deg
+// either way every 3-7 s. Patrol: walks (slowly, gun low) to a ground point 6-22 m off within 16 m of his post, stops
+// 3-8 s and looks round, then the next; facing where he walks. Engaged men leave this (other states).
+function yardIdle(e, dt) {
+  const role = e.yardRole;
+  if (!role) return false;
+  e.peekT = 0; e.crouchT = 0;
+  if (yardBodyCheck(e, dt)) return true;                           // a mate lying dead in view: the alarm (aiNoise -> engaged, hunts there)
+  if (role === 'sniper') { const t = wnow(); e.idleYaw = e.homeYaw + Math.sin(t * 0.21 + e.idx) * 0.95 + Math.sin(t * 0.067 + 1.3) * 0.35; e.aimT = 0.4; return true; }
+  if (role === 'sentry') {
+    e.aimT = 0; e.idleT -= dt;
+    if (e.idleT <= 0) { e.idleT = rnd2(3, 7); e.idleYaw = e.homeYaw + rnd2(-1.6, 1.6); }
+    return true;
+  }
+  e.aimT = 0.15;
+  if (e.path && e.pathI < e.path.length) { e.anchor.copy(e.pos); return true; }   // walking (enemyMove follows the path); a stop holds here
+  if (e.path) { e.path = null; e.anchor.copy(e.pos); e.idleT = rnd2(3, 8); e.idleYaw = e.yaw + rnd2(-1.2, 1.2); }
+  e.idleT -= dt;
+  if (e.idleT > 0) { if (Math.random() < dt * 0.25) e.idleYaw = e.yaw + rnd2(-1.4, 1.4); return true; }
+  const pt = yardPatrolPoint(e);
+  if (pt) { const path = findPath(e.room, e.pos.x, e.pos.y, pt[0], pt[1]); if (path && path.length) { e.path = path; e.pathI = 0; } }
+  e.idleT = rnd2(2, 4);
+  return true;
+}
+// Bodies: twice a second an unengaged yard man looks for a dead mate in front of him (within 14 m, the sniper 30 m) with a
+// clear line from his eye to the body. Found: it is reported once (m.bodyFound) and he goes to it as if he had heard you.
+const _ybd = { a: new THREE.Vector3(), b: new THREE.Vector3() };
+function yardBodyCheck(e, dt) {
+  e.bodyT = (e.bodyT || 0) - dt;
+  if (e.bodyT > 0) return false;
+  e.bodyT = 0.5;
+  const R = e.yardRole === 'sniper' ? 30 : 14, fx = -Math.sin(e.yaw + e.twist), fz = -Math.cos(e.yaw + e.twist);
+  for (const m of e.room.enemies || []) {
+    if (m === e || !m.dead || m.bodyFound || !m.B || !m.B.pelvis) continue;
+    m.B.pelvis.getWorldPosition(_ybd.b);
+    const dx = rLX(e.room, _ybd.b.x) - e.pos.x, dz = rLZ(e.room, _ybd.b.z) - e.pos.y, d = Math.hypot(dx, dz);
+    if (d > R || d < 0.3 || (fx * dx + fz * dz) / d < 0.35) continue;
+    enemyEye(e, _ybd.a); _ybd.b.y += 0.15;
+    if (!clearLine(_ybd.a, _ybd.b, 0.3)) continue;
+    m.bodyFound = true;
+    aiNoise(e, rLX(e.room, _ybd.b.x), rLZ(e.room, _ybd.b.z), 1.0);
+    return true;
+  }
+  return false;
+}
+function yardPatrolPoint(e) {
+  const r = e.room, G = navGrid(r), hw = r.w / 2, hd = r.d / 2;
+  for (let k = 0; k < 16; k++) {
+    const x = rnd2(-hw + 2, hw - 2), z = rnd2(-hd + 3, hd - 10);       // never into the safe room's doorway
+    const dMe = Math.hypot(x - e.pos.x, z - e.pos.y), dHome = Math.hypot(x - e.home.x, z - e.home.y);
+    if (dMe < 6 || dMe > 22 || dHome > 16) continue;
+    if (!navFree(G, x, z) || yardFloor(r, x, z, 0) > 0.05) continue;  // the ground only (no catwalk, tower or stairs)
+    return [x, z];
+  }
+  return null;
+}
 function yardManPlaced(e, spec, sp) {
+  e.yardRole = spec.sniper ? 'sniper' : e.idx === 1 || e.idx === 3 ? 'sentry' : 'patrol';
   e.root.traverse((o) => { if (o.isMesh) o.castShadow = false; });   // the yard's shadows are baked: men cast none (no ghost shadows)
   if (!spec.sniper) return;
   e.sniper = true; e.stairHold = true; e.stairY = sp.y; e.errK *= 0.45; e.err *= 0.45; e.reactK *= 1.3;
@@ -48311,6 +48374,7 @@ function yardTick(dt, t) {
   else if (!inY && Y.envOld) { scene.environment = Y.envOld; Y.envOld = null; }
   if (inY !== Y.wasIn) { Y.wasIn = inY; yardRainAudio(inY); }
   if (inY) { scene.environmentIntensity *= YC.envK; if (pool.fill) pool.fill.intensity *= 0.18; }
+  yardLightning(inY, dt);                                         // outdoor: distant lightning in the cloud, thunder after it
   if (Y.glint && Y.glint.visible && performance.now() - (Y.glintAt || 0) > 250) Y.glint.visible = Y.laser.visible = false;
   if (yard) {
     YU.uYTime.value = t;
@@ -48349,6 +48413,36 @@ function yardTick(dt, t) {
     }
   }
   stealthTick(dt);
+}
+// Lightning (?lightning=off): every 30-80 s a strike somewhere in the cloud: two or three flickers over ~0.3 s brighten the sky
+// and the night's reflected light (environment x up to 6, half in the headset), then thunder from its distance 1.5-7 s
+// later (a close one cracks first). It lights you up for the men too (stealthLight). No light object, no recompile.
+const YLT_ON = !/[?&]lightning=off\b/.test(location.search);
+function yardLightning(inY, dt) {
+  const Y = YARD, now = performance.now() / 1000;
+  if (!YLT_ON) return;
+  const L = Y.lt || (Y.lt = { next: now + rnd2(20, 45), seq: [], k: 0, thunder: 0, near: false });
+  if (!inY) { L.k = 0; YSKY.expo.value = YC.sky.expo; return; }
+  if (now > L.next) {
+    L.next = now + rnd2(30, 80); L.seq.length = 0;
+    const n = 2 + (Math.random() < 0.5 ? 1 : 0), dist = rnd2(0.6, 7);
+    for (let i = 0; i < n; i++) L.seq.push(now + i * rnd2(0.06, 0.14), i === 0 ? 1 : rnd2(0.35, 0.9));
+    L.thunder = now + dist; L.near = dist < 2.2; L.gain = clamp(1.4 / dist, 0.25, 1);
+  }
+  let k = 0;
+  for (let i = 0; i < L.seq.length; i += 2) { const a = now - L.seq[i]; if (a >= 0 && a < 0.6) k += L.seq[i + 1] * Math.exp(-a / 0.07); }
+  L.k = Math.min(1.5, k) * (renderer.xr.isPresenting ? 0.5 : 1);
+  YSKY.expo.value = YC.sky.expo * (1 + 9 * L.k);
+  scene.environmentIntensity *= 1 + 4 * L.k;
+  if (L.thunder && now > L.thunder) {
+    L.thunder = 0;
+    if (audio.ctx && audio.ctx.state === 'running' && audio.noise) {
+      const t = audio.ctx.currentTime;
+      if (L.near) nBurst(t, 0.5, 'bandpass', 900, 0.8, 0.18 * L.gain, 0.35, 0.7);
+      nBurst(t + (L.near ? 0.08 : 0), 4.5, 'lowpass', 140, 0.7, 0.55 * L.gain, 3.2, 0.8);
+      nBurst(t + 0.6, 3.0, 'lowpass', 70, 0.7, 0.4 * L.gain, 2.6, 0.6);
+    }
+  }
 }
 function yardRainAudio(on) {
   const A = audio.ctx;
@@ -48903,6 +48997,7 @@ function stealthLight() {
     }
     if (best >= 0 && bestE > 0.05) { const Lp = LP[best]; _st.d.set(P.x - Lp.x, P.y - Lp.y, P.z - Lp.z).normalize(); if (!clearLine(_st.b.set(Lp.x, Lp.y, Lp.z).addScaledVector(_st.d, 0.4), P, 0.3)) E -= bestE * 0.94; }
   }
+  if (YARD && YARD.lt && stream.current && stream.current.yard) E += 5 * YARD.lt.k;   // a lightning flash shows you up
   const E0 = 0.6 * STEALTH_DIFF[S.diff].light * (stream.current && stream.current.yard ? 4 : 1);   // outdoors the eye is night-adapted: a wall lamp 6 m off lights you ~0.4, not ~0.75
   return clamp(E / (E + E0));
 }
@@ -49067,7 +49162,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
   } catch (e) { /* no title */ }
 })();
 yardFogColour();                                                  // the default fog until sky/sky.json arrives
-if (window.__cqcDev) Object.assign(window.__cqcDev, { restartToSafe, respawnPlayer, playerState, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+if (window.__cqcDev) Object.assign(window.__cqcDev, { restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
