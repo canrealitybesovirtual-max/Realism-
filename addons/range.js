@@ -12,11 +12,12 @@
 //           (targets, enemy capsules). Props take the bullet's momentum.
 //   Sound   recorded shots from cqc/sounds (pistol1, ak1-5, awp1, supPistol1 style), handling takes, a room reverb indoors and a
 //           field echo outdoors; steel rings with the speed-of-sound delay.
-//   Targets  (lane, from the bench line at x 1.2): paper bullseyes (holes drawn into the paper, ring score) and AR500 plates
+//   Targets  (lane, from the shooting line at x 1.2): paper bullseyes (holes drawn into the paper, ring score) and AR500 plates
 //           that swing and ring, at 5 / 10 / 25 m and 50-300 m. The far plane is raised to 420 m when long steel is up.
 //   Part 2  ejected casings (one pooled InstancedMesh, ballistic arc, Rapier-ray bounces, brass tinks), the AWM scope
-//           (VR: picture in picture on the eyepiece; computer: full-screen scope while aiming, wheel zoom), a scoreboard by
-//           the bench (last hits, distance, ring, time of flight), guns that fall out of the world come back to the bench.
+//           (VR: picture in picture on the eyepiece; computer: full-screen scope while aiming, wheel zoom), a scoreboard in the
+//           window corner (last hits, distance, ring, time of flight), guns that fall out of the world come back to the desk.
+//   Guns lie on the office desk against the wall (muzzles to the wall, left and right of the monitor / keyboard / mouse).
 //   Not built yet: magazines as separate props (VR mag change by hand), VR racking by grabbing the slide, clays and birds,
 //           the wall rack.
 // API: window.__studioRange = { ready, types, spawn(type) -> Promise<gun>, clearGuns(), returnGuns(), setup(), resetTargets(),
@@ -77,7 +78,10 @@
     awp: { magOut: ["akMagOut2", 1.1], magIn: ["akMagIn1", 1.1], back: ["smgBoltBack", 0.8], fwd: ["smgBoltFwd", 0.8], rel: ["smgBoltFwd", 0.8] }
   };
   var HOLD = [0, -0.012, 0.02];          // the bundle's grip point (middle finger) in its held-gun frame
-  var LANE = { x: 1.2, z: -0.1 };        // the bench line in the office; targets run toward -x through the open pane
+  var LANE = { x: 1.2, z: -0.1 };        // the shooting line in the office; targets run toward -x through the open pane
+  // the office desk (bundle At: 1.6 x 0.75 m, top 0.735, centre x -0.15, back 2.5 cm off the back wall z -2.5); guns lie in the
+  // free strips beside the monitor / keyboard / desk pad (x -0.45..0.37) and the mouse
+  var DESK = { x0: -0.95, x1: 0.65, z0: -2.475, z1: -1.725, top: 0.735, strips: [[-0.93, -0.46], [0.40, 0.63]], muzzleZ: -2.455 };
   api.types = Object.keys(GUNS).map(function (k) { return { id: k, label: GUNS[k].label, cart: CART[GUNS[k].cart].label }; });
 
   waitForStudio().then(function (S) {
@@ -210,7 +214,7 @@
       ray.set(o, dir); ray.far = len; rhits.length = 0;
       if (shootables.length) ray.intersectObjects(shootables, false, rhits);
       if (rhits.length && rhits[0].distance < bestD) { best = { kind: "obj", h: rhits[0] }; bestD = rhits[0].distance; }
-      // Rapier: the room, the bench, every prop (not the gun that fired)
+      // Rapier: the room, the desk, every prop (not the gun that fired)
       if (P.world) {
         rapierRay.origin.x = o.x; rapierRay.origin.y = o.y; rapierRay.origin.z = o.z; rapierRay.dir.x = dir.x; rapierRay.dir.y = dir.y; rapierRay.dir.z = dir.z;
         var r = null;
@@ -282,7 +286,7 @@
     for (var ci = 0; ci < NC; ci++) { caseMesh.setMatrixAt(ci, ZERO); CASES.push({ on: false, rest: false, p: new V(), v: new V(), w: new V(), q: new THREE.Quaternion(), s: new V(), c: null, age: 0, bounces: 0 }); }
     root.add(caseMesh);
     var _cq = new THREE.Quaternion(), _cv = new V(), _cn = new V(), caseRay = { origin: { x: 0, y: 0, z: 0 }, dir: { x: 0, y: 0, z: 1 } };
-    function benchTop(x, z) { return Math.abs(x - LANE.x) < 0.31 && Math.abs(z - LANE.z) < 0.9 ? 0.95 : -Infinity; }
+    function deskTop(x, z) { return x > DESK.x0 && x < DESK.x1 && z > DESK.z0 && z < DESK.z1 ? DESK.top : -Infinity; }
     // out of the ejection port: right, up and a little back, plus a spread; spinning end over end
     function ejectCase(gun, live) {
       var c = CASE[gun.d.cart], k = CASES[caseI]; caseI = (caseI + 1) % NC;
@@ -304,7 +308,7 @@
       for (var i = 0; i < api.guns.length; i++) if (api.guns[i].prop && api.guns[i].prop.body === b) return false;
       return true;
     }
-    function caseGround(x, z) { return Math.max(benchTop(x, z), x < -5.7 && !groundCollider ? -50 : floorY(x)); }
+    function caseGround(x, z) { return Math.max(deskTop(x, z), x < -5.7 && !groundCollider ? -50 : floorY(x)); }
     function stepCases(dt) {
       if (!casesMoving && !casesDirty) return;
       var rays = 0;
@@ -313,7 +317,7 @@
         if (!k.rest) {
           k.age += dt; k.v.y -= 9.81 * dt;
           var len = k.v.length() * dt, hitN = null, hitD = 0;
-          // walls, the bench, props: one ray along the step while it is quick (a few a frame)
+          // walls, the desk, props: one ray along the step while it is quick (a few a frame)
           if (len > 0.004 && rays < 8 && P.world) {
             rays++;
             _cn.copy(k.v).normalize();
@@ -362,7 +366,7 @@
     }
     function tink(k, vn) {
       var now = performance.now(); if (now - tinkAt < 30) return; tinkAt = now;
-      var soft = k.p.y > 0.5 && benchTop(k.p.x, k.p.z) > 0 ? 0.55 : 1;   // on the wooden bench: duller
+      var soft = k.p.y > 0.5 && deskTop(k.p.x, k.p.z) > 0 ? 0.55 : 1;   // on the oak desk: duller
       play(tinkBuf(), k.p, { gain: Math.min(0.5, 0.08 + vn * 0.09) * soft * (k.bounces ? 0.7 : 1), rate: k.c.f * (0.9 + Math.random() * 0.2) * (soft < 1 ? 0.8 : 1), verb: 0.12, ref: 1.2, lowpass: soft < 1 ? 3500 : 0 });
     }
 
@@ -656,34 +660,44 @@
     }
 
     // ---------- spawning ----------
-    var gen = 0, SLOTS = 6, MAXGUNS = 8;
-    // the bench slot (0..5 along it) furthest from any gun lying there
-    function freeSlot() {
-      var best = 0, bestD = -1;
-      for (var i = 0; i < SLOTS; i++) {
-        var z = LANE.z - 0.75 + i * 0.3, dmin = 9;
-        for (var j = 0; j < api.guns.length; j++) { var o = api.guns[j].object.position; if (Math.abs(o.x - LANE.x) < 0.4 && o.y > 0.8 && o.y < 1.4) dmin = Math.min(dmin, Math.abs(o.z - z)); }
-        if (dmin > bestD + 0.01) { bestD = dmin; best = i; }
+    var gen = 0, MAXGUNS = 8;
+    var DESK_Q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -Math.PI / 2));   // on its right side, bore (-z) to the wall
+    function onDesk(o) { var t = o.prop.body.translation(); return t.x > DESK.x0 - 0.05 && t.x < DESK.x1 + 0.05 && t.z > DESK.z0 - 0.1 && t.z < DESK.z1 + 0.6 && t.y > DESK.top - 0.05 && t.y < DESK.top + 0.6; }
+    // lying across x the gun takes its model height (box y); a spot is the first free x in the desk strips, 1.5 cm apart
+    function deskSpot(g, others) {
+      var hw = g.T.box.getSize(_v3).y / 2, used = [];
+      for (var j = 0; j < others.length; j++) {
+        var o = others[j]; if (o === g || !o.prop || isHeld(o) || !onDesk(o)) continue;
+        var w = o.T.box.getSize(_v3).y / 2, ox = o.prop.body.translation().x; used.push([ox - w, ox + w]);
       }
-      return { i: best, free: bestD > 0.14 };
+      for (var s = 0; s < DESK.strips.length; s++) {
+        for (var x = DESK.strips[s][0] + hw; x <= DESK.strips[s][1] - hw + 1e-6; x += 0.01) {
+          var ok = true;
+          for (j = 0; j < used.length && ok; j++) if (x + hw + 0.015 > used[j][0] && x - hw - 0.015 < used[j][1]) ok = false;
+          if (ok) return { x: x, high: false };
+        }
+      }
+      return { x: (DESK.strips[0][0] + DESK.strips[0][1]) / 2, high: true };   // full: laid on top of the left pile
     }
-    function homePose(g, slot, high) {   // on the bench line, lying on its right side, muzzle down the lane
-      var half = g.T.box.getSize(_v3).multiplyScalar(0.5);
-      g.home.p.set(LANE.x + 0.05, 0.95 + half.x + 0.004 + (high ? 0.25 : 0), LANE.z - 0.75 + slot * 0.3);
-      g.home.q.setFromEuler(_eul.set(0, Math.PI / 2, -Math.PI / 2, "YXZ"));
+    // the object origin so that its box sits on the desk at x, muzzle end 2 cm off the wall
+    function homePose(g, spot) {
+      var b = g.T.box, half = b.getSize(_v3).multiplyScalar(0.5), ctr = b.getCenter(_v2);
+      g.home.q.copy(DESK_Q);
+      var off = ctr.clone().applyQuaternion(DESK_Q);
+      g.home.p.set(spot.x, DESK.top + half.x + 0.004 + (spot.high ? 0.3 : 0), DESK.muzzleZ + half.z).sub(off);
     }
     api.spawn = function (type) {
       if (!GUNS[type]) return Promise.reject(new Error("unknown gun " + type));
       if (window.__studioProps && window.__studioProps.full()) return Promise.resolve(null);
-      if (api.guns.length >= MAXGUNS) { info("The bench holds " + MAXGUNS + " guns. Put some away first."); return Promise.resolve(null); }
+      if (api.guns.length >= MAXGUNS) { info("The desk holds " + MAXGUNS + " guns. Put some away first."); return Promise.resolve(null); }
       info("Bringing out the " + GUNS[type].label + "…");
       preload(GUNS[type].snd.fam, GUNS[type].snd.shot);
       var my = gen;
       return loadType(type).then(function (T) {
         if (my !== gen || api.guns.length >= MAXGUNS) return null;   // put away while it loaded
         var g = new RangeGun(type, T), b = T.box, half = b.getSize(new V()).multiplyScalar(0.5), ctr = b.getCenter(new V());
-        var sl = freeSlot(); g.home = { p: new V(), q: new THREE.Quaternion(), slot: sl.i };
-        homePose(g, sl.i, !sl.free);
+        g.home = { p: new V(), q: new THREE.Quaternion() };
+        homePose(g, deskSpot(g, api.guns));
         g.object.position.copy(g.home.p); g.object.quaternion.copy(g.home.q);
         try { renderer.compile(g.object, camera, scene); } catch (e) {}   // programs now, not on the first frame it shows
         scene.add(g.object); g.object.updateMatrixWorld(true);
@@ -691,7 +705,7 @@
           shapes: [{ kind: "cuboid", size: [Math.max(0.008, half.x * 0.9), Math.max(0.01, half.y * 0.85), Math.max(0.02, half.z * 0.95)], offset: [ctr.x, ctr.y, ctr.z] }] });
         S.guns.push(g); api.guns.push(g);
         play("pickup" + (1 + Math.floor(Math.random() * 3)), g.object.position, { gain: 0.6 });
-        info(g.label + " is on the bench (" + g.rounds + "+1, " + CART[g.d.cart].label + "). Pick it up (E or grip).");
+        info(g.label + " is on the desk (" + g.rounds + "+1, " + CART[g.d.cart].label + "). Pick it up (E or grip).");
         return g;
       }).catch(function (e) { console.error(e); if (log) log.error("Could not load the " + GUNS[type].label + ": " + (e && e.message || e)); return null; });
     };
@@ -708,41 +722,28 @@
       if (desk && desk.held && desk.held.prop === g.prop) return true;
       return !!(XR && XR.hands && g.inHand());
     }
-    // back to its bench slot (not one in a hand): "put the guns back", or one that fell out of the world
-    function sendHome(g) {
-      homePose(g, g.home.slot, false);
-      P.teleport(g.prop, g.home.p, g.home.q); g.prop.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    // back to a free desk spot (not one in a hand): "put the guns back", or one that fell out of the world
+    function sendHome(g, others) {
+      homePose(g, deskSpot(g, others || api.guns));
+      P.teleport(g.prop, g.home.p, g.home.q); g.prop.body.setAngvel({ x: 0, y: 0, z: 0 }, true); g.prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     }
     api.returnGuns = function () {
-      var n = 0;
-      for (var i = 0; i < api.guns.length; i++) { var g = api.guns[i]; if (isHeld(g)) continue; var sl = freeSlotFor(g); g.home.slot = sl; sendHome(g); n++; }
+      var placed = [], n = 0;   // laid out again from the left, one after the other
+      for (var i = 0; i < api.guns.length; i++) { var g = api.guns[i]; if (isHeld(g)) continue; sendHome(g, placed); placed.push(g); n++; }
       return n;
     };
-    function freeSlotFor(g) {   // its own slot, unless another gun now lies there
-      var mine = g.home.slot, taken = false;
-      for (var j = 0; j < api.guns.length; j++) { var o = api.guns[j]; if (o !== g && o.home.slot === mine) taken = true; }
-      if (!taken) return mine;
-      for (var i = 0; i < SLOTS; i++) { var used = false; for (j = 0; j < api.guns.length; j++) if (api.guns[j] !== g && api.guns[j].home.slot === i) used = true; if (!used) return i; }
-      return mine;
-    }
     var recoverT = 0;
-    function recover(dt) {   // twice a second: a gun below the world (or far off it) goes back to the bench
+    function recover(dt) {   // twice a second: a gun below the world (or far off it) goes back to the desk
       recoverT += dt; if (recoverT < 0.5) return; recoverT = 0;
       for (var i = 0; i < api.guns.length; i++) {
         var g = api.guns[i], t = g.prop.body.translation();
         if (isHeld(g)) continue;
-        if (!(t.y > floorY(t.x) - 1.5) || t.y > 60 || Math.abs(t.z) > 250 || t.x < -450 || t.x > 60) { sendHome(g); info(g.label + " fell out of the world: it is back on the bench."); }
+        if (!(t.y > floorY(t.x) - 1.5) || t.y > 60 || Math.abs(t.z) > 250 || t.x < -450 || t.x > 60) { sendHome(g); info(g.label + " fell out of the world: it is back on the desk."); }
       }
     }
 
-    // ---------- the bench and the lane ----------
+    // ---------- the lane ----------
     var wood = new THREE.MeshStandardMaterial({ color: 0x8a6a48, roughness: 0.8 }), steelM = new THREE.MeshStandardMaterial({ color: 0x3a3c40, roughness: 0.55, metalness: 0.7 });
-    (function bench() {
-      var top = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.05, 1.8), wood); top.position.set(LANE.x, 0.925, LANE.z); root.add(top);
-      [-0.8, 0.8].forEach(function (dz) { var leg = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.9, 0.05), steelM); leg.position.set(LANE.x, 0.45, LANE.z + dz); root.add(leg); });
-      if (P.addStatic) P.addStatic({ center: new V(LANE.x, 0.925, LANE.z), half: new V(0.31, 0.025, 0.9) });
-      if (desk && desk.walk && desk.walk.blockers) desk.walk.blockers.push(new THREE.Box2(new THREE.Vector2(LANE.x - 0.31, LANE.z - 0.9), new THREE.Vector2(LANE.x + 0.31, LANE.z + 0.9)));
-    })();
     var groundCollider = null;
     function rangeGround() { if (groundCollider || !P.addStatic) return; groundCollider = P.addStatic({ center: new V(-212, -0.57, 0), half: new V(206.5, 0.5, 200) }); }
 
@@ -799,7 +800,7 @@
         t.w += (-9.81 / t.L * Math.sin(t.th) - 0.6 * t.w) * dt; t.th += t.w * dt;
         if (t.th > 1.3 || t.th < -1.3) { t.th = Math.max(-1.3, Math.min(1.3, t.th)); t.w *= -0.3; }   // the chains go slack: it drops back
         t.ww += (-30 * t.tw - 1.5 * t.ww) * dt; t.tw += t.ww * dt;
-        t.pivot.rotation.set(t.th, t.tw, 0);   // the group faces the bench; local x is across the lane
+        t.pivot.rotation.set(t.th, t.tw, 0);   // the group faces the shooting line; local x is across the lane
       }
     }
     api.setup = function () {
@@ -826,7 +827,7 @@
       var list = api.types.map(function (t) { return { name: "range " + t.id, label: t.label, group: "Range", info: t.cart, tint: "#3b3d42", act: function () { api.spawn(t.id); } }; });
       list.push({ name: "range setup", label: "Set up targets", group: "Range", info: "paper + steel, 5-300 m", tint: "#6b5a3a", act: api.setup });
       list.push({ name: "range reset", label: "Reset targets", group: "Range", info: api.score().slice(0, 40), tint: "#4a4f5a", act: api.resetTargets });
-      list.push({ name: "range return", label: "Guns back on the bench", group: "Range", info: api.guns.length + " out", tint: "#4a4f5a", act: api.returnGuns });
+      list.push({ name: "range return", label: "Guns back on the desk", group: "Range", info: api.guns.length + " out", tint: "#4a4f5a", act: api.returnGuns });
       list.push({ name: "range clear", label: "Put the guns away", group: "Range", info: api.guns.length + " out", tint: "#7a2a2a", act: api.clearGuns });
       return list;
     };
@@ -875,7 +876,7 @@
     addEventListener("pagehide", deskScopeOff);
     if (renderer.xr.addEventListener) renderer.xr.addEventListener("sessionstart", deskScopeOff);
 
-    // ---------- scoreboard: a canvas board left of the lane, ahead of the bench, redrawn only when a shot or hit changes it ----------
+    // ---------- scoreboard: a canvas board in the back corner by the west windows, redrawn only when a shot or hit changes it ----------
     var board = (function () {
       var c = document.createElement("canvas"); c.width = 640; c.height = 400;
       var tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
@@ -885,7 +886,8 @@
       var post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1.26, 0.04), steelM); post.position.set(0, -0.9, -0.02);
       var foot = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.02, 0.3), steelM); foot.position.set(0, -1.46, -0.02);
       g.add(face, back, post, foot);
-      g.position.set(LANE.x - 0.6, 1.47, LANE.z + 1.1); g.rotation.y = 2.31;   // left of the lane ahead of the bench, turned to the shooter
+      // corner of the west glazing wall (x -2.2) and the back wall (z -2.5), clear of the lane; face turned into the room, to the shooting line
+      g.position.set(-1.92, 1.47, -2.22); g.rotation.y = Math.atan2(LANE.x + 1.92, LANE.z + 2.22);
       face.raycast = back.raycast = post.raycast = foot.raycast = function () {};
       root.add(g);
       var ver = -1;
@@ -916,7 +918,7 @@
       return { group: g, tick: function () { if (ver !== stats.ver) { ver = stats.ver; draw(); } } };
     })();
 
-    // a gun in the computer's hand follows the view; pointed at the bench or a wall it used to jam there until the engine
+    // a gun in the computer's hand follows the view; pointed at the desk or a wall it used to jam there until the engine
     // let go of it (hold error > 0.45 m). While held there it passes through the room (it still pushes props).
     var GROUPS_PROP = (2 << 16) | 3, GROUPS_HELD = (2 << 16) | 2;
     function ghost(g, on) {
@@ -948,7 +950,7 @@
         recover(dt); board.tick();
       }
     });
-    try { renderer.compile(root, camera, scene); } catch (e) {}   // bench, board, casings, holes, dust: compiled now
+    try { renderer.compile(root, camera, scene); } catch (e) {}   // board, casings, holes, dust: compiled now
 
     // ---------- commands ----------
     var GUNWORD = { glock: "g17", "glock 17": "g17", pistol: "g17", "1911": "m1911", m1911: "m1911", colt: "m1911", akm: "akmn", ak: "akmn", ak47: "akmn", "ak-47": "akmn", kalashnikov: "akmn",

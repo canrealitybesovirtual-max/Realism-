@@ -2649,7 +2649,7 @@ const CONFIG = {
       bodyFoley: 1,                           // step 86: his posture: knee down, coming up, pivots on the spot (gain, 0 = off)
       acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
-      doors: { on: true, gain: 1, creak: 1, creakShare: 0.45 },   // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before. Step 88: creak = hinge creak gain while a leaf swings (0 = off, ?creak=off), creakShare = the share of doors that creak (fixed per door)
+      doors: { on: true, gain: 0.5, creak: 1, creakShare: 0.45 },   // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before. Step 88: creak = hinge creak gain while a leaf swings (0 = off, ?creak=off), creakShare = the share of doors that creak (fixed per door)
       knocks: { on: true, gain: 1, minDv: 0.6 },   // step 86: props landing / bumping / falling over make a sound by material and mass (minDv m/s lost in a frame; on false = silent as before)
       handlingRec: { on: true, gain: 1, his: 0.8, sup: 1, buy: 1, pick: 1, cloth: 1 },   // step 99: recorded magazine / handle / suppressed shot / purchase / item pick-up / coat rustle sounds (gains; his = his reloads, 0 = silent; on false or ?hrec=off = the step 87 / 86 synth)
       foley: { brass: 1, mech: 1, drops: 1, kit: 0 },   // step 87: gun sounds besides shots, gain per group (0 = off; all 0 or ?foley=off = shots only, as before): brass / hull landings; reload, rack, selector, dry, pump, bench clicks; dropped mags, guns, nades, shells, parts; holster / pouch / handle (synth only, so off)
@@ -2828,6 +2828,7 @@ const CONFIG = {
     core: 0.2,                 // m, the wall between the two flights of the switchback (step 18)
     pad: 1.1,                  // m of flat floor beyond the foot of flight 1 / the top of flight 2 (step 18)
     guard: 1.0,                // m, guard height of the balustrades and the core wall above the floor it protects
+    men: 0.5, men2: 0.3,       // a stairwell's chance of a man on its top half (landing / top pad), and of a second one
     emptyChance: 0.25,         // the room after a stairwell: chance it is empty (step 16.2)
     extraChance: 0.3,          // ...and chance it holds one man more than planned
     landing: 1.35,             // m, depth of the corridor along each door wall (step 18); the doors swing over them
@@ -15773,7 +15774,7 @@ function fireGun(g, now) {
     pool.muzzle.intensity = pool.muzzleI;
     pool.muzzleT = pool.muzzleT0 = 0.045;
   }
-  if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.28 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
+  if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.39 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
   if (g.sup && !g.muzEnd) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
   muzzleSmoke(_wv, _fd, g.type);           // step 10
@@ -16045,7 +16046,7 @@ function fixturesRestore(room) {
 const colliderInfo = new Map();     // collider handle -> { room, kind }
 const doorByCollider = new Map();
 const roomMemory = new Map();       // `${kind}:${slot}` -> { holes: [], doorHoles: [] }
-const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;   // city zones carry their own id
+const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;
 function roomMem(room) {
   let m = roomMemory.get(memKey(room));
   if (!m) { m = { holes: [], doorHoles: [] }; roomMemory.set(memKey(room), m); }
@@ -18469,6 +18470,7 @@ function wbSpawn(room) {
     WB.jaws = [-1, 1].map((sd) => { const j = K.jaw.clone(); j.userData.sd = sd; j.position.set(WB.vise.x, WB.vise.y - 0.04, WB.vise.z + sd * WB.jawOpen); room.group.add(j); return j; });
     WB.jawW = WB.jawOpen;
     const s = K.sign.clone(); s.position.set(WB.benchX + 0.2, 1.45, 2.985); s.rotation.y = Math.PI; room.group.add(s);
+    try { wbTrays(room); } catch (e) { console.warn('bench trays not built', e); }   // a low parts bin under every table spot, labelled
   }
   // step 88: the VISE button (a new one with each safe room)
   WB.btnAt = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
@@ -18486,6 +18488,78 @@ function wbSpawn(room) {
    holster or sling). A loose one, wherever it lies, goes back to its spot. One locked on a gun left behind stays on
    that gun and gives its spot up; one whose gun is gone (its room unloaded) is dropped. Free spots get fresh parts.
    (Before: every part ever locked on a gun held its spot for good, so a gun left behind emptied the table.) */
+// Bench trays: a shallow black polymer parts bin (2 mm floor, 22 mm walls) under each table spot of every gun's
+// list, sized to the gap to its neighbours, with a small printed white-on-charcoal label strip in front naming the
+// part. Geometry per size, label textures per name (cached); the rims are static colliders on the room body so
+// a dropped part stays in its bin. The part's rest height is unchanged (it sits 2 mm into the floor of the bin).
+const TRAY = { geo: new Map(), lbl: new Map(), mat: null, lmat: null, h: 0.022, t: 0.003, f: 0.002,
+  names: { light: 'WEAPON LIGHT', laser: 'LASER', sup: 'SUPPRESSOR', ext: 'BARREL EXT.', dot: 'RED DOT', cover: 'OPTIC COVER', comp: 'COMPENSATOR', fh: 'FLASH HIDER', pl2: 'PL-2 LIGHT' } };
+function trayAll() {
+  const L = [];
+  for (const A of [WB_TABLE, WB_G17, typeof WB_AKM !== 'undefined' ? WB_AKM : [], typeof WB_M19 !== 'undefined' ? WB_M19 : [], typeof WB_M4 !== 'undefined' ? WB_M4 : [], typeof WB_AWM !== 'undefined' ? WB_AWM : []]) for (const t of A) L.push(t);
+  return L;
+}
+function trayName(t) {
+  const it = t[6] && WORKSHOP.byId && WORKSHOP.byId.get(t[6]);
+  let n = it ? it.name.replace(/\s*\(.*?\)\s*/g, ' ').trim() : TRAY.names[t[0]] || String(t[5] || t[0]);
+  if (!it && t[0] === 'sup') n = t[1] ? 'RIFLE SUPPRESSOR' : 'PISTOL SUPPRESSOR';
+  n = n.toUpperCase();
+  return n.length > 20 ? n.slice(0, 19) + '…' : n;
+}
+function trayGeo(w, d) {
+  const k = `${w.toFixed(3)}x${d.toFixed(3)}`;
+  if (TRAY.geo.has(k)) return TRAY.geo.get(k);
+  const { h, t, f } = TRAY, P = [];
+  P.push(placed(lbox(w, f, d, 0.0008), 0, f / 2, 0));
+  for (const s of [-1, 1]) {
+    P.push(placed(lbox(w, h, t, 0.001), 0, h / 2, s * (d / 2 - t / 2)));
+    P.push(placed(lbox(t, h, d - 2 * t, 0.001), s * (w / 2 - t / 2), h / 2, 0));
+  }
+  const g = mergeGeometries(P);
+  TRAY.geo.set(k, g);
+  return g;
+}
+function trayLabel(text) {
+  if (TRAY.lbl.has(text)) return TRAY.lbl.get(text);
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 64;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#26282b'; c.fillRect(0, 0, 512, 64);
+  c.fillStyle = '#e9e9e6'; c.font = '600 38px "Barlow Semi Condensed", "Arial Narrow", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(text, 256, 34, 490);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
+  const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0 });
+  TRAY.lbl.set(text, m);
+  return m;
+}
+function wbTrays(room) {
+  if (!TRAY.mat) TRAY.mat = new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.62, metalness: 0 });   // black polymer bins
+  const spots = trayAll(), y0 = 0.905, seen = [];
+  for (const t of spots) {
+    const x = t[2], z = t[3];
+    if (seen.some((q) => Math.abs(q[0] - x) < 0.02 && Math.abs(q[1] - z) < 0.02)) continue;
+    seen.push([x, z]);
+    let nx = 0.32, nz = 0.2;
+    for (const u of spots) {
+      if (u === t) continue;
+      const dx = Math.abs(u[2] - x), dz = Math.abs(u[3] - z);
+      if (dx < 0.02 && dz < 0.02) continue;
+      if (dz < 0.07) nx = Math.min(nx, dx); else if (dx < 0.1) nz = Math.min(nz, dz);
+    }
+    const big = t[0] === 'sup' || t[0] === 'm4part' || t[0] === 'awm';
+    const w = Math.max(0.06, Math.min(big ? 0.3 : 0.15, nx - 0.012)), d = Math.max(0.05, Math.min(0.12, nz - 0.03));
+    const m = mesh(trayGeo(w, d), TRAY.mat, false, true);
+    m.position.set(x, y0, z); room.group.add(m);
+    const lw = Math.min(w - 0.006, 0.12), lab = mesh(new THREE.PlaneGeometry(lw, lw / 8), trayLabel(trayName(t)), false, true);
+    lab.rotation.set(-Math.PI / 2, 0, Math.PI);                   // flat on the bench in front of the bin, read from your side (-z)
+    lab.position.set(x, y0 + 0.0012, z - d / 2 - lw / 16 - 0.004); room.group.add(lab);
+    for (const [hx, hz, cx, cz] of [[w / 2, TRAY.t / 2, 0, d / 2 - TRAY.t / 2], [w / 2, TRAY.t / 2, 0, -d / 2 + TRAY.t / 2], [TRAY.t / 2, d / 2, w / 2 - TRAY.t / 2, 0], [TRAY.t / 2, d / 2, -w / 2 + TRAY.t / 2, 0]]) {
+      const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, TRAY.h / 2, hz).setTranslation(x + cx, y0 + TRAY.h / 2, z + cz)
+        .setFriction(0.6).setRestitution(0.1).setCollisionGroups(COLL.static), room.body);
+      colliderInfo.set(col.handle, { room, kind: 'wood' });
+      room.colliderHandles.push(col.handle);
+    }
+  }
+}
 function wbCarried(g) { return !!g && !!g.prop && !g.prop.removing && (g.prop.holders.length > 0 || !!g.slot || (WB.open && WB.gun === g)); }
 function wbRestock(room = WB.room) {
   if (!room || room !== WB.room || !room.active) return 0;
@@ -19805,7 +19879,8 @@ const BLAMP = {
   gripR: 0.12,                                       // m: a VR grip squeezed this near the head or the rocker switches it   // room x, height, metres out from the front wall
   swR: 0.014,                                        // m: the rocker's touch radius (VR)
   room: null, grp: null, diff: null, diffMat: null, rocker: null, emit: null, aimO: null, light: null, pick: [], ray: null,
-  swAt: new THREE.Vector3(), v: new THREE.Vector3(), d: new THREE.Vector3()
+  swAt: new THREE.Vector3(), v: new THREE.Vector3(), d: new THREE.Vector3(),
+  held: undefined, moved: false, off: new THREE.Matrix4(), mW: new THREE.Matrix4(), mI: new THREE.Matrix4(), hp: new THREE.Vector3(), hq: new THREE.Quaternion(), one: new THREE.Vector3(1, 1, 1), shT: 0
 };
 // Load (boot, right after initLightPool): the one light, before anything compiles.
 function benchLampInit() {
@@ -19885,7 +19960,9 @@ function benchLampLook() {
 function benchLampRoom(room) {
   if (!BLAMP.on || room.kind !== 'safe' || !BLAMP.light) return;
   if (!BLAMP.grp) benchLampBuild();
-  BLAMP.grp.position.set(0, 0, room.d / 2);
+  if (!BLAMP.moved) BLAMP.grp.position.set(0, 0, room.d / 2);   // moved by you: it keeps your spot (room-local) in every safe room
+  else if (BLAMP.room && BLAMP.room !== room) BLAMP.grp.position.z += room.d / 2 - BLAMP.room.d / 2;
+  if (BLAMP.held !== undefined) BLAMP.held = undefined;
   room.group.add(BLAMP.grp);
   BLAMP.grp.updateMatrixWorld(true);
   BLAMP.room = room;
@@ -19904,6 +19981,7 @@ function benchLampTick() {
   const B = BLAMP, L = B.light;
   if (!L) return;
   const live = benchLampLive(), I = live && B.lit ? B.cd : 0;
+  if (B.held !== undefined) benchLampFollow(live);
   if (I > 0) { B.emit.getWorldPosition(L.position); B.aimO.getWorldPosition(L.target.position); }
   if (L.intensity !== I) L.intensity = I;
   if (!live || !renderer.xr.isPresenting) return;
@@ -19927,8 +20005,45 @@ function benchLampGrip(hand) {
   hand.source.getWorldPosition(B.v);
   B.emit.getWorldPosition(B.d); B.rocker.getWorldPosition(B.swAt);
   if (Math.min(B.v.distanceTo(B.d), B.v.distanceTo(B.swAt)) > B.gripR) return false;
-  benchLampToggle(hand);
+  benchLampTake(hand);                                               // grip = carry it; the rocker switches it (fingertip)
   return true;
+}
+// Movable lamp: the whole lamp (bracket, arm, head) follows the hand that took it (or a spot in front of your eyes on
+// the computer) with the turn it had, and stays where you let go; the light rides the head as before. Room-local, so
+// it keeps your spot in every safe room.
+function benchLampHandM(hand, out) {
+  const B = BLAMP;
+  if (hand) { handPose(hand, B.hp, B.hq); return out.compose(B.hp, B.hq, B.one); }
+  camera.updateMatrixWorld(); return out.copy(camera.matrixWorld);
+}
+function benchLampTake(hand) {
+  const B = BLAMP;
+  B.grp.updateMatrixWorld(true);
+  benchLampHandM(hand, B.mW);
+  if (!hand) {                                                      // computer: bring the head to 0.55 m in front of you
+    B.emit.getWorldPosition(B.v); B.mI.copy(B.mW).invert(); B.v.applyMatrix4(B.mI);
+    B.off.copy(B.mI).multiply(B.grp.matrixWorld);
+    B.off.premultiply(B.mI.makeTranslation(-B.v.x, -0.12 - B.v.y, -0.55 - B.v.z));
+  } else B.off.copy(B.mW.invert()).multiply(B.grp.matrixWorld);
+  B.held = hand; B.moved = true;
+  if (hand) pulse(hand, 0.25, 18);
+  if (!btnSfx('vise', null, 0.6)) sfx('selector');
+}
+function benchLampFollow(live) {
+  const B = BLAMP;
+  if (!live || (B.held && !renderer.xr.isPresenting)) { B.held = undefined; return; }
+  benchLampHandM(B.held, B.mW).multiply(B.off);
+  B.mI.copy(B.grp.parent.matrixWorld).invert();
+  B.mW.premultiply(B.mI).decompose(B.grp.position, B.grp.quaternion, B.v);
+  B.grp.updateMatrixWorld(true);
+  const t = performance.now() / 1000;
+  if (t - B.shT > 0.2) { B.shT = t; dirtyShadows(); }
+}
+function benchLampRelease(hand) {
+  const B = BLAMP;
+  if (B.held === undefined || B.held !== hand) return;
+  B.held = undefined; dirtyShadows();
+  if (hand) pulse(hand, 0.2, 14);
 }
 // Computer: E / click with the dot on the lamp (termDeskPress asks first).
 function benchLampDesk() {
@@ -19936,8 +20051,11 @@ function benchLampDesk() {
   if (renderer.xr.isPresenting || !benchLampLive()) return false;
   camera.getWorldPosition(B.v); camera.getWorldDirection(B.d);
   B.ray.set(B.v, B.d);
-  if (!B.ray.intersectObjects(B.pick, false).length) return false;
-  benchLampToggle(null);
+  if (B.held === null) { B.held = undefined; dirtyShadows(); if (!btnSfx('vise', null, 0.5)) sfx('selector'); return true; }   // carried: E puts it down here
+  const hit = B.ray.intersectObjects(B.pick, false)[0];
+  if (!hit) return false;
+  if (hit.object === B.rocker || hit.object === B.diff) benchLampToggle(null);   // the rocker or the diffuser: switch it
+  else { benchLampTake(null); toast('Lamp in hand: look where you want it, E to put it down', 2600); }   // the body: carry it
   return true;
 }
 if (/[?&]dev\b/.test(location.search)) window.__cqcLamp = { BLAMP, EXT, EXT_STORE, benchLampToggle, benchLampDesk, benchLampTick, benchLampGrip, extSearSet, flashlight, FLASH_BEAM, flashPeak, setFlashlight, updateLightMount };
@@ -20350,7 +20468,6 @@ function deskLightToggle() {
  *    AKM-N, AKM, M4A1-S: vm-ak.glb, one long take cut into clips (VM.rigs.ak.cut)
  *    AWP: vm-sniper.glb (the shot clip works the bolt; the real bolt cycles with it)
  *    Glock 17, M1911 (and the old M&P9, FN 509, PPK): vm-pistol2.glb (cut into clips)
- *    vm-pistol.glb, vm-makarov.glb (arms from vm-saiga.glb): loaded by nothing since step 89
  *  Sleeves take your uniform's colour. ?vm=off turns it all off.
  * ========================================================================= */
 const VM = {
@@ -20360,9 +20477,7 @@ const VM = {
     // step 89: gunNode = the pack gun's own node (your gun rides on it), magNode / boltNode = its parts your magazine / bolt follow
     ak: { file: 'vm-ak.glb', eye: [11, 23, -46], cm: true, arms: ['Object_7'], gunNode: 'ak', magNode: 'mag', cut: { fire: [0, 0.2], reloadFull: [0.2, 3.3], reloadFast: [3.3, 5.1], idle: [6.6, 7.4], draw: [7.45, 8.1] } },
     pistol2: { file: 'vm-pistol2.glb', eye: [7, 22, -22], cm: true, arms: ['Object_7'], gunNode: 'BPpistol', magNode: 'clip', cut: { fire: [0, 0.3], reloadFast: [0.3, 2.2], reloadFull: [2.2, 4.4], idle: [5.9, 6.8], draw: [6.85, 7.5] } },
-    pistol: { file: 'vm-pistol.glb', head: 'Head_Cam_014', arms: ['Object_9'], gunNode: 'PBody_058', magNode: 'Pmag_061', clips: { idle: 'Armature|FPS_Pistol_Idle', walk: 'Armature|FPS_Pistol_Walk', fire: 'Armature|FPS_Pistol_Fire', reloadFast: 'Armature|FPS_Pistol_Reload_easy', reloadFull: 'Armature|FPS_Pistol_Reload_full' } },
     sniper: { file: 'vm-sniper.glb', head: 'Camera', headPosOnly: true, arms: ['Object_9'], bolt: 0.5, gunNode: 'Body_057', magNode: 'Mag_060', boltNode: 'Bolt_059', clips: { idle: 'Rig|SRifle_Idle', walk: 'Rig|SRifle_Walk', fire: 'Rig|SRifle_Shot_nosight', reloadFast: 'Rig|SRifle_Reload', reloadFull: 'Rig|SRifle_Reload_Full' } },
-    makarov: { file: 'vm-makarov.glb', head: 'Head_Cam_014', armsFrom: { file: 'vm-saiga.glb', mesh: 'Object_9', hide: 'Object_96' }, arms: [], clips: { idle: 'Rig|MK_Idle', walk: 'Rig|MK_walk', fire: 'Rig|MK_Shot', reloadFast: 'Rig|MK_ReloadFast', reloadFull: 'Rig|MK_ReloadFull' } }
   },
   // step 89: every gun has a rig (the g17 moved to the M1911 take: life-size hands and a solved fit, VMH_FIT)
   byType: { akmn: 'ak', akm: 'ak', m4a1s: 'ak', smg: 'ak', rifle: 'ak', shotgun: 'ak', awp: 'sniper',
@@ -20398,18 +20513,6 @@ function vmLoad(key) {
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
     const L = new GLTFLoader(), g = await L.loadAsync('./models/vm/' + R.file);
     const root = g.scene, base = new THREE.Group(); base.add(root); base.matrixAutoUpdate = false;
-    if (R.armsFrom) {                                           // the same rig in another pack: bind its arms to this skeleton by bone name
-      const s = await L.loadAsync('./models/vm/' + R.armsFrom.file);
-      let arms = null; s.scene.traverse(o => { if (o.isSkinnedMesh && o.name === R.armsFrom.mesh) arms = o; });
-      const k = n => n.replace(/_\d+$/, '').replace(/\./g, ''), by = {};
-      root.traverse(o => { if (o.isBone) by[k(o.name)] = o; });
-      let host = null; root.traverse(o => { if (o.name === R.armsFrom.hide) { o.visible = false; host = o.parent; } });
-      if (arms && host) {
-        const sk = new THREE.Skeleton(arms.skeleton.bones.map(b => by[k(b.name)] || b), arms.skeleton.boneInverses);
-        const m = new THREE.SkinnedMesh(arms.geometry, arms.material); m.name = 'vmArms'; m.bind(sk, arms.bindMatrix); host.add(m);
-        R.arms = ['vmArms'];
-      }
-    }
     const mixer = new THREE.AnimationMixer(root), acts = {};
     if (R.cut) { const src = g.animations[0]; for (const [n, [a, b]] of Object.entries(R.cut)) acts[n] = mixer.clipAction(THREE.AnimationUtils.subclip(src, n, Math.round(a * 30), Math.round(b * 30), 30)); }
     else for (const [n, cn] of Object.entries(R.clips)) { const c = g.animations.find(c => c.name === cn); if (c) acts[n] = mixer.clipAction(c); }
@@ -20893,11 +20996,18 @@ async function vmhBake(key) {
     let eb = bones.find((b) => (side === 'R' ? /^(R_elbow|Forearm_R)/i : /^(L_elbow|Forearm_L)/i).test(b.name)), E = eb ? wp(eb) : null;
     if (!E || E.distanceTo(W) < 0.08) { E = null; for (let p = wr.parent; p && !E; p = p.parent) if (p.isBone && wp(p).distanceTo(W) > 0.12) E = wp(p); }
     if (!E) E = W.clone().add(new THREE.Vector3(0, 0, -0.25));
-    const knu = [], walk = (b) => { for (const c of b.children) { if (!c.isBone) continue; const p = wp(c), kids = c.children.filter((x) => x.isBone).length; if (p.distanceTo(W) >= 0.035 && kids <= 1) knu.push({ p, th: /thumb/i.test(c.name) }); else walk(c); } };
+    const knu = [], walk = (b) => { for (const c of b.children) { if (!c.isBone) continue; const p = wp(c), kids = c.children.filter((x) => x.isBone).length; if (p.distanceTo(W) >= 0.035 && kids <= 1) knu.push({ p, b: c, th: /thumb/i.test(c.name) }); else walk(c); } };
     walk(wr);
     knu.sort((p, q) => (q.th - p.th) || (p.p.distanceTo(W) - q.p.distanceTo(W)));
     const T0 = knu.length ? knu[0].p : W.clone(), fing = knu.slice(1).map((k) => k.p).sort((p, q) => p.distanceTo(T0) - q.distanceTo(T0));
     const I = fing.length ? fing[0] : W.clone(), K = fing.length ? fing[fing.length - 1] : W.clone();
+    // trigger finger: the index chain (knuckle nearest the thumb, two bones on), each joint's subtree for the per-vertex bend
+    const ib = knu.slice(1).sort((p, q) => p.p.distanceTo(T0) - q.p.distanceTo(T0))[0], ch = ib ? [ib.b] : [];
+    while (ch.length && ch.length < 3) { const n = ch[ch.length - 1].children.find((x) => x.isBone); if (!n) break; ch.push(n); }
+    const subs = ch.length === 3 ? ch.map((b) => { const st = new Set(); b.traverse((x) => { if (x.isBone) st.add(x); }); return st; }) : null;
+    let fingJ = null;
+    if (subs) { const J = ch.map(wp), tb = ch[2].children.find((x) => x.isBone); fingJ = J.concat([tb ? wp(tb) : J[2].clone().multiplyScalar(2).sub(J[1])]); }
+    const iw = [];
     // skinned once on the CPU (positions and normals), kept vertices only, indexed
     const pos = [], nrm = [], uv = [], idx = [], groups = [], bm = new THREE.Matrix4(), sm = new THREE.Matrix4(), nm = new THREE.Matrix3(), nv = new THREE.Vector3();
     for (const o of arms) {
@@ -20913,6 +21023,7 @@ async function vmhBake(key) {
         bm.multiplyMatrices(toW, sm).multiply(o.bindMatrix);
         v.fromBufferAttribute(P, i).applyMatrix4(bm);
         map[i] = pos.length / 3; pos.push(v.x, v.y, v.z);
+        if (subs) for (let q = 0; q < 3; q++) { let a = 0; for (let c = 0; c < 4; c++) if (subs[q].has(sk.bones[SI.getComponent(i, c)])) a += SW.getComponent(i, c); iw.push(a); }
         if (NN) { nv.fromBufferAttribute(NN, i).applyMatrix3(nm.getNormalMatrix(bm)).normalize(); nrm.push(nv.x, nv.y, nv.z); } else nrm.push(0, 1, 0);
         if (UV) uv.push(UV.getX(i), UV.getY(i)); else uv.push(0, 0);
       }
@@ -20934,9 +21045,10 @@ async function vmhBake(key) {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     geo.setIndex(idx);
+    if (fingJ && iw.length === pos.length) geo.setAttribute('aIdxW', new THREE.Float32BufferAttribute(iw, 3)); else fingJ = null;
     const mats = [];
     for (const gr of groups) { let k = mats.indexOf(gr.mat); if (k < 0) { k = mats.length; mats.push(gr.mat); } geo.addGroup(gr.start, gr.count, k); }
-    out.sides[side] = { geo, mats, W, E, I, K, T: T0, tan: arms.some((o) => !!o.geometry.attributes.tangent) };   // polish 2: the source had vertex tangents
+    out.sides[side] = { geo, mats, W, E, I, K, T: T0, fingJ, tan: arms.some((o) => !!o.geometry.attributes.tangent) };   // polish 2: the source had vertex tangents
   }
   out.Sv = vmhSurface(gun, U, VMH.sample);                         // the VM gun's surface (rig space, metres)
   return (VMH.bakes[key] = out);
@@ -21127,18 +21239,55 @@ function vmhFit(g) {
       const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
       const geo = H.geo.clone().applyMatrix4(M);
       geo.computeBoundingSphere();
-      const mats = H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase);
+      const FJ = side === 'R' ? vmhFingFrame(H, M) : null;
+      const mkMats = (U) => H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase);
         if (H.tan && c.normalScale) c.normalScale.y *= -1;               // polish 2: baked without tangents (GLTFLoader's derivative-tangent rule, as the step 109 sleeves)
-        return c; });
-      const mesh = new THREE.Mesh(geo, mats);
+        return gloveInside(c, FJ && geo.attributes.aIdxW ? U : null); });
+      const U0 = vmhFingU(FJ);
+      const mesh = new THREE.Mesh(geo, mkMats(U0)); mesh.userData.fingU = U0;
       mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false;
       scene.add(mesh); VMH.meshes.add(mesh);
-      out.sides[side] = { mesh, H, M, roots: new Map() };
+      out.sides[side] = { mesh, H, M, FJ, mkMats, roots: new Map() };
     }
     VMH.fits[t] = out;
   }).catch((e) => { console.warn('Step 85: fitted hands for ' + t + ' failed', e); VMH.fits[t] = null; });
   return false;
 }
+// Trigger finger on the fitted (baked) firing hand: the pack's idle take holds the index curled into the guard. The
+// index vertices bend about their own three joints in the vertex shader (aIdxW = weight on each joint's subtree, one
+// hinge axis along the knuckle line), so the finger follows the trigger: off it = straight along the frame above the
+// guard, pointing at the muzzle (trigger discipline); touched = the pad resting on the trigger face; pulled = curled in.
+function vmhFingFrame(H, M) {
+  if (!H.fingJ) return null;
+  const J = H.fingJ.map((p) => p.clone().applyMatrix4(M)), Im = H.I.clone().applyMatrix4(M), Km = H.K.clone().applyMatrix4(M), Wm = H.W.clone().applyMatrix4(M);
+  const ax = Km.clone().sub(Im).normalize();
+  const rot = (v, o, a) => v.clone().sub(o).applyAxisAngle(ax, a).add(o);
+  if (rot(J[3], J[0], 0.2).distanceTo(Wm) > J[3].distanceTo(Wm)) ax.negate();   // + = curl (the tip toward the wrist)
+  const sa = (a, b) => { const p = a.clone().projectOnPlane(ax).normalize(), q = b.clone().projectOnPlane(ax).normalize(); return Math.atan2(ax.dot(p.clone().cross(q)), p.dot(q)); };
+  const d1 = J[1].clone().sub(J[0]), d2 = J[2].clone().sub(J[1]), d3 = J[3].clone().sub(J[2]);
+  const b2 = sa(d1, d2), b3 = sa(d2, d3), fwd = new THREE.Vector3(0, 0.05, -1);   // gun root space: the bore is -z; a touch up so it clears the guard
+  const a1 = clamp(sa(d1, fwd), -1.4, 0.2);
+  return { J, ax, along: [a1, -0.9 * b2, -0.9 * b3], on: [-0.06, -0.04, 0], pull: [0.08, 0.16, 0.1] };
+}
+function vmhFingU(FJ) {
+  if (!FJ) return null;
+  return { uFJ1: { value: FJ.J[0] }, uFJ2: { value: FJ.J[1] }, uFJ3: { value: FJ.J[2] }, uFAx: { value: FJ.ax }, uFA: { value: new THREE.Vector3() } };
+}
+const _vfA = new THREE.Vector3(), _vfB = new THREE.Vector3();
+function vmhFingPose(h, g, role, FJ, U) {
+  const gp = h.ctrl && h.ctrl.userData && h.ctrl.userData.gamepad, b = gp && gp.buttons && gp.buttons[0];
+  const pull = b ? (b.value || (b.pressed ? 1 : 0)) : (g.trigger || 0);
+  const busy = !!(g.task || (g.lh && g.lh.active)), touch = role === 'primary' && !busy && (b ? (b.touched || pull > 0.02) : true);   // no controller (computer): on the trigger
+  if (role !== 'primary') _vfA.set(0, 0, 0);
+  else if (!touch) _vfA.fromArray(FJ.along);
+  else _vfA.fromArray(FJ.on).lerp(_vfB.fromArray(FJ.pull), clamp(pull));
+  const now = performance.now() / 1000, dt = clamp(now - (U.t || now), 0, 0.1); U.t = now;
+  const k = U.init ? 1 - Math.exp(-22 * dt) : 1; U.init = true;
+  U.uFA.value.lerp(_vfA, k);
+}
+const VMH_FING_VS = `
+attribute vec3 aIdxW; uniform vec3 uFJ1, uFJ2, uFJ3, uFAx, uFA;
+vec3 fRot(vec3 v, float a) { float c = cos(a), s = sin(a); return v * c + cross(uFAx, v) * s + uFAx * dot(uFAx, v) * (1.0 - c); }`;
 // Each frame before the hands are placed: nothing is taken yet.
 function vmhFrameStart() {
   for (const h of HANDS.list) {
@@ -21160,7 +21309,17 @@ function vmhTake(h, g, role, dz, P, Q) {
   _vmhM.copy(root.matrixWorld);
   if (dz) _vmhM.multiply(_vmhM2.makeTranslation(0, 0, dz));
   if (mirror) _vmhM.multiply(_vmhMir);
-  S.mesh.matrix.copy(_vmhM); S.mesh.matrixWorldNeedsUpdate = true; S.mesh.visible = true;
+  // one mesh per hand: two guns of one type (one in each hand) both take the 'R' fit; a shared mesh followed the last
+  // hand and left the other hand drawn by nothing
+  const hm = S.hm || (S.hm = new Map());
+  let mesh = hm.get(h);
+  if (!mesh) {
+    mesh = S.mesh;
+    if (hm.size) { const U = vmhFingU(S.FJ); mesh = new THREE.Mesh(S.mesh.geometry, S.mkMats(U)); mesh.userData.fingU = U; mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false; scene.add(mesh); VMH.meshes.add(mesh); }
+    hm.set(h, mesh);
+  }
+  if (mesh.userData.fingU && S.FJ) vmhFingPose(h, g, role, S.FJ, mesh.userData.fingU);
+  mesh.matrix.copy(_vmhM); mesh.matrixWorldNeedsUpdate = true; mesh.visible = true;
   // the hidden hand root where its wrist meets the fitted glove (proper rotation: mirrored hands use their own rig)
   let R = S.roots.get(h);
   if (!R) {
@@ -21207,6 +21366,38 @@ function vmPackWrist(h, W, E, I, K) {
   const sg = 0.01 * HANDLOOK.vmhScale * HANDLOOK.extra;                              // cm rig (vmhBake's unit), the gun hands' size
   return frame(Wo, Wo.clone().setZ(Wr.z + 0.1), h.rp[4], h.rp[13]).multiply(new THREE.Matrix4().makeScale(sg, sg, sg)).multiply(frame(W, E, I, K).invert());
 }
+// Glove inside never shows: the pack glove is an open shell (cuff, cut at the wrist). Both faces are drawn so the cuff
+// is closed, the inside (back faces) is a flat dark lining with the normal turned to the eye, and anything within
+// GLOVE_IN.near of the eye dithers away (no near-plane slice into the hollow hand). Chains any earlier onBeforeCompile.
+const GLOVE_IN = { near: { value: 0.05 }, done: new WeakSet() };
+function gloveInside(mat, FU) {
+  if (!mat || GLOVE_IN.done.has(mat)) return mat;
+  GLOVE_IN.done.add(mat); mat.side = THREE.DoubleSide; mat.shadowSide = THREE.FrontSide;
+  const prev = mat.onBeforeCompile, pk = mat.customProgramCacheKey ? mat.customProgramCacheKey.bind(mat) : () => '';
+  mat.onBeforeCompile = (sh, r) => {
+    if (prev) prev.call(mat, sh, r);
+    sh.uniforms.uGlvNear = GLOVE_IN.near;
+    if (FU) {                                                        // the fitted firing hand's trigger finger (vmhFingPose)
+      Object.assign(sh.uniforms, FU);
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>' + VMH_FING_VS)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+objectNormal = fRot(objectNormal, uFA.z * aIdxW.z); objectNormal = fRot(objectNormal, uFA.y * aIdxW.y); objectNormal = fRot(objectNormal, uFA.x * aIdxW.x);`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+transformed = uFJ3 + fRot(transformed - uFJ3, uFA.z * aIdxW.z); transformed = uFJ2 + fRot(transformed - uFJ2, uFA.y * aIdxW.y); transformed = uFJ1 + fRot(transformed - uFJ1, uFA.x * aIdxW.x);`);
+    }
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vGlvW;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvGlvW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uGlvNear;\nvarying vec3 vGlvW;')
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+{ float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  if (1.0 - smoothstep(uGlvNear, uGlvNear + 0.03, length(vGlvW - cameraPosition)) > n) discard; }`)
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nif (!gl_FrontFacing) normal = normalize(vViewPosition);')
+      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif (!gl_FrontFacing) gl_FragColor.rgb = min(gl_FragColor.rgb, vec3(0.012, 0.012, 0.011));');
+  };
+  mat.customProgramCacheKey = () => pk() + '|gloveIn' + (FU ? 'F' : '');
+  mat.needsUpdate = true;
+  return mat;
+}
 function glove104Start() {
   if (!GLOVE104.on || GLOVE104.sides) return;
   GLOVE104.sides = {};
@@ -21217,6 +21408,7 @@ function glove104Start() {
     const m0 = [].concat(arms.material)[0], mat = m0.clone();
     if (m0.userData.vmBase) mat.color.copy(m0.userData.vmBase);   // untinted (vmTint tints the shared arm material by the uniform)
     if (arms.geometry.attributes.tangent && mat.normalScale) mat.normalScale.y *= -1;   // polish 2: the glove is baked without tangents (as the step 109 sleeves)
+    gloveInside(mat);
     GLOVE104.hide = new THREE.MeshBasicMaterial({ visible: false });
     for (const h of HANDS.list) { const G = glove104Hand(h, arms, mat); if (G) GLOVE104.sides[h.left ? 'L' : 'R'] = G; }
     GLOVE104.ready = !!(GLOVE104.sides.L && GLOVE104.sides.R);
@@ -23741,7 +23933,50 @@ function removeEnemy(e) {
   const i = ENEMY.list.indexOf(e); if (i >= 0) ENEMY.list.splice(i, 1);
   if (e.room.enemies) { const j = e.room.enemies.indexOf(e); if (j >= 0) e.room.enemies.splice(j, 1); }
 }
+// A stairwell man stands on the stair's floor (his room's local y); everyone else on 0.
+function enemyFloorY(e) { const r = e.room; return r && r.stair && e.stairY != null ? e.stairY : 0; }
+// Stairwells: CONFIG.stairs.men of them (fixed per slot) put 1 (sometimes 2) men on the top half: the half landing or the top floor's pad.
+function stairMenSpot(room, taken) {
+  const S = room.stair, R = mulberry32((roomSeed(room.slot) ^ 0x57A1E5 ^ (taken.length * 977)) >>> 0);
+  for (let i = 0; i < 200; i++) {
+    const x = (R() - 0.5) * (room.w - 0.9), z = (R() - 0.5) * (room.d - 0.9), y = stairFloor(S, x, z, S.rise);
+    if (y < S.h1 - 0.01 || !stairFlatTop(S, x, z, y)) continue;
+    if (taken.some((t) => Math.hypot(t.x - x, t.z - z) < 1.1)) continue;
+    return { x, z, y };
+  }
+  return null;
+}
+function stairFlatTop(S, x, z, y) { return Math.abs(stairFloor(S, x + 0.25, z, S.rise) - y) < 0.02 && Math.abs(stairFloor(S, x - 0.25, z, S.rise) - y) < 0.02 && Math.abs(stairFloor(S, x, z + 0.25, S.rise) - y) < 0.02 && Math.abs(stairFloor(S, x, z - 0.25, S.rise) - y) < 0.02; }
+function stairMenActivated(room) {
+  const SC = CONFIG.stairs;
+  if (!SC.men || !room.stair) return;
+  const R = mulberry32((roomSeed(room.slot) ^ 0x5DA1B) >>> 0);
+  const m = roomMem(room);
+  if (!m.plan) {
+    const n = R() < SC.men ? (R() < SC.men2 ? 2 : 1) : 0;
+    const T = threatNow(0), list = [];
+    for (let i = 0; i < n; i++) list.push({ gun: Math.random() < 0.6 ? 'smg' : 'pistol', skill: clamp(T + rnd2(-0.15, 0.15)), aggr: 0.2 });
+    aiAssignRoles(list);
+    m.plan = { list, dead: list.map(() => false), cleared: list.length === 0, threat: T, enteredT: 0, dmg: 0 };
+  }
+  const plan = m.plan, taken = [];
+  room.enemies = [];
+  plan.list.forEach((spec, i) => {
+    if (plan.dead[i]) return;
+    const sp = stairMenSpot(room, taken);
+    if (!sp) { plan.dead[i] = true; return; }
+    taken.push(sp);
+    const e = spawnEnemy(room, spec, i, []);
+    if (!e) return;
+    e.pos.set(sp.x, sp.z); e.home.set(sp.x, sp.z); e.anchor.set(sp.x, sp.z); e.stairHold = true; e.stairY = sp.y;
+    const ex = (room.entryX || 0), ez = room.d / 2;                 // face the way you come in
+    e.yaw = e.homeYaw = Math.atan2(-(ex - sp.x), -(ez - sp.z));
+    e.root.position.set(sp.x, sp.y, sp.z); e.root.rotation.y = e.yaw;
+  });
+  if (plan.list.length && plan.dead.every(Boolean)) plan.cleared = true;
+}
 function enemiesRoomActivated(room) {
+  if (room.kind === 'stair') { try { stairMenActivated(room); } catch (e) { console.warn('stairwell men not placed', e); } return; }
   if (room.kind !== 'normal') return;
   const plan = loopPlan(room);                // step 9: the director's plan, made once per room
   room.enemies = [];
@@ -23801,7 +24036,7 @@ function tableBoxes(room) {
   return out;
 }
 function navGrid(room) {
-  if (room.navCache) return room.navCache;   // city zones: built once
+  if (room.navCache) return room.navCache;
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
   const boxes = (room.walkLocal || []).concat(tableBoxes(room));
@@ -24148,6 +24383,7 @@ function enemyHunt(e) {
  * ------------------------------------------------------------------------- */
 const _mv = new THREE.Vector2(), _mp = { x: 0, z: 0 };
 function enemyMove(e, dt) {
+  if (e.stairHold) { e.pos.copy(e.home); e.vel.set(0, 0); e.speed = 0; e.path = null; return; }   // stairwell man: holds his spot on the top half, turns and shoots
   const C = CONFIG.enemy;
   let tx, tz, maxV;
   if ((e.state === 'move' || e.state === 'hunt' || e.state === 'search') && e.path && e.pathI < e.path.length) {
@@ -24311,7 +24547,7 @@ function enemyPose(e, dt, now) {
   }
   const cr = smoothstep(0, 1, e.crouch);
   // --- root ---
-  e.root.position.set(e.pos.x, 0, e.pos.y);
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y);
   e.root.rotation.y = e.yaw;
   // --- walk cycle ---
   const sp = e.speed;
@@ -24496,7 +24732,7 @@ function enemyShotSfx(dist, type = 'smg', at = null, sup = false) {
   if (!audio.ctx || audio.ctx.state !== 'running') return;
   if (at && hrecOn() && HREC.bufs.supPistol1 && gunSuppressed(type, sup ? { sup } : null)) {   // step 99: his suppressed gun, the recorded take from his muzzle
     const rifle = WEAPON_DEFS[type] && WEAPON_DEFS[type].cls !== 'pistol', k = CONFIG.polish.audio.enemyShot;
-    soundAt(at, () => { supPlay(rifle, k); if (rifle) { const B = shotBufs(type), P = shotMix(type); if (B && B.length) playBaked(B, 1.25 * P.gain * GUN_MIX.shot * k * 0.28, P.verb, 0.96 + Math.random() * 0.06, P.echo * GUN_MIX.echo * 0.3, GUN_MIX.tone * 0.8); } });
+    soundAt(at, () => { supPlay(rifle, k); if (rifle) { const B = shotBufs(type), P = shotMix(type); if (B && B.length) playBaked(B, 1.25 * P.gain * GUN_MIX.shot * k * 0.39, P.verb, 0.96 + Math.random() * 0.06, P.echo * GUN_MIX.echo * 0.3, GUN_MIX.tone * 0.8); } });
     return;
   }
   const B = shotBufs(type), k = clamp(3 / (dist + 1.5), 0.2, 0.8);   // step 81
@@ -25685,7 +25921,7 @@ function downedLegIK(e, D) {
 // The pose on the driver (so the skin and the hit capsules follow).
 function downedApply(e, D) {
   const B = e.B, s = D.s, V = _d91;
-  e.root.position.set(e.pos.x, 0, e.pos.y); e.root.rotation.set(0, D.h, 0);
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y); e.root.rotation.set(0, D.h, 0);
   B.pelvis.position.set(s.px, s.py, s.pz);
   B.pelvis.quaternion.setFromAxisAngle(V.Y, s.yawP).multiply(V.q.setFromAxisAngle(V.X, -s.th)).multiply(V.q.setFromAxisAngle(V.Y, s.rho)).multiply(V.q.setFromAxisAngle(V.Z, s.wig));
   B.spine.rotation.set(s.sp, s.tw, 0, 'YXZ'); B.chest.rotation.set(s.cp, s.tw * 0.6, 0, 'YXZ');
@@ -26287,7 +26523,7 @@ function surrPose(e, dt, now) {
   const up = smoothstep(0, 1, S.up), det = smoothstep(0, 1, S.detK), pick = smoothstep(0, 1, S.pick);
   const kR = smoothstep(0, 1, clamp(S.kn * 1.7)), kL = smoothstep(0, 1, clamp(S.kn * 1.7 - 0.7)), kn = (kR + kL) / 2;
   // --- root, hips, spine ---
-  e.root.position.set(e.pos.x, 0, e.pos.y); e.root.rotation.y = e.yaw;
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y); e.root.rotation.y = e.yaw;
   const sp = e.speed;
   e.phase += dt * sp / 0.36 * Math.PI * 0.5;
   const gait = clamp(sp / 1.2) * (1 - kn), stride = Math.min(0.5, 0.16 + sp * 0.2);
@@ -28686,6 +28922,7 @@ function wsUpdate(dt) {
           const u = (x / C.w + 0.5) * WS_LW, v = (0.5 - y / C.h) * WS_LH;
           if (!W.deskHitO) W.deskHitO = { u: 0, v: 0 };
           W.deskHitO.u = u; W.deskHitO.v = v; W.deskHit = W.deskHitO;
+          if (t < WZ.near) { WZ.seenT = performance.now() / 1000; WZ.d = t; }   // workshop zoom: you are using it
           hover = wsHitAt(u, v); show = true; cx = x; cy = y;
           reticle.classList.toggle('on', !!hover);
           if (!W.deskHinted) { W.deskHinted = true; toast(IS_TOUCH ? 'Gunsmith: aim the dot at a button, tap Grab' : 'Gunsmith: aim the dot at a button, press E or click. Scroll: next gun', 2600); }
@@ -31959,14 +32196,20 @@ const HREC_SET = {
     rackBack: [['glkRackBack1', 1, 0.9], ['glkRackBack2', 1, 0.9], ['glkRackBack1', 1.04, 0.9], ['glkRackBack2', 0.97, 0.9]],
     rackFwd: [['glkRackFwd1', 1, 0.9], ['glkRackFwd2', 1, 0.9], ['glkRackFwd1', 0.97, 0.9], ['glkRackFwd2', 1.03, 0.9]],
     slideRel: [['glkSlideRel', 1, 0.9], ['glkSlideRel', 0.96, 0.9], ['glkRackFwd2', 1.02, 0.85], ['glkRackFwd1', 1.03, 0.85]],
-    lockBack: [['glkRackBack1', 1.06, 0.8], ['glkRackBack2', 1.08, 0.8], ['glkRackBack1', 1.1, 0.8]] }
+    lockBack: [['glkRackBack1', 1.06, 0.8], ['glkRackBack2', 1.08, 0.8], ['glkRackBack1', 1.1, 0.8]] },
+  // bolt guns (def.manual: the AWM): the AK takes pitched down for the heavy bolt, the handle's lift and turn-down from
+  // the dry-fire clicks and the AK slam, the box magazine from the AK / SMG magazine takes
+  bolt: { magOut: [['akMagOut1', 0.92, 0.9], ['akMagOut2', 0.9, 0.9], ['smgMagOut', 0.86, 1]], magIn: [['akMagIn1', 0.9, 1], ['smgMagIn', 0.88, 1], ['akMagIn1', 0.94, 0.95]],
+    rackBack: [['akRackBack1', 0.8, 1], ['akRackBack2', 0.78, 1], ['akRackBack3', 0.82, 1]],
+    rackFwd: [['akRackFwd1', 0.8, 0.85], ['akRackFwd2', 0.78, 0.85], ['akRackFwd3', 0.82, 0.85]],
+    lift: [['dry2', 0.72, 1], ['dry5', 0.7, 1], ['dry7', 0.74, 1]], close: [['akRackFwd4', 1.25, 0.55], ['dry3', 0.62, 1], ['akRackFwd2', 1.3, 0.55]] }
 };
 // step 101: one recorded Glock for every pistol: polymer frames a few % apart, the steel PPK small and higher, the 1911 lower
 const PIST_RATE = { g17: 1, pistol: 0.96, fn509: 1.05, ppk: 1.09, m1911: 0.91 };
 const PIST_LS = { ppk: 1, m1911: 2.5 };                            // dB more body (low shelf) for the steel slides
 const HREC_ALT = { slideRel: 'rackFwd', lockBack: 'rackFwd' };    // a family without the event plays this one
-const HREC_FAM = { akm: 'ak', akmn: 'ak', m4a1s: 'm4', rifle: 'm4', smg: 'smg' };   // + every cls 'pistol'
-const HREC_LVL = { magOut: 0.5, magIn: 0.65, rackBack: 0.55, rackFwd: 0.8, slideRel: 0.8, lockBack: 0.5 };   // x GUN_MIX.handling x HREC.norm (the synth's LVL, a touch up: these should be heard)
+const HREC_FAM = { akm: 'ak', akmn: 'ak', m4a1s: 'm4', rifle: 'm4', smg: 'smg', awp: 'bolt' };   // + every cls 'pistol'
+const HREC_LVL = { magOut: 0.5, magIn: 0.65, rackBack: 0.55, rackFwd: 0.8, slideRel: 0.8, lockBack: 0.5, lift: 0.45, close: 0.55 };   // x GUN_MIX.handling x HREC.norm (the synth's LVL, a touch up: these should be heard)
 const SUP_VAR = [{ r: 1, hs: 0, ls: 0 }, { r: 0.96, hs: -2.5, ls: 1 }, { r: 1.04, hs: 1.5, ls: -1 }];   // three suppressed shots from one take
 function loadHandlingRecordings(ctx) {
   if (!HREC.on || HREC.loading) return; HREC.loading = true;
@@ -31983,7 +32226,7 @@ function hrecNorm(b) {
   return clamp(Math.pow(10, HREC_RMS / 20) / Math.sqrt(m / w + 1e-12), 0.4, 3);
 }
 function hrecOn() { const H = CONFIG.polish.audio.handlingRec; return HREC.on && !!H && H.on !== false; }
-function hrecFam(type, def) { return HREC_FAM[type] || (def && def.cls === 'pistol' ? 'pistol' : null); }
+function hrecFam(type, def) { return HREC_FAM[type] || (def && def.cls === 'pistol' ? 'pistol' : def && def.manual ? 'bolt' : null); }
 // One variant of a set whose file has decoded, never the same as last time (key = family + event).
 function hrecPick(key, set) {
   let n = 0;
@@ -32057,7 +32300,7 @@ function supPlay(rifle, k = 1) {
   let i = (Math.random() * SUP_VAR.length) | 0;
   if (i === last) i = (i + 1 + ((Math.random() * (SUP_VAR.length - 1)) | 0)) % SUP_VAR.length;
   HREC.last.sup = i;
-  const V = SUP_VAR[i], g = 1.25 * GUN_MIX.shot * (H.sup ?? 1) * k;
+  const V = SUP_VAR[i], g = 1.75 * GUN_MIX.shot * (H.sup ?? 1) * k;   // x1.4 (+3 dB): suppressed shots a little louder
   if (rifle) {
     hrecPlay(b, 0.42 * g, 0.78 * V.r, { ls: 6 + V.ls, lsF: 200, hs: V.hs - 1, lp: 7000, verb: 0.5, echo: 0.4 * GUN_MIX.echo });
     nBurst(audio.ctx.currentTime + 0.004, 0.03, 'highpass', 3800, 0.7, 0.07 * k, 0.008, 0.2);   // the round's crack (supersonic), small
@@ -32069,7 +32312,7 @@ function gunSuppressed(type, g) { return !!(g && g.sup) || type === 'fn509' || t
 function supShot(g, d) {
   if (!hrecOn() || !gunSuppressed(g.type, g) || !audio.ctx || audio.ctx.state !== 'running') return false;
   const rifle = d.cls !== 'pistol';
-  if (rifle) { const k = g.afx ? g.afx.snd : 1; sfx(d.sound, 0.28 * k); supPlay(true, k); return true; }   // step 103: k = the extra cans
+  if (rifle) { const k = g.afx ? g.afx.snd : 1; sfx(d.sound, 0.39 * k); supPlay(true, k); return true; }   // step 103: k = the extra cans
   if (!supPlay(false, g.afx ? g.afx.snd : 1)) return false;        // step 100: the compact can is a little louder (GLOCK_FX)
   const E = CONFIG.polish.audio.earsShot;
   earsHit((E[g.type] ?? E[d.sound] ?? 0.5) * 0.28 * (g.afx ? g.afx.snd : 1));
@@ -34121,6 +34364,7 @@ function splashStep(f, k) {
   P.y = f.to.y;
   const d = splashWetAt(P), pace = clamp(0.45 + BODY.speed / 2.2, 0.45, 1);
   if (d > 0 && audio.ctx && audio.ctx.state === 'running') splashSnd(audio.ctx.currentTime + 0.003, d, pace);
+  bodyWetStep(d, pace);                                             // step 122: boots and hems get wet
   SPLASH.feet[k] = splashFoot(SPLASH.room, P, SPLASH.d, d, pace, s, SPLASH.feet[k]);
 }
 // His step (updateFootsteps): the boot beside his path (alternating), along his walk. Returns the depth for his footstep's voice.
@@ -34654,6 +34898,7 @@ function polishUpdate(dt, t) {
   trickleTick(dt);                               // step 88: dust sifting from fresh holes
   trcTick(dt);                                   // step 121: tracer streaks down their paths
   if (SPLASH.on) splashTick(dt);                 // step 94: wet prints dry
+  bodyWetTick(dt);                               // step 122: damp boots and hems dry
   updateContact();
   if (audio.ctx && audio.ctx.state === 'running') {
     if (SPAT.ok) updateListener();
@@ -36365,6 +36610,131 @@ if (!gl_FrontFacing) gl_FragColor.rgb *= 0.8;   // a touch darker, like cloth fo
   };
   mat.customProgramCacheKey = () => 'bodycut254';
 }
+/* ---------------------------------------------------------------------------
+ *  STEP 122 — TROUSERS AND BOOTS LOOK REAL (CONFIG.body.wear, ?bodywear=off)
+ *  Procedural detail in the body's own rest space (the skinned meshes are bound
+ *  with an identity bind, so `position` is the standing body in metres: ground
+ *  y 0, ankles z 0, toes toward -z). Trousers: roughness mottle, out / inseam
+ *  grooves with stitches, hem fold, knee and seat wear, creases behind the knee,
+ *  dust low down. Boots: grain mottle, flex creases over the vamp, welt stitching,
+ *  toe scuffs and a polished toe, rubber lug edge, dust. Damp layer: hems and
+ *  lower boots darker and glossier, from the floor you stand on (wear93 wet
+ *  share) and much more after standing water (splashStep), drying over minutes.
+ *  One extra program per material kind, compiled with the body; two shared uniforms.
+ * ------------------------------------------------------------------------- */
+const BWEAR = { on: !/[?&]bodywear=off/.test(location.search), wet: { value: 0 }, damp: { value: 0 }, wetDry: 170, dampUp: 45, dampDown: 120, dampK: 0.7, puddle: 0.2, damp1: 0.03 };
+const BWEAR_GLSL = `
+varying vec3 vBwP; varying vec3 vBwN;
+uniform float uBwWet, uBwDamp;
+float bwHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float bwNoise(vec3 p) {
+  vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(bwHash(i), bwHash(i + vec3(1, 0, 0)), f.x), mix(bwHash(i + vec3(0, 1, 0)), bwHash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(bwHash(i + vec3(0, 0, 1)), bwHash(i + vec3(1, 0, 1)), f.x), mix(bwHash(i + vec3(0, 1, 1)), bwHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+vec3 bwBump(vec3 n, float h) {            // h in metres of relief; screen-space derivatives (perturbNormalArb)
+  vec3 sp = -vViewPosition, sx = dFdx(sp), sy = dFdy(sp), r1 = cross(sy, n), r2 = cross(n, sx);
+  float det = dot(sx, r1); vec2 dh = vec2(dFdx(h), dFdy(h));
+  vec3 g = sign(det) * (dh.x * r1 + dh.y * r2);
+  return normalize(abs(det) * n - g);
+}`;
+// kind: 0 trousers, 1 boot leather, 2 boot rubber, 3 boot nylon (wet only)
+const BWEAR_COLOR = [
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP, Nn = normalize(vBwN);
+  float sd = P.x >= 0.0 ? 1.0 : -1.0, lat = Nn.x * sd, frn = -Nn.z;
+  float n1 = bwNoise(P * 70.0), n2 = bwNoise(P * 9.0);
+  float knee = smoothstep(0.1, 0.0, abs(P.y - 0.515)) * smoothstep(0.15, 0.75, frn);
+  float seat = smoothstep(0.07, 0.0, abs(P.y - 0.905)) * smoothstep(0.35, 0.85, Nn.z) * 0.7;
+  bwK = max(knee * (0.45 + 0.55 * n1), seat * n2);
+  float sz = 1.0 - smoothstep(0.015, 0.05, abs(Nn.z));
+  float seam = sz * (step(0.3, lat) + step(0.3, -lat) * step(P.y, 0.84)) * step(P.y, 1.0);
+  float st = step(0.55, fract(P.y * 260.0));
+  float hem = smoothstep(0.004, 0.0, abs(P.y - 0.172));
+  float bk = smoothstep(0.06, 0.0, abs(P.y - 0.49)) * smoothstep(0.2, 0.7, Nn.z);
+  bwH = -0.00035 * seam - 0.0004 * hem + 0.0003 * bk * sin(P.y * 340.0 + n2 * 9.0 + P.x * 60.0) + 0.00012 * seam * st;
+  float lvl = 0.15 + 0.035 * uBwDamp + 0.13 * uBwWet, rag = (bwNoise(P * 45.0) - 0.5) * 0.03;
+  bwWet = (1.0 - smoothstep(lvl - 0.025, lvl + 0.004, P.y + rag)) * clamp(uBwDamp * 1.6 + uBwWet * 1.4, 0.0, 1.0);
+  float dust = smoothstep(0.32, 0.15, P.y) * (0.4 + 0.6 * n2) * (1.0 - bwWet);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.45 + 0.012, bwK * 0.7);
+  diffuseColor.rgb *= 1.0 - 0.18 * seam * (1.0 - st) - 0.25 * hem;
+  diffuseColor.rgb += vec3(0.020, 0.018, 0.015) * dust;
+  diffuseColor.rgb *= mix(0.92, 1.06, n2);
+  diffuseColor.rgb *= 1.0 - 0.45 * bwWet;
+  bwR = mix(0.9, 1.1, n1) * (1.0 - 0.1 * bwK) * mix(1.0, 0.6, bwWet);
+}`,
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP, Nn = normalize(vBwN);
+  float n1 = bwNoise(P * 160.0), n2 = bwNoise(P * 22.0);
+  float flex = smoothstep(-0.075, -0.095, P.z) * smoothstep(-0.17, -0.15, P.z) * smoothstep(0.03, 0.05, P.y) * smoothstep(0.1, 0.5, Nn.y);
+  float toe = smoothstep(-0.185, -0.225, P.z);
+  float wy = 0.033 + 0.012 * smoothstep(-0.17, -0.236, P.z) + 0.01 * smoothstep(-0.05, 0.03, P.z);
+  float weltL = smoothstep(0.0014, 0.0004, abs(P.y - wy)) * (1.0 - smoothstep(0.4, 0.7, abs(Nn.y)));
+  float dash = smoothstep(0.35, 0.45, fract((P.z + abs(P.x) * 0.7) * 240.0)) * smoothstep(0.85, 0.75, fract((P.z + abs(P.x) * 0.7) * 240.0));
+  float scuff = smoothstep(0.6, 0.8, bwNoise(P * vec3(190.0, 70.0, 190.0))) * (toe + 0.35 * smoothstep(0.07, 0.03, P.y));
+  bwK = scuff;
+  bwH = 0.00045 * flex * sin(P.z * 560.0 + n2 * 5.0) * (0.6 + 0.4 * n1) + 0.0002 * weltL * dash - 0.0001 * weltL;
+  float lvl = 0.02 + 0.045 * uBwDamp + 0.09 * uBwWet, rag = (bwNoise(P * 60.0) - 0.5) * 0.02;
+  bwWet = (1.0 - smoothstep(lvl - 0.02, lvl + 0.003, P.y + rag)) * clamp(uBwDamp * 1.8 + uBwWet * 1.5, 0.0, 1.0);
+  diffuseColor.rgb *= mix(0.86, 1.08, n2);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.10, 0.092, 0.08), weltL * dash * 0.85);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 2.1 + 0.02, scuff * 0.6 * (1.0 - bwWet));
+  diffuseColor.rgb *= 1.0 - 0.35 * bwWet;
+  bwR = mix(0.85, 1.15, n1) * mix(1.0, 0.72, toe * (1.0 - scuff)) * (1.0 + 0.6 * scuff) * mix(1.0, 0.45, bwWet);
+}`,
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP, Nn = normalize(vBwN);
+  float n1 = bwNoise(P * 120.0), side = 1.0 - smoothstep(0.35, 0.6, abs(Nn.y));
+  float a = (P.z + abs(P.x) * 0.8) * 95.0, lug = smoothstep(0.3, 0.42, fract(a)) * smoothstep(0.9, 0.78, fract(a));
+  float edge = side * smoothstep(0.016, 0.004, P.y);
+  bwH = -0.0006 * edge * (1.0 - lug) + 0.00015 * side * smoothstep(0.02, 0.026, P.y) * sin(P.y * 2400.0);
+  float dust = (side + smoothstep(0.003, 0.0, P.y)) * (0.4 + 0.6 * n1);
+  float lvl = 0.012 + 0.02 * uBwDamp + 0.04 * uBwWet;
+  bwWet = (1.0 - smoothstep(lvl - 0.01, lvl + 0.003, P.y)) * clamp(uBwDamp * 2.0 + uBwWet * 1.5, 0.0, 1.0);
+  diffuseColor.rgb *= 1.0 - 0.35 * edge * (1.0 - lug);
+  diffuseColor.rgb += vec3(0.03, 0.028, 0.025) * dust * (1.0 - bwWet);
+  diffuseColor.rgb *= 1.0 - 0.3 * bwWet;
+  bwR = mix(0.9, 1.08, n1) * mix(1.0, 0.32, bwWet);
+}`,
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP;
+  float lvl = 0.03 + 0.05 * uBwDamp + 0.12 * uBwWet, rag = (bwNoise(P * 50.0) - 0.5) * 0.025;
+  bwWet = (1.0 - smoothstep(lvl - 0.02, lvl + 0.003, P.y + rag)) * clamp(uBwDamp * 1.6 + uBwWet * 1.4, 0.0, 1.0);
+  diffuseColor.rgb *= 1.0 - 0.45 * bwWet;
+  bwR = mix(0.92, 1.08, bwNoise(P * 80.0)) * mix(1.0, 0.6, bwWet);
+}`];
+function bodyWearShader(mat, kind) {
+  if (!BWEAR.on) return mat;
+  const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey && mat.customProgramCacheKey !== THREE.Material.prototype.customProgramCacheKey ? mat.customProgramCacheKey.bind(mat) : null;
+  mat.onBeforeCompile = (sh, r) => {
+    if (prev) prev(sh, r);
+    sh.uniforms.uBwWet = BWEAR.wet; sh.uniforms.uBwDamp = BWEAR.damp;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBwP; varying vec3 vBwN;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBwP = position; vBwN = normal;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + BWEAR_GLSL)
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + BWEAR_COLOR[kind])
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor * bwR, 0.04, 1.0);')
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nif (gl_FrontFacing && bwH != 0.0) normal = bwBump(normal, bwH);\nnormal = normalize(mix(normal, normalize(vNormal), 0.35 * bwWet));');
+    if (kind === 0) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\n#ifdef USE_SHEEN\nmaterial.sheenColor *= 1.0 - 0.8 * bwWet;\n#endif');
+  };
+  mat.customProgramCacheKey = () => (prevKey ? prevKey() : '') + '|bw122-' + kind;
+  return mat;
+}
+// Damp from the floor you are on, wetter after standing water (splashStep), dries over minutes. No allocation.
+function bodyWetTick(dt) {
+  if (!BWEAR.on || !(dt > 0)) return;
+  const r = typeof stream !== 'undefined' ? stream.current : null;
+  const tgt = r && r.wear93 ? clamp(r.wear93.wet * BWEAR.dampK, 0, 1) : 0, d = BWEAR.damp;
+  d.value += (tgt - d.value) * (1 - Math.exp(-dt / (tgt > d.value ? BWEAR.dampUp : BWEAR.dampDown)));
+  BWEAR.wet.value *= Math.exp(-dt / BWEAR.wetDry);
+}
+function bodyWetStep(depth, pace) {
+  if (!BWEAR.on || !(depth > 0)) return;
+  const w = BWEAR.wet;
+  w.value = Math.min(1, w.value + (depth >= 0.45 ? BWEAR.puddle * depth * pace : BWEAR.damp1 * depth));
+}
 function bodyMaterials() {
   const T = bodyTextures(), n2 = (s) => new THREE.Vector2(s, s);
   const shirt = new THREE.MeshPhysicalMaterial({
@@ -36378,16 +36748,17 @@ function bodyMaterials() {
   });
   bodyCutShader(shirt);
   const pants = new THREE.MeshPhysicalMaterial({
-    color: 0x2c2d31, roughness: 0.86, metalness: 0, normalMap: T.ripstop, normalScale: n2(0.7),
+    color: 0x2c2d31, roughness: 0.86, metalness: 0, normalMap: T.ripstop, normalScale: n2(BWEAR.on ? 0.85 : 0.7),
     sheen: 0.4, sheenRoughness: 0.6, sheenColor: new THREE.Color(0x4a4d55), side: THREE.DoubleSide   // a flexed hip shows cloth, never a hole
   });
   bodyCutShader(pants);
+  bodyWearShader(pants, 0);                                        // step 122: seams, wear, damp hems
   return {
     tex: T, shirt, pants,
-    leather: new THREE.MeshStandardMaterial({ color: 0x24211e, roughness: 0.5, metalness: 0, normalMap: T.leather, normalScale: n2(0.55) }),
-    nylon: new THREE.MeshStandardMaterial({ color: 0x272826, roughness: 0.84, metalness: 0, normalMap: T.cordura, normalScale: n2(0.8) }),
+    leather: bodyWearShader(new THREE.MeshStandardMaterial({ color: 0x24211e, roughness: BWEAR.on ? 0.44 : 0.5, metalness: 0, normalMap: T.leather, normalScale: n2(BWEAR.on ? 0.7 : 0.55) }), 1),
+    nylon: bodyWearShader(new THREE.MeshStandardMaterial({ color: 0x272826, roughness: 0.84, metalness: 0, normalMap: T.cordura, normalScale: n2(0.8) }), 3),
     poly: new THREE.MeshStandardMaterial({ color: 0x1e1f21, roughness: 0.42, metalness: 0, normalMap: T.kydex, normalScale: n2(0.3) }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.9, metalness: 0, normalMap: T.kydex, normalScale: n2(0.6) }),
+    rubber: bodyWearShader(new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.9, metalness: 0, normalMap: T.kydex, normalScale: n2(0.6) }), 2),
     shell: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.25 })
   };
 }
@@ -37949,7 +38320,7 @@ for (let i = 0; i < 2; i++) {
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { release(hand); releaseDoor(hand); };   // step 116: the bag back on your hip
+  const squeezeEnd = () => { benchLampRelease(hand); release(hand); releaseDoor(hand); };   // the bench lamp let go where you hold it
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
@@ -38806,11 +39177,11 @@ function kickSfx(kind, P, k) {
   soundAt(P, () => {
     const t = audio.ctx.currentTime + 0.003, j = 0.9 + Math.random() * 0.2;
     if (kind === 'door') {
-      nBurst(t, 0.34, 'lowpass', 170 * j, 0.9, 0.95, 0.24, 0.5);            // the boot into a hollow steel leaf
-      nBurst(t, 0.1, 'bandpass', 950 * j, 1.1, 0.32, 0.08, 0.4);
-      tone(t, 300 * j, 284 * j, 0.7, 0.07, 'triangle', 0.5);                 // the leaf rings
-      tone(t, 517 * j, 500 * j, 0.5, 0.045, 'triangle', 0.5);
-      nBurst(t + 0.04, 0.09, 'bandpass', 3100, 3, 0.09, 0.06, 0.3);          // latch and closer rattle
+      nBurst(t, 0.34, 'lowpass', 170 * j, 0.9, 0.7, 0.24, 0.5);            // the boot into a hollow steel leaf (x0.75: doors quieter)
+      nBurst(t, 0.1, 'bandpass', 950 * j, 1.1, 0.24, 0.08, 0.4);
+      tone(t, 300 * j, 284 * j, 0.7, 0.052, 'triangle', 0.5);                 // the leaf rings
+      tone(t, 517 * j, 500 * j, 0.5, 0.034, 'triangle', 0.5);
+      nBurst(t + 0.04, 0.09, 'bandpass', 3100, 3, 0.068, 0.06, 0.3);          // latch and closer rattle
     } else if (kind === 'man' || kind === 'body') {
       nBurst(t, 0.14, 'lowpass', 240 * j, 0.9, 0.62, 0.1, 0.3);
       nBurst(t + 0.01, 0.08, 'bandpass', 1300 * j, 1.2, 0.12, 0.06, 0.2);   // kit on the carrier
@@ -39123,6 +39494,7 @@ function tickSafe(timeMs, frame) {
 function tick(timeMs) {
   if (!ready) return;
   bzPre();               // bench zoom: your own view back before anything reads or moves it
+  wzPre();               // workshop zoom: your own field of view back
   if (renderer.xr.isPresenting && XRVIS.state !== 'visible') { clock.getDelta(); PROF.last = 0; renderer.render(scene, camera); return; }   // step 31: Quest menu open: the world waits, nobody shoots you
   if (document.hidden && !renderer.xr.isPresenting) { clock.getDelta(); PROF.last = 0; return; }   // perf: background tab: no sim, no render
   if (!mobFrame(timeMs)) return;                   // step 48: mobile frame cap (the skipped time joins the next frame)
@@ -39191,6 +39563,7 @@ function tick(timeMs) {
   stillsTick(performance.now() / 1000);   // step 42: a body cam still, before this frame's own render
   scopeTick(dt);         // step 74: the view through the AWP scope
   bzApply(dt);           // bench zoom (computer): the view closes in on the gun in the vise
+  wzApply(dt);           // workshop zoom (computer): the view narrows on the GUNSMITH screen
   bodyCamLivePre(dt, performance.now() / 1000);   // step 23.3: live body cam (off / BOOST / headset: uBody = 0, no motion)
   eyeAdaptPre(dt);       // step 96: eye adaptation (computer, outside body cam mode)
   nvgPre();              // step 118: night vision down: the tube's tone map and gain for this frame's draw
@@ -41116,6 +41489,25 @@ function bzWanted() {
   return BZ.dist < BZ.near;
 }
 // Start of the frame: your own view back (only if the camera still carries the zoom: anything that moved it since wins).
+// Workshop zoom (computer, ?wszoom=off): the dot on the GUNSMITH glass within WZ.near m narrows the field of view
+// (eased 0.35 s) so about WZ.span m of the glass fills the view height: the text reads large, the dot still aims
+// (the view's centre ray does not move), you look about to reach the other buttons. Off the glass for 0.6 s = back.
+const WZ = { on: !/[?&]wszoom=off\b/.test(location.search), near: 1.6, span: 0.62, fovMin: 22, k: 0, seenT: -9, d: 1, bFov: 0, applied: false, hold: 0.6, dur: 0.35 };
+function wzPre() {
+  if (!WZ.applied) return;
+  camera.fov = WZ.bFov; camera.updateProjectionMatrix(); WZ.applied = false;
+}
+function wzApply(dt) {
+  if (!WZ.on || renderer.xr.isPresenting || IS_TOUCH || (BZ.applied)) { WZ.k = 0; return; }
+  const want = WORKSHOP.on && WORKSHOP.awake && performance.now() / 1000 - WZ.seenT < WZ.hold;
+  const st = Math.min(Math.max(dt || 0, 0), 0.1) / WZ.dur;
+  WZ.k = want ? Math.min(1, WZ.k + st) : Math.max(0, WZ.k - st);
+  if (WZ.k <= 0) return;
+  WZ.bFov = camera.fov;
+  const tf = Math.max(WZ.fovMin, Math.min(WZ.bFov, 2 * Math.atan(WZ.span / 2 / Math.max(0.3, WZ.d)) * 180 / Math.PI));
+  const e = WZ.k * WZ.k * (3 - 2 * WZ.k);
+  camera.fov = WZ.bFov + (tf - WZ.bFov) * e; camera.updateProjectionMatrix(); WZ.applied = true;
+}
 function bzPre() {
   if (!BZ.applied) return;
   if (camera.position.equals(BZ.lp)) camera.position.copy(BZ.bpL);
@@ -41293,6 +41685,9 @@ function x64Anim(g, dt) {
   if (P.bolt) {
     const s = g.slideOff, t = Math.min(1, s / d.lift), z = Math.max(0, s - d.lift) * d.travel / (d.travel - d.lift);
     P.bolt.rotation.z = smoothstep(0, 1, t) * d.liftAng;
+    // the handle's lift (unlocked, up) and turn-down (locked) are heard: edges with hysteresis, synth 'selector' without the takes
+    if (d.manual && !g.boltUp && t > 0.92) { g.boltUp = true; gunSfx(g, 'lift', 'selector', 0.9); }
+    else if (g.boltUp && t < 0.08) { g.boltUp = false; gunSfx(g, 'close', 'selector', 1); }
     P.bolt.position.z = X.piv.bolt.z + z; P.shroud.position.z = z;
   }
   if (P.catch) P.catch.rotation.x += (((g.thumbCatchUntil || 0) > now ? -0.3 : 0) - P.catch.rotation.x) * k(40);

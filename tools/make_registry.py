@@ -210,12 +210,12 @@ c("text_smaller", G, ["text smaller","smaller text","zoom out"], "text smaller",
 c("contrast", G, ["high contrast [onoff]"], "high contrast on", "", {"onoff":T(type="enum",of="onoff")}, status="planned", planned=P8)
 c("look_at", G, ["look at [object]","face [object]"], "look at the monitor", "Facing {object}.", {"object":OBJ}, undo=False)
 G = "Range"
-c("spawn_gun", G, ["spawn [gun]","give me [gun]","get [gun]","add [gun]","bring out [gun]"], "spawn the AKM", "The {gun} is on the bench by the window lane. Pick it up.", {"gun":T(type="enum",of="gun")}, undo=False)
+c("spawn_gun", G, ["spawn [gun]","give me [gun]","get [gun]","add [gun]","bring out [gun]"], "spawn the AKM", "The {gun} is on the desk. Pick it up.", {"gun":T(type="enum",of="gun")}, undo=False)
 c("range_setup", G, ["set up range","set up shooting range","build range","build shooting range","make shooting range","shooting range","spawn targets","add targets","put up targets"], "set up a shooting range", "Range set up: {count} targets from 5 to 300 m down the lane through the open window pane.", cost="Med", undo=False)
 c("reset_targets", G, ["reset targets","reset range","reset score","stand targets up","clear score"], "reset targets", "Targets are fresh and the score is zero.", undo=False)
 c("score", G, ["score","show score","my score","what is my score","how did i do","accuracy"], "what is my score", "{score}", undo=False)
 c("clear_guns", G, ["put guns away","remove guns","clear guns","put away guns"], "put the guns away", "Put {count} guns away.", undo=False)
-c("return_guns", G, ["put guns back on bench","put guns back","guns back on bench","guns back","return guns","reset guns","bring guns back"], "put the guns back on the bench", "Put {count} guns back on the bench.", undo=False)
+c("return_guns", G, ["put guns back on desk","put guns back on bench","put guns back","guns back on desk","guns back","return guns","reset guns","bring guns back"], "put the guns back on the desk", "Put {count} guns back on the desk.", undo=False)
 c("start_clays", G, ["start clays","pull","clays on","start trap","start skeet"], "start clays", "", status="planned", planned="arrives with the clay thrower (next range step)")
 G = "Help"
 c("list", G, ["list commands","what can i say","help","commands","show commands"], "what can I say", "Here is what you can say.", undo=False)
