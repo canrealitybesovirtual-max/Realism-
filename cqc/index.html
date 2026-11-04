@@ -8428,7 +8428,8 @@ function updateStreaming() {
     const budget = PACE.moveStart && nowB - PACE.moveStart < 0.05 ? 0 : S.buildBudgetMs * (paceBusy(nowB) ? CONFIG.pace.buildBusyK : 1)
       * (stream.building.plan && stream.building.plan.type === 'yard' && stream.current && stream.current.kind === 'safe' ? 2.5 : 1);   // outdoor start: the big yard builds faster while you wait in the safe room
     while (performance.now() - t0 < budget) {
-      if (stream.building.builder.next().done) { stream.ready.push(stream.building); stream.building = null; break; }
+      if (stream.building.plan && stream.building.plan.type === 'yard') stream.building.ySteps = (stream.building.ySteps || 0) + 1;   // the outdoor map's loading panel counts its steps
+      if (stream.building.builder.next().done) { if (stream.building.ySteps) yardLoadDone(stream.building.ySteps); stream.ready.push(stream.building); stream.building = null; break; }
     }
   }
 
@@ -24852,6 +24853,7 @@ function removeEnemy(e) {
   if (e.room.enemies) { const j = e.room.enemies.indexOf(e); if (j >= 0) e.room.enemies.splice(j, 1); }
 }
 // A stairwell man stands on the stair's floor (his room's local y); everyone else on 0.
+function enemyBaseY(e) { return (e.room ? e.room.origin.y : 0) + enemyFloorY(e); }   // world y of the floor he stands on
 function enemyFloorY(e) { const r = e.room; return r && (r.stair || r.yard) && e.stairY != null ? e.stairY : 0; }   // outdoor start: the tower man
 // Stairwells: CONFIG.stairs.men of them (fixed per slot) put 1 (sometimes 2) men on the top half: the half landing or the top floor's pad.
 function stairMenSpot(room, taken) {
@@ -25829,7 +25831,7 @@ function enemyRayTest(o, dir, maxT) {
     if ((e.dead && !e.downed) || !e.room.active || !e.root.visible || !e.room.group.visible) continue;   // step 91: a man down is still there to hit
     // quick reject: ray far from his centre (step 91: a man on the floor, his pelvis)
     if (e.downed) _hc.p.setFromMatrixPosition(e.B.pelvis.matrixWorld).sub(o);
-    else _hc.p.set(rWX(e.room, e.pos.x), 1.0, rWZ(e.room, e.pos.y)).sub(o);
+    else _hc.p.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 1.0, rWZ(e.room, e.pos.y)).sub(o);   // his own floor (the tower cab, a stair landing, a wing above): the reject used y 1.0, so a man up there could never be hit
     const tc = _hc.p.dot(dir);
     if (tc < -1.2 || tc > maxT + 1.2) continue;
     if (_hc.p.addScaledVector(dir, -tc).length() > 1.3) continue;
@@ -27091,7 +27093,7 @@ const _eoS = new THREE.Sphere(), _eoH = new THREE.Vector3();
 function enemyOffscreen(e) {
   if (_vfStale || !CONFIG.enemy.offscreenPoseHz) return false;
   const o = e.room.origin;
-  _eoS.center.set(rWX(e.room, e.pos.x), o.y + 0.9, rWZ(e.room, e.pos.y)); _eoS.radius = 1.3;
+  _eoS.center.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 0.9, rWZ(e.room, e.pos.y)); _eoS.radius = 1.3;
   headWorld(_eoH);
   if (_eoS.center.distanceTo(_eoH) < 3) return false;          // close: always full rate (a gun can point where you don't look)
   return !_vf.intersectsSphere(_eoS);
@@ -28107,7 +28109,7 @@ function aiRoundPassed(o, dir, toi) {
   for (const e of ENEMY.list) {
     if (e.dead || !e.room.active || !(e.room.visible || e.room === stream.current)) continue;
     if (!roomCanSense(e.room)) continue;                         // step 22.3
-    _ai.p.set(rWX(e.room, e.pos.x), mix(1.62, 1.0, e.crouch), rWZ(e.room, e.pos.y)).sub(o);
+    _ai.p.set(rWX(e.room, e.pos.x), enemyBaseY(e) + mix(1.62, 1.0, e.crouch), rWZ(e.room, e.pos.y)).sub(o);
     const t = _ai.p.dot(dir);
     if (t < 0.3 || t > toi + 0.4) continue;
     const miss = _ai.p.addScaledVector(dir, -t).length();
@@ -35163,7 +35165,7 @@ function updateFootsteps(dt) {
     e.p10Step = (e.p10Step || 0) + dt * (1.3 + e.speed * 0.75);
     if (e.p10Step < 1) continue;
     e.p10Step -= 1;
-    _p10.a.set(rWX(e.room, e.pos.x), e.room.origin.y + 0.08, rWZ(e.room, e.pos.y));
+    _p10.a.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 0.08, rWZ(e.room, e.pos.y));
     const k = clamp(e.speed / 2.4, 0.35, 1), j = 0.85 + Math.random() * 0.3, uf = ufHis(e, _p10.a), wd = SPLASH.on ? splashHis(e, k) : 0;   // step 92: brass / glass under his boot; step 94: water
     soundAt(_p10.a, () => {
       const t = audio.ctx.currentTime + 0.003;
@@ -35608,7 +35610,7 @@ function ambBedTick(dt) {
 // before his head clears the wall), a pivot on the spot (sole on grit). Edges on what the pose follows
 // (crouchT + stumble; enemyPose smooths it and runs throttled off screen), hysteresis 0.75 / 0.5.
 const _ebf = new THREE.Vector3();
-function ebfAt(e, y) { return _ebf.set(rWX(e.room, e.pos.x), e.room.origin.y + y, rWZ(e.room, e.pos.y)); }
+function ebfAt(e, y) { return _ebf.set(rWX(e.room, e.pos.x), enemyBaseY(e) + y, rWZ(e.room, e.pos.y)); }
 function ebfKneel(e) {
   if (e.dead || !e.room.active || !audio.noise) return;
   const g = CONFIG.polish.audio.bodyFoley, j = 0.9 + Math.random() * 0.2;
@@ -47233,7 +47235,7 @@ function* yardTexSet(N, size, f, nk, seedName) {
   return { map: yardDataTex(A, N, true), normal: yardDataTex(Nm, N, false), orm: yardDataTex(O, N, false), name: seedName };
 }
 function* yardTextures(xr) {
-  const NW = xr ? 512 : 1024, NG = xr ? 512 : 1024, NM = xr ? 256 : 512;
+  const NW = 1024, NG = 1024, NM = 512;                             // the headset at full size too (it read blurry at 512 / 256)
   // Board-formed concrete: 2.4 m tile = 16 boards of 15 cm, panel seams every 1.2 m, tie holes on a 0.6 m grid.
   const n1 = yardNoise(11, 64), n2 = yardNoise(12, 64), n3 = yardNoise(13, 64), hsh = (a, b) => { const v = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return v - Math.floor(v); };
   const wall = yield* yardTexSet(NW, YC.tex.wall, (x, y, o) => {
@@ -48595,8 +48597,61 @@ function yardLights(cur) {
  *  Per frame (after nightUpdate): uniforms, sky on the camera, rain box, camera far, environment.
  * ------------------------------------------------------------------------- */
 const _yt = { v: new THREE.Vector3(), m: new THREE.Matrix4() };
+/* ---------------------------------------------------------------------------
+ *  Outdoor map loading panel. Choosing the outdoor start in a safe room builds the yard in the background; nothing
+ *  said so. A panel 0.9 m in front of your eyes (headset and computer; a child of the camera, drawn on top)
+ *  shows "BUILDING OUTPOST 17" with a bar from the builder's steps (the count of the last build, saved), then
+ *  "OUTPOST 17 READY" for 1.5 s. One canvas, redrawn only when the percent changes; compiled at its creation.
+ * ------------------------------------------------------------------------- */
+const YLOAD = { mesh: null, cv: null, ctx: null, tex: null, pct: -1, doneAt: 0, key: 'cqc.yardSteps.v1' };
+function yardLoadDone(n) {
+  try { localStorage.setItem(YLOAD.key, String(n)); } catch (e) { /* private mode */ }
+  YLOAD.doneAt = performance.now() / 1000;
+}
+function yardLoadMake() {
+  const cv = YLOAD.cv = document.createElement('canvas'); cv.width = 512; cv.height = 128;
+  YLOAD.ctx = cv.getContext('2d');
+  const tex = YLOAD.tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false, fog: false, toneMapped: false });
+  const me = YLOAD.mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.09), m);
+  me.position.set(0, -0.11, -0.9); me.renderOrder = 100002; me.frustumCulled = false;
+  camera.add(me);
+  try { renderer.compileAsync(me, camera, scene).catch(() => {}); } catch (e) { /* compiled on first show */ }
+  me.visible = false;
+}
+function yardLoadDraw(pct, ready) {
+  const c = YLOAD.ctx, W = 512, H = 128;
+  c.clearRect(0, 0, W, H);
+  c.fillStyle = 'rgba(8,10,12,0.82)'; c.beginPath(); c.roundRect ? c.roundRect(2, 2, W - 4, H - 4, 14) : c.rect(2, 2, W - 4, H - 4); c.fill();
+  c.strokeStyle = 'rgba(255,255,255,0.18)'; c.lineWidth = 2; c.stroke();
+  c.fillStyle = '#e8e4da'; c.font = '600 28px "Archivo", "Inter", sans-serif'; c.textBaseline = 'middle';
+  c.fillText(ready ? 'OUTPOST 17 READY' : 'BUILDING OUTPOST 17', 26, 42);
+  c.fillStyle = 'rgba(232,228,218,0.6)'; c.font = '500 22px "Inter", sans-serif';
+  c.fillText(ready ? 'The door is open' : `${pct} %  ·  stay in the safe room`, 26, 82);
+  c.fillStyle = 'rgba(255,255,255,0.12)'; c.fillRect(26, 104, W - 52, 8);
+  c.fillStyle = ready ? '#8fd18a' : '#f0c060'; c.fillRect(26, 104, (W - 52) * (ready ? 1 : pct / 100), 8);
+  YLOAD.tex.needsUpdate = true;
+}
+function yardLoadTick() {
+  const b = stream.building, now = performance.now() / 1000;
+  const building = !!(b && b.plan && b.plan.type === 'yard');
+  const ready = !building && now - YLOAD.doneAt < 1.5;
+  if (!building && !ready) { if (YLOAD.mesh && YLOAD.mesh.visible) YLOAD.mesh.visible = false; YLOAD.pct = -1; return; }
+  if (!YLOAD.mesh) yardLoadMake();
+  let pct = 100;
+  if (building) {
+    let tot = 0; try { tot = +localStorage.getItem(YLOAD.key) || 0; } catch (e) { /* private mode */ }
+    pct = Math.min(99, Math.floor(100 * (b.ySteps || 0) / Math.max(1, tot || 400)));
+  }
+  const k = ready ? 101 : pct;
+  if (k !== YLOAD.pct) { YLOAD.pct = k; yardLoadDraw(pct, ready); }
+  const sc = renderer.xr.isPresenting ? 1 : 1.7;                     // bigger on a flat screen
+  if (YLOAD.mesh.scale.x !== sc) YLOAD.mesh.scale.set(sc, sc, 1);
+  YLOAD.mesh.visible = true;
+}
 function yardTick(dt, t) {
   const Y = YARD;
+  yardLoadTick();                                                    // the loading panel while the outdoor map builds
   if (!Y || !Y.built) { stealthTick(dt); return; }
   let yard = null;
   for (const r of stream.rooms.values()) if (r.yard && r.active) yard = r;
