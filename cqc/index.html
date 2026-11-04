@@ -24741,27 +24741,38 @@ function navLine(G, ax, az, bx, bz) {
 function findPath(room, sx, sz, tx, tz) {
   const G = navGrid(room), s = navSnap(G, sx, sz), t = navSnap(G, tx, tz);
   if (!s || !t) return null;
+  // Buffers kept per grid and reused (the outdoor yard's grid is 56k cells: fresh arrays per search were GC stalls).
+  // A cell's cost / parent are valid only when its stamp equals this search's generation; the heap is typed.
   const N = G.nx * G.nz, si = s[1] * G.nx + s[0], ti = t[1] * G.nx + t[0];
-  const gS = new Float32Array(N).fill(Infinity), from = new Int32Array(N).fill(-1), closed = new Uint8Array(N);
-  const heap = [], push = (f, i) => {           // binary min-heap of [f, index]
-    heap.push([f, i]); let k = heap.length - 1;
-    while (k > 0) { const p = (k - 1) >> 1; if (heap[p][0] <= heap[k][0]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; }
+  let B = G._pf;
+  if (!B || B.N !== N) B = G._pf = { N, gS: new Float32Array(N), from: new Int32Array(N), seen: new Uint32Array(N), shut: new Uint32Array(N), gen: 0, hf: new Float32Array(1024), hi: new Int32Array(1024) };
+  if (++B.gen >= 0xFFFFFFF0) { B.gen = 1; B.seen.fill(0); B.shut.fill(0); }
+  const gen = B.gen, gS = B.gS, from = B.from, seen = B.seen, shut = B.shut;
+  let hn = 0;
+  const push = (f, i) => {
+    if (hn >= B.hf.length) { const f2 = new Float32Array(B.hf.length * 2), i2 = new Int32Array(B.hi.length * 2); f2.set(B.hf); i2.set(B.hi); B.hf = f2; B.hi = i2; }
+    const HF = B.hf, HI = B.hi; let k = hn++;
+    while (k > 0) { const p = (k - 1) >> 1; if (HF[p] <= f) break; HF[k] = HF[p]; HI[k] = HI[p]; k = p; }
+    HF[k] = f; HI[k] = i;
   };
   const pop = () => {
-    const top = heap[0], last = heap.pop();
-    if (heap.length) {
-      heap[0] = last; let k = 0;
-      for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === k) break; [heap[m], heap[k]] = [heap[k], heap[m]]; k = m; }
+    const HF = B.hf, HI = B.hi, top = HI[0]; hn--;
+    if (hn > 0) {
+      const f = HF[hn], i = HI[hn]; let k = 0;
+      for (;;) { const l = 2 * k + 1, r = l + 1; let m = -1, mf = f; if (l < hn && HF[l] < mf) { m = l; mf = HF[l]; } if (r < hn && HF[r] < mf) m = r; if (m < 0) break; HF[k] = HF[m]; HI[k] = HI[m]; k = m; }
+      HF[k] = f; HI[k] = i;
     }
     return top;
   };
-  const hfn = (i) => { const dx = Math.abs(i % G.nx - t[0]), dz = Math.abs(((i / G.nx) | 0) - t[1]); return Math.max(dx, dz) + 0.414 * Math.min(dx, dz); };
-  gS[si] = 0; push(hfn(si), si);
+  const hw = N > 30000 ? 1.6 : 1;                                   // big grids (the yard): weighted A*, a few % longer paths, far fewer cells opened
+  const hfn = (i) => { const dx = Math.abs(i % G.nx - t[0]), dz = Math.abs(((i / G.nx) | 0) - t[1]); return (Math.max(dx, dz) + 0.414 * Math.min(dx, dz)) * hw; };
+  gS[si] = 0; from[si] = -1; seen[si] = gen; push(hfn(si), si);
   let found = false, guard = 0;
-  while (heap.length && guard++ < 20000) {
-    const [, i] = pop();
-    if (closed[i]) continue;
-    closed[i] = 1;
+  const cap = Math.max(20000, N);
+  while (hn > 0 && guard++ < cap) {
+    const i = pop();
+    if (shut[i] === gen) continue;
+    shut[i] = gen;
     if (i === ti) { found = true; break; }
     const ix = i % G.nx, iz = (i / G.nx) | 0;
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
@@ -24769,10 +24780,10 @@ function findPath(room, sx, sz, tx, tz) {
       const nx = ix + dx, nz = iz + dz;
       if (nx < 0 || nz < 0 || nx >= G.nx || nz >= G.nz) continue;
       const ni = nz * G.nx + nx;
-      if (G.g[ni] || closed[ni]) continue;
+      if (G.g[ni] || shut[ni] === gen) continue;
       if (dx && dz && (G.g[iz * G.nx + nx] || G.g[nz * G.nx + ix])) continue;   // no cutting corners
       const ng = gS[i] + (dx && dz ? 1.414 : 1);
-      if (ng < gS[ni]) { gS[ni] = ng; from[ni] = i; push(ng + hfn(ni), ni); }
+      if (seen[ni] !== gen || ng < gS[ni]) { seen[ni] = gen; gS[ni] = ng; from[ni] = i; push(ng + hfn(ni), ni); }
     }
   }
   if (!found) return null;
@@ -27494,6 +27505,10 @@ function enemyReloaded(e) {
 function loopCallout(e, now) {                    // "contact": the others react a beat later
   for (const m of e.room.enemies || []) {
     if (m === e || m.dead || m.surr || m.engaged || m.alertAt) continue;   // polish 2: not a man who gave up
+    if (e.room.yard && Math.hypot(m.pos.x - e.pos.x, m.pos.y - e.pos.y) > 18) {   // outdoors: only men in earshot of the shout; the rest turn to look
+      m.alert = Math.max(m.alert || 0, 0.4); if (e.hasKnown) { m.lastKnown.copy(e.lastKnown); m.hasKnown = true; }
+      continue;
+    }
     m.alertAt = now + rnd2(0.35, 0.9);
     if (e.hasKnown) { m.lastKnown.copy(e.lastKnown); m.hasKnown = true; }
   }
@@ -27809,7 +27824,7 @@ function aiListen(e, dt, now) {
 // The door into a combat room opening: a skilled man turns to it, gun up.
 function aiDoors() {
   for (const r of stream.rooms.values()) {
-    if (r.kind !== 'normal' || !r.active || !r.enemies || !r.enemies.length) continue;
+    if (r.kind !== 'normal' || !r.active || !r.enemies || !r.enemies.length || r.yard) continue;   // outdoors: nobody across the yard hears the door
     const prev = stream.rooms.get(r.slot - 1);   // step 22.3: a door nudged a crack is not "the door opened"
     const B = aiBoard(r), open = !!(prev && prev.door && Math.abs(prev.door.angle) > CONFIG.ai.doorSense.open);
     if (open && !B.doorWas && CONFIG.ai.hearing) {
@@ -46647,7 +46662,7 @@ const YC = {
   flood: { E: 4.5 }, lampK: 1,
   sky: { expo: 0.055, sat: 0.32, tint: [0.62, 0.72, 0.92], fog: [0.018, 0.021, 0.026] },
   fog: { dens: 0.034, densXR: 0.05, fall: 0.12, max: 0.97, scat: 1 },   // thick night fog: past ~70 m (Quest ~50 m) only tree shapes and the sky show
-  rain: { n: 4500, nXR: 1500, box: [26, 16, 26], fall: 8.5, wind: [0.9, 0.4], splash: 400, splashXR: 140 },
+  rain: { n: 4500, nXR: 900, box: [26, 16, 26], fall: 8.5, wind: [0.9, 0.4], splash: 400, splashXR: 80 },
   envK: 1.4, far: 125, farXR: 85,                                // camera far in the yard: the fog hides everything before it
   sniper: { sight: 75, glint: 0.9, gap: 2.6, first: 1.6 }
 };
@@ -48214,6 +48229,7 @@ function yardTick(dt, t) {
       Dv.set(rF(yard) * l.d[0], l.d[1], rF(yard) * l.d[2], l.cos);
     }
     if (Y.shaftMat) Y.shaftMat.uniforms.uK.value = dark ? 0 : 0.05;
+    if (yard.yardShafts) yard.yardShafts.visible = !renderer.xr.isPresenting;   // headset: no light-shaft cones (big additive overdraw)
     if (yard.active) yardDoorsTick(yard, performance.now() / 1000);
     if (Y.haloMat) Y.haloMat.uniforms.uK.value = dark ? 0 : 1;
     if (yard.yardLens) yard.yardLens.material = dark ? Y.mats.lensOff : Y.mats.lens;
@@ -48289,7 +48305,7 @@ const NC = {
   forest: { edge: 20.3, side: 26, xMax: 95, zMax: 85, xMaxXR: 65, zMaxXR: 58, step: [3.6, 5.8], stepXR: 1.3 },
   ground: { xMax: 132, zMax: 142, xMaxXR: 98, zMaxXR: 106, tile: 2.5 },
   colX: 60, colZ: 70,                                               // outside trees with a trunk collider (bullets over the wall)
-  drips: 600, dripsXR: 240
+  drips: 600, dripsXR: 120
 };
 const NAT_TREES = ['pineA', 'pineB', 'pineC', 'snagA', 'snagB', 'leafA', 'deadB', 'deadC'];
 const NAT_SINGLE = { rockA: 'rock', rockB: 'rock', stumpA: 'stump', stumpB: 'stump', stumpC: 'stump', bushA: 'bush', bushB: 'bush', fernA: 'fern', fernB: 'fern', weed: 'fern' };
@@ -48755,7 +48771,7 @@ const _st = { a: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vecto
 function stealthLight() {
   const S = stealthState(), P = _st.a; headWorld(P); P.y -= 0.5;
   let E = 0.02 * (typeof NIGHT === 'object' && NIGHT.env !== undefined ? NIGHT.env : 1);
-  const spot = (s, ray) => {
+  const spot = (s, ray, k = 1) => {
     if (!s || s.intensity <= 0) return;
     _st.d.subVectors(P, s.position); const d2 = Math.max(0.25, _st.d.lengthSq()), d = Math.sqrt(d2);
     _st.b.subVectors(s.target.position, s.position).normalize();
@@ -48764,9 +48780,9 @@ function stealthLight() {
     let e = s.intensity / d2 * smoothstep(co, co + (1 - co) * Math.max(0.05, s.penumbra), c);
     if (e < 0.01) return;
     if (ray && !clearLine(_st.b.copy(s.position).addScaledVector(_st.d, 0.3 / d), P, 0.3)) e *= 0.06;
-    E += e;
+    E += e * k;
   };
-  for (const s of pool.main) spot(s, true);                          // (the moon and the floods are shadow-tested: indoors they are walls away)
+  for (const s of pool.main) spot(s, true, s === pool.main[0] && s.userData.yardMode ? 0.25 : 1);   // the yard's moon is a rainy overcast night: it shows the ground, it does not light you up                          // (the moon and the floods are shadow-tested: indoors they are walls away)
   spot(pool.portal, true);
   for (const r of pool.rects) if (r.intensity > 0) { const d2 = Math.max(0.3, P.distanceToSquared(r.position)); E += r.intensity * r.width * r.height * 0.5 / d2; }
   if (typeof flashlight === 'object' && flashlight && flashlight.intensity > 0) E += 1.5;   // your own light gives you away
@@ -48817,7 +48833,7 @@ function stealthK(e, pd, dotF) {
 function stealthSees(e, pd) {
   const S = stealthState();
   if (!S.on || e.engaged) return true;
-  const Dd = STEALTH_DIFF[S.diff], base = e.sniper ? YC.sniper.sight : CONFIG.enemy.sight;
+  const Dd = STEALTH_DIFF[S.diff], base = e.sniper ? CONFIG.enemy.sight * 1.4 : CONFIG.enemy.sight;   // the sniper's 75 m is for a man he already knows about
   return pd < base * Dd.range * (0.22 + 0.78 * Math.sqrt(S.L)) + 2;
 }
 function stealthPost(e, visible, now, adv) {
