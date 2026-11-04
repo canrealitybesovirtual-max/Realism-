@@ -3872,8 +3872,9 @@ function applyMacro(material, macroTex, key) {
       .replace('#include <aomap_fragment>', '#include <aomap_fragment>\nreflectedLight.indirectDiffuse *= macroS.a;\nreflectedLight.indirectSpecular *= mix(1.0, macroS.a, 0.7);');
     if (key === 'floor' && FLOOR_WEAR.on && FLOOR_WEAR.tex) floorWearInject(shader);   // step 93
     if (key === 'wall' && WALL_WEAR.on && WALL_WEAR.tex) wallWearInject(shader);       // step 95
+    surfInject(shader, key);                                                             // scanned layers, anti-tiling, close-up detail
   };
-  material.customProgramCacheKey = () => (key === 'floor' && FLOOR_WEAR.on ? 'macro-floor93' : key === 'wall' && WALL_WEAR.on ? 'macro-wall95' : `macro-${key}`);
+  material.customProgramCacheKey = () => (key === 'floor' && FLOOR_WEAR.on ? 'macro-floor93' : key === 'wall' && WALL_WEAR.on ? 'macro-wall95' : `macro-${key}`) + (SURF.on ? '|sf1' : '');
 }
 
 /* ---------------------------------------------------------------------------
@@ -4612,6 +4613,104 @@ renderer.xr.setFoveation(CONFIG.xr.foveation);
 document.body.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', () => { BOOT.lost++; bootSave(BOOT.stage, BOOT.pct); console.warn('[start] the graphics context was lost during: ' + BOOT.stage); });   // step 40
 maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET ? 4 : 8);   // higher costs Quest bandwidth for no visible gain
+/* ---------------------------------------------------------------------------
+ *  SURFACES (?surf=off). The room shells (every wing's floor, wall paint and ceiling: applyMacro's three programs)
+ *  were procedural maps repeating every 1.2-2 m, flat up close. Three layers on top, in the same programs:
+ *  - anti-tiling (stochastic sampling, after Inigo Quilez's "texture repetition" #3): a low-frequency noise picks one
+ *    of 8 random offsets per patch and blends two neighbouring offsets (textureGrad, shared derivatives, so no mip seams);
+ *    map, normal map and roughness all use the same offsets, so they stay in register. The grid is gone.
+ *  - real photo-scanned PBR detail (cqc/textures: the Studio's concrete diff / nor / orm and plaster nor / orm scans):
+ *    floors take the scan's albedo variation (relative to its mean, so each finish keeps its colour), its relief
+ *    (whiteout blend into the procedural normal) and its roughness and AO; walls and ceilings take the plaster's
+ *    relief and roughness under the paint. Scan tiles 2.4 m / 1.2 m / 1.6 m, offset from the base tiles.
+ *  - a close-up detail normal (grit scan, 11-16 cm tiles) fading in within ~3 m: sharp surfaces at arm's length in VR.
+ *  Headset: roughness / AO scans sampled once (the two-sample blend stays on map, normal map and albedo scan).
+ *  Off until all six scans have loaded (uSfK.x), so nothing ever samples a missing texture. One program per kind (+|sf1).
+ * ------------------------------------------------------------------------- */
+const SURF = { on: !/[?&]surf=off\b/.test(location.search), failed: false,
+  u: { uSfA: { value: null }, uSfN: { value: null }, uSfO: { value: null }, uSfPN: { value: null }, uSfPO: { value: null }, uSfG: { value: null },
+    uSfK: { value: new THREE.Vector4(0, 0, 0, 0) }, uSfM: { value: new THREE.Vector4(0.25, 0.6, 0.6, 0.8) } } };
+const SF_GLSL = `
+uniform sampler2D uSfA, uSfN, uSfO, uSfPN, uSfPO, uSfG; uniform vec4 uSfK, uSfM;
+float sfH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float sfV(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(sfH(i), sfH(i + vec2(1.0, 0.0)), f.x), mix(sfH(i + vec2(0.0, 1.0)), sfH(i + vec2(1.0, 1.0)), f.x), f.y); }
+vec2 sfOA, sfOB, sfDX, sfDY; float sfW;
+void sfSetup(vec2 uv) {
+  float k = sfV(uv * 0.45) * 0.65 + sfV(uv * 1.3 + 17.0) * 0.35;
+  float l = k * 8.0, ia = floor(l), f = fract(l);
+  sfOA = sin(vec2(3.0, 7.0) * ia) * 0.5 + 0.5; sfOB = sin(vec2(3.0, 7.0) * (ia + 1.0)) * 0.5 + 0.5;
+  sfW = smoothstep(0.3, 0.7, f); sfDX = dFdx(uv); sfDY = dFdy(uv);
+}
+vec4 sfTexS(sampler2D s, vec2 uv, float k) {
+  vec4 a = textureGrad(s, uv + sfOA, sfDX * k, sfDY * k);
+  vec4 b = textureGrad(s, uv + sfOB, sfDX * k, sfDY * k);
+  return mix(a, b, sfW);
+}
+vec4 sfTex(sampler2D s, vec2 uv) { return sfTexS(s, uv, 1.0); }
+vec3 sfBlendN(vec3 a, vec3 b) { return normalize(vec3(a.xy + b.xy, a.z * b.z)); }   // whiteout blend
+`;
+function surfInject(sh, key, o = null) {   // o: { tile (m per uv repeat), keep (share of the procedural albedo contrast kept) } for other users (the yard)
+  if (!SURF.on || !sh.fragmentShader.includes('#include <map_fragment>')) return;
+  const C = THREE.ShaderChunk, kind = key === 'floor' ? 0 : key === 'wall' ? 1 : 2, T = o ? { floor: o.tile, wall: o.tile, ceiling: o.tile } : CONFIG.tile;
+  const P = [   // scan scale, grit scale, scan normal strength, grit strength, AO share
+    [T.floor / 2.4, T.floor / 0.11, 0.55, 0.32, 0.5],
+    [T.wall / 1.2, T.wall / 0.14, 0.45, 0.2, 0.4],
+    [T.ceiling / 1.6, T.ceiling / 0.16, 0.22, 0.1, 0.3]][kind];
+  const f = (x) => x.toFixed(4);
+  Object.assign(sh.uniforms, SURF.u);
+  // Albedo variation from the concrete scan: the floor's own (0.6); walls and ceilings faintly (paint over block / board), at their own scale.
+  const aw = [0.75, 0.22, 0.14][kind];
+  const scanA = `{ vec3 sa = sfTexS(uSfA, ${kind === 0 ? 'sfSUv' : 'vMapUv * 0.71'}, ${kind === 0 ? 'SF_SK' : '0.71'}).rgb; float sl = dot(sa, vec3(0.2126, 0.7152, 0.0722)); diffuseColor.rgb *= clamp(mix(1.0, sl / max(uSfM.x, 0.02), ${aw.toFixed(2)}), 0.45, 1.7); }`;
+  const orm = kind === 0 ? 'uSfO' : 'uSfPO', nor = kind === 0 ? 'uSfN' : 'uSfPN', rMean = kind === 0 ? 'uSfM.y' : 'uSfM.z';
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>\n#define SF_SK ${f(P[0])}\n#define SF_GK ${f(P[1])}\n${SF_GLSL}`)
+    .replace('#include <map_fragment>', `float sfFade = 1.0 - smoothstep(0.6, 3.2, length(vViewPosition));
+vec4 sfO = vec4(1.0); vec2 sfSUv = vMapUv * SF_SK; sfSetup(vMapUv);
+${C.map_fragment.replace('texture2D( map, vMapUv )', 'sfTex( map, vMapUv )').replace('diffuseColor *= sampledDiffuseColor;', 'if (uSfK.x > 0.5) sampledDiffuseColor.rgb = mix(textureLod(map, vMapUv, 12.0).rgb, sampledDiffuseColor.rgb, ' + (o ? o.keep : [0.55, 0.3, 0.5][kind]).toFixed(2) + ');   // the procedural pits and blotches flattened toward the map mean: the scans carry the detail\n\tdiffuseColor *= sampledDiffuseColor;')}
+if (uSfK.x > 0.5) { ${scanA}
+  sfO = uSfK.y > 0.5 ? texture2D(${orm}, sfSUv) : sfTexS(${orm}, sfSUv, SF_SK); }`)
+    .replace('#include <roughnessmap_fragment>', C.roughnessmap_fragment.replace('texture2D( roughnessMap, vRoughnessMapUv )', '(uSfK.y > 0.5 ? texture2D( roughnessMap, vRoughnessMapUv ) : sfTex( roughnessMap, vRoughnessMapUv ))')
+      + `\nif (uSfK.x > 0.5) roughnessFactor *= clamp(mix(1.0, sfO.g / max(${rMean}, 0.05), 0.55), 0.6, 1.5);`)
+    .replace('#include <normal_fragment_maps>', C.normal_fragment_maps
+      .replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz', 'vec3 mapN = sfTex( normalMap, vNormalMapUv ).xyz')
+      .replace('normal = normalize( tbn * mapN );', `if (uSfK.x > 0.5) {
+    vec3 sN = sfTexS(${nor}, sfSUv, SF_SK).xyz * 2.0 - 1.0; sN.xy *= ${f(P[2])}; mapN = sfBlendN(mapN, sN);
+    if (sfFade > 0.001) { vec3 gN = texture2D(uSfG, vMapUv * SF_GK).xyz * 2.0 - 1.0; gN.xy *= ${f(P[3])} * sfFade; mapN = sfBlendN(mapN, gN); }
+  }
+  normal = normalize( tbn * mapN );`))
+    .replace('#include <aomap_fragment>', `#include <aomap_fragment>\nif (uSfK.x > 0.5) reflectedLight.indirectDiffuse *= mix(1.0, sfO.r, ${f(P[4])});`);
+}
+// Mean of a loaded image (64 x 64 copy): sRGB albedo as linear luminance, data maps per channel.
+function surfMean(img, srgb) {
+  try {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const x = c.getContext('2d'); x.drawImage(img, 0, 0, 64, 64);
+    const d = x.getImageData(0, 0, 64, 64).data, lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    let r = 0, g = 0, b = 0, l = 0;
+    for (let i = 0; i < d.length; i += 4) { r += d[i] / 255; g += d[i + 1] / 255; b += d[i + 2] / 255; l += 0.2126 * lin(d[i]) + 0.7152 * lin(d[i + 1]) + 0.0722 * lin(d[i + 2]); }
+    const n = d.length / 4; return { r: r / n, g: g / n, b: b / n, lum: l / n };
+  } catch (e) { return null; }
+}
+function surfLoad() {
+  if (!SURF.on) return;
+  const L = new THREE.TextureLoader(), files = { uSfA: ['concrete_diff.jpg', true], uSfN: ['concrete_nor.jpg'], uSfO: ['concrete_orm.jpg'], uSfPN: ['plaster_nor.jpg'], uSfPO: ['plaster_orm.jpg'], uSfG: ['grit_nor.jpg'] };
+  const means = {}; let left = Object.keys(files).length;
+  for (const [k, [file, srgb]] of Object.entries(files)) {
+    const t = L.load('textures/' + file, (tx) => {
+      means[k] = surfMean(tx.image, srgb);
+      if (--left) return;
+      const M = SURF.u.uSfM.value, A = means.uSfA, O = means.uSfO, PO = means.uSfPO;
+      M.set(A ? A.lum : 0.25, O ? O.g : 0.6, PO ? PO.g : 0.6, O ? O.r : 0.8);
+      if (!SURF.failed) SURF.u.uSfK.value.x = 1;
+    }, undefined, () => { SURF.failed = true; console.warn('Surfaces: scan ' + file + ' did not load; the procedural surfaces stay as they were'); });
+    t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    SURF.u[k].value = t;
+  }
+}
+surfLoad();
+
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x000000);
@@ -32128,6 +32227,7 @@ function tfillChunk() {
   for (const k of ['standard', 'physical', 'lambert', 'phong', 'toon']) if (L[k]) L[k].uniforms.uTfP = { value: TFILL.P };
 }
 function tfillTick() {
+  SURF.u.uSfK.value.y = renderer.xr.isPresenting ? 1 : 0;           // surfaces: the headset's lighter path
   if (!TFILL.on) return;
   const P = TFILL.P, cur = stream.current, xr = renderer.xr.isPresenting;
   let n = 0;
@@ -47633,8 +47733,9 @@ function yardMat(kind, set, opts = {}) {
     map: set ? set.map : null, normalMap: set ? set.normal : null, roughnessMap: set ? set.orm : null, metalnessMap: set ? set.orm : null, aoMap: set ? set.orm : null,
     roughness: 1, metalness: 1, envMapIntensity: 1, ...o
   });
-  m.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: kind }; s.uniforms.uYWindA.value = wind; s.uniforms.uYFlut.value = flutter; };
-  m.customProgramCacheKey = () => 'yard17';
+  const sf = SURF.on && set && (kind === 0 || kind === 1) ? (kind === 1 ? ['floor', { tile: YC.tex.ground, keep: 0.7 }] : ['wall', { tile: YC.tex.wall, keep: 0.75 }]) : null;   // surfaces: the concrete walls and the ground take the scans (board pattern / sawcuts kept)
+  m.onBeforeCompile = (s) => { yardInject(s); if (sf) surfInject(s, sf[0], sf[1]); s.uniforms.uYKind = { value: kind }; s.uniforms.uYWindA.value = wind; s.uniforms.uYFlut.value = flutter; };
+  m.customProgramCacheKey = () => 'yard17' + (sf ? '|sf' + kind : '');
   m.userData.yardKind = kind;
   return m;
 }
@@ -49466,7 +49567,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
   } catch (e) { /* no title */ }
 })();
 yardFogColour();                                                  // the default fog until sky/sky.json arrives
-if (window.__cqcDev) Object.assign(window.__cqcDev, { buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+if (window.__cqcDev) Object.assign(window.__cqcDev, { SURF, buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
