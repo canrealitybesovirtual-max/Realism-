@@ -8757,7 +8757,7 @@ function probeRoomUnloaded(room) {
  *  Performance pass: MSAA on the chain, GTAO at half resolution, and the
  *  pixel ratio is chosen by ADAPTIVE QUALITY below.
  * ========================================================================== */
-let composer = null, filmPass = null, gtaoPass = null, postEnabled = true;
+let composer = null, filmPass = null, gtaoPass = null, postEnabled = true, bloomPass = null;   // step 123: bloomPass kept for Sharpness
 /* ----------------------------------------------------------------------------
  *  STEP 23.3 — BODY CAM REALISM, LIVE (MENU.bodyCamRealism, terminal GRAPHICS)
  *  A live first-person camera feel: on, your own view looks like a real
@@ -8782,13 +8782,14 @@ const FilmGradeShader = {
     uBody: { value: 0 }, uGlitch: { value: 0 }, uK: { value: CONFIG.replay.bcr.live.fisheye },
     uBGrain: { value: CONFIG.replay.bcr.live.grain }, uBVig: { value: CONFIG.replay.bcr.live.vignette }, uBChroma: { value: CONFIG.replay.bcr.live.chroma },
     // step 23.5: auto exposure, rolling shutter, oversharpening, gain noise, compression, clipping (0 = skipped)
-    uAE: { value: 1 }, uShut: { value: 0 }, uSharp: { value: 0 }, uNoise: { value: 0 }, uBlock: { value: 0 }, uClip: { value: 0 }
+    uAE: { value: 1 }, uShut: { value: 0 }, uSharp: { value: 0 }, uNoise: { value: 0 }, uBlock: { value: 0 }, uClip: { value: 0 },
+    uCas: { value: 0 }   // step 123: contrast-adaptive sharpening (COMFORT Sharpness; 0 = off)
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
     uniform sampler2D tDiffuse; uniform float uTime, uGrain, uChroma, uVignette; uniform vec2 uRes; varying vec2 vUv;
     uniform float uBody, uGlitch, uK, uBGrain, uBVig, uBChroma;
-    uniform float uAE, uShut, uSharp, uNoise, uBlock, uClip;
+    uniform float uAE, uShut, uSharp, uNoise, uBlock, uClip, uCas;
     float rand(vec2 p){ p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
     float bcHash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float bcSeg(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)); }
@@ -8812,6 +8813,16 @@ const FilmGradeShader = {
       if (uSharp > 0.0) {                                       // step 23.5: body cam oversharpening, two taps
         vec2 px = 1.0 / uRes;
         col = max(col + (col - 0.5 * (texture2D(tDiffuse, uv + px).rgb + texture2D(tDiffuse, uv - px).rgb)) * uSharp, 0.0);
+      }
+      if (uCas > 0.0 && uBody < 0.5) {                          // step 123: CAS (AMD FidelityFX style), 4 extra taps
+        vec2 px = 1.0 / uRes;
+        vec3 ca = texture2D(tDiffuse, uv).rgb, cn = texture2D(tDiffuse, uv + vec2(0.0, px.y)).rgb, cs = texture2D(tDiffuse, uv - vec2(0.0, px.y)).rgb;
+        vec3 ce = texture2D(tDiffuse, uv + vec2(px.x, 0.0)).rgb, cw = texture2D(tDiffuse, uv - vec2(px.x, 0.0)).rgb;
+        vec3 mn = min(ca, min(min(cn, cs), min(ce, cw))), mx = max(ca, max(max(cn, cs), max(ce, cw)));
+        vec3 amp = sqrt(clamp(min(mn, 2.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+        vec3 wt = -amp / mix(8.0, 5.0, uCas);
+        vec3 shp = (ca + wt * (cn + cs + ce + cw)) / (1.0 + 4.0 * wt);
+        col += clamp(shp, 0.0, 1.0) - ca;
       }
       col *= uAE;                                               // step 23.5: auto exposure (1 when off)
       col *= 1.0 - uVignette * smoothstep(0.1, 0.8, r2 * 2.0);
@@ -8871,7 +8882,8 @@ function setupPost() {
     composer.addPass(gtao);
     gtaoPass = gtao;
   } catch (e) { console.warn('GTAO unavailable, continuing without it.', e); }
-  composer.addPass(new UnrealBloomPass(new THREE.Vector2(w, h), CONFIG.post.bloomStrength, CONFIG.post.bloomRadius, CONFIG.post.bloomThreshold));
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), CONFIG.post.bloomStrength, CONFIG.post.bloomRadius, CONFIG.post.bloomThreshold);
+  composer.addPass(bloomPass);
   composer.addPass(new OutputPass());       // tone mapping + sRGB happen here
   // Step 20: edge smoothing. MSAA only sees triangle edges; SMAA also catches what it misses: shiny
   // edges on steel and gun parts, thin pickets and rails, tile joints, and the stair-step edges you
@@ -9908,7 +9920,33 @@ try {
   for (const k of Object.keys(OPTIONS)) if (OPTIONS[k].includes(saved[k])) comfort[k] = saved[k];
   for (const [k, f] of [['bodyFwd', 'fwd'], ['bodyUp', 'up'], ['fov', 'fov']]) if (typeof saved[k] === 'number' && isFinite(saved[k])) comfort[k] = Math.min(VIEW_FIT[f][1], Math.max(VIEW_FIT[f][0], saved[k]));
   if (typeof saved.bodyShow === 'boolean') comfort.bodyShow = saved.bodyShow;
+  if (typeof saved.sharp === 'boolean') comfort.sharp = saved.sharp;   // step 123
 } catch (e) { /* storage blocked: defaults are fine */ }
+/* STEP 123 — SHARPNESS (COMFORT; ?sharp=off = exactly as before). Computer: CAS in the film pass (no extra
+ * target), chroma fringes x0.4, bloom radius 0.55 -> 0.4, render scale allowed up to the screen (max 2x;
+ * auto quality still drops it to hold the frame rate). Headset: fixed foveation 0.5 -> 0.35 at session start
+ * (the existing adaptive foveation still raises it while frames drop). Textures already use anisotropy 8 / 4. */
+const SHARP = { on: !/[?&]sharp=off/.test(location.search), cas: 0.6, chromaK: 0.4, bloomR: 0.4, maxPr: 2, fov: 0.35, base: null };
+if (SHARP.on && typeof comfort.sharp !== 'boolean') comfort.sharp = true;
+function sharpApply() {
+  if (!SHARP.on) return;
+  const on = comfort.sharp !== false;
+  if (!SHARP.base) SHARP.base = { pr: CONFIG.perf.desktop.maxPixelRatio, fov: CONFIG.xr.foveation };
+  const b = SHARP.base;
+  if (filmPass) { filmPass.uniforms.uCas.value = on ? SHARP.cas : 0; filmPass.uniforms.uChroma.value = CONFIG.post.chroma * (on ? SHARP.chromaK : 1); }
+  if (bloomPass) bloomPass.radius = on ? Math.min(CONFIG.post.bloomRadius, SHARP.bloomR) : CONFIG.post.bloomRadius;
+  if (!IS_HEADSET && !IS_TOUCH) {
+    CONFIG.perf.desktop.maxPixelRatio = on ? Math.max(b.pr, SHARP.maxPr) : b.pr;
+    if (typeof perfLevels === 'function' && perf.levels) {
+      perf.levels = perfLevels();
+      if (Number.isInteger(perf.mode) && perf.mode >= perf.levels.length) perf.mode = 'auto';
+      if (perf.level >= perf.levels.length) applyLevel(perf.levels.length - 1);
+    }
+  }
+  if (!(typeof BOOST !== 'undefined' && BOOST.on)) CONFIG.xr.foveation = on ? Math.min(b.fov, SHARP.fov) : b.fov;
+  if (typeof BOOST !== 'undefined' && BOOST.base) BOOST.base.fov = on ? Math.min(b.fov, SHARP.fov) : b.fov;
+}
+sharpApply();
 // A desktop field of view designed against the old fixed 72 deg (aim, the viewmodel) kept in the same ratio to yours.
 const fovFor = (deg) => (comfort.fov === 72 ? deg : 2 * Math.atan(Math.tan(deg * Math.PI / 360) * Math.tan(comfort.fov * Math.PI / 360) / Math.tan(Math.PI / 5)) * 180 / Math.PI);
 
@@ -27931,12 +27969,14 @@ function termComfort(W, H, now) {
   });
   let y = 132 + 4 * P;
   tRowLabel('Brightness', y, rh, 28, 'desktop: [ and ]');
-  tBtn('exp:-', T_X0, y, 80, rh, '−', { size: 32, fn: () => exposureStep(-0.1) });
-  tText(renderer.toneMappingExposure.toFixed(2), T_X0 + 140, y + rh / 2 + 1, 26, TC.text, 'center', 700, TC.mono);
-  tBtn('exp:+', T_X0 + 200, y, 80, rh, '+', { size: 32, fn: () => exposureStep(0.1) });
+  const shOn = SHARP.on, ew = shOn ? 48 : 80;                     // step 123: narrower brightness buttons make room for Sharpness
+  tBtn('exp:-', T_X0, y, ew, rh, '−', { size: 32, fn: () => exposureStep(-0.1) });
+  tText(renderer.toneMappingExposure.toFixed(2), T_X0 + (shOn ? 80 : 140), y + rh / 2 + 1, 26, TC.text, 'center', 700, TC.mono);
+  tBtn('exp:+', T_X0 + (shOn ? 112 : 200), y, ew, rh, '+', { size: 32, fn: () => exposureStep(0.1) });
+  if (SHARP.on) tTog('sharp', T_X0 + 170, y, 164, rh, 'Sharpness', comfort.sharp !== false, (v) => { comfort.sharp = v; comfortChanged(); sharpApply(); termMsg(v ? 'Sharpness on: crisper image, render scale up to the screen' : 'Sharpness off'); });   // step 123
   if (renderer.xr.isPresenting) tText('Saved in this browser', 1008, y + rh / 2 + 1, 19, TC.dim, 'right', 600);
   else {                                                         // step 98: the computer's field of view (never used in the headset)
-    tText('Field of view', 610, y + rh / 2 + 1, 22, TC.text, 'left', 600, TC.sans, 136);
+    tText('Field of view', SHARP.on ? 642 : 610, y + rh / 2 + 1, SHARP.on ? 20 : 22, TC.text, 'left', 600, TC.sans, SHARP.on ? 104 : 136);
     tBtn('fov:-', 752, y, 64, rh, '−', { size: 32, fn: () => viewFitStep('fov', -1) });
     tText(`${comfort.fov}°`, 862, y + rh / 2 + 1, 26, TC.text, 'center', 700, TC.mono);
     tBtn('fov:+', 908, y, 64, rh, '+', { size: 32, fn: () => viewFitStep('fov', 1) });
@@ -42027,6 +42067,7 @@ function freeItemHand(h, it, p, P, Q) {
     await yieldFrame();
     if (REAL_LIGHT) bakeEnvironment();           // step 58: Real lighting off = no baked bounce light
     setupPost();
+    sharpApply();                                // step 123: CAS / chroma / bloom radius on the new chain
     // Performance pass: compile both shader variants now, with the baked lighting in:
     // the post chain's (no tone mapping, desktop) and the screen/VR one (tone mapped).
     // Before, the first desktop frame and the first VR frame each froze to compile.
