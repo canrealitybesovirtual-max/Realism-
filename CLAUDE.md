@@ -929,3 +929,5 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - City map removed (CITY section, cqc/city/, watch / M panel buttons, hooks).
 - NVG: tube fov 95 deg, softer field stop (edge 0.12), grain / sparkle / hex pattern / bloom / halos about a quarter of before.
 - Safe-room bench walk box depth 0.31 -> 0.17 m half (you stand against the front edge).
+## CQC: Beretta 92X removed
+- The step 120 section above is history: WEAPON_DEFS.b92, EXTG.b92, B92 / B92_* / b92* code, store rows and WS_GUNS / WS_REAL entries, paint groups, rail rows, muzzle / heat / brass / ballistics / sound table entries, hand and viewmodel fits, the locker peg (GL.pistols is m1911, g17), inv.b92, the enemy drop, cqc/models/beretta92x.glb (+ src) and tools/pack_beretta.py, the release-notes credit. Old saves' b92.* store ids are ignored. Syntax parse only.
