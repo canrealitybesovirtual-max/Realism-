@@ -15741,7 +15741,7 @@ function fireGun(g, now) {
   _fo.copy(g.wr.chamber).applyMatrix4(root.matrixWorld);
   // Step 8.1: zeroed. The sights sit above the bore, so the bore is angled up a hair
   // and the bullet crosses the sight line at d.zero metres (CQC: a few cm low up close).
-  _fd.set(0, d.zero ? (g.sightY ?? d.eye[1]) / d.zero : 0, -1).normalize().applyQuaternion(_wq);   // step 100: a red dot / tall sights move the sight line
+  _fd.set(d.zero ? (g.sightX || 0) / d.zero : 0, d.zero ? (g.sightY ?? d.eye[1]) / d.zero : 0, -1).normalize().applyQuaternion(_wq);   // step 100: a red dot / tall sights move the sight line
   const AF = g.afx || AFX0;                                        // step 100: the fitted parts (GLOCK_FX)
   _fx.set(1, 0, 0).applyQuaternion(_wq); _fy.set(0, 1, 0).applyQuaternion(_wq);
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
@@ -19081,12 +19081,168 @@ function wbSnap(g, p) {
   _snM.makeBasis(xAx, up, zAx);
   p.root.quaternion.setFromRotationMatrix(_snM);
   p.root.position.copy(hit.point).addScaledVector(_snN, 0.0004);
+  if (optIs(p.item)) {                                              // any-gun fit: an optic on top sits square to the bore (axis along -z), on the centreline
+    _snX.set(0, 1, 0).transformDirection(model.matrixWorld);
+    if (_snN.dot(_snX) > 0.5) {
+      model.getWorldQuaternion(p.root.quaternion);
+      const L = model.worldToLocal(_wbV.copy(p.root.position)); L.x = 0; p.root.position.copy(model.localToWorld(L));
+    }
+  }
+  p.item.snapped = true;
+  seatPart(g, p);                                                   // any-gun fit: optics on top, grips under, stocks at the rear
   p.root.updateMatrixWorld(true);
   return true;
 }
+/* Any-gun fit: optic sight lines. An optic on a gun that is not its own (or put on by wbSnap) gets its sight line from its own
+ * window / eyepiece (the reticle glass, the picture-in-picture disc): g.sightY / g.sightX (fireGun zeroes the bore to it),
+ * g.wr.eye (desktop ADS), the scope picture (ACOG desc with this gun's objective, the AKM 2x's own picture). Taken off: the
+ * gun's own line again (its own refresh, or what it had before). */
+const OPT_AK = new Set(['akdot', 'akholo', 'akx2']), _osB = new THREE.Box3(), _osV = new THREE.Vector3();
+function optIs(it) { return !!it && (it.sub === 'dot' || OPT_AK.has(it.akKey) || (it.sub === 'm4part' && (it.part === 'dot' || it.part === 'holo' || it.part === 'acog'))); }
+function optOwn(g, it) { return !it.snapped && ((it.sub === 'dot' && (g.type === 'g17' || g.type === 'm1911')) || (it.akKey && g.type === 'akmn') || (it.sub === 'm4part' && g.type === 'm4a1s')); }
+function optAxisMesh(it) { return it.eyepiece || it.reticle || it.pip || it.glass || null; }
+// The optic's axis point in the gun's design space (g.model), or null.
+function optAxis(g, p, out) {
+  const it = p.item, m = optAxisMesh(it);
+  g.model.updateMatrixWorld(true); p.root.updateMatrixWorld(true);
+  if (m && m.geometry) {
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    _osB.copy(m.geometry.boundingBox).applyMatrix4(m.matrixWorld);
+  } else { _osB.setFromObject(p.root); const h = _osB.max.y - _osB.min.y; _osB.min.y += 0.6 * h; _osB.max.y = _osB.min.y; }
+  return g.model.worldToLocal(_osB.getCenter(out));
+}
+// Any-gun fit: a snapped part (not the gun's own fit; muzzle devices are muzFx's) adds a default effect from its mass:
+// weight, recoil by momentum (heavier gun kicks less), sway / aim / ADS by the added inertia about the grip.
+// Any-gun fit: where a cross-gun part sits. The gun's drawn vertices (visible meshes, no fitted parts) in its design space
+// (g.model), cached per gun; the part's own bounds in its frame. Optic: mount face flush on the highest point under its whole
+// length (so over the iron sights too), axis parallel to the bore, centred. Grip: its top on the lowest point of the gun under
+// it, ahead of the magazine. Stock: front at the receiver rear (behind the grip), bore height. Lights / lasers: the surface snap.
+const PART_GRIP = new Set(['vfg', 'afg', 'akvg', 'akag', 'akhs']), PART_STOCK = new Set(['sopmod', 'ctr']);
+function partKind(it) { return optIs(it) ? 'optic' : PART_GRIP.has(it.part) || PART_GRIP.has(it.akKey) ? 'grip' : PART_STOCK.has(it.part) ? 'stock' : null; }
+// The gun's drawn meshes (visible, no fitted parts, no magazine, no transparent glass / additive glow), cached per gun.
+function gunMeshes(g) {
+  if (g._vcloud) return g._vcloud;
+  const model = g.model, out = [], skip = new Set();
+  model.traverse((o) => { if (o.userData.att) o.traverse((c) => skip.add(c)); });
+  for (const mg of [g.mag && g.mag.root, g.parts && g.parts.mag]) if (mg) mg.traverse((c) => skip.add(c));
+  model.traverse((o) => {
+    if (!o.isMesh || skip.has(o) || !o.geometry) return;
+    for (let q = o; q && q !== model; q = q.parent) if (!q.visible) return;
+    if (o.material && (o.material.transparent || o.material.blending === THREE.AdditiveBlending)) return;
+    out.push(o);
+  });
+  return (g._vcloud = out);
+}
+// Highest / lowest drawn point of the gun over z0..z1 within |x| < xw, by rays down / up in design space (any mesh density).
+const _gsRC = new THREE.Raycaster(), _gsO = new THREE.Vector3(), _gsD = new THREE.Vector3();
+function gunSpan(g, z0, z1, xw, ymin = -0.5, ymax = 0.5) {
+  const list = gunMeshes(g), W = g.model.matrixWorld, inv = new THREE.Matrix4().copy(W).invert();
+  g.model.updateMatrixWorld(true);
+  let top = -Infinity, bot = Infinity;
+  for (let a = 0; a <= 8; a++) for (const x of [-xw * 0.5, 0, xw * 0.5]) {
+    const z = z0 + (z1 - z0) * a / 8;
+    for (const dn of [true, false]) {
+      _gsO.set(x, dn ? ymax : ymin, z).applyMatrix4(W); _gsD.set(0, dn ? -1 : 1, 0).transformDirection(W);
+      _gsRC.set(_gsO, _gsD); _gsRC.far = (ymax - ymin) * 1.01;
+      const h = _gsRC.intersectObjects(list, false)[0]; if (!h) continue;
+      const y = h.point.applyMatrix4(inv).y;
+      if (dn) top = Math.max(top, y); else bot = Math.min(bot, y);
+    }
+  }
+  return top === -Infinity ? null : { top, bot };
+}
+function seatBox(p, out) {                                          // the part's drawn bounds in its own frame
+  const inv = new THREE.Matrix4().copy(p.root.matrixWorld).invert(), M = new THREE.Matrix4(), b = new THREE.Box3();
+  out.makeEmpty();
+  p.root.traverse((o) => { if (!o.isMesh || !o.geometry) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); out.union(b.copy(o.geometry.boundingBox).applyMatrix4(M)); });
+  return out;
+}
+const _spB = new THREE.Box3();
+function seatPart(g, p) {
+  const k = partKind(p.item); if (!k || !g.model) return false;
+  const model = g.model, d = g.def;
+  p.root.updateMatrixWorld(true); model.updateMatrixWorld(true);
+  const B = seatBox(p, _spB), L = model.worldToLocal(new THREE.Vector3().setFromMatrixPosition(p.root.matrixWorld));
+  const len = B.max.z - B.min.z, palmZ = d.palm ? d.palm[2] : 0;
+  if (k === 'optic') {
+    const S = gunSpan(g, L.z + B.min.z - 0.004, L.z + B.max.z + 0.004, 0.016);
+    if (!S) return false;
+    L.set(0, S.top + 0.0006 - B.min.y, L.z);
+  } else if (k === 'grip') {
+    const zf = d.muzzle ? d.muzzle[2] : -0.3, z = Math.min(L.z, palmZ - 0.12);   // ahead of the magazine well
+    const zc = Math.max(z, zf * 0.7), S = gunSpan(g, zc + B.min.z, zc + B.max.z, 0.02, -0.12, 0.05);
+    if (!S) return false;
+    L.set(0, S.bot - 0.0006 - B.max.y, zc);
+  } else {                                                          // stock
+    const S = gunSpan(g, palmZ, palmZ + 0.4, 0.04);
+    const zr = S ? palmZ + 0.03 : palmZ + 0.03;
+    L.set(0, -(B.min.y + B.max.y) / 2 * 0.3, zr - B.min.z);
+    void len;
+  }
+  model.getWorldQuaternion(p.root.quaternion);
+  p.root.position.copy(model.localToWorld(L));
+  p.root.updateMatrixWorld(true);
+  return true;
+}
+// Any-gun fit: a cross-gun foregrip is the support hand's hold (the step 23 vfg hold works on any long gun).
+function foreignGrip(g, own) {
+  const p = (g.atts || []).find((q) => q.item.snapped && partKind(q.item) === 'grip' && (q.item.part === 'vfg' || q.item.akKey === 'akvg'));
+  if (!p) { if (g._def0) { if (!own) g.def = g._def0; g._def0 = null; if (!own && g.wr) g.wr = Object.assign({}, g.wr, { vfg: null }); } return; }
+  if (!g._def0) g._def0 = g.def;
+  const B = seatBox(p, _spB), c = g.model.worldToLocal(B.getCenter(new THREE.Vector3()).applyMatrix4(p.root.matrixWorld));
+  const vfg = [c.x, c.y - 0.15 * (B.max.y - B.min.y), c.z], pm = (g.def.palm || [0, 0, 0]);
+  g.def = Object.assign(Object.create(Object.getPrototypeOf(g.def)), g.def, { vfg });
+  g.wr = Object.assign({}, g.wr, { vfg: new THREE.Vector3(vfg[0] - pm[0], vfg[1] - pm[1], vfg[2] - pm[2]) });
+}
+function foreignFx(g, own) {
+  foreignGrip(g, own);
+  if (!g || !g.prop) return;
+  const F = g._ffx;
+  if (F && !own && g.afx) {                                         // undo the last pass (no own refresh rebuilt g.afx)
+    g.afx.mass -= F.m; for (const k of ['kick', 'climb', 'dkick', 'sway', 'aim', 'ads']) g.afx[k] /= F[k];
+  }
+  g._ffx = null;
+  const parts = (g.atts || []).filter((q) => q.item.snapped && !muzIsDev(q.item));
+  if (!parts.length) return;
+  const A = g.afx || (g.afx = Object.assign({}, AFX0)), d = g.def, M0 = (d.mass || 1) + (A.mass || 0), root = g.prop.root;
+  root.updateMatrixWorld(true); const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  let m = 0, I = 0;
+  for (const p of parts) {
+    const pm = p.mass || 0.15, L = Math.max(0.05, new THREE.Vector3().setFromMatrixPosition(p.root.matrixWorld).applyMatrix4(inv).length());
+    m += pm; I += pm * L * L;
+  }
+  const Lg = Math.max(0.08, -((d.muzzle && d.muzzle[2]) || -0.2)), r = I / ((d.mass || 1) * Lg * Lg / 4);
+  const k = M0 / (M0 + m), N = { m, kick: k, climb: 1 / (1 + 0.1 * r), dkick: k, sway: 1 + 0.09 * r, aim: 1 + 0.05 * r, ads: 1 + 0.07 * r };
+  A.mass = (A.mass || 0) + m; for (const q of ['kick', 'climb', 'dkick', 'sway', 'aim', 'ads']) A[q] = (A[q] ?? 1) * N[q];
+  g._ffx = N;
+}
+function optSight(g, own) {
+  if (!g || !g.prop || !g.model) return;
+  const p = (g.atts || []).find((q) => optIs(q.item) && !optOwn(g, q.item));
+  const P = g.parts || (g.parts = {}), d = g.def, pm = d.palm || [0, 0, 0];
+  if (!p) {
+    const O = g._optOver; if (!O) return;
+    g._optOver = null; g.sightX = 0;
+    if (!own) { g.sightY = O.y; g.wr = Object.assign({}, g.wr, { eye: O.eye }); }
+    if (!(own && (g.type === 'm4a1s' || g.type === 'awp'))) { if (O.scope) { P.scope = O.scope; P.scopeLens = O.lens; } else { delete P.scope; delete P.scopeLens; } }
+    if (g.type !== 'akmn') g.akLens = null;
+    return;
+  }
+  if (!g._optOver) g._optOver = { y: g.sightY ?? (d.eye ? d.eye[1] : 0), eye: g.wr && g.wr.eye, scope: P.scope, lens: P.scopeLens };
+  const A = optAxis(g, p, _osV), it = p.item;
+  g.sightY = A.y; g.sightX = A.x;
+  const ez = d.eye ? d.eye[2] : A.z + 0.3;
+  g.wr = Object.assign({}, g.wr, { eye: new THREE.Vector3(A.x - pm[0], A.y - pm[1], ez - pm[2]) });
+  if (it.part === 'acog' && it.eyepiece && M4A.ready) {
+    const ob = g.model.worldToLocal(new THREE.Vector3(0, M4_ACOG.h, M4_ACOG.ob).applyMatrix4(p.root.matrixWorld));   // its objective (item frame as on the M4: origin on the rail top)
+    g._acogDesc = Object.assign({}, m4AcogDesc(), { ob });
+    P.scopeLens = it.eyepiece; P.scope = g._acogDesc;
+  } else if (!(own && (g.type === 'm4a1s' || g.type === 'awp'))) { if (g._optOver.scope) { P.scope = g._optOver.scope; P.scopeLens = g._optOver.lens; } else { delete P.scope; delete P.scopeLens; } }
+  g.akLens = it.akKey === 'akx2' && it.pip ? it.pip : (g.type === 'akmn' ? g.akLens : null);
+}
 function wbGrabbed(it) {
   if (RAIL.on && it.pl2 && !it.tableSpot) it.tableSpot = railPl2Spot();   // step 112: a PL-2 off a gun keeps a place on the table
-  it.rail = null;
+  it.rail = null; it.snapped = false;                                // any-gun fit
   wbUnhook(it);
   const sg = it.stuck ? it.stuck.g : null, g = sg && muzIsDev(it) ? sg : null;
   if (g) muzOff(g, it.prop);                                        // step 103: what was in front of it goes back on the table
@@ -19097,13 +19253,14 @@ function wbGrabbed(it) {
 // Step 100 / 102 / 105 / 108: a gun with its own build (Glock, AKM, M4A1-S, M1911) redoes its hardware, sight line, muzzle and effects after a part came or went.
 function attRefresh(g) {
   if (!g || !g.prop) return;
-  atcDirty(g);                                                      // attclip
+  atcDirty(g); g._vcloud = null;                                   // attclip (any-gun fit: the drawn cloud is re-read)
   if (g.type === 'g17') g17Refresh(g);
   else if (g.type === 'akmn') akmRefresh(g);                        // step 102
   else if (g.type === 'm1911') m19Refresh(g);                       // step 108
   else if (g.type === 'b92') b92Refresh(g);                         // step 120
   else if (g.type === 'm4a1s' && M4A.ready) m4Refresh(g);
   else if (g.type === 'awp' && AWMA.ready) awmRefresh(g);           // step 113
+  else { optSight(g, false); foreignFx(g, false); }                // any-gun fit: guns without their own build
 }
 function wbSupSnap(g, p, reach) {
   const root = g.prop.root; root.updateMatrixWorld(true);
@@ -20449,14 +20606,14 @@ if (/[?&]dev\b/.test(location.search)) window.__cqcSling = { SLANIM, SLC, slingC
 // or an empty hand poking it.
 const _lzs = new THREE.Vector3();
 function nearLaserSwitch(tip, reach) {
-  RAIL.nearL = null;
+  RAIL.nearL = null; let best = Infinity, bg = null;
   for (const q of props) {
     const g = q.item;
     if (!g || g.kind !== 'gun' || !g.wr || !g.wr.laser || q.removing) continue;
     q.root.updateWorldMatrix(true, false);
-    for (const e of railLasersOf(g)) if (_lzs.copy(e.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip) < reach) { RAIL.nearL = e; return g; }   // step 112: which module
+    for (const e of railLasersOf(g)) { const dd = _lzs.copy(e.sw).applyMatrix4(q.root.matrixWorld).distanceTo(tip); if (dd < reach && dd < best) { best = dd; RAIL.nearL = e; bg = g; } }   // step 112: which module (nearest pad: several of one kind each switch on their own)
   }
-  return null;
+  return bg;
 }
 
 function deskLightToggle() {
@@ -21692,16 +21849,16 @@ function updateLightMount() {
 // an empty hand can also just poke it. (VRTIP on: fingertip / thumb tip contacts only, switchTips.)
 const _lb = new THREE.Vector3(), _lb2 = new THREE.Vector3(), _lbq = new THREE.Quaternion();
 function nearLightSwitch(tip, reach) {
-  RAIL.nearLt = null;
+  RAIL.nearLt = null; let best = Infinity, bg = null;
   for (const q of props) {
     const g = q.item;
     if (!g || g.kind !== 'gun' || !g.light || q.removing) continue;
     for (const it of railLightsOf(g)) {                                // step 112: each light's own buttons
       const r = it.prop.root; r.updateWorldMatrix(true, false);
-      for (const b of LIGHT_BUTTONS) if (_lb2.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip) < reach) { RAIL.nearLt = it; return g; }
+      for (const b of LIGHT_BUTTONS) { const dd = _lb2.copy(b).applyMatrix4(r.matrixWorld).distanceTo(tip); if (dd < reach && dd < best) { best = dd; RAIL.nearLt = it; bg = g; } }   // nearest button wins
     }
   }
-  return null;
+  return bg;
 }
 function updateLightSwitches() {
   if (VRTIP.on) { medTrigger(); switchTips(); return; }             // switches by fingertip / thumb tip only (VRTIP)
@@ -40161,7 +40318,8 @@ function b92Grips(g) {
   g.model.add(o); H.panel = o;
 }
 // After a part came on or off: wrap and dot shown, grips, muzzle point, sight line, the effects.
-function b92Refresh(g) {
+function b92Refresh(g) { const r = b92Refresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
+function b92Refresh0(g) {
   if (!g || g.type !== 'b92' || !B92.ready || !g.prop) return;
   const d = g.def, P = g.parts, pm = d.palm, wrap = b92Owned('b92.wrap'), dot = wrap && b92Fitted('b92.dot');
   if (P.b92wrap) P.b92wrap.visible = wrap;
@@ -40945,7 +41103,8 @@ function g17BenchFit(g, p, reach) {
 
 /* --- keeping every Glock's build (store <-> guns) --- */
 // After a part comes on or off: hardware shown, the muzzle point, the sight line, the stock light, the effects.
-function g17Refresh(g) {
+function g17Refresh(g) { const r = g17Refresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
+function g17Refresh0(g) {
   if (!g || g.type !== 'g17' || !G17A.ready) return;
   const H = g17Hw(g), M = G17A.M, d = g.def, T = M.thread;
   const chain = muzState(g), thr = g17Owned('g17.thread'), muz = chain.length > 0;   // step 103
@@ -42281,7 +42440,7 @@ function muzFx(g, chain, out) {
 }
 // The clip's second box: as long and as wide as the chain, from the base muzzle to the tip.
 function muzClipSet(g, chain) {
-  atcDirty(g);                                                      // attclip
+  atcDirty(g); g._vcloud = null;                                   // attclip (any-gun fit: the drawn cloud is re-read)
   if (!chain.length || typeof RAPIER === 'undefined') { g.muzClip = null; return; }
   const b = muzBase(g, _mzB), t = muzTip(g, chain, _mzT), L = b.z - t.z;
   if (!(L > 0.01)) { g.muzClip = null; return; }
@@ -42642,18 +42801,19 @@ function akmReticleMat(dotMoa, ringMoa) {
 // The 2x's eyepiece: the view from its objective (AKMA.kit.pip.rt), an exit pupil, a red ring-and-dot reticle.
 function akmPipMat(rt) {
   return new THREE.ShaderMaterial({
-    uniforms: { tScene: { value: rt.texture }, uEye: { value: new THREE.Vector3(0, 0, AKM_DIM.relief) }, uRelief: { value: AKM_DIM.relief }, uBox: { value: 0.012 }, uLit: { value: 0 }, uLvl: { value: 1 } },
+    uniforms: { tScene: { value: rt.texture }, uEye: { value: new THREE.Vector3(0, 0, AKM_DIM.relief) }, uRelief: { value: AKM_DIM.relief }, uBox: { value: 0.03 }, uLit: { value: 0 }, uLvl: { value: 1 } },   // wide eye box (forgiving)
     vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
     fragmentShader: `uniform sampler2D tScene; uniform vec3 uEye; uniform float uRelief, uBox, uLit, uLvl; varying vec2 vUv;
       void main() {
         vec2 p = (vUv - 0.5) * 2.0;
         vec2 off = uEye.xy / uBox;                                    // eye off the axis, in eye-box units
-        float dz = (uEye.z - uRelief) / 0.05;
-        float R = clamp(1.04 - 0.1 * dot(off, off) - 0.12 * dz * dz, 0.45, 1.04);
-        float vis = 1.0 - smoothstep(R - 0.12, R, length(p + off * 0.3));
+        float dz = (uEye.z - uRelief) / 0.12;                       // forgiving eye relief
+        float R = clamp(1.06 - 0.05 * dot(off, off) - 0.06 * dz * dz, 0.82, 1.06);   // the picture fills the eyepiece; a thin soft edge only
+        float vis = 1.0 - smoothstep(R - 0.06, R, length(p + off * 0.12));
         vec3 col = texture2D(tScene, clamp(0.5 + (p + off * 0.06) * 0.5, 0.0, 1.0)).rgb * vis * uLit;
         float d = length(p);
-        float ret = (1.0 - smoothstep(0.018, 0.03, d)) + (1.0 - smoothstep(0.008, 0.016, abs(d - 0.34)));
+        float aa = fwidth(d) * 1.2;                                  // clean, anti-aliased ring and dot
+        float ret = (1.0 - smoothstep(0.012 - aa, 0.012 + aa, d)) + (1.0 - smoothstep(0.004 - aa, 0.004 + aa, abs(d - 0.34)));
         col += vec3(1.0, 0.05, 0.025) * ret * uLvl * uLit * 0.9;
         col += vec3(0.012, 0.016, 0.02) * (1.0 - uLit) * (0.6 + 0.4 * p.y);
         gl_FragColor = vec4(col, 1.0);
@@ -42739,8 +42899,8 @@ function akmKit() {
     akdot: { geo: new THREE.CircleGeometry(1, 40).scale(half('dot')[0], half('dot')[1], 1).translate(...win('dot')), mat: akmReticleMat(3, 0) },
     akholo: { geo: new THREE.ShapeGeometry(rr(half('holo')[0], half('holo')[1], 0.003), 6).translate(...win('holo')), mat: akmReticleMat(1, 65) }
   };
-  const X = ex.x2, px = IS_HEADSET ? 256 : 384, rt = new THREE.WebGLRenderTarget(px, px, { type: THREE.HalfFloatType, depthBuffer: true });
-  K.pip = { rt, cam: new THREE.PerspectiveCamera(13, 1, 0.3, 80), mat: akmPipMat(rt), eyeL: new THREE.Vector3() };   // 2x: a 26 deg eyepiece / 2
+  const X = ex.x2, px = 512, rt = new THREE.WebGLRenderTarget(px, px, { type: THREE.HalfFloatType, depthBuffer: true });   // sharper target
+  K.pip = { rt, cam: new THREE.PerspectiveCamera(20, 1, 0.3, 120), mat: akmPipMat(rt), eyeL: new THREE.Vector3() };   // wider: a 40 deg eyepiece / 2
   RETICLE.mats.push(K.glass.akdot.mat, K.glass.akholo.mat, K.pip.mat);   // step 105: one room brightness for every reticle (reticleTick)
   K.pipGeo = new THREE.CircleGeometry(X.eyeR * 0.97, 40).translate(0, X.axisY, X.eyeZ + 0.0015);
   K.objGeo = new THREE.CircleGeometry(X.objR * 0.97, 32).rotateY(Math.PI).translate(0, X.axisY, X.objZ - 0.0003);
@@ -42880,7 +43040,8 @@ function akmGunIds(g, out) {
   return out;
 }
 // After anything changed on this AKM: the kit's parts shown, the sight line, the support hold, the muzzle, the effects.
-function akmRefresh(g) {
+function akmRefresh(g) { const r = akmRefresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
+function akmRefresh0(g) {
   if (!AKMA.ready || !g || g.type !== 'akmn' || !g.prop) return;
   const H = akmHw(g), d = WEAPON_DEFS.akmn, chain = muzState(g), dev = chain.length > 0, show = (list, v) => { for (const o of list) o.visible = v; };
   show(H.wood, !H.kit); H.rails.visible = H.kit; H.coverMesh.visible = H.kit && H.covers;
@@ -42978,7 +43139,7 @@ function akmTick(dt) {
   akmPipTick();                                                      // the reticles' brightness: reticleTick (RETICLE, step 105)
 }
 function akmPipGun() {
-  for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.type === 'akmn' && g.akLens && !g.prop.removing) return g; }
+  for (const h of renderer.xr.isPresenting ? vrHands : [deskHand]) { const g = gunOf(h); if (g && g.akLens && !g.prop.removing) return g; }   // any-gun fit: a 2x on any gun
   return null;
 }
 function akmPipTick() {
@@ -42989,7 +43150,7 @@ function akmPipTick() {
   lens.updateMatrixWorld(true);
   lens.worldToLocal(headWorld(P.eyeL));                             // the eye in the eyepiece's frame (its glass faces +z)
   P.eyeL.y -= X.axisY; P.eyeL.z -= X.eyeZ;
-  if (!(P.eyeL.z > 0.015 && P.eyeL.z < 0.25 && Math.hypot(P.eyeL.x, P.eyeL.y) < 0.04)) return;
+  if (!(P.eyeL.z > 0.01 && P.eyeL.z < 0.3 && Math.hypot(P.eyeL.x, P.eyeL.y) < 0.06)) return;   // forgiving eye box
   U.uLit.value = 1; U.uEye.value.copy(P.eyeL);
   P.cam.position.set(0, X.axisY, X.objZ).applyMatrix4(lens.matrixWorld);   // on the axis at the objective, looking down the gun
   lens.getWorldQuaternion(P.cam.quaternion); P.cam.updateMatrixWorld(true);
@@ -43552,7 +43713,8 @@ function m19BenchFit(g, p, reach) {
 /* --- keeping every 1911's build (store <-> guns) --- */
 const _m19M = new THREE.Vector3();
 // After anything changed: hardware shown, grips, the muzzle point, the sight line, the effects.
-function m19Refresh(g) {
+function m19Refresh(g) { const r = m19Refresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
+function m19Refresh0(g) {
   if (!g || g.type !== 'm1911' || !M1911A.ready || !g.prop) return;
   const H = m19Hw(g), M = M1911A.M, d = g.def, T = M.thread;
   const chain = muzState(g), thr = m19Owned('m1911.thread'), muz = chain.length > 0;
@@ -43766,7 +43928,8 @@ const M4_GEO = { shoulder: -0.4925, stub: -0.5199, handleY: 0.0215, handleZ: [-0
 const M4_CUT_KEYS = ['handle', 'hg', 'stock'];                        // cut meshes that stay on the gun (parts.*), shown or hidden
 const M4_R = { tube: 0.0235, rail: 0.0295 };                          // quad rail: body radius, rail-top radius (the 12 / 3 / 6 / 9 faces)
 const M4_VFG_DROP = 0.0568;                                           // grip point under the rail face (the AKM foregrip's: VFG_SUP)
-const M4_ACOG = { mag: 4, afov: 28, relief: 0.038, box: 0.012, eye: 0.0445, ob: -0.0985, lens: 0.0118, h: 0.031 };
+const M4_ACOG = { mag: 4, afov: 36, relief: 0.038, box: 0.026,   // wider field, forgiving eye box
+  eye: 0.0445, ob: -0.0985, lens: 0.0118, h: 0.031 };
 const M4_BUIS = { down: -Math.PI / 2 };                                // the flip-up sight folds forward flat
 const M4_NOT_HERE = 'Made for the M4A1-S: its rail, its quad rail, its buffer tube';
 // Store id -> bench part (sub, part, label, kg; hold: 'long' = a fist round its long axis, 'grip' = round a vertical grip;
@@ -44074,7 +44237,7 @@ function m4Tpl(name) {
 // The prism scope's description for SCOPE (one for every M4: the seat is the same): fixed 4x, lit chevron, short eye relief.
 function m4AcogDesc() {
   if (M4A.acog) return M4A.acog;
-  const rt = new THREE.WebGLRenderTarget(IS_HEADSET ? 256 : 384, IS_HEADSET ? 256 : 384, { type: THREE.HalfFloatType, depthBuffer: true });
+  const rt = new THREE.WebGLRenderTarget(512, 512, { type: THREE.HalfFloatType, depthBuffer: true });
   if (!SCOPE.cam) SCOPE.cam = new THREE.PerspectiveCamera(M4_ACOG.afov / M4_ACOG.mag, 1, 0.6, 140);
   const A = M4_ACOG, S = M4A.S;
   M4A.acog = { reticle: 'chevron', mag: A.mag, min: A.mag, max: A.mag, afov: A.afov, relief: A.relief, box: A.box,
@@ -44181,7 +44344,8 @@ function m4SyncGun(g) {
 function m4ApplyStore() { for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'm4a1s' && !q.removing) m4SyncGun(q.item); }
 // After a part came or went: factory parts shown or hidden, the folding sight, the sling, the sight line, the scope, the
 // foregrip point, the muzzle and the effects.
-function m4Refresh(g) {
+function m4Refresh(g) { const r = m4Refresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
+function m4Refresh0(g) {
   if (!M4A.ready || !g || g.type !== 'm4a1s' || !g.prop) return;
   const H = m4Hw(g), M = M4A.M, S = M4A.S, d = g.def, P = g.parts, pm = d.palm;
   const on = (part) => m4On(g, (q) => q.sub === 'm4part' && q.part === part);
@@ -44727,7 +44891,8 @@ function awmReseat(g) {
 }
 // After a part came or went: the hardware, the optic (factory 3-25x, the 10x or none), covers, sling, the sight line and
 // eye, the scope's eye box (a cheek riser: x AWM_CHEEK.box), the muzzle chain and the effects.
-function awmRefresh(g) {
+function awmRefresh(g) { const r = awmRefresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
+function awmRefresh0(g) {
   if (!AWMA.ready || !g || g.type !== 'awp' || !g.prop) return;
   const A = g.awm || (g.awm = { afx0: null, restK: 0, restApplied: -1 }), H = awmHw(g), M = AWMA.M, d = WEAPON_DEFS.awp, P = g.parts, pm = d.palm, opt = awmOptic();
   for (const o of H.scope) o.visible = opt === 'scope';
@@ -45634,7 +45799,7 @@ function railWant(t) {
 }
 // Make one gun's rail devices match the layout (not while it is in the vise: the bench owns it until RELEASE).
 function railSync(g) {
-  atcDirty(g);                                                      // attclip
+  atcDirty(g); g._vcloud = null;                                   // attclip (any-gun fit: the drawn cloud is re-read)
   if (!RAIL.on || !g || g.kind !== 'gun' || !g.prop || g.prop.removing || (WB.open && WB.gun === g) || !railReady(g)) return;
   railHw(g);
   const faces = railFaces(g), R = RAIL_ROWS[g.type] && wsReal(g.type) ? RAIL_ROWS[g.type] : null;
