@@ -2649,7 +2649,7 @@ const CONFIG = {
       bodyFoley: 1,                           // step 86: his posture: knee down, coming up, pivots on the spot (gain, 0 = off)
       acoustics: true,                        // step 85: the reverb follows the room you are in (ACOUSTICS); false = one room sound everywhere
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
-      doors: { on: true, gain: 1, creak: 1, creakShare: 0.45 },   // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before. Step 88: creak = hinge creak gain while a leaf swings (0 = off, ?creak=off), creakShare = the share of doors that creak (fixed per door)
+      doors: { on: true, gain: 0.5, creak: 1, creakShare: 0.45 },   // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before. Step 88: creak = hinge creak gain while a leaf swings (0 = off, ?creak=off), creakShare = the share of doors that creak (fixed per door)
       knocks: { on: true, gain: 1, minDv: 0.6 },   // step 86: props landing / bumping / falling over make a sound by material and mass (minDv m/s lost in a frame; on false = silent as before)
       handlingRec: { on: true, gain: 1, his: 0.8, sup: 1, buy: 1, pick: 1, cloth: 1 },   // step 99: recorded magazine / handle / suppressed shot / purchase / item pick-up / coat rustle sounds (gains; his = his reloads, 0 = silent; on false or ?hrec=off = the step 87 / 86 synth)
       foley: { brass: 1, mech: 1, drops: 1, kit: 0 },   // step 87: gun sounds besides shots, gain per group (0 = off; all 0 or ?foley=off = shots only, as before): brass / hull landings; reload, rack, selector, dry, pump, bench clicks; dropped mags, guns, nades, shells, parts; holster / pouch / handle (synth only, so off)
@@ -15778,7 +15778,7 @@ function fireGun(g, now) {
     pool.muzzle.intensity = pool.muzzleI;
     pool.muzzleT = pool.muzzleT0 = 0.045;
   }
-  if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.28 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
+  if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.39 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
   if (g.sup && !g.muzEnd) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
   muzzleSmoke(_wv, _fd, g.type);           // step 10
@@ -21162,11 +21162,18 @@ async function vmhBake(key) {
     let eb = bones.find((b) => (side === 'R' ? /^(R_elbow|Forearm_R)/i : /^(L_elbow|Forearm_L)/i).test(b.name)), E = eb ? wp(eb) : null;
     if (!E || E.distanceTo(W) < 0.08) { E = null; for (let p = wr.parent; p && !E; p = p.parent) if (p.isBone && wp(p).distanceTo(W) > 0.12) E = wp(p); }
     if (!E) E = W.clone().add(new THREE.Vector3(0, 0, -0.25));
-    const knu = [], walk = (b) => { for (const c of b.children) { if (!c.isBone) continue; const p = wp(c), kids = c.children.filter((x) => x.isBone).length; if (p.distanceTo(W) >= 0.035 && kids <= 1) knu.push({ p, th: /thumb/i.test(c.name) }); else walk(c); } };
+    const knu = [], walk = (b) => { for (const c of b.children) { if (!c.isBone) continue; const p = wp(c), kids = c.children.filter((x) => x.isBone).length; if (p.distanceTo(W) >= 0.035 && kids <= 1) knu.push({ p, b: c, th: /thumb/i.test(c.name) }); else walk(c); } };
     walk(wr);
     knu.sort((p, q) => (q.th - p.th) || (p.p.distanceTo(W) - q.p.distanceTo(W)));
     const T0 = knu.length ? knu[0].p : W.clone(), fing = knu.slice(1).map((k) => k.p).sort((p, q) => p.distanceTo(T0) - q.distanceTo(T0));
     const I = fing.length ? fing[0] : W.clone(), K = fing.length ? fing[fing.length - 1] : W.clone();
+    // trigger finger: the index chain (knuckle nearest the thumb, two bones on), each joint's subtree for the per-vertex bend
+    const ib = knu.slice(1).sort((p, q) => p.p.distanceTo(T0) - q.p.distanceTo(T0))[0], ch = ib ? [ib.b] : [];
+    while (ch.length && ch.length < 3) { const n = ch[ch.length - 1].children.find((x) => x.isBone); if (!n) break; ch.push(n); }
+    const subs = ch.length === 3 ? ch.map((b) => { const st = new Set(); b.traverse((x) => { if (x.isBone) st.add(x); }); return st; }) : null;
+    let fingJ = null;
+    if (subs) { const J = ch.map(wp), tb = ch[2].children.find((x) => x.isBone); fingJ = J.concat([tb ? wp(tb) : J[2].clone().multiplyScalar(2).sub(J[1])]); }
+    const iw = [];
     // skinned once on the CPU (positions and normals), kept vertices only, indexed
     const pos = [], nrm = [], uv = [], idx = [], groups = [], bm = new THREE.Matrix4(), sm = new THREE.Matrix4(), nm = new THREE.Matrix3(), nv = new THREE.Vector3();
     for (const o of arms) {
@@ -21182,6 +21189,7 @@ async function vmhBake(key) {
         bm.multiplyMatrices(toW, sm).multiply(o.bindMatrix);
         v.fromBufferAttribute(P, i).applyMatrix4(bm);
         map[i] = pos.length / 3; pos.push(v.x, v.y, v.z);
+        if (subs) for (let q = 0; q < 3; q++) { let a = 0; for (let c = 0; c < 4; c++) if (subs[q].has(sk.bones[SI.getComponent(i, c)])) a += SW.getComponent(i, c); iw.push(a); }
         if (NN) { nv.fromBufferAttribute(NN, i).applyMatrix3(nm.getNormalMatrix(bm)).normalize(); nrm.push(nv.x, nv.y, nv.z); } else nrm.push(0, 1, 0);
         if (UV) uv.push(UV.getX(i), UV.getY(i)); else uv.push(0, 0);
       }
@@ -21203,9 +21211,10 @@ async function vmhBake(key) {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     geo.setIndex(idx);
+    if (fingJ && iw.length === pos.length) geo.setAttribute('aIdxW', new THREE.Float32BufferAttribute(iw, 3)); else fingJ = null;
     const mats = [];
     for (const gr of groups) { let k = mats.indexOf(gr.mat); if (k < 0) { k = mats.length; mats.push(gr.mat); } geo.addGroup(gr.start, gr.count, k); }
-    out.sides[side] = { geo, mats, W, E, I, K, T: T0, tan: arms.some((o) => !!o.geometry.attributes.tangent) };   // polish 2: the source had vertex tangents
+    out.sides[side] = { geo, mats, W, E, I, K, T: T0, fingJ, tan: arms.some((o) => !!o.geometry.attributes.tangent) };   // polish 2: the source had vertex tangents
   }
   out.Sv = vmhSurface(gun, U, VMH.sample);                         // the VM gun's surface (rig space, metres)
   return (VMH.bakes[key] = out);
@@ -21398,18 +21407,55 @@ function vmhFit(g) {
       const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
       const geo = H.geo.clone().applyMatrix4(M);
       geo.computeBoundingSphere();
-      const mats = H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase);
+      const FJ = side === 'R' ? vmhFingFrame(H, M) : null;
+      const mkMats = (U) => H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase);
         if (H.tan && c.normalScale) c.normalScale.y *= -1;               // polish 2: baked without tangents (GLTFLoader's derivative-tangent rule, as the step 109 sleeves)
-        return c; });
-      const mesh = new THREE.Mesh(geo, mats);
+        return gloveInside(c, FJ && geo.attributes.aIdxW ? U : null); });
+      const U0 = vmhFingU(FJ);
+      const mesh = new THREE.Mesh(geo, mkMats(U0)); mesh.userData.fingU = U0;
       mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false;
       scene.add(mesh); VMH.meshes.add(mesh);
-      out.sides[side] = { mesh, H, M, roots: new Map() };
+      out.sides[side] = { mesh, H, M, FJ, mkMats, roots: new Map() };
     }
     VMH.fits[t] = out;
   }).catch((e) => { console.warn('Step 85: fitted hands for ' + t + ' failed', e); VMH.fits[t] = null; });
   return false;
 }
+// Trigger finger on the fitted (baked) firing hand: the pack's idle take holds the index curled into the guard. The
+// index vertices bend about their own three joints in the vertex shader (aIdxW = weight on each joint's subtree, one
+// hinge axis along the knuckle line), so the finger follows the trigger: off it = straight along the frame above the
+// guard, pointing at the muzzle (trigger discipline); touched = the pad resting on the trigger face; pulled = curled in.
+function vmhFingFrame(H, M) {
+  if (!H.fingJ) return null;
+  const J = H.fingJ.map((p) => p.clone().applyMatrix4(M)), Im = H.I.clone().applyMatrix4(M), Km = H.K.clone().applyMatrix4(M), Wm = H.W.clone().applyMatrix4(M);
+  const ax = Km.clone().sub(Im).normalize();
+  const rot = (v, o, a) => v.clone().sub(o).applyAxisAngle(ax, a).add(o);
+  if (rot(J[3], J[0], 0.2).distanceTo(Wm) > J[3].distanceTo(Wm)) ax.negate();   // + = curl (the tip toward the wrist)
+  const sa = (a, b) => { const p = a.clone().projectOnPlane(ax).normalize(), q = b.clone().projectOnPlane(ax).normalize(); return Math.atan2(ax.dot(p.clone().cross(q)), p.dot(q)); };
+  const d1 = J[1].clone().sub(J[0]), d2 = J[2].clone().sub(J[1]), d3 = J[3].clone().sub(J[2]);
+  const b2 = sa(d1, d2), b3 = sa(d2, d3), fwd = new THREE.Vector3(0, 0.05, -1);   // gun root space: the bore is -z; a touch up so it clears the guard
+  const a1 = clamp(sa(d1, fwd), -1.4, 0.2);
+  return { J, ax, along: [a1, -0.9 * b2, -0.9 * b3], on: [-0.06, -0.04, 0], pull: [0.08, 0.16, 0.1] };
+}
+function vmhFingU(FJ) {
+  if (!FJ) return null;
+  return { uFJ1: { value: FJ.J[0] }, uFJ2: { value: FJ.J[1] }, uFJ3: { value: FJ.J[2] }, uFAx: { value: FJ.ax }, uFA: { value: new THREE.Vector3() } };
+}
+const _vfA = new THREE.Vector3(), _vfB = new THREE.Vector3();
+function vmhFingPose(h, g, role, FJ, U) {
+  const gp = h.ctrl && h.ctrl.userData && h.ctrl.userData.gamepad, b = gp && gp.buttons && gp.buttons[0];
+  const pull = b ? (b.value || (b.pressed ? 1 : 0)) : (g.trigger || 0);
+  const busy = !!(g.task || (g.lh && g.lh.active)), touch = role === 'primary' && !busy && (b ? (b.touched || pull > 0.02) : true);   // no controller (computer): on the trigger
+  if (role !== 'primary') _vfA.set(0, 0, 0);
+  else if (!touch) _vfA.fromArray(FJ.along);
+  else _vfA.fromArray(FJ.on).lerp(_vfB.fromArray(FJ.pull), clamp(pull));
+  const now = performance.now() / 1000, dt = clamp(now - (U.t || now), 0, 0.1); U.t = now;
+  const k = U.init ? 1 - Math.exp(-22 * dt) : 1; U.init = true;
+  U.uFA.value.lerp(_vfA, k);
+}
+const VMH_FING_VS = `
+attribute vec3 aIdxW; uniform vec3 uFJ1, uFJ2, uFJ3, uFAx, uFA;
+vec3 fRot(vec3 v, float a) { float c = cos(a), s = sin(a); return v * c + cross(uFAx, v) * s + uFAx * dot(uFAx, v) * (1.0 - c); }`;
 // Each frame before the hands are placed: nothing is taken yet.
 function vmhFrameStart() {
   for (const h of HANDS.list) {
@@ -21431,7 +21477,17 @@ function vmhTake(h, g, role, dz, P, Q) {
   _vmhM.copy(root.matrixWorld);
   if (dz) _vmhM.multiply(_vmhM2.makeTranslation(0, 0, dz));
   if (mirror) _vmhM.multiply(_vmhMir);
-  S.mesh.matrix.copy(_vmhM); S.mesh.matrixWorldNeedsUpdate = true; S.mesh.visible = true;
+  // one mesh per hand: two guns of one type (one in each hand) both take the 'R' fit; a shared mesh followed the last
+  // hand and left the other hand drawn by nothing
+  const hm = S.hm || (S.hm = new Map());
+  let mesh = hm.get(h);
+  if (!mesh) {
+    mesh = S.mesh;
+    if (hm.size) { const U = vmhFingU(S.FJ); mesh = new THREE.Mesh(S.mesh.geometry, S.mkMats(U)); mesh.userData.fingU = U; mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.castShadow = false; mesh.receiveShadow = true; mesh.visible = false; scene.add(mesh); VMH.meshes.add(mesh); }
+    hm.set(h, mesh);
+  }
+  if (mesh.userData.fingU && S.FJ) vmhFingPose(h, g, role, S.FJ, mesh.userData.fingU);
+  mesh.matrix.copy(_vmhM); mesh.matrixWorldNeedsUpdate = true; mesh.visible = true;
   // the hidden hand root where its wrist meets the fitted glove (proper rotation: mirrored hands use their own rig)
   let R = S.roots.get(h);
   if (!R) {
@@ -21478,6 +21534,38 @@ function vmPackWrist(h, W, E, I, K) {
   const sg = 0.01 * HANDLOOK.vmhScale * HANDLOOK.extra;                              // cm rig (vmhBake's unit), the gun hands' size
   return frame(Wo, Wo.clone().setZ(Wr.z + 0.1), h.rp[4], h.rp[13]).multiply(new THREE.Matrix4().makeScale(sg, sg, sg)).multiply(frame(W, E, I, K).invert());
 }
+// Glove inside never shows: the pack glove is an open shell (cuff, cut at the wrist). Both faces are drawn so the cuff
+// is closed, the inside (back faces) is a flat dark lining with the normal turned to the eye, and anything within
+// GLOVE_IN.near of the eye dithers away (no near-plane slice into the hollow hand). Chains any earlier onBeforeCompile.
+const GLOVE_IN = { near: { value: 0.05 }, done: new WeakSet() };
+function gloveInside(mat, FU) {
+  if (!mat || GLOVE_IN.done.has(mat)) return mat;
+  GLOVE_IN.done.add(mat); mat.side = THREE.DoubleSide; mat.shadowSide = THREE.FrontSide;
+  const prev = mat.onBeforeCompile, pk = mat.customProgramCacheKey ? mat.customProgramCacheKey.bind(mat) : () => '';
+  mat.onBeforeCompile = (sh, r) => {
+    if (prev) prev.call(mat, sh, r);
+    sh.uniforms.uGlvNear = GLOVE_IN.near;
+    if (FU) {                                                        // the fitted firing hand's trigger finger (vmhFingPose)
+      Object.assign(sh.uniforms, FU);
+      sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>' + VMH_FING_VS)
+        .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
+objectNormal = fRot(objectNormal, uFA.z * aIdxW.z); objectNormal = fRot(objectNormal, uFA.y * aIdxW.y); objectNormal = fRot(objectNormal, uFA.x * aIdxW.x);`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+transformed = uFJ3 + fRot(transformed - uFJ3, uFA.z * aIdxW.z); transformed = uFJ2 + fRot(transformed - uFJ2, uFA.y * aIdxW.y); transformed = uFJ1 + fRot(transformed - uFJ1, uFA.x * aIdxW.x);`);
+    }
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vGlvW;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvGlvW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uGlvNear;\nvarying vec3 vGlvW;')
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+{ float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  if (1.0 - smoothstep(uGlvNear, uGlvNear + 0.03, length(vGlvW - cameraPosition)) > n) discard; }`)
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nif (!gl_FrontFacing) normal = normalize(vViewPosition);')
+      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif (!gl_FrontFacing) gl_FragColor.rgb = min(gl_FragColor.rgb, vec3(0.012, 0.012, 0.011));');
+  };
+  mat.customProgramCacheKey = () => pk() + '|gloveIn' + (FU ? 'F' : '');
+  mat.needsUpdate = true;
+  return mat;
+}
 function glove104Start() {
   if (!GLOVE104.on || GLOVE104.sides) return;
   GLOVE104.sides = {};
@@ -21488,6 +21576,7 @@ function glove104Start() {
     const m0 = [].concat(arms.material)[0], mat = m0.clone();
     if (m0.userData.vmBase) mat.color.copy(m0.userData.vmBase);   // untinted (vmTint tints the shared arm material by the uniform)
     if (arms.geometry.attributes.tangent && mat.normalScale) mat.normalScale.y *= -1;   // polish 2: the glove is baked without tangents (as the step 109 sleeves)
+    gloveInside(mat);
     GLOVE104.hide = new THREE.MeshBasicMaterial({ visible: false });
     for (const h of HANDS.list) { const G = glove104Hand(h, arms, mat); if (G) GLOVE104.sides[h.left ? 'L' : 'R'] = G; }
     GLOVE104.ready = !!(GLOVE104.sides.L && GLOVE104.sides.R);
@@ -24767,7 +24856,7 @@ function enemyShotSfx(dist, type = 'smg', at = null, sup = false) {
   if (!audio.ctx || audio.ctx.state !== 'running') return;
   if (at && hrecOn() && HREC.bufs.supPistol1 && gunSuppressed(type, sup ? { sup } : null)) {   // step 99: his suppressed gun, the recorded take from his muzzle
     const rifle = WEAPON_DEFS[type] && WEAPON_DEFS[type].cls !== 'pistol', k = CONFIG.polish.audio.enemyShot;
-    soundAt(at, () => { supPlay(rifle, k); if (rifle) { const B = shotBufs(type), P = shotMix(type); if (B && B.length) playBaked(B, 1.25 * P.gain * GUN_MIX.shot * k * 0.28, P.verb, 0.96 + Math.random() * 0.06, P.echo * GUN_MIX.echo * 0.3, GUN_MIX.tone * 0.8); } });
+    soundAt(at, () => { supPlay(rifle, k); if (rifle) { const B = shotBufs(type), P = shotMix(type); if (B && B.length) playBaked(B, 1.25 * P.gain * GUN_MIX.shot * k * 0.39, P.verb, 0.96 + Math.random() * 0.06, P.echo * GUN_MIX.echo * 0.3, GUN_MIX.tone * 0.8); } });
     return;
   }
   const B = shotBufs(type), k = clamp(3 / (dist + 1.5), 0.2, 0.8);   // step 81
@@ -32252,14 +32341,20 @@ const HREC_SET = {
     rackBack: [['glkRackBack1', 1, 0.9], ['glkRackBack2', 1, 0.9], ['glkRackBack1', 1.04, 0.9], ['glkRackBack2', 0.97, 0.9]],
     rackFwd: [['glkRackFwd1', 1, 0.9], ['glkRackFwd2', 1, 0.9], ['glkRackFwd1', 0.97, 0.9], ['glkRackFwd2', 1.03, 0.9]],
     slideRel: [['glkSlideRel', 1, 0.9], ['glkSlideRel', 0.96, 0.9], ['glkRackFwd2', 1.02, 0.85], ['glkRackFwd1', 1.03, 0.85]],
-    lockBack: [['glkRackBack1', 1.06, 0.8], ['glkRackBack2', 1.08, 0.8], ['glkRackBack1', 1.1, 0.8]] }
+    lockBack: [['glkRackBack1', 1.06, 0.8], ['glkRackBack2', 1.08, 0.8], ['glkRackBack1', 1.1, 0.8]] },
+  // bolt guns (def.manual: the AWM): the AK takes pitched down for the heavy bolt, the handle's lift and turn-down from
+  // the dry-fire clicks and the AK slam, the box magazine from the AK / SMG magazine takes
+  bolt: { magOut: [['akMagOut1', 0.92, 0.9], ['akMagOut2', 0.9, 0.9], ['smgMagOut', 0.86, 1]], magIn: [['akMagIn1', 0.9, 1], ['smgMagIn', 0.88, 1], ['akMagIn1', 0.94, 0.95]],
+    rackBack: [['akRackBack1', 0.8, 1], ['akRackBack2', 0.78, 1], ['akRackBack3', 0.82, 1]],
+    rackFwd: [['akRackFwd1', 0.8, 0.85], ['akRackFwd2', 0.78, 0.85], ['akRackFwd3', 0.82, 0.85]],
+    lift: [['dry2', 0.72, 1], ['dry5', 0.7, 1], ['dry7', 0.74, 1]], close: [['akRackFwd4', 1.25, 0.55], ['dry3', 0.62, 1], ['akRackFwd2', 1.3, 0.55]] }
 };
 // step 101: one recorded Glock for every pistol: polymer frames a few % apart, the steel PPK small and higher, the 1911 lower
 const PIST_RATE = { g17: 1, pistol: 0.96, fn509: 1.05, ppk: 1.09, m1911: 0.91, b92: 0.97 };   // step 120: the 92X, the Glock takes a touch lower
 const PIST_LS = { ppk: 1, m1911: 2.5 };                            // dB more body (low shelf) for the steel slides
 const HREC_ALT = { slideRel: 'rackFwd', lockBack: 'rackFwd' };    // a family without the event plays this one
-const HREC_FAM = { akm: 'ak', akmn: 'ak', m4a1s: 'm4', rifle: 'm4', smg: 'smg' };   // + every cls 'pistol'
-const HREC_LVL = { magOut: 0.5, magIn: 0.65, rackBack: 0.55, rackFwd: 0.8, slideRel: 0.8, lockBack: 0.5 };   // x GUN_MIX.handling x HREC.norm (the synth's LVL, a touch up: these should be heard)
+const HREC_FAM = { akm: 'ak', akmn: 'ak', m4a1s: 'm4', rifle: 'm4', smg: 'smg', awp: 'bolt' };   // + every cls 'pistol'
+const HREC_LVL = { magOut: 0.5, magIn: 0.65, rackBack: 0.55, rackFwd: 0.8, slideRel: 0.8, lockBack: 0.5, lift: 0.45, close: 0.55 };   // x GUN_MIX.handling x HREC.norm (the synth's LVL, a touch up: these should be heard)
 const SUP_VAR = [{ r: 1, hs: 0, ls: 0 }, { r: 0.96, hs: -2.5, ls: 1 }, { r: 1.04, hs: 1.5, ls: -1 }];   // three suppressed shots from one take
 function loadHandlingRecordings(ctx) {
   if (!HREC.on || HREC.loading) return; HREC.loading = true;
@@ -32276,7 +32371,7 @@ function hrecNorm(b) {
   return clamp(Math.pow(10, HREC_RMS / 20) / Math.sqrt(m / w + 1e-12), 0.4, 3);
 }
 function hrecOn() { const H = CONFIG.polish.audio.handlingRec; return HREC.on && !!H && H.on !== false; }
-function hrecFam(type, def) { return HREC_FAM[type] || (def && def.cls === 'pistol' ? 'pistol' : null); }
+function hrecFam(type, def) { return HREC_FAM[type] || (def && def.cls === 'pistol' ? 'pistol' : def && def.manual ? 'bolt' : null); }
 // One variant of a set whose file has decoded, never the same as last time (key = family + event).
 function hrecPick(key, set) {
   let n = 0;
@@ -32350,7 +32445,7 @@ function supPlay(rifle, k = 1) {
   let i = (Math.random() * SUP_VAR.length) | 0;
   if (i === last) i = (i + 1 + ((Math.random() * (SUP_VAR.length - 1)) | 0)) % SUP_VAR.length;
   HREC.last.sup = i;
-  const V = SUP_VAR[i], g = 1.25 * GUN_MIX.shot * (H.sup ?? 1) * k;
+  const V = SUP_VAR[i], g = 1.75 * GUN_MIX.shot * (H.sup ?? 1) * k;   // x1.4 (+3 dB): suppressed shots a little louder
   if (rifle) {
     hrecPlay(b, 0.42 * g, 0.78 * V.r, { ls: 6 + V.ls, lsF: 200, hs: V.hs - 1, lp: 7000, verb: 0.5, echo: 0.4 * GUN_MIX.echo });
     nBurst(audio.ctx.currentTime + 0.004, 0.03, 'highpass', 3800, 0.7, 0.07 * k, 0.008, 0.2);   // the round's crack (supersonic), small
@@ -32362,7 +32457,7 @@ function gunSuppressed(type, g) { return !!(g && g.sup) || type === 'fn509' || t
 function supShot(g, d) {
   if (!hrecOn() || !gunSuppressed(g.type, g) || !audio.ctx || audio.ctx.state !== 'running') return false;
   const rifle = d.cls !== 'pistol';
-  if (rifle) { const k = g.afx ? g.afx.snd : 1; sfx(d.sound, 0.28 * k); supPlay(true, k); return true; }   // step 103: k = the extra cans
+  if (rifle) { const k = g.afx ? g.afx.snd : 1; sfx(d.sound, 0.39 * k); supPlay(true, k); return true; }   // step 103: k = the extra cans
   if (!supPlay(false, g.afx ? g.afx.snd : 1)) return false;        // step 100: the compact can is a little louder (GLOCK_FX)
   const E = CONFIG.polish.audio.earsShot;
   earsHit((E[g.type] ?? E[d.sound] ?? 0.5) * 0.28 * (g.afx ? g.afx.snd : 1));
@@ -39100,11 +39195,11 @@ function kickSfx(kind, P, k) {
   soundAt(P, () => {
     const t = audio.ctx.currentTime + 0.003, j = 0.9 + Math.random() * 0.2;
     if (kind === 'door') {
-      nBurst(t, 0.34, 'lowpass', 170 * j, 0.9, 0.95, 0.24, 0.5);            // the boot into a hollow steel leaf
-      nBurst(t, 0.1, 'bandpass', 950 * j, 1.1, 0.32, 0.08, 0.4);
-      tone(t, 300 * j, 284 * j, 0.7, 0.07, 'triangle', 0.5);                 // the leaf rings
-      tone(t, 517 * j, 500 * j, 0.5, 0.045, 'triangle', 0.5);
-      nBurst(t + 0.04, 0.09, 'bandpass', 3100, 3, 0.09, 0.06, 0.3);          // latch and closer rattle
+      nBurst(t, 0.34, 'lowpass', 170 * j, 0.9, 0.7, 0.24, 0.5);            // the boot into a hollow steel leaf (x0.75: doors quieter)
+      nBurst(t, 0.1, 'bandpass', 950 * j, 1.1, 0.24, 0.08, 0.4);
+      tone(t, 300 * j, 284 * j, 0.7, 0.052, 'triangle', 0.5);                 // the leaf rings
+      tone(t, 517 * j, 500 * j, 0.5, 0.034, 'triangle', 0.5);
+      nBurst(t + 0.04, 0.09, 'bandpass', 3100, 3, 0.068, 0.06, 0.3);          // latch and closer rattle
     } else if (kind === 'man' || kind === 'body') {
       nBurst(t, 0.14, 'lowpass', 240 * j, 0.9, 0.62, 0.1, 0.3);
       nBurst(t + 0.01, 0.08, 'bandpass', 1300 * j, 1.2, 0.12, 0.06, 0.2);   // kit on the carrier
@@ -41855,6 +41950,9 @@ function x64Anim(g, dt) {
   if (P.bolt) {
     const s = g.slideOff, t = Math.min(1, s / d.lift), z = Math.max(0, s - d.lift) * d.travel / (d.travel - d.lift);
     P.bolt.rotation.z = smoothstep(0, 1, t) * d.liftAng;
+    // the handle's lift (unlocked, up) and turn-down (locked) are heard: edges with hysteresis, synth 'selector' without the takes
+    if (d.manual && !g.boltUp && t > 0.92) { g.boltUp = true; gunSfx(g, 'lift', 'selector', 0.9); }
+    else if (g.boltUp && t < 0.08) { g.boltUp = false; gunSfx(g, 'close', 'selector', 1); }
     P.bolt.position.z = X.piv.bolt.z + z; P.shroud.position.z = z;
   }
   if (P.catch) P.catch.rotation.x += (((g.thumbCatchUntil || 0) > now ? -0.3 : 0) - P.catch.rotation.x) * k(40);
