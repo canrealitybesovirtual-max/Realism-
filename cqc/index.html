@@ -8181,6 +8181,7 @@ function unloadRoom(room) {
       if (!inside) for (const r of stream.rooms.values()) if (r !== room && r.active && insideRoom(r, x, z, 0.2, y)) { elsewhere = true; break; }
       if (inside || (p.spawnRoom === room && !elsewhere)) removeProp(p);
     }
+    if (room.yardDoors) yardDoorsUnload(room);                // outdoor start: the side doors
     if (room.door) {
       if (room.door.holder) releaseDoor(room.door.holder);
       world.removeRigidBody(room.door.body);              // also removes its hinge joint
@@ -8591,6 +8592,7 @@ function shiftWorld(dx, dz, dy = 0) {          // step 12: dy = vertical re-base
     if (r.body) mv(r.body);
     if (r.wearBody) mv(r.wearBody);                               // step 80: the personal locker's own body
     if (r.door) { mv(r.door.body); r.door.settled = false; }
+    if (r.yardDoors) for (const d of r.yardDoors) { mv(d.body); d.settled = false; }   // outdoor start: the side doors
   }
   if (RIG.ready) { mv(RIG.anchor); for (const c of RIG.cap) mv(c.b); if (RIG.anchorP) { RIG.anchorP.x += dx; RIG.anchorP.y += dy; RIG.anchorP.z += dz; } }   // step 80: the sling anchor and torso capsules
   for (const p of props) {
@@ -8709,6 +8711,7 @@ function activateDoor(room) {
   doors.push(door);
 }
 const doorHinge = (door, out) => {
+  if (door.sec) return out.set(rWX(door.room, door.sec.hx), rWZ(door.room, door.sec.hz));   // outdoor start: a side door's own hinge
   const r = door.room, E = exitLeaf(r);
   return out.set(rWX(r, E.x - E.s * door.sw / 2), rWZ(r, E.z));
 };
@@ -8764,7 +8767,7 @@ function doorPace(door, now) {
   const P = CONFIG.pace, m = door.mode;
   let cap = m === 'drive' ? ((door.drive && door.drive.cap) || P.drive) : m === 'kick' ? P.kick : m === 'hand' ? P.hand : 0;
   if (!cap) return;
-  const next = stream.rooms.get(door.room.slot + 1);
+  const next = door.sec ? null : stream.rooms.get(door.room.slot + 1);   // outdoor start: side doors reveal no room
   if (next && !next.seen) cap *= P.reveal;                       // the first look into a fresh room: slower still
   const w = door.body.angvel(), dir = door.angle > 0.01 ? 1 : door.angle < -0.01 ? -1 : Math.sign(w.y);   // step 53: opening, either way
   if (dir && w.y * dir > cap) door.body.setAngvel({ x: w.x, y: cap * dir, z: w.z }, true);
@@ -8775,8 +8778,8 @@ function updateDoorsPre(now) {
   for (const door of doors) {
     let target = 0, k = P.closerStiffness, c = P.closerDamping, mode = 'closer';
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
-    const next = stream.rooms.get(door.room.slot + 1);
-    if (!next || !next.active) {
+    const next = door.sec ? null : stream.rooms.get(door.room.slot + 1);
+    if (door.sec ? door.sec.locked : (!next || !next.active)) {     // outdoor start: a side door is locked only when it leads nowhere
       if (door.holder) { const hl = door.holder; releaseDoor(hl); if (now - (door.rattleAt || 0) > 0.4) { door.rattleAt = now; doorSfx(door, 'rattle'); pulse(hl, 0.45, 35); } }   // step 86: it won't give
       door.drive = null; k = 60; c = 15; mode = 'locked';
     }
@@ -8855,7 +8858,7 @@ function updateDoorsPost(dt = 0) {
         }
       }
     }
-    if (Math.abs(a) > CONFIG.pace.revealAngle) { const nx = stream.rooms.get(door.room.slot + 1); if (nx && !nx.seen) nx.seen = true; }   // step 52
+    if (!door.sec && Math.abs(a) > CONFIG.pace.revealAngle) { const nx = stream.rooms.get(door.room.slot + 1); if (nx && !nx.seen) nx.seen = true; }   // step 52 (not a side door)
     doorPace(door, 0);
     door.settled = sleeping;
     door.group.position.set(rLX(door.room, t.x), t.y - o.y, rLZ(door.room, t.z));   // step 83: in the (maybe turned) room's frame
@@ -16766,7 +16769,7 @@ function addDoorHole(door, wp, wn, save, kind = 'metal', sc = 1) {   // step 119
   const roll = Math.random() * Math.PI * 2, s = (0.85 + Math.random() * 0.3) * sc;
   const lx = _dp.x, ly = _dp.y, lz = _dp.z, nx = _fn.x, ny = _fn.y, nz = _fn.z;
   putDecal(decalLayer(door, door.group, kind), kind, lx, ly, lz, nx, ny, nz, roll, s);
-  if (save) roomMem(door.room).doorHoles.push(kind === 'metal' ? [lx, ly, lz, nx, ny, nz, roll, s] : [lx, ly, lz, nx, ny, nz, roll, s, kind]);
+  if (save && !door.sec) roomMem(door.room).doorHoles.push(kind === 'metal' ? [lx, ly, lz, nx, ny, nz, roll, s] : [lx, ly, lz, nx, ny, nz, roll, s, kind]);
 }
 function restoreRoomHoles(room) {
   const m = roomMemory.get(memKey(room));
@@ -24515,7 +24518,7 @@ function capIntersect(ro, rd, pa, pb, r) {
 function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   hitchNote('man spawned');   // step 34
   spec = spec || { gun: 'smg', skill: 0.4, aggr: 0.4 };
-  const W = ENEMY_LOADOUTS[spec.gun] || ENEMY_LOADOUTS.smg;
+  const W = (spec.gun === 'awp' && !(GUN_BUILD.awp && WEAPON_DEFS.awp && WR.awp)) ? ENEMY_LOADOUTS.smg : (ENEMY_LOADOUTS[spec.gun] || ENEMY_LOADOUTS.smg);   // outdoor start: the AWM until its model has loaded
   if (spec.kit == null) spec.kit = spec.look != null ? spec.look : (Math.random() < 0.5 ? 0 : 1);   // his rifle loadout (0 AKM, 1 M4A1-S), kept in the room plan
   spec.look = 0;                                                   // one model now: the soldier
   const model = ENEMY.models[0];
@@ -25333,6 +25336,7 @@ function enemyFire(e, dt, now) {
   e.err = Math.max(C.errMin * e.errK, e.err * Math.exp(-dt / (C.settle * e.errK))) + playerState.vel.length() * C.errMove * dt * 6;
   e.err = Math.min(e.err, C.errBase * e.errK * 1.6);
   if (e.pumpAt && now > e.pumpAt) { e.pumpAt = 0; spawnCasing(e.gun, 'hull'); }   // step 9: his pump throws the hull
+  if (e.boltAt && now > e.boltAt) yardBoltTick(e, now);            // outdoor start: the AWM's bolt, back then home
   // Step 11: suppressed men shoot worse; suppressive fire is aimed at where you were, with a wide cone.
   if (AI_ON() && e.suppress > 1.2) e.err = Math.max(e.err, C.errBase * e.errK * 0.5 * Math.min(1, e.suppress - 1.2));
   const st = e.state;
@@ -25369,7 +25373,7 @@ function enemyShoot(e, now) {
     // Where would this round meet you? Trace only that far; anything in between (cover) gets its say.
     const pt = playerRayHit(_es.o, _es.d);
     const reached = traceBullet(_es.o, _es.d, d, W.gun, { enemy: true, range: pt ? pt.t : CONFIG.weapons.rayRange });
-    if (pt && reached && !PEN.miss) playerHit(PEN.part || pt.part, _es.d, _tbE, (W.pellets > 1 ? CONFIG.loop.pellet : 1) * penYouK());   // step 119: through a wall it may have turned
+    if (pt && reached && !PEN.miss) playerHit(PEN.part || pt.part, _es.d, _tbE, (W.pellets > 1 ? CONFIG.loop.pellet : 1) * (W.dmgK || 1) * penYouK());   // outdoor start: dmgK (the .338)   // step 119: through a wall it may have turned
     else if (!missed) { missed = true; nearMiss(_es.o, _es.d); }
   }
   _es.d.copy(_es.b);
@@ -25384,6 +25388,7 @@ function enemyShoot(e, now) {
     pool.muzzleT = pool.muzzleT0 = 0.045;
   }
   if (d.action === 'pump') e.pumpAt = now + 0.35;              // step 9: the hull comes out when he pumps
+  else if (W.bolt) { e.boltAt = now + W.bolt[0]; e.boltPh = 0; }   // outdoor start: a bolt gun ejects when he works the bolt
   else spawnCasing(g, d.casing);
   e.recoilV += W.recoil;
   muzzleSmoke(_es.m, _es.b, W.gun);                             // step 10
@@ -25769,6 +25774,7 @@ function enemyDie(e, hitSeg, dir, P, impulse) {
 const DROP = { max: 6, list: [] };
 function enemyDropType(e) {
   const g = e.w && e.w.gun;
+  if (g === 'awp') return GUN_BUILD.awp && WEAPON_DEFS.awp ? 'awp' : null;   // outdoor start: the tower sniper's own AWM
   const t = g === 'pistol' ? 'g17' : g === 'shotgun' ? 'm4a1s' : (e.spec && e.spec.kit === 1 ? 'm4a1s' : 'akmn');
   return GUN_BUILD[t] && WEAPON_DEFS[t] ? t : null;
 }
@@ -46708,15 +46714,32 @@ function yardLayout() {
       { x0: 9, x1: hw, z0: -24, z1: -6, h: 9.6, n: 'B' },
       { x0: 14, x1: 17, z0: 14, z1: 17, h: 3.6, n: 'T' }             // guard tower base
     ],
-    flights: [                                                      // walkable stairs along z: x0 x1, foot z, top z, rise
-      { x0: -8, x1: -6.8, zf: 2.0, zt: -4.72, y: 4.5, open: 1 },      // up A's east face to the catwalk landing
-      { x0: 12.6, x1: 13.8, zf: 8.6, zt: 14.0, y: 3.6, open: 0 }      // up to the tower cab
+    flights: [                                                      // walkable stairs along z: x0 x1, foot z, top z, rise, which sides carry a rail
+      { x0: -8, x1: -6.8, zf: 2.0, zt: -4.72, y: 4.5, rails: ['x1'] },          // up A's east face to the catwalk landing
+      { x0: 12.6, x1: 13.8, zf: 8.6, zt: 14.0, y: 3.6, rails: ['x0', 'x1'] },   // up to the tower cab
+      { x0: 12.6, x1: 13.8, zf: -14.0, zt: -18.6, y: 3.0, rails: ['x0'] }       // inside B: the stair core, up to its locked top door
     ],
     decks: [                                                        // flat walkable: x0 x1 z0 z1 y
       { x0: -8, x1: -6.6, z0: -7.7, z1: -4.72, y: 4.5 },            // landing
       { x0: -6.6, x1: 9, z0: -7.7, z1: -6.3, y: 4.5 },              // catwalk bridge A -> B
       { x0: 12.6, x1: 13.8, z0: 14, z1: 15.4, y: 3.6 },             // tower stair landing
-      { x0: 13.8, x1: 17.4, z0: 13.6, z1: 17.4, y: 3.6 }            // tower cab deck
+      { x0: 13.8, x1: 17.4, z0: 13.6, z1: 17.4, y: 3.6 },           // tower cab deck
+      { x0: 11.8, x1: 13.8, z0: -20.4, z1: -18.6, y: 3.0 }          // stair core landing (inside B)
+    ],
+    // Interiors behind the working side doors (architecture only): b = building index; walls 0.24 m to the outer face.
+    rooms: [
+      { n: 'guard room', b: 0, x0: -19.5, x1: -12.9, z0: 9.9, z1: 13.76, h: 3.0, counter: [-17.8, -15.4, 11.4, 12.0] },
+      { n: 'bay office', b: 0, x0: -12.6, x1: -8.24, z0: 10.6, z1: 13.76, h: 3.0, counter: [-12.3, -11.1, 11.0, 13.2] },
+      { n: 'stair core', b: 1, x0: 9.24, x1: 13.8, z0: -20.4, z1: -13.2, h: 6.0, counter: null }
+    ],
+    // Side doors (the room door system's secondary leaves): x, z on the outer face, n = outward normal (from behind the door to
+    // where you stand), y = sill. wall: no opening behind it (always locked: it leads nowhere).
+    sdoors: [
+      { id: 'guard', x: -14, z: 14, n: [0, 1], y: 0, room: 0 },
+      { id: 'office', x: -8, z: 12.4, n: [1, 0], y: 0, room: 1 },
+      { id: 'core', x: 9, z: -16, n: [-1, 0], y: 0, room: 2 },
+      { id: 'coreTop', x: 13.8, z: -19.5, n: [-1, 0], y: 3.0, wall: true, locked: true },
+      { id: 'catwalk', x: 9, z: -7, n: [-1, 0], y: 4.5, wall: true, locked: true }
     ],
     barriers: [[4, -2, 0], [-3, -12, 0.12], [12, 2, Math.PI / 2], [-12, 20, 0], [5.5, -19.5, -0.08], [-14, -15, Math.PI / 2], [1.5, 21, 0.3], [-5, -23, 0], [3.5, -24.2, 0.05]],
     bollards: [[13.6, 13.2], [17.8, 13.2], [17.8, 17.8], [-7.4, 5.6], [-7.4, 10.8], [-3.6, -26.6], [-0.4, -26.6], [6.6, 26.6], [9.4, 26.6]],
@@ -46738,10 +46761,56 @@ function yardLayout() {
     lamp(-14, 2.75, 14.35, 0, -1, 0.4, 0.25, 1, 'wall', 0),             // 6: A's door
     lamp(8.65, 2.75, -16, -0.4, -1, 0, 0.25, 1, 'wall', 0),             // 7: B's door
     lamp(8.65, 7.2, -7, -0.4, -1, 0, 0.25, 1, 'wall', 0),               // 8: B's catwalk door
-    lamp(10.5, 6.2, 26.6, 0, -1, -0.3, 0.3, 1, 'wall', 0)               // 9: B1 wall lamp beside the entry
+    lamp(10.5, 6.2, 26.6, 0, -1, -0.3, 0.3, 1, 'wall', 0),              // 9: B1 wall lamp beside the entry
+    lamp(-16.2, 2.86, 11.8, 0, -1, 0, 0.02, 1, 'room', 0),             // 10-13: ceiling lights in the interiors (zone = room index)
+    lamp(-10.4, 2.86, 12.2, 0, -1, 0, 0.02, 1, 'room', 0),
+    lamp(11.0, 2.76, -15.6, 0, -1, 0, 0.02, 1, 'room', 0),
+    lamp(11.0, 5.86, -19.2, 0, -1, 0, 0.02, 1, 'room', 0)
   ];
-  L.lampI = { flood: 900, wall: 60 };
+  L.lamps.forEach((l, i) => { l.zone = i < 10 ? -1 : i === 10 ? 0 : i === 11 ? 1 : 2; });
+  L.lampI = { flood: 900, wall: 60, room: 26 };
+  // Door openings through the outer walls (free space, like the interiors).
+  const DW = CONFIG.door.width / 2 + 0.06;
+  L.gaps = L.sdoors.filter((d) => !d.wall).map((d) => {
+    const t = 0.24;
+    return d.n[1] ? { x0: d.x - DW, x1: d.x + DW, z0: Math.min(d.z, d.z - d.n[1] * t), z1: Math.max(d.z, d.z - d.n[1] * t), b: L.rooms[d.room].b }
+      : { x0: Math.min(d.x, d.x - d.n[0] * t), x1: Math.max(d.x, d.x - d.n[0] * t), z0: d.z - DW, z1: d.z + DW, b: L.rooms[d.room].b };
+  });
+  // Covered from the rain: x0 z0 x1 z1 and the underside height (rain and splashes stop under them).
+  L.roofs = [
+    [-hw, -8, -8, 14, 8.4], [9, -24, hw, -6, 9.6], [14, 14, 17, 17, 3.6], [13.55, 13.35, 17.65, 17.65, 6.42],
+    [-8, -7.7, -6.6, -4.72, 4.5], [-6.6, -7.7, 9, -6.3, 4.5], [-8, 5.4, -5.6, 11, 5.15],
+    [YC.exitX - 0.84, -hd, YC.exitX + 1.76, -hd + 1.25, 2.62], [YC.entryX - 0.84, hd - 1.25, YC.entryX + 1.76, hd, 2.62], [-15.4, 14, -12.6, 15.1, 2.55]
+  ];
   return L;
+}
+
+// The solid part of building bi as rectangles: footprint minus its interiors and door openings (grid on their edges,
+// rows merged). A building with nothing carved out is its footprint.
+function yardCells(L, bi) {
+  const b = L.bld[bi], free = L.rooms.filter((r) => r.b === bi).concat(L.gaps.filter((g) => g.b === bi));
+  if (!free.length) return [[b.x0, b.x1, b.z0, b.z1]];
+  const xs = [...new Set([b.x0, b.x1, ...free.flatMap((r) => [r.x0, r.x1])])].filter((x) => x >= b.x0 && x <= b.x1).sort((a, c) => a - c);
+  const zs = [...new Set([b.z0, b.z1, ...free.flatMap((r) => [r.z0, r.z1])])].filter((z) => z >= b.z0 && z <= b.z1).sort((a, c) => a - c);
+  const out = [];
+  for (let j = 0; j + 1 < zs.length; j++) {
+    let run = null;
+    for (let i = 0; i + 1 < xs.length; i++) {
+      const cx = (xs[i] + xs[i + 1]) / 2, cz = (zs[j] + zs[j + 1]) / 2;
+      const solid = !free.some((r) => cx > r.x0 && cx < r.x1 && cz > r.z0 && cz < r.z1);
+      if (solid && run && run[1] === xs[i]) run[1] = xs[i + 1];
+      else if (solid) { run = [xs[i], xs[i + 1], zs[j], zs[j + 1]]; out.push(run); }
+      else run = null;
+    }
+  }
+  return out.filter((c) => c[1] - c[0] > 1e-3 && c[3] - c[2] > 1e-3);
+}
+// A side door's frame: leaf yaw (positive angle opens away from n), leaf centre, hinge (room-local).
+function yardDoorFrame(d) {
+  const D = CONFIG.door, sw = D.width - 0.02, th = Math.atan2(d.n[0], d.n[1]);
+  const off = d.wall ? 0.03 : -0.21;                                // a gap door hangs at the far side of its opening
+  const cx = d.x + d.n[0] * off, cz = d.z + d.n[1] * off;
+  return { th, cx, cz, hx: cx - sw / 2 * Math.cos(th), hz: cz + sw / 2 * Math.sin(th), mx: d.x + d.n[0] * (d.wall ? 0.012 : -0.12), mz: d.z + d.n[1] * (d.wall ? 0.012 : -0.12) };
 }
 
 /* ---------------------------------------------------------------------------
@@ -46938,15 +47007,27 @@ function yardFenceTex() {                                        // 50 mm chain-
  *  0 board-formed concrete, 1 ground slab, 2 painted steel, 3 yellow steel, 4 precast barrier, 5 ground paint,
  *  6 decal, 7 chain-link, 8 glass, 9 steel grating
  * ------------------------------------------------------------------------- */
-const YARD_NL = 10;
+const YARD_NL = 14, YARD_NR = 3, YARD_NF = 12;                    // lamps, interiors, rain covers
 const YU = {
   uYTime: { value: 0 }, uYWet: { value: 1 }, uYInv: { value: new THREE.Matrix4() }, uYNoise: { value: null },
   uYLampP: { value: Array.from({ length: YARD_NL }, () => new THREE.Vector4()) }, uYLampD: { value: Array.from({ length: YARD_NL }, () => new THREE.Vector4(0, -1, 0, 0.5)) },
-  uYLampC: { value: new THREE.Color(1.0, 0.82, 0.62) }, uYFogC: { value: new THREE.Color() }, uYFog: { value: new THREE.Vector4(0.022, 0.12, 0, 0.9) }, uYScat: { value: 1 }
+  uYLampC: { value: new THREE.Color(1.0, 0.82, 0.62) }, uYFogC: { value: new THREE.Color() }, uYFog: { value: new THREE.Vector4(0.022, 0.12, 0, 0.9) }, uYScat: { value: 1 },
+  uYLampZ: { value: new Float32Array(YARD_NL).fill(-1) },          // -1 outdoor (not inside an interior), k = only inside interior k
+  uYRoomR: { value: Array.from({ length: YARD_NR }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoomTop: { value: new Float32Array(YARD_NR) },
+  uYRoof: { value: Array.from({ length: YARD_NF }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoofH: { value: new Float32Array(YARD_NF) }
 };
 const YARD_GLSL_COMMON = `
 uniform float uYTime; uniform float uYWet; uniform mat4 uYInv; uniform sampler2D uYNoise;
 uniform vec4 uYLampP[${YARD_NL}]; uniform vec4 uYLampD[${YARD_NL}]; uniform vec3 uYLampC; uniform vec3 uYFogC; uniform vec4 uYFog; uniform float uYScat;
+uniform float uYLampZ[${YARD_NL}]; uniform vec4 uYRoomR[${YARD_NR}]; uniform float uYRoomTop[${YARD_NR}];
+// Which interior a room-local point is in (-1 = outdoors).
+int yRoomOf(vec3 lp) {
+  int k0 = -1;
+  for (int k = 0; k < ${YARD_NR}; k++) { vec4 R = uYRoomR[k]; if (lp.x > R.x - 0.03 && lp.x < R.z + 0.03 && lp.z > R.y - 0.03 && lp.z < R.w + 0.03 && lp.y < uYRoomTop[k] + 0.05) k0 = k; }
+  return k0;
+}
+// May lamp i light a point in interior room (-1 outdoors)? Outdoor lamps never reach inside, interior ones only their room.
+bool yLampFor(int i, int room) { float z = uYLampZ[i]; return z < -0.5 ? room < 0 : abs(float(room) - z) < 0.5; }
 float yH(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float yVN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(yH(i), yH(i + vec2(1.0, 0.0)), f.x), mix(yH(i + vec2(0.0, 1.0)), yH(i + vec2(1.0, 1.0)), f.x), f.y); }
@@ -46957,7 +47038,7 @@ vec3 yFog(vec3 col, vec3 wp){
   float f = (1.0 - exp(-d * uYFog.x * hf)) * uYFog.w;
   vec3 rd = v / max(d, 1e-3), sc = vec3(0.0);
   for (int i = 0; i < ${YARD_NL}; i++) {
-    vec4 P = uYLampP[i]; if (P.w <= 0.0) continue;
+    vec4 P = uYLampP[i]; if (P.w <= 0.0 || uYLampZ[i] > -0.5) continue;
     vec3 c = P.xyz - cameraPosition; float t = clamp(dot(c, rd), 0.0, d); vec3 q = cameraPosition + rd * t - P.xyz;
     float h2 = dot(q, q); sc += uYLampC * (P.w * 0.0009 / (h2 + 0.35)) * (1.0 - exp(-d * 0.08));
   }
@@ -46970,7 +47051,7 @@ function yardInject(shader) {
     .replace('#include <project_vertex>', '#include <project_vertex>\nvYW = (modelMatrix * vec4(transformed, 1.0)).xyz; vYN = normalize(mat3(modelMatrix) * objectNormal);');
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>\nvarying vec3 vYW; varying vec3 vYN; uniform float uYKind;\n${YARD_GLSL_COMMON}
-float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0; vec2 yRip = vec2(0.0);
+float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0; vec2 yRip = vec2(0.0); int yRoomI = -1;
 vec2 yRipple(vec2 p, float t) {
   vec2 acc = vec2(0.0);
   for (int k = 0; k < 2; k++) {
@@ -46985,6 +47066,7 @@ vec2 yRipple(vec2 p, float t) {
     .replace('#include <map_fragment>', `#include <map_fragment>
 {
   vec3 lp = (uYInv * vec4(vYW, 1.0)).xyz; vec3 N = normalize(vYN); float K = uYKind;
+  yRoomI = yRoomOf(lp); float dryK = yRoomI >= 0 ? 0.0 : 1.0;           // indoors: no rain on anything
   yUp = N.y;
   bool yFlat = abs(N.y) > 0.6;
   vec2 q = yFlat ? lp.xz : vec2(abs(N.x) > abs(N.z) ? lp.z : lp.x, lp.y);
@@ -46995,7 +47077,7 @@ vec2 yRipple(vec2 p, float t) {
   float curv = length(fwidth(N)) / max(length(fwidth(vYW)), 1e-4);
   float edge = smoothstep(5.0, 22.0, curv);
   float streak = 0.0;
-  if (!yFlat && K < 4.5) {                                                    // rain streaks down the walls
+  if (!yFlat && K < 4.5 && yRoomOf(lp) < 0) {                               // rain streaks down the walls (not indoors)
     float s = texture2D(uYNoise, vec2(q.x * 0.35, q.y * 0.018 + 0.5)).g;
     streak = smoothstep(0.52, 0.82, s) * (0.45 + 0.55 * nz2.r);
     diffuseColor.rgb *= 1.0 - streak * (K > 1.5 ? 0.25 : 0.42);
@@ -47018,14 +47100,14 @@ vec2 yRipple(vec2 p, float t) {
   }
   // Wet model: porous surfaces darken, flat ones carry water, puddles on the ground stand.
   float por = K > 1.5 && K < 3.5 ? 0.15 : K > 6.5 ? 0.0 : 0.55;
-  float wet = uYWet * (yFlat ? 1.0 : 0.5 + 0.5 * streak);
-  if (yFlat && N.y > 0.0 && (K > 0.5 && K < 1.5 || K > 4.5 && K < 5.5)) {
+  float wet = uYWet * dryK * (yFlat ? 1.0 : 0.5 + 0.5 * streak);
+  if (dryK > 0.5 && yFlat && N.y > 0.0 && (K > 0.5 && K < 1.5 || K > 4.5 && K < 5.5)) {
     float pd = yPuddleF(lp.xz) - (0.73 - 0.04 * uYWet);
     float aa = fwidth(pd) + 0.002;
     yPud = smoothstep(-aa, aa, pd) * uYWet;
     yDamp = smoothstep(-0.09, 0.0, pd) * uYWet;
     yRip = yRipple(lp.xz, uYTime) * (0.25 + 0.75 * yPud) * uYWet;
-  } else if (yFlat && N.y > 0.0) yRip = yRipple(lp.xz, uYTime) * 0.15 * uYWet;
+  } else if (dryK > 0.5 && yFlat && N.y > 0.0) yRip = yRipple(lp.xz, uYTime) * 0.15 * uYWet;
   diffuseColor.rgb *= mix(1.0, 0.5, wet * por) * mix(1.0, 0.72, yDamp * por);
   diffuseColor.rgb *= mix(1.0, 0.55, yPud);
   yWetR = wet * (yFlat ? 0.85 : 0.55);
@@ -47045,7 +47127,7 @@ roughnessFactor = mix(roughnessFactor, 0.045, max(yPud, yDamp * 0.35));`)
 }`)
     .replace('#include <lights_fragment_maps>', `{
   for (int i = 0; i < ${YARD_NL}; i++) {
-    vec4 P = uYLampP[i]; if (P.w <= 0.0) continue;
+    vec4 P = uYLampP[i]; if (P.w <= 0.0 || !yLampFor(i, yRoomI)) continue;
     vec3 Lw = P.xyz - vYW; float d2 = dot(Lw, Lw); vec3 Ln = Lw * inversesqrt(d2);
     vec4 D = uYLampD[i]; float sp = smoothstep(D.w, D.w + 0.18 * (1.0 - D.w) + 0.02, dot(-Ln, D.xyz));
     if (sp <= 0.0) continue;
@@ -47137,11 +47219,14 @@ void main(){ vec3 d = vW - uC; vec3 c = ySky(vec3(d.x, min(d.y, -0.02 * length(d
   });
 }
 // Rain streaks: a box round the camera, wrapped in the vertex shader, clipped to the yard; lit by the lamps (forward scatter).
+const YRAIN_ROOF = `
+uniform vec4 uYRoof[${YARD_NF}]; uniform float uYRoofH[${YARD_NF}];
+float yCovered(vec3 lp) { for (int k = 0; k < ${YARD_NF}; k++) { vec4 R = uYRoof[k]; if (lp.x > R.x && lp.x < R.z && lp.z > R.y && lp.z < R.w && lp.y < uYRoofH[k]) return 0.0; } return 1.0; }`;
 const YRAIN_LIGHT = `
 vec3 yRainLight(vec3 wp, vec3 vd) {
   vec3 c = uYFogC * 3.0;
   for (int i = 0; i < ${YARD_NL}; i++) {
-    vec4 P = uYLampP[i]; if (P.w <= 0.0) continue;
+    vec4 P = uYLampP[i]; if (P.w <= 0.0 || uYLampZ[i] > -0.5) continue;
     vec3 L = P.xyz - wp; float d2 = dot(L, L); vec3 Ln = L * inversesqrt(d2);
     float sp = smoothstep(uYLampD[i].w - 0.1, uYLampD[i].w + 0.1, dot(-Ln, uYLampD[i].xyz));
     c += uYLampC * (P.w * sp / (d2 + 1.0)) * (0.25 + 2.2 * pow(max(dot(-vd, Ln), 0.0), 6.0));
@@ -47155,6 +47240,7 @@ function yardRainMaterial(splash) {
 attribute vec4 aSeed; attribute vec2 aCorner;
 uniform vec3 uCam; uniform vec2 uHalf; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv; uniform float uFloorY;
 varying vec2 vC; varying float vK; varying vec3 vW;
+${YRAIN_ROOF}
 float h1(float n){ return fract(sin(n) * 43758.5453); }
 void main(){
   float rate = 1.6 + aSeed.w * 1.2, t = uYTime * rate + aSeed.w * 7.0, cyc = floor(t), ph = fract(t);
@@ -47163,7 +47249,7 @@ void main(){
   vec3 p = vec3(uCam.x + o.x, 0.0, uCam.z + o.y);
   vec3 lp = (uYInv * vec4(p, 1.0)).xyz;
   p.y = uFloorY;
-  float inside = step(abs(lp.x), uHalf.x - 0.3) * step(abs(lp.z), uHalf.y - 0.3);
+  float inside = step(abs(lp.x), uHalf.x - 0.3) * step(abs(lp.z), uHalf.y - 0.3) * yCovered(vec3(lp.x, 0.01, lp.z));
   float r = (0.012 + ph * 0.07) * (0.7 + aSeed.y * 0.6);
   p.xz += aCorner * r;
   vC = aCorner; vK = (1.0 - ph) * inside * uRainK; vW = p;
@@ -47172,12 +47258,13 @@ void main(){
 attribute vec4 aSeed; attribute vec2 aCorner;
 uniform vec3 uCam; uniform vec3 uBox; uniform float uFall; uniform vec2 uWind; uniform vec2 uHalf; uniform float uPx; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv;
 varying vec2 vC; varying float vK; varying vec3 vW;
+${YRAIN_ROOF}
 void main(){
   vec3 vel = vec3(uWind.x, -uFall * (0.85 + 0.3 * aSeed.w), uWind.y);
   vec3 p = aSeed.xyz * uBox + vel * uYTime;
   p = mod(p - uCam + uBox * 0.5, uBox) - uBox * 0.5 + uCam;
   vec3 lp = (uYInv * vec4(p, 1.0)).xyz;
-  float inside = step(abs(lp.x), uHalf.x) * step(abs(lp.z), uHalf.y) * step(0.0, lp.y) * step(aSeed.w, uRainK);
+  float inside = step(abs(lp.x), uHalf.x) * step(abs(lp.z), uHalf.y) * step(0.0, lp.y) * step(aSeed.w, uRainK) * yCovered(lp);
   vec3 dir = normalize(vel), vd = normalize(p - cameraPosition);
   vec3 side = normalize(cross(dir, vd));
   float dist = length(p - cameraPosition), wid = max(0.0011, uPx * dist);
@@ -47427,8 +47514,12 @@ function* yardBuilder(room) {
   yield;
 
   // --- Buildings A and B, the tower base. Board-formed concrete, panel joints, roof parapets, pipes and conduits. ---
-  for (const b of L.bld) {
-    rbx(M.wall, b.x0, b.x1, 0, b.h, b.z0, b.z1, 0.04);
+  for (const [bi, b] of L.bld.entries()) {
+    const cells = yardCells(L, bi);
+    if (cells.length === 1) rbx(M.wall, b.x0, b.x1, 0, b.h, b.z0, b.z1, 0.04);
+    else for (const [x0, x1, z0, z1] of cells) box(M.wall, x0, x1, 0, b.h, z0, z1);   // carved: plain boxes (no bevel seams on the faces)
+    for (const r of L.rooms) if (r.b === bi) box(M.wall, r.x0, r.x1, r.h, b.h, r.z0, r.z1);   // the slab and solid over an interior
+    for (const gp of L.gaps) if (gp.b === bi) box(M.wall, gp.x0, gp.x1, CONFIG.door.height + 0.06, b.h, gp.z0, gp.z1);   // over a door opening
     if (b.n !== 'T') rbx(M.wall, b.x0 - 0.05, b.x1 + 0.05, b.h - 0.45, b.h + 0.05, b.z0 - 0.05, b.z1 + 0.05, 0.03);   // parapet
     for (let y = 3.6; y < b.h - 0.6; y += 3.6) { box(M.wall, b.x0 - 0.012, b.x1 + 0.012, y - 0.03, y, b.z0 - 0.012, b.z1 + 0.012); }
     yield;
@@ -47448,9 +47539,8 @@ function* yardBuilder(room) {
     cyl(M.metal, xf + 0.14, 7.1, 3, 0.05, 22, 10, Math.PI / 2);
     for (let z = -7.5; z < 14; z += 2.2) box(M.metal, xf, xf + 0.26, 6.45, 6.5, z, z + 0.06);
     for (let z = -6.4; z < 14; z += 4.4) decal(z % 3 > 1 ? 'rust0' : 'rust1', xf + 0.012, 5.3, z, 0.35, 2.2, Math.PI / 2);
-    // A's door (south face, z = 14)
+    // A's guard room door (south face, z = 14): canopy and lamp (frame and leaf below, with the other side doors)
     const dx = -14, dz = 14;
-    box(M.door, dx - 0.95, dx + 0.95, 0, 2.2, dz, dz + 0.05); box(M.metal, dx - 1.05, dx + 1.05, 2.2, 2.3, dz, dz + 0.08); box(M.metal, dx - 0.01, dx + 0.01, 0, 2.2, dz + 0.05, dz + 0.06);
     box(M.wall, dx - 1.4, dx + 1.4, 2.55, 2.7, dz, dz + 1.1);
     box(M.metal, dx - 0.2, dx + 0.2, 2.82, 3.0, dz, dz + 0.22); lensBox(dx - 0.18, dx + 0.18, 2.805, 2.82, dz + 0.04, dz + 0.2);
     decal('danger', dx + 1.7, 1.6, dz + 0.012, 0.6, 0.6, 0);
@@ -47459,9 +47549,7 @@ function* yardBuilder(room) {
   }
   { // B: ground door + catwalk door on the west face (x = 9), the DANGER plate, conduits
     const xf = 9;
-    for (const [z, y0] of [[-16, 0], [-7, 4.5]]) {
-      box(M.door, xf - 0.05, xf, y0, y0 + 2.2, z - 0.95, z + 0.95); box(M.metal, xf - 0.08, xf, y0 + 2.2, y0 + 2.3, z - 1.05, z + 1.05);
-      box(M.metal, xf - 0.06, xf - 0.05, y0, y0 + 2.2, z - 0.01, z + 0.01);
+    for (const [z, y0] of [[-16, 0], [-7, 4.5]]) {                   // lamp housings over the two doors (frames and leaves below)
       box(M.metal, xf - 0.22, xf, y0 + 2.42, y0 + 2.6, z - 0.2, z + 0.2); lensBox(xf - 0.2, xf - 0.04, y0 + 2.405, y0 + 2.42, z - 0.18, z + 0.18);
       decal('rust1', xf - 0.012, y0 + 1.6, z, 0.5, 1.6, -Math.PI / 2);
     }
@@ -47470,6 +47558,13 @@ function* yardBuilder(room) {
     box(M.metal, xf - 0.12, xf, 3.4, 3.46, -23.5, -6.5);                                          // conduit tray
     for (let z = -23; z < -6.5; z += 2) { box(M.metal, xf - 0.2, xf, 3.2, 3.5, z, z + 0.25); decal('rust0', xf - 0.012, 2.4, z + 0.12, 0.3, 1.6, -Math.PI / 2); }
     cyl(M.metal, xf - 0.15, 8.2, -15, 0.12, 17.5, 12, Math.PI / 2);
+  }
+  { // interiors: counters (cover), steel skirting, ceiling lights
+    for (const r of L.rooms) {
+      if (r.counter) { const [x0, x1, z0, z1] = r.counter; rbx(M.wall, x0, x1, 0, 1.0, z0, z1, 0.02); box(M.metal, x0 - 0.03, x1 + 0.03, 1.0, 1.05, z0 - 0.03, z1 + 0.03); }
+      for (const [x0, x1, z0, z1] of [[r.x0, r.x1, r.z0, r.z0 + 0.012], [r.x0, r.x1, r.z1 - 0.012, r.z1], [r.x0, r.x0 + 0.012, r.z0, r.z1], [r.x1 - 0.012, r.x1, r.z0, r.z1]]) box(M.metal, x0, x1, 0, 0.1, z0, z1, false);
+    }
+    for (const l of L.lamps) if (l.k === 'room') { const [x, y, z] = l.p; box(M.metal, x - 0.62, x + 0.62, y + 0.02, y + 0.12, z - 0.16, z + 0.16); lensBox(x - 0.58, x + 0.58, y, y + 0.02, z - 0.12, z + 0.12); }
   }
   yield;
 
@@ -47495,8 +47590,7 @@ function* yardBuilder(room) {
       const a = Math.atan2(F.y, Math.abs(F.zt - F.zf));
       add(BOX, M.metal, x, F.y / 2 - 0.12, (F.zf + F.zt) / 2, sg < 0 ? a : -a, 0, 0, 0.05, 0.25, l);
     }
-    rail(F.x1, F.zf, 0, F.x1, F.zt, F.y);
-    if (!F.open) rail(F.x0, F.zf, 0, F.x0, F.zt, F.y);
+    for (const side of F.rails) rail(F[side], F.zf, 0, F[side], F.zt, F.y);
     yield;
   }
   for (const Dk of L.decks) {
@@ -47525,6 +47619,7 @@ function* yardBuilder(room) {
     lensBox(lp[0] - 0.22, lp[0] + 0.22, lp[1] - 0.17, lp[1] + 0.17, lp[2] - 0.12, lp[2] - 0.1);
     cyl(M.metal, lp[0], (top + lp[1]) / 2, lp[2] + 0.1, 0.03, lp[1] - top, 6);
     const Lg = L.decks[2]; rail(Lg.x0, Lg.z0, Lg.y, Lg.x0, Lg.z1, Lg.y); rail(Lg.x0, Lg.z1, Lg.y, Lg.x1, Lg.z1, Lg.y);
+    const Lc = L.decks[4]; rail(Lc.x0, Lc.z0, Lc.y, Lc.x0, Lc.z1, Lc.y); rail(Lc.x0, Lc.z1, Lc.y, 12.6, Lc.z1, Lc.y);   // the stair core landing
   }
   for (const [i, [px, pz]] of L.poles.entries()) {                   // flood poles: concrete base, steel mast, head
     const lp = L.lamps[i + 1].p;
@@ -47569,6 +47664,21 @@ function* yardBuilder(room) {
     return leaf;
   };
   room.doorVisual = put(dg, makeLeaf(), ex, cy, -hd - T + 0.03);
+  // Side doors: steel frames in the static group, leaves in their own (live) group, hung by yardDoorsActivate.
+  room.yardLeafG = new THREE.Group(); room.yardLeaves = [];
+  const mergeLeaf = (leaf) => {                                      // a side leaf in 4 draws: slab, its steel, two levers
+    const steel = [];
+    for (const c of [...leaf.children]) if (c.isMesh && c.material === KM.steel) { c.updateMatrix(); steel.push(yardClean(c.geometry.clone()).applyMatrix4(c.matrix)); leaf.remove(c); }
+    if (steel.length) leaf.add(mesh(own(mergeGeometries(steel)), KM.steel, true, true));
+    return leaf;
+  };
+  for (const sd of L.sdoors) {                                       // frames join the static batch
+    const F = yardDoorFrame(sd), ux = Math.cos(F.th), uz = -Math.sin(F.th), jw = D.width / 2 + 0.03;
+    for (const sgn of [-1, 1]) add(KG.jamb, KM.door, F.mx + ux * jw * sgn, sd.y + (D.height + 0.04) / 2, F.mz + uz * jw * sgn, 0, F.th, 0, 1, 1, 1, 0);
+    add(KG.head, KM.door, F.mx, sd.y + D.height + 0.03, F.mz, 0, F.th, 0, 1, 1, 1, 0);
+    add(KG.threshold, KM.steel, F.mx, sd.y + 0.006, F.mz, 0, F.th, 0, 1, 1, 1, 0, false);
+    room.yardLeaves.push(put(room.yardLeafG, mergeLeaf(makeLeaf()), F.cx, sd.y + cy, F.cz, F.th));
+  }
   if (room.entryX !== null) {
     const pg = room.entryPlug = new THREE.Group(), nx = room.entryX, nz = hd + T / 2;
     put(pg, mesh(KG.jamb, KM.door), nx - D.width / 2 - 0.03, (D.height + 0.04) / 2, nz);
@@ -47595,6 +47705,8 @@ function* yardBuilder(room) {
   { const on = lens.filter((l) => l[1]).map((l) => l[0]); if (on.length) { const m = merged(on, M.lens, false); own(m.geometry); g.add(m); room.yardLens = m; } }
 
   // --- Lights: the pool fittings (troffers carry the tower flood and the approach pole), lamps, shafts, halos ---
+  L.rooms.forEach((r, k) => { YU.uYRoomR.value[k].set(r.x0, r.z0, r.x1, r.z1); YU.uYRoomTop.value[k] = r.h; });
+  L.roofs.forEach((r, k) => { YU.uYRoof.value[k].set(r[0], r[1], r[2], r[3]); YU.uYRoofH.value[k] = r[4]; });
   room.troffers = [0, 1].map((i) => { const dm = new THREE.MeshBasicMaterial(); room.ownMat.push(dm); return { x: L.lamps[i].p[0], z: L.lamps[i].p[2], y: L.lamps[i].p[1] + 0.2, diffMat: dm }; });   // the pool's fittings (night / flicker code writes their glow; the lenses are ours)
   Y.lampsL = L.lamps.map((l) => ({ ...l, I: l.I * L.lampI[l.k] * YC.lampK }));
   { // shafts
@@ -47635,6 +47747,7 @@ function* yardBuilder(room) {
   yield;
   freezeStatic(g, room.yardSky);
   freezeStatic(dg, room.doorVisual);
+  g.add(room.yardLeafG);                                            // after the freeze: the side leaves move
   Y.built = true;
   try { renderer.compileAsync(g, camera, scene).catch(() => { /* compiled on first draw */ }); } catch (e) { /* older three */ }
 }
@@ -47659,7 +47772,12 @@ function yardActivate(room, box, walk) {
   };
   endW(-hd - T / 2, room.exitX, YC.back);
   endW(hd + T / 2, room.entryX, YC.front);
-  for (const b of L.bld) { box((b.x1 - b.x0) / 2, b.h / 2, (b.z1 - b.z0) / 2, (b.x0 + b.x1) / 2, b.h / 2, (b.z0 + b.z1) / 2, 0.6, 0, 'concrete'); walk((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2, (b.x1 - b.x0) / 2, (b.z1 - b.z0) / 2, b.h); }
+  for (const [bi, b] of L.bld.entries()) {
+    for (const [x0, x1, z0, z1] of yardCells(L, bi)) { box((x1 - x0) / 2, b.h / 2, (z1 - z0) / 2, (x0 + x1) / 2, b.h / 2, (z0 + z1) / 2, 0.6, 0, 'concrete'); walk((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2, b.h); }
+    for (const r of L.rooms) if (r.b === bi) box((r.x1 - r.x0) / 2, (b.h - r.h) / 2, (r.z1 - r.z0) / 2, (r.x0 + r.x1) / 2, (b.h + r.h) / 2, (r.z0 + r.z1) / 2, 0.6, 0, 'concrete');   // ceiling slab and up
+    for (const gp of L.gaps) if (gp.b === bi) { const y0 = D.height + 0.06; box((gp.x1 - gp.x0) / 2, (b.h - y0) / 2, (gp.z1 - gp.z0) / 2, (gp.x0 + gp.x1) / 2, (b.h + y0) / 2, (gp.z0 + gp.z1) / 2, 0.6, 0, 'concrete'); }
+  }
+  for (const r of L.rooms) if (r.counter) { const [x0, x1, z0, z1] = r.counter; box((x1 - x0) / 2, 0.525, (z1 - z0) / 2, (x0 + x1) / 2, 0.525, (z0 + z1) / 2, 0.6, 0, 'concrete'); walk((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2, 1.05); }
   // facade pilasters and canopies stay visual (they stand 0.4 m out: a walk box keeps you off them)
   for (const zf of [-hd, hd]) for (let x = -hw + 3; x < hw - 1; x += 6.4) if (Math.abs(x - (zf < 0 ? room.exitX : room.entryX)) > 2.6) {
     const zc = zf < 0 ? zf + 0.19 : zf - 0.19; box(0.32, 3, 0.19, x, 3, zc, 0.6, 0, 'concrete'); walk(x, zc, 0.32, 0.19, h);
@@ -47669,8 +47787,7 @@ function yardActivate(room, box, walk) {
     for (let k = 0; k < n; k++) box(hx, 0.02, go / 2, cx, (k + 1) * rise - 0.02, F.zf + sg * (k + 0.5) * go, 0.8, 0, 'metal');
     const zA = F.zf + (F.zt - F.zf) * 0.3, zc = (zA + F.zt) / 2, hz = Math.abs(F.zt - zA) / 2;
     walk(cx, zc, hx, hz, F.y, 0, { lvTop: 0.5 });                    // under the flight: walls the ground, not the stair
-    walk(F.x1 + 0.03, (F.zf + F.zt) / 2 + sg * 0.25, 0.03, Math.abs(F.zt - F.zf) / 2 - 0.25, F.y + 1.1);
-    if (!F.open) walk(F.x0 - 0.03, (F.zf + F.zt) / 2 + sg * 0.25, 0.03, Math.abs(F.zt - F.zf) / 2 - 0.25, F.y + 1.1);
+    for (const side of F.rails) walk(F[side] + (side === 'x1' ? 0.03 : -0.03), (F.zf + F.zt) / 2 + sg * 0.25, 0.03, Math.abs(F.zt - F.zf) / 2 - 0.25, F.y + 1.1);
   }
   for (const Dk of L.decks) box((Dk.x1 - Dk.x0) / 2, 0.1, (Dk.z1 - Dk.z0) / 2, (Dk.x0 + Dk.x1) / 2, Dk.y - 0.1, (Dk.z0 + Dk.z1) / 2, 0.8, 0, 'metal');
   { const C = L.decks[1], Ld = L.decks[0], Lg = L.decks[2], Cb = L.decks[3], up = (y) => ({ bot: y - 0.3 });
@@ -47685,6 +47802,9 @@ function yardActivate(room, box, walk) {
     cw(Cb.x0, Cb.x1, Cb.z0, Cb.z0 + 0.04); cw(Cb.x0, Cb.x1, Cb.z1 - 0.04, Cb.z1); cw(Cb.x1 - 0.04, Cb.x1, Cb.z0, Cb.z1); cw(Cb.x0, Cb.x0 + 0.04, 15.4, Cb.z1);
     cw(Cb.x0, Cb.x0 + 0.04, Cb.z0, 14);
     box(1.85, 0.06, 1.85, (Cb.x0 + Cb.x1) / 2, Cb.y + 2.76, (Cb.z0 + Cb.z1) / 2, 0.5, 0, 'metal');   // roof
+    const Lc = L.decks[4];                                           // the stair core landing: open west edge, and its north edge beside the flight
+    walk(Lc.x0 - 0.03, (Lc.z0 + Lc.z1) / 2, 0.03, (Lc.z1 - Lc.z0) / 2, Lc.y + 1.1, 0, up(Lc.y));
+    walk((Lc.x0 + 12.6) / 2, Lc.z1 + 0.03, (12.6 - Lc.x0) / 2, 0.03, Lc.y + 1.1, 0, up(Lc.y));
   }
   for (const [x, z] of L.posts) { box(0.1, 2.1, 0.1, x, 2.1, z, 0.5, 0, 'metal'); walk(x, z, 0.1, 0.1, 4.2); }
   for (const [px, pz] of L.poles) { box(0.35, 0.35, 0.35, px, 0.35, pz, 0.6, 0, 'concrete'); box(0.11, 5.5, 0.11, px, 6, pz, 0.5, 0, 'metal'); walk(px, pz, 0.35, 0.35, 11); }
@@ -47697,6 +47817,64 @@ function yardActivate(room, box, walk) {
   }
   for (const [x, z] of L.bollards) { box(0.1, 0.55, 0.1, x, 0.55, z, 0.5, 0, 'metal'); walk(x, z, 0.11, 0.11, 1.1); }
   room.navCache = yardNav(room);
+  yardDoorsActivate(room);
+}
+/* Side doors: the room door system's leaves (doors[], doorByCollider, walk boxes, closer, lever, kick, breach, holes,
+ * sounds), each with its own body, collider and revolute joint on the yard's body; door.sec marks them (fixed hinge,
+ * own lock, no streaming role). Locked ones (they lead nowhere) rattle, thud when kicked and never give. */
+function yardDoorsActivate(room) {
+  const D = CONFIG.door, P = CONFIG.doorPhys, o = room.origin, sw = D.width - 0.02, cy = (D.height - 0.02) / 2 + 0.008;
+  room.yardDoors = [];
+  room.yard.sdoors.forEach((sd, i) => {
+    const F = yardDoorFrame(sd), base = rYaw(room) + F.th, leaf = room.yardLeaves && room.yardLeaves[i];
+    if (!leaf) return;
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(rWX(room, F.cx), o.y + sd.y + cy, rWZ(room, F.cz))
+      .setRotation({ x: 0, y: Math.sin(base / 2), z: 0, w: Math.cos(base / 2) }).setLinearDamping(0.4).setAngularDamping(0.9));
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(sw / 2, (D.height - 0.02) / 2, 0.0225).setMass(P.mass).setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.door), body);
+    const jd = RAPIER.JointData.revolute({ x: F.hx, y: sd.y + cy, z: F.hz }, { x: -sw / 2, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
+    jd.limitsEnabled = true; jd.limits = [-P.maxBack, P.maxOpen];
+    const joint = world.createImpulseJoint(jd, room.body, body, true);
+    if (joint.setLimits) joint.setLimits(-P.maxBack, P.maxOpen);
+    if (joint.configureMotorModel && RAPIER.MotorModel) joint.configureMotorModel(RAPIER.MotorModel.AccelerationBased);
+    const door = {
+      room, body, joint, group: leaf, sw, cy, base, vis: 0,
+      angle: 0, prevAngle: 0, mode: '', target: -1, drive: null, holder: null, grabOffset: 0, grabR: 0, grabY: 0, settled: false,
+      walk: { x: rWX(room, F.cx), z: rWZ(room, F.cz), c: Math.cos(base), s: Math.sin(base), hx: sw / 2, hz: 0.033, top: o.y + sd.y + D.height, bot: o.y + sd.y },
+      sec: { i, id: sd.id, locked: !!sd.locked, hx: F.hx, hz: F.hz }
+    };
+    leaf.userData.door = door;
+    door.colHandle = col.handle; door.col = col; door.latching = false;
+    doorCreak(door); door.crP = 0.9 + 0.2 * ((i * 0.618) % 1);      // each its own hinge pitch
+    doors.push(door); doorByCollider.set(col.handle, door);
+    room.yardDoors.push(door);
+  });
+  rebuildWalk();
+}
+function yardDoorsUnload(room) {
+  for (const d of room.yardDoors || []) {
+    if (d.holder) releaseDoor(d.holder);
+    doorByCollider.delete(d.colHandle);
+    try { world.removeRigidBody(d.body); } catch (e) { /* gone with the world */ }
+    const i = doors.indexOf(d); if (i >= 0) doors.splice(i, 1);
+  }
+  room.yardDoors = null;
+}
+// The men open the side doors they walk into (unlocked ones), away from them, like you do.
+function yardDoorsTick(yard, now) {
+  if (!yard.yardDoors) return;
+  const P = CONFIG.doorPhys;
+  for (const d of yard.yardDoors) {
+    if (d.sec.locked || d.holder || Math.abs(d.angle) > 0.6 || (d.drive && now < d.drive.until)) continue;
+    for (const e of yard.enemies || []) {
+      if (e.dead || e.surr || e.speed < 0.15) continue;
+      const wx = rWX(yard, e.pos.x), wz = rWZ(yard, e.pos.y);
+      if (Math.hypot(wx - d.walk.x, wz - d.walk.z) > 0.95) continue;
+      const side = doorSide(d, wx, wz);
+      d.drive = { target: side > 0 ? P.maxOpen * 0.88 : -P.maxBack * 0.88, k: 9, c: 6, until: now + 2.6, cap: CONFIG.doorUse.pace };
+      leverHold(d, now + 0.4);
+      break;
+    }
+  }
 }
 // Nav grid at the ground: rasterised per box (the generic one tests every cell against every box).
 function yardNav(room) {
@@ -47751,6 +47929,11 @@ function yardCover(room, out) {
     }
   }
   for (const [px, pz] of L.poles) add(px, pz + 0.35 + gap, 0, 1, 0.7, 0);
+  for (const r of L.rooms) if (r.counter) {                          // the interiors' counters: both long sides
+    const [x0, x1, z0, z1] = r.counter, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    if (x1 - x0 > z1 - z0) { add(cx, z0 - gap, 0, -1, 1.05, 0); add(cx, z1 + gap, 0, 1, 1.05, 0); }
+    else { add(x0 - gap, cz, -1, 0, 1.05, 0); add(x1 + gap, cz, 1, 0, 1.05, 0); }
+  }
 }
 function yardSpawnSpot(room, taken, spec) {
   const L = room.yard, far = (x, z) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > 1.4);
@@ -47774,7 +47957,26 @@ function yardSpawnSpot(room, taken, spec) {
   return { x, z, yaw: Math.atan2(-(YC.entryX - x), -(room.d / 2 - z)) };
 }
 // loopPlan: the yard's men are rifles; the first is the tower sniper.
-function yardPlanMen(list) { for (const s of list) s.gun = 'smg'; if (list.length) list[0].sniper = true; }
+function yardPlanMen(list) { for (const s of list) s.gun = 'smg'; if (list.length) { list[0].sniper = true; list[0].gun = 'awp'; } }
+// The tower sniper's AWM: five rounds, the .338's punch (x dmgK on a hit), a bolt worked after every shot (bolt: s after the
+// shot the bolt comes back and throws the case, s it is home), 2.4-3.2 s between aimed shots; drops the AWM (enemyDropType).
+ENEMY_LOADOUTS.awp = { gun: 'awp', ammo: 5, rpm: 0, burst: [1, 1], gap: [2.4, 3.2], spread: 0.0012, reload: 3.8, pellets: 1, pref: 30, spares: 2,
+  react: 1.25, reach: -0.26, recoil: 22, dmgK: 2.6, bolt: [0.45, 0.85] };
+const _ybt = new THREE.Vector3();
+function yardBoltTick(e, now) {
+  const W = e.w, g = e.gun;
+  if (!W.bolt || !g || !g.root || e.dead) { e.boltAt = 0; return; }
+  g.root.getWorldPosition(_ybt);
+  const rec = hrecOn() && e.gunP;                                    // the recorded bolt family (HREC_SET.bolt), else the synth takes
+  if (!e.boltPh) {                                                   // bolt up and back: the spent case flies
+    spawnCasing(g, g.def.casing);
+    if (rec) { enemyReloadSfx(e, 'lift'); enemyReloadSfx(e, 'rackBack'); } else soundAt(_ybt, () => sfx('rackBack', 0.9));
+    e.boltPh = 1; e.boltAt = now + (W.bolt[1] - W.bolt[0]);
+  } else {                                                           // forward and down: the next round in
+    if (rec) { enemyReloadSfx(e, 'rackFwd'); enemyReloadSfx(e, 'close'); } else soundAt(_ybt, () => sfx('rackFwd', 0.9));
+    e.boltPh = 0; e.boltAt = 0;
+  }
+}
 function yardManPlaced(e, spec, sp) {
   if (!spec.sniper) return;
   e.sniper = true; e.stairHold = true; e.stairY = sp.y; e.errK *= 0.45; e.err *= 0.45; e.reactK *= 1.3;
@@ -47855,9 +48057,11 @@ function yardTick(dt, t) {
       const l = Y.lampsL[i], P = YU.uYLampP.value[i], Dv = YU.uYLampD.value[i];
       if (!l) { P.w = 0; continue; }
       P.set(rWX(yard, l.p[0]), yard.origin.y + l.p[1], rWZ(yard, l.p[2]), dark ? 0 : l.I);
+      YU.uYLampZ.value[i] = l.zone === undefined ? -1 : l.zone;
       Dv.set(rF(yard) * l.d[0], l.d[1], rF(yard) * l.d[2], l.cos);
     }
     if (Y.shaftMat) Y.shaftMat.uniforms.uK.value = dark ? 0 : 0.05;
+    if (yard.active) yardDoorsTick(yard, performance.now() / 1000);
     if (Y.haloMat) Y.haloMat.uniforms.uK.value = dark ? 0 : 1;
     if (yard.yardLens) yard.yardLens.material = dark ? Y.mats.lensOff : Y.mats.lens;
     if (vis) {
@@ -47938,15 +48142,16 @@ function stealthLight() {
     if (ray && !clearLine(_st.b.copy(s.position).addScaledVector(_st.d, 0.3 / d), P, 0.3)) e *= 0.06;
     E += e;
   };
-  for (const s of pool.main) spot(s, true);
+  for (const s of pool.main) spot(s, true);                          // (the moon and the floods are shadow-tested: indoors they are walls away)
   spot(pool.portal, true);
   for (const r of pool.rects) if (r.intensity > 0) { const d2 = Math.max(0.3, P.distanceToSquared(r.position)); E += r.intensity * r.width * r.height * 0.5 / d2; }
   if (typeof flashlight === 'object' && flashlight && flashlight.intensity > 0) E += 1.5;   // your own light gives you away
   if (pool.muzzle && pool.muzzle.intensity > 0) E += 2;
   if (YARD && YARD.built && stream.current && stream.current.yard) {
-    const LP = YU.uYLampP.value, LD = YU.uYLampD.value; let best = -1, bestE = 0;
+    const LP = YU.uYLampP.value, LD = YU.uYLampD.value, yr = stream.current; let best = -1, bestE = 0;
+    const lx = rLX(yr, P.x), lz = rLZ(yr, P.z), ly = P.y - yr.origin.y, rm = yr.yard.rooms.findIndex((r) => lx > r.x0 && lx < r.x1 && lz > r.z0 && lz < r.z1 && ly < r.h);
     for (let i = 0; i < YARD_NL; i++) {
-      const Lp = LP[i]; if (Lp.w <= 0) continue;
+      const Lp = LP[i], z = YU.uYLampZ.value[i]; if (Lp.w <= 0 || (z < -0.5 ? rm >= 0 : rm !== z)) continue;
       _st.d.set(P.x - Lp.x, P.y - Lp.y, P.z - Lp.z); const d2 = Math.max(0.3, _st.d.lengthSq()), c = _st.d.dot(_st.b.set(LD[i].x, LD[i].y, LD[i].z)) / Math.sqrt(d2);
       if (c < LD[i].w) continue;
       const e = Lp.w * smoothstep(LD[i].w, LD[i].w + 0.18 * (1 - LD[i].w) + 0.02, c) / (d2 + 0.25);
