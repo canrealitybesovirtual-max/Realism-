@@ -11160,6 +11160,7 @@ const lastPlayer = new THREE.Vector3(1e9, 0, 0);
 async function initPhysics() {
   await RAPIER.init();
   world = new RAPIER.World({ x: 0, y: CONFIG.physics.gravity, z: 0 });
+  physNanGuard();
   // More solver iterations keep stacks (can on crate, crate on crate) from creeping.
   const ip = world.integrationParameters;
   if (ip && 'numSolverIterations' in ip) ip.numSolverIterations = CONFIG.physics.solverIterations;
@@ -33797,6 +33798,32 @@ const P10_LIGHT_GLSL = `
     return uAmb + beam + uFlash * 2.0 / (1.0 + dot(F, F) * 1.5);
   }`;
 
+// Physics NaN guard: one non-finite number given to Rapier (a position, velocity, impulse) makes its next
+// step panic ('unreachable') and the physics world never works again: the game freezes. Every setter and
+// desc that takes a vector drops a non-finite one (logged once with where it came from) instead.
+const PHYS_NAN = { n: 0, seen: new Set() };
+function physNanGuard() {
+  const ok = (v) => v == null || typeof v !== 'object' || (Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z) && (v.w === undefined || Number.isFinite(v.w)) && Math.abs(v.x) < 1e6 && Math.abs(v.y) < 1e6 && Math.abs(v.z) < 1e6);
+  const fin = (v) => typeof v !== 'number' || (Number.isFinite(v) && Math.abs(v) < 1e6);
+  const wrap = (P, names, label) => {
+    if (!P) return;
+    for (const m of names) {
+      const f = P[m]; if (typeof f !== 'function') continue;
+      P[m] = function (a, b, c, d) {
+        if (ok(a) && ok(b) && ok(c) && fin(a) && fin(b) && fin(c)) return f.call(this, a, b, c, d);
+        PHYS_NAN.n++;
+        const where = (new Error().stack || '').split('\n')[2] || '';
+        if (!PHYS_NAN.seen.has(m + where)) { PHYS_NAN.seen.add(m + where); console.warn('Physics: dropped a non-finite ' + label + '.' + m, a, where.trim()); }
+        return label === 'desc' ? this : undefined;
+      };
+    }
+  };
+  wrap(RAPIER.RigidBody && RAPIER.RigidBody.prototype, ['setTranslation', 'setNextKinematicTranslation', 'setLinvel', 'setAngvel', 'setRotation', 'setNextKinematicRotation',
+    'applyImpulse', 'applyImpulseAtPoint', 'applyTorqueImpulse', 'addForce', 'addTorque', 'addForceAtPoint', 'setLinearDamping', 'setAngularDamping', 'setGravityScale', 'setAdditionalMass'], 'body');
+  wrap(RAPIER.Collider && RAPIER.Collider.prototype, ['setTranslation', 'setTranslationWrtParent', 'setRotation', 'setRotationWrtParent', 'setHalfExtents', 'setRadius'], 'collider');
+  wrap(RAPIER.RigidBodyDesc && RAPIER.RigidBodyDesc.prototype, ['setTranslation', 'setRotation', 'setLinvel', 'setAngvel'], 'desc');
+  wrap(RAPIER.ColliderDesc && RAPIER.ColliderDesc.prototype, ['setTranslation', 'setRotation'], 'desc');
+}
 function p10Ray(o, d, maxT, filter, excludeBody) {
   if (!P10.ray) P10.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
   P10.ray.origin = { x: o.x, y: o.y, z: o.z };
