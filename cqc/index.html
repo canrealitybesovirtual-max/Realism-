@@ -4640,12 +4640,13 @@ void sfSetup(vec2 uv) {
   float k = sfV(uv * 0.45) * 0.65 + sfV(uv * 1.3 + 17.0) * 0.35;
   float l = k * 8.0, ia = floor(l), f = fract(l);
   sfOA = sin(vec2(3.0, 7.0) * ia) * 0.5 + 0.5; sfOB = sin(vec2(3.0, 7.0) * (ia + 1.0)) * 0.5 + 0.5;
-  sfW = smoothstep(0.3, 0.7, f); sfDX = dFdx(uv); sfDY = dFdy(uv);
+  sfW = uSfK.y > 0.5 ? smoothstep(0.43, 0.57, f) : smoothstep(0.32, 0.68, f); sfDX = dFdx(uv); sfDY = dFdy(uv);   // headset: a narrower blend band
 }
-vec4 sfTexS(sampler2D s, vec2 uv, float k) {
-  vec4 a = textureGrad(s, uv + sfOA, sfDX * k, sfDY * k);
-  vec4 b = textureGrad(s, uv + sfOB, sfDX * k, sfDY * k);
-  return mix(a, b, sfW);
+vec4 sfTexS(sampler2D s, vec2 uv, float k) {   // one fetch inside a patch, two only in its blend band (explicit gradients: fine in a branch)
+  vec2 gx = sfDX * k, gy = sfDY * k;
+  if (sfW < 0.002) return textureGrad(s, uv + sfOA, gx, gy);
+  if (sfW > 0.998) return textureGrad(s, uv + sfOB, gx, gy);
+  return mix(textureGrad(s, uv + sfOA, gx, gy), textureGrad(s, uv + sfOB, gx, gy), sfW);
 }
 vec4 sfTex(sampler2D s, vec2 uv) { return sfTexS(s, uv, 1.0); }
 vec3 sfBlendN(vec3 a, vec3 b) { return normalize(vec3(a.xy + b.xy, a.z * b.z)); }   // whiteout blend
@@ -20815,6 +20816,12 @@ function benchLampFollow(live) {
   const B = BLAMP;
   if (!live || (B.held && !renderer.xr.isPresenting)) { B.held = undefined; return; }
   benchLampHandM(B.held, B.mW).multiply(B.off);
+  if (!B.held) {                                                    // computer: the head never goes through a wall (pulled back along the view to 12 cm short of it)
+    camera.getWorldPosition(B.v); B.hp.set(0, -0.12, -0.55).applyMatrix4(camera.matrixWorld); B.d.copy(B.hp).sub(B.v);
+    const L = B.d.length(); B.d.multiplyScalar(1 / L);
+    const h = p10Ray(B.v, B.d, L + 0.12, P10_STATIC_RAY);
+    if (h) { const k = Math.max(0.15, p10Toi(h) - 0.12) - L; if (k < 0) { B.mW.elements[12] += B.d.x * k; B.mW.elements[13] += B.d.y * k; B.mW.elements[14] += B.d.z * k; } }
+  }
   B.mI.copy(B.grp.parent.matrixWorld).invert();
   B.mW.premultiply(B.mI).decompose(B.grp.position, B.grp.quaternion, B.v);
   B.grp.updateMatrixWorld(true);
