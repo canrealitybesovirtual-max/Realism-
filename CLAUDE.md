@@ -1097,3 +1097,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Bench lamp carried on the computer: its head is pulled back along the view to 12 cm short of any static collider (no more putting it down through a wall).
 - Measured headless: game JS ~2.9 ms a frame in a combat room (render stubbed); no new shader programs while walking rooms 1-2 after load.
 - Painted steel texture (shadePaintedMetal): chips were 6 % of the tile in big 1/8-tile patches (bare metal reads black in dim rooms: cabinets looked blotched); now ~0.9 % small chips (fbm 24 + 6). The texture cache key hashes the recipe, so it regenerates on the next load.
+- Walls (shadeWall): pinholes much sparser (they read as cork at 2-3 m), hairline cracks fainter. Tan wing paint is now putty / taupe #a39a86 / #6e675a (the ochre read as cardboard under the warm tubes). Brushed steel prop wear (kind 1): grime and tea-stain streaks weaker (big ducts looked smeared).
