@@ -4300,6 +4300,7 @@ function wearTexel(D, N, c, x0, y0, x1, y1, fx, fy) {
   return ((a + (b - a) * fx) * (1 - fy) + (e + (f - e) * fx) * fy) / 255;
 }
 function wearWetAt(room, lx, lz) {
+  if (room && room.yard) return yardWetAt(room, lx, lz);        // outdoor start: rain puddles (the shader's noise)
   const W = room && room.wear93, D = FLOOR_WEAR.cpu;
   SPLASH.pool = 0; SPLASH.damp = 0;
   if (!W || !D || W.hw === undefined || Math.abs(lx) > W.hw || Math.abs(lz) > W.hd) return 0;
@@ -6200,6 +6201,7 @@ function roomPlan(i) {
     const wing = wingAt(wi), k = s - wing.start, R = mulberry32((roomSeed(s) ^ 0x2C1B3C6D) >>> 0);
     // Step 12: every wing after the first is reached by a stairwell, one floor up or down.
     const level0 = prev ? prev.level : 0, SC = CONFIG.stairs, stairWing = SC.on && wing.index > 0;
+    { const yp = yardPlanAt(s, wing, k, level0); if (yp) { _plans.push(yp); continue; } }   // outdoor start: the yard, then the stairwell down
     if (stairWing && k === 0) {
       const R2 = mulberry32((roomSeed(s) ^ 0x51A1B5) >>> 0);
       let dir = R2() < SC.upChance ? 1 : -1;
@@ -6228,6 +6230,7 @@ function normalParams(i) {
   const plan = roomPlan(i);
   if (plan.type === 'stair') { const sp = stairParams(i, plan); _paramCache.set(i, sp); return sp; }   // step 12
   if (facIs(plan.type)) { const fp = facParams(i, plan); _paramCache.set(i, fp); return fp; }        // facility section
+  if (plan.type === 'yard') { const yp = yardParams(i, plan); _paramCache.set(i, yp); return yp; }  // outdoor start
   const S = ROOM_TYPES[plan.type].size;
   const R = mulberry32(roomSeed(i)), m = CONFIG.door.width / 2 + 0.5;
   let w = Math.round((S.w[0] + (S.w[1] - S.w[0]) * R()) * 10) / 10;
@@ -7143,6 +7146,7 @@ function roomMaterials(room) {
 }
 function* roomBuilder(room) {
   if (room.kind === 'stair') { yield* stairBuilder(room); return; }   // step 12
+  if (room.plan && room.plan.type === 'yard') { yield* yardBuilder(room); return; }   // outdoor start
   if (!room.layout) room.layout = yield* generateLayout(room);
   const { w, d, h } = room, M = KIT.mat, G = KIT.geo, P = KIT.proto, D = CONFIG.door, T = CONFIG.stream.wallT;
   const L = room.layout, g = room.group, dg = room.doorGroup, RM = room.mats = roomMaterials(room);
@@ -7967,7 +7971,7 @@ function stairFloor(S, lx, lz, hint = 0) {
 }
 // Flat floor at 0 or rise (the corridors and the pads): where the world may re-base vertically.
 function stairFlat(S, lx, lz) { return S.u ? (lz >= S.zc || S.side * (S.xp - lx) <= 0) : (Math.abs(S.zs * lz) >= S.uLo || S.side * (S.xp - lx) <= 0); }
-function roomFloorAt(r, lx, lz, hint = 0) { return r.stair ? stairFloor(r.stair, lx, lz, hint) : r.facMz ? facFloor(r.facMz, lx, lz, hint) : 0; }   // facility section: the checkpoint landing
+function roomFloorAt(r, lx, lz, hint = 0) { return r.stair ? stairFloor(r.stair, lx, lz, hint) : r.facMz ? facFloor(r.facMz, lx, lz, hint) : r.yard ? yardFloor(r, lx, lz, hint) : 0; }   // outdoor start: stairs, catwalk, tower   // facility section: the checkpoint landing
 function updateFloor() {
   rig.updateMatrixWorld(true);
   headWorld(_fl);
@@ -7975,7 +7979,7 @@ function updateFloor() {
   const r = c && c.active && insideRoom(c, _fl.x, _fl.z, 0.3, _fl.y) ? c : roomContaining(_fl.x, _fl.z, 0.3, _fl.y);
   if (!r) return;
   const lx = rLX(r, _fl.x), lz = rLZ(r, _fl.z);
-  level.flat = r.facMz ? facFloor(r.facMz, lx, lz, level.floor - r.origin.y) < 0.005 : (!r.stair || stairFlat(r.stair, lx, lz));   // facility section: no re-base on the landing
+  level.flat = r.yard ? yardFlat(r, lx, lz, level.floor - r.origin.y) : r.facMz ? facFloor(r.facMz, lx, lz, level.floor - r.origin.y) < 0.005 : (!r.stair || stairFlat(r.stair, lx, lz));   // facility section: no re-base on the landing
   const y = r.origin.y + roomFloorAt(r, lx, lz, level.floor - r.origin.y);
   if (Math.abs(y - level.floor) > 1e-5) { level.floor = y; applyHeight(); rig.updateMatrixWorld(true); propWearSync(); }
 }
@@ -8090,6 +8094,7 @@ function activateRoom(room) {
     wbox(0, sEnd, -S.uLo - 0.06, -S.uLo, S.rise + S.guard);                           // balustrade: high corridor / flight 2
   }
   room.cover = { list: [] };                                    // step 6: crates, lockers, partitions
+  if (room.yard) yardActivate(room, box, walk);                 // outdoor start: real wall heights, buildings, steel, nav
   room.layout.furniture.forEach((f, fi) => {
     const s = FURN[f.type];
     if (CRATE_HP[f.type] && crateBrokenInMemory(room, fi)) return;   // only boards left of it
@@ -8374,7 +8379,7 @@ function updateStreaming() {
   // What should exist right now.
   const c = stream.current.slot, safeSlot = Math.max(0, stream.frontier - S.safeBehind);
   const want = new Map([[safeSlot, 'safe']]);
-  for (let s = Math.max(safeSlot + 1, c - S.behind); s <= c + S.ahead; s++) want.set(s, roomPlan(s).type === 'stair' ? 'stair' : 'normal');
+  for (let s = Math.max(safeSlot + 1, c - S.behind); s <= c + S.ahead; s++) { if (yardStop(s)) break; want.set(s, roomPlan(s).type === 'stair' ? 'stair' : 'normal'); }   // outdoor only: nothing past the yard
 
   // Unload what's no longer wanted, but never in view.
   for (const r of [...stream.rooms.values()]) {
@@ -8564,6 +8569,7 @@ function assignLights(cur, portal) {
   // Step 98: the flicker clock only ran while a combat room's tube was lit, so leaving the safe room (or a dark room) found it
   // long overdue and the new room's light stuttered dark the moment you stepped in. A new room's tube now waits grace s.
   if (flicker.fixture && (!fxWas || fxWas.room !== cur)) flicker.arm = true;
+  yardLights(cur);                                               // outdoor start: moon, tower flood, door lamps (restored elsewhere)
   dirtyShadows();
 }
 
@@ -23878,6 +23884,7 @@ function coverPoints(room) {
     }
   }
   if (room.layout && room.layout.fac) facCoverPoints(room, add, out);   // facility section: piers, landing, gates, barriers
+  if (room.yard) yardCover(room, out);                          // outdoor start: barriers, corners, poles
   for (const p of props) {
     if (!p.table || !p.inWorld || p.holders.length) continue;
     const t = p.root.position;
@@ -24527,7 +24534,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   root.add(gb.root);
   room.group.add(root);
   const gun = { root: gb.root, model: gb.model, parts: gb.parts, flashT: 0, def: gd, wr: WR[W.gun], prop: { root: gb.root }, primary: null };
-  const sp = enemySpawnSpot(room, taken);
+  const sp = (room.yard && yardSpawnSpot(room, taken, spec)) || enemySpawnSpot(room, taken);   // outdoor start: door squad, yard, tower
   taken.push(sp);
   const e = {
     room, root, B, gun, hp: CONFIG.enemy.health,
@@ -24550,6 +24557,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   e.err = CONFIG.enemy.errBase * e.errK;
   root.position.set(sp.x, 0, sp.z);
   root.rotation.y = sp.yaw;
+  if (room.yard) yardManPlaced(e, spec, sp);                   // outdoor start: the tower sniper
   ENEMY.list.push(e);
   (room.enemies = room.enemies || []).push(e);
   enemyPose(e, 0.016, wnow());   // step 45: world time
@@ -24586,7 +24594,7 @@ function removeEnemy(e) {
   if (e.room.enemies) { const j = e.room.enemies.indexOf(e); if (j >= 0) e.room.enemies.splice(j, 1); }
 }
 // A stairwell man stands on the stair's floor (his room's local y); everyone else on 0.
-function enemyFloorY(e) { const r = e.room; return r && r.stair && e.stairY != null ? e.stairY : 0; }
+function enemyFloorY(e) { const r = e.room; return r && (r.stair || r.yard) && e.stairY != null ? e.stairY : 0; }   // outdoor start: the tower man
 // Stairwells: CONFIG.stairs.men of them (fixed per slot) put 1 (sometimes 2) men on the top half: the half landing or the top floor's pad.
 function stairMenSpot(room, taken) {
   const S = room.stair, R = mulberry32((roomSeed(room.slot) ^ 0x57A1E5 ^ (taken.length * 977)) >>> 0);
@@ -24791,7 +24799,7 @@ function enemySees(e) {
   if (!roomCanSense(e.room)) return false;                      // step 22.3: not through a shut door, not through a crack
   enemyEye(e, _ev.a);
   headWorld(_ev.b);
-  if (_ev.a.distanceTo(_ev.b) > CONFIG.enemy.sight && !(AWMA.ready && awmGlint(e, _ev.a, nightDark(e.room)))) return false;   // step 113: a scope's glint carries farther
+  if (_ev.a.distanceTo(_ev.b) > (e.sniper ? YC.sniper.sight : CONFIG.enemy.sight) && !(AWMA.ready && awmGlint(e, _ev.a, nightDark(e.room)))) return false;   // step 113: a scope's glint carries farther
   if (nightDark(e.room) && !nightCanSee(e)) { enemyEye(e, _ev.a); return false; }   // step 11: in the dark he needs light to see you
   if (clearLine(_ev.a, _ev.b)) return true;
   _ev.b.y -= 0.35;                                              // a shoulder showing is enough
@@ -24894,9 +24902,9 @@ function enemyThink(e, dt, now) {
   _ev.d.subVectors(_ev.b, _ev.a).normalize();
   const fwdX = -Math.sin(e.yaw + e.twist), fwdZ = -Math.cos(e.yaw + e.twist);
   const inFov = (fwdX * _ev.d.x + fwdZ * _ev.d.z) > Math.cos(C.fov / 2) || pd < 2.2;
-  const visible = e.los && (inFov || e.engaged);
+  const visible = e.los && (inFov || e.engaged) && stealthSees(e, pd);   // stealth: light-scaled range
   if (visible) {
-    e.seen = Math.min(1, e.seen + dt * (pd < 4 ? 3.5 : 1.8) * (adv && e.alert > 0.3 ? 1.6 : 1));   // step 11: a man already listening picks you up faster
+    e.seen = Math.min(1, e.seen + dt * (pd < 4 ? 3.5 : 1.8) * (adv && e.alert > 0.3 ? 1.6 : 1) * stealthK(e, pd, fwdX * _ev.d.x + fwdZ * _ev.d.z));   // step 11: a man already listening picks you up faster; stealth: light, speed, cone, range
     e.lastKnown.set(rLX(e.room, _ev.b.x), _ev.b.y - 0.35, rLZ(e.room, _ev.b.z)); e.hasKnown = true;
     e.lastSeenT = now;
     if (!e.wasVisible) { e.acquire = now + rnd2(C.reaction[0], C.reaction[1]) * e.reactK; e.err = C.errBase * e.errK; }
@@ -24905,6 +24913,7 @@ function enemyThink(e, dt, now) {
   } else e.seen = Math.max(0, e.seen - dt * 0.3);
   e.wasVisible = visible;
   e.visible = visible;
+  stealthPost(e, visible, now, adv);                            // stealth: searching, the meter
   e.suppress = Math.max(0, e.suppress - dt * 0.4);
   if (playerState.dead && e.engaged) { e.engaged = false; e.state = 'idle'; e.path = null; e.watch = null; e.search = null; }
   if (!e.engaged && e.alertAt && now > e.alertAt) { e.alertAt = 0; e.heard = true; }   // step 9: a teammate called contact
@@ -25344,6 +25353,7 @@ function enemyFire(e, dt, now) {
 }
 const _es = { o: new THREE.Vector3(), m: new THREE.Vector3(), d: new THREE.Vector3(), b: new THREE.Vector3(), x: new THREE.Vector3(), y: new THREE.Vector3() };
 function enemyShoot(e, now) {
+  if (e.sniper && !yardSniperGate(e, now)) return;              // outdoor start: the tower sniper glints first
   const g = e.gun, d = g.def, W = e.w;
   g.root.updateWorldMatrix(true, false);
   _es.o.copy(g.wr.chamber).applyMatrix4(g.root.matrixWorld);
@@ -27422,7 +27432,7 @@ function loopPlan(room) {
   if (T > 0.45 && Math.random() < (T - 0.35) * 1.4) n++;
   if (loop.stress > L.breather) n--;                               // a breather after a bad fight
   let cap = room.w * room.d < L.smallRoom ? Math.min(2, L.maxEnemies) : L.maxEnemies;
-  { const rp = room.slot > 0 ? roomPlan(room.slot) : null, rt = rp && ROOM_TYPES[rp.type]; if (rt && rt.men) cap = Math.min(cap, rt.men); if (rt && rt.range) { cap = Math.max(cap, 3); n = Math.max(n, 3); } }   // step 69: men per room type (step 75: the range holds 3-4)
+  { const rp = room.slot > 0 ? roomPlan(room.slot) : null, rt = rp && ROOM_TYPES[rp.type]; if (rt && rt.men) cap = Math.min(cap, rt.men); if (rt && rt.range) { cap = Math.max(cap, 3); n = Math.max(n, 3); } if (rt && rt.yard) { cap = renderer.xr.isPresenting ? YC.menXR : rt.men; n = Math.max(n, rt.minMen + Math.round(T * 2)); } }   // outdoor start: a squad at the door, more across the yard   // step 69: men per room type (step 75: the range holds 3-4)
   // Step 16.2: the room at the foot / top of a stairwell rolls its own odds: empty, as planned, or one more.
   const prevPlan = room.slot > 0 ? roomPlan(room.slot - 1) : null, afterStair = !!(prevPlan && prevPlan.type === 'stair');   // slot 0 (the safe room) has no plan
   if (afterStair) { const SC = CONFIG.stairs, q = Math.random(); if (q < SC.emptyChance) n = 0; else if (q < SC.emptyChance + SC.extraChance) n++; }
@@ -27441,6 +27451,7 @@ function loopPlan(room) {
       aggr: clamp(T * 0.8 + rnd2(-0.15, 0.25) + (gun === 'shotgun' ? 0.3 : 0))   // how readily he leaves cover and pushes
     });
   }
+  if (room.plan && room.plan.type === 'yard') yardPlanMen(list); // outdoor start: rifles, the first in the tower
   aiAssignRoles(list);                                          // step 11: point, support, flank, solo
   { const N = CONFIG.night, c = mix(N.torchChance[0], N.torchChance[1], T);   // step 11: some men carry a weapon light (used at night)
     list.forEach((s) => { s.torch = Math.random() < c; }); }
@@ -27779,7 +27790,7 @@ function aiListen(e, dt, now) {
   let range = sp > F.runSpeed ? F.run : F.walk;
   if (_ai.a.y < 1.2) range *= 0.55;                              // crouched or kneeling: softer steps
   if (!insideRoom(e.room, _ai.a.x, _ai.a.z, 0, _ai.a.y)) range *= 0.6;   // through the doorway
-  range *= mix(0.8, 1.2, e.skill);
+  range *= mix(0.8, 1.2, e.skill) * stealthHearK();            // stealth: difficulty
   if (dist > range) return;
   aiNoise(e, lx, lz, ((1 - dist / range) * 0.6 + 0.25) * 0.4);
 }
@@ -28448,10 +28459,11 @@ function termOps(W, H, now) {
   });
   const acc = r.shots ? Math.round(r.hits / r.shots * 100) : 0;
   tText(`${r.cleared} rooms  ·  ${r.kills} kills  ·  ${acc}% hits  ·  ${fmtTime(now - r.t0)}`, 36, 432, 20, TC.text, 'left', 600, TC.sans, 430);
-  ctx.fillStyle = TC.line; ctx.fillRect(36, 462, 430, 1);
-  tWrap('Points at risk bank when you walk back in here.', 36, 490, 430, 19, TC.dim, 24);
+  ctx.fillStyle = TC.line; ctx.fillRect(36, 450, 430, 1);
+  tText('Points at risk bank when you walk back in here.', 36, 472, 19, TC.dim, 'left', 600, TC.sans, 430);
   const b = career.best[MENU.mode];
-  tText(`Best ${tLabel(MENU.mode).toLowerCase()}: ${b ? b.score : 'none yet'}`, 36, 548, 20, TC.dim, 'left', 600, TC.sans, 430);
+  tText(`Best ${tLabel(MENU.mode).toLowerCase()}: ${b ? b.score : 'none yet'}`, 36, 500, 20, TC.dim, 'left', 600, TC.sans, 430);
+  tSeg('ystart', 36, 520, 430, 48, [['cqc', 'CQC ONLY'], ['outdoor', 'OUT + CQC'], ['outonly', 'OUTDOOR']], yardModeNow(), (v) => yardSetMode(v), { size: 19 });   // outdoor start: the start choice
   // mode, lights, deploy
   const x = 506, w = 502;
   tHead('Mode', x, 162);
@@ -28514,17 +28526,22 @@ function termOpfor(W, H, now) {
   tRowLabel('Extras', 368, rh, 28, adv ? null : 'first three need Advanced');
   const ew = (T_CW - 3 * 8) / 4, extras = [['sup', 'suppress', 'Suppress', true], ['flank', 'flank', 'Flank', true], ['hear', 'hearing', 'Hearing', true], ['radio', 'radio', 'Radio', false]];
   extras.forEach(([id, key, label, needsAdv], i) => tTog(id, T_X0 + i * (ew + 8), 368, ew, rh, label, MENU[key], (v) => termSet(key, v, label), { disabled: needsAdv && !adv, size: 20 }));
+  // Stealth (every room): how fast they notice you, and the detection chevron
+  const SS = stealthState();
+  tRowLabel('Stealth', 424, rh, 28, 'light, shadow, speed, distance');
+  tSeg('stealth', T_X0, 424, T_CW, rh, [['off', 'OFF'], ['easy', 'EASY'], ['normal', 'NORMAL'], ['hard', 'HARD']], SS.on ? SS.diff : 'off', (v) => { SS.on = v !== 'off'; if (SS.on) SS.diff = v; stealthSave(); yardUiSync(); termMsg(`Stealth: ${tLabel(v)}`); });
+  tRowLabel('Detection meter', 478, rh, 28, 'a chevron toward who notices you');
+  tSeg('smeter', T_X0, 478, T_CW, rh, [['on', 'ON'], ['min', 'MINIMAL'], ['off', 'OFF']], SS.meter, (v) => { SS.meter = v; stealthSave(); yardUiSync(); termMsg(`Detection meter: ${tLabel(v)}`); });
   // the rooms ahead
-  tBox(16, 444, 992, 136, TC.faint, TC.line);
-  tHead('Rooms ahead', 36, 470);
+  tBox(16, 534, 992, 44, TC.faint, TC.line);
   const ahead = [...stream.rooms.values()].filter((r) => r.kind === 'normal' && r.active).sort((a, b) => a.slot - b.slot).slice(0, 3);
-  if (!ahead.length) tText('Nothing planned yet', 36, 528, 21, TC.dim);
+  tText('Ahead', 32, 556, 20, TC.dim, 'left', 600);
+  if (!ahead.length) tText('Nothing planned yet', 120, 556, 20, TC.dim);
   ahead.forEach((r, i) => {
-    const x = 36 + i * 326, m = roomMemory.get(memKey(r)), p = m && m.plan;
+    const x = 120 + i * 296, m = roomMemory.get(memKey(r)), p = m && m.plan;
     const alive = p ? p.list.filter((_, k) => !p.dead[k]).length : 0;
     const status = !p ? 'not planned' : p.cleared ? 'clear' : `${alive} ${alive === 1 ? 'man' : 'men'} · threat ${1 + Math.round(p.threat * 9)}`;
-    tText(r.plan ? r.plan.number : `#${r.slot}`, x, 512, 24, TC.text, 'left', 700, TC.mono, 300);
-    tText(status, x, 548, 20, p && p.cleared ? TC.ok : p ? TC.hi : TC.dim, 'left', 600, TC.sans, 300);
+    tText(`${r.plan ? r.plan.number : `#${r.slot}`}  ${status}`, x, 556, 19, p && p.cleared ? TC.ok : p ? TC.hi : TC.dim, 'left', 600, TC.sans, 286);
   });
 }
 
@@ -30954,7 +30971,7 @@ function watchDrawPanel() {
   c.textBaseline = 'middle'; c.textAlign = 'left'; c.fillStyle = '#ffc46b'; c.font = '700 30px ui-monospace, Menlo, monospace'; c.fillText('MODS', 22, 34);
   c.textAlign = 'right'; c.fillStyle = modAny() ? '#ff8466' : '#5d8a7c'; c.font = '600 22px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
   c.fillText(modAny() ? 'Score off while mods are on' : 'Tap a switch', W - 22, 34);
-  const top = 66, gap = 10, cols = 2, rows = Math.ceil((MOD_LIST.length + 1) / cols), bw = (W - 22 * 2 - gap) / cols, bh = (H - top - 18 - gap * (rows - 1)) / rows;
+  const top = 66, gap = 10, cols = 2, rows = Math.ceil((MOD_LIST.length + 1 + yardWatchCount()) / cols), bw = (W - 22 * 2 - gap) / cols, bh = (H - top - 18 - gap * (rows - 1)) / rows;
   MOD_LIST.forEach(([k, label], i) => {
     const x = 22 + (i % cols) * (bw + gap), y = top + Math.floor(i / cols) * (bh + gap), on = MOD[k];
     const lit = WATCH.flashId === k && performance.now() / 1000 < WATCH.flashUntil, hov = WATCH.hover === k;
@@ -30975,6 +30992,7 @@ function watchDrawPanel() {
     c.fillText(arm ? 'Tap again to restart' : 'Restart in safe room', x + bw / 2, y + bh / 2, bw - 20);
     WATCH.hits.push({ id: 'restart', x, y, w: bw, h: bh });
   }
+  yardWatchCells(c, 22, top, bw, bh, gap, cols);                   // outdoor start + stealth settings
   WATCH.panelTex.needsUpdate = true; WATCH.dirty = false;
 }
 function watchOpen(on) {
@@ -31048,6 +31066,7 @@ function watchHitAt(l, pw, ph) {
 }
 function watchPanelPress(id, hand) {
   if (id === 'restart') { pulse(hand, 0.45, 18); sfxTick(2000); restartTap(); return; }   // step 86
+  if (yardCellPress(id)) { pulse(hand, 0.45, 18); sfxTick(2200); return; }   // outdoor start + stealth settings
   modSet(id, !MOD[id]); WATCH.flashId = id; WATCH.flashUntil = performance.now() / 1000 + 0.14;
   pulse(hand, 0.45, 18); sfxTick(MOD[id] ? 2600 : 1500);
 }
@@ -31079,6 +31098,7 @@ function modDomBuild() {
     b.addEventListener('click', (ev) => { ev.stopPropagation(); audioUnlock(); modSet(k, !MOD[k]); });
     grid.appendChild(b);
   }
+  yardDomBuild(grid);                                              // outdoor start + stealth settings
   const rb = document.createElement('button'); rb.type = 'button'; rb.id = 'mwRestart'; rb.className = 'mw-restart';   // step 86
   rb.addEventListener('click', (ev) => { ev.stopPropagation(); audioUnlock(); restartTap(); });
   grid.appendChild(rb);
@@ -31120,6 +31140,7 @@ function modDomSync() {
   if (rb) { const a = restartArmed(); rb.textContent = a ? 'Click again to restart' : 'Restart in safe room'; rb.setAttribute('aria-pressed', a ? 'true' : 'false'); }
   const sub = document.getElementById('mwSub'); if (sub) sub.textContent = modAny() ? 'Mods on: this run scores nothing' : 'Tap a switch. Score stays on while all are off';
   if (WATCH.faceCv) watchDrawFace();
+  yardUiSync();
 }
 function modPanelToggle(force) {
   const open = typeof force === 'boolean' ? force : !document.body.classList.contains('modOpen');
@@ -32435,6 +32456,7 @@ function roomAcoustic(r) {
   if (r.stair || r.kind === 'stair') return 'stair';
   const t = r.plan && r.plan.type;
   if (t && ROOM_TYPES[t] && ROOM_TYPES[t].acoustic) return ROOM_TYPES[t].acoustic;   // facility section
+  if (t === 'yard') return 'range';                             // outdoor start: slaps off the buildings
   if (t === 'range' || t === 'hall') return t;
   if (r.kind === 'safe' || t === 'office' || t === 'records' || t === 'lockers') return 'small';
   return 'room';
@@ -40186,6 +40208,7 @@ function tick(timeMs) {
   stressUpdate(dt);      // step 41: your breathing, heartbeat, tremor
   goreUpdate(dtW);       // step 41: pools drying, you dripping
   nightUpdate(dtW);      // step 11: dark rooms, the men's weapon lights
+  yardTick(dtW, t);      // outdoor start (sky, rain, fog, lamps) + stealth (light level, meter)
   profMark('enemies');
   weaponsUpdate(dt, t);  // step 5: gun poses, triggers, mechanisms, magazines (before physics)
   thumbSelectorUpdate(dt);   // step 30: a tracked thumb flicks the fire selector
@@ -46576,6 +46599,1528 @@ function atcKnock(p, now) {
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty, atcBuild, atcEnsure, atcSigOf, atcBody, atcProbe, atcFree, atcItemClip, atcKnock,
   gunClipWorld, gunFreeAt, gunClipShape, updateGunProbe, updateHeldItem, clipReady, updateDoorsPre, updateDoorsPost, stepPhysics, CLIP, COLL, GROUP });
+
+
+
+/* ===========================================================================
+ *  OUTDOOR START ("OUTPOST 17") + STEALTH
+ *  Start choice (title screen, watch / M panel while in the first safe room; cqc.start.v1; ?start=cqc|outdoor|outonly):
+ *    CQC ONLY       the old game (default): no yard.
+ *    OUTDOOR + CQC  slot 1 is the yard; its back door (the "17" block) opens on a stairwell down (slot 2), then the rooms.
+ *    OUTDOOR ONLY   the yard only: the block's door stays locked (slot 2 is never streamed).
+ *  The yard is a normal combat room (kind 'normal', plan.type 'yard'): the room chain, doors, enemies, loop plan, score,
+ *  holes and penetration all work as in a room. Its own builder (yardBuilder), collider pass (yardActivate), floor
+ *  function (yardFloor: stairs, catwalk, tower), nav grid, cover points, spawn spots, lights (yardLights) and per-frame
+ *  work (yardTick: sky, rain, fog uniforms, camera far, environment). Everything room-local (rWX / rWZ).
+ *  Look: generated PBR sets (board-formed concrete, broom-finished slabs, painted steel: albedo / normal / ORM) at
+ *  2.3 / 5.9 / 2 mm a texel (half in the headset), one shared surface shader (macro variation, rain streaks, moss,
+ *  edge wear, rust runs, wet model with puddles and rain ripples, analytic lamps, height fog with lamp in-scatter).
+ *  Sky: cqc/sky/sky.webp (the user's Forest Clearing skybox, CC-BY-4.0 Luis Vidal; tools/pack_sky.py) graded to a
+ *  rainy night in the shader; the same grading makes the 256 px PMREM used as IBL. Replace the sky: drop another
+ *  equirect (row 0 = zenith) at cqc/sky/sky.webp + sky2k.webp and edit sky.json (colours, sun = moon direction).
+ *  Light count fixed: moon = pool.main[0] (shadowed spot 140 m out), tower flood = pool.main[1] (shadowed),
+ *  pool.rects over the two working doors; every other lamp is analytic in the yard shader (no shadow).
+ * ========================================================================= */
+var YARD = null;                                                 // var: hooks may run before this section evaluates
+const YC = {
+  key: 'cqc.start.v1', modes: ['cqc', 'outdoor', 'outonly'],
+  label: { cqc: 'CQC ONLY', outdoor: 'OUTDOOR + CQC', outonly: 'OUTDOOR ONLY' },
+  w: 40, d: 56, h: 14, entryX: 8, exitX: -2,
+  front: 7.2, back: 12, perim: 3.0, fence: 2.2,
+  tex: { wall: 2.4, ground: 6, metal: 1 },
+  men: 8, menXR: 6, minMen: 5,
+  moon: { dist: 140, E: 0.22, rot: 75 },                          // rot: panorama yaw (deg) so the bright cloud sits over the 17 block
+  flood: { E: 4.5 }, lampK: 1,
+  sky: { expo: 0.055, sat: 0.32, tint: [0.62, 0.72, 0.92], fog: [0.018, 0.021, 0.026] },
+  fog: { dens: 0.022, fall: 0.12, max: 0.9, scat: 1 },
+  rain: { n: 7000, nXR: 2600, box: [26, 16, 26], fall: 8.5, wind: [0.9, 0.4], splash: 600, splashXR: 220 },
+  envK: 1.4, far: 220,
+  sniper: { sight: 75, glint: 0.9, gap: 2.6, first: 1.6 }
+};
+function yardMode() {
+  const m = /[?&]start=(cqc|outdoor|outonly)\b/.exec(location.search);
+  if (m) return m[1];
+  try { const v = localStorage.getItem(YC.key); if (YC.modes.includes(v)) return v; } catch (e) { /* */ }
+  return 'cqc';
+}
+function yardModeNow() { return yardState().mode; }
+function yardState() {
+  if (!YARD) YARD = { mode: yardMode(), built: false, room: null, mats: null, tex: null, env: null, envOld: null, sky: null, lampsL: [], lampsW: [], prev: null, rain: null, camFar: 0 };
+  return YARD;
+}
+function yardRegister() {
+  if (ROOM_TYPES.yard) return;
+  ROOM_TYPES.yard = { label: 'outpost 17', size: { w: [YC.w, YC.w], d: [YC.d, YC.d] }, density: [0, 1], sig: false, men: YC.men, minMen: YC.minMen, yard: true,
+    runs: [], bare: true, marks: {}, clock: 0, partition: 0, pony: 0, table: 0, tipped: 0, panel: 0, whiteboard: 0, props: [], nProps: [0, 0] };
+}
+// roomPlan hook: slot 1 the yard, slot 2 a stairwell down into the block (OUTDOOR + CQC).
+function yardPlanAt(s, wing, k, level0) {
+  const mode = yardModeNow();
+  if (mode === 'cqc' || s > 2 || s < 1) return null;
+  yardRegister();
+  if (s === 1) return { slot: 1, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` };
+  if (mode !== 'outdoor' || !CONFIG.stairs.on) return null;
+  const SC = CONFIG.stairs, dir = level0 - 1 >= SC.levels[0] ? -1 : 1;
+  return { slot: 2, wing, k, type: 'stair', dir, entryLevel: level0, level: level0 + dir, number: `${wing.letter}-${floorDigit(level0)}00` };
+}
+function yardParams(i, plan) {
+  return { w: YC.w, d: YC.d, h: YC.h, entryX: YC.entryX, exitX: YC.exitX, seed: (roomSeed(i) ^ 0x17F00D) >>> 0, plan, officeSide: 0 };
+}
+const yardStop = (s) => yardModeNow() === 'outonly' && s >= 2;   // updateStreaming: nothing past the yard
+// The start choice. Re-plans slot 1 on (before you have walked into it).
+function yardSetMode(m) {
+  if (!YC.modes.includes(m)) return;
+  try { localStorage.setItem(YC.key, m); } catch (e) { /* this visit */ }
+  const Y = yardState(); if (Y.mode === m) { yardUiSync(); return; }
+  const ok = yardReplan(m);
+  if (ok) Y.mode = m;
+  yardUiSync();
+  toast(ok ? `Start: ${YC.label[m]}` : `Start: ${YC.label[m]}. Applies from the first safe room: reload the game`, 2600);
+}
+function yardReplan(m) {
+  if (!stream.current) {                                          // still loading
+    if (stream.rooms.size || stream.building || stream.ready.length) return false;
+    yardState().mode = m; _plans.length = 1; _facing.length = 2; _paramCache.clear(); anchors.length = 0; anchorY.length = 0;
+    return true;
+  }
+  if (stream.current.slot !== 0 || stream.frontier > 0) return false;
+  for (const r of stream.rooms.values()) if (r.slot >= 1 && r.enemies && r.enemies.some((e) => e.engaged || e.dead)) return false;
+  if (stream.building && stream.building.slot >= 1) { try { unloadRoom(stream.building); } catch (e) { /* half built */ } stream.building = null; }
+  for (let i = stream.ready.length - 1; i >= 0; i--) if (stream.ready[i].slot >= 1) { try { unloadRoom(stream.ready[i]); } catch (e) { /* */ } stream.ready.splice(i, 1); }
+  for (const r of [...stream.rooms.values()]) if (r.slot >= 1 && r.kind !== 'safe') unloadRoom(r);
+  yardState().mode = m;
+  _plans.length = 1; _facing.length = 2;
+  for (const k of [..._paramCache.keys()]) if (k >= 1) _paramCache.delete(k);
+  anchors.length = Math.min(anchors.length, 1); anchorY.length = Math.min(anchorY.length, 1);
+  for (const k of [...roomMemory.keys()]) { const n = +k.split(':')[1]; if (n >= 1 && !k.startsWith('safe')) roomMemory.delete(k); }
+  return true;
+}
+
+/* ---------------------------------------------------------------------------
+ *  Layout (room-local: x across, z along the chain, entry wall +z, the 17 block at -z). One table drives the
+ *  visuals, the colliders, the walk boxes, the floor function and the nav grid.
+ * ------------------------------------------------------------------------- */
+function yardLayout() {
+  const hw = YC.w / 2, hd = YC.d / 2;
+  const L = {
+    bld: [                                                          // solid blocks: x0 x1 z0 z1 h (kind concrete)
+      { x0: -hw, x1: -8, z0: -8, z1: 14, h: 8.4, n: 'A' },
+      { x0: 9, x1: hw, z0: -24, z1: -6, h: 9.6, n: 'B' },
+      { x0: 14, x1: 17, z0: 14, z1: 17, h: 3.6, n: 'T' }             // guard tower base
+    ],
+    flights: [                                                      // walkable stairs along z: x0 x1, foot z, top z, rise
+      { x0: -8, x1: -6.8, zf: 2.0, zt: -4.72, y: 4.5, open: 1 },      // up A's east face to the catwalk landing
+      { x0: 12.6, x1: 13.8, zf: 8.6, zt: 14.0, y: 3.6, open: 0 }      // up to the tower cab
+    ],
+    decks: [                                                        // flat walkable: x0 x1 z0 z1 y
+      { x0: -8, x1: -6.6, z0: -7.7, z1: -4.72, y: 4.5 },            // landing
+      { x0: -6.6, x1: 9, z0: -7.7, z1: -6.3, y: 4.5 },              // catwalk bridge A -> B
+      { x0: 12.6, x1: 13.8, z0: 14, z1: 15.4, y: 3.6 },             // tower stair landing
+      { x0: 13.8, x1: 17.4, z0: 13.6, z1: 17.4, y: 3.6 }            // tower cab deck
+    ],
+    barriers: [[4, -2, 0], [-3, -12, 0.12], [12, 2, Math.PI / 2], [-12, 20, 0], [5.5, -19.5, -0.08], [-14, -15, Math.PI / 2], [1.5, 21, 0.3], [-5, -23, 0], [3.5, -24.2, 0.05]],
+    bollards: [[13.6, 13.2], [17.8, 13.2], [17.8, 17.8], [-7.4, 5.6], [-7.4, 10.8], [-3.6, -26.6], [-0.4, -26.6], [6.6, 26.6], [9.4, 26.6]],
+    helipad: { x: 0, z: 9, r: 6.5 },
+    bay: { z0: 6, z1: 10.4, h: 4.2 },                               // roll-up loading bay on A's east face (x = -8)
+    posts: [[-2.5, -7.7], [-2.5, -6.3], [3.5, -7.7], [3.5, -6.3]],    // catwalk portal columns
+    poles: [[-15, 21.5], [-6, -17.5]],
+    exitX: YC.exitX, entryX: YC.entryX, hw, hd
+  };
+  // Lamps (room-local): p, aim dir, cone cos, intensity (cd-ish). k: 'wall' | 'flood'. shaft: cone mesh.
+  const lamp = (x, y, z, dx, dy, dz, cos, I, k, shaft) => { const l = Math.hypot(dx, dy, dz); return { p: [x, y, z], d: [dx / l, dy / l, dz / l], cos, I, k, shaft }; };
+  L.lamps = [
+    lamp(15.6, 6.9, 13.2, -0.45, -0.55, -1, 0.82, 0, 'flood', 1),       // 0: tower flood (pool.main[1], shadowed; analytic I 0)
+    lamp(-15, 11.6, 20.9, 0.55, -0.8, -0.6, 0.78, 1, 'flood', 1),        // 1: pole flood over the approach
+    lamp(-6, 11.6, -17.1, 0.6, -0.8, -0.35, 0.78, 1, 'flood', 1),        // 2: pole flood over the block's front
+    lamp(YC.exitX + 0.45, 3.05, -hd + 0.35, 0, -1, 0.35, 0.2, 0, 'wall', 0),   // 3: exit door (pool.rects[0])
+    lamp(YC.entryX, 2.85, hd - 0.35, 0, -1, -0.35, 0.2, 0, 'wall', 0),         // 4: entry door (pool.rects[1])
+    lamp(-7.6, 4.95, 8.2, 1, -1.2, 0, 0.25, 1, 'wall', 0),              // 5: loading bay canopy
+    lamp(-14, 2.75, 14.35, 0, -1, 0.4, 0.25, 1, 'wall', 0),             // 6: A's door
+    lamp(8.65, 2.75, -16, -0.4, -1, 0, 0.25, 1, 'wall', 0),             // 7: B's door
+    lamp(8.65, 7.2, -7, -0.4, -1, 0, 0.25, 1, 'wall', 0),               // 8: B's catwalk door
+    lamp(10.5, 6.2, 26.6, 0, -1, -0.3, 0.3, 1, 'wall', 0)               // 9: B1 wall lamp beside the entry
+  ];
+  L.lampI = { flood: 900, wall: 60 };
+  return L;
+}
+
+/* ---------------------------------------------------------------------------
+ *  Textures: generated once (time-sliced), DataTextures with mipmaps. Tileable value noise.
+ * ------------------------------------------------------------------------- */
+function yardNoise(seed, P) {                                    // lattice P x P, wraps: n(x, y) with x, y in lattice units
+  const R = mulberry32(seed >>> 0), g = new Float32Array(P * P);
+  for (let i = 0; i < g.length; i++) g[i] = R();
+  return (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+    const a = ((xi % P) + P) % P, b = ((yi % P) + P) % P, a1 = (a + 1) % P, b1 = (b + 1) % P;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const v0 = g[b * P + a] + (g[b * P + a1] - g[b * P + a]) * sx, v1 = g[b1 * P + a] + (g[b1 * P + a1] - g[b1 * P + a]) * sx;
+    return v0 + (v1 - v0) * sy;
+  };
+}
+function yardDataTex(data, N, srgb) {
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true; t.anisotropy = maxAniso; if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+// A set from a per-pixel function f(x, y, o) in metres (o: h height, r g b albedo 0..1, rough, ao, metal). Normal from height.
+function* yardTexSet(N, size, f, nk, seedName) {
+  const H = new Float32Array(N * N), A = new Uint8Array(N * N * 4), O = new Uint8Array(N * N * 4), Nm = new Uint8Array(N * N * 4), o = {};
+  const px = size / N;
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      o.h = 0.5; o.r = o.g = o.b = 0.5; o.rough = 0.8; o.ao = 1; o.metal = 0;
+      f(x * px, y * px, o);
+      const i = y * N + x, j = i * 4;
+      H[i] = o.h;
+      A[j] = clamp(o.r) * 255; A[j + 1] = clamp(o.g) * 255; A[j + 2] = clamp(o.b) * 255; A[j + 3] = 255;
+      O[j] = clamp(o.ao) * 255; O[j + 1] = clamp(o.rough) * 255; O[j + 2] = clamp(o.metal) * 255; O[j + 3] = 255;
+    }
+    if ((y & 15) === 15) yield;
+  }
+  const s = nk / px;                                             // height units (m) -> slope
+  for (let y = 0; y < N; y++) {
+    const ym = ((y - 1 + N) % N) * N, yp = ((y + 1) % N) * N, yr = y * N;
+    for (let x = 0; x < N; x++) {
+      const xm = (x - 1 + N) % N, xp = (x + 1) % N;
+      // texture rows run up the image (flipY false for DataTexture: row 0 = v 0)
+      const dx = (H[yr + xp] - H[yr + xm]) * 0.5 * s, dy = (H[yp + x] - H[ym + x]) * 0.5 * s;
+      const l = Math.hypot(dx, dy, 1), j = (yr + x) * 4;
+      Nm[j] = (-dx / l * 0.5 + 0.5) * 255; Nm[j + 1] = (-dy / l * 0.5 + 0.5) * 255; Nm[j + 2] = (1 / l * 0.5 + 0.5) * 255; Nm[j + 3] = 255;
+    }
+    if ((y & 63) === 63) yield;
+  }
+  return { map: yardDataTex(A, N, true), normal: yardDataTex(Nm, N, false), orm: yardDataTex(O, N, false), name: seedName };
+}
+function* yardTextures(xr) {
+  const NW = xr ? 512 : 1024, NG = xr ? 512 : 1024, NM = xr ? 256 : 512;
+  // Board-formed concrete: 2.4 m tile = 16 boards of 15 cm, panel seams every 1.2 m, tie holes on a 0.6 m grid.
+  const n1 = yardNoise(11, 64), n2 = yardNoise(12, 64), n3 = yardNoise(13, 64), hsh = (a, b) => { const v = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return v - Math.floor(v); };
+  const wall = yield* yardTexSet(NW, YC.tex.wall, (x, y, o) => {
+    const b = Math.floor(y / 0.15), by = y - b * 0.15, bt = hsh(b, 3.1) - 0.5, rec = hsh(b, 7.7) * 0.0015;
+    const grain = n1(x * 26.67, b * 9 + by * 60) * 0.6 + n2(x * 6.67, y * 26.67) * 0.4;       // grain along the board
+    const fine = n3(x * 106.67, y * 106.67);
+    let h = -rec + (grain - 0.5) * 0.0012 + (fine - 0.5) * 0.0004, alb = 0.46 + bt * 0.06 + (grain - 0.5) * 0.07 + (n2(x * 1.67, y * 1.67) - 0.5) * 0.08, ao = 1, rough = 0.86 + (grain - 0.5) * 0.08;
+    const dj = Math.min(by, 0.15 - by);
+    if (dj < 0.004) { h += 0.0012 * (1 - dj / 0.004); alb += 0.04; }                       // fins where the boards met
+    const xm = x % 1.2, ds = Math.min(xm, 1.2 - xm), ys = Math.min(y, 2.4 - y);
+    if (ds < 0.008) { h -= 0.004 * (1 - ds / 0.008); alb *= 0.72; ao *= 0.6; }               // panel seam
+    if (ys < 0.006) { h -= 0.003 * (1 - ys / 0.006); alb *= 0.78; ao *= 0.7; }
+    const tx = (x % 0.6) - 0.3, ty = (y % 0.6) - 0.3, r = Math.hypot(tx, ty);
+    if (r < 0.022) { const k = 1 - r / 0.022; if (r < 0.013) { h -= 0.012 * Math.sqrt(1 - r / 0.013); alb *= 0.32; ao *= 0.25; rough = 0.95; } else { h -= 0.001 * k; alb *= 0.86; } }   // tie hole + cone ring
+    const cx = Math.floor(x / 0.025), cy = Math.floor(y / 0.025);                              // bug holes
+    if (hsh(cx, cy) > 0.93) { const ox = (hsh(cx + 1, cy) * 0.6 + 0.2) * 0.025, oy = (hsh(cx, cy + 1) * 0.6 + 0.2) * 0.025, rr = Math.hypot(x - cx * 0.025 - ox, y - cy * 0.025 - oy), R0 = 0.0012 + hsh(cy, cx) * 0.002;
+      if (rr < R0) { h -= 0.0025 * (1 - rr / R0); alb *= 0.55; ao *= 0.5; } }
+    o.h = h; o.r = alb * 1.0; o.g = alb * 0.985; o.b = alb * 0.955; o.rough = rough; o.ao = ao;
+  }, 1.0, 'wall');
+  // Broom-finished slab: 6 m tile, sawcut joints on the tile edges, aggregate, a few hairline cracks.
+  const c1 = yardNoise(21, 64), c2 = yardNoise(22, 128), c3 = yardNoise(23, 32);
+  const crk = [];
+  { const R = mulberry32(77); for (let k = 0; k < 3; k++) { let x = R() * 6, y = R() * 6, a = R() * 6.28; const pts = [[x, y]]; for (let s = 0; s < 14; s++) { a += (R() - 0.5) * 0.9; x += Math.cos(a) * 0.12; y += Math.sin(a) * 0.12; pts.push([x, y]); } crk.push(pts); } }
+  const CM = new Float32Array(NG * NG).fill(1), cpx = YC.tex.ground / NG;   // hairline cracks rasterised once (distance in m, 1 = far)
+  for (const P of crk) for (let i = 0; i + 1 < P.length; i++) {
+    const [ax, ay] = P[i], [bx, by] = P[i + 1], steps = Math.ceil(Math.hypot(bx - ax, by - ay) / cpx);
+    for (let k = 0; k <= steps; k++) {
+      const cx = ax + (bx - ax) * k / steps, cy = ay + (by - ay) * k / steps;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const ix = ((Math.floor(cx / cpx) + dx) % NG + NG) % NG, iy = ((Math.floor(cy / cpx) + dy) % NG + NG) % NG, j = iy * NG + ix;
+        CM[j] = Math.min(CM[j], Math.hypot((ix + 0.5) * cpx - (((cx % 6) + 6) % 6), (iy + 0.5) * cpx - (((cy % 6) + 6) % 6)));
+      }
+    }
+  }
+  const crackD = (x, y) => CM[Math.min(NG - 1, (y / cpx) | 0) * NG + Math.min(NG - 1, (x / cpx) | 0)];
+  const ground = yield* yardTexSet(NG, YC.tex.ground, (x, y, o) => {
+    const broom = c2(x * 4, y * 128) * 0.7 + c2(x * 12, y * 260) * 0.3, mot = c1(x * 1.6, y * 1.6) * 0.6 + c3(x * 3.2, y * 3.2) * 0.4;
+    let h = (broom - 0.5) * 0.0009, alb = 0.37 + (mot - 0.5) * 0.09 + (broom - 0.5) * 0.03, ao = 1, rough = 0.8 + (broom - 0.5) * 0.1;
+    const ag = hsh(Math.floor(x / 0.004), Math.floor(y / 0.004));
+    if (ag > 0.985) { alb += 0.12; rough -= 0.15; } else if (ag < 0.012) { alb -= 0.08; h -= 0.0004; }
+    const ex = Math.min(x, 6 - x), ey = Math.min(y, 6 - y), e = Math.min(ex, ey);
+    if (e < 0.004) { h -= 0.008 * (1 - e / 0.004); alb *= 0.45; ao *= 0.35; rough = 0.92; }      // sawcut joint
+    else if (e < 0.01) { alb *= 0.9; }
+    const cd = crackD(x, y);
+    if (cd < 0.0016) { h -= 0.002 * (1 - cd / 0.0016); alb *= 0.55; ao *= 0.6; }
+    o.h = h; o.r = alb; o.g = alb * 0.99; o.b = alb * 0.97; o.rough = rough; o.ao = ao;
+  }, 1.2, 'ground');
+  // Painted steel (neutral, tinted by the material colour): orange peel, scratches to bare steel, chips with rust.
+  const m1 = yardNoise(31, 32), m2 = yardNoise(32, 64), m3 = yardNoise(33, 128);
+  const metal = yield* yardTexSet(NM, YC.tex.metal, (x, y, o) => {
+    const peel = m3(x * 128, y * 128), chip = m1(x * 12, y * 12) * 0.65 + m2(x * 32, y * 32) * 0.35;
+    let h = (peel - 0.5) * 0.00025, alb = 0.82 + (m2(x * 8, y * 8) - 0.5) * 0.08, rough = 0.48 + (peel - 0.5) * 0.08, metal = 0, ao = 1;
+    const sc = Math.abs(Math.sin((x * 0.8 + y * 0.35) * 90 + m1(x * 4, y * 4) * 9)) < 0.03 && m2(x * 6, y * 3) > 0.62;
+    if (sc) { alb = 0.62; rough = 0.3; metal = 1; h -= 0.0002; }
+    if (chip > 0.71) { const k = smoothstep(0.71, 0.76, chip); alb = mix(alb, 0.3, k); rough = mix(rough, 0.92, k); metal = 0; h -= 0.0005 * k; o.r = alb * 1.3; o.g = alb * 0.85; o.b = alb * 0.55; }
+    else { o.r = alb; o.g = alb; o.b = alb; }
+    o.h = h; o.rough = rough; o.metal = metal; o.ao = ao;
+  }, 2.0, 'metal');
+  // Shared noise for the shader (R low, G streaks, B fine, A blotches), 256 px tile.
+  const NN = 256, D = new Uint8Array(NN * NN * 4), q1 = yardNoise(41, 16), q2 = yardNoise(42, 64), q3 = yardNoise(43, 128), q4 = yardNoise(44, 32);
+  for (let y = 0; y < NN; y++) for (let x = 0; x < NN; x++) {
+    const u = x / NN, v = y / NN, j = (y * NN + x) * 4;
+    D[j] = (q1(u * 16, v * 16) * 0.6 + q4(u * 32, v * 32) * 0.4) * 255;
+    D[j + 1] = (q2(u * 64, v * 4) * 0.7 + q3(u * 128, v * 8) * 0.3) * 255;
+    D[j + 2] = (q3(u * 128, v * 128) * 0.6 + q2(u * 64, v * 64) * 0.4) * 255;
+    D[j + 3] = (q4(u * 32, v * 32) * 0.5 + q1(u * 16, v * 16) * 0.5) * 255;
+  }
+  const noise = yardDataTex(D, NN, false);
+  yield;
+  return { wall, ground, metal, noise, decal: yardDecalAtlas(xr), fence: yardFenceTex() };
+}
+// Stencils and stains on one canvas (2048 x 1024, 1024 x 512 in the headset). Regions in UV (0..1, v up).
+const YARD_ATLAS = {
+  s17: [0, 0.5, 0.25, 0.5], b1: [0.25, 0.875, 0.25, 0.125], b2: [0.25, 0.75, 0.25, 0.125], danger: [0.25, 0.5, 0.25, 0.25],
+  n1: [0.5, 0.875, 0.0625, 0.125], n2: [0.5625, 0.875, 0.0625, 0.125], n3: [0.625, 0.875, 0.0625, 0.125],
+  rust0: [0.6875, 0.5, 0.0625, 0.5], rust1: [0.75, 0.5, 0.0625, 0.5], stain0: [0.8125, 0.5, 0.0625, 0.5], stain1: [0.875, 0.5, 0.0625, 0.5],
+  h: [0.5, 0.5, 0.1875, 0.375], zone: [0, 0, 0.5, 0.25], keep: [0.5, 0.25, 0.25, 0.125]
+};
+function yardDecalAtlas(xr) {
+  const W = xr ? 1024 : 2048, H = W / 2, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const c = cv.getContext('2d'), R = mulberry32(1717);
+  const reg = (k) => { const [u, v, w, h] = YARD_ATLAS[k]; return [u * W, (1 - v - h) * H, w * W, h * H]; };
+  const stencil = (k, txt, col, font, sizeK, cut) => {
+    const [x, y, w, h] = reg(k);
+    c.save(); c.beginPath(); c.rect(x, y, w, h); c.clip();
+    c.fillStyle = col; c.font = `900 ${Math.round(h * sizeK)}px "Arial Black", Impact, "Arial Narrow", sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(txt, x + w / 2, y + h / 2 + h * 0.04, w * 0.94);
+    if (cut) { c.globalCompositeOperation = 'destination-out'; c.fillStyle = '#000'; for (let i = 1; i < 6; i++) c.fillRect(x + w * i / 6 - w * 0.004, y, w * 0.008, h); }
+    c.globalCompositeOperation = 'destination-out';                  // spray edge, wear
+    for (let i = 0; i < w * h / 90; i++) { c.globalAlpha = R() * 0.7; c.fillRect(x + R() * w, y + R() * h, 1 + R() * 3, 1 + R() * 3); }
+    c.globalAlpha = 1; c.globalCompositeOperation = 'source-over'; c.restore();
+  };
+  stencil('s17', '17', 'rgba(232,230,222,0.92)', 0, 0.9, true);
+  stencil('b1', 'B1 →', 'rgba(236,233,224,0.9)', 0, 0.7, true);
+  stencil('b2', 'B2 →', 'rgba(236,233,224,0.9)', 0, 0.7, true);
+  stencil('n1', '1', 'rgba(232,196,52,0.9)', 0, 0.85, false); stencil('n2', '2', 'rgba(232,196,52,0.9)', 0, 0.85, false); stencil('n3', '3', 'rgba(232,196,52,0.9)', 0, 0.85, false);
+  stencil('zone', 'NO ENTRY', 'rgba(232,196,52,0.85)', 0, 0.62, true);
+  stencil('keep', 'KEEP CLEAR', 'rgba(232,196,52,0.85)', 0, 0.62, true);
+  { // DANGER KEEP OUT plate (opaque)
+    const [x, y, w, h] = reg('danger');
+    c.fillStyle = '#e9e5da'; c.fillRect(x + 4, y + 4, w - 8, h - 8);
+    c.fillStyle = '#b3171b'; c.fillRect(x + 4, y + 4, w - 8, h * 0.38);
+    c.fillStyle = '#f2efe6'; c.font = `900 ${Math.round(h * 0.26)}px "Arial Black", Impact, sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText('DANGER', x + w / 2, y + h * 0.21, w * 0.86);
+    c.fillStyle = '#16181a'; c.font = `900 ${Math.round(h * 0.17)}px "Arial Black", Impact, sans-serif`; c.fillText('KEEP OUT', x + w / 2, y + h * 0.56, w * 0.86);
+    c.font = `700 ${Math.round(h * 0.08)}px Arial, sans-serif`; c.fillText('AUTHORISED PERSONNEL ONLY', x + w / 2, y + h * 0.78, w * 0.86);
+    c.strokeStyle = '#16181a'; c.lineWidth = 3; c.strokeRect(x + 6, y + 6, w - 12, h - 12);
+    c.globalCompositeOperation = 'source-atop';
+    for (let i = 0; i < 40; i++) { c.fillStyle = `rgba(${90 + R() * 40},${40 + R() * 20},20,${0.1 + R() * 0.25})`; const sx = x + R() * w; c.fillRect(sx, y + R() * h * 0.2, 2 + R() * 4, h * (0.3 + R() * 0.6)); }
+    c.globalCompositeOperation = 'source-over';
+  }
+  const runs = (k, r0, g0, b0, a0) => {                             // vertical runs: wide at the top, thinning down
+    const [x, y, w, h] = reg(k);
+    for (let i = 0; i < 26; i++) {
+      const sx = x + w * (0.15 + R() * 0.7), len = h * (0.25 + R() * 0.75), wd = w * (0.02 + R() * 0.07);
+      const g = c.createLinearGradient(0, y, 0, y + len); g.addColorStop(0, `rgba(${r0},${g0},${b0},${a0})`); g.addColorStop(1, `rgba(${r0},${g0},${b0},0)`);
+      c.fillStyle = g; c.beginPath(); c.moveTo(sx - wd, y); c.lineTo(sx + wd, y); c.lineTo(sx + wd * 0.2, y + len); c.lineTo(sx - wd * 0.2, y + len); c.fill();
+    }
+  };
+  runs('rust0', 112, 52, 22, 0.55); runs('rust1', 96, 44, 20, 0.45); runs('stain0', 18, 20, 18, 0.5); runs('stain1', 26, 28, 22, 0.38);
+  { // helipad H (white)
+    const [x, y, w, h] = reg('h'); c.fillStyle = 'rgba(236,234,228,0.92)';
+    c.fillRect(x + w * 0.2, y + h * 0.1, w * 0.14, h * 0.8); c.fillRect(x + w * 0.66, y + h * 0.1, w * 0.14, h * 0.8); c.fillRect(x + w * 0.2, y + h * 0.44, w * 0.6, h * 0.12);
+    c.globalCompositeOperation = 'destination-out'; for (let i = 0; i < w * h / 60; i++) { c.globalAlpha = R() * 0.8; c.fillRect(x + R() * w, y + R() * h, 1 + R() * 4, 1 + R() * 4); } c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = maxAniso;
+  return t;
+}
+function yardFenceTex() {                                        // 50 mm chain-link diamonds, alpha, 0.3 m a repeat
+  const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const c = cv.getContext('2d'); c.clearRect(0, 0, S, S); c.strokeStyle = '#c8ccce'; c.lineWidth = 4.2; c.lineCap = 'round';
+  const n = 6, st = S / n;
+  for (let i = -1; i <= n; i++) { c.beginPath(); for (let k = 0; k <= n * 2; k++) { const y = k * st / 2, x = i * st + ((k & 1) ? st / 2 : 0); if (k) c.lineTo(x, y); else c.moveTo(x, y); } c.stroke(); }
+  const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso;
+  return t;
+}
+
+/* ---------------------------------------------------------------------------
+ *  The yard surface shader (one program for every yard surface; kind per material).
+ *  0 board-formed concrete, 1 ground slab, 2 painted steel, 3 yellow steel, 4 precast barrier, 5 ground paint,
+ *  6 decal, 7 chain-link, 8 glass, 9 steel grating
+ * ------------------------------------------------------------------------- */
+const YARD_NL = 10;
+const YU = {
+  uYTime: { value: 0 }, uYWet: { value: 1 }, uYInv: { value: new THREE.Matrix4() }, uYNoise: { value: null },
+  uYLampP: { value: Array.from({ length: YARD_NL }, () => new THREE.Vector4()) }, uYLampD: { value: Array.from({ length: YARD_NL }, () => new THREE.Vector4(0, -1, 0, 0.5)) },
+  uYLampC: { value: new THREE.Color(1.0, 0.82, 0.62) }, uYFogC: { value: new THREE.Color() }, uYFog: { value: new THREE.Vector4(0.022, 0.12, 0, 0.9) }, uYScat: { value: 1 }
+};
+const YARD_GLSL_COMMON = `
+uniform float uYTime; uniform float uYWet; uniform mat4 uYInv; uniform sampler2D uYNoise;
+uniform vec4 uYLampP[${YARD_NL}]; uniform vec4 uYLampD[${YARD_NL}]; uniform vec3 uYLampC; uniform vec3 uYFogC; uniform vec4 uYFog; uniform float uYScat;
+float yH(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float yVN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(yH(i), yH(i + vec2(1.0, 0.0)), f.x), mix(yH(i + vec2(0.0, 1.0)), yH(i + vec2(1.0, 1.0)), f.x), f.y); }
+float yPuddleF(vec2 q){ return yVN(q * 0.16) * 0.55 + yVN(q * 0.42 + 17.0) * 0.3 + yVN(q * 1.3 + 41.0) * 0.15; }
+vec3 yFog(vec3 col, vec3 wp){
+  vec3 v = wp - cameraPosition; float d = length(v);
+  float hy = max(wp.y - uYFog.z, 0.0), hf = exp(-hy * uYFog.y);
+  float f = (1.0 - exp(-d * uYFog.x * hf)) * uYFog.w;
+  vec3 rd = v / max(d, 1e-3), sc = vec3(0.0);
+  for (int i = 0; i < ${YARD_NL}; i++) {
+    vec4 P = uYLampP[i]; if (P.w <= 0.0) continue;
+    vec3 c = P.xyz - cameraPosition; float t = clamp(dot(c, rd), 0.0, d); vec3 q = cameraPosition + rd * t - P.xyz;
+    float h2 = dot(q, q); sc += uYLampC * (P.w * 0.0009 / (h2 + 0.35)) * (1.0 - exp(-d * 0.08));
+  }
+  return mix(col, uYFogC, f) + sc * uYScat * f;
+}`;
+function yardInject(shader) {
+  Object.assign(shader.uniforms, YU);
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vYW; varying vec3 vYN;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvYW = (modelMatrix * vec4(transformed, 1.0)).xyz; vYN = normalize(mat3(modelMatrix) * objectNormal);');
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>\nvarying vec3 vYW; varying vec3 vYN; uniform float uYKind;\n${YARD_GLSL_COMMON}
+float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0; vec2 yRip = vec2(0.0);
+vec2 yRipple(vec2 p, float t) {
+  vec2 acc = vec2(0.0);
+  for (int k = 0; k < 2; k++) {
+    vec2 q = p * 2.6 + float(k) * vec2(0.37, 0.71); vec2 c = floor(q); vec2 f = fract(q) - 0.5;
+    float h = yH(c + float(k) * 13.0); vec2 o = vec2(yH(c + 3.1), yH(c + 7.7)) - 0.5; vec2 dd = f - o * 0.5;
+    float r = length(dd) + 1e-4, ph = fract(t * (0.9 + 0.5 * h) + h), x = (r - ph * 0.45) * 38.0;
+    float g = sin(x) * exp(-x * x * 0.12) * (1.0 - ph) * (1.0 - ph) * smoothstep(0.5, 0.3, r);
+    acc += dd / r * g;
+  }
+  return acc;
+}`)
+    .replace('#include <map_fragment>', `#include <map_fragment>
+{
+  vec3 lp = (uYInv * vec4(vYW, 1.0)).xyz; vec3 N = normalize(vYN); float K = uYKind;
+  yUp = N.y;
+  bool yFlat = abs(N.y) > 0.6;
+  vec2 q = yFlat ? lp.xz : vec2(abs(N.x) > abs(N.z) ? lp.z : lp.x, lp.y);
+  vec4 nz = texture2D(uYNoise, q * 0.045);                                  // macro: kills tiling
+  vec4 nz2 = texture2D(uYNoise, q * 0.17 + 0.31);
+  float macro = nz.r * 0.6 + nz2.a * 0.4;
+  if (K < 6.5) diffuseColor.rgb *= mix(0.78, 1.14, macro) * mix(vec3(1.02, 0.99, 0.96), vec3(0.97, 1.0, 1.03), nz.a);
+  float curv = length(fwidth(N)) / max(length(fwidth(vYW)), 1e-4);
+  float edge = smoothstep(5.0, 22.0, curv);
+  float streak = 0.0;
+  if (!yFlat && K < 4.5) {                                                    // rain streaks down the walls
+    float s = texture2D(uYNoise, vec2(q.x * 0.35, q.y * 0.018 + 0.5)).g;
+    streak = smoothstep(0.52, 0.82, s) * (0.45 + 0.55 * nz2.r);
+    diffuseColor.rgb *= 1.0 - streak * (K > 1.5 ? 0.25 : 0.42);
+    if (K > 1.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.075, 0.03), streak * smoothstep(0.55, 0.8, nz.a) * 0.8);   // rust runs on steel
+  }
+  if (K < 0.5 || K > 3.5 && K < 4.5) {                                      // concrete: chipped edges, moss at the foot and in corners
+    diffuseColor.rgb *= 1.0 + edge * 0.22 * (0.5 + nz2.b);
+    float moss = (1.0 - smoothstep(0.0, 0.35 + nz2.r * 0.7, lp.y)) * smoothstep(0.42, 0.72, nz.a + nz2.b * 0.3) * (yFlat ? 0.0 : 1.0);
+    moss += (yFlat && lp.y > 0.4 ? 1.0 : 0.0) * smoothstep(0.6, 0.85, nz.a) * 0.5;
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.045, 0.06, 0.025) * (0.7 + nz2.b * 0.6), clamp(moss, 0.0, 0.85));
+    yRoughK = 1.0 + edge * 0.1 + moss * 0.1;
+  }
+  if (K > 1.5 && K < 3.5) {                                                  // steel: rubbed bright edges
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.41, 0.4), edge * 0.5 * nz2.b);
+    yMetK = 1.0 + edge;
+  }
+  if (K > 4.5 && K < 5.5) {                                                  // ground paint: worn through to the slab
+    float wear = texture2D(uYNoise, lp.xz * 0.9).b * 0.6 + nz2.r * 0.4;
+    if (wear < 0.33) discard;
+  }
+  // Wet model: porous surfaces darken, flat ones carry water, puddles on the ground stand.
+  float por = K > 1.5 && K < 3.5 ? 0.15 : K > 6.5 ? 0.0 : 0.55;
+  float wet = uYWet * (yFlat ? 1.0 : 0.5 + 0.5 * streak);
+  if (yFlat && N.y > 0.0 && (K > 0.5 && K < 1.5 || K > 4.5 && K < 5.5)) {
+    float pd = yPuddleF(lp.xz) - (0.73 - 0.04 * uYWet);
+    float aa = fwidth(pd) + 0.002;
+    yPud = smoothstep(-aa, aa, pd) * uYWet;
+    yDamp = smoothstep(-0.09, 0.0, pd) * uYWet;
+    yRip = yRipple(lp.xz, uYTime) * (0.25 + 0.75 * yPud) * uYWet;
+  } else if (yFlat && N.y > 0.0) yRip = yRipple(lp.xz, uYTime) * 0.15 * uYWet;
+  diffuseColor.rgb *= mix(1.0, 0.5, wet * por) * mix(1.0, 0.72, yDamp * por);
+  diffuseColor.rgb *= mix(1.0, 0.55, yPud);
+  yWetR = wet * (yFlat ? 0.85 : 0.55);
+}`)
+    .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = clamp(roughnessFactor * yRoughK, 0.04, 1.0);
+roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.3), yWetR);
+roughnessFactor = mix(roughnessFactor, 0.045, max(yPud, yDamp * 0.35));`)
+    .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = clamp(metalnessFactor * yMetK, 0.0, 1.0);')
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+{
+  vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  if (yUp > 0.6) {
+    normal = normalize(mix(normal, upV, yPud * 0.9));
+    normal = normalize(normal + (viewMatrix * vec4(yRip.x, 0.0, yRip.y, 0.0)).xyz * 0.55);
+  }
+}`)
+    .replace('#include <lights_fragment_maps>', `{
+  for (int i = 0; i < ${YARD_NL}; i++) {
+    vec4 P = uYLampP[i]; if (P.w <= 0.0) continue;
+    vec3 Lw = P.xyz - vYW; float d2 = dot(Lw, Lw); vec3 Ln = Lw * inversesqrt(d2);
+    vec4 D = uYLampD[i]; float sp = smoothstep(D.w, D.w + 0.18 * (1.0 - D.w) + 0.02, dot(-Ln, D.xyz));
+    if (sp <= 0.0) continue;
+    IncidentLight yl; yl.direction = normalize((viewMatrix * vec4(Ln, 0.0)).xyz); yl.color = uYLampC * (P.w * sp / (d2 + 0.25)); yl.visible = true;
+    RE_Direct(yl, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+  }
+}
+#include <lights_fragment_maps>`)
+    .replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb = yFog(gl_FragColor.rgb, vYW);');
+}
+function yardMat(kind, set, opts = {}) {
+  const m = new THREE.MeshStandardMaterial({
+    map: set ? set.map : null, normalMap: set ? set.normal : null, roughnessMap: set ? set.orm : null, metalnessMap: set ? set.orm : null, aoMap: set ? set.orm : null,
+    roughness: 1, metalness: 1, envMapIntensity: 1, ...opts
+  });
+  m.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: kind }; };
+  m.customProgramCacheKey = () => 'yard17';
+  m.userData.yardKind = kind;
+  return m;
+}
+function yardMaterials(T) {
+  const M = {};
+  M.wall = yardMat(0, T.wall, { color: new THREE.Color(0.95, 0.95, 0.95) });
+  M.ground = yardMat(1, T.ground, { color: new THREE.Color(0.86, 0.86, 0.86) });
+  M.metal = yardMat(2, T.metal, { color: new THREE.Color(0.2, 0.215, 0.22) });
+  M.door = yardMat(2, T.metal, { color: new THREE.Color(0.26, 0.29, 0.3) });
+  M.yellow = yardMat(3, T.metal, { color: new THREE.Color(0.78, 0.55, 0.05) });
+  M.barrier = yardMat(4, T.ground, { color: new THREE.Color(1.05, 1.04, 1.0) });
+  M.paintY = yardMat(5, T.ground, { color: new THREE.Color(2.0, 1.45, 0.18), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  M.paintW = yardMat(5, T.ground, { color: new THREE.Color(2.4, 2.35, 2.25), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  M.grate = yardMat(9, T.metal, { color: new THREE.Color(0.17, 0.17, 0.17) });
+  M.glass = yardMat(8, T.metal, { color: new THREE.Color(0.02, 0.025, 0.03), metalnessMap: null, metalness: 0.0, roughnessMap: null, roughness: 0.08 });
+  M.decal = new THREE.MeshStandardMaterial({ map: T.decal, transparent: true, depthWrite: false, roughness: 0.5, metalness: 0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 });
+  M.decal.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: 6 }; }; M.decal.customProgramCacheKey = () => 'yard17d';
+  M.fence = new THREE.MeshStandardMaterial({ map: T.fence, alphaTest: 0.45, side: THREE.DoubleSide, color: 0x9aa0a4, roughness: 0.4, metalness: 0.9 });
+  M.fence.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: 7 }; }; M.fence.customProgramCacheKey = () => 'yard17f';
+  M.lens = new THREE.MeshStandardMaterial({ color: 0xfff1dc, roughness: 0.2, metalness: 0, emissive: new THREE.Color(1.0, 0.86, 0.66), emissiveIntensity: 28 });
+  M.lensOff = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.3, metalness: 0 });
+  for (const k of ['wall', 'ground', 'metal', 'door', 'yellow', 'barrier', 'paintY', 'paintW', 'grate', 'glass', 'decal', 'fence']) {
+    M[k].envMapIntensity = k === 'glass' ? 1.2 : k === 'ground' || k.startsWith('paint') ? 1.0 : 0.7;
+  }
+  return M;
+}
+
+/* ---------------------------------------------------------------------------
+ *  Sky, outer ground, rain, splashes, light shafts, halos (ShaderMaterials, tone mapped like the rest).
+ * ------------------------------------------------------------------------- */
+const YSKY = { meta: null, tex: null, has: { value: 0 }, map: { value: null }, rot: { value: YC.moon.rot * Math.PI / 180 },
+  expo: { value: YC.sky.expo }, sat: { value: YC.sky.sat }, tint: { value: new THREE.Color(...YC.sky.tint) }, moon: { value: new THREE.Vector3(0, 0.7, -0.7) },
+  zen: { value: new THREE.Color(0.012, 0.014, 0.018) }, hor: { value: new THREE.Color(0.02, 0.022, 0.026) }, gnd: { value: new THREE.Color(0.006, 0.007, 0.007) } };
+const YARD_SKY_FN = `
+uniform sampler2D uSky; uniform float uHas; uniform float uRot; uniform float uExpo; uniform float uSat; uniform vec3 uTint; uniform vec3 uMoon;
+uniform vec3 uZen; uniform vec3 uHor; uniform vec3 uGnd; uniform vec3 uFogC2;
+vec3 ySky(vec3 d) {
+  d = normalize(d);
+  float el = asin(clamp(d.y, -1.0, 1.0)), az = atan(d.x, -d.z) - uRot;
+  vec3 c;
+  if (uHas > 0.5) {
+    vec2 uv = vec2(0.25 + az / 6.2831853, 0.5 + el / 3.1415927);
+    c = texture2D(uSky, uv).rgb;
+    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = mix(vec3(l), c, uSat) * uTint * uExpo;
+    c *= mix(0.55, 1.0, smoothstep(-0.05, 0.25, d.y));                     // the ground of the panorama: darker
+  } else c = d.y > 0.0 ? mix(uHor, uZen, pow(d.y, 0.6)) : mix(uHor, uGnd, pow(-d.y, 0.4));
+  float m = max(dot(d, normalize(uMoon)), 0.0);
+  c += vec3(0.55, 0.62, 0.75) * (pow(m, 48.0) * 0.06 + pow(m, 6.0) * 0.012) * (0.4 + 0.6 * smoothstep(-0.02, 0.1, d.y));   // moon behind the cloud
+  float hz = exp(-abs(d.y) * 7.0);
+  return mix(c, uFogC2, clamp(hz * 0.85 + 0.12, 0.0, 0.95));
+}`;
+function yardSkyUniforms() {
+  return { uSky: YSKY.map, uHas: YSKY.has, uRot: YSKY.rot, uExpo: YSKY.expo, uSat: YSKY.sat, uTint: YSKY.tint, uMoon: YSKY.moon, uZen: YSKY.zen, uHor: YSKY.hor, uGnd: YSKY.gnd, uFogC2: YU.uYFogC };
+}
+function yardSkyMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: yardSkyUniforms(), depthTest: false, depthWrite: false, side: THREE.BackSide, fog: false,
+    vertexShader: 'varying vec3 vD; void main(){ vD = (modelMatrix * vec4(position, 0.0)).xyz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `${YARD_SKY_FN}\nvarying vec3 vD; void main(){ gl_FragColor = vec4(ySky(vD), 1.0);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}`
+  });
+}
+// Beyond the walls: the panorama's own ground, projected onto a plane from the compound's centre at eye height, fogged.
+function yardOuterMaterial() {
+  const u = { ...yardSkyUniforms(), uC: { value: new THREE.Vector3() } };
+  Object.assign(u, YU);
+  return new THREE.ShaderMaterial({
+    uniforms: u, fog: false, side: THREE.DoubleSide,
+    vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+    fragmentShader: `${YARD_SKY_FN}\n${YARD_GLSL_COMMON}\nuniform vec3 uC; varying vec3 vW;
+void main(){ vec3 d = vW - uC; vec3 c = ySky(vec3(d.x, min(d.y, -0.02 * length(d.xz)), d.z)) * 0.7; gl_FragColor = vec4(yFog(c, vW), 1.0);\n#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}`
+  });
+}
+// Rain streaks: a box round the camera, wrapped in the vertex shader, clipped to the yard; lit by the lamps (forward scatter).
+const YRAIN_LIGHT = `
+vec3 yRainLight(vec3 wp, vec3 vd) {
+  vec3 c = uYFogC * 3.0;
+  for (int i = 0; i < ${YARD_NL}; i++) {
+    vec4 P = uYLampP[i]; if (P.w <= 0.0) continue;
+    vec3 L = P.xyz - wp; float d2 = dot(L, L); vec3 Ln = L * inversesqrt(d2);
+    float sp = smoothstep(uYLampD[i].w - 0.1, uYLampD[i].w + 0.1, dot(-Ln, uYLampD[i].xyz));
+    c += uYLampC * (P.w * sp / (d2 + 1.0)) * (0.25 + 2.2 * pow(max(dot(-vd, Ln), 0.0), 6.0));
+  }
+  return c;
+}`;
+function yardRainMaterial(splash) {
+  const u = { ...YU, uCam: { value: new THREE.Vector3() }, uBox: { value: new THREE.Vector3(...YC.rain.box) }, uFall: { value: YC.rain.fall }, uWind: { value: new THREE.Vector2(...YC.rain.wind) },
+    uHalf: { value: new THREE.Vector2(YC.w / 2, YC.d / 2) }, uPx: { value: 0.002 }, uRainK: { value: 1 }, uFloorY: { value: 0.012 } };
+  const vs = splash ? `
+attribute vec4 aSeed; attribute vec2 aCorner;
+uniform vec3 uCam; uniform vec2 uHalf; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv; uniform float uFloorY;
+varying vec2 vC; varying float vK; varying vec3 vW;
+float h1(float n){ return fract(sin(n) * 43758.5453); }
+void main(){
+  float rate = 1.6 + aSeed.w * 1.2, t = uYTime * rate + aSeed.w * 7.0, cyc = floor(t), ph = fract(t);
+  float s = aSeed.x * 91.7 + cyc * 13.37;
+  vec2 o = (vec2(h1(s), h1(s + 1.7)) - 0.5) * 20.0;
+  vec3 p = vec3(uCam.x + o.x, 0.0, uCam.z + o.y);
+  vec3 lp = (uYInv * vec4(p, 1.0)).xyz;
+  p.y = uFloorY;
+  float inside = step(abs(lp.x), uHalf.x - 0.3) * step(abs(lp.z), uHalf.y - 0.3);
+  float r = (0.012 + ph * 0.07) * (0.7 + aSeed.y * 0.6);
+  p.xz += aCorner * r;
+  vC = aCorner; vK = (1.0 - ph) * inside * uRainK; vW = p;
+  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+}` : `
+attribute vec4 aSeed; attribute vec2 aCorner;
+uniform vec3 uCam; uniform vec3 uBox; uniform float uFall; uniform vec2 uWind; uniform vec2 uHalf; uniform float uPx; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv;
+varying vec2 vC; varying float vK; varying vec3 vW;
+void main(){
+  vec3 vel = vec3(uWind.x, -uFall * (0.85 + 0.3 * aSeed.w), uWind.y);
+  vec3 p = aSeed.xyz * uBox + vel * uYTime;
+  p = mod(p - uCam + uBox * 0.5, uBox) - uBox * 0.5 + uCam;
+  vec3 lp = (uYInv * vec4(p, 1.0)).xyz;
+  float inside = step(abs(lp.x), uHalf.x) * step(abs(lp.z), uHalf.y) * step(0.0, lp.y) * step(aSeed.w, uRainK);
+  vec3 dir = normalize(vel), vd = normalize(p - cameraPosition);
+  vec3 side = normalize(cross(dir, vd));
+  float dist = length(p - cameraPosition), wid = max(0.0011, uPx * dist);
+  vec3 q = p - dir * (0.32 * aCorner.y) + side * (wid * aCorner.x);
+  vC = aCorner; vK = inside * smoothstep(0.4, 1.5, dist) * clamp(0.0011 / wid, 0.25, 1.0); vW = q;
+  gl_Position = projectionMatrix * viewMatrix * vec4(q, 1.0);
+}`;
+  return new THREE.ShaderMaterial({
+    uniforms: u, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    vertexShader: vs,
+    fragmentShader: `${YARD_GLSL_COMMON}\n${YRAIN_LIGHT}\nvarying vec2 vC; varying float vK; varying vec3 vW;
+void main(){
+  if (vK <= 0.001) discard;
+  vec3 vd = normalize(vW - cameraPosition);
+  ${splash ? 'float r = length(vC); float a = smoothstep(1.0, 0.75, r) * smoothstep(0.45, 0.8, r) * vK * 0.55;' : 'float a = (1.0 - abs(vC.x)) * smoothstep(0.0, 0.25, vC.y) * smoothstep(1.0, 0.6, vC.y) * vK * 0.22;'}
+  vec3 c = yRainLight(vW, vd) * a;
+  gl_FragColor = vec4(c, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
+  });
+}
+function yardQuadsGeo(n, seedFn, rain) {
+  const g = new THREE.BufferGeometry(), S = new Float32Array(n * 16), C = new Float32Array(n * 8), I = new Uint32Array(n * 6), R = mulberry32(rain ? 4242 : 4343);
+  const corners = rain ? [[-1, 0], [1, 0], [1, 1], [-1, 1]] : [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  for (let i = 0; i < n; i++) {
+    const s = [R(), R(), R(), R()];
+    for (let k = 0; k < 4; k++) { S.set(s, (i * 4 + k) * 4); C.set(corners[k], (i * 4 + k) * 2); }
+    I.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 12), 3));
+  g.setAttribute('aSeed', new THREE.BufferAttribute(S, 4)); g.setAttribute('aCorner', new THREE.BufferAttribute(C, 2));
+  g.setIndex(new THREE.BufferAttribute(I, 1));
+  return g;
+}
+// Volumetric-looking flood cones: additive, brightest where the eye looks through the most of the cone.
+function yardShaftMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...YU, uK: { value: 0.05 } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
+    vertexShader: 'varying vec3 vW; varying vec3 vN; varying float vT; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); vT = uv.y; gl_Position = projectionMatrix * viewMatrix * w; }',
+    fragmentShader: `uniform float uK; uniform float uYTime; uniform vec3 uYLampC; uniform float uYWet; varying vec3 vW; varying vec3 vN; varying float vT;
+void main(){
+  vec3 v = normalize(cameraPosition - vW); float f = abs(dot(normalize(vN), v));
+  float along = pow(1.0 - clamp(vT, 0.0, 1.0), 1.4) * 0.85 + 0.15;
+  float d = length(cameraPosition - vW);
+  float a = uK * f * f * along * smoothstep(1.0, 5.0, d) * (0.85 + 0.15 * sin(vW.y * 3.0 + uYTime * 6.0 + vW.x * 2.0)) * (0.6 + 0.4 * uYWet);
+  gl_FragColor = vec4(uYLampC * a, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
+  });
+}
+function yardHaloMaterial() {                                     // camera-facing glow quads at the lamp heads (the headset has no bloom)
+  return new THREE.ShaderMaterial({
+    uniforms: { ...YU, uK: { value: 1 } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    vertexShader: `attribute vec2 aCorner; attribute float aSize; varying vec2 vC; void main(){ vec4 c = viewMatrix * modelMatrix * vec4(position, 1.0); c.xy += aCorner * aSize; c.z += aSize * 0.5; vC = aCorner; gl_Position = projectionMatrix * c; }`,
+    fragmentShader: `uniform float uK; uniform vec3 uYLampC; varying vec2 vC;
+void main(){ float r = length(vC); float a = exp(-r * r * 7.0) * 0.9 + exp(-r * 2.6) * 0.18; a *= smoothstep(1.0, 0.85, r) * uK;
+  gl_FragColor = vec4(uYLampC * a * 3.0, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ *  Shared assets (once): sky texture + json, textures, materials. Loaded only when a yard is built.
+ * ------------------------------------------------------------------------- */
+function yardSkyLoad() {
+  const Y = yardState();
+  if (Y.skyLoading) return; Y.skyLoading = true;
+  const xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || !!renderer.xr.isPresenting;
+  fetch('sky/sky.json').then((r) => (r.ok ? r.json() : null)).then((m) => {
+    if (!m) return;
+    YSKY.meta = m;
+    const g = (a, k) => new THREE.Color(a[0], a[1], a[2]).convertSRGBToLinear().multiplyScalar(k);
+    YSKY.hor.value.copy(g(m.horizon, YC.sky.expo * 0.6)); YSKY.zen.value.copy(g(m.zenith, YC.sky.expo * 0.5)); YSKY.gnd.value.copy(g(m.ground, YC.sky.expo * 0.25));
+    const az = (m.sun.az * Math.PI / 180) + YSKY.rot.value, el = m.sun.el * Math.PI / 180;
+    YSKY.moon.value.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+    yardFogColour();
+    pool.key = '';                                                // re-aim the moon light
+    YSKY.has.value = YSKY.tex ? 1 : 0;
+  }).catch(() => { /* gradient sky */ });
+  new THREE.TextureLoader().load(xr ? 'sky/sky2k.webp' : 'sky/sky.webp', (t) => {
+    t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter; t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping;
+    YSKY.tex = t; YSKY.map.value = t; YSKY.has.value = 1;
+    yardEnvBake();
+  }, undefined, () => { console.info('Outdoor: no sky/sky.webp, a plain night gradient is used'); yardEnvBake(); });
+}
+function yardFogColour() {
+  const m = YSKY.meta, f = YC.sky.fog;
+  const c = m ? new THREE.Color(m.horizon[0], m.horizon[1], m.horizon[2]).convertSRGBToLinear() : new THREE.Color(0.25, 0.25, 0.2);
+  const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b || 0.1;
+  YU.uYFogC.value.setRGB(mix(l, c.r, 0.25) / l * f[0], mix(l, c.g, 0.25) / l * f[1], mix(l, c.b, 0.25) / l * f[2]);
+}
+function yardEnvAssign() { const Y = YARD; if (Y && Y.mats && Y.env) for (const k of Object.keys(Y.mats)) if (!k.startsWith('lens')) Y.mats[k].envMap = Y.env.texture; }
+// IBL: the graded sky rendered into a 256 px cube and pre-filtered (the size every room probe uses: same programs).
+function yardEnvBake() {
+  const Y = yardState();
+  try {
+    const rt = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType }), cam = new THREE.CubeCamera(0.1, 100, rt), sc = new THREE.Scene();
+    const m = yardSkyMaterial(), dome = new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), m);
+    sc.add(dome, cam);
+    const xrOn = renderer.xr.enabled, prev = renderer.getRenderTarget();
+    renderer.xr.enabled = false;
+    cam.update(renderer, sc);
+    renderer.xr.enabled = xrOn; renderer.setRenderTarget(prev);
+    const env = pmrem.fromCubemap(rt.texture);
+    rt.dispose(); dome.geometry.dispose(); m.dispose();
+    if (Y.env) Y.env.dispose();
+    Y.env = env;
+    yardEnvAssign();
+  } catch (e) { console.warn('Outdoor: sky environment not baked', e); }
+}
+
+/* ---------------------------------------------------------------------------
+ *  Builder (time-sliced, like roomBuilder). Static parts are merged per material.
+ * ------------------------------------------------------------------------- */
+const _yM = new THREE.Matrix4(), _yQ = new THREE.Quaternion(), _yE = new THREE.Euler(), _yP = new THREE.Vector3(), _yS = new THREE.Vector3();
+function yardUV(geo, tile, off = 0) {                             // box mapping in room-local metres, after the transform
+  const p = geo.attributes.position, n = geo.attributes.normal, uv = geo.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+    let U, V;
+    if (ax >= ay && ax >= az) { U = p.getZ(i) * Math.sign(n.getX(i)); V = p.getY(i); } else if (ay >= az) { U = p.getX(i); V = p.getZ(i); } else { U = -p.getX(i) * Math.sign(n.getZ(i)); V = p.getY(i); }
+    uv.setXY(i, U / tile + off, V / tile + off);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+function yardClean(geo) {
+  for (const k of Object.keys(geo.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') geo.deleteAttribute(k);
+  return geo.index ? geo.toNonIndexed() : geo;
+}
+function* yardBuilder(room) {
+  const Y = yardState(), xr = /OculusBrowser|Quest/i.test(navigator.userAgent);
+  room.yard = yardLayout();
+  const L = room.yard, { hw, hd } = L, D = CONFIG.door, T = CONFIG.stream.wallT, KG = KIT.geo, KM = KIT.mat;
+  room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
+    qc: { pass: true, score: 100, attempt: 1, fails: [], notes: ['outdoor'], visible: 1, hidden: 0, density: 0 } };
+  room.wear93 = { wet: 1, leak: 0, hw, hd, s1: 0, s2: 0 };
+  if (!Y.tex) { yardSkyLoad(); Y.tex = yield* yardTextures(xr); YU.uYNoise.value = Y.tex.noise; }
+  if (!Y.mats) { Y.mats = yardMaterials(Y.tex); if (Y.env) yardEnvAssign(); }
+  const M = Y.mats, g = room.group, dg = room.doorGroup, own = (geo) => { room.ownGeo.push(geo); return geo; };
+  const batch = new Map(), tileOf = (m) => (m === M.wall ? YC.tex.wall : m === M.ground || m === M.paintY || m === M.paintW ? YC.tex.ground : YC.tex.metal);
+  const add = (geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1, uvMode = 1, cast = true) => {
+    _yM.compose(_yP.set(x, y, z), _yQ.setFromEuler(_yE.set(rx, ry, rz)), _yS.set(sx, sy, sz));
+    const gg = yardClean(geo.clone()); gg.applyMatrix4(_yM);
+    if (uvMode === 1) yardUV(gg, tileOf(mat));
+    let b = batch.get(mat); if (!b) batch.set(mat, b = { parts: [], cast: false });
+    b.parts.push(gg); if (cast) b.cast = true;
+  };
+  const BOX = new THREE.BoxGeometry(1, 1, 1);
+  const box = (mat, x0, x1, y0, y1, z0, z1, cast = true) => add(BOX, mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2, 0, 0, 0, x1 - x0, y1 - y0, z1 - z0, 1, cast);
+  const rbx = (mat, x0, x1, y0, y1, z0, z1, r = 0.03) => add(new RoundedBoxGeometry(x1 - x0, y1 - y0, z1 - z0, 1, Math.min(r, (x1 - x0) * 0.45, (y1 - y0) * 0.45, (z1 - z0) * 0.45)), mat, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  const cyl = (mat, x, y, z, r, h, seg = 10, rx = 0, rz = 0, ry = 0) => add(new THREE.CylinderGeometry(r, r, h, seg, 1), mat, x, y, z, rx, ry, rz, 1, 1, 1, 1);
+  const decal = (k, x, y, z, w, h, ry, flatGround = false) => {      // a quad with an atlas region, facing +z turned by ry (or lying flat)
+    const [u, v, uw, vh] = YARD_ATLAS[k], geo = new THREE.PlaneGeometry(w, h), uv = geo.attributes.uv;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, u + uv.getX(i) * uw, v + uv.getY(i) * vh);
+    add(geo, M.decal, x, y, z, flatGround ? -Math.PI / 2 : 0, flatGround ? 0 : ry, flatGround ? ry : 0, 1, 1, 1, 0, false);
+  };
+  const lens = [];
+  const lensBox = (x0, x1, y0, y1, z0, z1, on = true) => { const gg = yardClean(BOX.clone()); _yM.compose(_yP.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), _yQ.identity(), _yS.set(x1 - x0, y1 - y0, z1 - z0)); gg.applyMatrix4(_yM); lens.push([gg, on]); };
+
+  // --- Ground: slabs (6 m), the painted marks, drains ---
+  { const gp = new THREE.PlaneGeometry(YC.w, YC.d + 2 * T, 8, 12); add(gp, M.ground, 0, 0, 0, -Math.PI / 2, 0, 0, 1, 1, 1, 1, false); }
+  const line = (mat, x0, z0, x1, z1, wd) => { const l = Math.hypot(x1 - x0, z1 - z0); add(BOX, mat, (x0 + x1) / 2, 0.002, (z0 + z1) / 2, 0, -Math.atan2(z1 - z0, x1 - x0), 0, l, 0.004, wd, 1, false); };
+  { const H = L.helipad;                                            // helipad: white ring, H, yellow touchdown marks
+    const ring = new THREE.RingGeometry(H.r - 0.45, H.r, 72, 1); add(ring, M.paintW, H.x, 0.003, H.z, -Math.PI / 2, 0, 0, 1, 1, 1, 1, false);
+    const ring2 = new THREE.RingGeometry(H.r - 1.25, H.r - 1.0, 72, 1); add(ring2, M.paintY, H.x, 0.003, H.z, -Math.PI / 2, 0, 0, 1, 1, 1, 1, false);
+    decal('h', H.x, 0.006, H.z, 4.2, 6.0, 0, true);
+  }
+  for (const s of [-1, 1]) line(M.paintY, s * 5.2 + 3, 26, s * 5.2 + 3, -25, 0.12);   // the drive lane
+  for (let k = 0; k < 3; k++) {                                        // loading bays in front of A's roll-up door
+    const z = L.bay.z0 - 1.4 + k * 2.9; line(M.paintY, -8, z, -2.5, z, 0.1);
+    decal(['n1', 'n2', 'n3'][k], -3.6, 0.006, z + 1.45, 0.9, 1.4, -Math.PI / 2, true);
+  }
+  decal('keep', -5.2, 0.006, (L.bay.z0 + L.bay.z1) / 2, 3.2, 0.8, Math.PI / 2, true);
+  decal('zone', 2, 0.006, -21.5, 4.4, 1.1, 0, true);
+  for (let z = -26; z <= -23; z += 0.5) line(M.paintY, L.exitX - 2.2, z, L.exitX + 2.2, z + 0.5, 0.09);   // hatch before the block door
+  { // linear drain in front of the bay, two grates on the lane
+    box(M.grate, -7.8, -7.45, 0.0, 0.006, L.bay.z0 - 0.4, L.bay.z1 + 0.4, false);
+    for (let z = L.bay.z0 - 0.35; z < L.bay.z1 + 0.4; z += 0.06) box(M.metal, -7.8, -7.45, 0.006, 0.012, z, z + 0.012, false);
+    for (const [x, z] of [[3, 0], [3, -14], [-2, 16]]) { box(M.grate, x - 0.3, x + 0.3, 0, 0.006, z - 0.3, z + 0.3, false); for (let k = -4; k <= 4; k++) box(M.metal, x - 0.3, x + 0.3, 0.006, 0.012, z + k * 0.065 - 0.008, z + k * 0.065 + 0.008, false); }
+  }
+  yield;
+
+  // --- Perimeter walls (x = +-hw), chain-link and wire above (where no building stands against them) ---
+  for (const s of [-1, 1]) {
+    const x0 = s < 0 ? -hw - 0.3 : hw, x1 = s < 0 ? -hw : hw + 0.3;
+    rbx(M.wall, x0, x1, 0, YC.perim, -hd - T, hd + T, 0.02);
+    box(M.wall, x0 - 0.05, x1 + 0.05, YC.perim, YC.perim + 0.12, -hd - T, hd + T);            // cap
+    const bl = L.bld.filter((b) => (s < 0 ? b.x0 <= -hw + 0.01 : b.x1 >= hw - 0.01));
+    const xf = s * (hw + 0.15), segs = [];
+    let z = -hd;
+    for (const b of bl.sort((a, c) => a.z0 - c.z0)) { if (b.z0 > z) segs.push([z, b.z0]); z = Math.max(z, b.z1); }
+    if (z < hd) segs.push([z, hd]);
+    for (const [za, zb] of segs) {
+      const len = zb - za, fy0 = YC.perim + 0.12, fy1 = fy0 + YC.fence;
+      const fp = new THREE.PlaneGeometry(len, YC.fence); add(fp, M.fence, xf, (fy0 + fy1) / 2, (za + zb) / 2, 0, Math.PI / 2, 0, 1, 1, 1, 0, false);
+      const fuv = batch.get(M.fence).parts.at(-1).attributes.uv; for (let i = 0; i < fuv.count; i++) fuv.setXY(i, fuv.getX(i) * len / 0.3, fuv.getY(i) * YC.fence / 0.3);
+      for (let pz = za; pz <= zb + 0.01; pz += len / Math.max(1, Math.round(len / 3))) {
+        cyl(M.metal, xf, fy0 + YC.fence / 2 + 0.2, pz, 0.03, YC.fence + 0.4, 8);
+        add(BOX, M.metal, xf - s * 0.18, fy1 + 0.32, pz, 0, 0, s * 0.78, 0.035, 0.7, 0.035);      // outrigger arm, outward
+      }
+      for (let k = 0; k < 3; k++) cyl(M.metal, xf - s * (0.08 + k * 0.12), fy1 + 0.13 + k * 0.17, (za + zb) / 2, 0.0022, len, 4, Math.PI / 2);   // barbed strands
+      // concertina coil on the arms
+      const turns = Math.round(len / 0.28), pts = [];
+      for (let i = 0; i <= turns * 10; i++) { const a = i / 10 * Math.PI * 2; pts.push(new THREE.Vector3(xf - s * 0.22 + Math.cos(a) * 0.24, fy1 + 0.4 + Math.sin(a) * 0.24, za + (zb - za) * i / (turns * 10))); }
+      add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), turns * 10, 0.0028, 3, false), M.metal, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, false);
+      yield;
+    }
+    yield;
+  }
+
+  // --- Facades: the 17 block (back, z = -hd) and the start building (front, z = +hd) ---
+  const facade = (zf, sgn, H, doorX, label, num) => {                // sgn: +1 = faces +z (back wall), -1 = faces -z (front)
+    const za = sgn > 0 ? zf - T * 0.9 : zf, zb = sgn > 0 ? zf : zf + T * 0.9, dw = D.width / 2 + 0.06, dh = D.height + 0.06;
+    rbx(M.wall, -hw - 0.3, doorX - dw, 0, H, za, zb, 0.02);
+    rbx(M.wall, doorX + dw, hw + 0.3, 0, H, za, zb, 0.02);
+    box(M.wall, doorX - dw, doorX + dw, dh, H, za, zb);
+    const out = (o) => (sgn > 0 ? zf + o : zf - o);                    // a depth out into the yard
+    for (let x = -hw + 3; x < hw - 1; x += 6.4) if (Math.abs(x - doorX) > 2.6) rbx(M.wall, x - 0.32, x + 0.32, 0, H, Math.min(zf, out(0.38)), Math.max(zf, out(0.38)), 0.03);   // pilasters
+    for (const y of [3.6, 7.4]) if (y < H - 1) box(M.wall, -hw - 0.3, hw + 0.3, y - 0.035, y, Math.min(zf, out(0.012)), Math.max(zf, out(0.012)));   // lift seams
+    rbx(M.wall, -hw - 0.3, hw + 0.3, H - 0.5, H, Math.min(zf, out(0.3)), Math.max(zf, out(0.3)), 0.03);   // parapet band
+    // door: steel frame round a double door (the real leaf + a fixed one), canopy, lamp, a stencil
+    const fx0 = doorX - dw - 0.08, fx1 = doorX + dw + D.width + 0.1;
+    box(M.door, fx0, fx0 + 0.08, 0, dh + 0.08, Math.min(zf, out(0.05)), Math.max(zf, out(0.05)));
+    box(M.door, fx1 - 0.08, fx1, 0, dh + 0.08, Math.min(zf, out(0.05)), Math.max(zf, out(0.05)));
+    box(M.door, fx0, fx1, dh, dh + 0.08, Math.min(zf, out(0.05)), Math.max(zf, out(0.05)));
+    box(M.door, doorX + dw, fx1 - 0.08, 0.01, dh, Math.min(zf, out(0.03)), Math.max(zf, out(0.03)));   // the fixed leaf
+    box(M.metal, doorX + dw + 0.06, doorX + dw + 0.09, 0.95, 1.05, Math.min(zf, out(0.06)), Math.max(zf, out(0.06)));
+    box(M.wall, fx0 - 0.25, fx1 + 0.25, 2.62, 2.78, Math.min(zf, out(1.25)), Math.max(zf, out(1.25)));   // canopy slab
+    for (const x of [fx0 - 0.1, fx1 + 0.1]) add(BOX, M.metal, x, 2.45, out(1.05), sgn * 0.6, 0, 0, 0.04, 0.6, 0.04);   // brackets
+    box(M.metal, doorX + 0.25, doorX + 0.65, 2.9, 3.12, Math.min(zf, out(0.22)), Math.max(zf, out(0.22)));   // lamp housing
+    lensBox(doorX + 0.28, doorX + 0.62, 2.885, 2.9, Math.min(out(0.04), out(0.2)), Math.max(out(0.04), out(0.2)));
+    decal('rust1', doorX + 0.45, 2.1, out(0.012), 0.5, 1.6, sgn > 0 ? 0 : Math.PI);
+    decal(label, fx1 + 1.1, 1.9, out(0.012), 1.4, 0.7, sgn > 0 ? 0 : Math.PI);
+    if (num) decal(num, doorX + 9.5, 8.2, out(0.012), 5.6, 5.6, 0);
+    for (let x = -hw + 1.2; x < hw - 1; x += 3.1) decal(x % 2 > 0 ? 'stain0' : 'stain1', x, H - 1.6, out(0.006), 1.5, 3.2, sgn > 0 ? 0 : Math.PI);
+    for (const x of [-hw + 1.5, hw - 1.5]) { cyl(M.metal, x, H / 2, out(0.12), 0.055, H, 10); for (let y = 1; y < H; y += 2.5) box(M.metal, x - 0.08, x + 0.08, y, y + 0.04, Math.min(zf, out(0.18)), Math.max(zf, out(0.18))); }   // downpipes
+  };
+  facade(-hd, 1, YC.back, L.exitX, 'b2', 's17');
+  for (const [x, y] of [[-14, 7.6], [-8, 7.6], [-14, 10.4], [-8, 10.4], [12, 10.4], [16, 10.4]]) { box(M.glass, x - 1.4, x + 1.4, y - 0.5, y + 0.5, -hd, -hd + 0.02, false); box(M.metal, x - 1.48, x + 1.48, y - 0.6, y - 0.5, -hd, -hd + 0.12); }   // dark slot windows
+  yield;
+  facade(hd, -1, YC.front, L.entryX, 'b1', null);
+  yield;
+
+  // --- Buildings A and B, the tower base. Board-formed concrete, panel joints, roof parapets, pipes and conduits. ---
+  for (const b of L.bld) {
+    rbx(M.wall, b.x0, b.x1, 0, b.h, b.z0, b.z1, 0.04);
+    if (b.n !== 'T') rbx(M.wall, b.x0 - 0.05, b.x1 + 0.05, b.h - 0.45, b.h + 0.05, b.z0 - 0.05, b.z1 + 0.05, 0.03);   // parapet
+    for (let y = 3.6; y < b.h - 0.6; y += 3.6) { box(M.wall, b.x0 - 0.012, b.x1 + 0.012, y - 0.03, y, b.z0 - 0.012, b.z1 + 0.012); }
+    yield;
+  }
+  { // A: roll-up loading bay (x = -8), canopy, pipes; A's steel door on the +z face
+    const B = L.bay, xf = -8;
+    box(M.metal, xf, xf + 0.06, 0, B.h, B.z0, B.z1);
+    for (let y = 0.1; y < B.h; y += 0.1) box(M.door, xf + 0.06, xf + 0.085, y, y + 0.06, B.z0 + 0.05, B.z1 - 0.05);   // shutter slats
+    box(M.yellow, xf + 0.06, xf + 0.12, 0, 0.08, B.z0, B.z1);
+    for (const z of [B.z0 - 0.12, B.z1]) box(M.metal, xf, xf + 0.14, 0, B.h + 0.2, z, z + 0.12);
+    box(M.metal, xf, xf + 0.5, B.h + 0.15, B.h + 0.65, B.z0 - 0.2, B.z1 + 0.2);                  // roll box
+    box(M.metal, xf, xf + 2.4, B.h + 0.85, B.h + 0.95, B.z0 - 0.6, B.z1 + 0.6);                   // canopy
+    for (const z of [B.z0 - 0.5, B.z1 + 0.5]) add(BOX, M.metal, xf + 1.2, B.h + 1.15, z, 0, 0, -1.05, 0.05, 2.6, 0.05);   // ties back to the wall
+    lensBox(xf + 0.3, xf + 0.9, B.h + 0.82, B.h + 0.85, (B.z0 + B.z1) / 2 - 0.25, (B.z0 + B.z1) / 2 + 0.25);
+    decal('rust0', xf - 0.012, B.h - 0.6, B.z1 + 0.3, 0.6, 2.4, -Math.PI / 2);
+    cyl(M.metal, xf + 0.16, 6.6, 3, 0.09, 22, 12, Math.PI / 2);                                  // pipe run along the face
+    cyl(M.metal, xf + 0.14, 7.1, 3, 0.05, 22, 10, Math.PI / 2);
+    for (let z = -7.5; z < 14; z += 2.2) box(M.metal, xf, xf + 0.26, 6.45, 6.5, z, z + 0.06);
+    for (let z = -6.4; z < 14; z += 4.4) decal(z % 3 > 1 ? 'rust0' : 'rust1', xf + 0.012, 5.3, z, 0.35, 2.2, Math.PI / 2);
+    // A's door (south face, z = 14)
+    const dx = -14, dz = 14;
+    box(M.door, dx - 0.95, dx + 0.95, 0, 2.2, dz, dz + 0.05); box(M.metal, dx - 1.05, dx + 1.05, 2.2, 2.3, dz, dz + 0.08); box(M.metal, dx - 0.01, dx + 0.01, 0, 2.2, dz + 0.05, dz + 0.06);
+    box(M.wall, dx - 1.4, dx + 1.4, 2.55, 2.7, dz, dz + 1.1);
+    box(M.metal, dx - 0.2, dx + 0.2, 2.82, 3.0, dz, dz + 0.22); lensBox(dx - 0.18, dx + 0.18, 2.805, 2.82, dz + 0.04, dz + 0.2);
+    decal('danger', dx + 1.7, 1.6, dz + 0.012, 0.6, 0.6, 0);
+    // conduit boxes on A's south face
+    for (let x = -19; x < -8.5; x += 2.6) { box(M.metal, x, x + 0.3, 1.2, 1.6, dz, dz + 0.14); cyl(M.metal, x + 0.15, 2.4, dz + 0.05, 0.016, 1.6, 6); }
+  }
+  { // B: ground door + catwalk door on the west face (x = 9), the DANGER plate, conduits
+    const xf = 9;
+    for (const [z, y0] of [[-16, 0], [-7, 4.5]]) {
+      box(M.door, xf - 0.05, xf, y0, y0 + 2.2, z - 0.95, z + 0.95); box(M.metal, xf - 0.08, xf, y0 + 2.2, y0 + 2.3, z - 1.05, z + 1.05);
+      box(M.metal, xf - 0.06, xf - 0.05, y0, y0 + 2.2, z - 0.01, z + 0.01);
+      box(M.metal, xf - 0.22, xf, y0 + 2.42, y0 + 2.6, z - 0.2, z + 0.2); lensBox(xf - 0.2, xf - 0.04, y0 + 2.405, y0 + 2.42, z - 0.18, z + 0.18);
+      decal('rust1', xf - 0.012, y0 + 1.6, z, 0.5, 1.6, -Math.PI / 2);
+    }
+    decal('danger', xf - 0.012, 1.55, -13.6, 0.62, 0.62, -Math.PI / 2);
+    decal('b2', xf - 0.012, 2.9, -12.6, 1.4, 0.7, -Math.PI / 2);
+    box(M.metal, xf - 0.12, xf, 3.4, 3.46, -23.5, -6.5);                                          // conduit tray
+    for (let z = -23; z < -6.5; z += 2) { box(M.metal, xf - 0.2, xf, 3.2, 3.5, z, z + 0.25); decal('rust0', xf - 0.012, 2.4, z + 0.12, 0.3, 1.6, -Math.PI / 2); }
+    cyl(M.metal, xf - 0.15, 8.2, -15, 0.12, 17.5, 12, Math.PI / 2);
+  }
+  yield;
+
+  // --- Steel: stairs, catwalk, tower cab, poles, barriers, bollards ---
+  const rail = (x0, z0, y0, x1, z1, y1) => {                         // a handrail from (x0, y0, z0) to (x1, y1, z1): posts, top and mid rails
+    const l = Math.hypot(x1 - x0, y1 - y0, z1 - z0), n = Math.max(1, Math.round(Math.hypot(x1 - x0, z1 - z0) / 1.5));
+    for (let i = 0; i <= n; i++) { const t = i / n; cyl(M.yellow, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t + 0.55, z0 + (z1 - z0) * t, 0.022, 1.1, 8); }
+    for (const hy of [1.08, 0.55]) {
+      _yQ.setFromUnitVectors(_yP.set(0, 1, 0), _yS.set(x1 - x0, y1 - y0, z1 - z0).normalize());
+      _yE.setFromQuaternion(_yQ);
+      add(new THREE.CylinderGeometry(0.024, 0.024, l, 8, 1), M.yellow, (x0 + x1) / 2, (y0 + y1) / 2 + hy, (z0 + z1) / 2, _yE.x, _yE.y, _yE.z);
+    }
+  };
+  for (const F of L.flights) {
+    const n = Math.round(F.y / 0.18), rise = F.y / n, sg = Math.sign(F.zt - F.zf), go = Math.abs(F.zt - F.zf) / n;
+    for (let k = 0; k < n; k++) {
+      const z0 = F.zf + sg * k * go;
+      box(M.grate, F.x0 + 0.06, F.x1 - 0.06, (k + 1) * rise - 0.04, (k + 1) * rise, Math.min(z0, z0 + sg * go), Math.max(z0, z0 + sg * go));
+      box(M.yellow, F.x0 + 0.06, F.x1 - 0.06, (k + 1) * rise - 0.045, (k + 1) * rise - 0.025, sg > 0 ? z0 + go - 0.03 : z0 - go, sg > 0 ? z0 + go : z0 - go + 0.03);   // nosing
+    }
+    for (const x of [F.x0 + 0.03, F.x1 - 0.03]) {                    // stringers
+      const l = Math.hypot(F.y, F.zt - F.zf);
+      const a = Math.atan2(F.y, Math.abs(F.zt - F.zf));
+      add(BOX, M.metal, x, F.y / 2 - 0.12, (F.zf + F.zt) / 2, sg < 0 ? a : -a, 0, 0, 0.05, 0.25, l);
+    }
+    rail(F.x1, F.zf, 0, F.x1, F.zt, F.y);
+    if (!F.open) rail(F.x0, F.zf, 0, F.x0, F.zt, F.y);
+    yield;
+  }
+  for (const Dk of L.decks) {
+    box(M.grate, Dk.x0, Dk.x1, Dk.y - 0.05, Dk.y, Dk.z0, Dk.z1);
+    box(M.metal, Dk.x0, Dk.x1, Dk.y - 0.25, Dk.y - 0.05, Dk.z0, Dk.z0 + 0.08); box(M.metal, Dk.x0, Dk.x1, Dk.y - 0.25, Dk.y - 0.05, Dk.z1 - 0.08, Dk.z1);
+    for (let x = Dk.x0 + 0.04; x < Dk.x1; x += 0.035) box(M.metal, x, x + 0.004, Dk.y - 0.004, Dk.y + 0.002, Dk.z0, Dk.z1, false);   // grating bars
+  }
+  { // catwalk rails, landing rail, portals under the bridge
+    const C = L.decks[1], Ld = L.decks[0];
+    rail(C.x0, C.z0, C.y, C.x1, C.z0, C.y); rail(C.x0, C.z1, C.y, C.x1, C.z1, C.y);
+    rail(Ld.x0, Ld.z0, Ld.y, Ld.x1, Ld.z0, Ld.y); rail(Ld.x1, C.z1, Ld.y, Ld.x1, Ld.z1, Ld.y);
+    for (const [x, z] of L.posts) box(M.metal, x - 0.1, x + 0.1, 0, C.y - 0.25, z - 0.1, z + 0.1);
+    for (const x of [-2.5, 3.5]) box(M.metal, x - 0.1, x + 0.1, C.y - 0.45, C.y - 0.25, C.z0 - 0.1, C.z1 + 0.1);
+  }
+  { // tower cab: posts, half walls, open band, roof, the flood on the roof
+    const Dk = L.decks[3], y = Dk.y, top = y + 2.7;
+    for (const [x, z] of [[Dk.x0, Dk.z0], [Dk.x1, Dk.z0], [Dk.x0, Dk.z1], [Dk.x1, Dk.z1]]) box(M.metal, x - 0.06, x + 0.06, y, top, z - 0.06, z + 0.06);
+    box(M.metal, Dk.x0, Dk.x1, y, y + 1.1, Dk.z0, Dk.z0 + 0.04);
+    box(M.metal, Dk.x0, Dk.x1, y, y + 1.1, Dk.z1 - 0.04, Dk.z1);
+    box(M.metal, Dk.x1 - 0.04, Dk.x1, y, y + 1.1, Dk.z0, Dk.z1);
+    box(M.metal, Dk.x0, Dk.x0 + 0.04, y, y + 1.1, 15.4, Dk.z1); box(M.metal, Dk.x0, Dk.x0 + 0.04, y, y + 1.1, Dk.z0, 14);   // west: the door opening at the landing
+    box(M.metal, Dk.x0 - 0.25, Dk.x1 + 0.25, top, top + 0.12, Dk.z0 - 0.25, Dk.z1 + 0.25);
+    box(M.wall, Dk.x0 - 0.1, Dk.x1 + 0.1, y - 0.25, y - 0.05, Dk.z0 - 0.1, Dk.z1 + 0.1);
+    const lp = L.lamps[0].p;
+    box(M.metal, lp[0] - 0.25, lp[0] + 0.25, lp[1] - 0.2, lp[1] + 0.2, lp[2] - 0.1, lp[2] + 0.25);
+    lensBox(lp[0] - 0.22, lp[0] + 0.22, lp[1] - 0.17, lp[1] + 0.17, lp[2] - 0.12, lp[2] - 0.1);
+    cyl(M.metal, lp[0], (top + lp[1]) / 2, lp[2] + 0.1, 0.03, lp[1] - top, 6);
+    const Lg = L.decks[2]; rail(Lg.x0, Lg.z0, Lg.y, Lg.x0, Lg.z1, Lg.y); rail(Lg.x0, Lg.z1, Lg.y, Lg.x1, Lg.z1, Lg.y);
+  }
+  for (const [i, [px, pz]] of L.poles.entries()) {                   // flood poles: concrete base, steel mast, head
+    const lp = L.lamps[i + 1].p;
+    rbx(M.wall, px - 0.35, px + 0.35, 0, 0.7, pz - 0.35, pz + 0.35, 0.03);
+    cyl(M.metal, px, 6, pz, 0.11, 11, 12);
+    box(M.metal, Math.min(px, lp[0]) - 0.06, Math.max(px, lp[0]) + 0.06, 11.3, 11.4, Math.min(pz, lp[2]) - 0.06, Math.max(pz, lp[2]) + 0.06);
+    box(M.metal, lp[0] - 0.32, lp[0] + 0.32, lp[1] - 0.12, lp[1] + 0.18, lp[2] - 0.32, lp[2] + 0.32);
+    lensBox(lp[0] - 0.28, lp[0] + 0.28, lp[1] - 0.14, lp[1] - 0.12, lp[2] - 0.28, lp[2] + 0.28);
+  }
+  { // jersey barriers (F-shape profile, 1.07 m tall precast) and bollards
+    const s = new THREE.Shape([[-0.3, 0], [0.3, 0], [0.3, 0.075], [0.21, 0.33], [0.09, 1.07], [-0.09, 1.07], [-0.21, 0.33], [-0.3, 0.075]].map(([x, y]) => new THREE.Vector2(x, y)));
+    const jg = new THREE.ExtrudeGeometry(s, { depth: 3.6, bevelEnabled: false }); jg.translate(0, 0, -1.8); jg.computeVertexNormals();
+    const jb = yardClean(jg); yardUV(jb, YC.tex.ground, 0.5);
+    for (const [x, z, ry] of L.barriers) {
+      _yM.compose(_yP.set(x, 0, z), _yQ.setFromAxisAngle(Y_AXIS, ry + Math.PI / 2), _yS.set(1, 1, 1));
+      const gg = jb.clone().applyMatrix4(_yM); let b = batch.get(M.barrier); if (!b) batch.set(M.barrier, b = { parts: [], cast: true }); b.parts.push(gg); b.cast = true;
+      for (const t of [-1.2, 1.2]) { const cx = x + Math.cos(ry) * t, cz = z - Math.sin(ry) * t; add(BOX, M.metal, cx, 0.95, cz, 0, ry, 0, 0.12, 0.05, 0.2); }   // lifting loops
+    }
+    for (const [x, z] of L.bollards) { cyl(M.yellow, x, 0.55, z, 0.105, 1.1, 14); cyl(M.wall, x, 1.12, z, 0.06, 0.05, 10); }
+  }
+  yield;
+
+  // --- Door hardware: the exit doorway (owned by this room) and the entry plug, as roomBuilder ---
+  const put = (parent, obj, x, y, z, ry = 0) => { obj.position.set(x, y, z); obj.rotation.y = ry; parent.add(obj); return obj; };
+  const ex = room.exitX, zg = -hd - T / 2;
+  put(dg, mesh(KG.jamb, KM.door), ex - D.width / 2 - 0.03, (D.height + 0.04) / 2, zg);
+  put(dg, mesh(KG.jamb, KM.door), ex + D.width / 2 + 0.03, (D.height + 0.04) / 2, zg);
+  put(dg, mesh(KG.head, KM.door), ex, D.height + 0.03, zg);
+  put(dg, mesh(KG.threshold, KM.steel, false, true), ex, 0.006, zg);
+  put(dg, mesh(KG.closer, KM.door), ex - D.width / 2 + 0.24, D.height + 0.1, -hd - T - 0.035);
+  room.backer = put(dg, new THREE.Mesh(KG.backer, KM.dark), ex, D.height / 2, -hd - T - 0.004);
+  const sw = D.width - 0.02, cy = (D.height - 0.02) / 2 + 0.008;
+  const makeLeaf = () => {
+    const leaf = new THREE.Group();
+    leaf.add(mesh(KG.slab, KM.door));
+    for (const s of [-1, 1]) {
+      put(leaf, mesh(KG.kick, KM.steel, false, true), 0, 0.14 - cy, s * 0.024);
+      const rose = mesh(KG.rose, KM.steel); rose.rotation.x = Math.PI / 2; rose.position.set(sw / 2 - 0.07, 1.0 - cy, s * 0.0285); leaf.add(rose);
+      const neck = mesh(KG.neck, KM.steel); neck.rotation.x = Math.PI / 2; neck.position.set(sw / 2 - 0.07, 1.0 - cy, s * 0.042); leaf.add(neck);
+      { const pv = put(leaf, new THREE.Group(), sw / 2 - 0.07, 1.0 - cy, s * 0.055); put(pv, mesh(KG.lever, KM.steel), -0.05, 0, 0); (leaf.userData.levers || (leaf.userData.levers = [])).push(pv); }
+    }
+    return leaf;
+  };
+  room.doorVisual = put(dg, makeLeaf(), ex, cy, -hd - T + 0.03);
+  if (room.entryX !== null) {
+    const pg = room.entryPlug = new THREE.Group(), nx = room.entryX, nz = hd + T / 2;
+    put(pg, mesh(KG.jamb, KM.door), nx - D.width / 2 - 0.03, (D.height + 0.04) / 2, nz);
+    put(pg, mesh(KG.jamb, KM.door), nx + D.width / 2 + 0.03, (D.height + 0.04) / 2, nz);
+    put(pg, mesh(KG.head, KM.door), nx, D.height + 0.03, nz);
+    put(pg, mesh(KG.threshold, KM.steel, false, true), nx, 0.006, nz);
+    put(pg, makeLeaf(), nx, cy, hd + 0.03);
+    pg.visible = false; g.add(pg);
+  }
+  { // room-number plate beside the exit: the room you are about to enter
+    const next = roomPlan(room.slot + 1), px = ex + D.width / 2 + D.width + 0.5;
+    const pm = mesh(KG.plate, KM.plate, false, true); pm.position.set(px, 1.55, -hd + 0.0046); g.add(pm);
+    const gm = mesh(own(glyphGeo(next.number)), KM.glyph, false, true); gm.position.set(px, 1.552, -hd + 0.0094); g.add(gm);
+  }
+  yield;
+
+  // --- Merge per material ---
+  for (const [mat, b] of batch) {
+    const m = merged(b.parts, mat, b.cast);
+    m.receiveShadow = true; own(m.geometry); g.add(m);
+    yield;
+  }
+  batch.clear(); BOX.dispose();
+  { const on = lens.filter((l) => l[1]).map((l) => l[0]); if (on.length) { const m = merged(on, M.lens, false); own(m.geometry); g.add(m); room.yardLens = m; } }
+
+  // --- Lights: the pool fittings (troffers carry the tower flood and the approach pole), lamps, shafts, halos ---
+  room.troffers = [0, 1].map((i) => { const dm = new THREE.MeshBasicMaterial(); room.ownMat.push(dm); return { x: L.lamps[i].p[0], z: L.lamps[i].p[2], y: L.lamps[i].p[1] + 0.2, diffMat: dm }; });   // the pool's fittings (night / flicker code writes their glow; the lenses are ours)
+  Y.lampsL = L.lamps.map((l) => ({ ...l, I: l.I * L.lampI[l.k] * YC.lampK }));
+  { // shafts
+    const parts = [];
+    for (const l of L.lamps) {
+      if (!l.shaft) continue;
+      const len = Math.min(16, l.p[1] / Math.max(0.3, -l.d[1]) * 1.05), rr = len * Math.tan(Math.acos(l.cos)) * 0.9;
+      const cg = new THREE.CylinderGeometry(0.2, rr, len, 24, 1, true); cg.translate(0, -len / 2, 0);
+      const uv = cg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));   // 0 at the lamp
+      _yQ.setFromUnitVectors(_yP.set(0, -1, 0), _yS.set(l.d[0], l.d[1], l.d[2]));
+      _yM.compose(_yP.set(l.p[0], l.p[1], l.p[2]), _yQ, _yS.set(1, 1, 1));
+      parts.push(yardClean(cg).applyMatrix4(_yM));
+    }
+    const sm = Y.shaftMat || (Y.shaftMat = yardShaftMaterial());
+    const m = new THREE.Mesh(own(mergeGeometries(parts)), sm); m.renderOrder = 5; m.frustumCulled = false; g.add(m); room.yardShafts = m;
+  }
+  { // halos
+    const n = L.lamps.length, geo = new THREE.BufferGeometry(), P = new Float32Array(n * 12), C = new Float32Array(n * 8), S = new Float32Array(n * 4), I = [];
+    L.lamps.forEach((l, i) => { const s = l.k === 'flood' ? 1.1 : 0.45; for (let k = 0; k < 4; k++) { P.set([l.p[0] + l.d[0] * 0.08, l.p[1] + l.d[1] * 0.08, l.p[2] + l.d[2] * 0.08], (i * 4 + k) * 3); C.set([[-1, -1], [1, -1], [1, 1], [-1, 1]][k], (i * 4 + k) * 2); S[i * 4 + k] = s; } I.push(i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3); });
+    geo.setAttribute('position', new THREE.BufferAttribute(P, 3)); geo.setAttribute('aCorner', new THREE.BufferAttribute(C, 2)); geo.setAttribute('aSize', new THREE.BufferAttribute(S, 1)); geo.setIndex(I);
+    const hm = Y.haloMat || (Y.haloMat = yardHaloMaterial());
+    const m = new THREE.Mesh(own(geo), hm); m.renderOrder = 6; m.frustumCulled = false; g.add(m); room.yardHalos = m;
+  }
+  { // sky dome (follows the camera, drawn first), the panorama ground outside, rain, splashes
+    const sky = Y.skyMat || (Y.skyMat = yardSkyMaterial());
+    const dome = new THREE.Mesh(Y.skyGeo || (Y.skyGeo = new THREE.SphereGeometry(25, 48, 24)), sky);
+    dome.renderOrder = -1e6; dome.frustumCulled = false; dome.matrixAutoUpdate = true; g.add(dome); room.yardSky = dome;
+    const om = Y.outerMat || (Y.outerMat = yardOuterMaterial());
+    const og = new THREE.BufferGeometry(), R = 420, a = hw + 0.3, b = hd + T + 0.2, y0 = -0.03;
+    const v = [[-R, -R], [R, -R], [R, R], [-R, R], [-a, -b], [a, -b], [a, b], [-a, b]].flatMap(([x, z]) => [x, y0, z]);
+    og.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+    og.setIndex([0, 4, 1, 1, 4, 5, 1, 5, 2, 2, 5, 6, 2, 6, 3, 3, 6, 7, 3, 7, 0, 0, 7, 4].map((i) => i));
+    const outer = new THREE.Mesh(own(og), om); outer.frustumCulled = false; g.add(outer); room.yardOuter = outer;
+    if (!Y.rainGeo) { Y.rainGeo = yardQuadsGeo(xr ? YC.rain.nXR : YC.rain.n, null, true); Y.splashGeo = yardQuadsGeo(xr ? YC.rain.splashXR : YC.rain.splash, null, false); Y.rainMat = yardRainMaterial(false); Y.splashMat = yardRainMaterial(true); }
+    const rain = new THREE.Mesh(Y.rainGeo, Y.rainMat); rain.frustumCulled = false; rain.renderOrder = 7; g.add(rain); room.yardRain = rain;
+    const spl = new THREE.Mesh(Y.splashGeo, Y.splashMat); spl.frustumCulled = false; spl.renderOrder = 4; g.add(spl);
+  }
+  yield;
+  freezeStatic(g, room.yardSky);
+  freezeStatic(dg, room.doorVisual);
+  Y.built = true;
+  try { renderer.compileAsync(g, camera, scene).catch(() => { /* compiled on first draw */ }); } catch (e) { /* older three */ }
+}
+
+/* ---------------------------------------------------------------------------
+ *  Activation: the shell colliders at their real heights, buildings, steel, barriers; walk boxes; the nav grid.
+ * ------------------------------------------------------------------------- */
+function yardActivate(room, box, walk) {
+  const L = room.yard, { hw, hd } = L, T = CONFIG.stream.wallT, D = CONFIG.door, t = 0.25, h = room.h;
+  // The shell pass built a ceiling and full-height walls: keep the floor (first), the rest goes.
+  for (let i = room.colliderHandles.length - 1; i >= 1; i--) {
+    const hd0 = room.colliderHandles[i], c = world.getCollider(hd0);
+    if (c) world.removeCollider(c, false);
+    colliderInfo.delete(hd0); room.colliderHandles.splice(i, 1);
+  }
+  for (const s of [-1, 1]) box(t, YC.perim / 2 + 0.06, hd + T, s * (hw + t), YC.perim / 2 + 0.06, 0, 0.5, 0, 'concrete');
+  const endW = (zc, doorX, H) => {
+    const L0 = -hw - t, R0 = hw + t, x0 = doorX - D.width / 2, x1 = doorX + D.width / 2;
+    box((x0 - L0) / 2, H / 2, T / 2, (L0 + x0) / 2, H / 2, zc, 0.5, 0, 'concrete');
+    box((R0 - x1) / 2, H / 2, T / 2, (x1 + R0) / 2, H / 2, zc, 0.5, 0, 'concrete');
+    box(D.width / 2, (H - D.height) / 2, T / 2, doorX, (H + D.height) / 2, zc, 0.5, 0, 'concrete');
+  };
+  endW(-hd - T / 2, room.exitX, YC.back);
+  endW(hd + T / 2, room.entryX, YC.front);
+  for (const b of L.bld) { box((b.x1 - b.x0) / 2, b.h / 2, (b.z1 - b.z0) / 2, (b.x0 + b.x1) / 2, b.h / 2, (b.z0 + b.z1) / 2, 0.6, 0, 'concrete'); walk((b.x0 + b.x1) / 2, (b.z0 + b.z1) / 2, (b.x1 - b.x0) / 2, (b.z1 - b.z0) / 2, b.h); }
+  // facade pilasters and canopies stay visual (they stand 0.4 m out: a walk box keeps you off them)
+  for (const zf of [-hd, hd]) for (let x = -hw + 3; x < hw - 1; x += 6.4) if (Math.abs(x - (zf < 0 ? room.exitX : room.entryX)) > 2.6) {
+    const zc = zf < 0 ? zf + 0.19 : zf - 0.19; box(0.32, 3, 0.19, x, 3, zc, 0.6, 0, 'concrete'); walk(x, zc, 0.32, 0.19, h);
+  }
+  for (const F of L.flights) {                                       // treads: one block per step for props / casings; walk: under-box + rails
+    const n = Math.round(F.y / 0.18), rise = F.y / n, sg = Math.sign(F.zt - F.zf), go = Math.abs(F.zt - F.zf) / n, cx = (F.x0 + F.x1) / 2, hx = (F.x1 - F.x0) / 2;
+    for (let k = 0; k < n; k++) box(hx, 0.02, go / 2, cx, (k + 1) * rise - 0.02, F.zf + sg * (k + 0.5) * go, 0.8, 0, 'metal');
+    const zA = F.zf + (F.zt - F.zf) * 0.3, zc = (zA + F.zt) / 2, hz = Math.abs(F.zt - zA) / 2;
+    walk(cx, zc, hx, hz, F.y, 0, { lvTop: 0.5 });                    // under the flight: walls the ground, not the stair
+    walk(F.x1 + 0.03, (F.zf + F.zt) / 2 + sg * 0.25, 0.03, Math.abs(F.zt - F.zf) / 2 - 0.25, F.y + 1.1);
+    if (!F.open) walk(F.x0 - 0.03, (F.zf + F.zt) / 2 + sg * 0.25, 0.03, Math.abs(F.zt - F.zf) / 2 - 0.25, F.y + 1.1);
+  }
+  for (const Dk of L.decks) box((Dk.x1 - Dk.x0) / 2, 0.1, (Dk.z1 - Dk.z0) / 2, (Dk.x0 + Dk.x1) / 2, Dk.y - 0.1, (Dk.z0 + Dk.z1) / 2, 0.8, 0, 'metal');
+  { const C = L.decks[1], Ld = L.decks[0], Lg = L.decks[2], Cb = L.decks[3], up = (y) => ({ bot: y - 0.3 });
+    walk((C.x0 + C.x1) / 2, C.z0 - 0.03, (C.x1 - C.x0) / 2, 0.03, C.y + 1.1, 0, up(C.y));
+    walk((C.x0 + C.x1) / 2, C.z1 + 0.03, (C.x1 - C.x0) / 2, 0.03, C.y + 1.1, 0, up(C.y));
+    walk((Ld.x0 + Ld.x1) / 2, Ld.z0 - 0.03, (Ld.x1 - Ld.x0) / 2, 0.03, Ld.y + 1.1, 0, up(Ld.y));
+    walk(Ld.x1 + 0.03, (C.z1 + Ld.z1) / 2, 0.03, (Ld.z1 - C.z1) / 2, Ld.y + 1.1, 0, up(Ld.y));
+    walk(Lg.x0 - 0.03, (Lg.z0 + Lg.z1) / 2, 0.03, (Lg.z1 - Lg.z0) / 2, Lg.y + 1.1, 0, up(Lg.y));
+    walk((Lg.x0 + Lg.x1) / 2, Lg.z1 + 0.03, (Lg.x1 - Lg.x0) / 2, 0.03, Lg.y + 1.1, 0, up(Lg.y));
+    // cab half walls: colliders (cover for the man up there) and walk boxes for you
+    const cw = (x0, x1, z0, z1) => { box((x1 - x0) / 2, 0.55, (z1 - z0) / 2, (x0 + x1) / 2, Cb.y + 0.55, (z0 + z1) / 2, 0.5, 0, 'metal'); walk((x0 + x1) / 2, (z0 + z1) / 2, (x1 - x0) / 2, (z1 - z0) / 2, Cb.y + 1.1, 0, up(Cb.y)); };
+    cw(Cb.x0, Cb.x1, Cb.z0, Cb.z0 + 0.04); cw(Cb.x0, Cb.x1, Cb.z1 - 0.04, Cb.z1); cw(Cb.x1 - 0.04, Cb.x1, Cb.z0, Cb.z1); cw(Cb.x0, Cb.x0 + 0.04, 15.4, Cb.z1);
+    cw(Cb.x0, Cb.x0 + 0.04, Cb.z0, 14);
+    box(1.85, 0.06, 1.85, (Cb.x0 + Cb.x1) / 2, Cb.y + 2.76, (Cb.z0 + Cb.z1) / 2, 0.5, 0, 'metal');   // roof
+  }
+  for (const [x, z] of L.posts) { box(0.1, 2.1, 0.1, x, 2.1, z, 0.5, 0, 'metal'); walk(x, z, 0.1, 0.1, 4.2); }
+  for (const [px, pz] of L.poles) { box(0.35, 0.35, 0.35, px, 0.35, pz, 0.6, 0, 'concrete'); box(0.11, 5.5, 0.11, px, 6, pz, 0.5, 0, 'metal'); walk(px, pz, 0.35, 0.35, 11); }
+  { const B = L.bay; box(0.4, 0.35, (B.z1 - B.z0) / 2 + 0.4, -8 + 0.25, B.h + 0.4, (B.z0 + B.z1) / 2, 0.5, 0, 'metal'); }
+  for (const [x, z, ry] of L.barriers) {
+    const c = box(0.2, 0.535, 1.8, x, 0.535, z, 0.6, ry + Math.PI / 2, 'concrete');
+    box(0.3, 0.1, 1.8, x, 0.1, z, 0.6, ry + Math.PI / 2, 'concrete');
+    walk(x, z, 1.8, 0.28, 1.07, ry);
+    void c;
+  }
+  for (const [x, z] of L.bollards) { box(0.1, 0.55, 0.1, x, 0.55, z, 0.5, 0, 'metal'); walk(x, z, 0.11, 0.11, 1.1); }
+  room.navCache = yardNav(room);
+}
+// Nav grid at the ground: rasterised per box (the generic one tests every cell against every box).
+function yardNav(room) {
+  const cs = 0.2, nx = Math.floor(room.w / cs), nz = Math.floor(room.d / cs), r = CONFIG.enemy.radius, g = new Uint8Array(nx * nz);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const x = -room.w / 2 + (i + 0.5) * cs, z = -room.d / 2 + (j + 0.5) * cs; if (Math.abs(x) > room.w / 2 - r || Math.abs(z) > room.d / 2 - r) g[j * nx + i] = 1; }
+  for (const b of room.walkLocal) {
+    if (b.bot !== undefined && b.bot > 1.5) continue;                // rails up on the catwalk and the tower
+    const ext = Math.hypot(b.hx, b.hz) + r + cs;
+    const i0 = Math.max(0, Math.floor((b.x - ext + room.w / 2) / cs)), i1 = Math.min(nx - 1, Math.ceil((b.x + ext + room.w / 2) / cs));
+    const j0 = Math.max(0, Math.floor((b.z - ext + room.d / 2) / cs)), j1 = Math.min(nz - 1, Math.ceil((b.z + ext + room.d / 2) / cs));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const k = j * nx + i; if (g[k]) continue;
+      if (boxDist(-room.w / 2 + (i + 0.5) * cs, -room.d / 2 + (j + 0.5) * cs, b) < r) g[k] = 1;
+    }
+  }
+  return { g, nx, nz, cs, w: room.w, d: room.d };
+}
+// Floor height at a room-local point: stair flights ramp along the nosings, decks are flat (only when you come from near their height).
+function yardFloor(r, lx, lz, hint = 0) {
+  const L = r.yard; if (!L) return 0;
+  for (const F of L.flights) {
+    if (lx < F.x0 || lx > F.x1) continue;
+    const t = (lz - F.zf) / (F.zt - F.zf); if (t < 0 || t > 1) continue;
+    const y = F.y * t; if (hint > y - 0.75) return y;
+  }
+  for (const Dk of L.decks) if (lx >= Dk.x0 && lx <= Dk.x1 && lz >= Dk.z0 && lz <= Dk.z1 && hint > Dk.y - 1.0) return Dk.y;
+  return 0;
+}
+const yardFlat = (r, lx, lz, hint) => yardFloor(r, lx, lz, hint) < 0.01;   // only the ground re-bases the world
+
+/* ---------------------------------------------------------------------------
+ *  Cover points (barriers, building corners, tower base, poles) and spawn spots (a squad at the block's door,
+ *  the rest across the yard, the sniper in the tower cab).
+ * ------------------------------------------------------------------------- */
+function yardCover(room, out) {
+  const L = room.yard, gap = 0.42, W = room.walkLocal || [], G = room.navCache;
+  const add = (lx, lz, nx, nz, top, peek) => {
+    if (Math.abs(lx) > room.w / 2 - 0.4 || Math.abs(lz) > room.d / 2 - 0.4) return;
+    if (G && !navFree(G, lx, lz)) return;
+    out.push({ x: rWX(room, lx), z: rWZ(room, lz), nx: rF(room) * nx, nz: rF(room) * nz, height: top < 1.3 ? 'low' : 'high', peek, soft: false, source: null, useable: top >= 0.95 && (top < 1.3 || peek !== 0) });
+  };
+  for (const [x, z, ry] of L.barriers) {
+    const c = Math.cos(ry), s = Math.sin(ry);                       // the barrier runs along (c, -s); faces are +-(s, c)
+    for (const side of [1, -1]) for (const t of [-1.1, 0, 1.1]) add(x + c * t + side * s * (0.3 + gap), z - s * t + side * c * (0.3 + gap), side * s, side * c, 1.07, 0);
+  }
+  for (const b of L.bld) {                                            // corners: a high spot with a side to step out from
+    for (const [cx, cz] of [[b.x0, b.z0], [b.x1, b.z0], [b.x0, b.z1], [b.x1, b.z1]]) {
+      for (const [nx, nz] of [[0, Math.sign(cz - (b.z0 + b.z1) / 2)], [Math.sign(cx - (b.x0 + b.x1) / 2), 0]]) {
+        const lx = cx + nx * gap - (nz ? Math.sign(cx - (b.x0 + b.x1) / 2) * 0.45 : 0), lz = cz + nz * gap - (nx ? Math.sign(cz - (b.z0 + b.z1) / 2) * 0.45 : 0);
+        add(lx, lz, nx, nz, b.h, nz ? Math.sign(cx - (b.x0 + b.x1) / 2) : Math.sign(cz - (b.z0 + b.z1) / 2));
+      }
+    }
+  }
+  for (const [px, pz] of L.poles) add(px, pz + 0.35 + gap, 0, 1, 0.7, 0);
+}
+function yardSpawnSpot(room, taken, spec) {
+  const L = room.yard, far = (x, z) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > 1.4);
+  if (spec && spec.sniper) { const Cb = L.decks[3]; return { x: (Cb.x0 + Cb.x1) / 2 + 0.3, z: (Cb.z0 + Cb.z1) / 2 - 0.2, yaw: Math.atan2(-(YC.entryX - 15.6), -(room.d / 2 - 15.5)), y: Cb.y }; }
+  const pts = [];
+  const cps = []; yardCover(room, cps);
+  const n = taken.length;
+  for (const c of cps) {
+    if (!c.useable) continue;
+    const lx = rLX(room, c.x), lz = rLZ(room, c.z);
+    if (!far(lx, lz) || lz > room.d / 2 - 9) continue;              // never at the safe-room door
+    const entrance = Math.hypot(lx - L.exitX, lz + room.d / 2) < 11;
+    const faceIn = c.nz * rF(room) > 0.3 || Math.abs(c.nx) > 0.5;
+    let s = Math.random() * 0.6 + (faceIn ? 0.6 : -0.6);
+    s += n < 4 ? (entrance ? 3 : -2) : (entrance ? -2 : 0) + (lz < 12 ? 0.6 : 0) + (lz > -4 && lz < 12 ? 0.5 : 0);   // the first three hold the door, the rest spread
+    pts.push([s, lx, lz]);
+  }
+  pts.sort((a, b) => b[0] - a[0]);
+  if (!pts.length) return null;
+  const [, x, z] = pts[0];
+  return { x, z, yaw: Math.atan2(-(YC.entryX - x), -(room.d / 2 - z)) };
+}
+// loopPlan: the yard's men are rifles; the first is the tower sniper.
+function yardPlanMen(list) { for (const s of list) s.gun = 'smg'; if (list.length) list[0].sniper = true; }
+function yardManPlaced(e, spec, sp) {
+  if (!spec.sniper) return;
+  e.sniper = true; e.stairHold = true; e.stairY = sp.y; e.errK *= 0.45; e.err *= 0.45; e.reactK *= 1.3;
+  e.root.position.y = sp.y;
+}
+
+/* ---------------------------------------------------------------------------
+ *  Lights. Called at the end of assignLights (only when the room or the portal changes).
+ * ------------------------------------------------------------------------- */
+const _yl = { p: new THREE.Vector3(), t: new THREE.Vector3() };
+function yardLights(cur) {
+  const Y = YARD, inY = !!(Y && cur && cur.yard);
+  const restore = (s) => {
+    if (!s.userData.yardMode) return;
+    s.userData.yardMode = false;
+    if (!s.userData.torch) { s.color.set(CONFIG.look.spot); s.angle = Math.PI * 0.42; s.penumbra = 1.0; s.distance = 0; s.decay = 2; s.shadow.camera.far = 8; }
+    s.shadow.camera.near = 0.1; s.shadow.camera.updateProjectionMatrix();
+  };
+  if (!inY) {
+    for (const s of pool.main) restore(s);
+    for (const r of pool.rects) if (r.userData.yardMode) { r.userData.yardMode = false; r.color.set(CONFIG.look.rect); r.width = 0.56; r.height = 1.16; }
+    return;
+  }
+  flicker.fixture = null;                                             // the yard's floods never stutter
+  const L = cur.yard, dark = nightDark(cur);
+  const mn = pool.main[0], fl = pool.main[1];
+  if (!mn.userData.torch) {                                           // moon: a far spot along the sky's bright cloud, shadowed
+    const m = YSKY.moon.value, R = YC.moon.dist;
+    _yl.p.set(m.x, Math.max(0.35, m.y), m.z).normalize();
+    mn.position.set(rWX(cur, 0) + _yl.p.x * R, cur.origin.y + _yl.p.y * R, rWZ(cur, 0) + _yl.p.z * R);
+    mn.target.position.set(rWX(cur, 0), cur.origin.y, rWZ(cur, 0));
+    mn.angle = Math.atan(Math.hypot(L.hw, L.hd) / R) * 1.1; mn.penumbra = 0.15; mn.distance = 0; mn.decay = 2;
+    mn.color.setRGB(0.62, 0.72, 0.95); mn.intensity = YC.moon.E * R * R;
+    mn.shadow.camera.near = R - 60; mn.shadow.camera.far = R + 60; mn.shadow.camera.updateProjectionMatrix();
+    mn.updateMatrixWorld(); mn.target.updateMatrixWorld(); mn.userData.yardMode = true;
+  }
+  if (!fl.userData.torch) {                                           // the tower flood, shadowed
+    const l = L.lamps[0], tx = l.p[0] + l.d[0] * 20, ty = l.p[1] + l.d[1] * 20, tz = l.p[2] + l.d[2] * 20;
+    fl.position.set(rWX(cur, l.p[0]), cur.origin.y + l.p[1], rWZ(cur, l.p[2]));
+    fl.target.position.set(rWX(cur, tx), cur.origin.y + ty, rWZ(cur, tz));
+    fl.angle = Math.acos(l.cos) * 1.05; fl.penumbra = 0.45; fl.distance = 0; fl.decay = 2;
+    fl.color.setRGB(1.0, 0.86, 0.68); fl.intensity = dark ? 0 : YC.flood.E * 20 * 20 * 0.5;
+    fl.shadow.camera.near = 0.5; fl.shadow.camera.far = 70; fl.shadow.camera.updateProjectionMatrix();
+    fl.updateMatrixWorld(); fl.target.updateMatrixWorld(); fl.userData.yardMode = true;
+  }
+  [3, 4].forEach((li, i) => {                                         // pool.rects over the two working doors
+    const r = pool.rects[i], l = L.lamps[li];
+    r.position.set(rWX(cur, l.p[0]), cur.origin.y + l.p[1] - 0.02, rWZ(cur, l.p[2]));
+    r.color.setRGB(1.0, 0.8, 0.58); r.width = 0.34; r.height = 0.16; r.intensity = dark ? 0 : CONFIG.light.rect * 2.2; r.userData.yardMode = true;
+  });
+  dirtyShadows();
+}
+
+/* ---------------------------------------------------------------------------
+ *  Per frame (after nightUpdate): uniforms, sky on the camera, rain box, camera far, environment.
+ * ------------------------------------------------------------------------- */
+const _yt = { v: new THREE.Vector3(), m: new THREE.Matrix4() };
+function yardTick(dt, t) {
+  const Y = YARD;
+  if (!Y || !Y.built) { stealthTick(dt); return; }
+  let yard = null;
+  for (const r of stream.rooms.values()) if (r.yard && r.active) yard = r;
+  const cur = stream.current, inY = !!(cur && cur.yard), vis = !!(yard && yard.visible);
+  const far = inY ? YC.far : 60;
+  if (camera.far !== far) { camera.far = far; camera.updateProjectionMatrix(); }
+  if (inY && Y.env && !Y.envOld) { Y.envOld = scene.environment; scene.environment = Y.env.texture; }   // the night sky's light on everything (same 256 px PMREM size: no recompile)
+  else if (!inY && Y.envOld) { scene.environment = Y.envOld; Y.envOld = null; }
+  if (inY !== Y.wasIn) { Y.wasIn = inY; yardRainAudio(inY); }
+  if (inY) { scene.environmentIntensity *= YC.envK; if (pool.fill) pool.fill.intensity *= 0.18; }
+  if (Y.glint && Y.glint.visible && performance.now() - (Y.glintAt || 0) > 250) Y.glint.visible = Y.laser.visible = false;
+  if (yard) {
+    YU.uYTime.value = t;
+    yard.group.updateMatrixWorld();
+    YU.uYInv.value.copy(yard.group.matrixWorld).invert();
+    YU.uYFog.value.set(YC.fog.dens, YC.fog.fall, yard.origin.y, YC.fog.max);
+    const dark = nightDark(yard);
+    for (let i = 0; i < YARD_NL; i++) {
+      const l = Y.lampsL[i], P = YU.uYLampP.value[i], Dv = YU.uYLampD.value[i];
+      if (!l) { P.w = 0; continue; }
+      P.set(rWX(yard, l.p[0]), yard.origin.y + l.p[1], rWZ(yard, l.p[2]), dark ? 0 : l.I);
+      Dv.set(rF(yard) * l.d[0], l.d[1], rF(yard) * l.d[2], l.cos);
+    }
+    if (Y.shaftMat) Y.shaftMat.uniforms.uK.value = dark ? 0 : 0.05;
+    if (Y.haloMat) Y.haloMat.uniforms.uK.value = dark ? 0 : 1;
+    if (yard.yardLens) yard.yardLens.material = dark ? Y.mats.lensOff : Y.mats.lens;
+    if (vis) {
+      headWorld(_yt.v);
+      yard.yardSky.position.copy(_yt.v).sub(yard.origin); if (rF(yard) < 0) { yard.yardSky.position.x *= -1; yard.yardSky.position.z *= -1; }
+      yard.yardSky.updateMatrix();
+      if (Y.outerMat) Y.outerMat.uniforms.uC.value.set(rWX(yard, 0), yard.origin.y + 1.7, rWZ(yard, 0));
+      const k = renderer.xr.isPresenting ? 0.55 : 1;
+      for (const m of [Y.rainMat, Y.splashMat]) { m.uniforms.uFloorY.value = yard.origin.y + 0.012; m.uniforms.uCam.value.copy(_yt.v); m.uniforms.uRainK.value = k; m.uniforms.uPx.value = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / Math.max(400, renderer.domElement.height); }
+    }
+  }
+  stealthTick(dt);
+}
+function yardRainAudio(on) {
+  const A = audio.ctx;
+  if (!A || !audio.noise || !audio.out) return;
+  const Y = YARD;
+  if (!Y.rainAu && on) {
+    try {
+      const src = A.createBufferSource(); src.buffer = audio.noise; src.loop = true;
+      const hp = A.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 350;
+      const lp = A.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 5200;
+      const pk = A.createBiquadFilter(); pk.type = 'peaking'; pk.frequency.value = 2400; pk.Q.value = 0.7; pk.gain.value = 4;
+      const gn = A.createGain(); gn.gain.value = 0;
+      src.connect(hp); hp.connect(lp); lp.connect(pk); pk.connect(gn); gn.connect(audio.out); src.start();
+      Y.rainAu = { src, gn };
+    } catch (e) { return; }
+  }
+  if (Y.rainAu) Y.rainAu.gn.gain.setTargetAtTime(on ? 0.07 : 0, A.currentTime, 0.6);
+}
+// Puddles on the CPU: the same noise as the shader (splash steps, wet prints, quench).
+function yardFract(v) { return v - Math.floor(v); }
+function yardH(x, y) { let a = yardFract(x * 0.1031), b = yardFract(y * 0.1031), c = yardFract(x * 0.1031); const d = a * (b + 33.33) + b * (c + 33.33) + c * (a + 33.33); a += d; b += d; c += d; return yardFract((a + b) * c); }
+function yardVN(x, y) { const ix = Math.floor(x), iy = Math.floor(y); let fx = x - ix, fy = y - iy; fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+  const a = yardH(ix, iy), b = yardH(ix + 1, iy), c = yardH(ix, iy + 1), d = yardH(ix + 1, iy + 1); return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy; }
+function yardPuddleF(x, z) { return yardVN(x * 0.16, z * 0.16) * 0.55 + yardVN(x * 0.42 + 17, z * 0.42 + 17) * 0.3 + yardVN(x * 1.3 + 41, z * 1.3 + 41) * 0.15; }
+function yardWetAt(room, lx, lz) {
+  SPLASH.pool = 0; SPLASH.damp = 0;
+  if (Math.abs(lx) > room.w / 2 || Math.abs(lz) > room.d / 2) return 0;
+  const wet = YU.uYWet.value, pd = yardPuddleF(lx, lz) - (0.73 - 0.04 * wet);
+  if (pd > 0 && wet > 0.01) { SPLASH.pool = 1; return clamp(0.45 + pd * 6, 0.45, 1); }
+  SPLASH.damp = smoothstep(-0.09, 0, pd) * wet;
+  return 0.2 + SPLASH.damp * 0.2;                                    // all of it is wet in the rain
+}
+
+/* ---------------------------------------------------------------------------
+ *  STEALTH (every room): detection builds gradually. Your light level (light pool, the yard's lamps and moon,
+ *  your own lights, a few rays a second for shadows), your speed and crouch, his view cone and the distance scale
+ *  how fast his e.seen rises (combat starts at 0.45 as before); between 0.12 and 0.45 he searches (aiNoise to
+ *  where he glimpsed you). Hearing ranges scale with the difficulty. Meter: a chevron toward whoever is noticing you.
+ *  Settings: cqc.stealth.v1 { on, diff: easy|normal|hard, meter: on|min|off } (watch, M panel). Off = the old maths.
+ * ------------------------------------------------------------------------- */
+const STEALTH_KEY = 'cqc.stealth.v1';
+var STEALTH = null;
+function stealthState() {
+  if (STEALTH) return STEALTH;
+  let o = null; try { o = JSON.parse(localStorage.getItem(STEALTH_KEY) || 'null'); } catch (e) { /* */ }
+  STEALTH = { on: o ? o.on !== false : true, diff: o && ['easy', 'normal', 'hard'].includes(o.diff) ? o.diff : 'normal', meter: o && ['on', 'min', 'off'].includes(o.meter) ? o.meter : 'on',
+    L: 1, lT: 0, sp: 0, crouch: false, top: null, topK: 0, meterK: 0, dom: null, vr: null, hp: new THREE.Vector3(), last: new THREE.Vector3(), lastT: 0 };
+  if (/[?&]stealth=off\b/.test(location.search)) STEALTH.on = false;
+  return STEALTH;
+}
+const STEALTH_DIFF = { easy: { range: 0.7, build: 0.6, light: 1.5, hear: 0.8 }, normal: { range: 1, build: 1, light: 1, hear: 1 }, hard: { range: 1.25, build: 1.5, light: 0.7, hear: 1.2 } };
+function stealthSave() { const S = stealthState(); try { localStorage.setItem(STEALTH_KEY, JSON.stringify({ on: S.on, diff: S.diff, meter: S.meter })); } catch (e) { /* */ } }
+const _st = { a: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
+// Light at your chest, 0..1 (E / (E + E0)). Spots: cone, distance, one ray each (shadow); rects as points; your torch.
+function stealthLight() {
+  const S = stealthState(), P = _st.a; headWorld(P); P.y -= 0.5;
+  let E = 0.02 * (typeof NIGHT === 'object' && NIGHT.env !== undefined ? NIGHT.env : 1);
+  const spot = (s, ray) => {
+    if (!s || s.intensity <= 0) return;
+    _st.d.subVectors(P, s.position); const d2 = Math.max(0.25, _st.d.lengthSq()), d = Math.sqrt(d2);
+    _st.b.subVectors(s.target.position, s.position).normalize();
+    const c = _st.d.dot(_st.b) / d, co = Math.cos(s.angle);
+    if (c < co) return;
+    let e = s.intensity / d2 * smoothstep(co, co + (1 - co) * Math.max(0.05, s.penumbra), c);
+    if (e < 0.01) return;
+    if (ray && !clearLine(_st.b.copy(s.position).addScaledVector(_st.d, 0.3 / d), P, 0.3)) e *= 0.06;
+    E += e;
+  };
+  for (const s of pool.main) spot(s, true);
+  spot(pool.portal, true);
+  for (const r of pool.rects) if (r.intensity > 0) { const d2 = Math.max(0.3, P.distanceToSquared(r.position)); E += r.intensity * r.width * r.height * 0.5 / d2; }
+  if (typeof flashlight === 'object' && flashlight && flashlight.intensity > 0) E += 1.5;   // your own light gives you away
+  if (pool.muzzle && pool.muzzle.intensity > 0) E += 2;
+  if (YARD && YARD.built && stream.current && stream.current.yard) {
+    const LP = YU.uYLampP.value, LD = YU.uYLampD.value; let best = -1, bestE = 0;
+    for (let i = 0; i < YARD_NL; i++) {
+      const Lp = LP[i]; if (Lp.w <= 0) continue;
+      _st.d.set(P.x - Lp.x, P.y - Lp.y, P.z - Lp.z); const d2 = Math.max(0.3, _st.d.lengthSq()), c = _st.d.dot(_st.b.set(LD[i].x, LD[i].y, LD[i].z)) / Math.sqrt(d2);
+      if (c < LD[i].w) continue;
+      const e = Lp.w * smoothstep(LD[i].w, LD[i].w + 0.18 * (1 - LD[i].w) + 0.02, c) / (d2 + 0.25);
+      if (e > bestE) { bestE = e; best = i; }
+      E += e;
+    }
+    if (best >= 0 && bestE > 0.05) { const Lp = LP[best]; _st.d.set(P.x - Lp.x, P.y - Lp.y, P.z - Lp.z).normalize(); if (!clearLine(_st.b.set(Lp.x, Lp.y, Lp.z).addScaledVector(_st.d, 0.4), P, 0.3)) E -= bestE * 0.94; }
+  }
+  const E0 = 0.6 * STEALTH_DIFF[S.diff].light;
+  return clamp(E / (E + E0));
+}
+function stealthTick(dt) {
+  const S = stealthState();
+  S.lT -= dt;
+  if (S.lT <= 0) {
+    S.lT = 0.25;
+    S.L = S.on ? stealthLight() : 1;
+    headWorld(S.hp);
+    const now = performance.now() / 1000, dtt = Math.max(0.05, now - S.lastT);
+    S.sp = S.lastT ? Math.min(12, Math.hypot(S.hp.x - S.last.x, S.hp.z - S.last.z) / dtt) : 0;
+    S.last.copy(S.hp); S.lastT = now;
+    S.crouch = S.hp.y - level.floor < 1.25;
+  }
+  stealthMeter(dt);
+}
+// Multiplier on his e.seen build rate (enemyThink). 1 when stealth is off.
+function stealthK(e, pd, dotF) {
+  const S = stealthState();
+  if (!S.on || e.engaged) return 1;
+  const Dd = STEALTH_DIFF[S.diff];
+  const kL = mix(0.05, 1.0, smoothstep(0.02, 0.6, S.L));
+  const kM = (S.crouch ? 0.55 : 1) * (S.sp < 0.4 ? 0.6 : S.sp < 2.4 ? 1 : 1.45);
+  const off = 1 - clamp(dotF);                                      // 0 straight ahead .. 1 at the edge of his view
+  const kA = mix(1, 0.35, clamp(off * 2.2));
+  const kD = clamp(1.25 - pd / (22 * Dd.range), 0.12, 1.25);
+  return Dd.build * kL * kM * kA * kD;
+}
+// Can he see you at all at this range in this light (unengaged men only)?
+function stealthSees(e, pd) {
+  const S = stealthState();
+  if (!S.on || e.engaged) return true;
+  const Dd = STEALTH_DIFF[S.diff], base = e.sniper ? YC.sniper.sight : CONFIG.enemy.sight;
+  return pd < base * Dd.range * (0.22 + 0.78 * Math.sqrt(S.L)) + 2;
+}
+function stealthPost(e, visible, now, adv) {
+  const S = stealthState();
+  if (!S.on || e.engaged || e.dead) return;
+  if (visible && e.seen > 0.12 && adv && (!e.stSearchT || now > e.stSearchT)) { e.stSearchT = now + 0.6; aiNoise(e, e.lastKnown.x, e.lastKnown.z, 0.05 + e.seen * 0.2); }
+  if (e.seen > S.topK || S.top === e) { S.top = e.seen > 0.01 ? e : null; S.topK = e.seen; }
+}
+const stealthHearK = () => { const S = stealthState(); return S.on ? STEALTH_DIFF[S.diff].hear : 1; };
+// The meter: a chevron on a ring round the view centre pointing at whoever notices you most, filling to 0.45.
+function stealthMeter(dt) {
+  const S = stealthState();
+  if (S.top && (S.top.dead || S.top.engaged || S.top.seen <= 0.005 || ENEMY.list.indexOf(S.top) < 0)) { S.top = null; S.topK = 0; }
+  if (S.top) S.topK = S.top.seen;
+  const show = S.on && S.meter !== 'off' && S.top && !playerState.dead ? clamp(S.topK / 0.45) : 0;
+  S.meterK += (show - S.meterK) * (1 - Math.exp(-dt * (show > S.meterK ? 10 : 3)));
+  let ang = 0;
+  if (S.top) {
+    S.top.root.getWorldPosition(_st.b); camera.getWorldPosition(_st.a);
+    _st.d.subVectors(_st.b, _st.a); camera.getWorldDirection(_st.b);
+    const yaw = Math.atan2(_st.b.x, _st.b.z), to = Math.atan2(_st.d.x, _st.d.z);
+    ang = Math.atan2(Math.sin(to - yaw), Math.cos(to - yaw));          // + = to your left
+  }
+  const k = S.meterK, col = k > 0.85 ? '#ff6a4a' : k > 0.45 ? '#ffc46b' : '#e8e6de', min = S.meter === 'min';
+  if (!renderer.xr.isPresenting) {
+    if (!S.dom) {
+      const d = document.createElement('div'); d.id = 'stealthMeter';
+      d.style.cssText = 'position:fixed;left:50%;top:50%;width:0;height:0;pointer-events:none;z-index:40;';
+      d.innerHTML = '<svg width="64" height="64" viewBox="-32 -32 64 64" style="position:absolute;left:-32px;top:-32px;overflow:visible"><path id="smBack" d="M-14,-6 L0,-16 L14,-6" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity="0.28"/><path id="smFill" d="M-14,-6 L0,-16 L14,-6" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" pathLength="1"/></svg>';
+      document.body.appendChild(d); S.dom = d; S.domB = d.querySelector('#smBack'); S.domF = d.querySelector('#smFill');
+    }
+    if (S.vr) S.vr.visible = false;
+    if (k < 0.01) { if (S.dom.style.display !== 'none') S.dom.style.display = 'none'; return; }
+    const R = Math.min(window.innerWidth, window.innerHeight) * (min ? 0.43 : 0.34), x = -Math.sin(ang) * R, y = -Math.cos(ang) * R;
+    S.dom.style.display = 'block';
+    S.dom.firstChild.style.transform = `translate(${x}px, ${y}px) rotate(${-ang}rad) scale(${min ? 0.7 : 1})`;
+    S.domB.setAttribute('stroke', col); S.domF.setAttribute('stroke', col);
+    S.domF.setAttribute('stroke-dasharray', `${k} 1`);
+    S.dom.style.opacity = String(clamp(0.25 + k * 0.75) * (min ? 0.7 : 1));
+    return;
+  }
+  if (S.dom) S.dom.style.display = 'none';
+  if (!S.vr) {                                                        // headset: a chevron on a ring 26 deg off the view axis
+    const g = new THREE.Group(), sh = new THREE.Shape([[-0.014, -0.004], [0, 0.008], [0.014, -0.004], [0.014, 0.0], [0, 0.012], [-0.014, 0.0]].map(([x, y]) => new THREE.Vector2(x, y)));
+    S.vrMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false });
+    const m = new THREE.Mesh(new THREE.ShapeGeometry(sh), S.vrMat); m.renderOrder = 1e5 + 5; m.position.y = 0.2; g.add(m);
+    g.position.set(0, 0, -0.42); camera.add(g); S.vr = g; S.vrM = m;
+  }
+  S.vr.visible = k > 0.01;
+  S.vr.rotation.z = ang;
+  S.vrM.position.y = min ? 0.24 : 0.2; S.vrMat.color.set(col); S.vrMat.opacity = clamp(0.2 + k * 0.7) * (min ? 0.6 : 1);
+  S.vrM.scale.setScalar(0.8 + k * 0.5);
+}
+// The tower sniper: a glint (and a laser line) before each shot; at most one shot per YC.sniper.gap s.
+function yardSniperGate(e, now) {
+  if (!e.sniper) return true;
+  const C = YC.sniper;
+  if (!e.los) { e.snReady = 0; yardGlint(e, 0); return false; }
+  if (!e.snReady) e.snReady = now + C.first;
+  const left = e.snReady - now;
+  yardGlint(e, left < C.glint ? 1 - left / C.glint : 0);
+  if (left > 0) return false;
+  e.snReady = now + C.gap; return true;
+}
+function yardGlint(e, k) {
+  const Y = yardState();
+  if (!Y.glint) {
+    const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d'), gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.15, 'rgba(255,240,220,0.8)'); gr.addColorStop(1, 'rgba(255,200,160,0)'); x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
+    Y.glint = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, toneMapped: false }));
+    Y.laser = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0xff2a1a, transparent: true, opacity: 0, toneMapped: false }));
+    Y.glint.visible = Y.laser.visible = false; scene.add(Y.glint, Y.laser);
+  }
+  if (k <= 0 || e.dead) { Y.glint.visible = Y.laser.visible = false; return; }
+  Y.glintAt = performance.now();
+  enemyEye(e, _st.a); headWorld(_st.b);
+  Y.glint.position.copy(_st.a).addScaledVector(_st.d.subVectors(_st.b, _st.a).normalize(), 0.12);
+  Y.glint.scale.setScalar(0.25 + 0.9 * k * (0.7 + 0.3 * Math.sin(performance.now() * 0.03))); Y.glint.visible = true;
+  const p = Y.laser.geometry.attributes.position; p.setXYZ(0, _st.a.x, _st.a.y - 0.05, _st.a.z); p.setXYZ(1, _st.b.x, _st.b.y - 0.35, _st.b.z); p.needsUpdate = true; Y.laser.geometry.computeBoundingSphere();
+  Y.laser.material.opacity = 0.25 + 0.5 * k; Y.laser.visible = true;
+}
+
+/* ---------------------------------------------------------------------------
+ *  UI: the title's start choice, the watch / M panel cells (start, stealth, meter).
+ * ------------------------------------------------------------------------- */
+var YARD_CELLS = [
+  ['ystart', () => `Start: ${YC.label[yardModeNow()]}`, () => { const m = YC.modes, i = m.indexOf(yardModeNow()); yardSetMode(m[(i + 1) % m.length]); }],
+  ['ystealth', () => `Stealth: ${stealthState().on ? stealthState().diff.toUpperCase() : 'OFF'}`, () => { const S = stealthState(), o = ['off', 'easy', 'normal', 'hard'], c = S.on ? S.diff : 'off', n = o[(o.indexOf(c) + 1) % 4]; S.on = n !== 'off'; if (S.on) S.diff = n; stealthSave(); yardUiSync(); }],
+  ['ymeter', () => `Detection meter: ${({ on: 'ON', min: 'MINIMAL', off: 'OFF' })[stealthState().meter]}`, () => { const S = stealthState(), o = ['on', 'min', 'off']; S.meter = o[(o.indexOf(S.meter) + 1) % 3]; stealthSave(); yardUiSync(); }]
+];
+function yardCellPress(id) { if (!YARD_CELLS) return false; const c = YARD_CELLS.find((q) => q[0] === id); if (!c) return false; c[2](); return true; }
+function yardUiSync() {
+  if (typeof WATCH === 'object' && WATCH) WATCH.dirty = true;
+  if (typeof TERM === 'object' && TERM) TERM.dirty = true;
+  for (const [id, lab] of YARD_CELLS) { const b = document.getElementById('mw_' + id); if (b) b.textContent = lab(); }
+  for (const b of document.querySelectorAll('[data-tstart]')) b.setAttribute('aria-pressed', b.dataset.tstart === yardModeNow() ? 'true' : 'false');
+}
+function yardDomBuild(grid) {
+  for (const [id, lab, fn] of YARD_CELLS) {
+    if (document.getElementById('mw_' + id)) continue;
+    const b = document.createElement('button'); b.type = 'button'; b.id = 'mw_' + id; b.textContent = lab();
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); audioUnlock(); fn(); });
+    grid.appendChild(b);
+  }
+}
+// Watch panel: draw the extra cells after the mods and the restart cell (same look).
+function yardWatchCount() { return YARD_CELLS ? YARD_CELLS.length : 0; }
+function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
+  if (!YARD_CELLS) return;
+  YARD_CELLS.forEach(([id, lab], j) => {
+    const i = MOD_LIST.length + 1 + j, x = x0 + (i % cols) * (bw + gap), y = top + Math.floor(i / cols) * (bh + gap), hov = WATCH.hover === id;
+    c.fillStyle = hov ? 'rgba(140,255,215,.16)' : 'rgba(140,255,215,.05)'; c.fillRect(x, y, bw, bh);
+    c.strokeStyle = hov ? '#c4f5e2' : 'rgba(140,255,215,.3)'; c.lineWidth = 3; c.strokeRect(x + 1.5, y + 1.5, bw - 3, bh - 3);
+    c.textAlign = 'center'; c.fillStyle = '#c4f5e2'; c.font = '600 25px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
+    c.fillText(lab(), x + bw / 2, y + bh / 2, bw - 20);
+    WATCH.hits.push({ id, x, y, w: bw, h: bh });
+  });
+}
+(function yardTitle() {                                             // the start choice on the title screen, beside the play space
+  try {
+    const sp = document.querySelector('#title .space');
+    if (!sp || document.querySelector('[data-tstart]')) return;
+    const g = document.createElement('div'); g.className = 'space'; g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Start');
+    g.innerHTML = '<span>Start</span>' + YC.modes.map((m) => `<button type="button" data-tstart="${m}" aria-pressed="false">${YC.label[m]}</button>`).join('');
+    sp.parentNode.insertBefore(g, sp.nextSibling);
+    g.addEventListener('click', (ev) => { const b = ev.target.closest('[data-tstart]'); if (!b) return; ev.stopPropagation(); yardSetMode(b.dataset.tstart); });
+    yardUiSync();
+  } catch (e) { /* no title */ }
+})();
+yardFogColour();                                                  // the default fog until sky/sky.json arrives
+if (window.__cqcDev) Object.assign(window.__cqcDev, { YARD: () => YARD, YC, YU, YSKY, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+  STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
 </script>

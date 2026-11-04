@@ -58,4 +58,5 @@ A close-quarters shooter for the browser: Meta Quest (WebXR), computer (mouse an
 ## Credits
 - three.js (MIT), Rapier (Apache-2.0), fonts (SIL Open Font License).
 - Sound effects from freesound.org (licences being confirmed; CC-BY sounds will be credited here): 841313 takareads, 874593 samrad20, 812821 beyercreative, 90967 department64, 402791, 675008, 677160, 855656 serutonin-deprivd, 142892 ceremonialchapstick, 184438 capslok, 762911 ienba, 369604 evanboyerman, 121765 / 121766 kno-sfx, 486226 ruben_uitenweerde, 174058 pjkasinski3, 395541 alayan, 712564 newlocknew, 528808 garuda1982, 161622 ryanconway, 172334 knova.
+- Outdoor start sky: "Forest Clearing 1 Ground Skybox" by Luis Vidal (https://sketchfab.com/Luis_Vidal), CC-BY-4.0, https://sketchfab.com/3d-models/forest-clearing-1-ground-skybox-a78ae6a11957401a83fd074004aafcc0 (graded to night in the game).
 - Interstate radio: royalty-free tracks (artists listed in `interstate/radio/radio.json` and the game's Credits page).
