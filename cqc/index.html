@@ -17112,7 +17112,7 @@ function deskGunPose(g, dt, P, Q) {
   // Breathing sway at ready, nearly none aimed.
   const s = performance.now() / 1000, sw = ((1 - t) * 0.004 + t * 0.0006 * AF.aim) * AF.sway;   // step 100: weight sways more, a dot steadies the aimed picture
   _rdyP.x += Math.sin(s * 1.1) * sw; _rdyP.y += Math.sin(s * 2.2) * sw * 0.6;
-  _rdyT.set(0, 0, -deskAimDist(g, dt));
+  _rdyT.set(0, 0, -(g._aimD = deskAimDist(g, dt)));                 // (kept: the viewmodel's hip pose aims at the same point)
   _lookM.lookAt(_rdyP, _rdyT, _UP);
   _hipQ.setFromRotationMatrix(_lookM);
   _hipP.copy(wr.eye).applyQuaternion(_hipQ);
@@ -20999,10 +20999,25 @@ function vmFollow(c, Dh) {
   c.matrix.compose(c.position, c.quaternion, c.scale).premultiply(W.T).premultiply(Dh).premultiply(W.N);
   c.matrixWorldNeedsUpdate = true;
 }
+// The pack's hip pose turned about your gun's sight point so its sight line runs to (0, 0, -D) in the view: the point under the
+// crosshair the real (hidden) gun is aimed at (deskGunPose), where fireGun's zeroed round lands. The screen centre is the
+// same in the viewmodel's own fov, so the drawn barrel and the shot agree at the hip as they do aimed.
+const _vhaE = new THREE.Vector3(), _vhaD = new THREE.Vector3(), _vhaT = new THREE.Vector3(), _vhaQ = new THREE.Quaternion(), _vhaM = new THREE.Matrix4(), _vhaR = new THREE.Matrix4();
+function vmHipAim(H, g) {
+  if (!g || !g.wr || !g.wr.eye || !(g._aimD > 0)) return;
+  _vhaE.copy(g.wr.eye).applyMatrix4(H);
+  _vhaD.set(0, 0, -1).transformDirection(H);
+  _vhaT.set(0, 0, -g._aimD).sub(_vhaE).normalize();
+  _vhaQ.setFromUnitVectors(_vhaD, _vhaT);
+  _vhaR.makeRotationFromQuaternion(_vhaQ);
+  _vhaM.makeTranslation(_vhaE.x, _vhaE.y, _vhaE.z).multiply(_vhaR).multiply(_vhaR.makeTranslation(-_vhaE.x, -_vhaE.y, -_vhaE.z));
+  H.premultiply(_vhaM);
+}
 function vmGunPlace(V, F, g) {
   const W = _v9, mm = vmMirOf(VM.mir, g.model);
   // hip: where the pack's gun is this frame (vmPlace has posed the rig)
   W.H.multiplyMatrices(V.node.matrixWorld, F.L);
+  vmHipAim(W.H, g);                                                // PC: the drawn barrel's sight line points at the crosshair point the shot goes to
   // the pack's magazine (and a bolt gun's bolt) moves carried onto yours
   const Dm = vmDelta(V, F, V.magNode, F.magRest, W.D), mag = vmMirOf(mm, g.mag && g.mag.root);
   if (Dm && mag) vmFollow(mag, Dm);
