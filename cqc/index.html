@@ -46749,6 +46749,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty,
  * ========================================================================= */
 var YARD = null;                                                 // var: hooks may run before this section evaluates
 const YC = {
+  steamAt: [[3, 0], [3, -14], [-2, 16]],                     // drain grates that steam (room-local x, z; the lane's grates in yardBuilder)
   key: 'cqc.start.v1', modes: ['cqc', 'outdoor', 'outonly'],
   label: { cqc: 'CQC ONLY', outdoor: 'OUTDOOR + CQC', outonly: 'OUTDOOR ONLY' },
   w: 40, d: 56, h: 14, entryX: 8, exitX: -2,
@@ -48372,6 +48373,7 @@ function yardTick(dt, t) {
   if (camera.far !== far) { camera.far = far; camera.updateProjectionMatrix(); }
   if (inY && Y.env && !Y.envOld) { Y.envOld = scene.environment; scene.environment = Y.env.texture; }   // the night sky's light on everything (same 256 px PMREM size: no recompile)
   else if (!inY && Y.envOld) { scene.environment = Y.envOld; Y.envOld = null; }
+  if (inY && !Y.warmed && renderer.compileAsync) { Y.warmed = true; try { renderer.compileAsync(scene, camera).catch(() => {}); } catch (e) { /* older three */ } }   // the men and their guns under the yard's lights: compiled off the main path (they were linked mid-fight when first seen)
   if (inY !== Y.wasIn) { Y.wasIn = inY; yardRainAudio(inY); }
   if (inY) { scene.environmentIntensity *= YC.envK; if (pool.fill) pool.fill.intensity *= 0.18; }
   yardLightning(inY, dt);                                         // outdoor: distant lightning in the cloud, thunder after it
@@ -48387,14 +48389,29 @@ function yardTick(dt, t) {
     camera.getWorldPosition(_yt.v);
     for (let i = 0; i < YARD_NL; i++) { const l = Y.lampsL[i]; dist[i] = !l || l.I <= 0 ? 1e9 : (rWX(yard, l.p[0]) - _yt.v.x) ** 2 + (yard.origin.y + l.p[1] - _yt.v.y) ** 2 + (rWZ(yard, l.p[2]) - _yt.v.z) ** 2; }
     ord.sort((a, b) => dist[a] - dist[b]);
+    // A failing lamp over B's catwalk door (index 8): steady, then every 4-13 s a 0.15-0.75 s stutter (drops out, struggles back).
+    const now = performance.now() / 1000, FK = Y.flk || (Y.flk = { next: now + 5, until: 0, k: 1 });
+    if (now > FK.next) { FK.until = now + 0.15 + Math.random() * 0.6; FK.next = now + 4 + Math.random() * 9; }
+    FK.k = now < FK.until ? (Math.random() < 0.55 ? 0.06 : 0.55 + Math.random() * 0.45) : 1;
     for (let j = 0; j < YARD_NL; j++) {
       const l = Y.lampsL[ord[j]], P = YU.uYLampP.value[j], Dv = YU.uYLampD.value[j];
       if (!l) { P.w = 0; YU.uYLampZ.value[j] = -1; continue; }
-      P.set(rWX(yard, l.p[0]), yard.origin.y + l.p[1], rWZ(yard, l.p[2]), dark ? 0 : l.I);
+      P.set(rWX(yard, l.p[0]), yard.origin.y + l.p[1], rWZ(yard, l.p[2]), dark ? 0 : l.I * (ord[j] === 8 ? FK.k : 1));
       YU.uYLampZ.value[j] = l.zone === undefined ? -1 : l.zone;
       Dv.set(rF(yard) * l.d[0], l.d[1], rF(yard) * l.d[2], l.cos);
     }
     YU.uYLampN.value = renderer.xr.isPresenting ? 5 : 10;
+    // Steam from the lane's drain grates (warm drain air in the cold rain): haze puffs within 25 m, 1.5/s each (headset 0.5/s, forced past its haze-off).
+    if (inY && !dark) {
+      const xr = renderer.xr.isPresenting, rate = xr ? 0.5 : 1.5, ST = Y.steam || (Y.steam = { acc: [0, 0, 0], v: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), o: { n: 1, c: [0.6, 0.62, 0.65], a: 0.06, sp: [0.12, 0.35], life: [3.5, 6], size: [0.09, 0.16], grow: 0.3, drag: 1.3, buoy: 0.22, force: true } });
+      YC.steamAt.forEach(([x, z], i) => {
+        ST.v.set(rWX(yard, x), yard.origin.y + 0.03, rWZ(yard, z));
+        if (ST.v.distanceToSquared(_yt.v) > 625) return;
+        ST.acc[i] += dt * rate; if (ST.acc[i] < 1) return; ST.acc[i] -= 1;
+        ST.v.x += (Math.random() - 0.5) * 0.4; ST.v.z += (Math.random() - 0.5) * 0.4;
+        hazeEmit(ST.v, ST.up, ST.o);
+      });
+    }
     if (Y.shaftMat) Y.shaftMat.uniforms.uK.value = dark ? 0 : 0.05;
     if (yard.yardShafts) yard.yardShafts.visible = !renderer.xr.isPresenting;   // headset: no light-shaft cones (big additive overdraw)
     if (yard.active) yardDoorsTick(yard, performance.now() / 1000);
@@ -49162,7 +49179,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
   } catch (e) { /* no title */ }
 })();
 yardFogColour();                                                  // the default fog until sky/sky.json arrives
-if (window.__cqcDev) Object.assign(window.__cqcDev, { restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+if (window.__cqcDev) Object.assign(window.__cqcDev, { locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
