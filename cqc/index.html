@@ -4597,6 +4597,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = CONFIG.exposure;
 nvgToneChunk();                                   // step 118: the night vision tone map, before anything compiles
+const TFILL = { on: !/[?&]tfill=off\b/.test(location.search), max: 8, maxXR: 3, I: 14, P: Array.from({ length: 11 }, () => new THREE.Vector4()), idx: [], dist: new Float32Array(96), head: new THREE.Vector3(), col: new THREE.Color(), was: 0 };
+tfillChunk();                                     // room fill: every ceiling fitting lights the room (before anything compiles)
 renderer.shadowMap.enabled = REAL_LIGHT;         // step 58: Real lighting off = no shadow maps
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // STEP 2 PERFORMANCE: the room and its lights never move, so shadow maps are rendered
@@ -6318,6 +6320,17 @@ function fixtureAt(wall, u, w, d) {
 // clear of the troffers and of full-height walls.
 function ceilingPlan(L, w, d, R) {
   const rr = (a, b) => a + (b - a) * R();
+  if (!L.troffers.length && TFILL.on && w * d >= 40) {
+    // Large rooms: a grid of fittings ~3.4 m apart (cell centres, so the column grid's lines miss them), the two
+    // nearest the middle first (they get the pool's shadowed lights), the rest light the room through the fill.
+    const nx = Math.max(1, Math.round(w / 3.4)), nz = Math.max(1, Math.round(d / 3.4));
+    if (nx * nz > 2) {
+      const pts = [];
+      for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) pts.push([Math.round((-w / 2 + (i + 0.5) * w / nx + rr(-0.12, 0.12)) * 100) / 100, Math.round((-d / 2 + (j + 0.5) * d / nz + rr(-0.12, 0.12)) * 100) / 100]);
+      pts.sort((p1, p2) => Math.hypot(p1[0], p1[1]) - Math.hypot(p2[0], p2[1]));
+      L.troffers = pts;
+    }
+  }
   if (!L.troffers.length) {
     L.troffers = w >= d
       ? [[-w * 0.23, rr(-0.6, 0.2)], [w * 0.23, rr(-0.2, 0.6)]]
@@ -6735,11 +6748,14 @@ function buildCandidate(p, R, T) {
   }
 
   // --- A drywall partition off a side wall: full height, or a half wall ---
-  if (R() < T.partition) {
+  // Large rooms (55 m2 and up: halls, big rooms) get 1-3 more, longer ones, about half of them half walls: the
+  // floor is broken up into bays, with cover and soft walls to shoot through.
+  const bigP = w * d >= 55, nPart = (R() < T.partition ? 1 : 0) + (bigP ? (w * d > 95 ? 2 : 1) + (R() < 0.35 ? 1 : 0) : 0);
+  for (let pn = 0; pn < nPart; pn++) {
     for (let tries = 0; tries < 24; tries++) {
-      let pony = R() < T.pony;
+      let pony = R() < (bigP ? Math.max(T.pony, 0.45) : T.pony);
       const sideW = R() < 0.5 ? -1 : 1, pwall = sideW < 0 ? 'left' : 'right';
-      const len = Math.round(rr(1.3, Math.max(1.4, Math.min(2.4, w * 0.4))) * 10) / 10;
+      const len = Math.round(rr(bigP ? 1.6 : 1.3, Math.max(1.4, Math.min(bigP ? 3.4 : 2.4, w * (bigP ? 0.38 : 0.4)))) * 10) / 10;
       const z = Math.round(rr(-d / 2 + 1.2, d / 2 - 1.7) * 100) / 100;
       const x0 = sideW < 0 ? -w / 2 : w / 2 - len, x1 = x0 + len, freeX = sideW < 0 ? x1 : x0;
       if (overlaps(x0, x1, z - 0.07, z + 0.07, 0.45)) continue;
@@ -22618,6 +22634,106 @@ function spawnDebris(room, def, pos, quat, vel, spin) {
 }
 
 /* ---------------------------------------------------------------------------
+ *  SHAPED DRYWALL DAMAGE (?pdmg=off: the old 20 cm square cells). Each face of a partition is one sheet; what
+ *  is broken is a mask (one small R8 texture per partition, 2 cm texels, both faces) the sheet's own material
+ *  copy reads: open = discarded (you see the studs and the far sheet's back through it), a rim of crushed,
+ *  cracked paint and the exposed gypsum core at the very edge, the sheet's inside face brown paper. Every
+ *  round punches its own ragged hole where it hit (entry ~1 cm, a torn exit 2-3 cm); a cell's damage
+ *  (unchanged: CONFIG.cover.cellHp, splash into its neighbours) breaking out stamps a ~17 cm blob round the
+ *  hits instead of removing a square, so a burst chews an organic, growing hole. A round passes freely where
+ *  the mask is open at its own point. Holes are kept per partition in room memory (pholes) and re-stamped
+ *  when the room is rebuilt. The shadow depth material reads the same mask (light through the holes).
+ *  One program variant (key +|pd) compiled with the first partition built (compileAsync), shared by all.
+ * ------------------------------------------------------------------------- */
+const PDMG = { on: !/[?&]pdmg=off\b/.test(location.search), px: 50, cap: 400 };
+const PD_GLSL = `
+varying vec3 vPd; uniform sampler2D uPdM; uniform vec4 uPdD; uniform float uPdW;
+float pdH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float pdN(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(pdH(i), pdH(i + vec2(1.0, 0.0)), f.x), mix(pdH(i + vec2(0.0, 1.0)), pdH(i + vec2(1.0, 1.0)), f.x), f.y); }
+float pdMask(out float pn) {
+  pn = 0.5; if (vPd.z < -0.5) return 0.0;
+  float face = mod(vPd.z, 2.0);
+  vec2 uv = vec2(((vPd.x + uPdD.x) * uPdD.y + 0.5) / uPdW, (face * (uPdD.z + 2.0) + 1.0 + clamp(vPd.y * uPdD.y, 0.0, uPdD.z - 1.0) + 0.5) / uPdD.w);
+  pn = pdN(vPd.xy * 70.0) * 0.6 + pdN(vPd.xy * 220.0) * 0.4;
+  return texture2D(uPdM, uv).r;
+}`;
+function pdMake(sp) {
+  const PX = PDMG.px, W = Math.ceil(sp.len * PX) + 2, Hf = Math.ceil(sp.h * PX) + 1, H2 = 2 * (Hf + 2);
+  const data = new Uint8Array(W * H2), tex = new THREE.DataTexture(data, W, H2, THREE.RedFormat, THREE.UnsignedByteType);
+  tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
+  return { W, Hf, H2, PX, L2: sp.len / 2, data, tex, uD: { value: new THREE.Vector4(sp.len / 2, PX, Hf, H2) }, uW: { value: W }, uM: { value: tex } };
+}
+// Ragged hole of radius R (m) at sheet point (x along the wall, y up) on one face; crush = how wide the crushed rim is.
+function pdStamp(pd, face, x, y, R, crush, seed) {
+  const { W, Hf, PX, L2, data } = pd, row0 = face * (Hf + 2) + 1;
+  const s1 = seed * 1.7, s2 = seed * 2.9, s3 = seed * 4.3, edge = 0.012, ring = R * 1.3 * crush + 0.015 * crush;
+  const reach = R * 1.45 + ring, px0 = Math.max(0, Math.floor((x + L2 - reach) * PX)), px1 = Math.min(W - 1, Math.ceil((x + L2 + reach) * PX));
+  const py0 = Math.max(0, Math.floor((y - reach) * PX)), py1 = Math.min(Hf - 1, Math.ceil((y + reach) * PX));
+  for (let j = py0; j <= py1; j++) {
+    const yy = j / PX - y, o = (row0 + j) * W;
+    for (let i = px0; i <= px1; i++) {
+      const xx = i / PX - L2 - x, d = Math.hypot(xx, yy), th = Math.atan2(yy, xx);
+      const Rt = R * (1 + 0.26 * Math.sin(3 * th + s1) + 0.16 * Math.sin(5 * th + s2) + 0.09 * Math.sin(9 * th + s3));
+      const open = clamp((Rt - d) / edge * 0.5 + 0.5), rim = ring > 0 ? clamp(1 - (d - Rt) / ring) : 0;
+      const v = Math.max(open * 255, rim * rim * 115) | 0;
+      if (v > data[o + i]) data[o + i] = v;
+    }
+  }
+  pd.tex.needsUpdate = true;
+}
+function pdOpen(pd, face, x, y) {
+  const i = Math.round((x + pd.L2) * pd.PX), j = Math.round(y * pd.PX);
+  if (i < 0 || i >= pd.W || j < 0 || j >= pd.Hf) return false;
+  return pd.data[(face * (pd.Hf + 2) + 1 + j) * pd.W + i] > 150;
+}
+function pdHole(rec, face, x, y, R, crush) {
+  const pd = rec.vis && rec.vis.pd; if (!pd) return;
+  const seed = Math.random() * 100;
+  pdStamp(pd, face, x, y, R, crush, seed);
+  const m = roomMem(rec.room), P = (m.pholes || (m.pholes = {})), L = P[rec.pi] || (P[rec.pi] = []);
+  if (L.length < PDMG.cap) L.push([face, +x.toFixed(3), +y.toFixed(3), +R.toFixed(4), crush, +seed.toFixed(2)]);
+}
+function pdUniforms(sh, pd) { sh.uniforms.uPdM = pd.uM; sh.uniforms.uPdD = pd.uD; sh.uniforms.uPdW = pd.uW; }
+function pdVertex(vs) {
+  return vs.replace('#include <common>', '#include <common>\nattribute float pdf;\nvarying vec3 vPd;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPd = vec3(position.x, position.y, pdf);');
+}
+function pdMaterial(src, pd) {
+  const m = src.clone(), base = src.onBeforeCompile, key = src.customProgramCacheKey;
+  m.onBeforeCompile = (sh, r) => {
+    if (base) base.call(src, sh, r);
+    pdUniforms(sh, pd);
+    sh.vertexShader = pdVertex(sh.vertexShader);
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + PD_GLSL)
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+  float pdN0; float pdM = pdMask(pdN0);
+  if (pdM > 0.5 + (pdN0 - 0.5) * 0.32) discard;`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+  if (vPd.z > 1.5) { diffuseColor.rgb = vec3(0.30, 0.24, 0.16) * (0.85 + 0.3 * pdN0); roughnessFactor = 0.95; }   // the sheet's inside: brown paper
+  else if (pdM > 0.05) {
+    float crush = smoothstep(0.05, 0.42, pdM), core = smoothstep(0.36, 0.5, pdM + (pdN0 - 0.5) * 0.1);
+    diffuseColor.rgb *= 1.0 - crush * (0.18 + 0.22 * pdN0);                  // crushed, cracked paint round the hole
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.60, 0.58, 0.53), core);  // the gypsum core at the torn edge
+    roughnessFactor = mix(roughnessFactor, 0.97, crush);
+  }`);
+  };
+  m.customProgramCacheKey = () => (key ? key.call(src) : 'wall') + '|pd';
+  return m;
+}
+function pdDepthMaterial(pd) {
+  const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  m.onBeforeCompile = (sh) => {
+    pdUniforms(sh, pd);
+    sh.vertexShader = pdVertex(sh.vertexShader);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + PD_GLSL)
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n  float pdN0; if (pdMask(pdN0) > 0.5 + (pdN0 - 0.5) * 0.32) discard;');
+  };
+  m.customProgramCacheKey = () => 'pd-depth';
+  return m;
+}
+/* ---------------------------------------------------------------------------
  *  PARTITIONS — built in the room builder. One mesh for both faces (wall
  *  material), one merged mesh for the studs (steel), a wooden cap on half walls.
  *  Local frame: x along the wall, y up from the floor, z through it.
@@ -22655,11 +22771,13 @@ function buildPartition(room, sp, pi, own) {
   };
   for (let f = 0; f < 2; f++) {
     const zc = (f === 0 ? 1 : -1) * (PART_T / 2 - SHEET / 2);
+    if (PDMG.on) { putBox(f, 0, sp.h / 2, zc, sp.len, sp.h, SHEET, false); continue; }   // shaped damage: one sheet per face, the holes are a mask
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
       const b = f * cols * rows + r * cols + c;
       putBox(b, -L2 + (c + 0.5) * cw, (r + 0.5) * ch, zc, cw, ch, SHEET, !!(hp && hp[b] <= 0));
     }
   }
+  if (PDMG.on) for (let b = 2; b < dims.n; b++) putBox(b, 0, 0, 0, 0, 0, 0, true);   // unused slots draw nothing
   putBox(dims.n, sp.free * (L2 + SHEET / 2), sp.h / 2, 0, SHEET, sp.h, PART_T, false);   // drywall over the free end
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
@@ -22667,12 +22785,32 @@ function buildPartition(room, sp, pi, own) {
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   geo.setAttribute('macroUv', new THREE.BufferAttribute(muv, 2));
   geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  let pd = null;
+  if (PDMG.on) {                                           // per vertex: face (0 / 1), + 2 on the sheet's inner side, -1 the free end
+    const pdf = new Float32Array(nBox * 24).fill(-1);
+    for (let f = 0; f < 2; f++) for (let v = 0; v < 24; v++) { const nz = tn[v * 3 + 2]; pdf[f * 24 + v] = f + ((f === 0 ? nz < -0.5 : nz > 0.5) ? 2 : 0); }
+    geo.setAttribute('pdf', new THREE.BufferAttribute(pdf, 1));
+  }
   geo.computeBoundingSphere();
   own(geo);
 
   const grp = new THREE.Group();
   grp.position.set(sp.x, 0, sp.z);
-  grp.add(mesh(geo, (room.mats && room.mats.wall) || M.wall, true, true));   // step 8: the wing's paint
+  const wallMat = (room.mats && room.mats.wall) || M.wall;
+  if (PDMG.on) {
+    pd = pdMake(sp);
+    const pm = pdMaterial(wallMat, pd), dm = pdDepthMaterial(pd);
+    room.ownMat.push(pm, dm, pd.tex);
+    const sheet = mesh(geo, pm, true, true); sheet.customDepthMaterial = dm;
+    grp.add(sheet);
+    const mm = roomMemory.get(memKey(room)), ph = mm && mm.pholes && mm.pholes[pi];
+    if (ph) for (const q of ph) pdStamp(pd, q[0], q[1], q[2], q[3], q[4], q[5]);
+    else if (hp) for (let b = 0; b < dims.n; b++) if (hp[b] <= 0) {   // cells opened before the mask existed: a hole each
+      const f = b >= cols * rows ? 1 : 0, r = Math.floor((b % (cols * rows)) / cols), c = (b % (cols * rows)) % cols;
+      pdStamp(pd, f, -L2 + (c + 0.5) * cw, (r + 0.5) * ch, 0.42 * Math.min(cw, ch), 1, b * 7.13);
+    }
+    try { renderer.compileAsync(sheet, camera, scene).catch(() => {}); } catch (e) { /* compiled on first draw */ }
+  } else grp.add(mesh(geo, wallMat, true, true));   // step 8: the wing's paint
 
   // Steel studs (C-section: web + two flanges) on 40 cm centres, top and bottom track.
   const studXs = studPositions(sp.len), sh = sp.h - 0.06, steel = [];
@@ -22695,7 +22833,7 @@ function buildPartition(room, sp, pi, own) {
     grp.add(cap);
   }
   room.group.add(grp);
-  return { geo, studXs };
+  return { geo, studXs, pd };
 }
 
 // A dead cell: all 24 vertices collapse onto its centre, so it draws nothing.
@@ -23385,8 +23523,13 @@ function partHit(rec, P, N, dir, E) {
 function partSheet(rec, face, lx, ly, wp, wn, E, dir, exit = false) {   // step 119: exit = the far sheet (a torn hole, dust out along the path)
   const L2 = rec.sp.len / 2, per = rec.cols * rec.rows;
   const col = clamp(Math.floor((lx + L2) / rec.cw), 0, rec.cols - 1), row = clamp(Math.floor(ly / rec.ch), 0, rec.rows - 1);
-  const b = face * per + row * rec.cols + col;
-  if (rec.hp[b] <= 0) return E;
+  const b = face * per + row * rec.cols + col, pd = rec.vis && rec.vis.pd;
+  if (pd ? pdOpen(pd, face, lx, ly) : rec.hp[b] <= 0) return E;    // an open hole lets the round straight through
+  if (pd) {                                                        // shaped damage: the round's own hole (entry ~1 cm, torn exit 2-3 cm) and a crushed rim
+    const hs = exit ? penXS() : PEN.live ? PEN.holeS : 1;
+    pdHole(rec, face, lx, ly, (exit ? 0.024 : 0.009) * hs * (0.8 + Math.random() * 0.4), exit ? 1 : 0.55);
+    rec.lastHit = rec.lastHit || { x: 0, y: 0 }; rec.lastHit.x = lx; rec.lastHit.y = ly;
+  }
   addRoomHole(rec.room, exit ? penX('plaster') : 'plaster', wp, wn, true, `p${rec.pi}:${b}`, exit ? penXS() : PEN.live ? PEN.holeS : 1);
   impactFx('plaster', wp, wn);
   if (exit) penCoverExit('plaster', wp, dir);
@@ -23409,14 +23552,29 @@ function destroyCell(rec, b, dir) {
   rec.hp[b] = 0;
   const { cols, rows, cw, ch, sp, room } = rec, per = cols * rows;
   const face = b >= per ? 1 : 0, r = Math.floor((b % per) / cols), c = (b % per) % cols;
-  if (rec.vis) collapseCell(rec.vis.geo, b);
+  const pd = rec.vis && rec.vis.pd;
+  if (rec.vis && !pd) collapseCell(rec.vis.geo, b);
   purgeTag(room, `p${rec.pi}:${b}`);
   const zs = face === 0 ? PART_T / 2 : -PART_T / 2;
   const cx = -sp.len / 2 + (c + 0.5) * cw, cy = (r + 0.5) * ch;
   const fr = rF(room);
   _dcN.set(0, 0, fr * Math.sign(zs));
-  // Chipped, crumbled edges on the cells that are left around the hole.
-  for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+  if (pd) {
+    // Shaped damage: the board breaks out round where it was hit (between that and the cell's middle), a ragged
+    // blob ~17 cm across that runs into its neighbours' holes; the decals it swallows go with it.
+    const lh = rec.lastHit, hx = lh ? mix(cx, clamp(lh.x, cx - cw / 2, cx + cw / 2), 0.6) : cx, hy = lh ? mix(cy, clamp(lh.y, cy - ch / 2, cy + ch / 2), 0.6) : cy;
+    const R = 0.42 * Math.min(cw, ch) * (0.8 + Math.random() * 0.45);
+    pdHole(rec, face, hx, hy, R, 1);
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const c2 = c + dc, r2 = r + dr;
+      if (c2 < 0 || c2 >= cols || r2 < 0 || r2 >= rows) continue;
+      const nx0 = -sp.len / 2 + c2 * cw, ny0 = r2 * ch;
+      const ddx = Math.max(nx0 - hx, 0, hx - (nx0 + cw)), ddy = Math.max(ny0 - hy, 0, hy - (ny0 + ch));
+      if (Math.hypot(ddx, ddy) < R * 0.9) purgeTag(room, `p${rec.pi}:${face * per + r2 * cols + c2}`);
+    }
+  }
+  // Chipped, crumbled edges on the cells that are left around the hole (the square-cell look; the mask draws its own rim).
+  if (!pd) for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     const c2 = c + dc, r2 = r + dr;
     if (c2 < 0 || c2 >= cols || r2 < 0 || r2 >= rows) continue;
     const b2 = face * per + r2 * cols + c2;
@@ -31929,6 +32087,77 @@ function nightCanSee(e) {
  * ========================================================================= */
 function nvgEnabled() { return !!(CONFIG.nvg && CONFIG.nvg.on !== false) && !/[?&]nvg=off\b/.test(location.search); }
 // At load, right after the renderer (no program exists yet). Phosphor colours and the response come from CONFIG.nvg.
+/* ---------------------------------------------------------------------------
+ *  ROOM FILL (?tfill=off). The light pool gives real lights (spot + area light, shadowed) to a room's first two
+ *  ceiling fittings only, so long and large rooms (halls, the range, corridors, big combat rooms) were dark and
+ *  flat past them. Every other fitting of the room you are in now lights it too: an unshadowed downlight
+ *  (cosine panel, same colour, ~the pool fitting's on-axis output) added in every lit three.js program through
+ *  the shared light chunks. Uniform array uTfP (world positions, shared by every material: cloneUniforms copies
+ *  arrays by reference), the nearest TFILL.max (headset maxXR, diffuse only) to your head, faded out before the
+ *  cut-off so none pops; clipped to the room's box so no light leaks through a doorway. No light object (the
+ *  light count, so the programs, never change), no new program. Off in the dark (power out), on shot-out tubes,
+ *  outdoors.
+ * ------------------------------------------------------------------------- */
+function tfillChunk() {
+  if (!TFILL.on) return;
+  const C = THREE.ShaderChunk, L = THREE.ShaderLib;
+  if (!C.lights_pars_begin || !C.lights_fragment_maps) { TFILL.on = false; return; }
+  C.lights_pars_begin += '\nuniform vec4 uTfP[ 11 ];\n';
+  C.lights_fragment_maps = `
+{
+  vec4 tfK = uTfP[ 8 ];
+  if ( uTfP[ 0 ].w > 0.0 ) {
+    vec3 tfW = transpose( mat3( viewMatrix ) ) * ( geometryPosition - viewMatrix[ 3 ].xyz );   // world position of this pixel
+    vec3 tfLo = uTfP[ 9 ].xyz, tfHi = uTfP[ 10 ].xyz;
+    if ( all( greaterThan( tfW, tfLo ) ) && all( lessThan( tfW, tfHi ) ) ) {
+      vec3 tfDn = ( viewMatrix * vec4( 0.0, -1.0, 0.0, 0.0 ) ).xyz;
+      for ( int i = 0; i < 8; i ++ ) {
+        vec4 tP = uTfP[ i ]; if ( tP.w <= 0.0 ) break;
+        vec3 tLv = ( viewMatrix * vec4( tP.xyz, 1.0 ) ).xyz - geometryPosition; float tD2 = dot( tLv, tLv );
+        vec3 tLn = tLv * inversesqrt( tD2 ); float tCe = dot( -tLn, tfDn ); if ( tCe <= 0.0 ) continue;
+        IncidentLight tfL; tfL.direction = tLn; tfL.color = tfK.xyz * ( tP.w * tCe / ( tD2 + 0.35 ) ); tfL.visible = true;
+        if ( tfK.w > 0.5 ) { RE_Direct( tfL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight ); }
+        else reflectedLight.directDiffuse += saturate( dot( geometryNormal, tLn ) ) * tfL.color * BRDF_Lambert( material.diffuseColor );
+      }
+    }
+  }
+}
+` + C.lights_fragment_maps;
+  for (const k of ['standard', 'physical', 'lambert', 'phong', 'toon']) if (L[k]) L[k].uniforms.uTfP = { value: TFILL.P };
+}
+function tfillTick() {
+  if (!TFILL.on) return;
+  const P = TFILL.P, cur = stream.current, xr = renderer.xr.isPresenting;
+  let n = 0;
+  if (cur && cur.active && cur.visible !== false && cur.troffers && cur.troffers.length > 2 && !cur.yard && !nightDark(cur)) {
+    const T = cur.troffers, idx = TFILL.idx, dist = TFILL.dist, K = xr ? TFILL.maxXR : TFILL.max;
+    camera.getWorldPosition(TFILL.head);
+    idx.length = 0;
+    for (let i = 2; i < T.length && idx.length < 96; i++) {
+      const tr = T[i]; if (tr.out) continue;
+      const y = cur.origin.y + (tr.y !== undefined ? tr.y : cur.h) - 0.06;
+      const dx = rWX(cur, tr.x) - TFILL.head.x, dy = y - TFILL.head.y, dz = rWZ(cur, tr.z) - TFILL.head.z;
+      dist[idx.length] = dx * dx + dy * dy + dz * dz; idx.push(i);
+    }
+    const ord = idx.map((_, j) => j).sort((a, b) => dist[a] - dist[b]);
+    const cut = ord.length > K ? Math.sqrt(dist[ord[K]]) : Infinity;
+    for (let j = 0; j < Math.min(K, ord.length); j++) {
+      const tr = T[idx[ord[j]]], d = Math.sqrt(dist[ord[j]]);
+      const fade = cut === Infinity ? 1 : clamp((cut - d) / 2.5, 0, 1);   // the farthest one fades as the next one comes closer: no pop
+      if (fade <= 0.01) continue;
+      P[n++].set(rWX(cur, tr.x), cur.origin.y + (tr.y !== undefined ? tr.y : cur.h) - 0.06, rWZ(cur, tr.z), TFILL.I * fade);
+    }
+    if (n) {
+      TFILL.col.set(CONFIG.look.rect).convertSRGBToLinear().lerp(TFILL.white || (TFILL.white = new THREE.Color(1, 1, 1)), 0.55);   // the fittings' white, a little warm
+      P[8].set(TFILL.col.r, TFILL.col.g, TFILL.col.b, xr ? 0 : 1);
+      const hw = cur.w / 2 + 0.3, hd = cur.d / 2 + 0.3;               // the room's box (turned rooms are the same box)
+      P[9].set(cur.origin.x - hw, cur.origin.y - 0.3, cur.origin.z - hd, 0);
+      P[10].set(cur.origin.x + hw, cur.origin.y + cur.h + 0.3, cur.origin.z + hd, 0);
+    }
+  }
+  for (let j = n; j < 8; j++) P[j].w = 0;
+  TFILL.was = n;
+}
 function nvgToneChunk() {
   if (!nvgEnabled()) return;
   const at = 'vec3 ACESFilmicToneMapping( vec3 color ) {', ch = THREE.ShaderChunk.tonemapping_pars_fragment;
@@ -40349,6 +40578,7 @@ function tick(timeMs) {
   updateImpactFx(dtW);
   g90Update(dtW);        // step 90: blood pouring from his wounds, tissue bits
   updateFlicker(t);
+  tfillTick();                                         // room fill: the room's other ceiling fittings light it
   fixJoltTick();         // step 87: shot-at tubes stutter (after the flicker, absolute writes)
   polishUpdate(dtW, t);  // step 10: haze, blood pools, contact shadows, particle light, listener, ears, boots
   handsUpdate(dt, t);    // step 13: hands follow the controllers / tracked joints / the gun they hold
@@ -49181,7 +49411,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
   } catch (e) { /* no title */ }
 })();
 yardFogColour();                                                  // the default fog until sky/sky.json arrives
-if (window.__cqcDev) Object.assign(window.__cqcDev, { locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+if (window.__cqcDev) Object.assign(window.__cqcDev, { buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
