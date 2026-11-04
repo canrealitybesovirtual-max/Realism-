@@ -2061,7 +2061,7 @@ const PROJECT_RULES = {
  * ========================================================================== */
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -24114,6 +24114,94 @@ async function buildEnemyKit() {
   }
   ENEMY.protos = ENEMY.models.map((m) => m.driver);
   ENEMY.proto = ENEMY.protos[0];
+  try { await enemyLodPrep(); } catch (e) { console.warn('Enemy LODs not built', e); }   // distance LODs (the models are ~130k triangles a man)
+}
+
+/* ---------------------------------------------------------------------------
+ *  ENEMY LODs (?elod=off). Each merged skinned part gets two simplified index buffers (meshoptimizer, borders locked
+ *  so material seams stay closed) over the SAME vertex attributes, so skinning, wounds and materials are unchanged and
+ *  the GPU keeps one vertex buffer. Per man, by distance from the camera (hysteresis 12 %), his parts swap geometry.
+ * ------------------------------------------------------------------------- */
+const ENEMY_LOD = { on: !/[?&]elod=off\b/.test(location.search), map: new WeakMap(), d: [7, 16], dXR: [5, 11], k: [0.3, 0.1], err: [0.008, 0.03], p: new THREE.Vector3(), c: new THREE.Vector3() };
+async function enemyLodPrep() {
+  if (!ENEMY_LOD.on) return;
+  const { MeshoptSimplifier: MS } = await import('./vendor/meshopt/meshopt_simplifier.js');
+  await MS.ready;
+  ENEMY_LOD.MS = MS;                                               // kept: his gun's parts get LODs the first time they are seen (enemyLodGeo)
+  let t0 = performance.now(), tri0 = 0, tri1 = 0, tri2 = 0;
+  for (const m of ENEMY.models) m.holder.traverse((o) => {
+    if (!o.isSkinnedMesh || ENEMY_LOD.map.has(o.geometry)) return;
+    const g = o.geometry, pos = g.attributes.position;
+    if (!g.index || !pos || pos.isInterleavedBufferAttribute || !(pos.array instanceof Float32Array) || pos.itemSize !== 3) return;
+    const idx = g.index.array instanceof Uint32Array ? g.index.array : new Uint32Array(g.index.array), n = idx.length;
+    if (n < 3000) return;                                          // small parts (eyes, patches): not worth it
+    const lods = [g];
+    for (let l = 0; l < 2; l++) {
+      const tgt = Math.max(3, Math.floor(n * ENEMY_LOD.k[l] / 3) * 3);
+      const out = MS.simplify(idx, pos.array, 3, tgt, ENEMY_LOD.err[l], ['LockBorder'])[0], cnt = out.length;   // [indices, error]
+      const prev = lods[lods.length - 1];
+      if (!cnt || cnt >= (prev.index.count * 0.92)) { lods.push(prev); continue; }   // could not go lower: keep the last
+      const lg = new THREE.BufferGeometry();
+      for (const k of Object.keys(g.attributes)) lg.setAttribute(k, g.attributes[k]);   // shared vertex buffers
+      lg.setIndex(new THREE.BufferAttribute(n > 65535 || pos.count > 65535 ? out.slice(0, cnt) : new Uint16Array(out.subarray(0, cnt)), 1));
+      lg.boundingSphere = g.boundingSphere; lg.boundingBox = g.boundingBox;
+      lods.push(lg);
+    }
+    tri0 += n / 3; tri1 += lods[1].index.count / 3; tri2 += lods[2].index.count / 3;
+    ENEMY_LOD.map.set(g, lods);
+  });
+  if (/[?&]dev\b/.test(location.search)) console.info('Enemy LODs', Math.round(tri0), Math.round(tri1), Math.round(tri2), 'tris', Math.round(performance.now() - t0), 'ms');
+}
+if (/[?&]dev\b/.test(location.search)) window.__cqcLod = () => ({ ENEMY_LOD, enemyLodTick });
+// LODs for one static (unskinned) geometry, made once and cached (his gun: the AK alone is ~66k triangles).
+function enemyLodGeo(g) {
+  const L = ENEMY_LOD;
+  if (L.map.has(g)) return L.map.get(g);
+  let lods = null, src = g;
+  const p0 = g.attributes && g.attributes.position;
+  if (L.MS && p0 && !g.index && !p0.isInterleavedBufferAttribute && !g.morphAttributes.position && p0.count >= 9000) {
+    try { src = mergeVertices(g); } catch (e) { src = g; }          // non-indexed gun parts: welded once (LOD buffers only; LOD 0 stays the original)
+  }
+  const pos = src.attributes && src.attributes.position;
+  if (L.MS && src.index && pos && !pos.isInterleavedBufferAttribute && pos.array instanceof Float32Array && pos.itemSize === 3 && src.index.count >= 3000) {
+    const idx = src.index.array instanceof Uint32Array ? src.index.array : new Uint32Array(src.index.array), n = idx.length;
+    lods = [g];
+    for (let l = 0; l < 2; l++) {
+      const prev = lods[lods.length - 1], prevN = prev.index ? prev.index.count : prev.attributes.position.count;
+      const out = L.MS.simplify(idx, pos.array, 3, Math.max(3, Math.floor(n * L.k[l] / 3) * 3), L.err[l] * 0.6, [])[0];   // closed gun parts: no border lock (seams are kept by the simplifier itself)
+      if (out.length >= prevN * 0.92) { lods.push(prev); continue; }
+      const lg = new THREE.BufferGeometry();
+      for (const k of Object.keys(src.attributes)) lg.setAttribute(k, src.attributes[k]);
+      for (const gr of g.groups) lg.addGroup(0, Infinity, gr.materialIndex);
+      lg.setIndex(new THREE.BufferAttribute(pos.count > 65535 ? out : new Uint16Array(out), 1));
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      lg.boundingSphere = g.boundingSphere; lg.boundingBox = g.boundingBox;
+      lods.push(lg);
+    }
+  }
+  L.map.set(g, lods);
+  return lods;
+}
+function enemyLodTick(e) {
+  const S = e.skin;
+  if (!ENEMY_LOD.on || !S) return;
+  const groot = e.gun && e.gun.root;
+  if (S.lodGun !== groot) {                                        // a new gun in his hands (or none): its parts' LODs
+    if (S.gunList) for (const [o, l] of S.gunList) o.geometry = l[0];
+    S.lodGun = groot; S.gunList = [];
+    if (groot && ENEMY_LOD.MS) groot.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) { const l = enemyLodGeo(o.geometry); if (l) S.gunList.push([o, l]); } });
+    S.lodSet = false;
+  }
+  if (!S.lodList && !(S.gunList && S.gunList.length)) return;
+  const L = ENEMY_LOD, D = renderer.xr.isPresenting ? L.dXR : L.d;
+  e.root.getWorldPosition(L.p); camera.getWorldPosition(L.c);
+  const d = L.p.distanceTo(L.c), cur = S.lod | 0;
+  let lv = d < D[0] ? 0 : d < D[1] ? 1 : 2;
+  if (lv < cur && d > D[lv] * 0.88) lv = cur;                       // hysteresis on the way back in
+  if (lv === cur && S.lodSet) return;
+  S.lod = lv; S.lodSet = true;
+  if (S.lodList) for (const [o, lods] of S.lodList) o.geometry = lods[lv];
+  if (S.gunList) for (const [o, lods] of S.gunList) o.geometry = lods[lv];
 }
 
 // Measure the model, pose it to the driver's rest, build the driver from its joints.
@@ -24420,7 +24508,9 @@ function enemyDress(e, model) {
   const T = {};
   for (const k of DRIVE_ORDER) T[k] = bones[model.def.map[k]];
   const fingers = model.fingers.map((f) => ({ b: bones[stripIdx(f.name)], axis: f.axis, ang: f.ang, base: f.base }));
-  e.skin = { holder, T, O: model.O, fingers, curl: -1, sphere, meshes, inv: new THREE.Matrix4() };
+  const lodList = [];
+  holder.traverse((o) => { if (o.isSkinnedMesh) { const l = ENEMY_LOD.map.get(o.geometry); if (l) lodList.push([o, l]); } });
+  e.skin = { holder, T, O: model.O, fingers, curl: -1, sphere, meshes, inv: new THREE.Matrix4(), lodList: lodList.length ? lodList : null, lod: 0, lodSet: false };
   e.sk = model.sk;
   e.hit = model.hit; e.ragDef = model.rag;
   enemyCurl(e, 1);
@@ -24436,6 +24526,7 @@ function enemyCurl(e, k) {
 function enemySkinSync(e) {
   const S = e.skin;
   if (!S) return;
+  enemyLodTick(e);                                                 // enemy LODs: geometry by distance
   const B = e.B, T = S.T;
   e.root.updateWorldMatrix(true, true);
   S.holder.updateWorldMatrix(false, false);
@@ -46800,7 +46891,7 @@ function yardLayout() {
     lamp(-14, 2.75, 14.35, 0, -1, 0.4, 0.25, 1, 'wall', 0),             // 6: A's door
     lamp(8.65, 2.75, -16, -0.4, -1, 0, 0.25, 1, 'wall', 0),             // 7: B's door
     lamp(8.65, 7.2, -7, -0.4, -1, 0, 0.25, 1, 'wall', 0),               // 8: B's catwalk door
-    lamp(10.5, 6.2, 26.6, 0, -1, -0.3, 0.3, 1, 'wall', 0),              // 9: B1 wall lamp beside the entry
+    lamp(10.5, 6.2, 26.6, 0, -1, -0.3, 0.3, 0.5, 'wall', 0),            // 9: B1 wall lamp beside the entry (half: you step out of the start building in near dark)
     lamp(-16.2, 2.86, 11.8, 0, -1, 0, 0.02, 1, 'room', 0),             // 10-13: ceiling lights in the interiors (zone = room index)
     lamp(-10.4, 2.86, 12.2, 0, -1, 0, 0.02, 1, 'room', 0),
     lamp(11.0, 2.76, -15.6, 0, -1, 0, 0.02, 1, 'room', 0),
@@ -47273,7 +47364,8 @@ roughnessFactor = mix(roughnessFactor, 0.05, max(yRiv, yBead));`)
     .replace('#include <lights_fragment_maps>', `{
   for (int i = 0; i < ${YARD_NL}; i++) {
     vec4 P = uYLampP[i]; if (P.w <= 0.0 || !yLampFor(i, yRoomI)) continue;
-    vec3 Lw = P.xyz - vYW; float d2 = dot(Lw, Lw); vec3 Ln = Lw * inversesqrt(d2);
+    vec3 Lw = P.xyz - vYW; float d2 = dot(Lw, Lw); if (d2 > 1600.0) continue;   // past 40 m a lamp adds nothing visible (and the fog has it)
+    vec3 Ln = Lw * inversesqrt(d2);
     vec4 D = uYLampD[i]; float sp = smoothstep(D.w, D.w + 0.18 * (1.0 - D.w) + 0.02, dot(-Ln, D.xyz));
     if (sp <= 0.0) continue;
     IncidentLight yl; yl.direction = normalize((viewMatrix * vec4(Ln, 0.0)).xyz); yl.color = uYLampC * (P.w * sp / (d2 + 0.25)); yl.visible = true;
@@ -48800,7 +48892,7 @@ function stealthLight() {
     }
     if (best >= 0 && bestE > 0.05) { const Lp = LP[best]; _st.d.set(P.x - Lp.x, P.y - Lp.y, P.z - Lp.z).normalize(); if (!clearLine(_st.b.set(Lp.x, Lp.y, Lp.z).addScaledVector(_st.d, 0.4), P, 0.3)) E -= bestE * 0.94; }
   }
-  const E0 = 0.6 * STEALTH_DIFF[S.diff].light;
+  const E0 = 0.6 * STEALTH_DIFF[S.diff].light * (stream.current && stream.current.yard ? 4 : 1);   // outdoors the eye is night-adapted: a wall lamp 6 m off lights you ~0.4, not ~0.75
   return clamp(E / (E + E0));
 }
 function stealthTick(dt) {
@@ -48827,7 +48919,7 @@ function stealthK(e, pd, dotF) {
   const off = 1 - clamp(dotF);                                      // 0 straight ahead .. 1 at the edge of his view
   const kA = mix(1, 0.35, clamp(off * 2.2));
   const kD = clamp(1.25 - pd / (22 * Dd.range), 0.12, 1.25);
-  return Dd.build * kL * kM * kA * kD * natConceal(e);              // nature: bushes, ferns, low branches between him and you
+  return Dd.build * kL * kM * kA * kD * natConceal(e) * (e.sniper ? 0.5 : 1);   // the tower man scans the whole yard: slower to fix on one spot              // nature: bushes, ferns, low branches between him and you
 }
 // Can he see you at all at this range in this light (unengaged men only)?
 function stealthSees(e, pd) {
