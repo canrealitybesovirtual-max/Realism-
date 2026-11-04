@@ -565,6 +565,19 @@ button{font:inherit;color:inherit}
 .sum-row span:first-child{color:var(--ash)}
 .hud-note{position:absolute;left:var(--pad-x);bottom:calc(var(--pad-y)*.8);font-size:var(--fs-xs);color:var(--bone-2);max-width:40ch;line-height:1.6;text-shadow:0 1px 10px rgba(0,0,0,.7)}
 .hud-note b{color:var(--bone);font-weight:500}
+/* police update: the chase bar (Pursuit / Wanted) */
+.chase-hud{position:absolute;left:50%;top:calc(var(--pad-y)*.55);transform:translateX(-50%);min-width:min(420px,70vw);text-align:center;display:none;
+  text-shadow:0 1px 10px rgba(0,0,0,.75);pointer-events:none}
+.chase-hud.on{display:block}
+.chase-hud .ch-top{display:flex;justify-content:center;align-items:baseline;gap:16px}
+.chase-hud .ch-title{font-family:var(--f-display);font-size:var(--fs-l);letter-spacing:.14em;color:var(--bone)}
+.chase-hud .ch-timer{font-size:var(--fs-s);color:var(--bone-2);font-variant-numeric:tabular-nums}
+.chase-hud .ch-line{font-size:var(--fs-s);color:var(--bone-2);margin-top:2px;font-variant-numeric:tabular-nums}
+.chase-hud .ch-bar{height:6px;margin:8px auto 4px;width:100%;background:rgba(232,227,218,.14);border-radius:3px;overflow:hidden}
+.chase-hud .ch-fill{height:100%;width:0;background:linear-gradient(90deg,#3a6cff,#e8e3da);transition:width .12s linear}
+.chase-hud.bad .ch-fill{background:linear-gradient(90deg,#9a1b23,#ff4a3a)}
+.chase-hud .ch-label{font-size:var(--fs-xs);color:var(--bone-2)}
+.chase-hud .ch-warn{font-size:var(--fs-xs);color:#ff6a5a;margin-top:2px;min-height:1.2em}
 .lockhint{position:absolute;left:50%;bottom:calc(var(--pad-y)*.5);transform:translateX(-50%);font-size:var(--fs-xs);color:var(--bone-2);opacity:0;transition:opacity .3s;text-shadow:0 1px 10px rgba(0,0,0,.8)}
 .lockhint.on{opacity:1}
 .mirhint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;display:none}
@@ -709,6 +722,8 @@ button{font:inherit;color:inherit}
   <div id="vignette"></div>
 
   <div id="hud" aria-hidden="true">
+    <div class="chase-hud" id="chase-hud"><div class="ch-top"><span class="ch-title"></span><span class="ch-timer"></span></div><div class="ch-line"></div>
+      <div class="ch-bar"><div class="ch-fill"></div></div><div class="ch-label"></div><div class="ch-warn"></div></div>
     <div class="hud-note" id="hud-note"></div>
     <div class="speedo">
       <div class="spd" id="hud-spd">0</div>
@@ -858,6 +873,7 @@ button{font:inherit;color:inherit}
               <dt>Typefaces</dt><dd>Cormorant Garamond, Inter</dd>
               <dt>Saloon ’97</dt><dd>“art of rally Latest Version 2027” by FarHandle5255, Sketchfab, CC BY 4.0, reduced and baked for this game</dd>
               <dt>Highway patrol ’04</dt><dd>“Chevrolet Impala Highway Patrol”, Sketchfab (see cars/police.json)</dd>
+              <dt>Police siren</dt><dd>“police car siren synthesized dry” by newlocknew, freesound.org (sound 692525), cut into wail and yelp loops</dd>
               <dt>VR hands</dt><dd>“generic-hand” from WebXR Input Profiles (immersive-web), MIT licence</dd>
               <dt>Snow trees</dt><dd>“Snow Trees Pack LOWPOLY” by EFX (sketchfab.com/evan4129), Sketchfab, CC BY 4.0, textures re-encoded to WebP</dd>
             </dl>
@@ -1094,6 +1110,7 @@ const ACTIONS = [
   { id: 'blinkLeft', label: 'Indicator left' },
   { id: 'blinkRight',label: 'Indicator right' },
   { id: 'hazard',    label: 'Hazard lights' },
+  { id: 'siren',     label: 'Siren: wail, yelp, off (police car)' },   // police update
   { id: 'wipers',    label: 'Wipers' },
   { id: 'radioPower',label: 'Radio on / off' },
   { id: 'radioStation', label: 'Radio: next station' },
@@ -1114,7 +1131,7 @@ const DEFAULTS = {
       throttle: ['KeyW', 'ArrowUp'], brake: ['KeyS', 'ArrowDown'], steerLeft: ['KeyA', 'ArrowLeft'], steerRight: ['KeyD', 'ArrowRight'],
       handbrake: ['Space', null], shiftUp: ['KeyE', null], shiftDown: ['KeyQ', null], clutch: ['ShiftLeft', null],
       camera: ['KeyC', null], lookBack: ['KeyB', null], horn: ['KeyH', null], autopilot: ['KeyO', null], telemetry: ['KeyT', null], pause: ['KeyP', 'Escape'],
-      ignition: ['KeyI', null], lights: ['KeyL', null], blinkLeft: ['Comma', null], blinkRight: ['Period', null], hazard: ['KeyG', null], wipers: ['KeyV', null],
+      ignition: ['KeyI', null], lights: ['KeyL', null], blinkLeft: ['Comma', null], blinkRight: ['Period', null], hazard: ['KeyG', null], wipers: ['KeyV', null], siren: ['KeyJ', null],
       radioPower: ['KeyR', null], radioStation: ['KeyN', null], trackNext: ['BracketRight', null], trackPrev: ['BracketLeft', null], volUp: ['Equal', null], volDown: ['Minus', null],
     },
     steerSensitivity: 1, steerLinearity: 1.15, deadzone: .08, keyboardSteerSpeed: 4.5,
@@ -1772,6 +1789,10 @@ const ENGINE_SFX = {
   },
 };
 
+/* Police update: the siren loops (tools/cut_siren.py from freesound 692525, newlocknew "police car siren synthesized dry";
+   licence not verified, credited): files padded like the engine loops, looped over [pad, pad + len]. Tone 1 wail, 2 yelp. */
+const SIREN_SFX = { pad: .2, files: ['siren-wail', 'siren-yelp'], len: [4.567583, 3.444937], voices: 3, range: 450 };
+
 /* ── §6d Car radio (build 1.28) ───────────────────────────────────────────
    Three stations of royalty-free tracks the player supplied (radio/radio.json:
    101.1 PHONK, 96.5 ROCK, 88.9 HARD ROCK / METAL; AAC, loudness-normalised).
@@ -1853,7 +1874,7 @@ class VehicleAudio {
     this.engPan = this.#panner(3.5); this.tyrePan = this.#panner(3);
     this.cabinLP = ctx.createBiquadFilter(); this.cabinLP.type = 'lowpass'; this.cabinLP.frequency.value = 18000; this.cabinLP.Q.value = .4;
     this.engBus = this.#g(1); this.engBus.connect(this.cabinLP).connect(this.engPan).connect(this.engOut);
-    this.#engine(); this.#tyres(); this.#world(); this.#traffic();
+    this.#engine(); this.#tyres(); this.#world(); this.#traffic(); this.#sirenInit();
     this.synthK = 1; this.samples = null; this.sampleState = 'loading'; this.born = ctx.currentTime; this.#loadSamples();
     this.radioOut = this.#g(1); this.radioOut.connect(B.radio || B.ambience); this.gate.push(this.radioOut);
     this.radio = new StreamRadio(ctx, this.radioOut, this.white); this.sources.push({ stop: () => this.radio.dispose(), disconnect() {} });   // build 1.28: the car radio (§6d)   // build 1.27: recorded engine, synth until it decodes
@@ -2133,6 +2154,61 @@ class VehicleAudio {
     }
   }
 
+  /* ── Police update: sirens. Your patrol car's (cab.siren: 1 wail, 2 yelp; ownSiren: the body has one) from the roof, and
+     the SIREN_SFX.voices nearest patrol cars in traffic running theirs (sirenList, set per frame by the app: world
+     position and velocity, yelp when closing in). Each voice is built when it starts and torn down after it fades:
+     both tones loop on their own source and crossfade, through a distance low-pass (air: the far wail loses its edge)
+     and a panner. Doppler from the closing speeds, as for the traffic engines: rate = (c - vL.n) / (c - vS.n), n the
+     unit vector from the source to the listener. Inside the car your own siren is muffled like the engine. ── */
+  #sirenInit() {
+    this.sir = { bufs: null, own: null, cars: new Map(), _q: new THREE.Vector3(), _v: new THREE.Vector3() };
+    this.sirenList = null; this.ownSiren = false;
+    Promise.all(SIREN_SFX.files.map(n => ENGINE_SFX.load(this.ctx, n))).then(b => { if (this.ok) this.sir.bufs = b; }).catch(e => Log.warn('Siren sounds did not load', e));
+  }
+  #sirenVoice(ref) {
+    const ctx = this.ctx, B = this.sir.bufs, p = this.#panner(ref); p.rolloffFactor = 1; p.maxDistance = 4000;
+    const lp = this.#f('lowpass', 16000, .5), g = this.#g(0); g.connect(lp).connect(p).connect(this.fxOut);
+    const tones = B.map((buf, i) => { const s = ctx.createBufferSource(), tg = this.#g(0); s.buffer = buf; s.loop = true; s.loopStart = SIREN_SFX.pad; s.loopEnd = SIREN_SFX.pad + SIREN_SFX.len[i];
+      s.connect(tg).connect(g); s.start(0, SIREN_SFX.pad + Math.random() * SIREN_SFX.len[i]); this.sources.push(s); return { s, g: tg }; });
+    return { p, lp, g, tones, seen: true, fresh: true };
+  }
+  #sirenStop(v) {
+    if (!v) return; const t = this.ctx.currentTime; v.g.gain.setTargetAtTime(0, t, .06);
+    setTimeout(() => { for (const tn of v.tones) { try { tn.s.stop(); } catch {} const i = this.sources.indexOf(tn.s); if (i >= 0) this.sources.splice(i, 1); try { tn.s.disconnect(); tn.g.disconnect(); } catch {} }
+      for (const n of [v.g, v.lp, v.p]) { try { n.disconnect(); } catch {} const i = this.nodes.indexOf(n); if (i >= 0) this.nodes.splice(i, 1); } }, 450);
+  }
+  #sirenSet(v, x, y, z, vx, vz, tone, gain, cp, muffle) {
+    const t = this.ctx.currentTime, LV = this.listenerVel;
+    if (v.fresh && v.p.positionX) { v.fresh = false; v.p.positionX.value = x; v.p.positionY.value = y; v.p.positionZ.value = z; }   // no glide in from the origin
+    this.#pos(v.p, x, y, z);
+    const dx = cp.x - x, dy = cp.y - y, dz = cp.z - z, d = Math.hypot(dx, dy, dz) || 1, nx = dx / d, ny = dy / d, nz = dz / d;
+    const rate = clamp((343 - (LV.x * nx + LV.y * ny + LV.z * nz)) / (343 - (vx * nx + vz * nz)), .6, 1.6);
+    for (let i = 0; i < v.tones.length; i++) { v.tones[i].s.playbackRate.setTargetAtTime(rate, t, .05); v.tones[i].g.gain.setTargetAtTime(tone === i + 1 ? 1 : 0, t, .04); }
+    v.lp.frequency.setTargetAtTime(Math.min(16000 * Math.exp(-d / 380) + 1400, muffle), t, .08);
+    v.g.gain.setTargetAtTime(gain, t, .08);
+  }
+  #sirens(cp, carPos, carQuat) {
+    const S = this.sir; if (!S?.bufs) return;
+    /* your own */
+    const tone = this.ownSiren ? this.cab?.siren || 0 : 0;
+    if (tone && !S.own) S.own = this.#sirenVoice(5);
+    if (S.own) {
+      if (!tone) { this.#sirenStop(S.own); S.own = null; }
+      else { const p = S._q.set(0, 1.6, .3).applyQuaternion(carQuat).add(carPos), v = this.listenerVel;   // it moves with you: no Doppler of its own
+        this.#sirenSet(S.own, p.x, p.y, p.z, v.x, v.z, tone, .5 * (1 - .4 * this.cabin), cp, lerp(16000, 2400, this.cabin)); }
+    }
+    /* patrol cars in traffic */
+    for (const v of S.cars.values()) v.seen = false;
+    const L = this.sirenList || [], n = Math.min(L.length, SIREN_SFX.voices);
+    for (let i = 0; i < n; i++) {
+      const o = L[i]; let v = S.cars.get(o.id);
+      if (!v) { v = this.#sirenVoice(14); S.cars.set(o.id, v); }
+      v.seen = true;
+      this.#sirenSet(v, o.x, o.y, o.z, o.vx, o.vz, o.yelp ? 2 : 1, .9, cp, 16000);
+    }
+    for (const [id, v] of S.cars) if (!v.seen) { this.#sirenStop(v); S.cars.delete(id); }
+  }
+
   /** Paused, summary or teardown: one fade over everything this class produces. */
   setPaused(on) {
     if (!this.ok) return; this.paused = on;
@@ -2173,6 +2249,7 @@ class VehicleAudio {
     /* build 1.19: listener velocity from the (smooth, interpolated) camera, for Doppler */
     if (this.camPrev) { const k = 1 - Math.exp(-10 * dt), LV = this.listenerVel; LV.x += ((cp.x - this.camPrev.x) / dt - LV.x) * k; LV.y += ((cp.y - this.camPrev.y) / dt - LV.y) * k; LV.z += ((cp.z - this.camPrev.z) / dt - LV.z) * k; }
     (this.camPrev ||= { x: 0, y: 0, z: 0 }).x = cp.x; this.camPrev.y = cp.y; this.camPrev.z = cp.z;
+    this.#sirens(cp, carPos, carQuat);                                  // police update
 
     /* ── Engine ── */
     const rpm = Math.max(0, src.rpm), rn = clamp(rpm / 7000, 0, 1.05), thr = clamp(src.throttle, 0, 1), running = src.running;
@@ -2365,9 +2442,9 @@ class VehicleAudio {
    events consumed with pressed(). Keyboard steering is rate-limited so it
    ramps like a real hand on a wheel. */
 const GP = { A: 0, B: 1, X: 2, Y: 3, LB: 4, RB: 5, LT: 6, RT: 7, VIEW: 8, START: 9, LS: 10, RS: 11, UP: 12, DOWN: 13, LEFT: 14, RIGHT: 15 };
-const GAMEPAD_ACTIONS = { handbrake: GP.A, shiftUp: GP.B, shiftDown: GP.X, camera: GP.Y, clutch: GP.LB, lookBack: GP.RS, horn: GP.LS, telemetry: GP.VIEW, pause: GP.START, autopilot: GP.UP };
+const GAMEPAD_ACTIONS = { handbrake: GP.A, shiftUp: GP.B, shiftDown: GP.X, camera: GP.Y, clutch: GP.LB, lookBack: GP.RS, horn: GP.LS, telemetry: GP.VIEW, pause: GP.START, autopilot: GP.UP, siren: GP.DOWN };   // police update: siren on D-pad down
 const GAMEPAD_LAYOUT = [['Steer', 'Left stick'], ['Throttle', 'Right trigger'], ['Brake', 'Left trigger'], ['Handbrake', 'A'], ['Shift up and down', 'B and X'],
-  ['Clutch', 'Left bumper'], ['Change camera', 'Y'], ['Look back', 'Right stick click'], ['Camera look', 'Right stick'], ['Horn', 'Left stick click'], ['Telemetry', 'View'], ['Autopilot', 'D-pad up'], ['Pause', 'Menu']];
+  ['Clutch', 'Left bumper'], ['Change camera', 'Y'], ['Look back', 'Right stick click'], ['Camera look', 'Right stick'], ['Horn', 'Left stick click'], ['Telemetry', 'View'], ['Autopilot', 'D-pad up'], ['Siren (patrol car)', 'D-pad down'], ['Pause', 'Menu']];
 const KEY_NAMES = { Space: 'Space', Escape: 'Esc', Enter: 'Enter', Backspace: 'Backspace', Tab: 'Tab', ShiftLeft: 'Left Shift', ShiftRight: 'Right Shift',
   ControlLeft: 'Left Ctrl', ControlRight: 'Right Ctrl', AltLeft: 'Left Alt', AltRight: 'Right Alt', MetaLeft: 'Left Cmd', MetaRight: 'Right Cmd',
   ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', CapsLock: 'Caps Lock' };
@@ -7535,6 +7612,9 @@ class DriveWorld {
     Object.assign(sun.shadow.camera, { left: -62, right: 62, top: 62, bottom: -62, near: 1, far: 420 }); sun.shadow.camera.updateProjectionMatrix();
     sun.shadow.bias = -.0002; sun.shadow.normalBias = .045; sun.shadow.radius = 3;
     this.scene.add(sun, sun.target);
+    /* police update: one beacon light for the whole scene (always there, so the light count and the programs never
+       change): it flashes red / blue over your patrol car's bar, or over the nearest patrol car running its lights. */
+    this.beaconLight = new THREE.PointLight(0xff2010, 0, 38, 2); this.beaconLight.castShadow = false; this.scene.add(this.beaconLight); this._bp = new THREE.Vector3();
     const bgSun = this.bgSun = new THREE.DirectionalLight(sunCol, day.sunIntensity); bgSun.position.copy(day.sunDir); this.bgScene.add(bgSun);
 
     onProgress('Laying the road');
@@ -7624,6 +7704,7 @@ class DriveWorld {
     this.rig.snap = true; this.rig.cineValid = false;
     this.P.s = null; this.#player();
     this.traffic.reset(this.P); this.score.reset(); this.autopilot.reset();
+    this.chase?.reset();                                               // police update
     this.environment.start();
     this.carObj.controls.reset(Math.max(this.environment.night || 0, this.tunnel ? 1 : 0));   // build 1.28: key out; lamps on after dark and in the tunnel
     this.particles?.clear(); this.skids?.clear(); this.tracks?.clear(); this.replay?.clear(); this._cpPrev = null; this.audioEvents.length = 0;
@@ -7753,10 +7834,12 @@ class DriveWorld {
     /* Traffic reacts to where the car is now; contacts feed back into the vehicle model */
     const P = this.#player();
     this.traffic.wet = this.wet;
+    this.traffic.playerSiren = !!(this.carObj.packCar?.glb?.police && this.carObj.cab?.siren);   // police update: traffic moves over for you
     this.traffic.step(dt, P, sim);
     if (sim.draft !== undefined) { sim.draft = this.traffic.draft; sim.windFy = this.traffic.wind; }
     this.score.idle = this.autopilot.on;                               // build 1.19: the autopilot's driving scores nothing, yours still pays
     for (const ev of this.traffic.events) { this.score.event(ev); if (this.audioEvents.length < 32) this.audioEvents.push(ev); }
+    this.chase?.step(dt, P);                                           // police update: Pursuit / Wanted
     this.score.step(dt, P);
     this.score.composure(sim);                                          // build 1.12: clean chains
     this.replay.record(this, dt);                                       // section 11
@@ -7785,6 +7868,7 @@ class DriveWorld {
     env.update(dt);
     this.traffic.draw(alpha, Math.max(env.night, env.rain * .6));      // lights on after dark and in rain
     this.carObj.setNight(Math.max(env.night, env.rain * .5), sim.brake > .05 && Math.abs(sim.speed) > .5, sim.damage || 0);
+    this.#beacon();                                                       // police update
     this.#bodyWater(dt, env, Math.abs(sim.speed));                        // section 12
     this.#windscreen(dt, env, Math.abs(sim.speed));                       // realism 1
     this.#grime(dt, env, Math.abs(sim.speed));                            // realism 7 (live only: a replay keeps what was gathered)
@@ -7880,6 +7964,39 @@ class DriveWorld {
       br += W.bridge * .25; if (i < 2) sF += (s0 + ds) * .5;
     }
     R.bridge = br; R.sF = sF; R.tr = tr;
+  }
+  /** Police update: Pursuit ('pursuit') or Wanted ('wanted') on this run, or none (null). */
+  setChase(mode) { this.chase = mode ? new ChaseMode(this, mode) : null; this.chase?.reset(); }
+  /** Police update: the scene's one beacon light. Your bar while it runs (above it, so the roof is not blown out), else
+   *  the nearest patrol car in traffic running its lights within 90 m, on the same pattern as its bar (traffic.time). */
+  #beacon() {
+    const L = this.beaconLight; if (!L) return;
+    const B = this.carObj.beacon, vr = !!this.vr?.driving;
+    let r = 0, b = 0, p = null;
+    if (B?.on) { r = B.r; b = B.b; p = this.carObj.body.localToWorld(this._bp.set(0, 2.05, .3)); }
+    else {
+      let best = null, bd = 90;
+      for (const a of this.traffic.agents) if (a.on && a.siren && Math.abs(a.rel) < bd) { bd = Math.abs(a.rel); best = a; }
+      if (best) { const t = this.traffic.time; r = policeFlash(t, -1); b = policeFlash(t, 1); p = this.traffic.worldPos(best, this._bp); p.y += .75; }
+    }
+    if (!p || !(r || b)) { L.intensity = 0; return; }
+    L.position.copy(p); L.color.setRGB(r ? 1 : 0, r ? .06 : .22, b ? 1 : .02);
+    L.intensity = (r && b ? 300 : 220) * (vr ? .7 : 1) * (.3 + .7 * (this.environment?.night || 0));   // daylight drowns most of it
+  }
+  /** Police update: patrol cars running their sirens within 450 m (for the siren voices), nearest first. yelp: the
+   *  closing-in tone, within 45 m. */
+  sirenSources(cp) {
+    const out = this._sir || (this._sir = []), pool = this._sirP || (this._sirP = []); out.length = 0; let k = 0;
+    for (const a of this.traffic.agents) {
+      if (!a.on || !a.siren || Math.abs(a.rel) > 450) continue;
+      const o = pool[k] || (pool[k] = { p: new THREE.Vector3() }); k++;
+      this.traffic.worldPos(a, o.p); o.id = a.id; o.x = o.p.x; o.y = o.p.y + .3; o.z = o.p.z;
+      const F = this.traffic.track.frame(a.s, this.F4), th = Math.hypot(F.T.x, F.T.z) || 1, vs = (a.crash ? a.crash.vs : a.v) * (a.dir || 1);
+      o.vx = F.T.x / th * vs; o.vz = F.T.z / th * vs; o.yelp = Math.abs(a.rel) < 45 && a.v > 3;
+      o.d2 = (o.x - cp.x) ** 2 + (o.z - cp.z) ** 2; out.push(o);
+    }
+    out.sort((p, q) => p.d2 - q.d2);
+    return out;
   }
   /** Vehicles near the listener as world points, nearest first (live traffic, or replay proxies). */
   trafficSources(cp, list = this.traffic.agents) {
@@ -8183,7 +8300,7 @@ class DriveWorld {
   #wsGlass(key) {
     const cache = this._wsG || (this._wsG = {}); if (cache[key]) return cache[key];
     const co = this.carObj, body = co.body; if (!body) return null;
-    const E = new THREE.Vector3(...CABIN_CEL.eye);
+    const E = new THREE.Vector3(...(GLB_CARS[key]?.cabin || CABIN_CEL).eye);   // police update: that body's seat
     const mir = MIRROR_GLASS[key]?.inner?.at || [0, E.y + .19, E.z - .33], sl = Math.tan(32 * Math.PI / 180);
     let a = mir[1] + .02 - sl * (mir[2] - .08), b = 0, c = sl;
     body.updateWorldMatrix(true, true);
@@ -8615,6 +8732,7 @@ const CABIN = {
   wheelR: .185,                      // rim radius (m)
   lock: 7.85,                        // wheel angle at full lock (rad, about 450°)
 };
+const WHEEL_R0 = .185;               // police update: the rim radius the wheel is built at (CABIN changes per body; the group is scaled to CABIN.wheelR)
 const UPHOLSTERY = { black: { name: 'Black nappa', hex: 0x131313 }, macchiato: { name: 'Macchiato beige', hex: 0x9c7c5c }, red: { name: 'Bengal red', hex: 0x5a1116 }, grey: { name: 'Neva grey', hex: 0x67635f } };
 const TRIMS = { walnut: { name: 'Open-pore walnut' }, carbon: { name: 'Carbon fibre' }, alu: { name: 'Brushed aluminium' }, piano: { name: 'Piano black' } };
 const AMBIENT_LIGHT = { ice: { name: 'Ice blue', rgb: [.32, .6, 1] }, violet: { name: 'Violet', rgb: [.56, .3, 1] }, amber: { name: 'Amber', rgb: [1, .52, .16] },
@@ -8974,14 +9092,31 @@ function grimeBake(group, body, L) {
    footwells, seat bases and door pockets low down, the space under the dash, and the headlining. Outside the box the
    material is untouched, so it can go on meshes that are part exterior. */
 const CABIN_OCC_U = { uCabInv: { value: null } };                     // the matrix is made on first use (THREE loads after this runs)
-function cabinOcclusion(mat) {
+/* Police update: the roof also stops point lights from above (the patrol car's beacon, street lamps overhead): a
+   point light's contribution to a point inside the cabin box falls to nothing as its direction (body space) rises
+   past ~15-30 deg; low lamps shining in through the side glass are untouched. shell (the patrol car's own body): the
+   bar's beacon is shaded the same way (fully) over the car's footprint, so it does not blow out the roof under it;
+   the interior terms below are left out. */
+const CABIN_ROOF_GLSL = /* glsl */`
+  uniform mat4 uCabInv;
+  float cabRoofK(vec3 dirView, float inside, float k) {
+    if (inside < .5) return 1.0;
+    vec3 dB = normalize(mat3(uCabInv) * (vec4(dirView, 0.0) * viewMatrix).xyz);
+    return mix(1.0, k, smoothstep(.22, .5, dB.y));
+  }`;
+function cabinOcclusion(mat, shell = false) {
   if (mat.userData.cabOcc) return mat; mat.userData.cabOcc = true; CABIN_OCC_U.uCabInv.value ??= new THREE.Matrix4();
   const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey?.bind(mat);
   mat.onBeforeCompile = (sh, r) => {
     prev?.call(mat, sh, r);
     sh.uniforms.uCabInv = CABIN_OCC_U.uCabInv;
     sh.vertexShader = 'uniform mat4 uCabInv; varying vec3 vCabP;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\nvCabP = (uCabInv * modelMatrix * vec4(transformed, 1.0)).xyz;');
-    sh.fragmentShader = 'varying vec3 vCabP;\n' + sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+    const box = shell ? 'step(abs(vCabP.x), 1.1) * step(abs(vCabP.z), 2.6) * step(vCabP.y, 1.7) * step(length(pointLight.position - geometryPosition), 2.4)'   // shell: only a light right over it (its own beacon)
+      : 'step(abs(vCabP.x), .86) * step(-1.15, vCabP.z) * step(vCabP.z, 1.45) * step(.2, vCabP.y) * step(vCabP.y, 1.45)';
+    sh.fragmentShader = 'varying vec3 vCabP;\n' + CABIN_ROOF_GLSL + '\n' + sh.fragmentShader.replace('#include <lights_fragment_begin>', THREE.ShaderChunk.lights_fragment_begin.replace('getPointLightInfo( pointLight, geometryPosition, directLight );',
+      `getPointLightInfo( pointLight, geometryPosition, directLight ); directLight.color *= cabRoofK( directLight.direction, ${box}, 0.0 );`));
+    if (shell) return;
+    sh.fragmentShader = sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
       { vec3 p = vCabP; float inside = step(abs(p.x), .86) * step(-1.15, p.z) * step(p.z, 1.45) * step(.2, p.y) * step(p.y, 1.45);
         float occ = mix(.26, 1.0, smoothstep(.3, 1.02, p.y));                      // footwells, seat bases, door pockets
         occ *= mix(.5, 1.0, min(1.0, smoothstep(-1.0, -.45, p.z) + step(.92, p.y)));  // under the dash
@@ -8990,7 +9125,7 @@ function cabinOcclusion(mat) {
         reflectedLight.indirectDiffuse *= occ; reflectedLight.indirectSpecular *= occ * occ;
         reflectedLight.directDiffuse *= mix(1.0, .55 + .45 * occ, inside); reflectedLight.directSpecular *= mix(1.0, .55 + .45 * occ, inside); }`);
   };
-  mat.customProgramCacheKey = () => (prevKey ? prevKey() : mat.type) + '+cabocc';
+  mat.customProgramCacheKey = () => (prevKey ? prevKey() : mat.type) + (shell ? '+cabshell' : '+cabocc2');
   mat.needsUpdate = true;
   return mat;
 }
@@ -9063,7 +9198,15 @@ function buildCelsior(car) {
    wheels and physics go under them. The patrol car keeps its own textures. Tail lamps on both are plain red glass
    that glows (dim with the lights on, bright on the brakes); the patrol car's light bar flashes with the hazard switch. */
 const GLB_CARS = {
-  police: { title: 'Highway patrol ’04', spec: 'A police interceptor in highway patrol livery, its own full cabin. The hazard switch runs the light bar. Patrol cars also drive in the traffic now. Model: “Chevrolet Impala Highway Patrol”.', file: './cars/police.glb', meta: './cars/police.json', paint: false, cabin: { eye: [-.4, 1.17, .12], wheel: [-.4, .93, -.36], tilt: -.4, wheelR: .19, lock: 7.85 } },
+  /* police update: the cabin numbers are the model's own (body space = model x 0.9546). Its steering wheel (rim centre
+     -0.356, 0.964, -0.436 in the model, face tilted 11.1 deg, rim 0.172 m outside) and column are cut out of the
+     'Interieur' mesh (strip: model-space boxes, whole connected pieces only) and the game's wheel, which turns and
+     carries the pads, the horn and the key, sits exactly there. eye: over the driver's seat (cushion centre x -0.43). */
+  police: { title: 'Highway patrol ’04', spec: 'A police interceptor in highway patrol livery, its own full cabin. The light bar, grille and rear flashers run on the console switch (J for the siren, G hazard key for the lights). Patrol cars also drive in the traffic and chase you in Wanted. Model: “Chevrolet Impala Highway Patrol”.', file: './cars/police.glb', meta: './cars/police.json', paint: false,
+    cabin: { eye: [-.38, 1.13, .1], wheel: [-.3398, .9202, -.4162], tilt: -.194, wheelR: .16, lock: 7.85 },
+    strip: [{ mat: 'Interieur', box: [[-.545, .785, -.705], [-.165, 1.14, -.385]] }],
+    cabinMats: /^(Interieur|Interieur_av|Interieur_porte|Interieur_sol|Siege|Speed|Plastique_orange)$/, unlitGlass: /^Projo_vitre$/,
+    flash: { Flash_light: 'grille', Feux_blanc: 'rear' } },
 };
 const GlbCars = {
   data: {}, p: {},
@@ -9076,17 +9219,58 @@ const GlbCars = {
   get(id, file) { return this.data[file || GLB_CARS[id].file] || null; },
 };
 const TAIL_GLASS = /^(tail|Feux_rouge_1|Feux_rouge_2|Feux_stop)$/, HEAD_GLASS = /^(head|Phare_vitre|Projo_vitre)$/, HEAD_LAMP = /^(Phare|Feux_blanc)$/;
+/** Police update: the flash pattern (both the drivable car and the patrol cars in traffic, POLICE_FLASH_GLSL is the
+ *  same in GLSL). 2.4 s cycle: 1.2 s quad flash (four 40 ms bursts a side, sides swapping every 0.3 s), then 1.2 s
+ *  wig-wag (sides swapping every 0.15 s). sg -1: the red (driver's) side, +1 the blue. kind 'rear': the white rear
+ *  flashers' slower wig-wag (1.25 Hz). Returns 0 or 1. */
+function policeFlash(t, sg, kind) {
+  if (kind === 'rear') return (((t * 2.5) % 1) < .5) === (sg < 0) ? 1 : 0;
+  const c = ((t % 2.4) + 2.4) % 2.4;
+  if (c < 1.2) { const half = Math.floor(c / .3) % 2 === 0 ? -1 : 1; if (half !== sg) return 0; return ((c / .3 * 4) % 1) < .55 ? 1 : 0; }
+  return (Math.floor((c - 1.2) / .15) % 2 === 0) === (sg < 0) ? 1 : 0;
+}
+const POLICE_FLASH_GLSL = /* glsl */`
+  float polFlash(float t, float sg) {
+    float c = mod(t, 2.4);
+    if (c < 1.2) { float hs = mod(floor(c / .3), 2.0) < .5 ? -1.0 : 1.0; if (hs != sg) return 0.0; return step(fract(c / .3 * 4.0), .55); }
+    return ((mod(floor((c - 1.2) / .15), 2.0) < .5) == (sg < 0.0)) ? 1.0 : 0.0;
+  }`;
 /** Red lamp glass: translucent, smooth, lit from inside. One per car (its glow follows that car's lamps). */
 function tailGlassMaterial() {
   return Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03,
     transparent: true, opacity: .86, emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2 }), { key: 'tailglass' });
 }
-/** A body from GLB_CARS, sitting on the player's wheels. */
-function buildGlbCar(car, id) {
+/** Police update: the triangles of whole connected pieces (by shared index) whose bounds lie inside one of the boxes
+ *  (model space) are dropped from a copy of the geometry. */
+function glbStrip(geo, boxes) {
+  const P = geo.attributes.position, I = geo.index; if (!I) return geo;
+  const n = P.count, par = new Int32Array(n); for (let i = 0; i < n; i++) par[i] = i;
+  const f = x => { while (par[x] !== x) x = par[x] = par[par[x]]; return x; };
+  for (let t = 0; t < I.count; t += 3) { const a = f(I.getX(t)), b = f(I.getX(t + 1)), c = f(I.getX(t + 2)); par[b] = a; par[f(c)] = a; }
+  const lo = new Map(), hi = new Map();
+  for (let i = 0; i < n; i++) { const r = f(i); let L = lo.get(r), H = hi.get(r); if (!L) { lo.set(r, L = [1e9, 1e9, 1e9]); hi.set(r, H = [-1e9, -1e9, -1e9]); }
+    const x = P.getX(i), y = P.getY(i), z = P.getZ(i); L[0] = Math.min(L[0], x); L[1] = Math.min(L[1], y); L[2] = Math.min(L[2], z); H[0] = Math.max(H[0], x); H[1] = Math.max(H[1], y); H[2] = Math.max(H[2], z); }
+  const drop = new Set();
+  for (const [r, L] of lo) { const H = hi.get(r); if (boxes.some(([b0, b1]) => L[0] >= b0[0] && L[1] >= b0[1] && L[2] >= b0[2] && H[0] <= b1[0] && H[1] <= b1[1] && H[2] <= b1[2])) drop.add(r); }
+  if (!drop.size) return geo;
+  const keep = []; for (let t = 0; t < I.count; t += 3) if (!drop.has(f(I.getX(t)))) keep.push(I.getX(t), I.getX(t + 1), I.getX(t + 2));
+  const g = geo.clone(); g.setIndex(keep); return g;
+}
+/** Police update: the triangles of a geometry on one side of x = 0 (sg -1 left, +1 right, by triangle centre). */
+function glbHalf(geo, sg) {
+  const P = geo.attributes.position, I = geo.index, N = I ? I.count : P.count, out = [];
+  for (let t = 0; t < N; t += 3) { const i0 = I ? I.getX(t) : t, i1 = I ? I.getX(t + 1) : t + 1, i2 = I ? I.getX(t + 2) : t + 2; if ((P.getX(i0) + P.getX(i1) + P.getX(i2)) * sg > 0) out.push(i0, i1, i2); }
+  const g = geo.clone(); g.setIndex(out); return g;
+}
+/** A body from GLB_CARS, sitting on the player's wheels. opt.own: the drivable car (its own copies of the geometry,
+ *  since the mirror adjust and the steering-wheel strip cut them; the showroom keeps the model whole). */
+function buildGlbCar(car, id, opt = {}) {
   const C = GLB_CARS[id], D = GlbCars.get(id); if (!C || !D) return null;
-  const M = car.mats, src = D.scene, m = D.meta, root = new THREE.Group();
-  const tail = tailGlassMaterial(), head = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.75, .75, .72), roughness: .05, metalness: .2, clearcoat: 1, transparent: true, opacity: C.paint ? .9 : .32,
+  const M = car.mats, src = D.scene, m = D.meta, root = new THREE.Group(), flash = [];
+  let unlit = null;
+  const mkHead = () => Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.75, .75, .72), roughness: .05, metalness: .2, clearcoat: 1, transparent: true, opacity: C.paint ? .9 : .32,
     emissive: new THREE.Color().setRGB(1, .95, .86), emissiveIntensity: 0, depthWrite: false }), { key: 'headglass' });
+  const tail = tailGlassMaterial(), head = mkHead();
   const lamps = [head];
   const bar = {};
   /* its own clear-coated paint (the car paint's object-space panel gaps and dust are laid out for the sedan's body);
@@ -9098,7 +9282,16 @@ function buildGlbCar(car, id) {
     if (!o.isMesh) return;
     const nm = o.material?.name || o.name;
     let mat = o.material;
+    if (C.flash?.[nm]) {                                               // police update: grille / rear flashers, a glow per side
+      for (const sg of [-1, 1]) {
+        const fm = o.material.clone(), kind = C.flash[nm], white = kind === 'rear';
+        fm.emissive = white ? new THREE.Color(1, .96, .9) : sg < 0 ? new THREE.Color(1, .05, .03) : new THREE.Color(.1, .25, 1); fm.emissiveMap = fm.map; fm.emissiveIntensity = 0;
+        const fmesh = new THREE.Mesh(glbHalf(o.geometry, sg), fm); fmesh.applyMatrix4(o.matrixWorld); root.add(fmesh); flash.push({ m: fm, sg, kind });
+      }
+      return;
+    }
     if (TAIL_GLASS.test(nm)) mat = tail;
+    else if (C.unlitGlass?.test(nm)) mat = unlit ??= grimeMat(mkHead());   // police update: the A-pillar spotlights stay dark with the headlamps
     else if (HEAD_GLASS.test(nm)) mat = head;
     else if (HEAD_LAMP.test(nm)) { mat = o.material.clone(); mat.emissive = new THREE.Color(1, .95, .86); mat.emissiveMap = mat.map; mat.emissiveIntensity = 0; Atmos.patch(mat, { key: 'glbcarlamp' }); grimeMat(mat); lamps.push(mat); }
     else if (C.paint && nm === 'paint') mat = paint;
@@ -9107,8 +9300,12 @@ function buildGlbCar(car, id) {
     else if (nm === 'trim') mat = M.satin;
     else if (/^Giro_(bleu|red)_text$/.test(nm)) {                     // the light bar: its own glow per colour
       mat = bar[nm] = o.material.clone(); mat.emissive = /bleu/.test(nm) ? new THREE.Color(.1, .25, 1) : new THREE.Color(1, .05, .03); mat.emissiveMap = mat.map; mat.emissiveIntensity = 0;
-    } else if (!o.material.userData.patched) { o.material.userData.patched = true; Atmos.patch(o.material, { key: 'glbcar' + (o.material.transparent ? 't' : '') }); if (!o.material.transparent) grimeMat(o.material); }
-    const mesh = new THREE.Mesh(o.geometry, mat); mesh.castShadow = mesh.receiveShadow = !mat.transparent; if (mat.transparent) mesh.renderOrder = 2;
+    } else if (!o.material.userData.patched) { o.material.userData.patched = true; Atmos.patch(o.material, { key: 'glbcar' + (o.material.transparent ? 't' : '') }); if (!o.material.transparent) grimeMat(o.material);
+      if (!o.material.transparent && C.cabinMats?.test(nm)) cabinOcclusion(o.material);                    // police update: its cabin is shaded like the saloon's
+      else if (!o.material.transparent && C.flash) cabinOcclusion(o.material, true); }                    // and its own beacon does not blow out its roof
+    let geo = o.geometry;
+    if (opt.own) { const st = C.strip?.filter(q => q.mat === nm); geo = st?.length ? glbStrip(geo, st.map(q => q.box)) : geo.clone(); if (geo === o.geometry) geo = geo.clone(); }
+    const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = mesh.receiveShadow = !mat.transparent; if (mat.transparent) mesh.renderOrder = 2;
     mesh.applyMatrix4(o.matrixWorld); root.add(mesh);
   });
   const s = Math.min(CAR.length / m.len, CAR.width / (m.wid * .92)), dz = -(m.zone[0] + m.zone[1]) / 2 * s, W = m.wheels;
@@ -9116,7 +9313,7 @@ function buildGlbCar(car, id) {
   const group = new THREE.Group(); group.name = 'glb-' + id; group.add(root);
   const U = { uNight: { value: 0 }, uBrake: { value: 0 }, uCabin: { value: 0 } };
   const wheels = { zf: W.zf * s + dz, zr: W.zr * s + dz, x: (W.x - W.wx * .5 + CAR.tyreW * .5) * s, r: (W.rf + W.rr) / 2 * s };
-  return { id, group, mat: paint, U, wheels, glb: { tail, lamps, bar }, ownCabin: true, cabin: C.cabin };
+  return { id, group, mat: paint, U, wheels, glb: { tail, lamps, bar, flash, police: !!C.flash }, ownCabin: true, cabin: C.cabin };
 }
 const FINISHES = {
   gloss: { name: 'Gloss black', metal: .45, rough: .42, cc: 1, ccRough: .028, flake: .06, peel: .07 },
@@ -9678,7 +9875,7 @@ class Car {
     this.models ??= {};
     if (!want && !this.models[id] && GLB_CARS[id]) {                 // build 1.31: a GLB body
       if (!GlbCars.get(id)) GlbCars.load(id).then(d => { if (d && this.s.data.car.model === id) this.applySettings(); else if (!d) bus.emit('toast', 'The car model could not be loaded'); });
-      else { try { const o = buildGlbCar(this, id); if (o) { this.models[id] = o; this.body.add(o.group); grimeBake(o.group, this.body, o.wheels); } } catch (e) { Log.error('The car model could not be built', e); } }
+      else { try { const o = buildGlbCar(this, id, { own: true }); if (o) { this.models[id] = o; this.body.add(o.group); grimeBake(o.group, this.body, o.wheels); } } catch (e) { Log.error('The car model could not be built', e); } }
     }
     const onCel = want && !!this.cel; this.isCel = onCel;
     const mo = want ? null : this.models[id] || null; this.packCar = mo;
@@ -9694,7 +9891,7 @@ class Car {
     for (const l of [...this.liners, ...this.cabinShell]) l.visible = !own && this.cabinView;
     this.#applyWheelLayout(mo?.wheels || WHEEL_LAYOUT_SEDAN);          // build 1.19: visible wheels sit in the body's own arches
     Object.assign(CABIN, onCel ? CABIN_CEL : mo?.cabin || CABIN_CEL);
-    this.wheelBase.position.set(...CABIN.wheel); this.wheelBase.rotation.x = CABIN.tilt; this.wheelBase.scale.setScalar(CABIN.wheelR / .185);
+    this.wheelBase.position.set(...CABIN.wheel); this.wheelBase.rotation.x = CABIN.tilt; this.wheelBase.scale.setScalar(CABIN.wheelR / WHEEL_R0);
     this.#glassCut();
     bus.emit('car:model', id);
   }
@@ -9922,10 +10119,15 @@ class Car {
     if (this.cel?.lampMat) this.cel.lampMat.emissiveIntensity = .1 + 2.4 * lamp + (braking ? 1.2 : 0);   // build 1.16: the saloon's lenses
     if (this.cel?.decals) this.cel.decals.emissiveIntensity = S.ign ? (L ? 1.1 : .35 + .5 * night) : 0;
         const G = this.packCar?.glb;
+    const B = this.beacon ??= { on: false, r: 0, b: 0 }; B.on = false; B.r = B.b = 0;
     if (G) {                                                          // build 1.31: red glass glowing, the light bar flashing with the hazards
       G.tail.emissiveIntensity = .15 + 1.1 * Math.min(1, lamp) + (braking ? 2.6 : 0); for (const m of G.lamps) m.emissiveIntensity = 2.6 * Math.min(1, lamp);
-      const t = performance.now() / 1000, on = !!S.hazard, ph = (t * 2.2) % 1;
-      for (const [k, m] of Object.entries(G.bar)) m.emissiveIntensity = on ? ((/bleu/.test(k) ? ph < .5 : ph >= .5) ? 6 : .2) : 0;
+      /* police update: the bar, grille and rear flashers run a quad-flash / wig-wag pattern (policeFlash) while the
+         lights are on: the console LIGHTS switch, the siren, or the hazard key. B: what the scene's beacon light shows. */
+      const t = performance.now() / 1000, on = G.police && !!(S.hazard || S.beacon || S.siren);
+      for (const [k, m] of Object.entries(G.bar)) { const sg = /bleu/.test(k) ? 1 : -1, f = on ? policeFlash(t, sg) : 0; m.emissiveIntensity = on ? (f ? 7 : .25) : 0; if (sg < 0) B.r = f; else B.b = f; }
+      for (const F of G.flash) F.m.emissiveIntensity = on ? (F.kind === 'rear' ? policeFlash(t, F.sg, 'rear') * 4 : policeFlash(t, -F.sg) * 8) : 0;
+      B.on = on;
     }
   }
   setNight(n, braking = false, damage = 0) { this.setLights(n, braking); this.paintU.uScuff.value = damage; }
@@ -9980,6 +10182,11 @@ const MIRROR_Q = {
 const MIRROR_GLASS = {
   celsior: { root: 'cel', inner: { at: [-.039, 1.326, -.372], r: .14, mat: m => m.roughness < .1, face: [0, 0, 1], tol: .9, wide: 1 },
              door: { at: [.912, 1.065, -.581], r: .09, mat: m => m.roughness < .1 && m.metalness < .5, wide: 1.3 } },
+  /* police update: the patrol car's own 'Miroir' glass (model x 0.9546): the inner one at the top of the windscreen on its
+     stalk, the door ones in their housings on the door's front corner. house: the adjust box margins (the door housing
+     reaches further forward than the saloon's). */
+  police: { root: 'model', inner: { at: [.0076, 1.2228, -.3742], r: .16, mat: m => m.name === 'Miroir', wide: 1 },
+            door: { at: [.924, 1.0014, -.5413], r: .13, mat: m => m.name === 'Miroir', wide: 1.3 }, house: { inner: [.015, .055], door: [.035, .16] } },
 };
 /* Mirror adjust (graphics.mirrorAdjust; ?mirradj=off = the fixed mirrors exactly as before: no housing split, no
    pivots, no hover, no grabs). Each glass turns about its pivot (door: just behind the glass; inner: the ball joint
@@ -10037,7 +10244,7 @@ class CarMirrors {
   #rig(key) {
     if (this.rigs[key]) return this.rigs[key];
     const spec = MIRROR_GLASS[key]; if (!spec) return null;
-    const body = this.car.body, eye = new THREE.Vector3(...CABIN_CEL.eye);
+    const body = this.car.body, eye = new THREE.Vector3(...(GLB_CARS[key]?.cabin || CABIN_CEL).eye);   // police update: that body's own seat
     const group = new THREE.Group(); group.name = 'mirrors-' + key; body.add(group);
     const rig = { group, glass: {}, frames: {} };
     const place = (id, G, sx) => {
@@ -10087,7 +10294,7 @@ class CarMirrors {
       for (const p of T) Cg.add(p); Cg.multiplyScalar(1 / T.length);
       let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
       for (const p of T) { const du = x.subVectors(p, Cg).dot(ug), dv = x.dot(vg); u0 = Math.min(u0, du); u1 = Math.max(u1, du); v0 = Math.min(v0, dv); v1 = Math.max(v1, dv); }
-      const [m, depth] = MIRADJ.house[door ? 'door' : 'inner'];
+      const [m, depth] = (MIRROR_GLASS[key].house || MIRADJ.house)[door ? 'door' : 'inner'];
       const parts = this.#extract(key, tmp.G, tmp.sx, { C: Cg, n: ng, u: ug, v: vg, u0: u0 - m, u1: u1 + m, v0: v0 - m, v1: v1 + m, n0: -depth, n1: .02 }, inv);
       const aim = new THREE.Group(), aimBack = new THREE.Group(); aim.add(aimBack);
       const P = door ? Cg.clone().addScaledVector(ng, -.012) : Cg.clone().addScaledVector(ng, -.03).addScaledVector(vg, (v1 - v0) * .25);
@@ -10412,6 +10619,16 @@ const CABIN_LAYOUT = {
     lamps: { front: [.7, .49, -2.37], rear: [.72, .73, 2.39], fw: .1, fh: .035, rw: .1, rh: .05 },
     dials: { tach: [-.455, .976, -.812], speed: [-.306, .978, -.808], temp: [-.497, .953, -.803], fuel: [-.35, .955, -.798], tell: [-.38, .995, -.806] },
   },
+  /* police update: the patrol car. Key and stalks on the game's column (the model's own column is cut out with its wheel);
+     the hazard switch is on the siren controller, a console-mounted control head (LIGHTS, WAIL, YELP, HAZARD) on top of
+     the centre console behind the stack, turned toward the driver. No head unit: the radio is on the wheel pads. */
+  police: {
+    key: KEY_SPOT, stalkL: [-.043, .004, -.128], stalkR: [.043, .004, -.128],
+    siren: { p: [.035, .712, -.115], n: [-.22, .86, .46], w: .17, h: .058, d: .034,
+      buttons: [['beacon', 'beacon', 'LIGHTS'], ['sirenWail', 'wail', 'WAIL'], ['sirenYelp', 'yelp', 'YELP'], ['hazard', 'hazard', 'HAZARD']] },
+    shifter: { p: [.03, .66, -.05], type: 'prnd', len: .1 },
+    lamps: { front: [.74, .64, -2.3], rear: [.74, .88, 2.3], fw: .1, fh: .035, rw: .1, rh: .05 },
+  },
 };
 /* build 1.32: the steering wheel's four spoke pads (wheel space, both cars), as switches: lights, hazard | radio on / off, next track */
 const WHEEL_PADS = [['lights', -.1395, 'lights', 'ringG'], ['hazard', -.0942, 'hazard', 'ringR'], ['radioPower', .0942, 'radio', 'ringB'], ['trackNext', .1395, null, 'ringW']]
@@ -10433,7 +10650,7 @@ class CabinControls {
   constructor(car) {
     this.car = car; this.rigs = {}; this.t = 0;
     /* the state lives on the car (one car, two bodies) */
-    this.st = car.cab = { ign: 0, lights: 0, blink: 0, hazard: false, wipers: 0, horn: false, radio: { on: false, vol: .55, st: 0, tuneT: 0 }, fuel: .78, temp: 18, blinkOn: false, events: [] };
+    this.st = car.cab = { ign: 0, lights: 0, blink: 0, hazard: false, beacon: false, siren: 0, wipers: 0, horn: false, radio: { on: false, vol: .55, st: 0, tuneT: 0 }, fuel: .78, temp: 18, blinkOn: false, events: [] };
     const em = (c, k = 1) => new THREE.MeshBasicMaterial({ color: new THREE.Color(...c).multiplyScalar(k), toneMapped: true, fog: false });
     this.M = { amberOn: em([1, .42, .04], 6),
       knob: new THREE.MeshStandardMaterial({ color: 0x101011, roughness: .45, metalness: .3 }), metal: new THREE.MeshStandardMaterial({ color: 0xc8c8cc, roughness: .2, metalness: 1 }),
@@ -10448,7 +10665,7 @@ class CabinControls {
   }
   /** Engine-off reset at the start of a run: key out, lamps as a driver would leave them for the hour. */
   reset(night) {
-    const S = this.st; S.ign = 0; S.blink = 0; S.hazard = false; S.wipers = 0; S.horn = false; S.lights = night > .35 ? 2 : 0; S.fuel = .78; S.temp = 18; S.crankT = 0;
+    const S = this.st; S.ign = 0; S.blink = 0; S.hazard = false; S.beacon = false; S.siren = 0; S.wipers = 0; S.horn = false; S.lights = night > .35 ? 2 : 0; S.fuel = .78; S.temp = 18; S.crankT = 0;
   }
   #canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; return { c, g: c.getContext('2d'), t }; }
   /** Build 1.38: a printed button made real. The cap's face is the dash texture itself, cut at exactly the button's UVs
@@ -10525,6 +10742,20 @@ class CabinControls {
       glow.position.z = .0009; glow.renderOrder = 4; glow.visible = false; g.add(glow);
       const c = { id: t.id, arg: t.arg, obj: g, r: Math.hypot(t.w, t.h) / 2 + .004, poke: true, box: [t.w, t.h], glow, flash: 0, lit: t.lit || null }; R.ctl.push(c); R.fx.push(c); return c; };
     for (const t of WHEEL_PADS) touch(car.wheelSpin, t);
+    if (L.siren) {                                                      // police update: the siren controller
+      const B = L.siren, g = this.#mount(root, B.p, B.n), cv = this.#canvas(512, 176), x = cv.g, n = B.buttons.length, bw = .031, bh = .021, gap = (B.w - .016 - n * bw) / (n - 1);
+      x.fillStyle = '#121314'; x.fillRect(0, 0, 512, 176);
+      x.fillStyle = '#d8d8d8'; x.font = '600 26px Inter, Arial, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText('CODE 3  ·  SIREN / LIGHTS', 256, 30);
+      B.buttons.forEach(([, , label], i) => { const cx = (.008 + bw / 2 + i * (bw + gap)) / B.w * 512, cy = (B.h / 2 + .006) / B.h * 176;
+        x.fillStyle = '#26282a'; x.fillRect(cx - bw / B.w * 256 - 6, cy - bh / B.h * 88 - 6, bw / B.w * 512 + 12, bh / B.h * 176 + 12);
+        x.fillStyle = '#e8e8e8'; x.font = '700 22px Inter, Arial, sans-serif'; x.fillText(label, cx, cy); });
+      cv.t.needsUpdate = true;
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(B.w, B.h), new THREE.MeshStandardMaterial({ map: cv.t, roughness: .55, metalness: .05 })); face.position.z = .0004; g.add(face);
+      const box = new THREE.Mesh(new RoundedBoxGeometry(B.w + .01, B.h + .01, B.d, 2, .004).translate(0, 0, -B.d / 2), M.plastic); box.castShadow = box.receiveShadow = true; g.add(box);
+      B.buttons.forEach(([id, lit], i) => touch(g, { id, lit, p: [-B.w / 2 + .008 + bw / 2 + i * (bw + gap), -.006, .0006], n: [0, 0, 1], w: bw, h: bh }));
+      R.sirenBox = g;
+    }
     R.capPending = [];
     for (const t of L.touch || []) { const c = touch(root, t); if (key === 'celsior' && car.cel && !this.#texCap(c, t, car.cel.group)) R.capPending.push([c, t]); }
     R.parts.lights = R.ctl.find(c => c.id === 'lights').obj;
@@ -10588,6 +10819,13 @@ class CabinControls {
       case 'blinkLeft': S.blink = S.blink === -1 ? 0 : -1; ev.push('stalk'); break;
       case 'blinkRight': S.blink = S.blink === 1 ? 0 : 1; ev.push('stalk'); break;
       case 'hazard': S.hazard = !S.hazard; ev.push('click'); break;
+      /* police update: the console's siren controller (and J). The siren needs the patrol car; it lights the bar too. */
+      case 'beacon': S.beacon = !S.beacon; if (!S.beacon) S.siren = 0; ev.push('click'); break;
+      case 'sirenWail': case 'sirenYelp': case 'siren': {
+        if (!this.car.packCar?.glb?.police) { if (id === 'siren') bus.emit('toast', 'The siren is on the highway patrol car'); break; }
+        const want = id === 'sirenWail' ? 1 : id === 'sirenYelp' ? 2 : (S.siren + 1) % 3;
+        S.siren = id !== 'siren' && S.siren === want ? 0 : want; if (S.siren) S.beacon = true; ev.push('click'); break;
+      }
       case 'lights': S.lights = arg ?? (S.lights + 1) % 4; ev.push('click'); break;
       case 'wipers': S.wipers = arg ?? (S.wipers + 1) % 3; ev.push('stalk'); break;
       case 'radioPower': S.radio.on = !S.radio.on; S.radio.tuneT = S.radio.on ? .4 : 0; ev.push('click'); break;
@@ -10628,9 +10866,10 @@ class CabinControls {
     for (const c of R.fx) {                                            // build 1.32: the switches' glow
       c.flash = Math.max(0, c.flash - dt * 5);
       if (c.cap) { const pressed = this.vrPokeObj?.left === c || this.vrPokeObj?.right === c ? 1 : Math.min(1, c.flash * 2.5); c.cap.position.z = c.capZ0 ?? (c.capZ0 = c.cap.position.z); c.cap.position.z = c.capZ0 - CAP.travel * pressed; }   // build 1.38: it goes in
-      const on = c.lit === 'lights' ? S.lights >= 1 : c.lit === 'hazard' ? S.hazard && S.blinkOn : c.lit === 'radio' ? S.radio.on && !!S.ign : false;
+      const on = c.lit === 'lights' ? S.lights >= 1 : c.lit === 'hazard' ? S.hazard && S.blinkOn : c.lit === 'radio' ? S.radio.on && !!S.ign
+        : c.lit === 'beacon' ? S.beacon || S.siren > 0 : c.lit === 'wail' ? S.siren === 1 : c.lit === 'yelp' ? S.siren === 2 : false;   // police update
       const m = c.glow.material, op = Math.max(on ? (c.lit === 'hazard' ? .6 : .28) : 0, c.flash * .5);
-      if (op !== m.opacity) { m.opacity = op; c.glow.visible = op > .01; m.color.set(c.flash > .3 || !on ? 0xffffff : c.lit === 'hazard' ? 0xff3a12 : c.lit === 'lights' ? 0x40ff70 : 0x60c8ff); }
+      if (op !== m.opacity) { m.opacity = op; c.glow.visible = op > .01; m.color.set(c.flash > .3 || !on ? 0xffffff : c.lit === 'hazard' ? 0xff3a12 : c.lit === 'lights' ? 0x40ff70 : c.lit === 'beacon' ? 0xff2a2a : c.lit === 'yelp' ? 0xffa020 : 0x60c8ff); }
     }
     if (P.clutch) P.clutch.rotation.x = -.22 + clamp(sim?.clutchPedal ?? 0, 0, 1) * .3;
     this.#lever(R, sim);
@@ -10881,7 +11120,7 @@ class DriverBody {
     if (vr || !R) return;
     const wb = car.wheelSpin; wb.updateWorldMatrix(true, false);
     const bodyInv = this._bi ??= new THREE.Matrix4(); bodyInv.copy(car.body.matrixWorld).invert();
-    const rimPt = (ang, out) => out.set(Math.cos(ang) * CABIN.wheelR, Math.sin(ang) * CABIN.wheelR, .01).applyMatrix4(wb.matrixWorld).applyMatrix4(bodyInv);
+    const rimPt = (ang, out) => out.set(Math.cos(ang) * WHEEL_R0, Math.sin(ang) * WHEEL_R0, .01).applyMatrix4(wb.matrixWorld).applyMatrix4(bodyInv);
     const task = S.lastAct && t - S.lastAct.t < (S.lastAct.id === 'key' ? 1.4 : .7) ? S.lastAct.id : S.ign === 2 ? 'key' : null;
     const ctlPos = (id, out) => { const o = id === 'key' ? R.parts.key : id === 'lever' ? (R.noLever ? null : R.parts.lever) : id === 'stalk' ? R.parts.stalkL : id === 'wipers' ? R.parts.stalkR : id === 'lights' ? R.parts.lights : id === 'radio' ? (R.lcdMesh || R.parts.vol) : id === 'hazard' ? R.parts.hazard : null;
       if (!o) return null; o.updateWorldMatrix(true, false); out.setFromMatrixPosition(o.matrixWorld).applyMatrix4(bodyInv); if (id === 'lever') out.y += (R.leverLen || .15) + .01; out.z += .03; return out; };
@@ -11525,10 +11764,10 @@ function policeTrafficGeometry(U) {
     const base = tailM ? new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .08, metalness: 0, transparent: true, opacity: .88 }) : o.material.clone();
     const mat = Atmos.patch(base, { key: 'trafpol' + (tailM ? 'T' : barM ? (blue ? 'B' : 'R') : base.transparent ? 't' : ''), uniforms: U,
       vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;', vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif',
-      fragPars: 'uniform float uNight, uTrafT; varying vec4 vLampI;',
+      fragPars: 'uniform float uNight, uTrafT; varying vec4 vLampI;' + (barM ? POLICE_FLASH_GLSL : ''),
       frag: tailM ? [['#include <emissivemap_fragment>', 'totalEmissiveRadiance = vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8);']]
-        : barM ? [['#include <emissivemap_fragment>', `{ float ph = fract(uTrafT * 2.2 + vLampI.z * .0); float on = step(.5, vLampI.w) * ${blue ? 'step(ph, .5)' : 'step(.5, ph)'};
-            totalEmissiveRadiance = ${blue ? 'vec3(.1, .25, 1.0)' : 'vec3(1.0, .05, .03)'} * on * 6.0; }`]] : [] });
+        : barM ? [['#include <emissivemap_fragment>', `{ float on = step(.5, vLampI.w) * polFlash(uTrafT, ${blue ? '1.0' : '-1.0'});   // police update: the drivable car's pattern
+            totalEmissiveRadiance = ${blue ? 'vec3(.1, .25, 1.0)' : 'vec3(1.0, .05, .03)'} * (on * 7.0 + step(.5, vLampI.w) * .2); }`]] : [] });
     mat.userData.shared = true; geos.push(g); mats.push(mat);
   });
   const body = BufferGeometryUtils.mergeGeometries(geos, true); geos.forEach(g => g.dispose());
@@ -11816,7 +12055,8 @@ class TrafficSystem {
       ps: 0, pu: 0, ppsi: 0, ppitch: 0, proll: 0, pdist: 0, rel: 0, prevRel: 0, f: 0, uLo: 0, uHi: 0, len: 4, lenE: 4, uDot: 0, uDotPrev: 0, yawRate: 0,
       lane: 0, tLane: 0, lc: 0, lcT: 0, lcP: 0, lcDur: 3, lcBase: 3, uFrom: 0, uTo: 0, sig: 0, sigOff: 0, decT: 1, decInt: 1.5, urgent: false, abortT: 0,
       lead: null, prevLead: null, noticeT: 0, cutBy: false, crash: null, shaken: 0, court: null, courtCool: 0, hornCd: 0, flash: 0, brake: 0, haz: false,
-      evadeT: 0, lastHit: -9, heavyHit: false, tailT: 0, cutWatch: 0, weave: 0, weaveF: .3, trk: { on: false, from: false, min: 9, contact: false, split: false } };
+      evadeT: 0, lastHit: -9, heavyHit: false, tailT: 0, cutWatch: 0, weave: 0, weaveF: .3, trk: { on: false, from: false, min: 9, contact: false, split: false },
+      role: null, siren: false, chase: null, yieldT: 0 };   // police update: chase roles (TrafficSystem.chaseSpawn), moving over for sirens
   }
   laneU(k, dir = 1) { const t = this.track; return dir * (t.laneStart + t.laneW * (k + .5)); }
 
@@ -11824,7 +12064,7 @@ class TrafficSystem {
   reset(P) {
     const c = this.cfg = { ...this.s.data.traffic }, tr = this.track;
     this.lanes = tr.lanes; this.B = 330; this.A = clamp(this.ahead * .92, 700, 1500);
-    for (const a of this.agents) a.on = false;
+    for (const a of this.agents) { a.on = false; a.role = null; a.siren = false; a.chase = null; }
     this.events.length = 0; this.sounds.length = 0; this.time = 0;
     this.#syncPlayer(P);
     this.target = { 1: this.#fill(1, c.density), [-1]: this.s.data.world.scenery === 'tunnel' ? 0 : this.#fill(-1, c.density * .62) };   // build 1.21: the tunnel has no oncoming bore
@@ -11891,7 +12131,7 @@ class TrafficSystem {
     a.lc = 0; a.sig = 0; a.psi = a.pitch = a.roll = 0; a.acc = a.accIdm = 0; a.uDot = a.uDotPrev = a.yawRate = 0;
     a.crash = null; a.shaken = 0; a.court = null; a.courtCool = 0; a.hornCd = 0; a.flash = 0; a.haz = false; a.brake = 0;
     a.lead = a.prevLead = null; a.noticeT = 0; a.cutBy = false; a.cutWatch = 0; a.decT = Math.random() * a.decInt; a.evadeT = 0; a.tailT = 0; a.heavyHit = false; a.lastHit = -9;
-    a.trk.on = false; a.trk.contact = false; a.trk.split = false;
+    a.trk.on = false; a.trk.contact = false; a.trk.split = false; a.role = null; a.siren = false; a.chase = null; a.yieldT = 0;
     a.ps = a.s; a.pu = a.u; a.ppsi = 0; a.ppitch = 0; a.proll = 0; a.pdist = a.dist;
     a.uLo = a.u - a.T.hw; a.uHi = a.u + a.T.hw;
   }
@@ -11926,6 +12166,7 @@ class TrafficSystem {
         if (live < this.target[a.dir] && tries < 2) { tries++; if (this.#respawn(a, A + Math.random() * 80)) { if (a.dir > 0) this.liveF++; else this.liveO++; } }
         continue;
       }
+      if (a.role) continue;                                            // police update: the chase keeps its own cars
       const r = a.rel;
       if (r < -B - 10) this.#respawn(a, A + Math.random() * 80);
       else if (r > A + (a.dir > 0 ? 90 : 140)) this.#respawn(a, -B + Math.random() * 30);
@@ -11964,6 +12205,8 @@ class TrafficSystem {
     }
     this.#groups();
     const gF = this.gF, gO = this.gO;
+    { const Y = this.sirensF || (this.sirensF = []); Y.length = 0;        // police update: who is coming up behind with a siren
+      for (const a of gF) if (a.isPlayer ? this.playerSiren : a.siren && !a.crash) Y.push(a); }
     for (let i = 0; i < gF.length; i++) if (!gF[i].isPlayer) this.#drive(gF[i], gF, i, dt, P);
     for (let i = 0; i < gO.length; i++) this.#drive(gO[i], gO, i, dt, null);
     this.#interact(dt, P, sim);
@@ -11974,7 +12217,9 @@ class TrafficSystem {
     if (a.hornCd > 0) a.hornCd -= dt;
     if (a.flash > 0) a.flash -= dt;
     if (a.shaken > 0) a.shaken -= dt;
+    if (a.crash && a.role && a.crash.still > 2.2 && Math.cos(a.psi) > .85 && Math.abs(a.rel) > (a.role === 'cop' ? 25 : 40)) { a.crash = null; a.v = 1; a.psi = 0; a.shaken = 1.5; }   // police update: back into the chase
     if (a.crash) { this.#crashMove(a, dt); return; }
+    if (a.role) { this.#chaseDrive(a, g, i, dt, P); return; }
     const grip = 1 - .3 * this.wet;
     /* corridor: the lane we are in, plus the one we are moving into */
     const uB = a.lc === 2 ? a.uTo : a.u, lo = Math.min(a.u, uB) - a.T.hw - .12, hi = Math.max(a.u, uB) + a.T.hw + .12;
@@ -11999,6 +12244,7 @@ class TrafficSystem {
       else if (acc < -3 && a.hornCd <= 0 && Math.random() < .25 + .7 * a.agg) { this.sounds.push({ type: 'horn', a }); a.hornCd = 6; if (a.agg > .55) a.flash = .9; }
     }
     if (P) this.#tailgated(a, g, i, P, dt);
+    if (a.dir > 0 && this.sirensF.length) this.#yield(a, g, i);
     if (a.dir > 0) this.#laneChange(a, g, i, acc, dt); else this.#keepLane(a, dt);
     acc = clamp(acc, -a.bmax * grip, a.amax);
     a.acc += clamp(acc - a.acc, -28 * dt, 9 * dt);                       // jerk-limited actuation
@@ -12096,6 +12342,15 @@ class TrafficSystem {
     a.courtCool = 9; a.tailT = 0;
     if (Math.random() < a.polite * .85) this.#consider(a, g, i, a.accIdm, false, true);
     else if (a.agg > .7 && Math.random() < .4 + .5 * (a.agg - .7)) { a.court = { mode: 'check', t: .55 + Math.random() * .3 }; a.flash = 0; }
+  }
+  /** Police update: a siren coming up behind in your lane (within 110 m, closing or close): move over if you can, the
+   *  courteous way (right first). Checked at most every 2 s per driver; a driver who cannot move keeps going. */
+  #yield(a, g, i) {
+    if (a.lc || a.crash || a.court || a.yieldT > this.time) return;
+    for (const c of this.sirensF) {
+      const gap = a.f - c.f, lw = this.track.laneW;
+      if (gap > 4 && gap < 110 && Math.abs(a.u - c.u) < lw * .6 && (gap < 35 || c.v > a.v + 2)) { a.yieldT = this.time + 2; this.#consider(a, g, i, a.accIdm, false, true); return; }
+    }
   }
   /** Reactions to the player trying to merge alongside. */
   #courtesy(a, acc, P, dt, seen) {
@@ -12216,7 +12471,8 @@ class TrafficSystem {
     const dvs = (ix * tx + iz * tz) * a.dir, dvu = ix * F.Rh.x + iz * F.Rh.z;
     const I = m * (a.T.len ** 2 + (2 * a.T.hw) ** 2) / 12, dx = hit.cx - p.x, dz = hit.cz - p.z;
     const dw = -(dz * -r.jx - dx * -r.jz) / I;
-    if (!a.crash && (dv > 1.8 || Math.abs(dw) > .22)) { a.crash = { vs: a.v, vu: a.uDot, w: 0, t: 0 }; a.lc = 0; a.court = null; }
+    const tough = a.role === 'cop' ? 2.8 : 1;                          // police update: a push bar takes more before a patrol car spins
+    if (!a.crash && (dv > 1.8 * tough || Math.abs(dw) > .22 * tough)) { a.crash = { vs: a.v, vu: a.uDot, w: 0, t: 0 }; a.lc = 0; a.court = null; }
     if (a.crash) { a.crash.vs += dvs; a.crash.vu += dvu; a.crash.w += dw * a.dir; }
     else { a.v = Math.max(0, a.v + dvs); a.shaken = 4; a.acc = Math.min(a.acc, -3); }
     /* One incident per touch: rubbing along a car, or being nudged again while still in
@@ -12226,11 +12482,113 @@ class TrafficSystem {
       const heavy = jp > 4 || !!a.crash && dv > 2.5;
       if (this.time - a.lastHit > 2.5 || (heavy && !a.heavyHit)) {
         a.heavyHit = heavy;
-        this.events.push({ type: 'contact', dv: jp, heavy });
+        this.events.push({ type: 'contact', dv: jp, heavy, role: a.role });
         if (a.hornCd <= 0) { this.sounds.push({ type: 'horn', a, long: true }); a.hornCd = 4; }
       }
       a.lastHit = this.time;
     }
+  }
+  /* ── Police update: chase roles (ChaseMode) ──
+     'suspect': a fleeing saloon. Fast (C.v0, a little faster with you close behind), short gaps, hard acceleration and
+     braking, and every 0.35 s it takes whichever of its own and the neighbouring lanes has the longest clear road ahead
+     (an urgent gap check first), over 1.1 s: it weaves. Boxed in behind you, it brakes like anyone. 'cop': a patrol car
+     with lights and siren. Far behind: closes at up to C.vmax, in the lane with the clearest road, your lane once
+     within 150 m. Within 30 m behind to alongside: rams (your lane position, a push toward your rear quarter, 3.5 m/s
+     faster than you). Ahead of you: boxes (your lane position, 5 m/s slower). Rams and boxes steer freely across the
+     lanes and ignore you as the car ahead; traffic they still respect. Neither is ever recycled; crashes recover once
+     stopped facing the right way (#drive). */
+  chaseSpawn(role, rel, lane, v) {
+    let a = this.agents.find(o => !o.on && o.dir > 0);
+    if (!a) { let far = null; for (const o of this.agents) if (o.on && o.dir > 0 && !o.role && (!far || Math.abs(o.rel) > Math.abs(far.rel))) far = o; a = far; }
+    if (!a) return null;
+    lane = clamp(lane, 0, this.lanes - 1);
+    const T = role === 'cop' ? TRAFFIC_TYPES.find(t => t.police) || TRAFFIC_TYPES[0] : TRAFFIC_TYPES.find(t => t.cls === 'car' && !t.police && !t.truck) || TRAFFIC_TYPES[0];
+    const wasOn = a.on; a.on = false;                                  // a free spot: its lane first, then the others, then a little further along
+    let k = lane, r = rel;
+    find: for (let tries = 0; tries < 4; tries++) {
+      const rr = rel + (tries ? (tries % 2 ? 1 : -1) * 18 * Math.ceil(tries / 2) : 0);
+      for (let j = 0; j < this.lanes; j++) { const kk = (lane + j) % this.lanes; this.#assign(a, kk); a.T = T; a.len = a.lenE = T.len; if (this.#free(a, rr, kk) || Math.abs(rr) < 80) { k = kk; r = rr; break find; } }
+    }
+    a.on = wasOn;
+    this.#assign(a, k); a.T = T; a.len = a.lenE = T.len;
+    this.#place(a, r, k); a.v = v;
+    if (role === 'cop') a.color.setRGB(1, 1, 1); else a.color.setRGB(.012, .012, .014);   // the livery is the texture; the suspect's saloon black
+    a.role = role; a.siren = role === 'cop';
+    Object.assign(a, { amax: role === 'cop' ? 4.8 : 4.4, b: 4.5, s0: 2, T_: .45, bmax: 9.6, bsafe: 7, decT: 1e9, signals: false, weave: .03, polite: 0, agg: 1, misjudge: 0 });
+    a.chase = { lcT: .5, v0: v, vmax: 60, side: Math.random() < .5 ? -1 : 1 };
+    return a;
+  }
+  /** Back to ordinary traffic (siren off, its own pace). */
+  chaseRelease(a) { if (!a) return; a.role = null; a.siren = false; a.chase = null; a.decT = 1 + Math.random(); a.v0 = clamp(a.v0, 55 / 3.6, 130 / 3.6); }
+  #chaseLead(a, g, i, lo, hi, skipPlayer) {
+    /* skipPlayer (a unit after you): you in its corridor are the target, so nothing beyond you counts either */
+    const f0 = a.f; for (let j = i + 1; j < g.length; j++) { const o = g[j]; if (o.f - f0 > 320) break; if (o.uHi > lo && o.uLo < hi) { if (skipPlayer && o.isPlayer) return null; return o; } } return null;
+  }
+  /** The suspect cuts in wherever there is physical room: nothing in lane k from a car length behind it to 7 m ahead
+   *  (the cars it cuts up brake for it; the usual gap acceptance would keep it boxed in all day). */
+  #chaseRoom(a, g, i, k) {
+    const uc = this.laneU(k), lo = uc - a.T.hw - .25, hi = uc + a.T.hw + .25;
+    for (let j = Math.max(0, i - 10); j < Math.min(g.length, i + 11); j++) {
+      const o = g[j]; if (o === a) continue;
+      const df = o.f - a.f; if (df < -(o.lenE + a.lenE) / 2 - 3 || df > (o.lenE + a.lenE) / 2 + 7) continue;
+      if (o.uHi > lo && o.uLo < hi) return false;
+    }
+    return true;
+  }
+  #chaseDrive(a, g, i, dt, P) {
+    const pl = this.player, C = a.chase, tr = this.track, grip = 1 - .3 * this.wet, cop = a.role === 'cop';
+    const d = pl.f - a.f, pv = Math.max(0, pl.v), lw = tr.laneW;
+    let vT = C.v0, uT = null, skip = false;
+    if (cop) {
+      skip = true;                                                                                  // you are the target, never the car to keep a gap to
+      if (d > 30) vT = d > 120 ? C.vmax : Math.min(C.vmax, pv + clamp(d * .08, 4, 26));          // far back: flat out
+      else if (d > -5) { vT = pv + 3.5; uT = pl.u + C.side * .35 * (d < 4 ? 1 : 0); }               // ram, then lean on your rear quarter
+      else { vT = Math.max(0, pv - 5); uT = pl.u; }                                                // ahead: box you in
+      if (pv < 3 && Math.abs(d) < 16) vT = Math.min(vT, pv + .5);                                 // you stopped: hold you there
+    } else if (d < 0 && d > -70) vT = C.v0 + 5;                                                     // you right behind him: flat out
+    else if (d < -250) vT = C.v0 * .85;                                                             // you far back: he thinks he has lost you
+    /* corridor ahead */
+    const uB = a.lc === 2 ? a.uTo : a.u, lo = Math.min(a.u, uB) - a.T.hw - .12, hi = Math.max(a.u, uB) + a.T.hw + .12;
+    const lead = this.#chaseLead(a, g, i, lo, hi, skip);
+    let acc = this.#idm(a, lead, Math.max(vT, 1));
+    a.accIdm = acc; a.lead = lead;
+    if (uT != null) {                                                  // free steering across the lanes (ram / box)
+      const u0 = tr.laneStart + a.T.hw * .8, u1 = tr.laneEnd - a.T.hw * .8;
+      const goal = clamp(uT, u0, u1), side = Math.sign(goal - a.u);
+      let blocked = false;                                              // never through a car alongside: hold the line until it is clear
+      for (let j = Math.max(0, i - 8); j < Math.min(g.length, i + 9) && !blocked; j++) {
+        const o = g[j]; if (o === a || o.isPlayer) continue;
+        if (Math.abs(o.f - a.f) < (o.lenE + a.lenE) / 2 + 1 && (side > 0 ? o.uLo < a.uHi + 1.2 && o.uHi > a.u : o.uHi > a.uLo - 1.2 && o.uLo < a.u)) blocked = true;
+      }
+      a.lc = 0; a.uDot = blocked ? 0 : clamp((goal - a.u) * 1.8, -3.4, 3.4); a.u += a.uDot * dt;
+      a.lane = a.tLane = clamp(Math.round((a.u - tr.laneStart) / lw - .5), 0, this.lanes - 1);
+    } else {
+      if (a.lc === 0 && (C.lcT -= dt) <= 0) {
+        C.lcT = .35;
+        const gapIn = k => { const uc = this.laneU(k), L = this.#chaseLead(a, g, i, uc - a.T.hw - .2, uc + a.T.hw + .2, cop); return L ? Math.min(250, this.#gap(a, L)) : 250; };
+        let best = a.lane, bs = gapIn(a.lane) + 12;
+        for (const k of [a.lane - 1, a.lane + 1]) {
+          if (k < 0 || k >= this.lanes) continue;
+          let sc = gapIn(k) + (cop && d > 0 && d < 150 && Math.abs(this.laneU(k) - pl.u) < lw * .5 ? 40 : 0);
+          if (sc > bs && (cop ? this.#evaluate(a, g, i, k, true, 1).safe : this.#chaseRoom(a, g, i, k))) { bs = sc; best = k; }
+        }
+        if (best !== a.lane) { a.tLane = best; a.lc = 2; a.lcP = 0; a.uFrom = a.u; a.uTo = this.laneU(best); a.lcDur = cop ? 1.3 : 1.1; a.abortT = cop ? .25 : 1e9; a.sig = 0; }   // the suspect never thinks twice
+      }
+      this.#laneChange(a, g, i, acc, dt);
+    }
+    acc = clamp(acc, -a.bmax * grip, a.amax * (a.shaken > 0 ? .5 : 1));
+    a.acc += clamp(acc - a.acc, -34 * dt, 14 * dt);
+    a.v = Math.max(0, a.v + a.acc * dt);
+    if (a.v === 0 && a.acc < 0) a.acc = 0;
+    let ds = a.v * dt;
+    if (lead && !lead.isPlayer) { const gp = this.#gap(a, lead) - ds + lead.v * dt; if (gp < .4) { a.v = Math.min(a.v, lead.v); a.acc = Math.min(a.acc, 0); ds = Math.max(0, ds + gp - .4); } }
+    a.s = mod(a.s + a.dir * ds, tr.length); a.f += ds; a.rel += a.dir * ds; a.dist += ds;
+    a.psi = Math.atan2(a.uDot, Math.max(a.v, 3));
+    a.yawRate = (a.psi - a.ppsi) / dt;
+    a.pitch = damp(a.pitch, clamp(a.acc * .0042, -.032, .02), 8, dt);
+    const latA = (a.uDot - a.uDotPrev) / dt; a.uDotPrev = a.uDot;
+    a.roll = damp(a.roll, clamp(latA * .007, -.03, .03), 6, dt);
+    a.brake = a.acc < -.65 || a.v < .4 ? 1 : 0;
   }
   /** Your horn: the driver ahead in your lane may move over, if they are the courteous kind. */
   playerHorn() {
@@ -12316,6 +12674,7 @@ class ScoreSystem {
         break;
       }
       case 'contact': {
+        if (ev.role === 'suspect') return;                             // police update: a PIT or a box on the suspect is the job, not a clip
         if (this.clock - this.lastContact < 1.2) return;
         this.lastContact = this.clock;
         if (ev.heavy) this.stats.crashes++; else this.stats.contacts++;
@@ -12325,6 +12684,10 @@ class ScoreSystem {
     }
   }
   barrier(strength) { if (strength < 2.5) return; this.stats.barrier++; this.#lose('Barrier'); }
+  /** Police update: chase results (ChaseMode). A bonus is banked at once; a penalty takes points and the running chain. */
+  bonus(label, pts) { if (this.idle) return; this.score += pts; this.#feed(label, pts, 'bank'); }
+  penalty(label, pts) { this.pending = 0; this.n = 0; this.t = 0; this.score = Math.max(0, this.score - pts); this.feedQ.push({ label, pts: -Math.round(pts), kind: 'bad' }); }
+  note(label) { this.feedQ.push({ label, pts: 0, kind: 'bad' }); }
   /** Build 1.28: a clip or a crash keeps half of the chain already banked (it used to lose all of it). */
   #lose(label) { const lost = this.pending * .5; this.score = Math.max(0, this.score - lost); this.pending = 0; this.n = 0; this.t = 0; this.feedQ.push({ label: lost > 0 ? label + ', half the chain kept' : label, pts: -Math.round(lost), kind: 'bad' }); }
   #bank() {
@@ -12347,6 +12710,147 @@ class ScoreSystem {
   }
   finish() { if (this.t > 0 || this.pending > 0) { this.t = 0; this.#bank(); } }
   takeFeed() { if (!this.feedQ.length) return null; const q = this.feedQ; this.feedQ = []; return q; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   §17b CHASES (police update)
+   Two run modes from the main menu, on the same road, traffic and scoring:
+   PURSUIT: you drive the patrol car. A black saloon comes past you at speed
+     and runs, weaving through the traffic (TrafficSystem role 'suspect').
+     Stop it: stay close (within 16 m, on its line). The hold meter fills
+     (faster within 9 m, much faster once it is stopped or spun: box it in
+     behind you, or a PIT nudge at its rear quarter) and drains when you
+     fall back; full at CHASE.hold s = caught, and it pulls over. After
+     CHASE.grace s: more than CHASE.far m back for CHASE.lose s, or more
+     than CHASE.gone m, = it escapes; CHASE.limit s on the clock too. A
+     suspect with you far behind eases off a little (it thinks it has lost
+     you). Points for a stop grow with the round, its speed and the time
+     left; touching the suspect costs no chain.
+   WANTED: you drive the saloon; patrol cars come with lights and siren
+     (role 'cop'): they close in, ram and lean on your rear quarter, and
+     from the second wave one waits ahead to box you in. Lose them: no
+     unit within CHASE.evadeR m for CHASE.evade s. Busted: slower than
+     16 km/h with a unit within 14 m for CHASE.bust s. Each escape raises
+     the heat (more units, faster); points for every escape and for time
+     at speed under pursuit; busted costs a fifth of the score.
+   Notices go through 'chase:note' (the page toast, and the headset's);
+   the page shows the chase bar (ChaseHud).
+   ════════════════════════════════════════════════════════════════════════ */
+const CHASE = { hold: 6, far: 420, lose: 8, gone: 950, grace: 20, limit: 240, evadeR: 300, evade: 8, bust: 3.5, between: { pursuit: 8, wanted: 14 } };
+class ChaseMode {
+  constructor(world, mode) {
+    this.w = world; this.mode = mode;
+    this.hud = { mode, title: '', line: '', bar: 0, barLabel: '', warn: '', timer: null, kind: '' };
+  }
+  reset() {
+    Object.assign(this, { t: 0, phase: 'wait', wait: this.mode === 'pursuit' ? 2.5 : 5, round: 0, heat: 1, units: [], suspect: null,
+      hold: 0, far: 0, bust: 0, evade: 0, last: 0, chaseT: 0, near: 1e9, acc: 0, v0: 45, vmax: 55, first: true });
+    const cc = this.w.carObj.controls;                                   // a chase starts with the engine turning over
+    if (cc?.st && cc.st.ign === 0) cc.act('ignition');
+    this.#hud();
+  }
+  #say(m, ms = 3600) { bus.emit('chase:note', { m, ms }); }
+  #lane() { return Math.floor(Math.random() * this.w.traffic.lanes); }
+  step(dt, P) {
+    this.t += dt;
+    if (this.phase === 'wait') { if ((this.wait -= dt) <= 0) this.#begin(P); this.#hud(); return; }
+    this.chaseT += dt;
+    if (this.mode === 'pursuit') this.#pursuit(dt, P); else this.#wanted(dt, P);
+    this.#hud();
+  }
+  #pursuit(dt, P) {
+    const T = this.w.traffic, sc = this.w.score;
+    let a = this.suspect;
+    if (!a || !a.on || a.role !== 'suspect') {                           // the traffic was rebuilt under him (another road): back where he was
+      a = this.suspect = T.chaseSpawn('suspect', clamp(this.last, -250, 300), this.#lane(), this.v0);
+      if (!a) return;
+    }
+    this.last = a.rel;
+    const d = Math.abs(a.rel) - (a.lenE + CAR.length) / 2, lat = Math.abs(a.u - P.u), stopped = !!a.crash || a.v < 4;
+    const close = d < 16 && lat < 3.2;
+    this.hold = clamp(this.hold + dt * (close ? (stopped ? 2.6 : d < 9 ? 1.4 : 1) : -.6), 0, CHASE.hold);
+    const counting = this.chaseT > CHASE.grace;
+    this.far = counting && Math.abs(a.rel) > CHASE.far ? this.far + dt : Math.max(0, this.far - 2 * dt);
+    if (this.hold >= CHASE.hold) {
+      const pts = Math.round((2500 + 1200 * (this.round - 1)) * (1 + clamp((this.v0 * 3.6 - 140) / 120, 0, .8)) + Math.max(0, CHASE.limit - this.chaseT) * 15);
+      sc.bonus('Suspect stopped', pts);
+      this.#say(`Suspect stopped after ${Math.round(this.chaseT)} s. Stand by for the next call.`);
+      if (!a.crash) a.crash = { vs: a.v, vu: 0, w: 0, t: 0 };           // he gives up: brakes to a stop, then the stopped-car logic takes him to the shoulder
+      T.chaseRelease(a); this.#end();
+    } else if (this.chaseT > CHASE.limit || this.far > CHASE.lose || (counting && Math.abs(a.rel) > CHASE.gone)) {
+      const late = this.chaseT > CHASE.limit;
+      sc.note(late ? 'Out of time' : 'Suspect escaped');
+      this.#say(late ? 'Out of time: the suspect got away.' : 'You lost him. The suspect got away.');
+      T.chaseRelease(a); this.#end();
+    }
+  }
+  #wanted(dt, P) {
+    const T = this.w.traffic, sc = this.w.score;
+    let nd = 1e9;
+    for (let k = 0; k < this.units.length; k++) {
+      let a = this.units[k];
+      if (!a || !a.on || a.role !== 'cop') {                             // rebuilt traffic: the unit comes back behind you
+        a = this.units[k] = T.chaseSpawn('cop', -300 - 45 * k, this.#lane(), Math.max(25, P.vs));
+        if (a) a.chase.vmax = this.vmax; else continue;
+      }
+      nd = Math.min(nd, Math.abs(a.rel) - (a.lenE + CAR.length) / 2);
+    }
+    this.near = nd;
+    const v = Math.max(0, P.vs);
+    if (v > 25 && nd < CHASE.evadeR) { this.acc += dt * v * .25 * this.heat; if (this.acc >= 250) { sc.bonus('Under pursuit', Math.round(this.acc)); this.acc = 0; } }
+    this.bust = v < 4.5 && nd < 14 ? this.bust + dt : Math.max(0, this.bust - 1.5 * dt);
+    this.evade = nd > CHASE.evadeR ? this.evade + dt : Math.max(0, this.evade - 2 * dt);
+    if (this.bust >= CHASE.bust) {
+      sc.penalty('Busted', Math.round(sc.score * .2));
+      this.#say('Busted. A fifth of your score goes on the fine; the units stand down.');
+      for (const a of this.units) T.chaseRelease(a);
+      this.heat = Math.max(1, this.heat - 1); this.#end();
+    } else if (this.evade >= CHASE.evade) {
+      sc.bonus(this.heat > 1 ? `Escaped, heat ${this.heat}` : 'Escaped', Math.round(2000 * this.heat + this.chaseT * 20));
+      this.#say(`You lost them. Heat ${this.heat + 1}: more units, and faster, next time.`);
+      for (const a of this.units) T.chaseRelease(a);
+      this.heat++; this.#end();
+    }
+  }
+  #begin(P) {
+    const T = this.w.traffic; this.round++;
+    Object.assign(this, { hold: 0, far: 0, bust: 0, evade: 0, chaseT: 0, acc: 0 });
+    if (this.mode === 'pursuit') {
+      this.v0 = Math.min(58, 43 + this.round * 2.5); this.last = -170;
+      this.suspect = T.chaseSpawn('suspect', -170, this.#lane(), this.v0);
+      this.#say(this.first ? `Dispatch: a black saloon at ${Math.round(this.v0 * 3.6)} km/h is about to pass you. Lights and siren: J (or the console). Stay on him until he stops: box him in or nudge his rear quarter.`
+        : `Dispatch: another speeder coming past, ${Math.round(this.v0 * 3.6)} km/h.`, 6000);
+    } else {
+      const n = Math.min(4, this.heat + 1); this.vmax = Math.min(66, 52 + this.heat * 3.5); this.units = [];
+      for (let k = 0; k < n; k++) {
+        const ahead = k === n - 1 && this.heat > 1;                      // from the second wave one waits ahead of you
+        const a = ahead ? T.chaseSpawn('cop', 420, this.#lane(), 22) : T.chaseSpawn('cop', -280 - 55 * k, this.#lane(), Math.max(28, P.vs + 8));
+        if (a) { a.chase.vmax = this.vmax; this.units.push(a); }
+      }
+      this.#say(this.first ? `Wanted: ${n} patrol units on your tail. Lose them: ${CHASE.evadeR} m clear for ${CHASE.evade} s. Stopped beside them, you are busted.`
+        : `${n} units after you${this.heat > 1 ? ', one up ahead' : ''}.`, 6000);
+    }
+    this.first = false; this.phase = 'chase';
+  }
+  #end() { this.phase = 'wait'; this.wait = CHASE.between[this.mode]; this.suspect = null; this.units = []; }
+  #hud() {
+    const H = this.hud; H.warn = ''; H.timer = null; H.kind = '';
+    if (this.mode === 'pursuit') {
+      H.title = 'PURSUIT';
+      if (this.phase === 'wait') { H.line = this.round ? 'Waiting for the next call' : 'Waiting for dispatch'; H.bar = 0; H.barLabel = ''; return; }
+      const a = this.suspect, d = a ? Math.max(0, Math.abs(a.rel) - (a.lenE + CAR.length) / 2) : 0;
+      H.line = `Suspect ${a && a.rel < 0 ? 'behind you, ' : ''}${Math.round(d)} m · ${Math.round((a?.crash ? a.crash.vs : a?.v || 0) * 3.6)} km/h`;
+      H.bar = this.hold / CHASE.hold; H.barLabel = a?.crash ? 'He is stopped: pull up close' : 'Stay close to stop him';
+      if (this.far > 0) { H.warn = `Losing him: ${Math.max(0, CHASE.lose - this.far).toFixed(0)} s`; H.kind = 'bad'; }
+      H.timer = Math.max(0, CHASE.limit - this.chaseT);
+    } else {
+      H.title = 'WANTED ' + '★'.repeat(Math.min(5, this.heat));
+      if (this.phase === 'wait') { H.line = this.round ? 'Lying low' : 'Cruising'; H.bar = 0; H.barLabel = ''; return; }
+      H.line = `Nearest unit ${Math.round(Math.max(0, this.near))} m`;
+      if (this.bust > .05) { H.bar = this.bust / CHASE.bust; H.barLabel = 'Pulling you over: drive!'; H.kind = 'bad'; }
+      else { H.bar = this.evade / CHASE.evade; H.barLabel = this.near > CHASE.evadeR ? 'Out of sight: keep going' : `Get ${CHASE.evadeR} m clear`; }
+    }
+  }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -13193,6 +13697,8 @@ class UIManager {
     const vr = this.app.vr;
     const items = [
       ['Start run', () => this.app.startRun()],
+      ['Pursuit', () => this.app.startRun('pursuit'), 'Chase a speeder in the patrol car'],   // police update
+      ['Wanted', () => this.app.startRun('wanted'), 'Outrun the highway patrol'],
       ...(vr?.supported ? [['Drive in VR', () => vr.enter(), 'Quest 3 and 3S']] : vr?.embeddedBlock ? [['Drive in VR', () => vr.openTab(), 'Opens in its own tab']] : []),
       ['Garage', () => this.show('garage')],
       ['Traffic setup', () => this.show('traffic')],
@@ -13499,6 +14005,17 @@ class HUD {
   setVisible(v) { this.visible = v; this.el.classList.toggle('on', v && this.s.data.interface.showHud); }
   refresh() { this.setVisible(this.visible); this.cache = {}; }
   setNote(...nodes) { this.e.note.replaceChildren(...nodes); }
+  /** Police update: the chase bar from ChaseMode.hud (null hides it). Text is written only when it changes. */
+  chase(H) {
+    const el = this.chEl ??= { root: $('#chase-hud'), title: $('#chase-hud .ch-title'), timer: $('#chase-hud .ch-timer'), line: $('#chase-hud .ch-line'), fill: $('#chase-hud .ch-fill'), label: $('#chase-hud .ch-label'), warn: $('#chase-hud .ch-warn'), c: {} };
+    const put = (k, v) => { if (el.c[k] !== v) { el.c[k] = v; el[k].textContent = v; } };
+    el.root.classList.toggle('on', !!H);
+    if (!H) return;
+    el.root.classList.toggle('bad', H.kind === 'bad');
+    put('title', H.title); put('line', H.line); put('label', H.barLabel); put('warn', H.warn);
+    put('timer', H.timer == null ? '' : `${Math.floor(H.timer / 60)}:${String(Math.floor(H.timer % 60)).padStart(2, '0')}`);
+    const w = Math.round(clamp(H.bar, 0, 1) * 1000) / 10 + '%'; if (el.c.w !== w) { el.c.w = w; el.fill.style.width = w; }
+  }
   #set(k, v) { if (this.cache[k] !== v) { this.cache[k] = v; this.e[k].textContent = v; } }
   update(dt, d) {
     this.acc += dt; if (this.acc < 1 / 30) return; this.acc = 0;       // 30 Hz DOM writes, no layout thrash
@@ -13747,6 +14264,7 @@ class App {
     bus.on('input:lock', locked => { if (!locked && this.state === 'run') this.pause(); });   // ignored in the headset (see pause)
     bus.on('input:gamepadLost', () => { if (this.state === 'run' && this.input.device === 'gamepad') this.pause(); this.ui.toast('Controller disconnected'); });
     bus.on('toast', m => this.ui.toast(m));
+    bus.on('chase:note', ({ m, ms }) => { if (this.state === 'run') this.ui.toast(m, ms); });   // police update
     bus.on('garage:go', () => { if (this.state === 'menu') this.startRun(); });   // build 1.31: driven out of the warehouse door
     const unlock = () => this.audio.ensure();
     addEventListener('pointerdown', unlock); addEventListener('keydown', unlock);
@@ -13827,7 +14345,7 @@ class App {
         const cab = this.carObj.cab, cc = this.carObj.controls;
         if (inp.pressed('horn') || (cab.horn && !this.hornPrev)) { this.audio.horn(.55, 0, 1, .42); this.driveWorld.traffic.playerHorn(); }
         this.hornPrev = cab.horn;
-        for (const a of ['ignition', 'lights', 'blinkLeft', 'blinkRight', 'hazard', 'wipers', 'radioPower', 'radioStation', 'trackNext', 'trackPrev']) if (inp.pressed(a)) cc.act(a);   // build 1.28
+        for (const a of ['ignition', 'lights', 'blinkLeft', 'blinkRight', 'hazard', 'wipers', 'radioPower', 'radioStation', 'trackNext', 'trackPrev', 'siren']) if (inp.pressed(a)) cc.act(a);   // build 1.28
         if (inp.pressed('volUp')) cc.act('radioVol', .1); if (inp.pressed('volDown')) cc.act('radioVol', -.1);
         if (inp.pressed('autopilot')) this.toggleAutopilot();
         else if (this.driveWorld.autopilot.on) { const hs = inp.state; if (Math.abs(hs.steer) > .3 || hs.brake > .3 || hs.handbrake > .3) this.toggleAutopilot(false, 'You have the car'); }
@@ -13872,6 +14390,7 @@ class App {
     else if (this.state !== 'paused' && this.state !== 'summary') this.world.update(dt, alpha, { mouse, stick: this.input.look, lookBack: this.state === 'run' && this.input.held('lookBack'), keys: this.state === 'menu' ? this.input.down : null, inp: this.input });
     if (this.state === 'run' && this.driveWorld && this.vaudio) {
       const d = this.driveWorld;
+      this.vaudio.sirenList = d.sirenSources(d.camera.position); this.vaudio.ownSiren = !!this.carObj.packCar?.glb?.police;   // police update
       this.vaudio.update(dt, d.liveSrc(), d.camera, d.car.position, d.car.quaternion, d.environment, d.trafficSources(d.camera.position), this.vr?.driving ? 'cockpit' : d.rig.mode);
     }
     this.rs.render(this.world, dt);
@@ -13879,6 +14398,7 @@ class App {
     if (this.state === 'run' && !this.vr?.presenting) {                // build 1.17: the page HUD is not seen in the headset
       const d = this.driveWorld, g = d.gearInfo;
       this.hud.update(dt, { speed: d.v, gear: g.gear, rpm: g.rpm, aids: d.sim.aids, score: d.score, auto: d.autopilot.on, noteOn: this.noteClock < 9, mir: d.carObj.mirrors.hint, lockHint: this.input.device === 'keyboard' && !this.input.locked && (Math.abs(d.v) < 1 || this.runClock < 4) });
+      this.hud.chase(d.chase?.hud || null);                            // police update
     }
     this.telemetry.update(dt, this.state === 'run' && this.settings.data.assists.telemetry && this.driveWorld?.sim?.telemetry ? this.driveWorld.sim : null);
     this.perf.update(raw, steps, this.rs);
@@ -13895,8 +14415,12 @@ class App {
   }
 
   /* ── State transitions ── */
-  async startRun() {
+  /** mode (police update): null = the usual run, 'pursuit' (the patrol car, chasing a suspect) or 'wanted' (the saloon,
+   *  chased by patrol cars). The mode picks the car for it (kept as your choice in the garage). */
+  async startRun(mode = null) {
     if (this.busy || this.state !== 'menu') return;
+    mode = mode === 'pursuit' || mode === 'wanted' ? mode : null;
+    if (mode) { const want = mode === 'pursuit' ? 'police' : 'celsior'; if (this.settings.data.car.model !== want) this.settings.set('car.model', want); }
     this.busy = true;
     this.economy.enforce(this.settings);
     this.audio.ui('start');
@@ -13906,8 +14430,10 @@ class App {
     const cap = $('#fade-cap'), step = async t => { cap.textContent = t; await wait(16); };
     try {
       await step('Building the interstate');
-      await Promise.race([Promise.all([SaloonData.load('traffic'), GlbCars.load('police', POLICE_LO), this.settings.data.car.model === 'celsior' ? SaloonData.load('player') : null]), wait(8000)]); applySaloonTraffic(); applyPoliceTraffic(); this.carObj.applySettings();
+      const mdl = this.settings.data.car.model;
+      await Promise.race([Promise.all([SaloonData.load('traffic'), GlbCars.load('police', POLICE_LO), mdl === 'celsior' ? SaloonData.load('player') : null, GLB_CARS[mdl] ? GlbCars.load(mdl) : null]), wait(8000)]); applySaloonTraffic(); applyPoliceTraffic(); this.carObj.applySettings();
       this.driveWorld = new DriveWorld(this.rs, this.settings, this.carObj, t => { cap.textContent = t; });
+      this.driveWorld.setChase(mode);                                  // police update
       this.driveWorld.vr = this.vr;                                    // build 1.15
       this.driveWorld.resize(this.rs.w, this.rs.h);
       await step('Compiling shaders');
@@ -13925,7 +14451,9 @@ class App {
     this.setWorld(this.driveWorld);
     this.audio.ensure();
     this.vaudio?.dispose(); this.vaudio = new VehicleAudio(this.audio, this.settings); this.vaudio.cab = this.carObj.cab;   // section 9: engine, tyres, wind, traffic, radio (build 1.28)
-    this.hud.setNote(h('b', {}, 'On the hard shoulder, engine off. '), 'Turn the key with I (in VR: squeeze the key and twist). Wait for a gap, then join. Clean passes, near misses, cuts and splits build a chain; contact loses it. H sounds the horn, T shows telemetry, C changes camera, O lets the car drive.');
+    if (mode === 'pursuit') this.hud.setNote(h('b', {}, 'Pursuit. '), 'A speeder is about to pass you. J runs the siren (wail, yelp, off) and the lights; G the lights alone. Stay close until he stops: box him in or nudge his rear quarter. Do not lose him.');
+    else if (mode === 'wanted') this.hud.setNote(h('b', {}, 'Wanted. '), 'The highway patrol is coming. Lose them: 300 m clear for 8 s. They ram and box; stopped next to one, you are busted.');
+    else this.hud.setNote(h('b', {}, 'On the hard shoulder, engine off. '), 'Turn the key with I (in VR: squeeze the key and twist). Wait for a gap, then join. Clean passes, near misses, cuts and splits build a chain; contact loses it. H sounds the horn, T shows telemetry, C changes camera, O lets the car drive.');
     this.hud.clearFeed();
     this.hud.setVisible(true); $('#vignette').classList.add('light');
     this.acc = 0; this.runClock = 0; this.noteClock = 0; this.state = 'run'; this.input.enabled = true; this.runBanked = false;
@@ -14435,7 +14963,7 @@ class VRSystem {
    *  around the column, hand over hand past half a turn. Road-wheel angle = wheel angle ÷ ratio,
    *  sent through the car's own speed-sensitive rack. */
   #wheel(d) {
-    const wb = d.carObj.wheelBase, R = CABIN.wheelR, ratio = this.s.data.vr.ratio || 14;
+    const wb = d.carObj.wheelBase, R = WHEEL_R0, ratio = this.s.data.vr.ratio || 14;
     wb.updateMatrixWorld(true);
     const inv = this._m3.copy(wb.matrixWorld).invert(), held = [];
     for (const side of ['left', 'right']) {
@@ -14548,7 +15076,7 @@ class VRSystem {
       if (U.pose) { const held = h ? 1 : 0, grip = Math.max(sq, held); U.pose({ index: Math.max(.55 + .4 * tr, held * .92), middle: .68 + .3 * grip, ring: .7 + .3 * grip, pinky: .72 + .28 * grip, thumb: .32 + .3 * held }); }
       else { for (const f of U.fingers) f.rotation.x = -1.25 * Math.max(sq, h ? 1 : 0); U.th.rotation.x = -.7 * tr; }
       if (h && g.parent) {                                      // the glove settles on the rim where the hand is
-        const a = this.holdAng[side], wb = d.carObj.wheelBase, w = this._v.set(Math.cos(a) * CABIN.wheelR, Math.sin(a) * CABIN.wheelR, .01);
+        const a = this.holdAng[side], wb = d.carObj.wheelBase, w = this._v.set(Math.cos(a) * WHEEL_R0, Math.sin(a) * WHEEL_R0, .01);
         wb.localToWorld(w); g.parent.worldToLocal(w); g.position.lerp(w, .6);
       } else g.position.multiplyScalar(.6);
     }
