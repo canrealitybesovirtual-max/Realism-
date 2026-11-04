@@ -18751,6 +18751,7 @@ function wbSpawn(room) {
     WB.jaws = [-1, 1].map((sd) => { const j = K.jaw.clone(); j.userData.sd = sd; j.position.set(WB.vise.x, WB.vise.y - 0.04, WB.vise.z + sd * WB.jawOpen); room.group.add(j); return j; });
     WB.jawW = WB.jawOpen;
     const s = K.sign.clone(); s.position.set(WB.benchX + 0.2, 1.45, 2.985); s.rotation.y = Math.PI; room.group.add(s);
+    try { wbTrays(room); } catch (e) { console.warn('bench trays not built', e); }   // a low parts bin under every table spot, labelled
   }
   // step 88: the VISE button (a new one with each safe room)
   WB.btnAt = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
@@ -18768,6 +18769,78 @@ function wbSpawn(room) {
    holster or sling). A loose one, wherever it lies, goes back to its spot. One locked on a gun left behind stays on
    that gun and gives its spot up; one whose gun is gone (its room unloaded) is dropped. Free spots get fresh parts.
    (Before: every part ever locked on a gun held its spot for good, so a gun left behind emptied the table.) */
+// Bench trays: a shallow black polymer parts bin (2 mm floor, 22 mm walls) under each table spot of every gun's
+// list, sized to the gap to its neighbours, with a small printed white-on-charcoal label strip in front naming the
+// part. Geometry per size, label textures per name (cached); the rims are static colliders on the room body so
+// a dropped part stays in its bin. The part's rest height is unchanged (it sits 2 mm into the floor of the bin).
+const TRAY = { geo: new Map(), lbl: new Map(), mat: null, lmat: null, h: 0.022, t: 0.003, f: 0.002,
+  names: { light: 'WEAPON LIGHT', laser: 'LASER', sup: 'SUPPRESSOR', ext: 'BARREL EXT.', dot: 'RED DOT', cover: 'OPTIC COVER', comp: 'COMPENSATOR', fh: 'FLASH HIDER', pl2: 'PL-2 LIGHT' } };
+function trayAll() {
+  const L = [];
+  for (const A of [WB_TABLE, WB_G17, typeof WB_AKM !== 'undefined' ? WB_AKM : [], typeof WB_M19 !== 'undefined' ? WB_M19 : [], typeof WB_M4 !== 'undefined' ? WB_M4 : [], typeof WB_AWM !== 'undefined' ? WB_AWM : []]) for (const t of A) L.push(t);
+  return L;
+}
+function trayName(t) {
+  const it = t[6] && WORKSHOP.byId && WORKSHOP.byId.get(t[6]);
+  let n = it ? it.name.replace(/\s*\(.*?\)\s*/g, ' ').trim() : TRAY.names[t[0]] || String(t[5] || t[0]);
+  if (!it && t[0] === 'sup') n = t[1] ? 'RIFLE SUPPRESSOR' : 'PISTOL SUPPRESSOR';
+  n = n.toUpperCase();
+  return n.length > 20 ? n.slice(0, 19) + '…' : n;
+}
+function trayGeo(w, d) {
+  const k = `${w.toFixed(3)}x${d.toFixed(3)}`;
+  if (TRAY.geo.has(k)) return TRAY.geo.get(k);
+  const { h, t, f } = TRAY, P = [];
+  P.push(placed(lbox(w, f, d, 0.0008), 0, f / 2, 0));
+  for (const s of [-1, 1]) {
+    P.push(placed(lbox(w, h, t, 0.001), 0, h / 2, s * (d / 2 - t / 2)));
+    P.push(placed(lbox(t, h, d - 2 * t, 0.001), s * (w / 2 - t / 2), h / 2, 0));
+  }
+  const g = mergeGeometries(P);
+  TRAY.geo.set(k, g);
+  return g;
+}
+function trayLabel(text) {
+  if (TRAY.lbl.has(text)) return TRAY.lbl.get(text);
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 64;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#26282b'; c.fillRect(0, 0, 512, 64);
+  c.fillStyle = '#e9e9e6'; c.font = '600 38px "Barlow Semi Condensed", "Arial Narrow", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(text, 256, 34, 490);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
+  const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0 });
+  TRAY.lbl.set(text, m);
+  return m;
+}
+function wbTrays(room) {
+  if (!TRAY.mat) TRAY.mat = new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.62, metalness: 0 });   // black polymer bins
+  const spots = trayAll(), y0 = 0.905, seen = [];
+  for (const t of spots) {
+    const x = t[2], z = t[3];
+    if (seen.some((q) => Math.abs(q[0] - x) < 0.02 && Math.abs(q[1] - z) < 0.02)) continue;
+    seen.push([x, z]);
+    let nx = 0.32, nz = 0.2;
+    for (const u of spots) {
+      if (u === t) continue;
+      const dx = Math.abs(u[2] - x), dz = Math.abs(u[3] - z);
+      if (dx < 0.02 && dz < 0.02) continue;
+      if (dz < 0.07) nx = Math.min(nx, dx); else if (dx < 0.1) nz = Math.min(nz, dz);
+    }
+    const big = t[0] === 'sup' || t[0] === 'm4part' || t[0] === 'awm';
+    const w = Math.max(0.06, Math.min(big ? 0.3 : 0.15, nx - 0.012)), d = Math.max(0.05, Math.min(0.12, nz - 0.03));
+    const m = mesh(trayGeo(w, d), TRAY.mat, false, true);
+    m.position.set(x, y0, z); room.group.add(m);
+    const lw = Math.min(w - 0.006, 0.12), lab = mesh(new THREE.PlaneGeometry(lw, lw / 8), trayLabel(trayName(t)), false, true);
+    lab.rotation.set(-Math.PI / 2, 0, Math.PI);                   // flat on the bench in front of the bin, read from your side (-z)
+    lab.position.set(x, y0 + 0.0012, z - d / 2 - lw / 16 - 0.004); room.group.add(lab);
+    for (const [hx, hz, cx, cz] of [[w / 2, TRAY.t / 2, 0, d / 2 - TRAY.t / 2], [w / 2, TRAY.t / 2, 0, -d / 2 + TRAY.t / 2], [TRAY.t / 2, d / 2, w / 2 - TRAY.t / 2, 0], [TRAY.t / 2, d / 2, -w / 2 + TRAY.t / 2, 0]]) {
+      const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, TRAY.h / 2, hz).setTranslation(x + cx, y0 + TRAY.h / 2, z + cz)
+        .setFriction(0.6).setRestitution(0.1).setCollisionGroups(COLL.static), room.body);
+      colliderInfo.set(col.handle, { room, kind: 'wood' });
+      room.colliderHandles.push(col.handle);
+    }
+  }
+}
 function wbCarried(g) { return !!g && !!g.prop && !g.prop.removing && (g.prop.holders.length > 0 || !!g.slot || (WB.open && WB.gun === g)); }
 function wbRestock(room = WB.room) {
   if (!room || room !== WB.room || !room.active) return 0;
@@ -20083,7 +20156,8 @@ const BLAMP = {
   gripR: 0.12,                                       // m: a VR grip squeezed this near the head or the rocker switches it   // room x, height, metres out from the front wall
   swR: 0.014,                                        // m: the rocker's touch radius (VR)
   room: null, grp: null, diff: null, diffMat: null, rocker: null, emit: null, aimO: null, light: null, pick: [], ray: null,
-  swAt: new THREE.Vector3(), v: new THREE.Vector3(), d: new THREE.Vector3()
+  swAt: new THREE.Vector3(), v: new THREE.Vector3(), d: new THREE.Vector3(),
+  held: undefined, moved: false, off: new THREE.Matrix4(), mW: new THREE.Matrix4(), mI: new THREE.Matrix4(), hp: new THREE.Vector3(), hq: new THREE.Quaternion(), one: new THREE.Vector3(1, 1, 1), shT: 0
 };
 // Load (boot, right after initLightPool): the one light, before anything compiles.
 function benchLampInit() {
@@ -20163,7 +20237,9 @@ function benchLampLook() {
 function benchLampRoom(room) {
   if (!BLAMP.on || room.kind !== 'safe' || !BLAMP.light) return;
   if (!BLAMP.grp) benchLampBuild();
-  BLAMP.grp.position.set(0, 0, room.d / 2);
+  if (!BLAMP.moved) BLAMP.grp.position.set(0, 0, room.d / 2);   // moved by you: it keeps your spot (room-local) in every safe room
+  else if (BLAMP.room && BLAMP.room !== room) BLAMP.grp.position.z += room.d / 2 - BLAMP.room.d / 2;
+  if (BLAMP.held !== undefined) BLAMP.held = undefined;
   room.group.add(BLAMP.grp);
   BLAMP.grp.updateMatrixWorld(true);
   BLAMP.room = room;
@@ -20182,6 +20258,7 @@ function benchLampTick() {
   const B = BLAMP, L = B.light;
   if (!L) return;
   const live = benchLampLive(), I = live && B.lit ? B.cd : 0;
+  if (B.held !== undefined) benchLampFollow(live);
   if (I > 0) { B.emit.getWorldPosition(L.position); B.aimO.getWorldPosition(L.target.position); }
   if (L.intensity !== I) L.intensity = I;
   if (!live || !renderer.xr.isPresenting) return;
@@ -20205,8 +20282,45 @@ function benchLampGrip(hand) {
   hand.source.getWorldPosition(B.v);
   B.emit.getWorldPosition(B.d); B.rocker.getWorldPosition(B.swAt);
   if (Math.min(B.v.distanceTo(B.d), B.v.distanceTo(B.swAt)) > B.gripR) return false;
-  benchLampToggle(hand);
+  benchLampTake(hand);                                               // grip = carry it; the rocker switches it (fingertip)
   return true;
+}
+// Movable lamp: the whole lamp (bracket, arm, head) follows the hand that took it (or a spot in front of your eyes on
+// the computer) with the turn it had, and stays where you let go; the light rides the head as before. Room-local, so
+// it keeps your spot in every safe room.
+function benchLampHandM(hand, out) {
+  const B = BLAMP;
+  if (hand) { handPose(hand, B.hp, B.hq); return out.compose(B.hp, B.hq, B.one); }
+  camera.updateMatrixWorld(); return out.copy(camera.matrixWorld);
+}
+function benchLampTake(hand) {
+  const B = BLAMP;
+  B.grp.updateMatrixWorld(true);
+  benchLampHandM(hand, B.mW);
+  if (!hand) {                                                      // computer: bring the head to 0.55 m in front of you
+    B.emit.getWorldPosition(B.v); B.mI.copy(B.mW).invert(); B.v.applyMatrix4(B.mI);
+    B.off.copy(B.mI).multiply(B.grp.matrixWorld);
+    B.off.premultiply(B.mI.makeTranslation(-B.v.x, -0.12 - B.v.y, -0.55 - B.v.z));
+  } else B.off.copy(B.mW.invert()).multiply(B.grp.matrixWorld);
+  B.held = hand; B.moved = true;
+  if (hand) pulse(hand, 0.25, 18);
+  if (!btnSfx('vise', null, 0.6)) sfx('selector');
+}
+function benchLampFollow(live) {
+  const B = BLAMP;
+  if (!live || (B.held && !renderer.xr.isPresenting)) { B.held = undefined; return; }
+  benchLampHandM(B.held, B.mW).multiply(B.off);
+  B.mI.copy(B.grp.parent.matrixWorld).invert();
+  B.mW.premultiply(B.mI).decompose(B.grp.position, B.grp.quaternion, B.v);
+  B.grp.updateMatrixWorld(true);
+  const t = performance.now() / 1000;
+  if (t - B.shT > 0.2) { B.shT = t; dirtyShadows(); }
+}
+function benchLampRelease(hand) {
+  const B = BLAMP;
+  if (B.held === undefined || B.held !== hand) return;
+  B.held = undefined; dirtyShadows();
+  if (hand) pulse(hand, 0.2, 14);
 }
 // Computer: E / click with the dot on the lamp (termDeskPress asks first).
 function benchLampDesk() {
@@ -20214,8 +20328,11 @@ function benchLampDesk() {
   if (renderer.xr.isPresenting || !benchLampLive()) return false;
   camera.getWorldPosition(B.v); camera.getWorldDirection(B.d);
   B.ray.set(B.v, B.d);
-  if (!B.ray.intersectObjects(B.pick, false).length) return false;
-  benchLampToggle(null);
+  if (B.held === null) { B.held = undefined; dirtyShadows(); if (!btnSfx('vise', null, 0.5)) sfx('selector'); return true; }   // carried: E puts it down here
+  const hit = B.ray.intersectObjects(B.pick, false)[0];
+  if (!hit) return false;
+  if (hit.object === B.rocker || hit.object === B.diff) benchLampToggle(null);   // the rocker or the diffuser: switch it
+  else { benchLampTake(null); toast('Lamp in hand: look where you want it, E to put it down', 2600); }   // the body: carry it
   return true;
 }
 if (/[?&]dev\b/.test(location.search)) window.__cqcLamp = { BLAMP, EXT, EXT_STORE, benchLampToggle, benchLampDesk, benchLampTick, benchLampGrip, extSearSet, flashlight, FLASH_BEAM, flashPeak, setFlashlight, updateLightMount };
@@ -38275,7 +38392,7 @@ for (let i = 0; i < 2; i++) {
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { brassRelease(hand); release(hand); releaseDoor(hand); };   // step 116: the bag back on your hip
+  const squeezeEnd = () => { benchLampRelease(hand); brassRelease(hand); release(hand); releaseDoor(hand); };   // step 116: the bag back on your hip
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
