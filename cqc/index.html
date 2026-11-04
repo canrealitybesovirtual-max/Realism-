@@ -22938,7 +22938,7 @@ function penRoomLayers(info, P, N, th, cosI, inside) {
   }
   if (k === 'concrete') { penLay('concrete', th * 100); return 'concrete'; }
   if (k === 'metal') { if (w > B.doorMax) return null; penLay('steel', B.skins / cosI); return 'metal'; }   // a door stand-in; machines stop it
-  if (k === 'wood') { penLay('wood', th * 100 * (w <= 0.06 ? 1 : B.woodFill)); return 'wood'; }
+  if (k === 'wood') { penLay('wood', th * 100 * (w <= 0.06 || info.solid ? 1 : B.woodFill)); return 'wood'; }   // nature: a trunk is solid wood
   if (k === 'glass') { penLay('glass', th * 100); return 'glass'; }
   return null;
 }
@@ -42678,6 +42678,7 @@ function freeItemHand(h, it, p, P, Q) {
     setShadowSize(CONFIG.shadow.desktop);        // also sizes the smaller portal map
     // The safe room plus the room ahead, built in full before you start.
     setLoad('Building the first rooms', 0.95);
+    if (yardModeNow() !== 'cqc') await natLoad();                  // nature: the yard's trees and rocks (the first rooms are built in one go below)
     await yieldFrame();
     for (const [slot, kind] of [[0, 'safe'], [1, 'normal']]) {
       bootSave(`Building the first rooms: ${kind === 'safe' ? 'safe room' : 'room ' + slot}`, 95);   // step 46: which room, if it dies
@@ -46659,6 +46660,7 @@ function yardState() {
   return YARD;
 }
 function yardRegister() {
+  natLoad();                                                        // nature: fetch the trees early (the builder waits for them)
   if (ROOM_TYPES.yard) return;
   ROOM_TYPES.yard = { label: 'outpost 17', size: { w: [YC.w, YC.w], d: [YC.d, YC.d] }, density: [0, 1], sig: false, men: YC.men, minMen: YC.minMen, yard: true,
     runs: [], bare: true, marks: {}, clock: 0, partition: 0, pony: 0, table: 0, tipped: 0, panel: 0, whiteboard: 0, props: [], nProps: [0, 0] };
@@ -47018,7 +47020,11 @@ const YU = {
   uYLampC: { value: new THREE.Color(1.0, 0.82, 0.62) }, uYFogC: { value: new THREE.Color() }, uYFog: { value: new THREE.Vector4(0.022, 0.12, 0, 0.9) }, uYScat: { value: 1 },
   uYLampZ: { value: new Float32Array(YARD_NL).fill(-1) },          // -1 outdoor (not inside an interior), k = only inside interior k
   uYRoomR: { value: Array.from({ length: YARD_NR }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoomTop: { value: new Float32Array(YARD_NR) },
-  uYRoof: { value: Array.from({ length: YARD_NF }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoofH: { value: new Float32Array(YARD_NF) }
+  uYRoof: { value: Array.from({ length: YARD_NF }, () => new THREE.Vector4(1e4, 1e4, -1e4, -1e4)) }, uYRoofH: { value: new Float32Array(YARD_NF) },
+  // nature / wet-night: half size, quality (0 = headset: one triplanar plane), rivulets + beads + drips (?wetx=off), wind, the moon beyond its spot
+  uYHalf: { value: new THREE.Vector2(YC.w / 2, YC.d / 2) }, uYQ: { value: 1 }, uYWetX: { value: /[?&]wetx=off\b/.test(location.search) ? 0 : 1 },
+  uYWindD: { value: new THREE.Vector2(YC.rain.wind[0], YC.rain.wind[1]).normalize() },
+  uYMoon: { value: new THREE.Vector4(0, 1, 0, 0) }, uYMoonC: { value: new THREE.Color(0.62, 0.72, 0.95) }, uYMoonP: { value: new THREE.Vector3() }, uYMoonA: { value: new THREE.Vector4(0, -1, 0, 0.96) }
 };
 const YARD_GLSL_COMMON = `
 uniform float uYTime; uniform float uYWet; uniform mat4 uYInv; uniform sampler2D uYNoise;
@@ -47048,14 +47054,42 @@ vec3 yFog(vec3 col, vec3 wp){
   }
   return mix(col, uYFogC, f) + sc * uYScat * f;
 }`;
+// Wet-night additions (step "nature"): kinds 10 bark / wood, 11 rock, 12 foliage (alpha cards), 13 forest floor; instancing
+// and wind in the vertex stage; rivulets on every outdoor vertical face, beads under every outdoor overhang (uYWetX),
+// the end-wall doors dry on their far side, the moon as an unshadowed fill where the shadowed moon spot stops (uYMoon).
 function yardInject(shader) {
   Object.assign(shader.uniforms, YU);
+  shader.uniforms.uYWindA = { value: 0 }; shader.uniforms.uYFlut = { value: 0 };   // per material (yardMat opts.wind / opts.flutter)
   shader.vertexShader = shader.vertexShader
-    .replace('#include <common>', '#include <common>\nvarying vec3 vYW; varying vec3 vYN;')
-    .replace('#include <project_vertex>', '#include <project_vertex>\nvYW = (modelMatrix * vec4(transformed, 1.0)).xyz; vYN = normalize(mat3(modelMatrix) * objectNormal);');
+    .replace('#include <common>', '#include <common>\nvarying vec3 vYW; varying vec3 vYN; varying float vYO; uniform float uYTime; uniform float uYWindA; uniform float uYFlut; uniform vec2 uYWindD;')
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+vYO = position.y;
+if (uYWindA > 0.0) {                                                  // trees: the whole crown sways (height^2), cards flutter
+  #ifdef USE_INSTANCING
+    vec3 yIp = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+    vec3 yWo = transpose(mat3(instanceMatrix)) * vec3(uYWindD.x, 0.0, uYWindD.y);
+  #else
+    vec3 yIp = vec3(0.0); vec3 yWo = vec3(uYWindD.x, 0.0, uYWindD.y);
+  #endif
+  yWo /= max(dot(yWo, yWo), 1e-6);                                    // world metres whatever the instance's scale and turn
+  float yPh = yIp.x * 0.37 + yIp.z * 0.23;
+  float yG = 0.55 + 0.45 * sin(uYTime * 0.23 + yIp.x * 0.02) * sin(uYTime * 0.11 + 1.7 + yIp.z * 0.015);
+  float ySw = (sin(uYTime * 0.8 + yPh) * 0.65 + sin(uYTime * 1.9 + yPh * 1.7) * 0.2) * yG;
+  float yHh = max(position.y, 0.0);
+  transformed += yWo * (uYWindA * ySw * yHh * yHh * 0.01);
+  if (uYFlut > 0.0) transformed += normal * (sin(uYTime * 5.3 + dot(position, vec3(2.1, 1.3, 2.7)) + yPh) * uYFlut * min(yHh, 2.0) * (0.4 + yG));
+}`)
+    .replace('#include <project_vertex>', `#include <project_vertex>
+#ifdef USE_INSTANCING
+vYW = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz; vYN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * objectNormal);
+#else
+vYW = (modelMatrix * vec4(transformed, 1.0)).xyz; vYN = normalize(mat3(modelMatrix) * objectNormal);
+#endif`);
   shader.fragmentShader = shader.fragmentShader
-    .replace('#include <common>', `#include <common>\nvarying vec3 vYW; varying vec3 vYN; uniform float uYKind;\n${YARD_GLSL_COMMON}
-float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0; vec2 yRip = vec2(0.0); int yRoomI = -1;
+    .replace('#include <common>', `#include <common>\nvarying vec3 vYW; varying vec3 vYN; varying float vYO; uniform float uYKind;\n${YARD_GLSL_COMMON}
+uniform vec2 uYHalf; uniform float uYQ; uniform float uYWetX; uniform vec4 uYMoon; uniform vec3 uYMoonC; uniform vec3 uYMoonP; uniform vec4 uYMoonA;
+float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0, yRiv = 0.0, yRivS = 0.0, yBead = 0.0, yBump = 0.0, yMoonOcc = 1.0;
+vec2 yRip = vec2(0.0), yBeadN = vec2(0.0); int yRoomI = -1; vec3 yRivT = vec3(0.0);
 vec2 yRipple(vec2 p, float t) {
   vec2 acc = vec2(0.0);
   for (int k = 0; k < 2; k++) {
@@ -47066,26 +47100,35 @@ vec2 yRipple(vec2 p, float t) {
     acc += dd / r * g;
   }
   return acc;
+}
+// Triplanar sample of the shared noise (local position, blend by the local normal); one plane in the headset (uYQ 0).
+vec4 yTri(vec3 p, vec3 n, float s) {
+  vec3 w = pow(abs(n), vec3(4.0)); w /= w.x + w.y + w.z;
+  if (uYQ < 0.5) { return w.y > max(w.x, w.z) ? texture2D(uYNoise, p.xz * s) : w.x > w.z ? texture2D(uYNoise, p.zy * s) : texture2D(uYNoise, p.xy * s); }
+  return texture2D(uYNoise, p.zy * s) * w.x + texture2D(uYNoise, p.xz * s) * w.y + texture2D(uYNoise, p.xy * s) * w.z;
 }`)
     .replace('#include <map_fragment>', `#include <map_fragment>
 {
   vec3 lp = (uYInv * vec4(vYW, 1.0)).xyz; vec3 N = normalize(vYN); float K = uYKind;
+  vec3 lN = normalize(mat3(uYInv) * N);
   yRoomI = yRoomOf(lp); float dryK = yRoomI >= 0 ? 0.0 : 1.0;           // indoors: no rain on anything
+  if (abs(lp.z) > uYHalf.y + 0.02 && abs(lp.x) < uYHalf.x + 0.5 && lN.z * sign(lp.z) > 0.2) dryK = 0.0;   // an end-wall door's far side: the next room
   yUp = N.y;
   bool yFlat = abs(N.y) > 0.6;
+  bool yVeg = K > 9.5 && K < 13.5;
   vec2 q = yFlat ? lp.xz : vec2(abs(N.x) > abs(N.z) ? lp.z : lp.x, lp.y);
   vec4 nz = texture2D(uYNoise, q * 0.045);                                  // macro: kills tiling
   vec4 nz2 = texture2D(uYNoise, q * 0.17 + 0.31);
   float macro = nz.r * 0.6 + nz2.a * 0.4;
-  if (K < 6.5) diffuseColor.rgb *= mix(0.78, 1.14, macro) * mix(vec3(1.02, 0.99, 0.96), vec3(0.97, 1.0, 1.03), nz.a);
+  if (K < 6.5 || yVeg && K < 11.5 || K > 12.5) diffuseColor.rgb *= mix(0.78, 1.14, macro) * mix(vec3(1.02, 0.99, 0.96), vec3(0.97, 1.0, 1.03), nz.a);
   float curv = length(fwidth(N)) / max(length(fwidth(vYW)), 1e-4);
   float edge = smoothstep(5.0, 22.0, curv);
   float streak = 0.0;
-  if (!yFlat && K < 4.5 && yRoomOf(lp) < 0) {                               // rain streaks down the walls (not indoors)
+  if (!yFlat && (K < 4.5 || K > 10.5 && K < 11.5) && dryK > 0.5) {         // rain streaks down the walls and rock faces (not indoors)
     float s = texture2D(uYNoise, vec2(q.x * 0.35, q.y * 0.018 + 0.5)).g;
     streak = smoothstep(0.52, 0.82, s) * (0.45 + 0.55 * nz2.r);
-    diffuseColor.rgb *= 1.0 - streak * (K > 1.5 ? 0.25 : 0.42);
-    if (K > 1.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.075, 0.03), streak * smoothstep(0.55, 0.8, nz.a) * 0.8);   // rust runs on steel
+    diffuseColor.rgb *= 1.0 - streak * (K > 1.5 && K < 4.5 ? 0.25 : 0.42);
+    if (K > 1.5 && K < 4.5) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.16, 0.075, 0.03), streak * smoothstep(0.55, 0.8, nz.a) * 0.8);   // rust runs on steel
   }
   if (K < 0.5 || K > 3.5 && K < 4.5) {                                      // concrete: chipped edges, moss at the foot and in corners
     diffuseColor.rgb *= 1.0 + edge * 0.22 * (0.5 + nz2.b);
@@ -47102,32 +47145,97 @@ vec2 yRipple(vec2 p, float t) {
     float wear = texture2D(uYNoise, lp.xz * 0.9).b * 0.6 + nz2.r * 0.4;
     if (wear < 0.33) discard;
   }
+  if (K > 9.5 && K < 10.5) {                                                 // bark: moss up the foot of the trunk, lichen crust in patches
+    vec4 t = yTri(lp, lN, 0.6);
+    float moss = (1.0 - smoothstep(0.15, 1.2 + t.r * 1.6, vYO)) * smoothstep(0.38, 0.62, t.a);
+    float lich = smoothstep(0.62, 0.78, t.b) * smoothstep(0.3, 0.6, nz.a);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.31, 0.25) * (0.8 + 0.4 * t.r), lich * 0.6);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.035, 0.05, 0.018) * (0.7 + 0.6 * t.g), clamp(moss, 0.0, 0.9));
+    yRoughK = 1.0 + moss * 0.1;
+    yBump = t.b * 0.6 + t.g * 0.4;
+    yMoonOcc = 0.45 + 0.55 * smoothstep(2.0, 9.0, vYO);                      // the forest's own shade on its lower trunks
+  }
+  if (K > 10.5 && K < 11.5) {                                                // rock: grain, lichen crust, moss on what faces up and at the foot
+    vec4 t = yTri(lp, lN, 0.9), t2 = yTri(lp + 3.7, lN, 0.23);
+    diffuseColor.rgb *= 0.72 + t.b * 0.5;
+    float lich = smoothstep(0.55, 0.72, t2.b * 0.6 + t.a * 0.4) * (0.6 + 0.4 * t.r);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.32, 0.34, 0.28) * (0.75 + 0.5 * t.g), lich * 0.75);
+    float moss = smoothstep(0.35, 0.85, lN.y) * smoothstep(0.45, 0.7, t2.a + t.r * 0.25) + (1.0 - smoothstep(0.0, 0.22, vYO)) * smoothstep(0.4, 0.7, t2.r);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.032, 0.05, 0.018) * (0.7 + 0.6 * t.g), clamp(moss, 0.0, 0.92));
+    yRoughK = 1.0 + moss * 0.15 + lich * 0.08;
+    yBump = t.b * 0.7 + t.r * 0.3;
+  }
+  if (K > 11.5 && K < 12.5) yMoonOcc = 0.6 + 0.4 * smoothstep(1.0, 8.0, vYO); // foliage: inner and lower cards in the crown's shade
+  if (K > 12.5) {                                                            // forest floor: moss mats, darker in hollows
+    vec4 t = texture2D(uYNoise, lp.xz * 0.11 + 0.7);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.03, 0.045, 0.016) * (0.7 + 0.6 * nz2.b), smoothstep(0.55, 0.8, t.a) * 0.7);
+    yMoonOcc = 0.35;                                                         // under the trees
+  }
   // Wet model: porous surfaces darken, flat ones carry water, puddles on the ground stand.
-  float por = K > 1.5 && K < 3.5 ? 0.15 : K > 6.5 ? 0.0 : 0.55;
+  float por = K > 1.5 && K < 3.5 ? 0.15 : K > 11.5 && K < 12.5 ? 0.3 : K > 9.5 ? 0.55 : K > 6.5 ? 0.0 : 0.55;
   float wet = uYWet * dryK * (yFlat ? 1.0 : 0.5 + 0.5 * streak);
-  if (dryK > 0.5 && yFlat && N.y > 0.0 && (K > 0.5 && K < 1.5 || K > 4.5 && K < 5.5)) {
+  if (K > 9.5 && K < 12.5) wet = uYWet * dryK * (K > 11.5 ? 0.85 : 0.75 + 0.25 * streak);   // bark, rock, needles: wet all round
+  bool yPudK = K > 0.5 && K < 1.5 || K > 4.5 && K < 5.5 || K > 12.5;
+  if (dryK > 0.5 && yFlat && N.y > (K > 12.5 ? 0.95 : 0.0) && yPudK) {
     float pd = yPuddleF(lp.xz) - (0.73 - 0.04 * uYWet);
     float aa = fwidth(pd) + 0.002;
     yPud = smoothstep(-aa, aa, pd) * uYWet;
     yDamp = smoothstep(-0.09, 0.0, pd) * uYWet;
     yRip = yRipple(lp.xz, uYTime) * (0.25 + 0.75 * yPud) * uYWet;
-  } else if (dryK > 0.5 && yFlat && N.y > 0.0) yRip = yRipple(lp.xz, uYTime) * 0.15 * uYWet;
+  } else if (dryK > 0.5 && yFlat && N.y > 0.0 && (K < 9.5 || K > 10.5 && K < 11.5)) yRip = yRipple(lp.xz, uYTime) * 0.15 * uYWet;
+  vec2 rq = vec2(q.x * 6.0, q.y); float aaR = fwidth(rq.x) * 1.5;           // (derivatives outside the branches)
+  vec2 bq = lp.xz * 9.0; float aaB = fwidth(bq.x) * 1.2;
+  if (uYWetX > 0.0 && dryK > 0.5 && !yFlat && (K < 4.5 || K > 9.5 && K < 11.5)) {   // rivulets: thin water runs down every outdoor vertical face
+    float col = floor(rq.x), fx = fract(rq.x), hc = yH(vec2(col, K * 7.0 + 3.0));
+    float c = 0.5 + (yVN(vec2(col * 3.7, q.y * 1.3)) - 0.5) * 0.7;
+    float w = 0.05 + 0.05 * hc, aa = aaR;
+    float ln = 1.0 - smoothstep(w - aa, w + aa, abs(fx - c));
+    float seg = smoothstep(0.42, 0.6, yVN(vec2(col * 1.7 + 9.0, q.y * 0.45 + uYTime * 0.05)));
+    float flow = 0.7 + 0.3 * sin((q.y + uYTime * (0.6 + 0.5 * hc)) * 11.0 + hc * 6.2831);
+    float far = 1.0 - smoothstep(0.25, 0.6, aa);
+    yRiv = ln * seg * step(0.35 - 0.15 * streak, hc) * flow * far * uYWet * uYWetX;
+    yRivS = clamp((fx - c) / max(w, 1e-3), -1.0, 1.0) * yRiv;
+    yRivT = normalize(cross(vec3(0.0, 1.0, 0.0), N) + vec3(1e-4, 0.0, 0.0));
+    diffuseColor.rgb *= 1.0 - 0.3 * yRiv;
+  }
+  if (uYWetX > 0.0 && dryK > 0.5 && N.y < -0.55 && (K < 4.5 || K > 8.5 && K < 9.5)) {   // beads hanging under every overhang, growing till they drop
+    vec2 bc = floor(bq); vec2 bf = fract(bq) - 0.5;
+    float bh = yH(bc + 11.0); vec2 bo = (vec2(yH(bc + 2.3), yH(bc + 5.1)) - 0.5) * 0.5;
+    float ph = fract(uYTime * (0.15 + 0.2 * bh) + bh), br = (0.08 + 0.18 * ph) * step(0.45, bh), bd = length(bf - bo), aa2 = aaB;
+    yBead = (1.0 - smoothstep(br - aa2, br + aa2, bd)) * uYWet * uYWetX * (1.0 - smoothstep(0.3, 0.7, aa2));
+    yBeadN = (bf - bo) / max(br, 1e-3);
+    diffuseColor.rgb *= 1.0 - 0.25 * yBead;
+  }
   diffuseColor.rgb *= mix(1.0, 0.5, wet * por) * mix(1.0, 0.72, yDamp * por);
   diffuseColor.rgb *= mix(1.0, 0.55, yPud);
-  yWetR = wet * (yFlat ? 0.85 : 0.55);
+  yWetR = wet * (yFlat ? 0.85 : 0.55) * (K > 11.5 && K < 12.5 ? 0.75 : 1.0);
 }`)
     .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 roughnessFactor = clamp(roughnessFactor * yRoughK, 0.04, 1.0);
 roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.3), yWetR);
-roughnessFactor = mix(roughnessFactor, 0.045, max(yPud, yDamp * 0.35));`)
+roughnessFactor = mix(roughnessFactor, 0.045, max(yPud, yDamp * 0.35));
+roughnessFactor = mix(roughnessFactor, 0.05, max(yRiv, yBead));`)
     .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = clamp(metalnessFactor * yMetK, 0.0, 1.0);')
     .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 {
+  #ifdef DOUBLE_SIDED
+  if (uYKind > 11.5 && uYKind < 12.5) normal *= faceDirection;            // foliage: both faces of a card light as the crown
+  #endif
   vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
   if (yUp > 0.6) {
     normal = normalize(mix(normal, upV, yPud * 0.9));
     normal = normalize(normal + (viewMatrix * vec4(yRip.x, 0.0, yRip.y, 0.0)).xyz * 0.55);
   }
+  vec2 dh = vec2(dFdx(yBump), dFdy(yBump)) * 0.9;
+  vec3 sx = dFdx(-vViewPosition), sy = dFdy(-vViewPosition);
+  if (uYKind > 9.5 && uYKind < 11.5) {                                       // bark and rock: fine relief from the triplanar grain
+    vec3 r1 = cross(sy, normal), r2 = cross(normal, sx);
+    float det = dot(sx, r1) * faceDirection;
+    vec3 g = sign(det) * (dh.x * r1 + dh.y * r2);
+    normal = normalize(abs(det) * normal - g);
+  }
+  if (yRiv > 0.0) normal = normalize(normal + (viewMatrix * vec4(yRivT, 0.0)).xyz * yRivS * 0.35);
+  if (yBead > 0.0) normal = normalize(normal + (viewMatrix * vec4(yBeadN.x, 0.0, yBeadN.y, 0.0)).xyz * yBead * 0.6);
 }`)
     .replace('#include <lights_fragment_maps>', `{
   for (int i = 0; i < ${YARD_NL}; i++) {
@@ -47138,16 +47246,25 @@ roughnessFactor = mix(roughnessFactor, 0.045, max(yPud, yDamp * 0.35));`)
     IncidentLight yl; yl.direction = normalize((viewMatrix * vec4(Ln, 0.0)).xyz); yl.color = uYLampC * (P.w * sp / (d2 + 0.25)); yl.visible = true;
     RE_Direct(yl, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
   }
+  if (uYMoon.w > 0.0 && yRoomI < 0) {                                       // the moon beyond the shadowed moon spot's cone (the forest)
+    vec3 mv = normalize(vYW - uYMoonP);
+    float k = 1.0 - smoothstep(uYMoonA.w, uYMoonA.w + (1.0 - uYMoonA.w) * 0.25, dot(mv, uYMoonA.xyz));
+    if (k > 0.001) {
+      IncidentLight ml; ml.direction = normalize((viewMatrix * vec4(uYMoon.xyz, 0.0)).xyz); ml.color = uYMoonC * (uYMoon.w * k * yMoonOcc); ml.visible = true;
+      RE_Direct(ml, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+    }
+  }
 }
 #include <lights_fragment_maps>`)
     .replace('#include <opaque_fragment>', '#include <opaque_fragment>\ngl_FragColor.rgb = yFog(gl_FragColor.rgb, vYW);');
 }
 function yardMat(kind, set, opts = {}) {
+  const { wind = 0, flutter = 0, ...o } = opts;                     // nature: per material wind sway / card flutter
   const m = new THREE.MeshStandardMaterial({
     map: set ? set.map : null, normalMap: set ? set.normal : null, roughnessMap: set ? set.orm : null, metalnessMap: set ? set.orm : null, aoMap: set ? set.orm : null,
-    roughness: 1, metalness: 1, envMapIntensity: 1, ...opts
+    roughness: 1, metalness: 1, envMapIntensity: 1, ...o
   });
-  m.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: kind }; };
+  m.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: kind }; s.uniforms.uYWindA.value = wind; s.uniforms.uYFlut.value = flutter; };
   m.customProgramCacheKey = () => 'yard17';
   m.userData.yardKind = kind;
   return m;
@@ -47163,6 +47280,7 @@ function yardMaterials(T) {
   M.paintY = yardMat(5, T.ground, { color: new THREE.Color(2.0, 1.45, 0.18), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
   M.paintW = yardMat(5, T.ground, { color: new THREE.Color(2.4, 2.35, 2.25), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
   M.grate = yardMat(9, T.metal, { color: new THREE.Color(0.17, 0.17, 0.17) });
+  M.ksteel = yardMat(2, T.metal, { color: new THREE.Color(0.5, 0.51, 0.52), metalnessMap: null, metalness: 0.85 });   // the kit's door hardware, wet (yardBuilder swaps KIT.mat.steel)
   M.glass = yardMat(8, T.metal, { color: new THREE.Color(0.02, 0.025, 0.03), metalnessMap: null, metalness: 0.0, roughnessMap: null, roughness: 0.08 });
   M.decal = new THREE.MeshStandardMaterial({ map: T.decal, transparent: true, depthWrite: false, roughness: 0.5, metalness: 0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 });
   M.decal.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: 6 }; }; M.decal.customProgramCacheKey = () => 'yard17d';
@@ -47170,7 +47288,7 @@ function yardMaterials(T) {
   M.fence.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: 7 }; }; M.fence.customProgramCacheKey = () => 'yard17f';
   M.lens = new THREE.MeshStandardMaterial({ color: 0xfff1dc, roughness: 0.2, metalness: 0, emissive: new THREE.Color(1.0, 0.86, 0.66), emissiveIntensity: 28 });
   M.lensOff = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.3, metalness: 0 });
-  for (const k of ['wall', 'ground', 'metal', 'door', 'yellow', 'barrier', 'paintY', 'paintW', 'grate', 'glass', 'decal', 'fence']) {
+  for (const k of ['wall', 'ground', 'metal', 'door', 'yellow', 'barrier', 'paintY', 'paintW', 'grate', 'glass', 'decal', 'fence', 'ksteel']) {
     M[k].envMapIntensity = k === 'glass' ? 1.2 : k === 'ground' || k.startsWith('paint') ? 1.0 : 0.7;
   }
   return M;
@@ -47239,7 +47357,7 @@ vec3 yRainLight(vec3 wp, vec3 vd) {
 }`;
 function yardRainMaterial(splash) {
   const u = { ...YU, uCam: { value: new THREE.Vector3() }, uBox: { value: new THREE.Vector3(...YC.rain.box) }, uFall: { value: YC.rain.fall }, uWind: { value: new THREE.Vector2(...YC.rain.wind) },
-    uHalf: { value: new THREE.Vector2(YC.w / 2, YC.d / 2) }, uPx: { value: 0.002 }, uRainK: { value: 1 }, uFloorY: { value: 0.012 } };
+    uHalf: { value: new THREE.Vector2(YC.w / 2, YC.d / 2) }, uHalfR: { value: new THREE.Vector2(YC.w / 2 + (NAT_ON ? 14 : 0), YC.d / 2) }, uPx: { value: 0.002 }, uRainK: { value: 1 }, uFloorY: { value: 0.012 } };
   const vs = splash ? `
 attribute vec4 aSeed; attribute vec2 aCorner;
 uniform vec3 uCam; uniform vec2 uHalf; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv; uniform float uFloorY;
@@ -47260,7 +47378,7 @@ void main(){
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
 }` : `
 attribute vec4 aSeed; attribute vec2 aCorner;
-uniform vec3 uCam; uniform vec3 uBox; uniform float uFall; uniform vec2 uWind; uniform vec2 uHalf; uniform float uPx; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv;
+uniform vec3 uCam; uniform vec3 uBox; uniform float uFall; uniform vec2 uWind; uniform vec2 uHalf; uniform vec2 uHalfR; uniform float uPx; uniform float uRainK; uniform float uYTime; uniform mat4 uYInv;
 varying vec2 vC; varying float vK; varying vec3 vW;
 ${YRAIN_ROOF}
 void main(){
@@ -47268,7 +47386,7 @@ void main(){
   vec3 p = aSeed.xyz * uBox + vel * uYTime;
   p = mod(p - uCam + uBox * 0.5, uBox) - uBox * 0.5 + uCam;
   vec3 lp = (uYInv * vec4(p, 1.0)).xyz;
-  float inside = step(abs(lp.x), uHalf.x) * step(abs(lp.z), uHalf.y) * step(0.0, lp.y) * step(aSeed.w, uRainK) * yCovered(lp);
+  float inside = step(abs(lp.x), uHalfR.x) * step(abs(lp.z), uHalfR.y) * step(0.0, lp.y) * step(aSeed.w, uRainK) * yCovered(lp);   // nature: over the forest edge too
   vec3 dir = normalize(vel), vd = normalize(p - cameraPosition);
   vec3 side = normalize(cross(dir, vd));
   float dist = length(p - cameraPosition), wid = max(0.0011, uPx * dist);
@@ -47364,7 +47482,7 @@ function yardFogColour() {
   const l = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b || 0.1;
   YU.uYFogC.value.setRGB(mix(l, c.r, 0.25) / l * f[0], mix(l, c.g, 0.25) / l * f[1], mix(l, c.b, 0.25) / l * f[2]);
 }
-function yardEnvAssign() { const Y = YARD; if (Y && Y.mats && Y.env) for (const k of Object.keys(Y.mats)) if (!k.startsWith('lens')) Y.mats[k].envMap = Y.env.texture; }
+function yardEnvAssign() { const Y = YARD; if (Y && Y.mats && Y.env) for (const k of Object.keys(Y.mats)) if (!k.startsWith('lens')) Y.mats[k].envMap = Y.env.texture; if (Y && Y.env && NAT && NAT.M) for (const m of Object.values(NAT.M)) m.envMap = Y.env.texture; }
 // IBL: the graded sky rendered into a 256 px cube and pre-filtered (the size every room probe uses: same programs).
 function yardEnvBake() {
   const Y = yardState();
@@ -47699,6 +47817,8 @@ function* yardBuilder(room) {
   }
   yield;
 
+  yield* natBuild(room, xr, add, box, M);                          // nature: beds and kerbs (into the batch), the ground outside, trees, rocks, drips
+
   // --- Merge per material ---
   for (const [mat, b] of batch) {
     const m = merged(b.parts, mat, b.cast);
@@ -47739,7 +47859,7 @@ function* yardBuilder(room) {
     const dome = new THREE.Mesh(Y.skyGeo || (Y.skyGeo = new THREE.SphereGeometry(25, 48, 24)), sky);
     dome.renderOrder = -1e6; dome.frustumCulled = false; dome.matrixAutoUpdate = true; g.add(dome); room.yardSky = dome;
     const om = Y.outerMat || (Y.outerMat = yardOuterMaterial());
-    const og = new THREE.BufferGeometry(), R = 420, a = hw + 0.3, b = hd + T + 0.2, y0 = -0.03;
+    const og = new THREE.BufferGeometry(), R = 420, a = hw + 0.3, b = hd + T + 0.2, y0 = NAT && NAT.on ? -0.6 : -0.03;   // nature: under the forest ground
     const v = [[-R, -R], [R, -R], [R, R], [-R, R], [-a, -b], [a, -b], [a, b], [-a, b]].flatMap(([x, z]) => [x, y0, z]);
     og.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
     og.setIndex([0, 4, 1, 1, 4, 5, 1, 5, 2, 2, 5, 6, 2, 6, 3, 3, 6, 7, 3, 7, 0, 0, 7, 4].map((i) => i));
@@ -47749,6 +47869,10 @@ function* yardBuilder(room) {
     const spl = new THREE.Mesh(Y.splashGeo, Y.splashMat); spl.frustumCulled = false; spl.renderOrder = 4; g.add(spl);
   }
   yield;
+  { // wet night on the kit's door hardware too (frames, leaves, levers): the yard's painted steel and a wet steel
+    const KMs = KIT.mat, swap = (o) => { if (!o.isMesh) return; if (o.material === KMs.door) o.material = M.door; else if (o.material === KMs.steel) o.material = M.ksteel; };
+    g.traverse(swap); dg.traverse(swap);
+  }
   freezeStatic(g, room.yardSky);
   freezeStatic(dg, room.doorVisual);
   g.add(room.yardLeafG);                                            // after the freeze: the side leaves move
@@ -47820,6 +47944,7 @@ function yardActivate(room, box, walk) {
     void c;
   }
   for (const [x, z] of L.bollards) { box(0.1, 0.55, 0.1, x, 0.55, z, 0.5, 0, 'metal'); walk(x, z, 0.11, 0.11, 1.1); }
+  natActivate(room, walk);                                          // nature: trunks, rock hulls, walk boxes (before the nav grid)
   room.navCache = yardNav(room);
   yardDoorsActivate(room);
 }
@@ -47933,6 +48058,7 @@ function yardCover(room, out) {
     }
   }
   for (const [px, pz] of L.poles) add(px, pz + 0.35 + gap, 0, 1, 0.7, 0);
+  natCover(room, add);                                               // nature: trunks and boulders in the compound
   for (const r of L.rooms) if (r.counter) {                          // the interiors' counters: both long sides
     const [x0, x1, z0, z1] = r.counter, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
     if (x1 - x0 > z1 - z0) { add(cx, z0 - gap, 0, -1, 1.05, 0); add(cx, z1 + gap, 0, 1, 1.05, 0); }
@@ -48000,6 +48126,7 @@ function yardLights(cur) {
     s.shadow.camera.near = 0.1; s.shadow.camera.updateProjectionMatrix();
   };
   if (!inY) {
+    YU.uYMoon.value.w = 0;                                            // nature: no unshadowed moon outside the yard
     for (const s of pool.main) restore(s);
     for (const r of pool.rects) if (r.userData.yardMode) { r.userData.yardMode = false; r.color.set(CONFIG.look.rect); r.width = 0.56; r.height = 1.16; }
     return;
@@ -48016,6 +48143,9 @@ function yardLights(cur) {
     mn.color.setRGB(0.62, 0.72, 0.95); mn.intensity = YC.moon.E * R * R;
     mn.shadow.camera.near = R - 60; mn.shadow.camera.far = R + 60; mn.shadow.camera.updateProjectionMatrix();
     mn.updateMatrixWorld(); mn.target.updateMatrixWorld(); mn.userData.yardMode = true;
+    _yl.t.subVectors(mn.target.position, mn.position).normalize();   // nature: the same moon, unshadowed, beyond the spot's cone (the forest)
+    YU.uYMoonP.value.copy(mn.position); YU.uYMoonA.value.set(_yl.t.x, _yl.t.y, _yl.t.z, Math.cos(mn.angle));
+    YU.uYMoon.value.set(-_yl.t.x, -_yl.t.y, -_yl.t.z, YC.moon.E); YU.uYMoonC.value.copy(mn.color);
   }
   if (!fl.userData.torch) {                                           // the tower flood, shadowed
     const l = L.lamps[0], tx = l.p[0] + l.d[0] * 20, ty = l.p[1] + l.d[1] * 20, tz = l.p[2] + l.d[2] * 20;
@@ -48075,6 +48205,9 @@ function yardTick(dt, t) {
       if (Y.outerMat) Y.outerMat.uniforms.uC.value.set(rWX(yard, 0), yard.origin.y + 1.7, rWZ(yard, 0));
       const k = renderer.xr.isPresenting ? 0.55 : 1;
       for (const m of [Y.rainMat, Y.splashMat]) { m.uniforms.uFloorY.value = yard.origin.y + 0.012; m.uniforms.uCam.value.copy(_yt.v); m.uniforms.uRainK.value = k; m.uniforms.uPx.value = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / Math.max(400, renderer.domElement.height); }
+      YU.uYQ.value = renderer.xr.isPresenting || (NAT && NAT.xr) ? 0 : 1;   // nature: one triplanar plane in the headset
+      if (NAT && NAT.drip && NAT.drip.material.uniforms) { NAT.drip.material.uniforms.uPx.value = Y.rainMat.uniforms.uPx.value; NAT.drip.material.uniforms.uK.value = k; }
+      natTick(yard);                                                  // nature: forest LOD buckets (at most 4 Hz, when you moved)
     }
   }
   stealthTick(dt);
@@ -48109,6 +48242,474 @@ function yardWetAt(room, lx, lz) {
   if (pd > 0 && wet > 0.01) { SPLASH.pool = 1; return clamp(0.45 + pd * 6, 0.45, 1); }
   SPLASH.damp = smoothstep(-0.09, 0, pd) * wet;
   return 0.2 + SPLASH.damp * 0.2;                                    // all of it is wet in the rain
+}
+
+/* ---------------------------------------------------------------------------
+ *  NATURE (Outpost 17): a forest edge outside the perimeter walls, plantings in the compound's margins, wet rocks.
+ *  Assets: cqc/models/nature.glb (tools/pack_nature.py) from the user's "Free Low-Poly Nature Assets Pack" (Sketchfab,
+ *  BozhidarKN, CC-BY-4.0): its broadleaf / dead trees, rocks, stumps, ferns; plus generated spruce-like pines, dead pines
+ *  (snags), dwarf pines (bushes), pine bark, needle cards, a forest floor and the tree impostors. ?nature=off = none.
+ *  Placement is fixed (seeded) in room-local metres: natInside (hand-placed beds) and natForest (jittered grid outside:
+ *  |x| >= 20.3 beside the yard, |x| >= 26 beyond its ends, never in the chain's corridor where the other rooms stand).
+ *  Draw: one InstancedMesh per kind, LOD and primitive (primitives of one kind and LOD share their instance buffers);
+ *  forest instances are sorted into LOD0 / LOD1 / LOD2 (impostor) or culled by distance at most every 0.25 s, only when you
+ *  moved 1.5 m (natTick); compound plantings are their own static meshes (LOD0, cast shadows). Quest: shorter LOD and
+ *  cull distances, a smaller and sparser forest, fewer kinds, one triplanar plane (uYQ 0).
+ *  Every surface uses the yard shader (yardInject): kinds 10 bark, 11 rock, 12 foliage, 13 forest floor; wind in the
+ *  vertex stage (uYWindA sway by height^2, uYFlut card flutter). Physics: trunk cylinders ('wood', solid: penetration
+ *  through the full thickness), rock convex hulls ('concrete'), walk boxes, nav, cover points (trees: high, step out to
+ *  either side; boulders: low or high); bushes and ferns hide a crouched man (natConceal in stealthK).
+ *  Drips: water falls from every overhang edge and from the compound's tree crowns (natDrips, one draw, vertex-animated).
+ * ------------------------------------------------------------------------- */
+const NAT_ON = !/[?&]nature=off\b/.test(location.search);
+const NC = {
+  url: 'models/nature.glb',
+  lod: [30, 64, 140], lodXR: [16, 42, 92],                         // LOD0 / LOD1 / impostor end (m from you to the crown's edge)
+  cull: { rock: 95, stump: 45, bush: 60, fern: 34 }, cullXR: { rock: 60, stump: 26, bush: 32, fern: 20 },
+  wind: 0.05, flutter: 0.006,
+  forest: { edge: 20.3, side: 26, xMax: 122, zMax: 100, xMaxXR: 88, zMaxXR: 72, step: [3.6, 5.8], stepXR: 1.3 },
+  ground: { xMax: 132, zMax: 142, xMaxXR: 98, zMaxXR: 106, tile: 2.5 },
+  colX: 60, colZ: 70,                                               // outside trees with a trunk collider (bullets over the wall)
+  drips: 900, dripsXR: 360
+};
+const NAT_TREES = ['pineA', 'pineB', 'pineC', 'snagA', 'snagB', 'leafA', 'deadB', 'deadC'];
+const NAT_SINGLE = { rockA: 'rock', rockB: 'rock', stumpA: 'stump', stumpB: 'stump', stumpC: 'stump', bushA: 'bush', bushB: 'bush', fernA: 'fern', fernB: 'fern', weed: 'fern' };
+const NAT_XR_DROP = { leafA: 'pineA', deadB: 'deadC', snagB: 'snagA', stumpB: 'stumpA', stumpC: 'stumpA', fernB: 'fernA' };   // fewer kinds (draws) in the headset
+// Soil beds with a flush concrete kerb (x0 x1 z0 z1) and the plantings in them (kind, x, z, scale, yaw). Kept clear of
+// the doors, the drive lane, the stairs, the helipad and the tower sniper's line to the entry door; crowns clear the walls.
+const NAT_BEDS = [[14.2, 19.75, 19.6, 27.55], [-19.75, -17.2, 16.8, 27.55], [-17.2, -14.6, 23.9, 27.55], [17.9, 19.75, -4.8, 9.8], [-19.75, -17.4, -26.9, -9.4], [15.6, 19.75, -27.55, -24.35]];
+const NAT_INSIDE = [
+  ['pineA', 17.1, 24.1, 0.68, 0.4], ['pineC', 18.2, 21.0, 0.62, 1.9], ['rockA', 15.6, 22.0, 1.3, 0.6], ['rockB', 16.0, 26.6, 0.9, 2.2], ['stumpA', 19.1, 26.9, 1.0, 0.3],
+  ['bushA', 15.0, 24.8, 1.0, 0], ['bushB', 19.1, 19.9, 1.1, 1.1], ['fernB', 14.8, 20.2, 1.0, 0.5], ['fernA', 17.6, 22.8, 1.0, 2.4], ['fernA', 19.2, 23.4, 0.8, 4.1],
+  ['pineB', -17.5, 25.6, 0.5, 2.1], ['snagA', -18.45, 19.6, 0.55, 0.9], ['rockA', -15.6, 26.5, 1.0, 2.7], ['rockB', -18.9, 22.4, 0.85, 0.2], ['bushA', -16.0, 24.6, 0.9, 0.7],
+  ['fernB', -18.9, 17.6, 0.9, 1.3], ['fernA', -18.1, 23.6, 1.0, 3.0], ['weed', -15.0, 27.1, 1.0, 0.4],
+  ['rockB', 19.0, 6.6, 1.25, 1.4], ['rockA', 18.9, -1.8, 1.3, -0.4], ['snagB', 18.3, 2.6, 0.8, 0.7], ['bushB', 19.0, 8.9, 1.0, 0], ['fernA', 19.1, 0.6, 0.9, 1], ['weed', 18.6, 4.4, 1.0, 2],
+  ['pineC', -18.15, -23.8, 0.6, 0.8], ['rockA', -18.4, -18.0, 1.6, 1.2], ['rockB', -18.9, -12.4, 1.0, 2.0], ['stumpB', -18.8, -21.2, 1.0, 0], ['bushA', -18.7, -15.4, 1.05, 2],
+  ['fernB', -19.0, -10.2, 0.9, 0.3], ['fernA', -18.3, -26.3, 0.9, 1.8],
+  ['rockA', 18.0, -26.0, 1.05, 2.4], ['bushB', 16.5, -26.9, 0.9, 1], ['fernA', 19.2, -24.9, 0.8, 0.2],
+  ['rockA', 10.7, 11.6, 1.2, -0.7], ['rockB', -6.9, 19.2, 1.0, 1.0]     // boulders on the approach past the helipad
+];
+var NAT = null;
+function natState() {
+  if (!NAT) NAT = { on: NAT_ON, loading: null, ready: false, failed: false, A: {}, T: {}, M: null, F: null, I: null, terrain: null, drip: null, xr: false, lastX: 1e9, lastZ: 1e9, lastT: -1e9 };
+  return NAT;
+}
+const natXR = () => /OculusBrowser|Quest/i.test(navigator.userAgent) || !!(renderer && renderer.xr && renderer.xr.isPresenting);
+// Fetched at boot when the start mode has a yard (the first rooms are built without returning to the event loop), else
+// when the yard is first planned; the time-sliced builder waits for it (12 s at most).
+function natLoad() {
+  const N = natState();
+  if (!N.on || N.ready || N.failed) return Promise.resolve();
+  if (N.loading) return N.loading;
+  N.loading = (async () => {
+    try {
+      const r = await fetch(NC.url);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+      const gltf = await gltfParse(GLTFLoader, await r.arrayBuffer());
+      for (const o of gltf.scene.children) {
+        const prims = o.isMesh ? [o] : o.children.filter((c) => c.isMesh);
+        if (!prims.length) continue;
+        N.A[o.name] = { ex: o.userData || {}, prims: prims.map((m) => ({ geo: m.geometry, mat: m.material.name })) };
+        for (const m of prims) {
+          const mm = m.material, t = N.T[mm.name] || (N.T[mm.name] = {});
+          t.map = mm.map || t.map; t.normal = mm.normalMap || t.normal; t.orm = mm.roughnessMap || t.orm; t.tangents = !!m.geometry.attributes.tangent;
+          for (const k of ['map', 'normal', 'orm']) if (t[k]) t[k].anisotropy = maxAniso;
+        }
+      }
+      if (!N.A.pineA_0 || !N.A.rockA || !N.A.floorMat) throw new Error('assets missing');
+      N.ready = true;
+    } catch (e) { N.failed = true; console.warn('Outdoor: models/nature.glb not loaded, the yard has no trees or rocks', e); }
+  })();
+  return N.loading;
+}
+function natMaterials(N) {
+  const T = N.T, M = {};
+  const mk = (kind, name, o = {}) => {
+    const t = T[name] || {};
+    const m = yardMat(kind, null, { map: t.map || null, normalMap: t.normal || null, roughnessMap: t.orm || null, aoMap: t.orm || null, metalnessMap: null, metalness: 0, roughness: 1, ...o });
+    if (m.normalMap && !t.tangents) m.normalScale.set(1, -1);       // no vertex tangents: GLTFLoader's rule for derivative ones
+    m.userData.nat = true;
+    return m;
+  };
+  const cards = { alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.62 };
+  M.pineBark = mk(10, 'pineBark', { wind: NC.wind }); M.packBark = mk(10, 'packBark', { wind: NC.wind });
+  M.needles = mk(12, 'needles', { ...cards, wind: NC.wind, flutter: NC.flutter });
+  M.leaf1 = mk(12, 'leaf1', { ...cards, wind: NC.wind, flutter: NC.flutter * 1.6 });
+  M.impostor = mk(12, 'impostor', { ...cards, roughness: 0.7, wind: NC.wind });
+  for (const k of ['fern1', 'fern2', 'weed']) M[k] = mk(12, k, { ...cards, wind: 0.02, flutter: NC.flutter * 1.4 });
+  for (const k of ['rock1', 'rock2']) M[k] = mk(11, k, { roughness: 1 });
+  for (const k of ['stump1', 'stump2', 'stump3']) M[k] = mk(10, k, { roughness: 1 });
+  M.floor = mk(13, 'floor', { roughness: 1, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+  for (const k of Object.keys(M)) M[k].envMapIntensity = k === 'floor' ? 0.7 : k.startsWith('rock') ? 0.75 : 0.55;
+  return M;
+}
+
+// Height of the ground outside the walls (room-local). 0 at the wall's foot, gentle hummocks near it, rising into the
+// mountainside away from the compound; only where natInRegion.
+function natInRegion(x, z, m = 0) { const ax = Math.abs(x), hd = YC.d / 2; return (ax >= NC.forest.edge + m && Math.abs(z) <= hd + 0.3) || ax >= NC.forest.side + m; }
+function natGround(x, z) {
+  const ax = Math.abs(x), out = Math.max(0, ax - 21);
+  const near = smoothstep(0, 5, out);
+  const rise = smoothstep(4, 100, out) * 15 * (0.75 + 0.5 * yardVN(z * 0.012 + 3, x > 0 ? 1.3 : 7.9));
+  const bump = (yardVN(x * 0.07, z * 0.07) - 0.5) * 1.5 + (yardVN(x * 0.21 + 5, z * 0.21 + 2) - 0.5) * 0.45;
+  return Math.max(0, rise + (bump + 0.25) * near);
+}
+
+// The instance lists: [kind, x, y, z, yaw, scale, tint r g b, inside, collider]. Seeded, so every visit is the same.
+function natPlan(xr) {
+  const R = mulberry32(0x17F0E5), out = [], hd = YC.d / 2, F = NC.forest;
+  const pick = (k) => (xr && NAT_XR_DROP[k]) || k;
+  const tint = (k) => { const v = 0.82 + R() * 0.32, h = (R() - 0.5) * 0.12; return k.startsWith('pine') || k.startsWith('bush') ? [v * (1 - h), v * (1 + h * 0.5), v * (1 + h)] : [v, v, v * (0.96 + R() * 0.06)]; };
+  const exK = (k) => { const a = NAT && (NAT.A[k + '_0'] || NAT.A[k]); return a ? a.ex : {}; };
+  for (const [k, x, z, s, ry] of NAT_INSIDE) {                        // a stand-in kind (headset) keeps the planting's crown
+    const k2 = pick(k), s2 = k2 === k ? s : s * (exK(k).crown || 1) / (exK(k2).crown || 1);
+    out.push({ k: k2, x, y: k.startsWith('rock') ? 0 : -0.02, z, ry, s: s2, c: tint(k), inside: true, col: true });
+  }
+  // weeds in the cracks along the foot of the walls
+  const busy = (x, z) => NAT_BEDS.some(([x0, x1, z0, z1]) => x > x0 - 0.3 && x < x1 + 0.3 && z > z0 - 0.3 && z < z1 + 0.3) || (x < -7.8 && z > -8.2 && z < 14.2) || (x > 8.8 && z > -24.2 && z < -5.8)
+    || Math.hypot(x - YC.entryX, z - hd) < 2.6 || Math.hypot(x - YC.exitX, z + hd) < 2.6 || (x > 13.4 && x < 18 && z > 12.9 && z < 18);
+  for (const s of [-1, 1]) for (let z = -hd + 0.6; z < hd - 0.6; z += 0.9 + R() * 2.4) { const x = s * (YC.w / 2 - 0.12 - R() * 0.1); if (!busy(x, z)) out.push({ k: 'weed', x, y: -0.01, z, ry: R() * 6.28, s: 0.45 + R() * 0.45, c: tint('weed'), inside: true, col: false }); }
+  for (const s of [-1, 1]) for (let x = -YC.w / 2 + 0.6; x < YC.w / 2 - 0.6; x += 1.2 + R() * 2.8) { const z = s * (hd - 0.5 - R() * 0.15); if (!busy(x, z)) out.push({ k: 'weed', x, y: -0.01, z, ry: R() * 6.28, s: 0.4 + R() * 0.4, c: tint('weed'), inside: true, col: false }); }
+  // the forest: a jittered grid, denser at the edge; trunks clear the wall by their crown
+  const xMax = xr ? F.xMaxXR : F.xMax, zMax = xr ? F.zMaxXR : F.zMax, sk = xr ? F.stepXR : 1;
+  const crownOf = (k) => { const a = NAT && NAT.A[k + '_0']; return a ? a.ex.crown || 2.5 : 2.5; };
+  for (const side of [-1, 1]) {
+    for (let ax = F.edge + 0.6; ax < xMax;) {
+      const sp = mix(F.step[0], F.step[1], smoothstep(2, 34, ax - 21)) * sk;
+      for (let z = -zMax; z < zMax; z += sp) {
+        const x = side * (ax + (R() - 0.5) * sp * 0.85), zz = z + (R() - 0.5) * sp * 0.85, u = R();
+        const near = Math.abs(x) < 36;
+        let k = u < 0.36 ? 'pineA' : u < 0.62 ? 'pineB' : u < 0.8 ? 'pineC' : u < 0.86 ? 'snagA' : u < 0.89 ? 'snagB' : u < 0.93 ? 'deadC' : u < 0.955 ? 'deadB' : near ? 'leafA' : 'pineA';
+        k = pick(k);
+        const s = (k === 'pineB' ? 0.75 + R() * 0.35 : 0.78 + R() * 0.45) * (near ? 1 : 1.05);
+        const cr = crownOf(k) * s;
+        if (Math.abs(x) < (Math.abs(zz) <= hd + 0.3 ? F.edge + 0.25 : F.side) + cr) continue;   // the crown clears the wall (and the corridor of rooms)
+        out.push({ k, x, y: natGround(x, zz) - 0.15, z: zz, ry: R() * 6.28, s, c: tint(k), inside: false, col: Math.abs(x) <= NC.colX && Math.abs(zz) <= NC.colZ });
+      }
+      ax += sp;
+    }
+    // undergrowth near the edge: boulders, stumps, dwarf pines, ferns
+    const ux = xr ? 40 : 52;
+    for (let ax = F.edge + 0.5; ax < ux; ax += 3.2) for (let z = -(xr ? 50 : 70); z < (xr ? 50 : 70); z += 3.2) {
+      const x = side * (ax + (R() - 0.5) * 2.8), zz = z + (R() - 0.5) * 2.8, u = R(), d = Math.abs(x) - 21;
+      if (!natInRegion(x, zz, 0.4)) continue;
+      let k = null, s = 1;
+      if (u < 0.075 + (d < 8 ? 0.05 : 0)) { k = R() < 0.55 ? 'rockA' : 'rockB'; s = 0.5 + R() * R() * 2.0 + (d < 6 ? 0.4 : 0); }
+      else if (u < 0.1) { k = ['stumpA', 'stumpB', 'stumpC'][(R() * 3) | 0]; s = 0.8 + R() * 0.5; }
+      else if (u < 0.2 && d < 30) { k = R() < 0.6 ? 'bushA' : 'bushB'; s = 0.8 + R() * 0.7; }
+      else if (u < (xr ? 0.3 : 0.42) && d < 22) { k = ['fernA', 'fernB', 'weed'][(R() * 3) | 0]; s = 0.7 + R() * 0.6; }
+      if (!k) continue;
+      k = pick(k);
+      out.push({ k, x, y: natGround(x, zz) - (k.startsWith('rock') ? 0.06 * s : 0.03), z: zz, ry: R() * 6.28, s, c: tint(k), inside: false, col: k.startsWith('rock') && s > 0.8 && Math.abs(x) < 45 && Math.abs(zz) < 60 });
+    }
+  }
+  return out;
+}
+
+// The ground outside: one grid, 2.5 m near the walls (5 m far), cut to natInRegion; its edges run on the region's lines.
+function natTerrain(xr) {
+  const G = NC.ground, xM = xr ? G.xMaxXR : G.xMax, zM = xr ? G.zMaxXR : G.zMax, hd = YC.d / 2 + 0.3;
+  const line = (a, b, near, step0, step1) => { const v = new Set([a, b]); for (let s = a; s < b; s += Math.abs(s) < near ? step0 : step1) v.add(+s.toFixed(3)); return v; };
+  const xs = [...new Set([...line(-xM, xM, 52, 2.5, 5), -26, 26, -NC.forest.edge, NC.forest.edge])].sort((a, b) => a - b);
+  const zs = [...new Set([...line(-zM, zM, 40, 2.5, 6), -hd, hd])].sort((a, b) => a - b);
+  const nx = xs.length, P = new Float32Array(nx * zs.length * 3), U = new Float32Array(nx * zs.length * 2), I = [];
+  for (let j = 0; j < zs.length; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i, x = xs[i], z = zs[j];
+    P.set([x, natInRegion(x, z, -0.01) ? natGround(x, z) : 0, z], k * 3); U.set([x / G.tile, z / G.tile], k * 2);
+  }
+  for (let j = 0; j + 1 < zs.length; j++) for (let i = 0; i + 1 < nx; i++) {
+    if (!natInRegion((xs[i] + xs[i + 1]) / 2, (zs[j] + zs[j + 1]) / 2)) continue;
+    const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
+    I.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setAttribute('uv', new THREE.BufferAttribute(U, 2)); g.setIndex(I);
+  g.computeVertexNormals(); g.computeBoundingSphere();
+  return g;
+}
+
+// Instanced meshes for one instance list. byKind[k] = { n, x, z, r (crown), mat (16 n), col (3 n), lods, cat, mesh[lod] = [meshes] }
+const _nM = new THREE.Matrix4(), _nQ = new THREE.Quaternion(), _nP = new THREE.Vector3(), _nS = new THREE.Vector3();
+function natMeshes(N, list, inside) {
+  const byKind = {}, meshes = [];
+  for (const it of list) (byKind[it.k] || (byKind[it.k] = { items: [] })).items.push(it);
+  for (const k of Object.keys(byKind)) {
+    const K = byKind[k], n = K.items.length, tree = NAT_TREES.includes(k);
+    K.n = n; K.lods = tree && !inside ? 3 : 1; K.cat = NAT_SINGLE[k] || 'tree';
+    K.x = new Float32Array(n); K.z = new Float32Array(n); K.r = new Float32Array(n); K.mat = new Float32Array(n * 16); K.col = new Float32Array(n * 3);
+    const ex = (N.A[tree ? k + '_0' : k] || {}).ex || {};
+    K.items.forEach((it, i) => {
+      K.x[i] = it.x; K.z[i] = it.z; K.r[i] = (ex.crown || ex.r || 1) * it.s;
+      _nM.compose(_nP.set(it.x, it.y, it.z), _nQ.setFromAxisAngle(Y_AXIS, it.ry), _nS.set(it.s, it.s, it.s)).toArray(K.mat, i * 16);
+      K.col.set(it.c, i * 3);
+    });
+    K.mesh = [];
+    for (let l = 0; l < K.lods; l++) {
+      const A = N.A[tree ? `${k}_${l}` : k];
+      const ms = [];
+      if (A) {
+        let im = null, ic = null;
+        for (const p of A.prims) {
+          const mat = N.M[p.mat]; if (!mat) continue;
+          const m = new THREE.InstancedMesh(p.geo, mat, n);
+          if (im) { m.instanceMatrix = im; m.instanceColor = ic; } else { m.setColorAt(0, new THREE.Color(1, 1, 1)); im = m.instanceMatrix; ic = m.instanceColor; }
+          im.setUsage(inside ? THREE.StaticDrawUsage : THREE.DynamicDrawUsage);
+          m.castShadow = inside && l === 0 && K.cat !== 'fern'; m.receiveShadow = l < 2;
+          m.frustumCulled = inside; m.count = inside ? n : 0; m.matrixAutoUpdate = false; m.name = `nat ${k} ${l}`;
+          ms.push(m); meshes.push(m);
+        }
+        if (inside && im) { im.array.set(K.mat); ic.array.set(K.col); for (const m of ms) m.computeBoundingSphere(); }
+      }
+      K.mesh.push(ms);
+    }
+  }
+  return { byKind, kinds: Object.keys(byKind), meshes };
+}
+// Forest LOD: buckets by distance from you to the crown's edge (room-local, xz).
+const _nTk = new THREE.Vector3();
+function natTick(yard) {
+  const N = NAT; if (!N || !N.F || !yard.natOn) return;
+  const now = performance.now();
+  if (now - N.lastT < 250) return;
+  headWorld(_nTk); const lx = rLX(yard, _nTk.x), lz = rLZ(yard, _nTk.z);
+  if (Math.hypot(lx - N.lastX, lz - N.lastZ) < 1.5 && now - N.lastT < 3000) return;
+  N.lastX = lx; N.lastZ = lz; N.lastT = now;
+  const D = N.xr ? NC.lodXR : NC.lod, C = N.xr ? NC.cullXR : NC.cull, cnt = [0, 0, 0];
+  for (const k of N.F.kinds) {
+    const K = N.F.byKind[k], lim = K.lods === 3 ? D : [C[K.cat] || 40];
+    cnt[0] = cnt[1] = cnt[2] = 0;
+    const arr = K.mesh.map((ms) => (ms.length ? [ms[0].instanceMatrix.array, ms[0].instanceColor.array] : null));
+    for (let i = 0; i < K.n; i++) {
+      const dx = K.x[i] - lx, dz = K.z[i] - lz, d = Math.sqrt(dx * dx + dz * dz) - K.r[i];
+      let l = 0; while (l < lim.length && d >= lim[l]) l++;
+      if (l >= lim.length || !arr[l]) continue;
+      const s = cnt[l]++;
+      arr[l][0].set(K.mat.subarray(i * 16, i * 16 + 16), s * 16); arr[l][1].set(K.col.subarray(i * 3, i * 3 + 3), s * 3);
+    }
+    K.mesh.forEach((ms, l) => { if (!ms.length) return; for (const m of ms) m.count = cnt[l]; ms[0].instanceMatrix.needsUpdate = true; ms[0].instanceColor.needsUpdate = true; });
+  }
+}
+
+// Drips: water hanging and falling from the overhangs' free edges and from the compound's tree crowns. Segments
+// [x0 y z0 x1 z1 floor] room-local; each drop hangs, swells, falls (gravity), splashes on the floor below.
+function natDripFloor(L, x, z, y) {
+  let f = 0;
+  for (const Dk of L.decks) if (Dk.y < y - 0.05 && x >= Dk.x0 && x <= Dk.x1 && z >= Dk.z0 && z <= Dk.z1) f = Math.max(f, Dk.y);
+  for (const b of L.bld) if (b.h < y - 0.05 && x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1) f = Math.max(f, b.h);
+  for (const F of L.flights) { if (x < F.x0 || x > F.x1) continue; const t = (z - F.zf) / (F.zt - F.zf); if (t >= 0 && t <= 1 && F.y * t < y - 0.05) f = Math.max(f, F.y * t); }
+  for (const [x0, z0, x1, z1, h] of L.roofs) if (h < y - 0.05 && x >= x0 && x <= x1 && z >= z0 && z <= z1) f = Math.max(f, h + 0.12);   // a lower canopy or deck slab
+  return f;
+}
+function natDripSegments(L, inside) {
+  const hw = YC.w / 2, hd = YC.d / 2, seg = [];
+  const against = (x0, z0, x1, z1, h) => {                           // an edge on the boundary or a face of something taller: no drips
+    const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+    if (Math.abs(mx) > hw - 0.05 || Math.abs(mz) > hd - 0.05) return true;
+    for (const b of L.bld) if (b.h > h + 0.1 && mx >= b.x0 - 0.05 && mx <= b.x1 + 0.05 && mz >= b.z0 - 0.05 && mz <= b.z1 + 0.05) return true;
+    for (const r of L.roofs) if (r[4] > h + 0.1 && mx >= r[0] - 0.05 && mx <= r[2] + 0.05 && mz >= r[1] - 0.05 && mz <= r[3] + 0.05) return true;   // under a higher roof
+    return false;
+  };
+  for (const [x0, z0, x1, z1, h] of L.roofs) {
+    for (const [a, b, c, d] of [[x0, z0, x1, z0], [x0, z1, x1, z1], [x0, z0, x0, z1], [x1, z0, x1, z1]]) {
+      if (against(a, b, c, d, h)) continue;
+      const out = 0.02, nx = a === c ? (a === x0 ? -out : out) : 0, nz = b === d ? (b === z0 ? -out : out) : 0;
+      const yl = h > 8 ? h + 0.04 : h - 0.02;                       // a building's parapet coping, or under a slab / deck
+      seg.push([a + nx, yl, b + nz, c + nx, d + nz, natDripFloor(L, (a + c) / 2 + nx * 5, (b + d) / 2 + nz * 5, yl), h > 8 ? 0.5 : 1]);
+    }
+  }
+  for (const [i, [px, pz]] of L.poles.entries()) { const lp = L.lamps[i + 1].p; seg.push([lp[0] - 0.3, lp[1] - 0.13, lp[2] - 0.32, lp[0] + 0.3, lp[2] - 0.32, 0, 0.3]); void px; void pz; }
+  for (const it of inside) {                                         // crowns: drops from inside the crown, down to the soil
+    if (!it.drip) continue;
+    for (let k = 0; k < 6; k++) { const a = k * 1.047 + it.ry, r = it.drip.r * (0.35 + 0.15 * (k % 3)); seg.push([it.x + Math.cos(a) * r, it.drip.y + (k % 2) * 0.8, it.z + Math.sin(a) * r, it.x + Math.cos(a) * r, it.z + Math.sin(a) * r, 0, 5]); }
+  }
+  return seg;
+}
+function natDripMesh(segs, n) {
+  const g = new THREE.BufferGeometry(), A = new Float32Array(n * 4 * 4), B = new Float32Array(n * 4 * 3), S = new Float32Array(n * 4 * 4), C = new Float32Array(n * 4 * 2), I = new Uint32Array(n * 6);
+  const R = mulberry32(0xD21F5), w = segs.map((s) => Math.max(0.3, Math.hypot(s[3] - s[0], s[4] - s[2])) * s[6]), tot = w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < n; i++) {
+    let u = R() * tot, si = 0; while (si < segs.length - 1 && u > w[si]) { u -= w[si]; si++; }
+    const s = segs[si], sd = [R(), R(), R(), R()];
+    for (let k = 0; k < 4; k++) {
+      const v = i * 4 + k;
+      A.set([s[0], s[1], s[2], s[5]], v * 4); B.set([s[3], s[1], s[4]], v * 3); S.set(sd, v * 4); C.set([[-1, 0], [1, 0], [1, 1], [-1, 1]][k], v * 2);
+    }
+    I.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 12), 3));
+  g.setAttribute('aA', new THREE.BufferAttribute(A, 4)); g.setAttribute('aB', new THREE.BufferAttribute(B, 3)); g.setAttribute('aSeed', new THREE.BufferAttribute(S, 4)); g.setAttribute('aCorner', new THREE.BufferAttribute(C, 2));
+  g.setIndex(new THREE.BufferAttribute(I, 1));
+  return g;
+}
+function natDripMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...YU, uPx: { value: 0.002 }, uK: { value: 1 } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    vertexShader: `
+attribute vec4 aA; attribute vec3 aB; attribute vec4 aSeed; attribute vec2 aCorner;
+uniform float uYTime; uniform float uPx; uniform float uK; uniform float uYWetX;
+varying vec2 vC; varying float vK; varying vec3 vW; varying float vSplash;
+void main(){
+  vec3 p0 = mix(aA.xyz, aB, aSeed.x);
+  float T = 1.3 + aSeed.y * 2.8, ph = fract(uYTime / T + aSeed.z), hang = 0.62;
+  float tau = max(ph - hang, 0.0) * T, y = p0.y - 4.9 * tau * tau, v = 9.8 * tau;
+  vec3 p; float len, wid; vSplash = 0.0;
+  vec3 dir = vec3(0.0, -1.0, 0.0);
+  if (ph < hang) { p = p0 - vec3(0.0, 0.002 + 0.004 * ph / hang, 0.0); len = 0.003 + 0.004 * ph / hang; vK = 0.25 * ph / hang; }
+  else if (y > aA.w) { p = vec3(p0.x, y, p0.z); len = clamp(v * 0.016, 0.006, 0.3); vK = 1.0; }
+  else {                                                              // landed: a small ring for 0.2 s
+    float tl = sqrt(max(p0.y - aA.w, 0.0) / 4.9), age = tau - tl;
+    vSplash = 1.0; vK = age < 0.2 ? 1.0 - age / 0.2 : 0.0;
+    float r = 0.012 + age * 0.22;
+    vec3 c = vec3(p0.x, aA.w + 0.012, p0.z);
+    vec4 cw = modelMatrix * vec4(c, 1.0);
+    vec3 q = cw.xyz + vec3((aCorner.x) * r, 0.0, (aCorner.y * 2.0 - 1.0) * r);
+    vC = vec2(aCorner.x, aCorner.y * 2.0 - 1.0); vW = q; vK *= uK * uYWetX;
+    gl_Position = projectionMatrix * viewMatrix * vec4(q, 1.0);
+    return;
+  }
+  vec4 w = modelMatrix * vec4(p, 1.0);
+  vec3 vd = normalize(w.xyz - cameraPosition), side = normalize(cross(dir, vd));
+  float dist = length(w.xyz - cameraPosition); wid = max(0.0012, uPx * dist);
+  vec3 q = w.xyz - dir * (len * aCorner.y) + side * (wid * aCorner.x);
+  vC = aCorner; vK *= uK * uYWetX * smoothstep(0.3, 1.2, dist) * clamp(0.0012 / wid, 0.25, 1.0); vW = q;
+  gl_Position = projectionMatrix * viewMatrix * vec4(q, 1.0);
+}`,
+    fragmentShader: `${YARD_GLSL_COMMON}\n${YRAIN_LIGHT}\nvarying vec2 vC; varying float vK; varying vec3 vW; varying float vSplash;
+void main(){
+  if (vK <= 0.001) discard;
+  vec3 vd = normalize(vW - cameraPosition);
+  float a = vSplash > 0.5 ? smoothstep(1.0, 0.75, length(vC)) * smoothstep(0.45, 0.8, length(vC)) * vK * 0.5 : (1.0 - abs(vC.x)) * vK * 0.4;
+  gl_FragColor = vec4(yRainLight(vW, vd) * a, 1.0);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`
+  });
+}
+
+// Builder part (yardBuilder, before the merge): beds and kerbs into the yard's batch, the ground outside, the meshes, drips.
+function* natBuild(room, xr, add, box, M) {
+  const N = natState();
+  room.natOn = false;
+  if (!N.on) return;
+  if (!N.ready && !N.failed) {
+    natLoad();
+    if (stream.building === room) { const t0 = performance.now(); while (!N.ready && !N.failed && performance.now() - t0 < 12000) yield; }   // streamed: wait (frames run)
+  }
+  if (!N.ready) return;
+  N.xr = xr;
+  if (!N.M) { N.M = natMaterials(N); yardEnvAssign(); }
+  if (!N.plan) {
+    N.plan = natPlan(xr);
+    const ins = N.plan.filter((it) => it.inside), out = N.plan.filter((it) => !it.inside);
+    for (const it of ins) { const a = N.A[it.k + '_0']; if (a && NAT_TREES.includes(it.k)) it.drip = { r: (a.ex.crown || 2) * it.s, y: Math.max(2, (a.ex.cb || a.ex.h * 0.3) * it.s + 0.5) }; }
+    N.I = natMeshes(N, ins, true); N.F = natMeshes(N, out, false);
+    N.terrain = natTerrain(xr);
+    yield;
+  }
+  // beds: forest-floor soil 1 cm over the slab, a flush precast kerb on the sides that face the yard
+  for (const [x0, x1, z0, z1] of NAT_BEDS) {
+    const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0, 1, 1); g.rotateX(-Math.PI / 2); g.translate((x0 + x1) / 2, 0.01, (z0 + z1) / 2);
+    const p = g.attributes.position, uv = g.attributes.uv; for (let i = 0; i < p.count; i++) uv.setXY(i, p.getX(i) / NC.ground.tile, p.getZ(i) / NC.ground.tile);
+    add(g, N.M.floor, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, false);
+    const hw = YC.w / 2 - 0.02, hd = YC.d / 2 - 0.5;
+    if (x0 > -hw) box(M.barrier, x0 - 0.12, x0, 0, 0.06, z0 - (z0 > -hd ? 0.12 : 0), z1 + (z1 < hd ? 0.12 : 0), false);
+    if (x1 < hw) box(M.barrier, x1, x1 + 0.12, 0, 0.06, z0 - (z0 > -hd ? 0.12 : 0), z1 + (z1 < hd ? 0.12 : 0), false);
+    if (z0 > -hd) box(M.barrier, x0, x1, 0, 0.06, z0 - 0.12, z0, false);
+    if (z1 < hd) box(M.barrier, x0, x1, 0, 0.06, z1, z1 + 0.12, false);
+  }
+  const g = room.group;
+  const tm = new THREE.Mesh(N.terrain, N.M.floor); tm.receiveShadow = true; tm.castShadow = false; tm.frustumCulled = false; tm.name = 'nat ground'; g.add(tm);
+  for (const m of N.I.meshes) g.add(m);
+  for (const m of N.F.meshes) g.add(m);
+  if (!N.drip) {
+    const segs = natDripSegments(room.yard, N.plan.filter((it) => it.inside));
+    N.drip = new THREE.Mesh(natDripMesh(segs, xr ? NC.dripsXR : NC.drips), natDripMaterial()); N.drip.frustumCulled = false; N.drip.renderOrder = 7; N.drip.name = 'nat drips';
+  }
+  g.add(N.drip);
+  room.natOn = true; N.lastT = -1e9; N.lastX = 1e9;
+}
+
+// Activation (yardActivate, before the nav grid): trunk cylinders, rock hulls, walk boxes for the compound's plantings.
+function natActivate(room, walk) {
+  const N = NAT;
+  if (!N || !room.natOn) return;
+  const hulls = {};
+  const hullOf = (k) => hulls[k] || (hulls[k] = new Float32Array((N.A[k] && N.A[k].ex.hull) || []));
+  const add = (desc, x, y, z, ry, kind, solid) => {
+    const c = world.createCollider(desc.setTranslation(x, y, z).setRotation({ x: 0, y: Math.sin(ry / 2), z: 0, w: Math.cos(ry / 2) }).setFriction(0.7).setRestitution(0.05).setCollisionGroups(COLL.static), room.body);
+    colliderInfo.set(c.handle, solid ? { room, kind, solid: true } : { room, kind }); room.colliderHandles.push(c.handle);
+  };
+  for (const it of N.plan) {
+    if (!it.col) continue;
+    const tree = NAT_TREES.includes(it.k), A = N.A[tree ? it.k + '_0' : it.k];
+    if (!A) continue;
+    const ex = A.ex, s = it.s;
+    if (tree) {
+      const r = Math.max(0.08, (ex.r || 0.2) * s * 1.05), h = Math.max(2, (ex.top || ex.h * 0.5) * s);
+      add(RAPIER.ColliderDesc.cylinder(h / 2, r), it.x, it.y + h / 2, it.z, 0, 'wood', true);
+      if (it.inside) walk(it.x, it.z, r, r, h);
+    } else if (NAT_SINGLE[it.k] === 'rock' || NAT_SINGLE[it.k] === 'stump') {
+      const H = hullOf(it.k), pts = new Float32Array(H.length);
+      for (let i = 0; i < H.length; i += 3) { pts[i] = H[i] * s; pts[i + 1] = H[i + 1] * s; pts[i + 2] = H[i + 2] * s; }
+      let desc = pts.length >= 12 ? RAPIER.ColliderDesc.convexHull(pts) : null;
+      const sz = ex.size || [1, 1, 1];
+      if (!desc) desc = RAPIER.ColliderDesc.cuboid(sz[0] * s * 0.42, sz[1] * s * 0.5, sz[2] * s * 0.42);
+      add(desc, it.x, it.y, it.z, it.ry, NAT_SINGLE[it.k] === 'rock' ? 'concrete' : 'wood', true);
+      if (it.inside && (ex.h || 0.5) * s > 0.3) walk(it.x, it.z, sz[0] * s * 0.42, sz[2] * s * 0.42, (ex.h || 0.5) * s, it.ry);   // a low stump is stepped over
+    }
+  }
+}
+// Cover (yardCover): trunks are high cover with a side to step out from; boulders low (or high when tall).
+function natCover(room, add) {
+  const N = NAT;
+  if (!N || !room.natOn) return;
+  const gap = 0.42;
+  for (const it of N.plan) {
+    if (!it.inside || !it.col) continue;
+    const tree = NAT_TREES.includes(it.k), A = N.A[tree ? it.k + '_0' : it.k];
+    if (!A) continue;
+    const ex = A.ex, s = it.s;
+    if (tree) {
+      const r = (ex.r || 0.2) * s;
+      for (const [nx, nz, pk] of [[1, 0, 1], [-1, 0, -1], [0, 1, -1], [0, -1, 1]]) add(it.x + nx * (r + gap), it.z + nz * (r + gap), nx, nz, ex.top * s, pk);
+    } else if (NAT_SINGLE[it.k] === 'rock') {
+      const h = (ex.h || 0.5) * s, sz = ex.size || [1, 1, 1], c = Math.cos(it.ry), sn = Math.sin(it.ry);
+      if (h < 0.85) continue;
+      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const lx = ox * (sz[0] * s * 0.42 + gap), lz = oz * (sz[2] * s * 0.42 + gap);
+        const wx = lx * c + lz * sn, wz = -lx * sn + lz * c, l = Math.hypot(wx, wz);       // the instance's yaw (three's rotation about +y)
+        add(it.x + wx, it.z + wz, wx / l, wz / l, h, h < 1.3 ? 0 : 1);
+      }
+    }
+  }
+}
+// Stealth: bushes, ferns and low pine branches between a man and you hide you (crouched behind a bush: mostly).
+function natConceal(e) {
+  const N = NAT, cur = stream.current;
+  if (!N || !N.plan || !cur || !cur.yard || !cur.natOn || !e || !e.root) return 1;
+  if (e.room !== cur || !e.pos) return 1;
+  const S = stealthState(), ex0 = e.pos.x, ez0 = e.pos.y, ey0 = e.root.position.y - cur.origin.y + 1.55;
+  const px = rLX(cur, S.hp.x), pz = rLZ(cur, S.hp.z), py = Math.max(0.3, S.hp.y - cur.origin.y - 0.45);
+  const dx = px - ex0, dz = pz - ez0, L2 = dx * dx + dz * dz;
+  if (L2 < 1) return 1;
+  let occ = 0;
+  for (const it of N.plan) {
+    if (!it.inside) continue;
+    const cat = NAT_SINGLE[it.k] || 'tree';
+    let r, y0, y1, k;
+    if (cat === 'bush') { r = 0.55 * it.s; y0 = 0; y1 = 0.85 * it.s; k = 0.8; }
+    else if (cat === 'fern' && it.k !== 'weed') { r = 0.45 * it.s; y0 = 0; y1 = 0.65 * it.s; k = 0.5; }
+    else if (it.k.startsWith('pine')) { const a = N.A[it.k + '_0']; r = (a ? a.ex.crown : 2) * it.s * 0.8; y0 = (a ? a.ex.cb : 3) * it.s - 0.6; y1 = y0 + 3; k = 0.6; }
+    else continue;
+    let t = ((it.x - ex0) * dx + (it.z - ez0) * dz) / L2; if (t < 0.05 || t > 0.97) continue;
+    const cx = ex0 + dx * t - it.x, cz = ez0 + dz * t - it.z, d = Math.hypot(cx, cz);
+    if (d > r) continue;
+    const y = ey0 + (py - ey0) * t;
+    if (y < y0 || y > y1) continue;
+    occ += k * (1 - d / r);
+  }
+  return mix(1, 0.22, clamp(occ));
 }
 
 /* ---------------------------------------------------------------------------
@@ -48191,7 +48792,7 @@ function stealthK(e, pd, dotF) {
   const off = 1 - clamp(dotF);                                      // 0 straight ahead .. 1 at the edge of his view
   const kA = mix(1, 0.35, clamp(off * 2.2));
   const kD = clamp(1.25 - pd / (22 * Dd.range), 0.12, 1.25);
-  return Dd.build * kL * kM * kA * kD;
+  return Dd.build * kL * kM * kA * kD * natConceal(e);              // nature: bushes, ferns, low branches between him and you
 }
 // Can he see you at all at this range in this light (unengaged men only)?
 function stealthSees(e, pd) {
@@ -48328,7 +48929,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
   } catch (e) { /* no title */ }
 })();
 yardFogColour();                                                  // the default fog until sky/sky.json arrives
-if (window.__cqcDev) Object.assign(window.__cqcDev, { YARD: () => YARD, YC, YU, YSKY, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
+if (window.__cqcDev) Object.assign(window.__cqcDev, { YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
 
