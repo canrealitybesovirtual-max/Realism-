@@ -2714,10 +2714,10 @@ const CONFIG = {
   workshop: {
     killPay: 100,                                 // $ per enemy killed (0 = none)
     on: true,                  // false (or ?workshop=off): no computer, no store; the terminal keeps its free RESTOCK button
-    x: 2.12, y: 1.72,          // m, safe room front wall: glass centre (over the bench's left end, left of the vise and the GUNSMITH sign)
+    x: 1.95, y: 1.82,          // m (moved left and up for the bigger glass: clear of the vise and the bench lamp), safe room front wall: glass centre (over the bench's left end, left of the vise and the GUNSMITH sign)
     out: 0.27,                 // m from the wall to the glass (the arm)
     tilt: 0.24,                // rad the glass faces down toward you
-    w: 0.88, h: 0.495,         // m, the glass (16:9); layout 1280 x 720 units, text 18+ units (1.2 cm+)
+    w: 1.4, h: 0.7875,         // m (1.6x the old 0.88 x 0.495, readable), the glass (16:9); layout 1280 x 720 units, text 18+ units (1.2 cm+)
     px: 1920, pxLow: 1280,     // canvas pixels across on a computer / headset and phones. PERFORMANCE: pxLow is ~3.7 MB per redraw on the Quest
     glow: 1.3,                 // emissive strength of the screen
     reach: 2.4,                // m: desktop aim reach
@@ -16351,6 +16351,7 @@ try {
     for (const k of ['bag', 'bin']) if (Array.isArray(o[k])) for (let i = 0; i < 6; i++) { const n = o[k][i]; if (Number.isFinite(n) && n >= 0) BRASS[k][i] = Math.floor(n); }
     if (Number.isFinite(o.cents) && o.cents >= 0 && o.cents < 100) BRASS.cents = Math.floor(o.cents);
     if (Number.isFinite(o.sold) && o.sold >= 0) BRASS.sold = Math.floor(o.sold);
+    for (let i = 0; i < 6; i++) { BRASS.bin[i] += BRASS.bag[i]; BRASS.bag[i] = 0; }   // no bag any more: its cases go to the bin
   }
 } catch (e) { /* an empty bag */ }
 function brassSave() { try { localStorage.setItem(BRASS.key, JSON.stringify({ v: 1, bag: BRASS.bag, bin: BRASS.bin, cents: BRASS.cents, sold: BRASS.sold })); } catch (e) { /* this visit only */ } }
@@ -16364,7 +16365,7 @@ function brassChanged() {                                           // bag or bi
   TERM.dirty = true; WORKSHOP.dirty = true;
   if (WATCH.faceCv && WATCH.faceTex) watchDrawFace();
 }
-const brassWatch = () => (BRASS.on && brassSum(BRASS.bag) ? `BRASS ${brassSum(BRASS.bag)}` : '');
+const brassWatch = () => (BRASS.on && brassSum(BRASS.bin) ? `BRASS ${brassSum(BRASS.bin)}` : '');
 
 // --- casings in flight (the step 5 pools): calibre, size, the moment they rest ---
 function brassCalOf(g) {
@@ -16381,6 +16382,7 @@ function brassSpawned(P, e, g, type) {
   if (!BRASS.on) return;
   const c = type === 'hull' ? 5 : brassCalOf(g), C = BRASS_CAL[c];
   e.cal = c; e.t0 = performance.now() / 1000;
+  if (g && g.type) { BRASS.bin[c]++; BRASS.binDirty = true; BRASS.autoSave = true; }   // your case goes straight to the safe-room bin
   if (C.hull) return;
   e.bx = C.rb / P.r; e.by = C.L / (2 * P.hh);
   if (e.bcal === c) return;
@@ -16573,6 +16575,7 @@ function brassNear(P, r) {                                          // a palm lo
 }
 // VR grip (squeezeStart, nothing else in reach): the bag off your hip, or a case (then the sweep goes on in brassTick).
 function brassGrab(hand) {
+  return false;                                                     // no collecting by hand: cases count into the bin when fired
   const B = BRASS;
   if (!B.on || !renderer.xr.isPresenting || hand.prop) return false;
   handPose(hand, B.hp, B.hq);
@@ -16598,6 +16601,7 @@ function brassRelease(hand) {                                       // squeezeEn
 }
 // Computer E (deskToggleGrab, first): the dot on the bin pours the bag; on a floor or a top near brass picks it up.
 function brassDesk() {
+  return false;                                                     // no collecting by hand
   const B = BRASS;
   if (!B.on || renderer.xr.isPresenting || !world) return false;
   camera.getWorldPosition(B.v); camera.getWorldDirection(B.d);
@@ -16702,6 +16706,8 @@ function brassBinUnder(P) {
 }
 function brassBagTick(dt) {
   const B = BRASS;
+  if (B.bagG) B.bagG.visible = false;                               // the dump bag is gone
+  return;
   if (!B.bagG) { brassBagBuild(); if (!B.bagG) return; }
   if (B.held && (!renderer.xr.isPresenting || playerState.dead || B.held.prop)) brassRelease(B.held);
   const f = Math.min(1, brassVol(B.bag) / CONFIG.brass.bag);
@@ -16953,7 +16959,7 @@ function brassPourEnd() {
 // The store's SELL BRASS: the whole bin at CONFIG.brass.price a case; part cents carry over to the next sale.
 function brassSell() {
   const n = brassSum(BRASS.bin);
-  if (!n) { wsMsg('The brass bin is empty. Pick up your spent cases and empty the bag into the bin'); wsDeny(); return false; }
+  if (!n) { wsMsg('The brass bin is empty. Every case you fire is counted into it'); wsDeny(); return false; }
   const cents = brassCents(n), pay = Math.floor(cents / 100);
   BRASS.cents = cents % 100; BRASS.sold += n; BRASS.bin.fill(0);
   if (pay > 0) walletEarn(pay);
@@ -16966,7 +16972,7 @@ function brassSupplies(now) {
   if (!BRASS.on) return false;
   const W = WORKSHOP, x0 = 320, pw = WS_LW - 16 - 320, I = CONFIG.weapons.inventory;
   tText('Supplies', x0, 96, 36, TC.text, 'left', 700, TC.sans, 560);
-  tText('Restocks cost money from your wallet. Spent brass from the bin sells here. Entering the safe room still refills you.', x0, 132, 19, TC.dim, 'left', 600, TC.sans, pw);
+  tText('Restocks cost money from your wallet. Every case you fire goes into the brass bin and sells here. Entering the safe room still refills you.', x0, 132, 19, TC.dim, 'left', 600, TC.sans, pw);
   const [mags, full] = wsMagStats();
   const status = {
     ammo: `${mags} magazines in your pouches, ${full} full${inv.shells ? `  ·  ${inv.shells} shells` : ''}`,
@@ -16991,7 +16997,7 @@ function brassSupplies(now) {
   });
   const n = brassSum(BRASS.bin), bag = brassSum(BRASS.bag);
   row(W.supplies.length, 'Sell brass', `The scrap dealer pays $${CONFIG.brass.price.toFixed(2)} a case for what is in the brass bin`,
-    n ? `Bin: ${brassList(BRASS.bin)}${bag ? `  ·  bag ${bag}` : ''}` : bag ? `Bin empty  ·  ${bag} in your bag: empty it into the bin` : 'Bin empty  ·  pick up your spent cases',
+    n ? `Bin: ${brassList(BRASS.bin)}` : 'Bin empty  ·  fire some rounds',
     brassMoney(n), n ? TC.ok : TC.dim, `${n} case${n === 1 ? '' : 's'}`, TC.dim, 'sup:brass', 'SELL', n > 0, brassSell);
   return true;
 }
@@ -16999,8 +17005,7 @@ function brassTermDraw() {                                          // the termi
   if (!BRASS.on) return;
   const n = brassSum(BRASS.bag), b = brassSum(BRASS.bin), vf = Math.round(100 * Math.min(1, brassVol(BRASS.bag) / CONFIG.brass.bag));
   tHead('Brass', 28, 512);
-  tText(n ? `Bag: ${brassList(BRASS.bag)}  ·  ${n} case${n === 1 ? '' : 's'}, ${vf}% full` : 'Bag: empty. Pick up spent cases (headset: grip by them, sweep to scoop; computer: E on them)',
-    28, 542, 21, n ? TC.text : TC.dim, 'left', 600, n ? TC.mono : TC.sans, 960);
+  tText('Every case you fire is counted into the brass bin', 28, 542, 21, TC.dim, 'left', 600, TC.sans, 960);
   tText(b ? `Brass bin (safe room, back right): ${b} case${b === 1 ? '' : 's'}, ${brassMoney(b)} at the GUNSMITH` : 'Brass bin: empty',
     28, 570, 21, b ? TC.hi : TC.dim, 'left', 600, TC.sans, 960);
 }
@@ -17009,6 +17014,9 @@ function brassTick(dt) {
   const B = BRASS;
   if (!B.on) return;
   brassBagTick(dt);
+  B.saveT = (B.saveT || 0) - dt;
+  if (B.autoSave && B.saveT <= 0) { B.autoSave = false; B.saveT = 2; brassChanged(); }
+  B.scoop.clear();
   for (const [hand, s] of B.scoop) {
     if (!renderer.xr.isPresenting || hand.prop) { B.scoop.delete(hand); continue; }
     handPose(hand, B.hp, B.hq);

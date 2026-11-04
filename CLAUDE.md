@@ -930,3 +930,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Muzzle: muzBenchFit keeps only the MUZ.max limit and "base device on the bare barrel"; thread, calibre and interface refusals (akm / m19 / awm / b92MuzRefuse, Glock thread) are no longer called from it.
 - Store: a slot lists the gun's own rows, then every other gun's modelled non-hardware rows of that category ("(<gun> part)"), paged ▲▼ by WS_SLOTS_MAX. Buying one ignores its home gun's requirements and does not auto-fit (it goes to the bench table); owned = "AT VISE" (fit it at the bench). Stats / afx unchanged: a foreign part fitted by the snap adds no afx entry (generic default = none).
 - Not done: g.sightY for a snapped foreign optic (sight line stays the gun's own), auto-made risers / wrap rails as models.
+## CQC: brass auto-counted, bigger workshop screen
+- Brass: no hand / E pickup, no hip bag, no pour. Every case you fire (brassSpawned with a player gun) adds 1 to BRASS.bin; saved every 2 s (brassTick). Cases still fly, land and lie as visuals. Old cqc.brass.v1 bag counts go into the bin on load. Bin, heap and SELL BRASS unchanged.
+- Workshop glass 1.4 x 0.7875 m (was 0.88 x 0.495), at x 1.95, y 1.82; same 1280 x 720 layout, so all text, rows and touch targets are 1.6x larger. No desktop zoom added. Syntax parse only.
