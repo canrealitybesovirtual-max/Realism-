@@ -34563,6 +34563,7 @@ function splashStep(f, k) {
   P.y = f.to.y;
   const d = splashWetAt(P), pace = clamp(0.45 + BODY.speed / 2.2, 0.45, 1);
   if (d > 0 && audio.ctx && audio.ctx.state === 'running') splashSnd(audio.ctx.currentTime + 0.003, d, pace);
+  bodyWetStep(d, pace);                                             // step 122: boots and hems get wet
   SPLASH.feet[k] = splashFoot(SPLASH.room, P, SPLASH.d, d, pace, s, SPLASH.feet[k]);
 }
 // His step (updateFootsteps): the boot beside his path (alternating), along his walk. Returns the depth for his footstep's voice.
@@ -35096,6 +35097,7 @@ function polishUpdate(dt, t) {
   trickleTick(dt);                               // step 88: dust sifting from fresh holes
   trcTick(dt);                                   // step 121: tracer streaks down their paths
   if (SPLASH.on) splashTick(dt);                 // step 94: wet prints dry
+  bodyWetTick(dt);                               // step 122: damp boots and hems dry
   updateContact();
   if (audio.ctx && audio.ctx.state === 'running') {
     if (SPAT.ok) updateListener();
@@ -36807,6 +36809,131 @@ if (!gl_FrontFacing) gl_FragColor.rgb *= 0.8;   // a touch darker, like cloth fo
   };
   mat.customProgramCacheKey = () => 'bodycut254';
 }
+/* ---------------------------------------------------------------------------
+ *  STEP 122 — TROUSERS AND BOOTS LOOK REAL (CONFIG.body.wear, ?bodywear=off)
+ *  Procedural detail in the body's own rest space (the skinned meshes are bound
+ *  with an identity bind, so `position` is the standing body in metres: ground
+ *  y 0, ankles z 0, toes toward -z). Trousers: roughness mottle, out / inseam
+ *  grooves with stitches, hem fold, knee and seat wear, creases behind the knee,
+ *  dust low down. Boots: grain mottle, flex creases over the vamp, welt stitching,
+ *  toe scuffs and a polished toe, rubber lug edge, dust. Damp layer: hems and
+ *  lower boots darker and glossier, from the floor you stand on (wear93 wet
+ *  share) and much more after standing water (splashStep), drying over minutes.
+ *  One extra program per material kind, compiled with the body; two shared uniforms.
+ * ------------------------------------------------------------------------- */
+const BWEAR = { on: !/[?&]bodywear=off/.test(location.search), wet: { value: 0 }, damp: { value: 0 }, wetDry: 170, dampUp: 45, dampDown: 120, dampK: 0.7, puddle: 0.2, damp1: 0.03 };
+const BWEAR_GLSL = `
+varying vec3 vBwP; varying vec3 vBwN;
+uniform float uBwWet, uBwDamp;
+float bwHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float bwNoise(vec3 p) {
+  vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(bwHash(i), bwHash(i + vec3(1, 0, 0)), f.x), mix(bwHash(i + vec3(0, 1, 0)), bwHash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(bwHash(i + vec3(0, 0, 1)), bwHash(i + vec3(1, 0, 1)), f.x), mix(bwHash(i + vec3(0, 1, 1)), bwHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+vec3 bwBump(vec3 n, float h) {            // h in metres of relief; screen-space derivatives (perturbNormalArb)
+  vec3 sp = -vViewPosition, sx = dFdx(sp), sy = dFdy(sp), r1 = cross(sy, n), r2 = cross(n, sx);
+  float det = dot(sx, r1); vec2 dh = vec2(dFdx(h), dFdy(h));
+  vec3 g = sign(det) * (dh.x * r1 + dh.y * r2);
+  return normalize(abs(det) * n - g);
+}`;
+// kind: 0 trousers, 1 boot leather, 2 boot rubber, 3 boot nylon (wet only)
+const BWEAR_COLOR = [
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP, Nn = normalize(vBwN);
+  float sd = P.x >= 0.0 ? 1.0 : -1.0, lat = Nn.x * sd, frn = -Nn.z;
+  float n1 = bwNoise(P * 70.0), n2 = bwNoise(P * 9.0);
+  float knee = smoothstep(0.1, 0.0, abs(P.y - 0.515)) * smoothstep(0.15, 0.75, frn);
+  float seat = smoothstep(0.07, 0.0, abs(P.y - 0.905)) * smoothstep(0.35, 0.85, Nn.z) * 0.7;
+  bwK = max(knee * (0.45 + 0.55 * n1), seat * n2);
+  float sz = 1.0 - smoothstep(0.015, 0.05, abs(Nn.z));
+  float seam = sz * (step(0.3, lat) + step(0.3, -lat) * step(P.y, 0.84)) * step(P.y, 1.0);
+  float st = step(0.55, fract(P.y * 260.0));
+  float hem = smoothstep(0.004, 0.0, abs(P.y - 0.172));
+  float bk = smoothstep(0.06, 0.0, abs(P.y - 0.49)) * smoothstep(0.2, 0.7, Nn.z);
+  bwH = -0.00035 * seam - 0.0004 * hem + 0.0003 * bk * sin(P.y * 340.0 + n2 * 9.0 + P.x * 60.0) + 0.00012 * seam * st;
+  float lvl = 0.15 + 0.035 * uBwDamp + 0.13 * uBwWet, rag = (bwNoise(P * 45.0) - 0.5) * 0.03;
+  bwWet = (1.0 - smoothstep(lvl - 0.025, lvl + 0.004, P.y + rag)) * clamp(uBwDamp * 1.6 + uBwWet * 1.4, 0.0, 1.0);
+  float dust = smoothstep(0.32, 0.15, P.y) * (0.4 + 0.6 * n2) * (1.0 - bwWet);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 1.45 + 0.012, bwK * 0.7);
+  diffuseColor.rgb *= 1.0 - 0.18 * seam * (1.0 - st) - 0.25 * hem;
+  diffuseColor.rgb += vec3(0.020, 0.018, 0.015) * dust;
+  diffuseColor.rgb *= mix(0.92, 1.06, n2);
+  diffuseColor.rgb *= 1.0 - 0.45 * bwWet;
+  bwR = mix(0.9, 1.1, n1) * (1.0 - 0.1 * bwK) * mix(1.0, 0.6, bwWet);
+}`,
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP, Nn = normalize(vBwN);
+  float n1 = bwNoise(P * 160.0), n2 = bwNoise(P * 22.0);
+  float flex = smoothstep(-0.075, -0.095, P.z) * smoothstep(-0.17, -0.15, P.z) * smoothstep(0.03, 0.05, P.y) * smoothstep(0.1, 0.5, Nn.y);
+  float toe = smoothstep(-0.185, -0.225, P.z);
+  float wy = 0.033 + 0.012 * smoothstep(-0.17, -0.236, P.z) + 0.01 * smoothstep(-0.05, 0.03, P.z);
+  float weltL = smoothstep(0.0014, 0.0004, abs(P.y - wy)) * (1.0 - smoothstep(0.4, 0.7, abs(Nn.y)));
+  float dash = smoothstep(0.35, 0.45, fract((P.z + abs(P.x) * 0.7) * 240.0)) * smoothstep(0.85, 0.75, fract((P.z + abs(P.x) * 0.7) * 240.0));
+  float scuff = smoothstep(0.6, 0.8, bwNoise(P * vec3(190.0, 70.0, 190.0))) * (toe + 0.35 * smoothstep(0.07, 0.03, P.y));
+  bwK = scuff;
+  bwH = 0.00045 * flex * sin(P.z * 560.0 + n2 * 5.0) * (0.6 + 0.4 * n1) + 0.0002 * weltL * dash - 0.0001 * weltL;
+  float lvl = 0.02 + 0.045 * uBwDamp + 0.09 * uBwWet, rag = (bwNoise(P * 60.0) - 0.5) * 0.02;
+  bwWet = (1.0 - smoothstep(lvl - 0.02, lvl + 0.003, P.y + rag)) * clamp(uBwDamp * 1.8 + uBwWet * 1.5, 0.0, 1.0);
+  diffuseColor.rgb *= mix(0.86, 1.08, n2);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.10, 0.092, 0.08), weltL * dash * 0.85);
+  diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 2.1 + 0.02, scuff * 0.6 * (1.0 - bwWet));
+  diffuseColor.rgb *= 1.0 - 0.35 * bwWet;
+  bwR = mix(0.85, 1.15, n1) * mix(1.0, 0.72, toe * (1.0 - scuff)) * (1.0 + 0.6 * scuff) * mix(1.0, 0.45, bwWet);
+}`,
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP, Nn = normalize(vBwN);
+  float n1 = bwNoise(P * 120.0), side = 1.0 - smoothstep(0.35, 0.6, abs(Nn.y));
+  float a = (P.z + abs(P.x) * 0.8) * 95.0, lug = smoothstep(0.3, 0.42, fract(a)) * smoothstep(0.9, 0.78, fract(a));
+  float edge = side * smoothstep(0.016, 0.004, P.y);
+  bwH = -0.0006 * edge * (1.0 - lug) + 0.00015 * side * smoothstep(0.02, 0.026, P.y) * sin(P.y * 2400.0);
+  float dust = (side + smoothstep(0.003, 0.0, P.y)) * (0.4 + 0.6 * n1);
+  float lvl = 0.012 + 0.02 * uBwDamp + 0.04 * uBwWet;
+  bwWet = (1.0 - smoothstep(lvl - 0.01, lvl + 0.003, P.y)) * clamp(uBwDamp * 2.0 + uBwWet * 1.5, 0.0, 1.0);
+  diffuseColor.rgb *= 1.0 - 0.35 * edge * (1.0 - lug);
+  diffuseColor.rgb += vec3(0.03, 0.028, 0.025) * dust * (1.0 - bwWet);
+  diffuseColor.rgb *= 1.0 - 0.3 * bwWet;
+  bwR = mix(0.9, 1.08, n1) * mix(1.0, 0.32, bwWet);
+}`,
+`float bwK = 0.0, bwWet = 0.0, bwH = 0.0, bwR = 1.0;
+{ vec3 P = vBwP;
+  float lvl = 0.03 + 0.05 * uBwDamp + 0.12 * uBwWet, rag = (bwNoise(P * 50.0) - 0.5) * 0.025;
+  bwWet = (1.0 - smoothstep(lvl - 0.02, lvl + 0.003, P.y + rag)) * clamp(uBwDamp * 1.6 + uBwWet * 1.4, 0.0, 1.0);
+  diffuseColor.rgb *= 1.0 - 0.45 * bwWet;
+  bwR = mix(0.92, 1.08, bwNoise(P * 80.0)) * mix(1.0, 0.6, bwWet);
+}`];
+function bodyWearShader(mat, kind) {
+  if (!BWEAR.on) return mat;
+  const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey && mat.customProgramCacheKey !== THREE.Material.prototype.customProgramCacheKey ? mat.customProgramCacheKey.bind(mat) : null;
+  mat.onBeforeCompile = (sh, r) => {
+    if (prev) prev(sh, r);
+    sh.uniforms.uBwWet = BWEAR.wet; sh.uniforms.uBwDamp = BWEAR.damp;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBwP; varying vec3 vBwN;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBwP = position; vBwN = normal;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + BWEAR_GLSL)
+      .replace('#include <color_fragment>', '#include <color_fragment>\n' + BWEAR_COLOR[kind])
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = clamp(roughnessFactor * bwR, 0.04, 1.0);')
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\nif (gl_FrontFacing && bwH != 0.0) normal = bwBump(normal, bwH);\nnormal = normalize(mix(normal, normalize(vNormal), 0.35 * bwWet));');
+    if (kind === 0) sh.fragmentShader = sh.fragmentShader.replace('#include <lights_physical_fragment>', '#include <lights_physical_fragment>\n#ifdef USE_SHEEN\nmaterial.sheenColor *= 1.0 - 0.8 * bwWet;\n#endif');
+  };
+  mat.customProgramCacheKey = () => (prevKey ? prevKey() : '') + '|bw122-' + kind;
+  return mat;
+}
+// Damp from the floor you are on, wetter after standing water (splashStep), dries over minutes. No allocation.
+function bodyWetTick(dt) {
+  if (!BWEAR.on || !(dt > 0)) return;
+  const r = typeof stream !== 'undefined' ? stream.current : null;
+  const tgt = r && r.wear93 ? clamp(r.wear93.wet * BWEAR.dampK, 0, 1) : 0, d = BWEAR.damp;
+  d.value += (tgt - d.value) * (1 - Math.exp(-dt / (tgt > d.value ? BWEAR.dampUp : BWEAR.dampDown)));
+  BWEAR.wet.value *= Math.exp(-dt / BWEAR.wetDry);
+}
+function bodyWetStep(depth, pace) {
+  if (!BWEAR.on || !(depth > 0)) return;
+  const w = BWEAR.wet;
+  w.value = Math.min(1, w.value + (depth >= 0.45 ? BWEAR.puddle * depth * pace : BWEAR.damp1 * depth));
+}
 function bodyMaterials() {
   const T = bodyTextures(), n2 = (s) => new THREE.Vector2(s, s);
   const shirt = new THREE.MeshPhysicalMaterial({
@@ -36820,16 +36947,17 @@ function bodyMaterials() {
   });
   bodyCutShader(shirt);
   const pants = new THREE.MeshPhysicalMaterial({
-    color: 0x2c2d31, roughness: 0.86, metalness: 0, normalMap: T.ripstop, normalScale: n2(0.7),
+    color: 0x2c2d31, roughness: 0.86, metalness: 0, normalMap: T.ripstop, normalScale: n2(BWEAR.on ? 0.85 : 0.7),
     sheen: 0.4, sheenRoughness: 0.6, sheenColor: new THREE.Color(0x4a4d55), side: THREE.DoubleSide   // a flexed hip shows cloth, never a hole
   });
   bodyCutShader(pants);
+  bodyWearShader(pants, 0);                                        // step 122: seams, wear, damp hems
   return {
     tex: T, shirt, pants,
-    leather: new THREE.MeshStandardMaterial({ color: 0x24211e, roughness: 0.5, metalness: 0, normalMap: T.leather, normalScale: n2(0.55) }),
-    nylon: new THREE.MeshStandardMaterial({ color: 0x272826, roughness: 0.84, metalness: 0, normalMap: T.cordura, normalScale: n2(0.8) }),
+    leather: bodyWearShader(new THREE.MeshStandardMaterial({ color: 0x24211e, roughness: BWEAR.on ? 0.44 : 0.5, metalness: 0, normalMap: T.leather, normalScale: n2(BWEAR.on ? 0.7 : 0.55) }), 1),
+    nylon: bodyWearShader(new THREE.MeshStandardMaterial({ color: 0x272826, roughness: 0.84, metalness: 0, normalMap: T.cordura, normalScale: n2(0.8) }), 3),
     poly: new THREE.MeshStandardMaterial({ color: 0x1e1f21, roughness: 0.42, metalness: 0, normalMap: T.kydex, normalScale: n2(0.3) }),
-    rubber: new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.9, metalness: 0, normalMap: T.kydex, normalScale: n2(0.6) }),
+    rubber: bodyWearShader(new THREE.MeshStandardMaterial({ color: 0x1b1b1b, roughness: 0.9, metalness: 0, normalMap: T.kydex, normalScale: n2(0.6) }), 2),
     shell: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, metalness: 0.25 })
   };
 }
