@@ -8648,6 +8648,7 @@ function flushShadows() {
     let soft = false;
     for (let i = 0; i < shadowLights.length; i++) {
       const l = shadowLights[i], u = l.userData;
+      if (u.yardBake) { u.shMot = false; u.shSoft = false; continue; }   // outdoor: the moon / flood maps are baked (static yard, men cast none)
       let go = false;
       if (u.shMot && (sch.frame + i) % sch.every === 0) go = true;
       else if (u.shSoft && !soft) { go = true; soft = true; }
@@ -46645,9 +46646,9 @@ const YC = {
   moon: { dist: 140, E: 0.22, rot: 75 },                          // rot: panorama yaw (deg) so the bright cloud sits over the 17 block
   flood: { E: 4.5 }, lampK: 1,
   sky: { expo: 0.055, sat: 0.32, tint: [0.62, 0.72, 0.92], fog: [0.018, 0.021, 0.026] },
-  fog: { dens: 0.022, fall: 0.12, max: 0.9, scat: 1 },
-  rain: { n: 7000, nXR: 2600, box: [26, 16, 26], fall: 8.5, wind: [0.9, 0.4], splash: 600, splashXR: 220 },
-  envK: 1.4, far: 220,
+  fog: { dens: 0.034, densXR: 0.05, fall: 0.12, max: 0.97, scat: 1 },   // thick night fog: past ~70 m (Quest ~50 m) only tree shapes and the sky show
+  rain: { n: 4500, nXR: 1500, box: [26, 16, 26], fall: 8.5, wind: [0.9, 0.4], splash: 400, splashXR: 140 },
+  envK: 1.4, far: 125, farXR: 85,                                // camera far in the yard: the fog hides everything before it
   sniper: { sight: 75, glint: 0.9, gap: 2.6, first: 1.6 }
 };
 function yardMode() {
@@ -48125,6 +48126,7 @@ function yardBoltTick(e, now) {
   }
 }
 function yardManPlaced(e, spec, sp) {
+  e.root.traverse((o) => { if (o.isMesh) o.castShadow = false; });   // the yard's shadows are baked: men cast none (no ghost shadows)
   if (!spec.sniper) return;
   e.sniper = true; e.stairHold = true; e.stairY = sp.y; e.errK *= 0.45; e.err *= 0.45; e.reactK *= 1.3;
   e.root.position.y = sp.y;
@@ -48138,7 +48140,7 @@ function yardLights(cur) {
   const Y = YARD, inY = !!(Y && cur && cur.yard);
   const restore = (s) => {
     if (!s.userData.yardMode) return;
-    s.userData.yardMode = false;
+    s.userData.yardMode = false; s.userData.yardBake = false;
     if (!s.userData.torch) { s.color.set(CONFIG.look.spot); s.angle = Math.PI * 0.42; s.penumbra = 1.0; s.distance = 0; s.decay = 2; s.shadow.camera.far = 8; }
     s.shadow.camera.near = 0.1; s.shadow.camera.updateProjectionMatrix();
   };
@@ -48159,7 +48161,7 @@ function yardLights(cur) {
     mn.angle = Math.atan(Math.hypot(L.hw, L.hd) / R) * 1.1; mn.penumbra = 0.15; mn.distance = 0; mn.decay = 2;
     mn.color.setRGB(0.62, 0.72, 0.95); mn.intensity = YC.moon.E * R * R;
     mn.shadow.camera.near = R - 60; mn.shadow.camera.far = R + 60; mn.shadow.camera.updateProjectionMatrix();
-    mn.updateMatrixWorld(); mn.target.updateMatrixWorld(); mn.userData.yardMode = true;
+    mn.updateMatrixWorld(); mn.target.updateMatrixWorld(); mn.userData.yardMode = true; mn.userData.yardBake = true;   // baked: drawn on entry only
     _yl.t.subVectors(mn.target.position, mn.position).normalize();   // nature: the same moon, unshadowed, beyond the spot's cone (the forest)
     YU.uYMoonP.value.copy(mn.position); YU.uYMoonA.value.set(_yl.t.x, _yl.t.y, _yl.t.z, Math.cos(mn.angle));
     YU.uYMoon.value.set(-_yl.t.x, -_yl.t.y, -_yl.t.z, YC.moon.E); YU.uYMoonC.value.copy(mn.color);
@@ -48171,7 +48173,7 @@ function yardLights(cur) {
     fl.angle = Math.acos(l.cos) * 1.05; fl.penumbra = 0.45; fl.distance = 0; fl.decay = 2;
     fl.color.setRGB(1.0, 0.86, 0.68); fl.intensity = dark ? 0 : YC.flood.E * 20 * 20 * 0.5;
     fl.shadow.camera.near = 0.5; fl.shadow.camera.far = 70; fl.shadow.camera.updateProjectionMatrix();
-    fl.updateMatrixWorld(); fl.target.updateMatrixWorld(); fl.userData.yardMode = true;
+    fl.updateMatrixWorld(); fl.target.updateMatrixWorld(); fl.userData.yardMode = true; fl.userData.yardBake = true;
   }
   [3, 4].forEach((li, i) => {                                         // pool.rects over the two working doors
     const r = pool.rects[i], l = L.lamps[li];
@@ -48191,7 +48193,7 @@ function yardTick(dt, t) {
   let yard = null;
   for (const r of stream.rooms.values()) if (r.yard && r.active) yard = r;
   const cur = stream.current, inY = !!(cur && cur.yard), vis = !!(yard && yard.visible);
-  const far = inY ? YC.far : 60;
+  const far = inY ? (renderer.xr.isPresenting ? YC.farXR : YC.far) : 60;
   if (camera.far !== far) { camera.far = far; camera.updateProjectionMatrix(); }
   if (inY && Y.env && !Y.envOld) { Y.envOld = scene.environment; scene.environment = Y.env.texture; }   // the night sky's light on everything (same 256 px PMREM size: no recompile)
   else if (!inY && Y.envOld) { scene.environment = Y.envOld; Y.envOld = null; }
@@ -48202,7 +48204,7 @@ function yardTick(dt, t) {
     YU.uYTime.value = t;
     yard.group.updateMatrixWorld();
     YU.uYInv.value.copy(yard.group.matrixWorld).invert();
-    YU.uYFog.value.set(YC.fog.dens, YC.fog.fall, yard.origin.y, YC.fog.max);
+    YU.uYFog.value.set(renderer.xr.isPresenting ? YC.fog.densXR : YC.fog.dens, YC.fog.fall, yard.origin.y, YC.fog.max);
     const dark = nightDark(yard);
     for (let i = 0; i < YARD_NL; i++) {
       const l = Y.lampsL[i], P = YU.uYLampP.value[i], Dv = YU.uYLampD.value[i];
@@ -48281,13 +48283,13 @@ function yardWetAt(room, lx, lz) {
 const NAT_ON = !/[?&]nature=off\b/.test(location.search);
 const NC = {
   url: 'models/nature.glb',
-  lod: [30, 64, 140], lodXR: [16, 42, 92],                         // LOD0 / LOD1 / impostor end (m from you to the crown's edge)
+  lod: [22, 45, 115], lodXR: [12, 30, 75],                         // LOD0 / LOD1 / impostor end (m from you to the crown's edge)
   cull: { rock: 95, stump: 45, bush: 60, fern: 34 }, cullXR: { rock: 60, stump: 26, bush: 32, fern: 20 },
   wind: 0.05, flutter: 0.006,
-  forest: { edge: 20.3, side: 26, xMax: 122, zMax: 100, xMaxXR: 88, zMaxXR: 72, step: [3.6, 5.8], stepXR: 1.3 },
+  forest: { edge: 20.3, side: 26, xMax: 95, zMax: 85, xMaxXR: 65, zMaxXR: 58, step: [3.6, 5.8], stepXR: 1.3 },
   ground: { xMax: 132, zMax: 142, xMaxXR: 98, zMaxXR: 106, tile: 2.5 },
   colX: 60, colZ: 70,                                               // outside trees with a trunk collider (bullets over the wall)
-  drips: 900, dripsXR: 360
+  drips: 600, dripsXR: 240
 };
 const NAT_TREES = ['pineA', 'pineB', 'pineC', 'snagA', 'snagB', 'leafA', 'deadB', 'deadC'];
 const NAT_SINGLE = { rockA: 'rock', rockB: 'rock', stumpA: 'stump', stumpB: 'stump', stumpC: 'stump', bushA: 'bush', bushB: 'bush', fernA: 'fern', fernB: 'fern', weed: 'fern' };
