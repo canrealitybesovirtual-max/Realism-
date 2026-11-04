@@ -2828,6 +2828,7 @@ const CONFIG = {
     core: 0.2,                 // m, the wall between the two flights of the switchback (step 18)
     pad: 1.1,                  // m of flat floor beyond the foot of flight 1 / the top of flight 2 (step 18)
     guard: 1.0,                // m, guard height of the balustrades and the core wall above the floor it protects
+    men: 0.5, men2: 0.3,       // a stairwell's chance of a man on its top half (landing / top pad), and of a second one
     emptyChance: 0.25,         // the room after a stairwell: chance it is empty (step 16.2)
     extraChance: 0.3,          // ...and chance it holds one man more than planned
     landing: 1.35,             // m, depth of the corridor along each door wall (step 18); the doors swing over them
@@ -16046,7 +16047,7 @@ function fixturesRestore(room) {
 const colliderInfo = new Map();     // collider handle -> { room, kind }
 const doorByCollider = new Map();
 const roomMemory = new Map();       // `${kind}:${slot}` -> { holes: [], doorHoles: [] }
-const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;   // city zones carry their own id
+const memKey = (room) => room.memId || `${room.kind}:${room.slot}`;
 function roomMem(room) {
   let m = roomMemory.get(memKey(room));
   if (!m) { m = { holes: [], doorHoles: [] }; roomMemory.set(memKey(room), m); }
@@ -24004,7 +24005,50 @@ function removeEnemy(e) {
   const i = ENEMY.list.indexOf(e); if (i >= 0) ENEMY.list.splice(i, 1);
   if (e.room.enemies) { const j = e.room.enemies.indexOf(e); if (j >= 0) e.room.enemies.splice(j, 1); }
 }
+// A stairwell man stands on the stair's floor (his room's local y); everyone else on 0.
+function enemyFloorY(e) { const r = e.room; return r && r.stair && e.stairY != null ? e.stairY : 0; }
+// Stairwells: CONFIG.stairs.men of them (fixed per slot) put 1 (sometimes 2) men on the top half: the half landing or the top floor's pad.
+function stairMenSpot(room, taken) {
+  const S = room.stair, R = mulberry32((roomSeed(room.slot) ^ 0x57A1E5 ^ (taken.length * 977)) >>> 0);
+  for (let i = 0; i < 200; i++) {
+    const x = (R() - 0.5) * (room.w - 0.9), z = (R() - 0.5) * (room.d - 0.9), y = stairFloor(S, x, z, S.rise);
+    if (y < S.h1 - 0.01 || !stairFlatTop(S, x, z, y)) continue;
+    if (taken.some((t) => Math.hypot(t.x - x, t.z - z) < 1.1)) continue;
+    return { x, z, y };
+  }
+  return null;
+}
+function stairFlatTop(S, x, z, y) { return Math.abs(stairFloor(S, x + 0.25, z, S.rise) - y) < 0.02 && Math.abs(stairFloor(S, x - 0.25, z, S.rise) - y) < 0.02 && Math.abs(stairFloor(S, x, z + 0.25, S.rise) - y) < 0.02 && Math.abs(stairFloor(S, x, z - 0.25, S.rise) - y) < 0.02; }
+function stairMenActivated(room) {
+  const SC = CONFIG.stairs;
+  if (!SC.men || !room.stair) return;
+  const R = mulberry32((roomSeed(room.slot) ^ 0x5DA1B) >>> 0);
+  const m = roomMem(room);
+  if (!m.plan) {
+    const n = R() < SC.men ? (R() < SC.men2 ? 2 : 1) : 0;
+    const T = threatNow(0), list = [];
+    for (let i = 0; i < n; i++) list.push({ gun: Math.random() < 0.6 ? 'smg' : 'pistol', skill: clamp(T + rnd2(-0.15, 0.15)), aggr: 0.2 });
+    aiAssignRoles(list);
+    m.plan = { list, dead: list.map(() => false), cleared: list.length === 0, threat: T, enteredT: 0, dmg: 0 };
+  }
+  const plan = m.plan, taken = [];
+  room.enemies = [];
+  plan.list.forEach((spec, i) => {
+    if (plan.dead[i]) return;
+    const sp = stairMenSpot(room, taken);
+    if (!sp) { plan.dead[i] = true; return; }
+    taken.push(sp);
+    const e = spawnEnemy(room, spec, i, []);
+    if (!e) return;
+    e.pos.set(sp.x, sp.z); e.home.set(sp.x, sp.z); e.anchor.set(sp.x, sp.z); e.stairHold = true; e.stairY = sp.y;
+    const ex = (room.entryX || 0), ez = room.d / 2;                 // face the way you come in
+    e.yaw = e.homeYaw = Math.atan2(-(ex - sp.x), -(ez - sp.z));
+    e.root.position.set(sp.x, sp.y, sp.z); e.root.rotation.y = e.yaw;
+  });
+  if (plan.list.length && plan.dead.every(Boolean)) plan.cleared = true;
+}
 function enemiesRoomActivated(room) {
+  if (room.kind === 'stair') { try { stairMenActivated(room); } catch (e) { console.warn('stairwell men not placed', e); } return; }
   if (room.kind !== 'normal') return;
   const plan = loopPlan(room);                // step 9: the director's plan, made once per room
   room.enemies = [];
@@ -24064,7 +24108,7 @@ function tableBoxes(room) {
   return out;
 }
 function navGrid(room) {
-  if (room.navCache) return room.navCache;   // city zones: built once
+  if (room.navCache) return room.navCache;
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
   const boxes = (room.walkLocal || []).concat(tableBoxes(room));
@@ -24411,6 +24455,7 @@ function enemyHunt(e) {
  * ------------------------------------------------------------------------- */
 const _mv = new THREE.Vector2(), _mp = { x: 0, z: 0 };
 function enemyMove(e, dt) {
+  if (e.stairHold) { e.pos.copy(e.home); e.vel.set(0, 0); e.speed = 0; e.path = null; return; }   // stairwell man: holds his spot on the top half, turns and shoots
   const C = CONFIG.enemy;
   let tx, tz, maxV;
   if ((e.state === 'move' || e.state === 'hunt' || e.state === 'search') && e.path && e.pathI < e.path.length) {
@@ -24574,7 +24619,7 @@ function enemyPose(e, dt, now) {
   }
   const cr = smoothstep(0, 1, e.crouch);
   // --- root ---
-  e.root.position.set(e.pos.x, 0, e.pos.y);
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y);
   e.root.rotation.y = e.yaw;
   // --- walk cycle ---
   const sp = e.speed;
@@ -25948,7 +25993,7 @@ function downedLegIK(e, D) {
 // The pose on the driver (so the skin and the hit capsules follow).
 function downedApply(e, D) {
   const B = e.B, s = D.s, V = _d91;
-  e.root.position.set(e.pos.x, 0, e.pos.y); e.root.rotation.set(0, D.h, 0);
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y); e.root.rotation.set(0, D.h, 0);
   B.pelvis.position.set(s.px, s.py, s.pz);
   B.pelvis.quaternion.setFromAxisAngle(V.Y, s.yawP).multiply(V.q.setFromAxisAngle(V.X, -s.th)).multiply(V.q.setFromAxisAngle(V.Y, s.rho)).multiply(V.q.setFromAxisAngle(V.Z, s.wig));
   B.spine.rotation.set(s.sp, s.tw, 0, 'YXZ'); B.chest.rotation.set(s.cp, s.tw * 0.6, 0, 'YXZ');
@@ -26550,7 +26595,7 @@ function surrPose(e, dt, now) {
   const up = smoothstep(0, 1, S.up), det = smoothstep(0, 1, S.detK), pick = smoothstep(0, 1, S.pick);
   const kR = smoothstep(0, 1, clamp(S.kn * 1.7)), kL = smoothstep(0, 1, clamp(S.kn * 1.7 - 0.7)), kn = (kR + kL) / 2;
   // --- root, hips, spine ---
-  e.root.position.set(e.pos.x, 0, e.pos.y); e.root.rotation.y = e.yaw;
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y); e.root.rotation.y = e.yaw;
   const sp = e.speed;
   e.phase += dt * sp / 0.36 * Math.PI * 0.5;
   const gait = clamp(sp / 1.2) * (1 - kn), stride = Math.min(0.5, 0.16 + sp * 0.2);
@@ -28950,6 +28995,7 @@ function wsUpdate(dt) {
           const u = (x / C.w + 0.5) * WS_LW, v = (0.5 - y / C.h) * WS_LH;
           if (!W.deskHitO) W.deskHitO = { u: 0, v: 0 };
           W.deskHitO.u = u; W.deskHitO.v = v; W.deskHit = W.deskHitO;
+          if (t < WZ.near) { WZ.seenT = performance.now() / 1000; WZ.d = t; }   // workshop zoom: you are using it
           hover = wsHitAt(u, v); show = true; cx = x; cy = y;
           reticle.classList.toggle('on', !!hover);
           if (!W.deskHinted) { W.deskHinted = true; toast(IS_TOUCH ? 'Gunsmith: aim the dot at a button, tap Grab' : 'Gunsmith: aim the dot at a button, press E or click. Scroll: next gun', 2600); }
@@ -39388,6 +39434,7 @@ function tickSafe(timeMs, frame) {
 function tick(timeMs) {
   if (!ready) return;
   bzPre();               // bench zoom: your own view back before anything reads or moves it
+  wzPre();               // workshop zoom: your own field of view back
   if (renderer.xr.isPresenting && XRVIS.state !== 'visible') { clock.getDelta(); PROF.last = 0; renderer.render(scene, camera); return; }   // step 31: Quest menu open: the world waits, nobody shoots you
   if (document.hidden && !renderer.xr.isPresenting) { clock.getDelta(); PROF.last = 0; return; }   // perf: background tab: no sim, no render
   if (!mobFrame(timeMs)) return;                   // step 48: mobile frame cap (the skipped time joins the next frame)
@@ -39456,6 +39503,7 @@ function tick(timeMs) {
   stillsTick(performance.now() / 1000);   // step 42: a body cam still, before this frame's own render
   scopeTick(dt);         // step 74: the view through the AWP scope
   bzApply(dt);           // bench zoom (computer): the view closes in on the gun in the vise
+  wzApply(dt);           // workshop zoom (computer): the view narrows on the GUNSMITH screen
   bodyCamLivePre(dt, performance.now() / 1000);   // step 23.3: live body cam (off / BOOST / headset: uBody = 0, no motion)
   eyeAdaptPre(dt);       // step 96: eye adaptation (computer, outside body cam mode)
   nvgPre();              // step 118: night vision down: the tube's tone map and gain for this frame's draw
@@ -41403,6 +41451,25 @@ function bzWanted() {
   return BZ.dist < BZ.near;
 }
 // Start of the frame: your own view back (only if the camera still carries the zoom: anything that moved it since wins).
+// Workshop zoom (computer, ?wszoom=off): the dot on the GUNSMITH glass within WZ.near m narrows the field of view
+// (eased 0.35 s) so about WZ.span m of the glass fills the view height: the text reads large, the dot still aims
+// (the view's centre ray does not move), you look about to reach the other buttons. Off the glass for 0.6 s = back.
+const WZ = { on: !/[?&]wszoom=off\b/.test(location.search), near: 1.6, span: 0.62, fovMin: 22, k: 0, seenT: -9, d: 1, bFov: 0, applied: false, hold: 0.6, dur: 0.35 };
+function wzPre() {
+  if (!WZ.applied) return;
+  camera.fov = WZ.bFov; camera.updateProjectionMatrix(); WZ.applied = false;
+}
+function wzApply(dt) {
+  if (!WZ.on || renderer.xr.isPresenting || IS_TOUCH || (BZ.applied)) { WZ.k = 0; return; }
+  const want = WORKSHOP.on && WORKSHOP.awake && performance.now() / 1000 - WZ.seenT < WZ.hold;
+  const st = Math.min(Math.max(dt || 0, 0), 0.1) / WZ.dur;
+  WZ.k = want ? Math.min(1, WZ.k + st) : Math.max(0, WZ.k - st);
+  if (WZ.k <= 0) return;
+  WZ.bFov = camera.fov;
+  const tf = Math.max(WZ.fovMin, Math.min(WZ.bFov, 2 * Math.atan(WZ.span / 2 / Math.max(0.3, WZ.d)) * 180 / Math.PI));
+  const e = WZ.k * WZ.k * (3 - 2 * WZ.k);
+  camera.fov = WZ.bFov + (tf - WZ.bFov) * e; camera.updateProjectionMatrix(); WZ.applied = true;
+}
 function bzPre() {
   if (!BZ.applied) return;
   if (camera.position.equals(BZ.lp)) camera.position.copy(BZ.bpL);
