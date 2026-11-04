@@ -972,12 +972,80 @@
         m.castShadow = true; root.add(m);
       })();
 
-      // ---- trees ----
-      var trees = meta.world.trees, tN = trees.n;
-      var txz = i16(trees.xz, tN * 2), tsc = u8(trees.s, tN), tty = u8(trees.t, tN);
+      // ---- trees (Poisson-spaced, dense along the roads, chunked + distance-faded) ----
+      // The packed tree list had trees stacked on one spot and only ~2 trees per
+      // 1000 m2. It is kept as a seed (far hills), filtered so no two trunks are closer
+      // than their spacing radii, then a jittered grid fills a forest band along every
+      // road (clear of the road and its shoulder) with the same spacing test.
+      var trees = meta.world.trees, tN0 = trees.n;
+      var txz = i16(trees.xz, tN0 * 2), tsc = u8(trees.s, tN0), tty = u8(trees.t, tN0);
       var tinfo = meta.tex.trees;
       var treeCol = [];  // collision: x,z,r
+      var TREE = { cell: 3.4, band: 150, clear: 13.5, park: 32, slope: 0.85, chunk: 192, farDesk: 1100, farXR: 300, fadeK: 0.8, spaceK: 0.085 };
+      var treeFar = { value: TREE.farDesk }, treeChunks = [];
       (function () {
+        var seed = 0x7a3e91 | 0;
+        function rnd() { seed = (seed + 0x6D2B79F5) | 0; var t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+        function vn2(x, z) {
+          var ix = Math.floor(x), iz = Math.floor(z), fx = x - ix, fz = z - iz;
+          fx = fx * fx * (3 - 2 * fx); fz = fz * fz * (3 - 2 * fz);
+          var a = hash1(ix * 57 + iz * 131), b = hash1(ix * 57 + 57 + iz * 131), c = hash1(ix * 57 + (iz + 1) * 131), d = hash1(ix * 57 + 57 + (iz + 1) * 131);
+          return (a + (b - a) * fx) * (1 - fz) + (c + (d - c) * fx) * fz;
+        }
+        // coarse distance-to-road field (8 m cells) stamped from the road samples
+        var DC = 8, DN = Math.ceil(SZ / DC) + 1, dist = new Float32Array(DN * DN).fill(1e9), R = TREE.band + 12, rc = Math.ceil(R / DC);
+        roads.forEach(function (rd) {
+          for (var k = 0; k < rd.n; k++) {
+            var px = rd.P[k * 2], pz = rd.P[k * 2 + 1], ci = Math.round((px + half) / DC), cj = Math.round((pz + half) / DC);
+            for (var b = -rc; b <= rc; b++) {
+              var j = cj + b; if (j < 0 || j >= DN) continue;
+              for (var a = -rc; a <= rc; a++) {
+                var i = ci + a; if (i < 0 || i >= DN) continue;
+                var d = Math.hypot(i * DC - half - px, j * DC - half - pz), o = j * DN + i; if (d < dist[o]) dist[o] = d;
+              }
+            }
+          }
+        });
+        function roadDist(x, z) { var i = Math.round((x + half) / DC), j = Math.round((z + half) / DC); if (i < 0 || j < 0 || i >= DN || j >= DN) return 1e9; return dist[j * DN + i]; }
+        // spacing hash (4 m cells): x, z, height, type, spacing radius
+        var HC = 4, hash = new Map(), list = [];
+        function free(x, z, r) {
+          var ix = Math.floor(x / HC), iz = Math.floor(z / HC);
+          for (var a = -2; a <= 2; a++) for (var b = -2; b <= 2; b++) {
+            var l = hash.get(gkey(ix + a, iz + b)); if (!l) continue;
+            for (var q = 0; q < l.length; q++) { var o = l[q], dx = x - list[o], dz = z - list[o + 1], rr = r + list[o + 4]; if (dx * dx + dz * dz < rr * rr) return false; }
+          }
+          return true;
+        }
+        function slopeOk(x, z) { var h = terrainH(x, z); return Math.hypot(terrainH(x + 1.5, z) - h, terrainH(x, z + 1.5) - h) / 1.5 < TREE.slope; }
+        function offRoad(x, z) {
+          if (Math.hypot(x - park.x, z - park.z) < TREE.park) return false;
+          if (roadDist(x, z) > TREE.clear + 12) return true;
+          var nr = nearestRoad(x, z); return !nr || nr.d > TREE.clear;
+        }
+        function add(x, z, hgt, t) {
+          var r = TREE.spaceK * hgt;
+          if (Math.abs(x) > half - 2 || Math.abs(z) > half - 2 || !free(x, z, r) || !offRoad(x, z) || !slopeOk(x, z)) return;
+          var key = gkey(Math.floor(x / HC), Math.floor(z / HC)), l = hash.get(key); if (!l) hash.set(key, l = []);
+          l.push(list.length); list.push(x, z, hgt, t, r);
+        }
+        for (var i = 0; i < tN0; i++) add(txz[i * 2] / 4, txz[i * 2 + 1] / 4, (15 + 7 * hash1(i * 1.7)) * tsc[i] / 100, tty[i] % 8);
+        var nSeed = list.length / 5;
+        // forest band: jittered grid; density thins away from the road, clumps and clearings by noise
+        var C = TREE.cell, GN = Math.floor(SZ / C);
+        for (var gj = 0; gj < GN; gj++) for (var gi = 0; gi < GN; gi++) {
+          var cx = -half + (gi + 0.5) * C, cz = -half + (gj + 0.5) * C, rd0 = roadDist(cx, cz);
+          if (rd0 > TREE.band || rd0 < TREE.clear - 9) continue;
+          var x = cx + (rnd() - 0.5) * C * 0.9, z = cz + (rnd() - 0.5) * C * 0.9;
+          var clump = vn2(x / 38, z / 38) * 0.7 + vn2(x / 11, z / 11) * 0.3;
+          var near = rd0 < 40 ? 1 : 1 - (rd0 - 40) / (TREE.band - 40) * 0.55;
+          var pr = near * (0.25 + 1.1 * clump) - (clump < 0.32 ? 0.5 : 0);
+          if (rnd() > pr) continue;
+          var s = 0.72 + 0.62 * Math.pow(rnd(), 1.4), hgt = (14 + 8 * rnd()) * s * (0.85 + 0.3 * clump);
+          add(x, z, hgt, Math.floor(rnd() * 8) % 8);
+        }
+        var tN = list.length / 5;
+
         var g = new THREE.BufferGeometry();
         var w = 0.125;
         var p = [-w, 1, 0, w, 1, 0, -w, 0, 0, w, 0, 0, 0, 1, -w, 0, 1, w, 0, 0, -w, 0, 0, w];
@@ -988,32 +1056,55 @@
         g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
         g.setAttribute("normal", new THREE.Float32BufferAttribute(nm, 3));
         g.setIndex([0, 2, 1, 1, 2, 3, 4, 6, 5, 5, 6, 7, 8, 9, 10, 9, 11, 10, 12, 13, 14, 13, 15, 14]);
-        var ty = new Float32Array(tN);
-        var mesh = new THREE.InstancedMesh(g, null, tN);
-        var M = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
-        for (var i = 0; i < tN; i++) {
-          var x = txz[i * 2] / 4, z = txz[i * 2 + 1] / 4, s = tsc[i] / 100, t = tty[i] % 8;
-          var info = tinfo[t], hgt = (15 + 7 * hash1(i * 1.7)) * s;
-          var foot = (511 - info.bot) / 512 * hgt;
-          var y = terrainH(x, z) - 0.25 - foot;
-          q.setFromAxisAngle(up, hash1(i * 3.3) * Math.PI);
-          M.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(hgt, hgt, hgt));
-          mesh.setMatrixAt(i, M); ty[i] = t;
-          treeCol.push(x, z, 0.32 * s + 0.1);
-        }
-        g.setAttribute("aType", new THREE.InstancedBufferAttribute(ty, 1));
-        function patch(sh) {
-          sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aType;")
+        function patch(sh, fade) {
+          sh.vertexShader = sh.vertexShader.replace("#include <common>", "#include <common>\nattribute float aType;" + (fade ? "\nuniform float uTreeFar;" : ""))
             .replace("#include <uv_vertex>", "#include <uv_vertex>\n#ifdef USE_MAP\nvMapUv.x = (vMapUv.x + aType) / 8.0;\n#endif");
+          if (fade) {
+            sh.uniforms.uTreeFar = treeFar;
+            // grow in at the edge of the draw distance instead of popping
+            sh.vertexShader = sh.vertexShader.replace("#include <begin_vertex>", "#include <begin_vertex>\n#ifdef USE_INSTANCING\n{ vec3 io = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xyz; float fd = distance(io.xz, cameraPosition.xz); transformed *= 1.0 - smoothstep(uTreeFar * " + TREE.fadeK.toFixed(2) + ", uTreeFar, fd); }\n#endif");
+          }
         }
         var mat = new THREE.MeshStandardMaterial({ map: T.trees, alphaTest: 0.42, side: THREE.FrontSide, roughness: 0.95, metalness: 0, color: 0xe6ebe8 });
-        mat.onBeforeCompile = patch;
+        mat.onBeforeCompile = function (sh) { patch(sh, true); };
+        mat.customProgramCacheKey = function () { return "rally-tree-fade"; };
         var dmat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: T.trees, alphaTest: 0.42, side: THREE.DoubleSide });
-        dmat.onBeforeCompile = patch;
-        mesh.material = mat; mesh.customDepthMaterial = dmat;
-        mesh.castShadow = true; mesh.receiveShadow = true;
-        root.add(mesh);
+        dmat.onBeforeCompile = function (sh) { patch(sh, false); };
+        // one InstancedMesh per CHUNK x CHUNK m cell: frustum culled by three, distance culled in update
+        var CH = TREE.chunk, byChunk = new Map();
+        for (var i = 0; i < tN; i++) {
+          var o = i * 5, key = gkey(Math.floor(list[o] / CH), Math.floor(list[o + 1] / CH)), l = byChunk.get(key);
+          if (!l) byChunk.set(key, l = []); l.push(o);
+        }
+        var M = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), v = new THREE.Vector3(), sv = new THREE.Vector3();
+        byChunk.forEach(function (l) {
+          var gc = g.clone(), ty = new Float32Array(l.length), mesh = new THREE.InstancedMesh(gc, mat, l.length), sx = 0, sz = 0;
+          for (var k = 0; k < l.length; k++) {
+            var o = l[k], x = list[o], z = list[o + 1], hgt = list[o + 2], t = list[o + 3];
+            var foot = (511 - tinfo[t].bot) / 512 * hgt;
+            // lowest ground under the trunk so the downhill side never floats
+            var gy = Math.min(terrainH(x, z), terrainH(x + 0.6, z), terrainH(x - 0.6, z), terrainH(x, z + 0.6), terrainH(x, z - 0.6));
+            q.setFromAxisAngle(up, hash1(o * 3.3 + 0.7) * Math.PI);
+            var wsc = 0.9 + 0.2 * hash1(o * 5.1);
+            M.compose(v.set(x, gy - 0.25 - foot, z), q, sv.set(hgt * wsc, hgt, hgt * wsc));
+            mesh.setMatrixAt(k, M); ty[k] = t; sx += x; sz += z;
+            treeCol.push(x, z, 0.32 * hgt / 18 + 0.1);
+          }
+          gc.setAttribute("aType", new THREE.InstancedBufferAttribute(ty, 1));
+          mesh.customDepthMaterial = dmat;
+          mesh.castShadow = true; mesh.receiveShadow = true;
+          if (mesh.computeBoundingSphere) mesh.computeBoundingSphere();
+          root.add(mesh);
+          treeChunks.push({ mesh: mesh, x: sx / l.length, z: sz / l.length });
+        });
+        g.dispose();
+        console.info("[rally] trees: " + tN + " (" + nSeed + " kept of " + tN0 + " packed), " + treeChunks.length + " chunks");
       })();
+      function treeCull(cx, cz, far) {
+        treeFar.value = far;
+        var lim = far + TREE.chunk * 0.75;
+        for (var i = 0; i < treeChunks.length; i++) { var c = treeChunks[i]; c.mesh.visible = Math.hypot(c.x - cx, c.z - cz) < lim; }
+      }
       var TG = 10, treeGrid = new Map();
       for (var i = 0; i < treeCol.length; i += 3) {
         var key = gkey(Math.floor(treeCol[i] / TG), Math.floor(treeCol[i + 1] / TG));
@@ -1053,24 +1144,102 @@
       var hemi = new THREE.HemisphereLight(0xd4e3f7, 0x9aa4b1, 0.85); root.add(hemi);
 
       // ---- falling snow ----
-      var flakes = (function () {
-        var n = 5000, p = new Float32Array(n * 3), r = new Float32Array(n);
-        for (var i = 0; i < n; i++) { p[i * 3] = Math.random() * 70; p[i * 3 + 1] = Math.random() * 40; p[i * 3 + 2] = Math.random() * 70; r[i] = Math.random(); }
-        var g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(p, 3)); g.setAttribute("aRand", new THREE.BufferAttribute(r, 1));
-        var m = new THREE.ShaderMaterial({
-          uniforms: { uTime: { value: 0 }, uCam: { value: new THREE.Vector3() }, uScale: { value: 1 } },
-          vertexShader: "uniform float uTime; uniform vec3 uCam; uniform float uScale; attribute float aRand; varying float vA;\n" +
-            "void main(){ vec3 p = position; p.y -= uTime * (1.1 + aRand * 0.9); p.x += uTime * 0.7 + sin(uTime * 0.6 + aRand * 40.0) * 0.8; p.z += uTime * 0.3 + cos(uTime * 0.5 + aRand * 30.0) * 0.6;\n" +
-            "vec3 box = vec3(70.0, 40.0, 70.0); vec3 rel = mod(p - uCam + box * 0.5, box) - box * 0.5; vec3 w = uCam + rel;\n" +
-            "vec4 mv = viewMatrix * vec4(w, 1.0); gl_Position = projectionMatrix * mv; gl_PointSize = clamp((0.9 + aRand * 1.6) * uScale / -mv.z, 1.0, 14.0); vA = smoothstep(35.0, 10.0, length(rel)) * 0.85; }",
-          fragmentShader: "varying float vA; void main(){ vec2 d = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.15, length(d)) * vA; if (a < 0.02) discard; gl_FragColor = vec4(1.0, 1.0, 1.0, a); }",
-          transparent: true, depthWrite: false
-        });
-        var pts = new THREE.Points(g, m); pts.frustumCulled = false; pts.renderOrder = 5;
-        return pts;
-      })();
+      // Real flakes: 1-6 mm soft discs falling 0.5-1.5 m/s with flutter and wind, in two
+      // camera-local wrapping boxes (a dense near one, a sparse far one for depth). Each
+      // flake is a camera-facing quad stretched along its motion relative to the camera
+      // over one shutter time, so it only streaks when you move fast; sub-pixel flakes
+      // keep their size and lose alpha instead of growing into bright squares.
+      var SNOWF = { near: [15, 9000, 3600], far: [52, 5000, 1800], expo: 1 / 45, gain: 0.82 };
+      var snowU = {
+        uTime: { value: 0 }, uCam: { value: new THREE.Vector3() }, uCamVel: { value: new THREE.Vector3() },
+        uWind: { value: new THREE.Vector2() }, uWindV: { value: new THREE.Vector2() }, uFocal: { value: 900 },
+        uExpo: { value: SNOWF.expo }, uSun: { value: sunDir.clone() }, uGain: { value: SNOWF.gain }
+      };
+      var SNOW_VS = [
+        "uniform float uTime, uFocal, uExpo, uBox; uniform vec3 uCam, uCamVel, uSun; uniform vec2 uWind, uWindV;",
+        "attribute vec3 aPos; attribute vec4 aRnd; varying vec2 vQ; varying float vA; varying float vL;",
+        "void main(){",
+        "  float fall = 0.5 + 1.0 * aRnd.y;                      // m/s, bigger flakes a little faster",
+        "  float w1 = 0.8 + 1.4 * aRnd.z, w2 = 0.6 + 1.1 * aRnd.w, A = 0.12 + 0.3 * aRnd.w;",
+        "  float ph = aRnd.z * 40.0, t = uTime;",
+        "  vec3 p = aPos;",
+        "  p.y -= t * fall;",
+        "  p.xz += uWind * (0.75 + 0.5 * aRnd.z);",
+        "  p.x += sin(t * w1 + ph) * A; p.z += cos(t * w2 + ph * 1.3) * A * 0.8;",
+        "  vec3 vel = vec3(uWindV.x * (0.75 + 0.5 * aRnd.z) + cos(t * w1 + ph) * A * w1, -fall, uWindV.y * (0.75 + 0.5 * aRnd.z) - sin(t * w2 + ph * 1.3) * A * 0.8 * w2);",
+        "  vec3 box = vec3(uBox, uBox * 0.6, uBox);",
+        "  vec3 rel = mod(p - uCam + box * 0.5, box) - box * 0.5;",
+        "  vec3 wp = uCam + rel;",
+        "  vec4 c = viewMatrix * vec4(wp, 1.0);",
+        "  float z = max(-c.z, 0.05);",
+        "  float rad = 0.0005 + 0.0025 * aRnd.x * aRnd.x;          // radius 0.5-3 mm (1-6 mm flakes)",
+        "  float pxm = z / uFocal;                                 // metres per pixel at this depth",
+        "  float radv = max(rad, 0.7 * pxm);                       // never under ~1.4 px wide",
+        "  float cover = (rad / radv) * (rad / radv);",
+        "  vec3 sv = (mat3(viewMatrix) * (vel - uCamVel)) * uExpo; // streak over one shutter time",
+        "  vec2 d = sv.xy; float len = length(d);",
+        "  vec2 ax = len > 1e-5 ? d / len : vec2(0.0, 1.0); vec2 bx = vec2(-ax.y, ax.x);",
+        "  float hl = radv + 0.5 * len;",
+        "  vec3 ctr = c.xyz - vec3(0.5 * d, 0.0);",
+        "  ctr.xy += bx * position.x * radv + ax * position.y * hl;",
+        "  gl_Position = projectionMatrix * vec4(ctr, 1.0);",
+        "  vQ = position.xy; vL = hl / radv;",
+        "  float dist = length(rel);",
+        "  float fade = smoothstep(0.12, 0.7, dist) * (1.0 - smoothstep(uBox * 0.32, uBox * 0.5, dist));",
+        "  vec3 vd = normalize(wp - cameraPosition);",
+        "  float lit = 0.78 + 0.22 * max(uSun.y, 0.0) + 0.45 * pow(max(dot(vd, uSun), 0.0), 6.0);",
+        "  vA = cover * fade * radv / hl * lit;",
+        "}"
+      ].join("\n");
+      var SNOW_FS = [
+        "uniform float uGain; varying vec2 vQ; varying float vA; varying float vL;",
+        "void main(){",
+        "  float r2 = vQ.x * vQ.x + vQ.y * vQ.y * (vL > 1.2 ? 0.35 : 1.0);",
+        "  float a = exp(-r2 * 3.2) * vA * uGain;",
+        "  if (a < 0.004) discard;",
+        "  gl_FragColor = vec4(vec3(0.93, 0.955, 1.0), a);",
+        "}"
+      ].join("\n");
+      function snowLayer(spec, xrN) {
+        var n = spec[1];
+        var g = new THREE.InstancedBufferGeometry();
+        g.setAttribute("position", new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+        g.setIndex([0, 1, 2, 0, 2, 3]);
+        var ap = new Float32Array(n * 3), ar = new Float32Array(n * 4);
+        for (var i = 0; i < n; i++) {
+          ap[i * 3] = Math.random() * spec[0]; ap[i * 3 + 1] = Math.random() * spec[0] * 0.6; ap[i * 3 + 2] = Math.random() * spec[0];
+          ar[i * 4] = Math.pow(Math.random(), 1.6); ar[i * 4 + 1] = Math.random(); ar[i * 4 + 2] = Math.random(); ar[i * 4 + 3] = Math.random();
+        }
+        g.setAttribute("aPos", new THREE.InstancedBufferAttribute(ap, 3));
+        g.setAttribute("aRnd", new THREE.InstancedBufferAttribute(ar, 4));
+        g.instanceCount = n;
+        var u = Object.assign({}, snowU, { uBox: { value: spec[0] } });
+        var m = new THREE.ShaderMaterial({ uniforms: u, vertexShader: SNOW_VS, fragmentShader: SNOW_FS, transparent: true, depthWrite: false });
+        var mesh = new THREE.Mesh(g, m); mesh.frustumCulled = false; mesh.renderOrder = 5;
+        mesh.userData.nDesk = n; mesh.userData.nXR = xrN;
+        return mesh;
+      }
+      var flakes = new THREE.Group(); flakes.name = "rally-snow";
+      var snowNear = snowLayer(SNOWF.near, SNOWF.near[2]), snowFar = snowLayer(SNOWF.far, SNOWF.far[2]);
+      flakes.add(snowNear); flakes.add(snowFar);
       scene.add(flakes); flakes.visible = false;
-
+      var snowState = { px: 0, py: 0, pz: 0, init: false, wx: 0, wz: 0 };
+      function snowUpdate(dt, t, pl, xrOn) {
+        var c = pl.cam, s = snowState, cv = snowU.uCamVel.value;
+        if (s.init && dt > 0 && dt < 0.25) {
+          var k = 1 - Math.exp(-dt * 10);
+          cv.x += ((c.x - s.px) / dt - cv.x) * k; cv.y += ((c.y - s.py) / dt - cv.y) * k; cv.z += ((c.z - s.pz) / dt - cv.z) * k;
+        } else cv.set(0, 0, 0);
+        s.px = c.x; s.py = c.y; s.pz = c.z; s.init = true;
+        // wind: slowly turning breeze with gusts, integrated so flakes never jump
+        var ang = 0.9 + 0.6 * noise1(t * 0.013), spd = 0.7 + 0.5 * noise1(t * 0.05 + 7) + 0.6 * Math.max(0, noise1(t * 0.21 + 3));
+        var wvx = Math.cos(ang) * spd, wvz = Math.sin(ang) * spd;
+        if (dt > 0 && dt < 0.25) { s.wx += wvx * dt; s.wz += wvz * dt; }
+        snowU.uWind.value.set(s.wx, s.wz); snowU.uWindV.value.set(wvx, wvz);
+        snowU.uTime.value = t; snowU.uCam.value.copy(c); snowU.uFocal.value = pl.focal;
+        snowNear.geometry.instanceCount = xrOn ? snowNear.userData.nXR : snowNear.userData.nDesk;
+        snowFar.geometry.instanceCount = xrOn ? snowFar.userData.nXR : snowFar.userData.nDesk;
+      }
       function treeHit(x, z, r) {
         var ix = Math.floor(x / TG), iz = Math.floor(z / TG), out = null;
         for (var a = -1; a <= 1; a++) for (var b = -1; b <= 1; b++) {
@@ -1109,13 +1278,14 @@
         mu: [0.95, 0.72, 0.6], roll: [0.12, 0.45, 1.6], kick: [0.05, 0.25], sprayColor: 0xf2f6ff,
         credits: "Car: \u201cart of rally Latest Version 2027\u201d by FarHandle5255 \u00b7 Textures: \u201cSnowy Mountain Road Scene\u201d by 99.Miles \u00b7 Sketchfab, CC BY 4.0",
         update: function (dt, t, pl) {
+          var xrOn = inXR();
           flakes.visible = true;
-          flakes.material.uniforms.uTime.value = t; flakes.material.uniforms.uCam.value.copy(pl.cam);
-          flakes.material.uniforms.uScale.value = pl.focal * 0.012;
+          snowUpdate(dt, t, pl, xrOn);
+          treeCull(pl.cam.x - OFFX, pl.cam.z, xrOn ? TREE.farXR : TREE.farDesk);
         },
         setActive: function (on) { if (!on) flakes.visible = false; },
         dispose: function () {
-          scene.remove(flakes); flakes.geometry.dispose(); flakes.material.dispose();
+          scene.remove(flakes); [snowNear, snowFar].forEach(function (m) { m.geometry.dispose(); m.material.dispose(); });
           root.removeFromParent();
           disposeTree(root);
           Object.keys(T).forEach(function (k) { T[k].dispose(); });
