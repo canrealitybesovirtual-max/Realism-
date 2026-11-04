@@ -10752,7 +10752,6 @@ function toast(text, ms = 1800) {
 function deskToggleGrab() {
   if (renderer.xr.isPresenting) return;
   if (SURR.on && surrDetainDesk()) { syncButtons(); return; }      // step 117: E on a man who gave up ties his hands
-  if (brassDesk()) { syncButtons(); return; }   // step 116: E at the brass bin, or with the dot on the floor by spent brass
   if (deskHand.prop) {
     // Step 22.1: with a gun in your hand, E on a magazine, shell or weapon light picks it up (pouch / rail).
     // Before, E always dropped the gun, so attachments and spares could never be taken with a gun out.
@@ -16496,7 +16495,6 @@ function brassRoomOff(room) {                                       // weaponsRo
   if (b) {
     for (const A of b.tops || []) for (const im of A) { b.g.remove(im); im.dispose(); }
     BRASS.bins.splice(BRASS.bins.indexOf(b), 1); room.brassBin = null;
-    if (BRASS.pour && BRASS.pour.bin === b) brassPourEnd();
   }
 }
 // Underfoot (ufBrass): bit 1 brass, 2 a hull lying under the sole at P (world), radius r, floor fy.
@@ -16513,220 +16511,8 @@ function brassUf(P, r, fy) {
   return m;
 }
 
-// --- collecting ---
-// Cases near P (world): VR (hand) within r of the palm, nearest first; computer within r across the floor at the dot.
-// Up to max cases (a pile gives several), never a hot one, never past the bag's volume. Plays the pick and the bag.
-function brassCollectAt(P, r, max, hand) {
-  const B = BRASS, res = B.res, now = performance.now() / 1000, C = CONFIG.brass, cand = B.cand;
-  res.n = res.hot = res.full = 0; res.c = -1; cand.length = 0;
-  for (const room of brassRooms()) {
-    const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
-    if (!L || !L.length) continue;
-    for (let i = 0; i < L.length; i++) {
-      const e = L[i], dx = rWX(room, e[0]) - P.x, dz = rWZ(room, e[2]) - P.z, dy = room.origin.y + e[1] - P.y, h2 = dx * dx + dz * dz;
-      if (hand ? h2 + dy * dy > r * r : h2 > r * r || Math.abs(dy) > 0.35) continue;
-      cand.push([h2 + dy * dy, L, i, room]);
-    }
-  }
-  if (!cand.length) return res;
-  cand.sort((a, b) => a[0] - b[0]);
-  let vol = brassVol(B.bag);
-  for (const [, L, i, room] of cand) {
-    if (res.n >= max) break;
-    const e = L[i], K = BRASS_CAL[e[7]];
-    if (now - e[9] < C.hot) { res.hot++; continue; }
-    const want = Math.min(e[8], max - res.n), take = Math.min(want, Math.floor((C.bag - vol) / K.bulk));
-    if (take < want) res.full = 1;                                  // the bag cannot take them all
-    if (take <= 0) break;
-    e[8] -= take; vol += take * K.bulk; B.bag[e[7]] += take; res.n += take;
-    if (res.c < 0) res.c = e[7];
-    B.dirty.add(room);
-  }
-  for (const L of new Set(cand.map((q) => q[1]))) for (let i = L.length - 1; i >= 0; i--) if (L[i][8] <= 0) L.splice(i, 1);   // emptied entries
-  if (res.n) { brassPickSfx(res.c, res.n); brassChanged(); }
-  if (hand) {
-    if (res.n) pulse(hand, 0.22, 14);
-    else if (res.hot) pulse(hand, 0.9, 40);                         // a fresh case: a sting, nothing more
-    else if (res.full) pulse(hand, 0.5, 60);
-  }
-  return res;
-}
-const _brR = [];
-function brassRooms() { _brR.length = 0; for (const r of stream.rooms.values()) _brR.push(r); return _brR; }
-function brassNear(P, r) {                                          // a palm low over brass: start a sweep
-  for (const room of brassRooms()) {
-    const mm = room.active && roomMemory.get(memKey(room)), L = mm && mm.brass;
-    if (!L) continue;
-    for (const e of L) {
-      const dx = rWX(room, e[0]) - P.x, dz = rWZ(room, e[2]) - P.z, dy = P.y - room.origin.y - e[1];
-      if (dx * dx + dz * dz < r * r && dy > -0.03 && dy < 0.15) return true;
-    }
-  }
-  return false;
-}
-// VR grip (squeezeStart, nothing else in reach): the bag off your hip, or a case (then the sweep goes on in brassTick).
-function brassGrab(hand) {
-  return false;                                                     // no collecting by hand: cases count into the bin when fired
-  const B = BRASS;
-  if (!B.on || !renderer.xr.isPresenting || hand.prop) return false;
-  handPose(hand, B.hp, B.hq);
-  if (!B.held && B.bagG && B.bagG.visible && B.v.set(0, -0.13, -0.045).applyMatrix4(B.bagG.matrix).distanceTo(B.hp) < 0.1) {
-    B.held = hand; B.over = 0; B.overBin = null; brassRustle(); pulse(hand, 0.3, 20);
-    return true;
-  }
-  const r = brassCollectAt(B.hp, 0.09, 1, hand);                    // the fist's centre: a case under the fingers
-  if (!r.n && !r.hot && !r.full && !brassNear(B.hp, 0.2)) return false;
-  let s = B.scoop.get(hand);
-  if (!s) B.scoop.set(hand, s = { n: 0, cool: 0, last: new THREE.Vector3() });
-  s.n = r.full ? CONFIG.brass.scoop : r.n; s.cool = r.hot && !r.n ? 0.5 : 0; s.last.copy(B.hp);
-  return true;
-}
-function brassRelease(hand) {                                       // squeezeEnd
-  const B = BRASS;
-  if (!B.on) return;
-  B.scoop.delete(hand);
-  if (B.held !== hand) return;
-  B.held = null;
-  if (B.pour && B.pour.hand === hand) brassPourEnd();
-  brassRustle();
-}
-// Computer E (deskToggleGrab, first): the dot on the bin pours the bag; on a floor or a top near brass picks it up.
-function brassDesk() {
-  return false;                                                     // no collecting by hand
-  const B = BRASS;
-  if (!B.on || renderer.xr.isPresenting || !world) return false;
-  camera.getWorldPosition(B.v); camera.getWorldDirection(B.d);
-  const bin = brassBinAimed(B.v, B.d);
-  if (bin) { brassPourStart(bin, null); return true; }
-  if (deskHand.prop && !gunOf(deskHand)) return false;              // a box in your hand: E drops it, as before
-  const hit = p10Ray(B.v, B.d, CONFIG.physics.deskReach, RAY_GROUPS, deskHand.prop ? deskHand.prop.body : undefined);
-  if (!hit || hit.normal.y < 0.5 || propByCollider.has(hit.collider.handle)) return false;   // on a prop or a wall: not brass
-  B.p.copy(B.d).multiplyScalar(p10Toi(hit)).add(B.v);
-  const r = brassCollectAt(B.p, CONFIG.brass.reach, Infinity, null);
-  if (r.n) toast(`Brass +${r.n}: ${brassSum(B.bag)} in the bag${r.full ? ' (full)' : ''}${r.hot ? '. Some are still hot' : ''}`);
-  else if (r.full) toast('Brass bag full. Empty it into the brass bin in the safe room');
-  else if (r.hot) toast('Hot brass. Give it a few seconds');
-  return !!(r.n || r.full || r.hot);
-}
 
-// --- sounds: tinks from the baked brass takes, a muffled bag, a pour into steel ---
-function brassTinks(n, g, rate, lp, at, spread, hull) {
-  const L = hull ? baked.thud : (baked.tinkBounce.length ? baked.tinkBounce : baked.tink);
-  if (!L || !L.length) return;
-  const d0 = audio.delay || 0;
-  try {
-    for (let i = 0; i < n; i++) {
-      audio.delay = d0 + at + (i ? Math.random() * spread : 0);
-      playBaked(L, g * (0.55 + Math.random() * 0.45), 0.18, rate * (0.9 + Math.random() * 0.2), 0, lp);
-    }
-  } finally { audio.delay = d0; }
-}
-function brassPickSfx(c, n) {                                       // cases off the floor, then into the bag
-  const F = foleyK('tink');
-  if (!F || !audio.ctx || audio.ctx.state !== 'running') return;
-  const C = BRASS_CAL[c] || BRASS_CAL[0];
-  brassTinks(Math.min(3, n), (C.hull ? 0.12 : 0.07 * GUN_MIX.brass) * F, C.rate * 1.05, C.hull ? 0 : GUN_MIX.tone * 1.4, 0, 0.05, C.hull);
-  brassRattle(n, 0.26);
-}
-function brassRattle(n, at) {                                       // through canvas: duller as the bag fills
-  const F = foleyK('tink');
-  if (!F || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
-  const f = Math.min(1, brassVol(BRASS.bag) / CONFIG.brass.bag);
-  brassTinks(Math.min(7, 2 + Math.round(Math.sqrt(n) * 1.4)), 0.06 * GUN_MIX.brass * F * CONFIG.brass.gain, 0.8 + 0.25 * (1 - f), 1500 + 1600 * (1 - f), at, 0.14, false);
-  nBurst(audio.ctx.currentTime + at, 0.16, 'bandpass', 1250, 0.8, 0.03 * F * CONFIG.brass.gain, 0.12, 0.1);
-}
-function brassRustle() {                                            // the bag taken off the belt or hung back
-  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
-  if (!clothRec(0.1 * CONFIG.brass.gain, { dur: 0.22, verb: 0.1 })) nBurst(audio.ctx.currentTime, 0.14, 'bandpass', 1500, 0.7, 0.03 * CONFIG.brass.gain, 0.1, 0.1);
-  if (brassSum(BRASS.bag)) brassRattle(Math.min(12, brassSum(BRASS.bag)), 0.03);
-}
-function brassPourSfx(R, n) {
-  const F = foleyK('tink');
-  if (!F || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
-  R.bin.g.updateWorldMatrix(true, false);
-  BRASS.v2.set(0, BRASS_BIN.skid + BRASS_BIN.H * 0.6, 0).applyMatrix4(R.bin.g.matrixWorld);
-  const S = BRASS.pk;
-  S.n = n; S.empty = brassSum(BRASS.bin) < 40; S.k = Math.min(1, n / 6); S.F = F * CONFIG.brass.gain;
-  soundAt(BRASS.v2, brassPourPlay, { occlude: false });
-}
-function brassPourPlay() {                                          // inside soundAt: the bin's voice
-  const S = BRASS.pk, t = audio.ctx.currentTime;
-  brassTinks(Math.min(5, 1 + Math.ceil(S.n * 0.4)), 0.11 * GUN_MIX.brass * S.F, 1, S.empty ? 0 : 5200, 0, 0.07, false);
-  if (S.empty) KNOCK_SND.can(t + Math.random() * 0.04, 1.3 + Math.random() * 0.4, 0.22 * S.F, 0.7);   // onto the steel bottom
-  nBurst(t, 0.1, 'highpass', 3400, 0.6, 0.014 * S.k * S.F, 0.08, 0.3);                               // cases sliding over cases
-}
 
-// --- the bag on your left hip ---
-function brassBagBuild() {
-  if (!BODY.ready || !BODY.restInv || !BODY.restInv[BB.pelvis]) return;
-  const B = BRASS;
-  B.bagLocal = rigLocal(BB.pelvis, new THREE.Vector3(-0.148, 0.99, 0.072), new THREE.Vector3(-0.62, 0, 0.78), new THREE.Vector3(0, 1, 0));
-  const tex = canvasTex(128, (c, S) => {                             // coyote cotton duck: weave, grime, a seam
-    c.fillStyle = '#7d6a4a'; c.fillRect(0, 0, S, S);
-    for (let y = 0; y < S; y += 2) { c.fillStyle = y % 4 ? 'rgba(255, 240, 210, 0.07)' : 'rgba(30, 20, 8, 0.1)'; c.fillRect(0, y, S, 1); }
-    for (let x = 0; x < S; x += 2) { c.fillStyle = x % 4 ? 'rgba(255, 240, 210, 0.05)' : 'rgba(30, 20, 8, 0.08)'; c.fillRect(x, 0, 1, S); }
-    const R = mulberry32(1163);
-    for (let i = 0; i < 40; i++) { c.fillStyle = `rgba(40, 28, 12, ${(0.03 + R() * 0.06).toFixed(3)})`; c.beginPath(); c.arc(R() * S, R() * S, 3 + R() * 14, 0, Math.PI * 2); c.fill(); }
-    c.fillStyle = 'rgba(40, 30, 16, 0.5)'; c.fillRect(S / 2 - 1, 0, 2, S);
-  });
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(3, 2);
-  const cloth = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.93, metalness: 0 }), cord = new THREE.MeshStandardMaterial({ color: 0x23201c, roughness: 0.8 });
-  const prof = [[0.0005, -0.1], [0.03, -0.097], [0.052, -0.086], [0.064, -0.062], [0.068, -0.02], [0.066, 0.028], [0.056, 0.058], [0.036, 0.077], [0.023, 0.086], [0.027, 0.094], [0.031, 0.1], [0.026, 0.104], [0.0005, 0.099]];
-  const body = mesh(new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), 18).scale(1, 1, 0.55), cloth);   // a gathered sack, flat against you
-  body.position.set(0, -0.13, -0.045);
-  body.add(mesh(placed(new THREE.TorusGeometry(0.024, 0.0022, 6, 20), 0, 0.086, 0, Math.PI / 2).scale(1, 1, 0.55), cord, false));   // drawstring
-  body.add(mesh(placed(new THREE.CylinderGeometry(0.0055, 0.0055, 0.014, 10), 0, 0.074, -0.016), cord, false));                       // cord lock
-  body.add(mesh(placed(new THREE.CylinderGeometry(0.0016, 0.0016, 0.045, 5), -0.003, 0.05, -0.016, 0, 0, 0.12), cord, false));
-  body.add(mesh(placed(new THREE.CylinderGeometry(0.0016, 0.0016, 0.04, 5), 0.003, 0.052, -0.016, 0, 0, -0.1), cord, false));
-  const g = new THREE.Group();
-  g.matrixAutoUpdate = false; g.visible = false;
-  g.add(body, mesh(placed(rbox(0.042, 0.075, 0.006, 0.002), 0, -0.012, -0.004), cloth, false));   // belt loop over the belt
-  scene.add(g);
-  B.bagG = g; B.bagBody = body;
-}
-// The bin under the bag (VR): the bag's middle over its opening, from just under the rim to 0.5 m above it.
-function brassBinUnder(P) {
-  const Bn = BRASS_BIN, top = Bn.skid + Bn.H;
-  for (const b of BRASS.bins) {
-    if (!b.room.active || !b.room.group.visible) continue;
-    b.g.updateWorldMatrix(true, false);
-    const l = BRASS.v2.copy(P).applyMatrix4(BRASS.m2.copy(b.g.matrixWorld).invert());
-    if (Math.abs(l.x) < Bn.L / 2 + 0.03 && Math.abs(l.z) < Bn.W / 2 + 0.03 && l.y > top - 0.06 && l.y < top + 0.5) return b;
-  }
-  return null;
-}
-function brassBagTick(dt) {
-  const B = BRASS;
-  if (B.bagG) B.bagG.visible = false;                               // the dump bag is gone
-  return;
-  if (!B.bagG) { brassBagBuild(); if (!B.bagG) return; }
-  if (B.held && (!renderer.xr.isPresenting || playerState.dead || B.held.prop)) brassRelease(B.held);
-  const f = Math.min(1, brassVol(B.bag) / CONFIG.brass.bag);
-  if (Math.abs(f - B.bagF) > 0.002) {                               // fuller = rounder and heavier at the bottom
-    B.bagF = f;
-    const s = Math.pow(f, 0.6), sz = 0.42 + 0.58 * s;
-    B.bagBody.scale.set(0.82 + 0.18 * s, 0.9 + 0.1 * s, sz); B.bagBody.position.z = -(0.006 + 0.04 * sz);
-  }
-  if (!B.held) {
-    B.tip = 0; B.over = 0; B.overBin = null;
-    const live = BODY.ready && CONFIG.body.on && BODY.init && !playerState.dead;
-    B.bagG.visible = live;
-    if (live) { B.bagG.matrix.multiplyMatrices(BODY.M[BB.pelvis], B.bagLocal); B.bagG.matrixWorldNeedsUpdate = true; }
-    return;
-  }
-  // in your hand by the neck: it hangs, yawed with the hand; held over the bin it tips over and pours
-  handPose(B.held, B.hp, B.hq);
-  B.d.set(0, 0, -1).applyQuaternion(B.hq);
-  const yaw = Math.atan2(-B.d.x, -B.d.z);
-  B.v.copy(B.hp); B.v.y -= 0.1;
-  const bin = brassSum(B.bag) ? brassBinUnder(B.v) : null;
-  B.over = bin ? B.over + dt : 0; B.overBin = bin;
-  B.tip += ((B.over > 0.35 ? 2.4 : 0) - B.tip) * (1 - Math.exp(-dt / 0.12));
-  if (bin && B.tip > 1.6 && !B.pour) brassPourStart(bin, B.held);
-  B.q.setFromEuler(B.e.set(-B.tip, yaw, 0, 'YXZ'));
-  B.m.compose(B.hp, B.q, B.s.set(1, 1, 1)).multiply(B.m2.makeTranslation(-B.neck.x, -B.neck.y, -B.neck.z));
-  B.bagG.matrix.copy(B.m); B.bagG.matrixWorldNeedsUpdate = true; B.bagG.visible = true;
-}
 
 // --- the brass bin (safe room) ---
 function brassBinKit() {
@@ -16825,7 +16611,6 @@ function brassHeapVol(pk) {                                          // m3 under
   for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) v += brassHeapH(-ix + (i + 0.5) * dx, -iz + (j + 0.5) * dz, pk);
   return v * dx * dz;
 }
-const brassBinCap = () => { brassHeapGeo(); return 4 * BRASS.heapIx * BRASS.heapIz * BRASS_BIN.hMax * 1e6; };   // cm3
 function brassHeapPeak(V) {
   if (V <= 0) return 0;
   brassHeapGeo();
@@ -16895,58 +16680,6 @@ function brassBinFill() {
   }
   for (const b of B.bins) if (b.tops) b.tops.forEach((A, c) => { for (const im of A) { im.count = cnt[c]; im.instanceMatrix.needsUpdate = true; } });
 }
-function brassBinAimed(eye, dir) {                                   // computer: the dot on a bin within reach
-  const Bn = BRASS_BIN, B = BRASS;
-  for (const b of B.bins) {
-    if (!b.room.active || !b.room.group.visible) continue;
-    b.g.updateWorldMatrix(true, false);
-    B.box.min.set(-Bn.L / 2 - 0.04, 0, -Bn.W / 2 - 0.04); B.box.max.set(Bn.L / 2 + 0.04, Bn.skid + Bn.H + 0.08, Bn.W / 2 + 0.04);
-    B.box.applyMatrix4(b.g.matrixWorld);
-    B.ray.set(eye, dir);
-    if (B.ray.intersectBox(B.box, B.v2) && B.v2.distanceTo(eye) < CONFIG.physics.deskReach) return b;
-  }
-  return null;
-}
-// Pouring: the bag into the bin at about the whole bag in 2.2 s (a trickle at first); stops when the bag is empty or the bin full.
-function brassPourStart(bin, hand) {
-  const n = brassSum(BRASS.bag);
-  if (!n) { if (!hand) toast('The brass bag is empty. Pick up spent cases first (E with the dot on them)'); return; }
-  if (brassVol(BRASS.bin) + 2.5 > brassBinCap()) { if (!hand) toast('The brass bin is full. Sell it at the GUNSMITH computer'); return; }
-  BRASS.pour = { bin, hand, n0: n, t: 0, rate: Math.max(60, n / 2.2), snd: 0, full: false };
-  BRASS.pourAcc = 0; BRASS.sndT = 0;
-  brassRattle(Math.min(n, 30), 0);
-}
-function brassPourTick(dt) {
-  const B = BRASS, R = B.pour;
-  if (!R) return;
-  if (!R.bin.room.active || (R.hand && (B.held !== R.hand || B.tip < 1.4 || B.overBin !== R.bin))) { brassPourEnd(); return; }
-  R.t += dt; B.pourAcc += R.rate * dt * Math.min(1, R.t / 0.25);
-  const cap = brassBinCap();
-  let vol = brassVol(B.bin), moved = 0;
-  while (B.pourAcc >= 1) {
-    const n = brassSum(B.bag);
-    if (!n) break;
-    let u = Math.random() * n, c = 0;
-    while (c < 5 && u >= B.bag[c]) { u -= B.bag[c]; c++; }
-    if (vol + BRASS_CAL[c].bulk > cap) { R.full = true; break; }
-    B.bag[c]--; B.bin[c]++; B.pourAcc--; moved++; vol += BRASS_CAL[c].bulk;
-  }
-  if (moved) { R.snd += moved; B.binDirty = true; }
-  B.sndT -= dt;
-  if (B.sndT <= 0 && R.snd) { B.sndT = 0.07; brassPourSfx(R, R.snd); R.snd = 0; }
-  if (R.hand && moved) pulseSoft(R.hand, 0.12, 20);
-  if (!brassSum(B.bag) || R.full) brassPourEnd();
-}
-function brassPourEnd() {
-  const R = BRASS.pour;
-  BRASS.pour = null;
-  if (!R) return;
-  const moved = R.n0 - brassSum(BRASS.bag), b = brassSum(BRASS.bin);
-  if (moved) brassChanged();
-  if (R.full) toast('The brass bin is full. Sell it at the GUNSMITH computer');
-  else if (moved && !R.hand) toast(`Emptied ${moved} case${moved === 1 ? '' : 's'} into the brass bin: ${b} in it, ${brassMoney(b)} at the GUNSMITH`);
-  BRASS.binDirty = true;
-}
 // The store's SELL BRASS: the whole bin at CONFIG.brass.price a case; part cents carry over to the next sale.
 function brassSell() {
   const n = brassSum(BRASS.bin);
@@ -17004,22 +16737,8 @@ function brassTermDraw() {                                          // the termi
 function brassTick(dt) {
   const B = BRASS;
   if (!B.on) return;
-  brassBagTick(dt);
   B.saveT = (B.saveT || 0) - dt;
   if (B.autoSave && B.saveT <= 0) { B.autoSave = false; B.saveT = 2; brassChanged(); }
-  B.scoop.clear();
-  for (const [hand, s] of B.scoop) {
-    if (!renderer.xr.isPresenting || hand.prop) { B.scoop.delete(hand); continue; }
-    handPose(hand, B.hp, B.hq);
-    const sp = dt > 0 ? B.hp.distanceTo(s.last) / dt : 0;
-    s.last.copy(B.hp);
-    if (s.cool > 0) { s.cool -= dt; continue; }
-    if (s.n >= CONFIG.brass.scoop || sp < 0.15) continue;           // a still pinch keeps its one
-    const r = brassCollectAt(B.hp, 0.075, CONFIG.brass.scoop - s.n, hand);
-    s.n += r.n;
-    if (r.full) s.n = CONFIG.brass.scoop; else if (r.hot && !r.n) s.cool = 0.5;
-  }
-  brassPourTick(dt);
   if (B.dirty.size) for (const r of B.dirty) if (!r.active || brassBuild(r)) B.dirty.delete(r);
   B.binT -= dt;
   if (B.binDirty && B.binT <= 0) { B.binT = 0.12; brassBinFill(); }
@@ -19015,7 +18734,7 @@ function wbAttRelease(p) {
   p.root.updateMatrixWorld(true);
   if (g && !muzIsDev(it) && railDevOf(it)) { const r = railBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 112: the next free rail spot
   if (g && muzIsDev(it)) { if (muzBenchFit(g, p, 0.09)) return true; }   // step 103: onto the chain's front end
-  else if (g && it.awm && g.type === 'awp' && AWMA.ready) { const r = awmBenchFit(g, p, AWMA.reach); if (r !== null) return r; }   // other guns: the generic snap below   // step 113: its place on the AWM
+  else if (g && it.awm && AWMA.ready && (g.type === 'awp' || it.awm === 'kf' || it.awm === 'shade')) { const r = awmBenchFit(g, p, AWMA.reach); if (r !== null) return r; }   // other guns: the generic snap below   // step 113: its place on the AWM
   else if (g && g.type === 'akmn' && AKMA.ready) { const r = akmBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 102: its rail on the AKM
   else if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 100: its own place on the Glock
   else if (g && g.type === 'm1911' && M1911A.ready) { const r = m19BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 108: the 1911's plate / rail
@@ -19093,8 +18812,8 @@ function wbSnap(g, p) {
  * g.wr.eye (desktop ADS), the scope picture (ACOG desc with this gun's objective, the AKM 2x's own picture). Taken off: the
  * gun's own line again (its own refresh, or what it had before). */
 const OPT_AK = new Set(['akdot', 'akholo', 'akx2']), _osB = new THREE.Box3(), _osV = new THREE.Vector3();
-function optIs(it) { return !!it && (it.sub === 'dot' || OPT_AK.has(it.akKey) || (it.sub === 'm4part' && (it.part === 'dot' || it.part === 'holo' || it.part === 'acog'))); }
-function optOwn(g, it) { return !it.snapped && ((it.sub === 'dot' && (g.type === 'g17' || g.type === 'm1911')) || (it.akKey && g.type === 'akmn') || (it.sub === 'm4part' && g.type === 'm4a1s')); }
+function optIs(it) { return !!it && (it.awm === 'scope' || it.awm === 's10' || it.sub === 'dot' || OPT_AK.has(it.akKey) || (it.sub === 'm4part' && (it.part === 'dot' || it.part === 'holo' || it.part === 'acog'))); }
+function optOwn(g, it) { return !it.snapped && ((it.awm && g.type === 'awp') || (it.sub === 'dot' && (g.type === 'g17' || g.type === 'm1911')) || (it.akKey && g.type === 'akmn') || (it.sub === 'm4part' && g.type === 'm4a1s')); }
 function optAxisMesh(it) { return it.eyepiece || it.reticle || it.pip || it.glass || null; }
 // The optic's axis point in the gun's design space (g.model), or null.
 function optAxis(g, p, out) {
@@ -19226,9 +18945,13 @@ function optSight(g, own) {
   if (!g._optOver) g._optOver = { y: g.sightY ?? (d.eye ? d.eye[1] : 0), eye: g.wr && g.wr.eye, scope: P.scope, lens: P.scopeLens };
   const A = optAxis(g, p, _osV), it = p.item;
   g.sightY = A.y; g.sightX = A.x;
-  const ez = d.eye ? d.eye[2] : A.z + 0.3;
+  const rel = it.scopeDesc ? it.scopeDesc.relief : it.part === 'acog' ? M4_ACOG.relief : it.akKey === 'akx2' ? 0.065 : null;
+  const ez = rel !== null ? A.z + rel : d.eye ? d.eye[2] : A.z + 0.3;   // a scope: its eye relief behind the eyepiece
   g.wr = Object.assign({}, g.wr, { eye: new THREE.Vector3(A.x - pm[0], A.y - pm[1], ez - pm[2]) });
-  if (it.part === 'acog' && it.eyepiece && M4A.ready) {
+  if (it.scopeDesc && it.eyepiece) {                               // the AWM's 3-25x / 10x on another gun: its picture, objective in this gun's frame
+    const ob = g.model.worldToLocal(it.obL.clone().applyMatrix4(p.root.matrixWorld));
+    P.scopeLens = it.eyepiece; P.scope = g._acogDesc = Object.assign({}, it.scopeDesc, { ob });
+  } else if (it.part === 'acog' && it.eyepiece && M4A.ready) {
     const ob = g.model.worldToLocal(new THREE.Vector3(0, M4_ACOG.h, M4_ACOG.ob).applyMatrix4(p.root.matrixWorld));   // its objective (item frame as on the M4: origin on the rail top)
     g._acogDesc = Object.assign({}, m4AcogDesc(), { ob });
     P.scopeLens = it.eyepiece; P.scope = g._acogDesc;
@@ -19340,7 +19063,7 @@ function wbDeskAtt(p) {
     if (muzBenchFit(g, p, 0)) toast(`${it.label} threaded on (${muzChain(g).length} of ${MUZ.max}). Click it again to take it off, B to lock`);
     return;
   }
-  if (it.awm && g.type === 'awp' && AWMA.ready) {                 // step 113: each part to its place on the AWM (other guns: generic snap)
+  if (it.awm && AWMA.ready && (g.type === 'awp' || it.awm === 'kf' || it.awm === 'shade')) {   // step 113: each part to its place on the AWM (other guns: generic snap)
     wbUnhook(it);
     const r = awmBenchFit(g, p, 0);
     if (r === true) { toast(`${it.label} on. Click it again to take it off, B to lock`); return; }
@@ -21357,7 +21080,6 @@ function vmhSolveAll(B, g) {
  * results for the default scale (same code, solved offline); another scale is solved here once per gun type. */
 const VMH_FIT98 = {
   akmn: { s: 0.9, R: [-0.88921, 0.03083, 0.13549, 0, 0.07319, 0.84989, 0.28692, 0, -0.11812, 0.29449, -0.84222, 0, -0.00309, -0.03273, -0.00474, 1], L: [-0.8743, 0.17805, 0.11787, 0, 0.19113, 0.87407, 0.09735, 0, -0.09522, 0.11961, -0.88692, 0, 0.00616, -0.06526, -0.03888, 1] },
-  m4a4: { s: 0.9, R: [-0.89657, 0.0362, 0.06968, 0, 0.03909, 0.89842, 0.03622, 0, -0.06811, 0.03911, -0.89657, 0, -0.00214, -0.03507, 0.00492, 1], L: [-0.89927, 0.03303, -0.01518, 0, 0.03295, 0.89938, 0.00481, 0, 0.01534, 0.00426, -0.89986, 0, -0.00751, -0.04065, 0.01967, 1] },
   m4a1s: { s: 0.9, R: [-0.89785, -0.05693, 0.02481, 0, -0.05836, 0.89641, -0.05503, 0, -0.02124, -0.0565, -0.89798, 0, 0.00331, -0.02517, 0.00306, 1], L: [-0.89225, -0.02859, 0.11433, 0, -0.0454, 0.88912, -0.13195, 0, -0.10875, -0.13659, -0.8829, 0, 0.04197, 0.01939, 0.00421, 1] },
   g17: { s: 0.9, R: [-0.89547, -0.06849, 0.0587, 0, -0.07532, 0.89001, -0.11051, 0, -0.04964, -0.11486, -0.89126, 0, 0.0115, -0.04071, 0.14358, 1], L: null },
   m1911: { s: 0.9, R: [-0.89937, -0.02985, 0.01544, 0, -0.02886, 0.89786, 0.05482, 0, -0.01722, 0.05428, -0.89819, 0, 0.00605, -0.06203, 0.1252, 1], L: null },
@@ -28261,7 +27983,6 @@ const WS_GUNS = {
     factory: { optic: 'no optic (rail and rings)', muzzle: 'muzzle brake', bipod: 'none', stock: 'folding stock, fixed comb', mag: '5-round magazine', sling: 'none' } }
 };
 const WS_GUN_ORDER = ['g17', 'm1911', 'akmn', 'rifle', 'awp', 'm4a1s'];  // list order; other bench guns are added after
-const WS_SKIP = ['m4a4', 'k98'];                               // being deleted
 // The 12 stats (docs/ATTACHMENTS.md section 10): [key, label, better (+1 more is better, -1 less is better)]
 const WS_STATS = [['dmg', 'Damage', 1], ['acc', 'Accuracy', 1], ['rec', 'Recoil', -1], ['sway', 'Weapon sway', -1], ['ads', 'ADS speed', 1], ['hip', 'Hip-fire accuracy', 1],
   ['rel', 'Reload speed', 1], ['move', 'Movement speed', 1], ['wt', 'Weight', -1], ['snd', 'Sound signature', -1], ['flash', 'Muzzle flash', -1], ['vis', 'Visibility', -1]];
@@ -28467,10 +28188,10 @@ function wsBuild() {
   base.add(merged(arm, M.steel));
   base.add(head);
 }
-// The guns the store lists: WS_GUN_ORDER plus any other gun on the safe room's bench (layout items), minus WS_SKIP.
+// The guns the store lists: WS_GUN_ORDER plus any other gun on the safe room's bench (layout items).
 function wsGunList(room) {
   const out = WORKSHOP.guns; out.length = 0;
-  const add = (k) => { if (k && WEAPON_DEFS[k] && !WS_SKIP.includes(k) && !out.includes(k)) out.push(k); };
+  const add = (k) => { if (k && WEAPON_DEFS[k] && !out.includes(k)) out.push(k); };
   for (const k of WS_GUN_ORDER) add(k);
   for (const s of (room && room.layout && room.layout.items) || []) if (s.type && !s.type.startsWith('mag')) add(s.type);
   if (WORKSHOP.sel !== 'supplies' && !out.includes(WORKSHOP.sel)) WORKSHOP.sel = out[0] || 'supplies';
@@ -38225,11 +37946,10 @@ for (let i = 0; i < 2; i++) {
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
     if (d) { grabDoor(hand, d); return; }
     if (benchLampGrip(hand)) return;                                 // the lamp over the gunsmith bench: grip its head
-    if (brassGrab(hand)) return;                                     // step 116: the brass bag off your hip, spent cases off the floor
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { brassRelease(hand); release(hand); releaseDoor(hand); };   // step 116: the bag back on your hip
+  const squeezeEnd = () => { release(hand); releaseDoor(hand); };   // step 116: the bag back on your hip
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
@@ -40985,28 +40705,6 @@ function g17Sfx(kind, pos) {
 }
 
 /* --- fit gaps (dev): the drawn surfaces, measured --- */
-function g17Gaps(g) {
-  if (!G17A.ready || !g) return null;
-  const out = {}, RC = new THREE.Raycaster(), M = G17A.M, root = g.prop.root;
-  root.updateMatrixWorld(true);
-  const inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), v = new THREE.Vector3(), mm = (x) => Math.round(x * 1e5) / 100;
-  const box = (o) => { const b = new THREE.Box3(); o.updateMatrixWorld(true); o.traverse((c) => { if (!c.isMesh || !c.visible) return; const P = c.geometry.attributes.position, Mx = new THREE.Matrix4().multiplyMatrices(inv, c.matrixWorld); for (let i = 0; i < P.count; i++) b.expandByPoint(v.fromBufferAttribute(P, i).applyMatrix4(Mx)); }); return b; };
-  const meshes = []; g.model.traverse((c) => { if (c.isMesh && c.visible && (c.geometry === EXTG.g17.geo.slide || c.geometry === EXTG.g17.geo.frame)) meshes.push(c); });
-  const ray = (x, y, z, dx, dy, dz) => { const o = new THREE.Vector3(x, y, z).applyMatrix4(g.model.matrixWorld), d = new THREE.Vector3(dx, dy, dz).transformDirection(g.model.matrixWorld); RC.set(o, d); RC.far = 0.05; const h = RC.intersectObjects(meshes, false)[0]; return h ? h.distance : null; };
-  if (g.g17.plate.visible) { const b = box(g.g17.plate); out.plate = { top: mm(b.max.y - M.top), note: 'top over the slide flat (mm); 2.1 mm of it in the cut' }; }
-  if (g.dot) { const b = box(g.dot.prop.root); out.dot = { gap: mm(b.min.y - M.plateTop), rearToRearSight: mm(M.rs.z0 - b.max.z), front: mm(b.min.z) }; }
-  if (g.cover && g.dot) { const a = box(g.cover.prop.root), b = box(g.dot.prop.root); out.cover = { side: mm(a.max.x - b.max.x), top: mm(a.max.y - b.max.y), front: mm(b.min.z - a.min.z) }; }
-  if (g.g17.sights.visible) { const b = box(g.g17.sights); out.sights = { base: mm(b.min.y - M.top), top: mm(b.max.y), winBottom: mm(M.plateTop + G17A.glassBox.min.y), winTop: mm(M.plateTop + G17A.glassBox.max.y) }; }
-  if (g.g17.barrel.visible) { const b = box(g.g17.barrel); out.barrel = { out: mm(M.front - b.min.z), shoulderToSlide: mm(M.front - M.front) }; }
-  for (const k of ['sup', 'comp']) if (g[k]) { const b = box(g[k].prop.root); out[k] = { gap: mm(M.front - b.max.z), len: mm(b.max.z - b.min.z), dia: mm(b.max.x - b.min.x), threadInside: mm(M.thread.len) }; }
-  for (const p of g.atts || []) if (p.item.sub === 'light' || p.item.sub === 'laser') {   // rays up from 2 mm under the mount's top face, along the clamp
-    const o = p.root.position, zs = p.item.sub === 'light' ? [-0.05, -0.032, -0.014] : [-0.03, -0.012, 0.006], up = [];
-    for (const dz of zs) for (const x of [-0.005, 0, 0.005]) { const d = ray(o.x + x, o.y - 0.002, o.z + dz, 0, 1, 0); if (d !== null) up.push(d - 0.002); }
-    const b = box(p.root);
-    out[p.item.sub] = { gap: up.length ? mm(Math.min(...up)) : null, gapMax: up.length ? mm(Math.max(...up)) : null, rays: up.length, top: mm(b.max.y), rail: mm(o.y) };
-  }
-  return out;
-}
 // The store rows' fx (the old per-part deltas) are derived from the gun's table, so the two can never disagree: each part
 // alone on a bare gun (step 105: any gun with a table; stats = its afxStats).
 function afxDeriveFx(gun, stats) {
@@ -41990,11 +41688,11 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { locksOpen, CHK, chkSay, ch
 if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI, bvSlotOf, bvRows, bvGunPage, bvPick, bvSync, bvAnchors, bvRender, bvLines, bvTick, bvFinger, bvTurn });   // step 114
-if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, RETICLE, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
+if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Sfx, g17VrHeft, reticleTick, RETICLE, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HS, DZ, dzProf, hsRays, hsSpheres, hsSeg, hsBeam, hsHook, hsScan, hsGuns, hsLights, handShadowTick, handShadowFlush, dazzleTick, dazzleRender, dzOwn, dzLux, dzAft });   // step 110
 if (window.__cqcDev) Object.assign(window.__cqcDev, { NVG, NVG_C, nvgTick, nvgGain, nvgGainTarget, nvgNoiseK, nvgPre, nvgPost, nvgRender, nvgFlip, nvgTake, nvgBuy, nvgModeHold, nvgSetIr, nvgSetPhos, nvgBeam, nvgLaserLook, nvgLaserHide, nvgIr, nvgKit, nvgModel });   // step 118
-if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
-if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Gaps, g17Sfx, g17VrHeft, reticleTick, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
+if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Sfx, g17VrHeft, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
+if (window.__cqcDev) Object.assign(window.__cqcDev, { G17A, G17_PARTS, GLOCK_FX, AFX0, g17Measure, g17DeriveFx, g17Kit, g17Hw, g17MakeAtt, g17Pose, g17BenchFit, g17Refuse, g17Refresh, g17SyncGun, g17ApplyStore, g17StoreChanged, g17FromGun, g17Stats, g17StoreIds, g17GunIds, g17FxOf, g17Sfx, g17VrHeft, reticleTick, g17Precompile, wbTable, WB_G17, wbDeskAtt, wbMakeAtt, wbUnfreeze, wsDrawStats, holdPose, fireGun, deskGunPose, nightCanSee, vmReloadTask, reloadMagTask, wsBaseStats, wsActive, setKinematic });   // step 100
 /* ===========================================================================
  *  STEP 103 — SCREW-ON MUZZLE CHAINS (?muzchain=off = one device as before)
  *  Any muzzle device (pistol cans MD3 / SB100, the rifle can, the compensator, the new barrel extension) threads
@@ -42736,15 +42434,6 @@ function akmRefuse(g, it) {
   return s === 'optic' ? `One optic on the mount: take the ${on.item.label} off first` : s === 'grip' ? `One part under the handguard: take the ${on.item.label} off first`
     : `That rail is taken: the ${on.item.label} is on it`;
 }
-// Step 103's chain, first device: the AKM's collar takes 5/8x24 rifle devices; AKM devices are for the AKM.
-function akmMuzRefuse(g, it, chain) {
-  if (chain.length) return null;                                    // in front of another device: the adapters
-  if (g.type !== 'akmn') return it.akKey ? 'Made for the AKM: 5/8x24, on its adapter collar' : null;
-  if (!AKMA.ready) return null;
-  if (!akmOwned('akmn.muzzle')) return 'Needs the muzzle interface: the adapter collar (gunsmith store)';
-  if (!it.akKey && !it.big) return 'Wrong thread: the AKM\'s adapter takes 5/8x24 rifle devices';
-  return null;
-}
 const _akP = new THREE.Vector3(), _akQ = new THREE.Quaternion();
 // Bench: a part let go of (VR, reach) or clicked (computer, 0) by the clamped AKM. null = not a rail part, true = on, false = not.
 function akmBenchFit(g, p, reach) {
@@ -42901,43 +42590,6 @@ function akmPipTick() {
 }
 
 /* --- fit gaps (dev, mm): rays from each measured surface of the AKM (or a part's contact face) to what sits on it --- */
-function akmGaps(g) {
-  if (!AKMA.ready || !g || g.type !== 'akmn') return null;
-  const H = akmHw(g), M = AKMA.M, out = {}, RC = new THREE.Raycaster(), mm = (x) => (x === null ? null : Math.round(x * 1e5) / 100);
-  g.prop.root.updateMatrixWorld(true);
-  const W = g.model.matrixWorld, mine = new Set([H.rails, H.collar, H.newStock]), own = [], kit = [];
-  g.model.traverse((o) => {
-    if (!o.isMesh || !o.visible) return;
-    let q = o; while (q.parent && q.parent !== g.model) q = q.parent;
-    if (!q.userData.att) (mine.has(q) ? kit : own).push(o);       // the parts are measured from their own origin
-  });
-  // from p (a measured surface, model space) along d to the first surface in list: the gap
-  const ray = (list, p, d) => {
-    const D = new THREE.Vector3(...d);
-    RC.set(new THREE.Vector3(...p).addScaledVector(D, -0.002).applyMatrix4(W), D.clone().transformDirection(W)); RC.far = 0.03;
-    const h = RC.intersectObjects(list, false)[0];
-    return h ? h.distance - 0.002 : null;
-  };
-  if (H.kit) Object.assign(out, {
-    handguardRear: mm(ray(own, [0.0205, -0.012, M.hgRear], [0, 0, 1])),                  // to the receiver (the wood had the same)
-    handguardFront: mm(ray(own, [-0.021, -0.005, M.hgFront], [0, 0, -1])),               // to the band
-    mountClamp: mm(ray(kit, [M.sr.x, (M.sr.y0 + M.sr.y1) / 2, (M.sr.z0 + M.sr.z1) / 2], [-1, 0, 0])),   // the side rail's flat to the clamp
-    mountOverCover: mm(ray(kit, [0, M.dcTop, -0.05], [0, 1, 0])) });                     // 2.5 mm by design
-  if (H.collar.visible) out.collar = mm(ray(kit, [0, 0.0095, M.fsFace], [0, 0, -1]));    // the front sight block to the collar
-  if (H.stock) out.stockAdapter = mm(ray(kit, [0, (M.recY0 + M.recY1) / 2, M.recRear], [0, 0, -1]));   // the receiver's rear to the adapter
-  const chain = muzChain(g);
-  if (chain.length) out.firstDevice = mm(muzBase(g, new THREE.Vector3()).distanceTo(_mzV.setFromMatrixPosition(chain[0].root.matrixWorld).applyMatrix4(_mzI.copy(g.prop.root.matrixWorld).invert())));
-  const inv = new THREE.Matrix4().copy(W).invert();
-  for (const p of g.atts || []) {                                    // a rail part's origin is its contact face: to the rail under it
-    const s = akmSlot(p.item);
-    if (s === 'muzzle') continue;
-    p.root.updateMatrixWorld(true);
-    const o = new THREE.Vector3().setFromMatrixPosition(p.root.matrixWorld).applyMatrix4(inv);
-    const into = new THREE.Vector3(0, s === 'optic' ? -1 : 1, 0).applyQuaternion(p.root.quaternion);
-    out[p.item.akKey || p.item.sub] = mm(ray(kit, o.toArray(), into.toArray()));
-  }
-  return out;
-}
 // The store rows' fx (shown where the store cannot ask AKM_FX) derived from it: each row alone on a Standard AKM.
 const akmDeriveFx = () => afxDeriveFx('akmn', akmStats);
 akmDeriveFx();
@@ -42945,7 +42597,7 @@ if (EXT.mag.akmn) WORKSHOP.fitted.add('akmn.mag40'); else WORKSHOP.fitted.delete
 muzLoad();                                                          // the AKM's kinds are known now
 if (!MUZ.saved.akmn) for (const id of Object.keys(AKM_MUZ)) if (WORKSHOP.fitted.has(id)) { MUZ.saved.akmn = [AKM_MUZ[id]]; break; }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { AKMA, AKM_DIM, AKM_ITEM, AKM_FX, AKM_MUZ, WB_AKM, WS_REAL, wsReal, wsRealOn, wsWanted, akmStats, akmMeasure, akmKit, akmHw,
-  akmMakeAtt, akmLocal, akmPose, akmRefuse, akmMuzRefuse, akmBenchFit, akmGunIds, akmRefresh, akmSyncGun, akmFromGun, akmStoreChanged, akmTick, akmGaps, akmDeriveFx });   // step 102
+  akmMakeAtt, akmLocal, akmPose, akmRefuse, akmBenchFit, akmGunIds, akmRefresh, akmSyncGun, akmFromGun, akmStoreChanged, akmTick, akmDeriveFx });   // step 102
 
 /* ===========================================================================
  *  STEP 108 — M1911 ATTACHMENTS, MADE REAL (?m1911att=off)
@@ -43393,16 +43045,6 @@ function m19Base(g, out) {
 }
 // Muzzle devices on a 1911 ride its barrel, as on a real one (the barrel runs back 3.5 mm and tilts with the slide).
 function m19FreezeParent(g, it) { return M1911A.ready && g.type === 'm1911' && muzIsDev(it) && g.parts.barrel ? g.parts.barrel : null; }
-// The chain's refusals for the .45: what may thread onto the barrel or the device in front. null = fine.
-function m19MuzRefuse(g, it, chain) {
-  if (!M1911A.ready) return null;
-  if (g.type === 'm1911') {
-    if (!m19Owned('m1911.thread')) return 'Needs the .578x28 threaded barrel (gunsmith store)';
-    if (!it.k45) return it.big ? 'A 5.56 can on a .45: the bullet would strike its baffles' : 'A 9 mm part on a .45: its bore is too small for the bullet';
-    return null;
-  }
-  return it.k45 && !chain.length ? 'A .45 part on a .578x28 thread: it goes on the M1911' : null;
-}
 
 /* --- where each part goes on a 1911 (dot / cover on the plate, light / laser on the rail) --- */
 function m19Local(sub, out) {
@@ -43605,28 +43247,13 @@ function m19Sfx(kind, pos) {
 }
 
 /* --- fit gaps (dev): the parts on a 1911, measured on the drawn surfaces (mm) --- */
-function m19Gaps(g) {
-  if (!M1911A.ready || !g || !g.m19hw) return null;
-  const M = M1911A.M, out = {}, v = new THREE.Vector3(), mm = (x) => Math.round(x * 1e5) / 100;
-  g.prop.root.updateMatrixWorld(true);
-  const inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert();
-  const box = (o) => { const b = new THREE.Box3(); o.traverse((c) => { if (!c.isMesh || !c.visible) return; const P = c.geometry.attributes.position, Mx = new THREE.Matrix4().multiplyMatrices(inv, c.matrixWorld); const ix = c.geometry.index; const n = ix ? ix.count : P.count; for (let k = 0; k < n; k++) b.expandByPoint(v.fromBufferAttribute(P, ix ? ix.getX(k) : k).applyMatrix4(Mx)); }); return b; };
-  if (g.m19hw.plate.visible) { const b = box(g.m19hw.plate); out.plate = { overCrown: mm(b.max.y - M.top), wallsInto: mm(M.crownAt(M.plateHW) - b.min.y), aheadOfRearSight: mm(M.rs.z0 - b.max.z) }; }
-  if (g.dot) { const b = box(g.dot.prop.root); out.dot = { onPlate: mm(b.min.y - M.plateTop), rearToRearSight: mm(M.rs.z0 - b.max.z) }; }
-  if (g.m19hw.barrel.visible) { const b = box(g.m19hw.barrel); out.thread = { out: mm(M.bar.front - b.min.z), shoulder: mm(M.front) }; }
-  const ch = muzChain(g);
-  if (ch.length) { const b = box(ch[0].root); out.muzzle = { gap: mm(M.front - b.max.z), len: mm(b.max.z - b.min.z), dia: mm(b.max.x - b.min.x), n: ch.length }; }
-  if (g.m19hw.rail.visible) { const b = box(g.m19hw.rail); out.rail = { top: mm(b.max.y), dustCover: mm(M.dc.bottom), mountFace: mm(M.railY), front: mm(b.min.z), rear: mm(b.max.z) }; }
-  for (const p of g.atts || []) if (p.item.sub === 'light' || p.item.sub === 'laser') { const b = box(p.root); out[p.item.sub] = { mount: mm(p.root.position.y), rear: mm(b.max.z), bottom: mm(b.min.y) }; }
-  return out;
-}
 // The store rows' fx are derived from M1911_FX (each part alone on a bare 1911), so the rows and the gun agree.
 const m19DeriveFx = () => afxDeriveFx('m1911', m19Stats);
 m19DeriveFx();
 m19MagApply(false);
 if (window.__cqcDev) Object.assign(window.__cqcDev, { M1911A, M1911_FX, M19_PARTS, M19_MUZ, M19_GRIPS, M19_PANEL, M19_MAG, WB_M19, m19Measure, m19Kit, m19Hw, m19FxOf, m19Stats, m19StoreIds, m19GunIds,
-  m19PartId, m19MakeAtt, m19BenchFit, m19Refuse, m19MuzRefuse, m19Refresh, m19SyncGun, m19FromGun, m19StoreChanged, m19ApplyStore, m19MagApply, m19MagDress, m19PanelGeo,
-  m19PanelPixels, m19PanelTex, m19PanelMat, m19Gaps, m19Sfx, m19Base, m19DeriveFx });   // step 108
+  m19PartId, m19MakeAtt, m19BenchFit, m19Refuse, m19Refresh, m19SyncGun, m19FromGun, m19StoreChanged, m19ApplyStore, m19MagApply, m19MagDress, m19PanelGeo,
+  m19PanelPixels, m19PanelTex, m19PanelMat, m19Sfx, m19Base, m19DeriveFx });   // step 108
 
 /* ===========================================================================
  *  STEP 105 — M4A1-S ATTACHMENTS (?m4att=off = the step 60 gun, store page "attachments coming")
@@ -43670,7 +43297,6 @@ const M4_VFG_DROP = 0.0568;                                           // grip po
 const M4_ACOG = { mag: 4, afov: 36, relief: 0.038, box: 0.026,   // wider field, forgiving eye box
   eye: 0.0445, ob: -0.0985, lens: 0.0118, h: 0.031 };
 const M4_BUIS = { down: -Math.PI / 2 };                                // the flip-up sight folds forward flat
-const M4_NOT_HERE = 'Made for the M4A1-S: its rail, its quad rail, its buffer tube';
 // Store id -> bench part (sub, part, label, kg; hold: 'long' = a fist round its long axis, 'grip' = round a vertical grip;
 // lie: rests on its side on the table). Light / laser are the bench's own (wbMakeAtt).
 const M4_PARTS = {
@@ -44302,9 +43928,10 @@ const AWM_MAG = { cap: 10, cap0: 5, ext: 0.045, m: 0.3 };
 const AWM_COV = { front: -1.83, rear: 2.0 };                           // the lids, open (rad about their hinges)
 const AWM_CHEEK = { box: 1.35 };
 const AWM_GLINT = { reach: 1.35, reachShade: 1.2, cos: Math.cos(0.105), cosShade: Math.cos(0.061), torch: 1.6 };
-const AWM_NOT_HERE = 'Made for the AWM: its scope, its fore-end rail, its stock module, its brake';
 // Store id -> bench part (part, sub, label, kg)
 const AWM_PARTS = {
+  'awp.scope': { part: 'scope', sub: 'awm', label: '3-25x56 scope', kg: 0.95 },   // removable: the factory scope as a part (any gun)
+  'awp.s10': { part: 's10', sub: 'awm', label: '10x42 scope', kg: 0.62 },
   'awp.kf': { part: 'kf', sub: 'awm', label: 'scope killflash', kg: 0.03 },
   'awp.shade': { part: 'shade', sub: 'awm', label: 'scope sunshade', kg: 0.07 },
   'awp.bipod': { part: 'bipod', sub: 'awm', label: 'bipod', kg: 0.36 },
@@ -44312,13 +43939,13 @@ const AWM_PARTS = {
   'awp.sup': { part: 'can', sub: 'sup', label: '.338 suppressor', kg: 0.72 }
 };
 const AWM_PART_ID = Object.fromEntries(Object.entries(AWM_PARTS).map(([id, P]) => [P.part, id]));
-const AWM_BENCH = ['awp.shade', 'awp.kf', 'awp.bipod', 'awp.cheek'];   // shade before the killflash: its seat
+const AWM_BENCH = ['awp.scope', 'awp.s10', 'awp.shade', 'awp.kf', 'awp.bipod', 'awp.cheek'];   // the scope before its shade / killflash   // shade before the killflash: its seat
 const AWM_MUZ = { 'awp.sup': 'k338' };
 const AWM_SND = { optic: 'thread', bipod: 'latch', stock: 'rail', muzzle: 'thread', sling: 'cover', mag: 'off', hardware: 'rail' };
 // Bench: a row on the front of the bench left of the gunsmith's (the M4's rows behind it): [sub, big, x, z, yaw, variant, store id]
 const WB_AWM = [['awm', false, 0.72, 2.44, Math.PI / 2, 'awm:bipod', 'awp.bipod'], ['awm', false, 0.96, 2.44, Math.PI / 2, 'awm:cheek', 'awp.cheek'],
   ['awm', false, 1.14, 2.44, Math.PI / 2, 'awm:kf', 'awp.kf'], ['awm', false, 1.3, 2.44, Math.PI / 2, 'awm:shade', 'awp.shade'],
-  ['sup', true, 1.62, 2.44, Math.PI / 2, 'awm:can', 'awp.sup']];
+  ['sup', true, 1.62, 2.44, Math.PI / 2, 'awm:can', 'awp.sup'], ['awm', false, 1.45, 2.34, 0, 'awm:scope', 'awp.scope'], ['awm', false, 0.9, 2.34, 0, 'awm:s10', 'awp.s10']];
 /* AWM_FX: what each part does on the AWM (GLOCK_FX's terms). The bare rifle (rail and rings, brake, 5 rounds) is the
    base; its identity (precision, stability, identification) stays: optics buy accuracy with aim time and glint,
    the bipod and cheek riser buy stability (the bipod only rested: AWM_REST), the can trades length and weight. */
@@ -44345,7 +43972,7 @@ const _awP = new THREE.Vector3(), _awQ = new THREE.Quaternion(), _awV = new THRE
 const awmStats = (ids, out) => afxStats('awp', AWM_FX, ids, out);
 const awmOwned = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
 const awmWant = (id) => wsWanted(id);
-const awmOptic = () => (awmWant('awp.s10') ? 's10' : awmWant('awp.scope') ? 'scope' : null);   // the store's optic slot (no bench optic)
+const awmOptic = (g, skip = null) => (awmOn(g, 's10', skip) ? 's10' : awmOn(g, 'scope', skip) ? 'scope' : null);   // the scope part on this gun (removable)
 const awmDrop = (ext) => (AWM_BIP.upper + ext + AWM_BIP.foot) * Math.cos(AWM_BIP.splay);   // hinge to feet, deployed
 function awmPartId(it) { return it && it.kind === 'att' && it.awm ? AWM_PART_ID[it.awm] || null : null; }
 
@@ -44495,6 +44122,12 @@ function awmTpl(name) {
   } else if (name === 'fcov') { addSpecParts(g, AWM_SPEC.fcovRing()); sub(AWM_SPEC.fcovLid(), new THREE.Vector3(0, AWM_KF.rOut + 0.0033, -0.0035), new THREE.Euler(AWM_COV.front, 0, 0)); }
   else if (name === 'rcov') { addSpecParts(g, AWM_SPEC.rcovRing()); sub(AWM_SPEC.rcovLid(), new THREE.Vector3(-(AWMA.M.eyeR + 0.0034), 0, 0.0035), new THREE.Euler(0, AWM_COV.rear, 0)); }
   else if (name === 'sling') { const m = new THREE.Mesh(awmSlingGeo(), gunMat('rubber')); m.castShadow = true; m.receiveShadow = true; g.add(m); addSpecParts(g, AWM_SPEC.swivels()); }
+  else if (name === 'scope') {                                       // the factory 3-25x: the AWP's own scope meshes + its eyepiece picture
+    const X = X64.awp;
+    for (const o of X.parts.body || []) if (o.g === AWMA.scopeGeo) { const m = new THREE.Mesh(o.g, o.m || gunMat('steel')); m.castShadow = true; m.receiveShadow = true; g.add(m); }
+    for (const o of X.parts.glass || []) { const m = new THREE.Mesh(o.g, o.m || gunMat('steel')); m.renderOrder = 2; g.add(m); }
+    if (scopeSetup()) { const m = new THREE.Mesh(new THREE.CircleGeometry(SCOPE.r * 0.97, 48), SCOPE.mat); m.name = 'awmEyepiece'; m.position.set(SCOPE.oc.x, SCOPE.oc.y, SCOPE.oc.z + 0.0015); m.renderOrder = 3; m.castShadow = m.receiveShadow = false; g.add(m); }
+  }
   else addSpecParts(g, AWM_SPEC[name]());
   if (name === 's10') {                                              // the eyepiece: the picture through the scope (SCOPE)
     const o = new THREE.Mesh(new THREE.CircleGeometry(AWM_S10.lens, 40), awmS10Desc().mat);
@@ -44552,6 +44185,10 @@ function awmMakeAtt(part) {
   const item = { kind: 'att', type: K.sub === 'sup' ? 'sup' : part, sub: K.sub, part, awm: part, label: K.label, hook: null, stuck: null, gun: null, lamp: null,
     rest: I.rest, tableC: I.c, hold: I.hold };
   if (part === 'can') Object.assign(item, { big: true, muz: 'k338', len: AWM_LEN.can, flat: true });   // a muzzle chain device (it.muz)
+  if (part === 'scope' || part === 's10') {                           // its picture on any gun (optSight): eyepiece, description, objective in its frame
+    const D = part === 'scope' ? SCOPE.awp : awmS10Desc();
+    Object.assign(item, { eyepiece: g.getObjectByName('awmEyepiece'), scopeDesc: D, obL: (part === 'scope' ? SCOPE.ob : D.ob).clone(), long: true });
+  }
   if (part === 'bipod') {
     item.legs = ['awmLegL', 'awmLowL', 'awmLegR', 'awmLowR'].map((n) => g.getObjectByName(n));
     item.bip = { dep: 0, ext: 0, want: false, has: false, seen: -9, ys: 0, k: 0, anchor: false, ax: 0, az: 0, shown: 0, shownE: 0 };
@@ -44589,12 +44226,14 @@ const awmHave = (g, id) => (g.atts || []).find((p) => !p.removing && awmPartId(p
 function awmSeat(g, part, out, skip = null) {
   const S = AWMA.S;
   if (part === 'kf') { out.copy(S.obj); if (awmOn(g, 'shade', skip)) out.z -= AWM_LEN.shade; return out; }
+  if (part === 'scope' || part === 's10') return out.set(0, 0, 0);   // built in the AWM's design space
   return out.copy(part === 'shade' ? S.obj : S[part]);
 }
 function awmSeatWorld(g, part, P, Q, skip = null) {
-  g.model.updateWorldMatrix(true, false);
-  awmSeat(g, part, P, skip).applyMatrix4(g.model.matrixWorld);
-  g.model.getWorldQuaternion(Q);
+  const sc = (part === 'kf' || part === 'shade') ? awmOn(g, 'scope', skip) : null, F = sc ? sc.root : g.model;   // on the 3-25x part's own frame (same design space)
+  F.updateWorldMatrix(true, false);
+  awmSeat(g, part, P, skip).applyMatrix4(F.matrixWorld);
+  F.getWorldQuaternion(Q);
   return P;
 }
 function awmAttach(g, id) {
@@ -44615,8 +44254,9 @@ function awmStick(g, p) {
 function awmSyncGun(g) {
   if (!AWMA.ready || !g || g.type !== 'awp' || !g.prop || g.prop.removing || (WB.open && WB.gun === g)) return;
   awmHw(g); AWMA.guns.add(g);
-  for (const id of AWM_BENCH) { const have = awmHave(g, id); if (have && !awmWant(id)) g17Detach(g, have); }
-  for (const id of AWM_BENCH) if (awmWant(id) && !awmHave(g, id)) awmAttach(g, id);
+  for (const id of AWM_BENCH) { const have = awmHave(g, id); if (have && (!awmWant(id) || (id === 'awp.scope' && awmWant('awp.s10')))) g17Detach(g, have); }
+  if (!awmWant('awp.scope') || awmWant('awp.s10')) for (const id of ['awp.kf', 'awp.shade']) { const have = awmHave(g, id); if (have) g17Detach(g, have); }   // they ride the 3-25x
+  for (const id of AWM_BENCH) if (awmWant(id) && !awmHave(g, id) && !(id === 'awp.scope' && awmWant('awp.s10')) && !((id === 'awp.kf' || id === 'awp.shade') && !awmOn(g, 'scope'))) awmAttach(g, id);   // one optic: the 10x wins; shade / killflash only on the 3-25x
   muzSync(g);
   awmRefresh(g);
 }
@@ -44633,20 +44273,21 @@ function awmReseat(g) {
 function awmRefresh(g) { const r = awmRefresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
 function awmRefresh0(g) {
   if (!AWMA.ready || !g || g.type !== 'awp' || !g.prop) return;
-  const A = g.awm || (g.awm = { afx0: null, restK: 0, restApplied: -1 }), H = awmHw(g), M = AWMA.M, d = WEAPON_DEFS.awp, P = g.parts, pm = d.palm, opt = awmOptic();
-  for (const o of H.scope) o.visible = opt === 'scope';
-  if (H.lens) H.lens.visible = opt === 'scope';
-  H.s10.visible = opt === 's10';
+  const A = g.awm || (g.awm = { afx0: null, restK: 0, restApplied: -1 }), H = awmHw(g), M = AWMA.M, d = WEAPON_DEFS.awp, P = g.parts, pm = d.palm, opt = awmOptic(g);
+  for (const o of H.scope) o.visible = false;                       // the factory scope is a part now (awp.scope)
+  if (H.lens) H.lens.visible = false;
+  H.s10.visible = false;
+  const optP = opt ? awmOn(g, opt) : null;
   H.rail.visible = awmOwned('awp.bipodif'); H.mod.visible = awmOwned('awp.stockmod'); H.qd.visible = awmOwned('awp.muzzle'); H.cups.visible = awmOwned('awp.slingpts');
   H.sling.visible = awmWant('awp.sling');
   awmReseat(g);
   const shade = awmOn(g, 'shade'), kf = awmOn(g, 'kf'), cheek = awmOn(g, 'cheek'), bip = awmOn(g, 'bipod');
   H.fcov.visible = H.rcov.visible = opt === 'scope' && awmWant('awp.cover');
   H.fcov.position.set(0, M.axis, M.obj - (shade ? AWM_LEN.shade : 0) - (kf ? AWM_LEN.kf : 0));
-  const D = opt === 'scope' ? A.d25 : opt === 's10' ? A.d10 : null, lens = opt === 'scope' ? H.lens : H.s10Lens;
+  const D = opt === 'scope' ? A.d25 : opt === 's10' ? A.d10 : null, lens = optP ? optP.item.eyepiece : null;
   if (D && lens) { D.box = (opt === 'scope' ? SCOPE.box : AWM_S10.box) * (cheek ? AWM_CHEEK.box : 1); P.scopeLens = lens; P.scope = D; }
   else { delete P.scopeLens; delete P.scope; }
-  g.sightY = opt === 's10' ? AWM_S10.axis : M.axis;
+  g.sightY = opt === 's10' ? AWM_S10.axis : M.axis;                // no optic: another one's line comes from optSight
   const eyeZ = opt === 's10' ? AWM_S10.rear - 0.0038 + AWM_S10.relief : d.eye[2];
   g.wr = Object.assign({}, g.wr, { eye: new THREE.Vector3(-pm[0], g.sightY - pm[1], eyeZ - pm[2]) });
   A.bipod = bip ? bip.item : null; A.kf = !!kf; A.shade = !!shade; A.optic = opt && D && lens ? opt : null;
@@ -44658,7 +44299,7 @@ function awmRefresh0(g) {
 function awmGunIds(g, out) {
   out.clear();
   for (const id of ['awp.mount', 'awp.bipodif', 'awp.stockmod', 'awp.muzzle', 'awp.slingpts']) if (awmOwned(id)) out.add(id);
-  const opt = awmOptic(); if (opt) out.add(opt === 's10' ? 'awp.s10' : 'awp.scope');
+  const opt = awmOptic(g); if (opt) out.add(opt === 's10' ? 'awp.s10' : 'awp.scope');
   if (awmWant('awp.mag10')) out.add('awp.mag10');
   const ch = muzChain(g), add = (p) => { if (p.removing || (muzIsDev(p.item) && p !== ch[0])) return; const id = awmPartId(p.item); if (id) out.add(id); };   // the rest of a chain: muzFx
   for (const p of g.atts || []) add(p);
@@ -44669,9 +44310,10 @@ function awmGunIds(g, out) {
 /* --- the bench vise --- */
 // Can this part go on this AWM now? null = yes, else why not.
 function awmRefuse(g, it) {
-  const part = it.awm, opt = awmOptic(), on = (k) => awmOn(g, k, it);
+  const part = it.awm, opt = awmOptic(g, it), on = (k) => awmOn(g, k, it);
+  if (part === 'scope' || part === 's10') { if (opt || (g.atts || []).some((q) => q.item !== it && optIs(q.item))) return 'One optic on the rail: take the other off first'; return null; }
   if (part === 'kf' || part === 'shade') {
-    if (opt !== 'scope') return 'Fits the 3-25x scope\'s 56 mm objective: fit that scope in the gunsmith store';
+    if (opt !== 'scope') return 'Fits the 3-25x scope\'s 56 mm objective: put that scope on first';
     if (on(part)) return part === 'kf' ? 'There is a killflash on the scope already' : 'There is a sunshade on the scope already';
     if (part === 'shade' && on('kf')) return 'The killflash screws on in front: take it off first';
   }
@@ -44683,7 +44325,9 @@ function awmRefuse(g, it) {
 function awmBenchFit(g, p, reach) {
   const it = p.item;
   if (!it.awm || it.awm === 'can') return null;                       // the can: the muzzle chain
-  if (((it.awm === 'kf' || it.awm === 'shade') && awmOptic() !== 'scope') || (it.awm === 'bipod' && !awmOwned('awp.bipodif')) || (it.awm === 'cheek' && !awmOwned('awp.stockmod'))) return null;   // any-gun fit: generic snap
+  const kfs = it.awm === 'kf' || it.awm === 'shade';
+  if (g.type !== 'awp' && !kfs) return null;                          // scopes / bipod / riser on other guns: the generic snap (seatPart)
+  if ((it.awm === 'bipod' && !awmOwned('awp.bipodif')) || (it.awm === 'cheek' && !awmOwned('awp.stockmod'))) return null;   // any-gun fit: generic snap
   awmSeatWorld(g, it.awm, _awP, _awQ, it);
   if (reach && p.root.position.distanceTo(_awP) > reach) return false;
   const why = awmRefuse(g, it);
@@ -44691,18 +44335,8 @@ function awmBenchFit(g, p, reach) {
   p.root.position.copy(_awP); p.root.quaternion.copy(_awQ); p.root.updateMatrixWorld(true);
   awmStick(g, p);
   g17Sfx(AWM_SND[(WORKSHOP.byId.get(awmPartId(it)) || { cat: 'hardware' }).cat] || 'rail', p.root.position);
-  awmRefresh(g);
+  if (g.type === 'awp') awmRefresh(g); else attRefresh(g);
   return true;
-}
-// The muzzle chain on the AWM: its .338 can only, first and last; a .338 can on nothing else.
-function awmMuzRefuse(g, it, chain) {
-  if (!AWMA.ready) return null;
-  const k338 = it.muz === 'k338';
-  if (g.type !== 'awp') return k338 ? 'Made for the AWM\'s brake: it slides over it and locks on the QD ring' : null;
-  if (chain.length) return 'The .338 can is the last thing on the muzzle: nothing threads on its front';
-  if (!k338) return it.sub === 'sup' ? 'A smaller-bore can on a .338: the bullet would strike its baffles' : 'The AWM\'s brake takes its own .338 can only';
-  if (!awmOwned('awp.muzzle')) return 'Needs the muzzle interface: the QD lock ring behind the brake (gunsmith store)';
-  return null;
 }
 // Root space: the .338 can's rear face on the QD ring (muzBase, when it is the first device).
 function awmBase(g, out) { g.model.updateMatrix(); return out.set(0, 0, AWM_GEO.qd[0]).applyMatrix4(g.model.matrix); }
@@ -44886,7 +44520,7 @@ if (AWMA.on) {
   afxDeriveFx('awp', awmStats);
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { AWMA, AWM_GEO, AWM_PARTS, AWM_FX, AWM_FX_VR, AWM_BIP, AWM_REST, AWM_S10, AWM_SPEC, WB_AWM, awmInit, awmMeasure, awmSeats,
-  awmTpl, awmMakeAtt, awmHw, awmSyncGun, awmRefresh, awmBenchFit, awmRefuse, awmMuzRefuse, awmFromGun, awmStoreChanged, awmStats, awmGunIds, awmMagApply, awmMagDress,
+  awmTpl, awmMakeAtt, awmHw, awmSyncGun, awmRefresh, awmBenchFit, awmRefuse, awmFromGun, awmStoreChanged, awmStats, awmGunIds, awmMagApply, awmMagDress,
   awmTick, awmBipodTick, awmRestPose, awmRestFx, awmLegsSet, awmDrop, awmGlint, awmHoneycomb, awmSlingGeo, awmS10Desc, awmNotchPad });   // step 113
 /* ===========================================================================
  *  STEP 112 — RAILS: STACKED DEVICES, WRAP-AROUND RAILS, THE GLOCK'S STOCK LIGHT  (?rails=off)
@@ -45614,8 +45248,7 @@ function railSyncType(t) {
 if (window.__cqcDev) Object.assign(window.__cqcDev, { RAIL, RAIL_DEV, RAIL_WRAP, RAIL_ROWS, RAIL_PL2_SPOTS, railFaces, railSpots, railCloud, railSection, railCutGeo, railSlotsOf,
   railWrapKit, railRingKit, railPistolKit, railM19Kit, railHw, railBenchFit, railClash, railBump, railMakePl2, railLead, railLasers, railWire, railUnwire, railToggleLight,
   railToggleLaser, railFx, railTick, railSync, railWant, railSaveGun, railSyncType, railZones, railObstacles, railXBox });
-if (window.__cqcDev) Object.assign(window.__cqcDev, { BRASS, BRASS_CAL, BRASS_BIN, BRASS_TYPE, brassCalOf, brassSettle, brassAdd, brassMerge, brassBuild, brassCollectAt, brassGrab, brassRelease,
-  brassDesk, brassUf, brassBinSpawn, brassBinFill, brassHeapPeak, brassHeapVol, brassBinCap, brassPourStart, brassSell, brassSupplies, brassTick, brassVol, brassSum });   // step 116
+if (window.__cqcDev) Object.assign(window.__cqcDev, { BRASS, BRASS_CAL, BRASS_BIN, BRASS_TYPE, brassCalOf, brassSettle, brassAdd, brassMerge, brassBuild, brassUf, brassBinSpawn, brassBinFill, brassHeapPeak, brassHeapVol, brassSell, brassSupplies, brassTick, brassVol, brassSum });   // step 116
 /* ===========================================================================
  *  ATTACHMENTS COLLIDE (doors, walls; ?attclip=off = exactly as before)
  *  The step 30 clip tested a held gun's own box (def.col) and, since step 103, its muzzle chain (g.muzClip); the step 8.1
