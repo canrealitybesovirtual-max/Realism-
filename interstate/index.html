@@ -5379,7 +5379,9 @@ class RoadChunk {
     const net = tr.net;
     for (const [side, base] of [[1, 0], [-1, VERGE_ROWS * VC]]) {
       for (let r = 0; r < rows; r++) {
-        const s = this.s0 + ds * (r - 1); tr.frame(s, F);
+        let s = this.s0 + ds * (r - 1);
+        if (this.tunSpan) { const [ta, tb] = this.tunSpan; if (s > ta && s < tb) s = s - ta < tb - s ? ta : tb; }   // the verge ends at the portal: inside the bore it climbed the hill over the road
+        tr.frame(s, F);
         const dMax = net ? net.vergeLimit(tr, F, side) : Infinity;       // build 1.30: each verge stops at the midline to the next road
         for (let c = 0; c < VC; c++) {
           const ci = side > 0 ? c : VC - 1 - c, d = Math.min(VERGE_D[ci], dMax);
@@ -5899,7 +5901,10 @@ class NetStatics {
     const postGeo = merge([cyl(.08, .08, 4.6, -1.9, 2.3, 0, 8), cyl(.08, .08, 4.6, 1.9, 2.3, 0, 8)]), panel = new THREE.PlaneGeometry(1, 1), back = new THREE.PlaneGeometry(1, 1).rotateY(Math.PI);
     this.geos = [postGeo, panel, back];
     for (const e of exits) {
-      const r = e.road, s = mod(e.st + e.dir * e.x, r.length); r.frame(s, F);
+      const r = e.road; let s = mod(e.st + e.dir * e.x, r.length);
+      /* never inside a tunnel's wall, a portal or beside a deck in mid air: slide it back toward the traffic (still before the exit) */
+      for (let k = 0; k < 90 && ((r.tunnelAt && r.tunnelAt(s, 70) >= 0) || (r.K1 && r.bridgeK(s) < .9)); k++) s = mod(s - e.dir * 20, r.length);
+      r.frame(s, F);
       const u = e.sideU * (r.railU + 3.4); r.vergePoint(F, u, p);
       const grp = new THREE.Group(); structureMatrix(m, F, 0, p);
       if (e.dir < 0) m.multiply(new THREE.Matrix4().makeRotationY(Math.PI));        // face the traffic that will take it
@@ -12121,7 +12126,7 @@ class CarMirrors {
     this.#targets(q, rig);
     if (!q || !rig) return;
     let f = this.frame++; const ids = [];
-    if (q === 'low') { if (f & 1) return; f >>= 1; }                  // perf pass: Low refreshes a mirror every other frame (each is a whole scene render)
+    /* Low: one mirror every frame (inner every other frame, each door every 4th): skipping frames made the glass stutter */
     if (o.cabin && !rig.frames.inner) ids.push(...(q === 'high' ? ['left', 'right'] : [f & 1 ? 'left' : 'right']));   // §14.14: the bike's two mirrors, no inner one
     else if (o.cabin) {
       if (q === 'high') { ids.push('inner'); if (rig.frames.left) ids.push(f & 1 ? 'left' : 'right'); }
@@ -12152,7 +12157,7 @@ class CarMirrors {
         cam.matrix.decompose(cam.position, cam.quaternion, cam.scale);
         const rx = (c.x - ep.x) * nx + (c.y - ep.y) * ny + (c.z - ep.z) * nz, ry = (c.x - ep.x) * v.x + (c.y - ep.y) * v.y + (c.z - ep.z) * v.z;
         /* the window through the glass, widened about its centre (convex door glass, wide inner glass); near plane on the glass */
-        const near = d + (id === 'inner' ? .02 : .075), k = near / d, far = q === 'low' ? 700 : 2400, hw = F.hw * F.wide, hh = F.hh * F.wide;   // build 1.39: past the housing and its rim
+        const near = d + (id === 'inner' ? .02 : .075), k = near / d, far = q === 'low' ? 500 : 2400, hw = F.hw * F.wide, hh = F.hh * F.wide;   // build 1.39: past the housing and its rim
         cam.near = near; cam.far = far;
         cam.projectionMatrix.makePerspective((rx - hw) * k, (rx + hw) * k, (ry + hh) * k, (ry - hh) * k, near, far);
         cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
@@ -17411,9 +17416,13 @@ class VRSystem {
     } catch (e) { Log.warn('Hand models did not load; keeping the simple gloves', e); }
   }
   #handLook() { for (const side of ['left', 'right']) { const m = this.gloves[side].userData.mesh; if (m) m.material = this.s.data.vr.hands === 'skin' ? this.handSkin : this.handGlove; } }
+  /** Chase and hood views: your hands and arms are not drawn (the seat is metres away). */
+  #handsHidden() { return !!this.driving && (this.s.data.vr.view || 'cockpit') !== 'cockpit' && !!VR_VIEWS[this.s.data.vr.view]; }
   #hands(d) {
+    const hid = this.#handsHidden();
     for (const side of ['left', 'right']) {
       const g = this.gloves[side], h = d && this.driving ? this.hold[side] : null, sq = side === 'left' ? this.inp.sqL : this.inp.sqR, tr = side === 'left' ? this.inp.brk : this.inp.thr;
+      g.visible = !hid;
       const U = g.userData;
       if (U.pose) { const held = h ? 1 : 0, grip = Math.max(sq, held); U.pose({ index: Math.max(.55 + .4 * tr, held * .92), middle: .68 + .3 * grip, ring: .7 + .3 * grip, pinky: .72 + .28 * grip, thumb: .32 + .3 * held }); }
       else { for (const f of U.fingers) f.rotation.x = -1.25 * Math.max(sq, h ? 1 : 0); U.th.rotation.x = -.7 * tr; }
@@ -17448,7 +17457,7 @@ class VRSystem {
     const UP = .27, FORE = .265;                                                // upper arm and forearm (wrist to elbow), metres
     for (const side of ['left', 'right']) {
       const A = this.arms[side], g = this.gloves[side], sg = side === 'right' ? 1 : -1;
-      A.g.visible = !!g.parent && this.presenting; if (!A.g.visible) continue;
+      A.g.visible = !!g.parent && this.presenting && !this.#handsHidden(); if (!A.g.visible) continue;
       const U = g.userData;
       /* wrist and the back-of-hand direction, in rig space */
       if (U.wrist) { U.wrist.updateWorldMatrix(true, false); V.W.setFromMatrixPosition(U.wrist.matrixWorld); U.knuckle.updateWorldMatrix(true, false); V.K.setFromMatrixPosition(U.knuckle.matrixWorld); }

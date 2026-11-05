@@ -1381,3 +1381,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Interstate: driving through traffic on a side loop's far carriageway
 - TrafficSystem.#interact only ran player contacts for gF (cars going the traffic view's way). The ring has a reversed view for its far carriageway (trackRev), but the side loops (B, C, D, E) do not: on a loop's far carriageway, where a flyover or slip road can put you after a while, the cars around you are gO and you passed straight through them. #interact now also runs #contact (no scoring, no pass / near-miss events) for gO cars within reach. Module parse only; the cause was found by reading (a long headless drive could not reproduce it: the autopilot stayed on the ring).
+
+## Interstate: hands in other views, snow in tunnel mouths, signs in walls, mirror refresh (headset check needed)
+- VR chase / hood views: gloves, arms (and the watch on the glove) are not drawn (#handsHidden); cockpit as before.
+- Tunnel mouths: a chunk crossing a portal built its verge along its whole length, so inside the bore the verge followed the ground (faded to the hill over the road) and a snow wedge rose across the far carriageway. #verge now collapses rows inside the tunnel span onto the nearer portal. Headless before / after at 15 m from the first portal: wedge gone.
+- Exit signs (NetStatics) were placed at fixed distances with no tunnel / deck check: one could stand inside a bore wall or a portal. Now slid back toward the traffic in 20 m steps until clear of tunnels (+70 m) and decks (bridgeK >= 0.9).
+- Mirrors on Low (and VR, which holds them to Low): one mirror every frame (inner every other frame, each door every 4th) instead of every other frame (door glass updated ~9 times a second); far plane 500 m (was 700) to pay for it.
+- Checked: module parse; headless tunnel screenshots.
