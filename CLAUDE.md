@@ -1303,3 +1303,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Desktop AWM uses the AK rifle take (VM.byType.awp 'ak', the step 98 VMH_FIT.awp hand fit): hands on the grip and fore-end. VM_FIT (sniper-take solve) only for the sniper rig. A bolt gun on a rig without its own bolt timing works the bolt 0.6 s after the shot (vmShot). VM_HIP keyed by gun type (awp: 3 cm right, 3.5 cm down, 7 cm out).
 - Store REMOVE of an AWM part while the AWM is in the vise now takes it off at once (awmSyncGun used to skip a clamped gun, and RELEASE then wrote the part back as fitted).
 - Syntax parse only.
+
+## CQC: AWM damage and head gore
+- enemyShot: an AWM round (d === WEAPON_DEFS.awp) is lethal anywhere and ignores plates; a body / limb hit takes the step 91 downed path (he falls and crawls, bleeds out), head / neck = dead.
+- awmHeadGore(e, P, dir) after g90Hit on an AWM head / neck hit: five merged craters (30-45 mm, cap 120 mm) over the side of the head facing you (face torn open, two pour), three extra mist / drop cones with a head spray decal each, a burst back out of the entry, 14 more tissue chunks. Scaled by g90K (off with gore off / mild). Syntax parse only.

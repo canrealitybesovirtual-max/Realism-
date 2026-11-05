@@ -26316,7 +26316,9 @@ function enemyShot(hit, dir, d, E) {
   loopShotHit();                                                // step 9: accuracy (once per trigger pull)
   _hc.l.copy(dir).negate();
   let dmg = C.dmg[h.part] || C.dmg.limb, plate = false;
-  if (h.part === 'torso' && h.b === 'chest') {
+  const awm = d === WEAPON_DEFS.awp, awmHead = awm && (h.part === 'head' || h.part === 'neck');   // .338 LM: any body round drops him (down, crawling), a head round destroys the face
+  if (awm) dmg = 1e4;
+  if (h.part === 'torso' && h.b === 'chest' && !awm) {
     // Plates front and back (the carrier, chest-local z beyond ±0.08, y -0.09..0.24) stop 9 mm cold.
     _hc.p.copy(hit.p); e.B.chest.worldToLocal(_hc.p);
     if (Math.abs(_hc.p.z) > 0.075 && _hc.p.y > -0.09 && _hc.p.y < 0.24 && Math.abs(_hc.p.x) < 0.14) { plate = true; dmg = C.dmg.plate; }
@@ -26328,6 +26330,7 @@ function enemyShot(hit, dir, d, E) {
     bloodFx(hit.p, dir, h.part, clamp(E, 0.4, 1.2));
     const wIn = addWound(e, e.B[h.b] || e.B.spine, hit.p, h.part), wOut = addExitWound(e, h, hit.p, dir, E, GORE_X && g90Through(d, h.part, E));
     if (GORE_X) g90Hit(e, h.part, wIn, wOut, hit.p, dir, d, E);   // step 90: the hole, it pours, the far side
+    if (GORE_X && awmHead) awmHeadGore(e, hit.p, dir);
   }
   P10.muteImpact = false;
   if (e.downed) {                                              // step 91: any further round ends him where he lies (silent)
@@ -35139,6 +35142,27 @@ function g90Hole(w, dir, h0, cap) {
 // Through-shots: rifles, the AWP and every head shot go through (pistol rounds as before, 80 %).
 const g90Through = (d, part, E) => E >= 0.3 && (part === 'head' || ((d.impulse || 0) >= 2.9 && (d.pellets || 1) === 1));
 // A hit that bled (enemyShot, ragdollHit). wIn / wOut: the wounds it left (wOut may be null).
+// AWM head shot: the face is gone (several merged craters over the side facing the shooter, pouring) and a far heavier
+// spray, mist and tissue behind and round him.
+const _awg = { c: new THREE.Vector3(), p: new THREE.Vector3(), q: new THREE.Vector3(), d: new THREE.Vector3() };
+function awmHeadGore(e, P, dir) {
+  const K = g90K(); if (!K || !e.B || !e.B.head || !e.room || !e.room.active) return;
+  const head = e.B.head, c = head.getWorldPosition(_awg.c);
+  for (let i = 0; i < 5; i++) {                                    // the face toward the round, torn open
+    const p = _awg.p.copy(c).addScaledVector(dir, -0.075).add(_awg.q.set(rnd2(-0.045, 0.045), rnd2(-0.06, 0.04), rnd2(-0.045, 0.045)));
+    const w = addWound(e, head, p, 'head');
+    if (w) { g90Hole(w, dir, rnd2(0.03, 0.045) * K, 0.12 * K); if (i < 2) g90StreamOn(e, w, 0, 1.6); }
+  }
+  const ex = _awg.p.copy(c).addScaledVector(dir, 0.1);
+  for (let i = 0; i < 3; i++) {
+    const dd = _awg.d.copy(dir).add(_awg.q.set(rnd2(-0.35, 0.35), rnd2(-0.2, 0.3), rnd2(-0.35, 0.35))).normalize();
+    fxEmit(ex, dd, 0.45, Math.round(30 * K), G90_MIST);
+    fxEmit(ex, dd, 0.4, Math.round(36 * K), G90_DROP);
+    g90Spray(ex, dd, true, 1, K * 1.5, 1);
+  }
+  fxEmit(c, _awg.d.copy(dir).negate(), 0.35, Math.round(16 * K), G90_DROP);   // back out of the entry, over his front
+  g90Chunks(e.room, ex, dir, Math.round(14 * K), 1);
+}
 function g90Hit(e, part, wIn, wOut, P, dir, d, E) {
   const K = g90K() * penWoundK();                                          // step 119: a round tumbling after a wall tears a bigger hole
   if (!K || !wIn || !e.room || !e.room.active) return;
