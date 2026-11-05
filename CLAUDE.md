@@ -1286,3 +1286,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Overpass / deck undersides rendered black: the IBL probe's straight-down "wet asphalt" was too dark; now brighter and blended only 55 % from steeper angles, so snow bounce lights soffits.
 - Trees blown white: tree ambient horizon x0.75 (was 1.1), sun term .028 (was .045).
 - Van shut lines broke into dashes (sank into the faceted shell between sections): lines 16 mm wide, lifted 15 mm.
+- Follow-up (white speckle on the road): asphalt normal flattened by wetness (x0.85) and specular anti-aliasing (roughness widened by fwidth of the normal).
