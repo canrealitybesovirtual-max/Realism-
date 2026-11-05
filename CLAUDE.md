@@ -1208,3 +1208,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Garage after a run (computer): checked headless: all three cars present and drawn after End run (Lexus 153 meshes, patrol and R6 copies in the scene). The VR path is being checked.
 - Checked: module parse.
 - Pursuit speeder (same pass): spawns 140 m AHEAD of you (was 170 m behind, passing you) at max(0.8 v0, your speed + 6); v0 50 + 3 x round m/s, cap 72 (was 43 + 2.5 x round, cap 58); acceleration 7.5 (was 4.4); +12 m/s with you within 90 m behind (was +5 within 70); looks for a gap every 0.18 s (was 0.35), lane change 0.62 s (was 1.1), threads gaps 1.5 m behind / 4 m ahead of a car (was 3 / 7). It is the traffic Lexus body (every passenger class is the saloon), black. CHASE.sus* knobs.
+
+## Interstate: patrol car cabin blacked out, real siren buttons (headset check needed)
+- GLB_CARS.police.blackCabin .14: its cabin materials (cabinMats) are darkened to 14 % of their colour, roughness >= .62 (all-black interior).
+- Siren controller: each switch (LIGHTS / WAIL / YELP / HAZARD) is now a raised rubber push cap (7.5 mm, rounded, in a bezel) with its label and a colour bar (red / blue / amber / orange) on a canvas, backlit (emissive 1.6 while its mode is on, .25 with the lamps on, else .05); it travels in when pressed (the existing c.cap / CAP.travel path, VR poke or key) and the glow sits on its face.
+- Checked: module parse.
