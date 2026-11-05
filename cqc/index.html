@@ -2383,9 +2383,9 @@ const CONFIG = {
   // Step 52: how fast a door may swing open (rad/s; 90° is 1.57 rad), and when loading happens.
   pace: {
     on: true,
-    drive: 0.7,                 // a press (E / Grab / click): about 1.5 s to fully open
+    drive: 0.5,                 // a press (E / Grab / click): about 1.5 s to fully open
     kick: 2.1,                 // a kick: under a second, still a slam
-    hand: 2.2,                 // your hand in VR: a little heavy, never so slow the lever leaves your hand
+    hand: 1.8,                 // your hand in VR: a little heavy, never so slow the lever leaves your hand
     reveal: 0.65,              // x the above for the first opening of a room you have not seen yet (about 2 s by press)
     revealAngle: 0.7,          // rad: past this the room counts as seen
     revealWindow: 1.5,         // s after a room comes into view: background work stays low
@@ -2400,7 +2400,7 @@ const CONFIG = {
     closerStiffness: 1.6,      // closer spring. With the damping below it shuts in about 4 s
     closerDamping: 2.6,
     handStiffness: 70, handDamping: 16,      // gripping the lever
-    pushStiffness: 14, pushDamping: 5,       // shouldering it open
+    pushStiffness: 8, pushDamping: 5,        // shouldering it open
     grabReach: 0.12,           // m from your palm to the lever
     latchAngle: 0.6            // step 8.1: rad. Closing below this, casings/hulls no longer block the leaf
   }
@@ -8954,8 +8954,8 @@ function operateDoor(door) {
   headWorld(_cur);                                              // step 53: away from you, whichever side you stand on
   const away = doorSide(door, _cur.x, _cur.z) > 0 ? P.maxOpen * 0.88 : -P.maxBack * 0.88;
   door.drive = Math.abs(door.angle) < 0.5
-    ? { target: away, k: 7, c: 7, until: now + (PACE_ON ? 4.2 : 2.4) }   // calmer: a steady push, not a fling   // step 52: long enough for a heavy, slow first opening
-    : { target: 0, k: 6, c: 6, until: now + 2 };
+    ? { target: away, k: 4.5, c: 6.5, until: now + (PACE_ON ? 5.5 : 3.2) }   // calmer: a steady push, not a fling   // step 52: long enough for a heavy, slow first opening
+    : { target: 0, k: 4.5, c: 6, until: now + 2.6 };
 }
 // Walking into the leaf pushes it away from you.
 function nudgeDoor(door, px, pz) {
@@ -9029,7 +9029,8 @@ function updateDoorsPre(now) {
     doorPace(door, now);                                         // step 52: before the step, so a kick never gets a free frame
   }
 }
-const _qTurn = new THREE.Quaternion(0, 1, 0, 0);                 // step 83: half a turn about y
+const _qTurn = new THREE.Quaternion(0, 1, 0, 0);
+const _dvP = new THREE.Vector3(), _dvQ = new THREE.Quaternion();                 // step 83: half a turn about y
 function updateDoorsPost(dt = 0) {
   const DC = CONFIG.polish.audio.doors, ck = CREAK.on && DOORSND.on && DC && DC.on && DC.gain && DC.creak;   // step 88
   for (const door of doors) {
@@ -9068,9 +9069,12 @@ function updateDoorsPost(dt = 0) {
     if (!door.sec && Math.abs(a) > CONFIG.pace.revealAngle) { const nx = stream.rooms.get(door.room.slot + 1); if (nx && !nx.seen) nx.seen = true; }   // step 52 (not a side door)
     doorPace(door, 0);
     door.settled = sleeping;
-    door.group.position.set(rLX(door.room, t.x), t.y - o.y, rLZ(door.room, t.z));   // step 83: in the (maybe turned) room's frame
-    door.group.quaternion.set(r.x, r.y, r.z, r.w);
-    if ((rF(door.room) < 0) !== !!door.vis) door.group.quaternion.premultiply(_qTurn);
+    _dvP.set(rLX(door.room, t.x), t.y - o.y, rLZ(door.room, t.z));   // step 83: in the (maybe turned) room's frame
+    _dvQ.set(r.x, r.y, r.z, r.w);
+    if ((rF(door.room) < 0) !== !!door.vis) _dvQ.premultiply(_qTurn);
+    // the drawn leaf follows the body smoothly: an uneven frame time or a contact correction no longer shows as a shake
+    const dk = dt > 0 && door.drawn && door.group.position.distanceToSquared(_dvP) < 0.25 ? 1 - Math.exp(-dt * 14) : 1;
+    door.group.position.lerp(_dvP, dk); door.group.quaternion.slerp(_dvQ, dk); door.drawn = true;
     const w = door.walk;
     w.x = t.x; w.z = t.z; w.c = Math.cos(aw + (door.vis || 0)); w.s = Math.sin(aw + (door.vis || 0));
     w.top = t.y - door.cy + CONFIG.door.height; w.bot = w.top - CONFIG.door.height;   // step 12: follows vertical re-bases
