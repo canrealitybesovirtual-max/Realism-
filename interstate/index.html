@@ -9766,7 +9766,8 @@ async function celsiorTrafficPrep() {
       if (CEL_TRAF.skip.test(m.mat)) continue;
       const n = m.n, pos = dq(new Uint16Array(bin.buffer, m.pos[0], n * 3), n, m.pmin, m.pmax, 3);
       const nor = new Int8Array(bin.buffer, m.nor[0], n * 3), uv = dq(new Uint16Array(bin.buffer, m.uv[0], n * 2), n, m.umin, m.umax, 2);
-      const ic = m.idx[1] / (m.i32 ? 4 : 2), I = new Uint32Array(m.i32 ? new Uint32Array(bin.buffer, m.idx[0], ic) : new Uint16Array(bin.buffer, m.idx[0], ic));
+      const ic = m.idx[1] / (m.i32 ? 4 : 2); let I = new Uint32Array(m.i32 ? new Uint32Array(bin.buffer, m.idx[0], ic) : new Uint16Array(bin.buffer, m.idx[0], ic));
+      if (CEL_TAIL_CUT.test(m.mat)) I = new Uint32Array(celCutTail(i => pos[i * 3], i => pos[i * 3 + 1], i => pos[i * 3 + 2], I));
       let W = I;                                                     // untextured parts: welded on position first (their split normals blocked the simplifier)
       if (m.tex == null) { const map = new Map(), rep = new Uint32Array(n); for (let i = 0; i < n; i++) { const key = Math.round(pos[i * 3] * 2e3) + ',' + Math.round(pos[i * 3 + 1] * 2e3) + ',' + Math.round(pos[i * 3 + 2] * 2e3); let r = map.get(key); if (r === undefined) map.set(key, r = i); rep[i] = r; } W = I.map(i => rep[i]); }
       const simp = (k, far) => { if (!k || k >= 1) return I; const tgt = Math.max(3, Math.floor(I.length * k / 3) * 3);
@@ -10063,6 +10064,16 @@ function celTailOuter(px, py, pz, idx) {
   const keep = []; for (let t = 0; t < idx.length; t += 3) { const c = cen(t); if (out(c) >= best.get(key(c)) - .003) keep.push(idx[t], idx[t + 1], idx[t + 2]); }
   return keep;
 }
+/** Triangles of the chrome / trim meshes inside the rear lamp boxes (a reflector grid under the photo lens) are
+ *  dropped: with the lens drawn solid they showed through as speckle. */
+const CEL_TAIL_BOX = (x, y, z) => z > 2.2 && y > .64 && y < 1.14 && Math.abs(x) > .18 && Math.abs(x) < .88;
+function celCutTail(px, py, pz, idx) {
+  const keep = [];
+  for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2];
+    if (!CEL_TAIL_BOX((px(a) + px(b) + px(c)) / 3, (py(a) + py(b) + py(c)) / 3, (pz(a) + pz(b) + pz(c)) / 3)) keep.push(a, b, c); }
+  return keep;
+}
+const CEL_TAIL_CUT = /^(chrome|Material_27|Material_106|vehiclelights128)$/;
 function celTailMaterial() {                                           // plain red lens glass: no photo, no facet pattern (both read as speckle)
   return Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
     emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -6 }), { key: 'celtail' });
@@ -10081,6 +10092,7 @@ function buildCelsior(car) {
     g.setAttribute('uv', new THREE.BufferAttribute(dq(new Uint16Array(bin.buffer, m.uv[0], n * 2), n, m.umin, m.umax, 2), 2));
     const ic = m.idx[1] / (m.i32 ? 4 : 2);
     g.setIndex(new THREE.BufferAttribute(m.i32 ? new Uint32Array(bin.buffer, m.idx[0], ic) : new Uint16Array(bin.buffer, m.idx[0], ic), 1));
+    if (CEL_TAIL.on && CEL_TAIL_CUT.test(m.mat)) { const P = g.attributes.position; g.setIndex(celCutTail(i => P.getX(i), i => P.getY(i), i => P.getZ(i), Array.from(g.index.array))); }
     g.computeBoundingSphere();
     let mat;
     if (m.paintKind === 'upper') mat = M.paint;                       // the garage paint finish, wet beads and dust apply
