@@ -1313,3 +1313,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC outdoor: optimisation pass (knobs only)
 - Fog denser (0.042 / headset 0.058) so the camera far plane comes in: 92 m (headset 66). Forest LOD [18, 36, 88] (headset [10, 24, 58]), forest 78 x 72 m (54 x 50), grid steps 4.0-6.6 m (x1.4 headset), ground cover culled nearer, terrain 110 x 120 m (80 x 88). Rain 2600 / 600 streaks in a smaller box, splashes 220 / 50, drips 320 / 70. Lamps per pixel 6 (headset / lite 3), nearest first. Syntax parse only.
+- Follow-up: the AK take with VMH_FIT.awp left the PC hands off the AWM (user photo); VM.byType.awp is 'sniper' again (VM_FIT.awp, the solved fit). VM_HIP.awp 2.5 cm right, 3 cm down, 6 cm out. The bolt timer works on both rigs.
