@@ -47261,6 +47261,22 @@ function yardLayout() {
     ],
     // Side doors (the room door system's secondary leaves): x, z on the outer face, n = outward normal (from behind the door to
     // where you stand), y = sill. wall: no opening behind it (always locked: it leads nowhere).
+    // Interior fit-out (the kit's own pieces; activateRoom gives them colliders, walk boxes and cover like any room's furniture).
+    // [type, x, z, ry]: furniture fronts face local +x; [x0, x1] etc. are the rooms above. Kept clear of the doors' swing.
+    furn: [
+      ['locker', -19.275, 10.4, 0], ['locker', -19.275, 11.33, 0], ['locker', -19.275, 12.26, 0],   // guard room: kit lockers on the west wall
+      ['desk', -13.28, 10.85, Math.PI],                                                              //   duty desk on the east wall
+      ['cabinet', -15.2, 10.255, -Math.PI / 2], ['cabinet', -14.7, 10.255, -Math.PI / 2],            //   files on the south wall
+      ['shelfA', -10.2, 13.525, Math.PI / 2],                                                        // bay office: shelving on the north wall
+      ['cabinet', -9.45, 10.955, -Math.PI / 2], ['cabinet', -9.95, 10.955, -Math.PI / 2],            //   files on the south wall
+      ['shelfB', 9.475, -19.6, 0],                                                                   // stair core: stores shelving
+      ['crateA', 10.0, -13.7, 0, 1.05], ['crateB', 10.0, -13.7, 0], ['crateC', 11.0, -13.62, 0.25]   //   crates by the door (A carries B)
+    ],
+    fix: [                                                          // wall fixtures [type, x, z, ry] (built facing +z, origin on the wall face)
+      ['extinguisher', -17.3, 9.9, 0], ['panel', -19.5, 13.15, Math.PI / 2], ['outlet', -12.9, 12.3, -Math.PI / 2],
+      ['extinguisher', -8.24, 11.4, -Math.PI / 2], ['outlet', -11.3, 10.6, 0],
+      ['extinguisher', 9.24, -14.6, Math.PI / 2], ['panel', 9.24, -17.9, Math.PI / 2]
+    ],
     sdoors: [
       { id: 'guard', x: -14, z: 14, n: [0, 1], y: 0, room: 0 },
       { id: 'office', x: -8, z: 12.4, n: [1, 0], y: 0, room: 1 },
@@ -48048,6 +48064,25 @@ function yardClean(geo) {
   for (const k of Object.keys(geo.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') geo.deleteAttribute(k);
   return geo.index ? geo.toNonIndexed() : geo;
 }
+// A kit material drawn in the yard: its own copy with the yard's lighting (analytic lamps by zone, fog, night fill) chained
+// on, as the neutral kind 7 (no rain, moss or puddles). One copy per source material, shared by every piece using it.
+const YARD_LIT = new Map();
+function yardLitMat(m) {
+  if (!m || !m.isMeshStandardMaterial || m.userData.yardKind !== undefined) return m;
+  let c = YARD_LIT.get(m);
+  if (c) return c;
+  c = m.clone();
+  const prev = m.onBeforeCompile, pk = m.customProgramCacheKey ? m.customProgramCacheKey.call(m) : '';
+  c.onBeforeCompile = (sh, r) => { if (prev) prev.call(c, sh, r); yardInject(sh); sh.uniforms.uYKind = { value: 7 }; };
+  c.customProgramCacheKey = () => pk + '|yardLit';
+  c.userData.yardKind = 7;
+  YARD_LIT.set(m, c);
+  return c;
+}
+function yardLitMesh(o) {
+  if (!o.isMesh) return;
+  o.material = Array.isArray(o.material) ? o.material.map(yardLitMat) : yardLitMat(o.material);
+}
 function* yardBuilder(room) {
   const Y = yardState(), xr = /OculusBrowser|Quest/i.test(navigator.userAgent);
   room.yard = yardLayout();
@@ -48214,6 +48249,19 @@ function* yardBuilder(room) {
       for (const [x0, x1, z0, z1] of [[r.x0, r.x1, r.z0, r.z0 + 0.012], [r.x0, r.x1, r.z1 - 0.012, r.z1], [r.x0, r.x0 + 0.012, r.z0, r.z1], [r.x1 - 0.012, r.x1, r.z0, r.z1]]) box(M.metal, x0, x1, 0, 0.1, z0, z1, false);
     }
     for (const l of L.lamps) if (l.k === 'room') { const [x, y, z] = l.p; box(M.metal, x - 0.62, x + 0.62, y + 0.02, y + 0.12, z - 0.16, z + 0.16); lensBox(x - 0.58, x + 0.58, y, y + 0.02, z - 0.12, z + 0.12); }
+  }
+  { // interiors: the kit's furniture and wall fixtures, on materials lit by the yard's lamps (yardLit: the room lamp, no rain)
+    const P = KIT.proto, put = (o, x, y, z, ry) => { o.position.set(x, y, z); o.rotation.y = ry; o.traverse(yardLitMesh); g.add(o); return o; };
+    room.furnObj = [];
+    for (const [type, x, z, ry, top] of L.furn || []) {
+      if (!P[type] || !FURN[type]) continue;
+      const f = { type, x, z, ry }; if (top) f.top = top;
+      room.layout.furniture.push(f);
+      const o = put(P[type].clone(), x, FURN[type].y, z, ry);
+      room.furnObj.push(CRATE_HP[type] ? o : null);
+      if (CRATE_HP[type] && crateBrokenInMemory(room, room.layout.furniture.length - 1)) o.visible = false;
+    }
+    for (const [type, x, z, ry] of L.fix || []) if (P[type]) put(P[type].clone(), x, 0, z, ry);
   }
   yield;
 
@@ -48472,7 +48520,9 @@ function yardActivate(room, box, walk) {
   }
   for (const [x, z] of L.bollards) { box(0.1, 0.55, 0.1, x, 0.55, z, 0.5, 0, 'metal'); walk(x, z, 0.11, 0.11, 1.1); }
   natActivate(room, walk);                                          // nature: trunks, rock hulls, walk boxes (before the nav grid)
-  room.navCache = yardNav(room);
+  const furnNav = [];                                               // the interiors' furniture (its walk boxes come after this, in activateRoom)
+  for (const f of room.layout.furniture || []) { const S = FURN[f.type]; if (S && S.walk) furnNav.push({ x: f.x, z: f.z, a: f.ry || 0, hx: S.walk[0], hz: S.walk[1], top: f.top || S.walk[2] }); }
+  room.navCache = yardNav(room, furnNav);
   yardDoorsActivate(room);
 }
 /* Side doors: the room door system's leaves (doors[], doorByCollider, walk boxes, closer, lever, kick, breach, holes,
@@ -48533,10 +48583,10 @@ function yardDoorsTick(yard, now) {
   }
 }
 // Nav grid at the ground: rasterised per box (the generic one tests every cell against every box).
-function yardNav(room) {
+function yardNav(room, extra = []) {
   const cs = 0.2, nx = Math.floor(room.w / cs), nz = Math.floor(room.d / cs), r = CONFIG.enemy.radius, g = new Uint8Array(nx * nz);
   for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const x = -room.w / 2 + (i + 0.5) * cs, z = -room.d / 2 + (j + 0.5) * cs; if (Math.abs(x) > room.w / 2 - r || Math.abs(z) > room.d / 2 - r) g[j * nx + i] = 1; }
-  for (const b of room.walkLocal) {
+  for (const b of room.walkLocal.concat(extra)) {
     if (b.bot !== undefined && b.bot > 1.5) continue;                // rails up on the catwalk and the tower
     const ext = Math.hypot(b.hx, b.hz) + r + cs;
     const i0 = Math.max(0, Math.floor((b.x - ext + room.w / 2) / cs)), i1 = Math.min(nx - 1, Math.ceil((b.x + ext + room.w / 2) / cs));
