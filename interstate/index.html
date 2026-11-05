@@ -1131,7 +1131,7 @@ const ACTIONS = [
 ];
 
 const DEFAULTS = {
-  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, mirrorAdjust: true, slush: true, tunnelAE: true, headBeam: true, grime: true, brightness: 1 },
+  graphics: { preset: 'high', ...structuredClone(QUALITY_PRESETS.high.values), filmGrain: true, chromaticAberration: true, lensRain: true, windscreen: true, windscreenVR: true, rainSplash: true, mirrorAdjust: true, slush: true, tunnelAE: true, headBeam: true, grime: true, brightness: 1 },
   audio: { master: .8, engine: .9, effects: .85, ambience: .7, ui: .55, radio: .8, muteUnfocused: true, spatial: true, roadSurface: true },
   controls: {
     bindings: {
@@ -1145,7 +1145,7 @@ const DEFAULTS = {
     rumble: true, rumbleStrength: .7, mouseSensitivity: 1, invertY: false,
   },
   camera: { mode: 'chase', fov: 62, speedFov: .5, shake: .5, chaseDistance: 5.8, chaseHeight: 1.55, smoothing: .55, weight: .6 },
-  assists: { transmission: 'auto', abs: true, tc: true, esc: true, damage: true, telemetry: false, autopilotStyle: 'brisk' },
+  assists: { transmission: 'auto', abs: true, tc: true, esc: true, rainGrip: true, damage: true, telemetry: false, autopilotStyle: 'brisk' },
   interface: { units: 'kmh', uiScale: 1, showHud: true, showFps: false },
   traffic: { preset: 'commuter', ...structuredClone(TRAFFIC_PRESETS.commuter.values) },
   car: { finish: 'gloss', wheels: 'twin', wheelFinish: 'gloss', calipers: 'graphite', aero: 'lip', rideHeight: 0, suspension: 'sport', tyrePressure: 2.3, brakeBias: .64, drive: 'awd',
@@ -1188,6 +1188,8 @@ const SETTINGS_SCHEMA = [
   { tab: 'graphics', key: 'graphics.chromaticAberration', type: 'toggle', label: 'Lens fringing', desc: 'Faint colour separation toward the edges of the frame.' },
   { tab: 'graphics', key: 'graphics.lensFlare', type: 'toggle', label: 'Lens flare', desc: 'Faint ghosts and veiling glare when the sun is in frame; anything in front of the sun hides them.' },
   { tab: 'graphics', key: 'graphics.lensRain', type: 'toggle', label: 'Rain on the lens', desc: 'Drops land on the camera in the rain, bead, and are blown off as you pick up speed. Photo mode stays clean.' },
+  { tab: 'graphics', key: 'graphics.windscreenVR', type: 'toggle', label: 'Water on the windscreen (headset)', desc: 'In VR: rain and spray bead on the glass in front of you, run up it at speed and are cleared by the wipers.' },
+  { tab: 'graphics', key: 'graphics.rainSplash', type: 'toggle', label: 'Rain splashes', desc: 'Drops splash on the road around the car in the rain.' },
   { tab: 'graphics', key: 'graphics.windscreen', type: 'toggle', label: 'Water on the windscreen', desc: 'Cockpit camera: rain and road spray bead on the screen, run up the glass at speed and are cleared by the wipers (V). Needs a depth effect (Medium and up). Off in the headset.' },   // realism 1
   { tab: 'graphics', key: 'graphics.slush', type: 'toggle', label: 'Slush and snow tracks', desc: 'Open road: ploughed slush on the shoulders and between the wheel tracks. Tyres throw it up and leave tracks in it that fade; it hisses and drags a little. The headset gets lighter spray and no tracks.' },   // realism 2
   { tab: 'graphics', key: 'graphics.tunnelAE', type: 'toggle', label: 'Eyes adjust in tunnels', desc: 'Into a tunnel the view starts dark and opens up over a couple of seconds; back out into the snow it blows out white and settles. Computer only; the headset keeps a steady exposure.' },   // realism 3
@@ -1245,6 +1247,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'assists', group: 'Electronic aids' },
   { tab: 'assists', key: 'assists.abs', type: 'toggle', label: 'Anti-lock brakes', desc: 'Releases a wheel that is about to lock. Slightly longer stops, full steering under braking.' },
   { tab: 'assists', key: 'assists.tc', type: 'toggle', label: 'Traction control', desc: 'Cuts engine torque and brakes a spinning rear wheel.' },
+  { tab: 'assists', key: 'assists.rainGrip', type: 'toggle', label: 'Rain grip', desc: 'Keeps most of your grip in the rain and stops aquaplaning; the road still looks and sounds wet. Off: the full wet-road physics (less grip, aquaplaning on standing water).' },
   { tab: 'assists', key: 'assists.esc', type: 'toggle', label: 'Stability control', desc: 'Brakes individual wheels to stop a slide. Off, the car will spin if you ask too much of it.' },
   { tab: 'assists', group: 'Autopilot' },
   { tab: 'assists', key: 'assists.autopilotStyle', type: 'select', label: 'Autopilot style', desc: 'How the car drives when you press O or D-pad up. Steer or brake to take it back. While it drives, nothing scores; your own driving in the same run still pays.', options: [['calm', 'Calm'], ['brisk', 'Brisk'], ['wild', 'Reckless']] },
@@ -5714,6 +5717,65 @@ function makeGradeLUT(N = 32) {
   t.wrapR = t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; t.unpackAlignment = 1; t.needsUpdate = true;
   return t;
 }
+/* Windscreen water in the headset (see DriveWorld.#wsVR): the finish pass's own drop / runner / wiper functions, cut
+ * out of its source once, on a layer in glass coordinates. */
+let WS_VR_GLSL = null;
+function wsVRBuild(G, body, key, old) {
+  if (old) { old.mesh.parent?.remove(old.mesh); old.mesh.geometry.dispose(); }
+  if (!WS_VR_GLSL) { const f = finishShader().fragmentShader, a = f.indexOf('uniform float uWsOn'), b = f.indexOf('/* ── Section 12'); WS_VR_GLSL = f.slice(a, b); }
+  const E = new THREE.Vector3(...(GLB_CARS[key]?.cabin || CABIN_CEL).eye), sg = Math.sign(E.clone().sub(G.C).dot(G.n)) || 1;
+  const B = G.box, pos = [], gg = [], N = 12, idx = [];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+    const x = B.x + (B.y - B.x) * i / N, y = B.z + (B.w - B.z) * j / N;
+    const P = G.C.clone().addScaledVector(G.u, x).addScaledVector(G.v, y).addScaledVector(G.n, sg * .004); pos.push(P.x, P.y, P.z); gg.push(x, y);
+  }
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const a = j * (N + 1) + i; idx.push(a, a + 1, a + N + 1, a + 1, a + N + 2, a + N + 1); }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('aG', new THREE.Float32BufferAttribute(gg, 2)); geo.setIndex(idx);
+  const v4 = (q) => ({ value: q.clone() }), u = {
+    uWsOn: { value: 1 }, uWs: { value: 0 }, uWsT: { value: 0 }, uWsW: { value: 0 }, uWsF: { value: 0 }, uWsMove: { value: 0 }, uWsAir: { value: 0 },
+    uWsRun: { value: 0 }, uWsRunK: { value: 0 }, uWsDir: { value: 1 }, uWsDay: { value: 1 }, uWsNight: { value: 0 }, uWsGr: { value: 0 },
+    uWsIP: { value: new THREE.Matrix4() }, uWsPM: { value: new THREE.Matrix4() }, uWsC: { value: new THREE.Vector3() }, uWsN: { value: new THREE.Vector3() }, uWsU: { value: new THREE.Vector3() }, uWsV: { value: new THREE.Vector3() },
+    uWsBox: v4(G.box), uWsPiv: v4(G.piv), uWsRad: v4(G.rad), uWsAng: v4(G.ang), uWk0: { value: new THREE.Vector4() }, uWk1: { value: new THREE.Vector4() }, uWw: { value: new THREE.Vector4() },
+    uWsSky: { value: new THREE.Vector3(.5, .52, .56) } };
+  const mat = new THREE.ShaderMaterial({ uniforms: u, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: true,
+    vertexShader: 'attribute vec2 aG; varying vec2 vG; void main(){ vG = aG; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: GLSL_NOISE + WS_VR_GLSL + /* glsl */`
+      uniform vec3 uWsSky; varying vec2 vG;
+      void main(){
+        vec2 g = vG; float mpp = max(length(fwidth(g)), 1e-5);
+        float bx = smoothstep(uWsBox.x, uWsBox.x + 0.03, g.x) * (1.0 - smoothstep(uWsBox.y - 0.03, uWsBox.y, g.x)) * smoothstep(uWsBox.z, uWsBox.z + 0.02, g.y) * (1.0 - smoothstep(uWsBox.w - 0.03, uWsBox.w, g.y));
+        float blade = 0.0;                                                   // the wiper arms and blades on the glass
+        for (int i = 0; i < 2; i++) {
+          vec2 piv = i == 0 ? uWsPiv.xy : uWsPiv.zw, rr = i == 0 ? uWsRad.xy : uWsRad.zw, an = i == 0 ? uWsAng.xy : uWsAng.zw;
+          float th = an.x + uWsF * (an.y - an.x); vec2 dir = vec2(cos(th), sin(th)), pd = vec2(-dir.y, dir.x), d = g - piv;
+          float al = dot(d, dir), ap = abs(dot(d, pd));
+          blade = max(blade, (1.0 - smoothstep(0.0075, 0.0075 + mpp, ap)) * step(rr.x, al) * step(al, rr.y));
+          blade = max(blade, (1.0 - smoothstep(0.0045, 0.0045 + mpp, ap)) * step(-0.02, al) * step(al, rr.y * 0.86));
+          blade = max(blade, 1.0 - smoothstep(0.014, 0.014 + mpp, length(d)));
+        }
+        vec4 D = vec4(0.0); float film = 0.0;
+        if (uWs > 0.002 && bx > 0.0) {
+          vec3 Lp = wsLast(g); float tauS = Lp.x > -1e3 ? uWsT - Lp.x : 1e4;
+          D = wsDrops(g, 0.013, 1.0, 0.0011, 0.0019, mpp);
+          vec4 B2 = wsDrops(g + 0.0047, 0.0085, 7.0, 0.0006, 0.0011, mpp); if (B2.z > D.z) D = B2;
+          vec4 R = wsRunner(g, mpp) * vec4(1.0, 1.0, vec2(smoothstep(0.3, 1.6, tauS) * min(uWs * 2.0, 1.0))); if (R.z > D.z) D = R;
+          film = exp(-tauS / 0.45) * min(uWs * 2.0, 1.0) * Lp.z;
+        }
+        float a = D.z * bx;
+        vec3 n3 = normalize(vec3(D.xy, 0.6));
+        float spec = pow(max(dot(n3, normalize(vec3(-0.35, 0.55, 0.75))), 0.0), 60.0) * a;
+        vec3 sky = uWsSky * (0.6 + 0.6 * clamp(-D.y, 0.0, 1.0));            // a bead shows the sky upside down: brighter where its dome faces down
+        vec3 col = sky * (1.0 - 0.7 * D.w) + vec3(1.0, 0.98, 0.94) * spec * (2.5 - 1.6 * uWsNight);
+        float alpha = a * (0.28 + 0.5 * D.w) + spec + film * 0.1 * bx;
+        col = mix(col, vec3(0.02), blade); alpha = max(alpha, blade * 0.97);
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }` });
+  const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = 4; mesh.frustumCulled = false; mesh.name = 'windscreen-water-vr'; body.add(mesh);
+  return { mesh, u, key };
+}
 /* realism 1: water on the windscreen and the wipers (cockpit camera, computer only). */
 const finishShader = () => ({
   uniforms: { tDiffuse: { value: null }, tLUT: { value: null }, tDepth: { value: null }, uHaze: { value: 0 }, uLutSize: { value: 32 }, uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 }, uGrain: { value: 1 }, uCA: { value: 1 }, uVignette: { value: .24 }, uSharpen: { value: .3 },
@@ -6982,8 +7044,11 @@ class VehicleDynamics {
        it depends on that tyre: inflation pressure (Horne's relation, onset ≈ 6.36·√p[kPa] km/h for
        a smooth tyre), how much tread is left to pump water away, the compound's tread pattern,
        and whether the tyre ahead of it has already cleared a track. */
-    const film = clamp((wet - .55) / .45, 0, 1), treadK = clamp(1 - 2.2 * this.wetPenalty, .35, 1);
-    const surf = (1 - .3 * wet) * (1 - this.wetPenalty * wet) * fRoadT;   // wet grip, compound, road temperature
+    /* Rain grip assist (assists.rainGrip, default on): the wet road costs a fifth of its grip loss and standing water
+       a sixth of its aquaplaning, so rain looks and sounds wet without the car stepping out under you. Off = full physics. */
+    const rk = A.rainGrip === false ? 1 : .2;
+    const film = clamp((wet - .55) / .45, 0, 1) * (A.rainGrip === false ? 1 : .16), treadK = clamp(1 - 2.2 * this.wetPenalty * rk, .35, 1);
+    const surf = (1 - .3 * wet * rk) * (1 - this.wetPenalty * wet * rk) * fRoadT;   // wet grip, compound, road temperature
     this.surfGrip = surf;
     let tcSlip = 0;
     for (let i = 0; i < 4; i++) {
@@ -8291,9 +8356,26 @@ class DriveWorld {
     W.move = W.phase === 1 ? 1 : W.phase === 2 ? -1 : 0;
     /* drawn for the cockpit camera only, never in the headset */
     if (g.windscreen !== false && (this.activeRig || this.rig).mode === 'cockpit' && !this.vr?.driving) {
-      const key = co.bodyKey === 'celsior' ? 'celsior' : 'sedan';
+      const key = co.bodyKey || 'sedan';
       W.glass = this.#wsGlass(key); W.body = co.body; W.view = !!W.glass;
     }
+    this.#wsVR(W, co);                                                   // the same water and wipers on the glass in the headset
+  }
+  /* Windscreen water in the headset: the computer draws it in the finish pass (which the headset never runs), so in VR a
+   * thin layer just inside the glass (WS_VR, child of the body, eye side) runs the same drop field, runners, film and
+   * wiper blades from the same state, shaded as water (sky caught in each bead, dark rim, a hot glint) since there is no
+   * frame to refract. graphics.windscreenVR (default on). */
+  #wsVR(W, co) {
+    const vr = (!!this.vr?.driving || !!this.wsVRTest) && this.s.data.graphics.windscreenVR !== false, key = co.bodyKey || 'sedan';   // wsVRTest: tests draw it on the computer
+    const M = this._wsVR;
+    if (!vr) { if (M) M.mesh.visible = false; return; }
+    const G = this.#wsGlass(key); if (!G || !co.body) { if (M) M.mesh.visible = false; return; }
+    const m = M && M.key === key && M.mesh.parent === co.body ? M : (this._wsVR = wsVRBuild(G, co.body, key, M));
+    m.mesh.visible = W.wet > .002 || W.f > 0 || W.phase > 0;
+    const u = m.u; u.uWs.value = W.wet; u.uWsT.value = W.T; u.uWsW.value = W.Wc; u.uWsF.value = W.f; u.uWsMove.value = W.move; u.uWsAir.value = W.air;
+    u.uWsRun.value = W.run; u.uWsRunK.value = W.runK; u.uWsDir.value = W.dir; u.uWsNight.value = W.night; u.uWsDay.value = 1 - W.night;
+    u.uWk0.value.fromArray(W.k0); u.uWk1.value.fromArray(W.k1); u.uWw.value.set(W.w0[0], W.w0[1], W.w1[0], W.w1[1]);
+    const S = this.environment?.sky; if (S) u.uWsSky.value.set(S.horizon[0] * 1.3 + S.zenith[0] * .5, S.horizon[1] * 1.3 + S.zenith[1] * .5, S.horizon[2] * 1.3 + S.zenith[2] * .5);
   }
   /** Realism 7: road grime and salt build up over the run. Road water thrown up by your own wheels (wet road, slush
    *  under the tyres) and by the vehicle ahead (realism 6's spray veil) lands on the body, faster with speed; the film is
@@ -10521,7 +10603,7 @@ class CarMirrors {
     this.hint = K.drag ? 'drag' : K.hover ? (rig.adj[K.hover].door ? 'door' : 'aim') : inp.locked ? 'dot' : '';
   }
   /** The input's key hook: E (hold to adjust) and F (fold a door mirror) while the dot is on a mirror. True = used. */
-  keyDown(code) {
+  key(code) {
     const K = this.desk, rig = this.rigs[this.car.bodyKey]; if (!this.adjOn || !rig?.adj || !K?.hover) return false;
     if (code === 'KeyE') { K.e = true; return true; }
     if (code === 'KeyF' && rig.adj[K.hover].door) { const A = rig.adj[K.hover]; A.ft = A.ft > .5 ? 0 : 1; return true; }
@@ -13251,26 +13333,47 @@ class WorldEnvironment {
     /* Rain */
     const N = this.rainN = 9000;
     this.rainU = { uCam: { value: new THREE.Vector3() }, uBox: { value: new THREE.Vector3(36, 22, 36) }, uFall: { value: this.fall }, uRel: { value: new THREE.Vector3(0, -8.6, 0) },
-      uTime: { value: 0 }, uStreak: { value: .024 }, uWidth: { value: .0065 }, uColor: { value: new THREE.Vector3(.5, .5, .5) }, uOpacity: { value: 0 } };
+      uTime: { value: 0 }, uStreak: { value: .024 }, uWidth: { value: .0065 }, uColor: { value: new THREE.Vector3(.5, .5, .5) }, uOpacity: { value: 0 },
+      /* rain look: your headlamps light the drops (as the snow), backlit rain glows toward the sun / moon */
+      uHlP: { value: new THREE.Vector3() }, uHlF: { value: new THREE.Vector3(0, 0, -1) }, uHlU: { value: new THREE.Vector3(0, 1, 0) }, uHlI: { value: 0 }, uHlLow: { value: 1 },
+      uLd: { value: new THREE.Vector3(0, 1, 0) }, uLc: { value: new THREE.Vector3() } };
     this.rainMesh = new THREE.Mesh(rainGeometry(N), new THREE.ShaderMaterial({
       uniforms: this.rainU, transparent: true, depthWrite: false,
       vertexShader: /* glsl */`
-        uniform vec3 uCam, uBox, uFall, uRel; uniform float uTime, uStreak, uWidth; attribute vec2 aCorner; varying float vA;
+        uniform vec3 uCam, uBox, uFall, uRel, uColor, uHlP, uHlF, uHlU, uLd, uLc; uniform float uTime, uStreak, uWidth, uHlI, uHlLow; attribute vec2 aCorner;
+        varying float vA; varying vec2 vQ; varying vec3 vC;
         void main(){
-          vec3 rel = mod(position * uBox + uFall * uTime - uCam, uBox) - uBox * 0.5;
+          float h1 = fract(dot(position, vec3(91.7, 47.3, 13.1))), h2 = fract(h1 * 7.31 + 0.37);
+          vec3 rel = mod(position * uBox + uFall * uTime * (0.85 + 0.3 * h2) - uCam, uBox) - uBox * 0.5;   // big drops fall faster
           vec3 w = uCam + rel;
           float sp = max(length(uRel), 1e-3); vec3 dir = uRel / sp;
-          vec3 pos = w - dir * min(sp * uStreak, 2.4) * aCorner.y;
-          vec3 side = normalize(cross(dir, normalize(pos - cameraPosition) + vec3(1e-4)));
+          vec3 pos = w - dir * min(sp * uStreak * (0.7 + 0.6 * h1), 2.4) * aCorner.y;
+          vec3 toC = normalize(pos - cameraPosition);
+          vec3 side = normalize(cross(dir, toC + vec3(1e-4)));
           float dist = length(rel);
-          pos += side * uWidth * (0.6 + dist * 0.02) * aCorner.x;
-          vA = (1.0 - aCorner.y * 0.75) * smoothstep(0.5, 2.5, dist) * (1.0 - smoothstep(uBox.x * 0.3, uBox.x * 0.5, length(rel.xz)));
+          pos += side * uWidth * (0.6 + 0.7 * h2) * (0.6 + dist * 0.02) * aCorner.x;
+          vQ = aCorner;
+          vA = smoothstep(0.5, 2.5, dist) * (1.0 - smoothstep(uBox.x * 0.3, uBox.x * 0.5, length(rel.xz))) * (0.55 + 0.45 * h1) * (1.0 - 0.35 * smoothstep(6.0, 16.0, dist));
+          vec3 d = w - uHlP; float r = max(length(d), 0.05); vec3 L = d / r;
+          float cone = smoothstep(0.82, 0.97, dot(L, uHlF)) * mix(1.0, 0.1 + 0.9 * smoothstep(0.06, -0.02, dot(L, uHlU)), uHlLow);
+          float back = pow(max(dot(-toC, -uLd), 0.0), 6.0);                      // rain between you and the light glows (forward scatter)
+          vC = uColor + vec3(1.0, 0.95, 0.86) * uHlI * cone * 26.0 / (r * r + 4.0) + uLc * back * 1.6;
           gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
         }`,
-      fragmentShader: 'uniform vec3 uColor; uniform float uOpacity; varying float vA; void main(){ gl_FragColor = vec4(uColor, uOpacity * vA); }',
+      fragmentShader: /* glsl */`
+        uniform float uOpacity; varying float vA; varying vec2 vQ; varying vec3 vC;
+        void main(){
+          float across = 1.0 - vQ.x * vQ.x, along = (1.0 - 0.7 * vQ.y) * smoothstep(0.0, 0.08, vQ.y + 0.02) * smoothstep(1.0, 0.75, vQ.y);   // a soft tapered streak, brighter at the drop
+          float a = uOpacity * vA * across * along;
+          if (a < 0.002) discard;
+          gl_FragColor = vec4(vC, a);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }`,
     }));
     this.rainMesh.frustumCulled = false; this.rainMesh.layers.set(6); this.rainMesh.renderOrder = 5; this.rainMesh.visible = false;
     world.scene.add(this.rainMesh); world.camera.layers.enable(6);
+    this.#splashBuild(world);                            // rain splashes on the road
     this.#snowBuild(world);                              // realism 6
     /* Median lamps that actually light the road: a fixed pool near the car, so the shader light count never changes */
     const q = this.s.data.graphics.preset, lowQ = q === 'low' || q === 'quest', n = world.tunnel ? (lowQ ? 2 : 4) : lowQ ? 0 : q === 'medium' ? 2 : 4;
@@ -13453,13 +13556,68 @@ class WorldEnvironment {
     if (dt > 0) { this.camVel.lerp(this.rel.subVectors(cam.position, this.camPrev).divideScalar(dt), 1 - Math.exp(-12 * dt)); }
     this.camPrev.copy(cam.position);
     this.rainMesh.visible = on;
-    if (!on) return;
+    if (!on) { this.splashMesh?.geometry.setDrawRange(0, 0); return; }
     this.fall.set(Math.sin(this.time * .7) * 1.2, -8.6, Math.cos(this.time * .5) * .8);
     u.uRel.value.subVectors(this.fall, this.camVel); u.uCam.value.copy(cam.position); u.uTime.value += dt;
     const k = .55 + .45 * (1 - this.night);
     u.uColor.value.set(S.horizon[0] * 1.5 + .25 * this.lamps * 1 + .012, S.horizon[1] * 1.5 + .25 * this.lamps * .72 + .012, S.horizon[2] * 1.5 + .25 * this.lamps * .45 + .014).multiplyScalar(k);
-    u.uOpacity.value = .32 * clamp(this.rain * 1.4, 0, 1);
+    u.uOpacity.value = .42 * clamp(this.rain * 1.4, 0, 1);
     this.rainMesh.geometry.setDrawRange(0, Math.ceil(this.rainN * clamp(this.rain, .15, 1)) * 6);
+    const sd = this.lightDir || this.sunDir; u.uLd.value.copy(sd); const sl = this.w.day?.sunLight || [1, 1, 1], lk = clamp(sd.y * 3, 0, 1) * (1 - .7 * this.cloud) * .25;
+    u.uLc.value.set(sl[0] * lk, sl[1] * lk, sl[2] * lk);
+    { const hl = this.w.carObj?.headlights, l0 = hl?.[0], l1 = hl?.[1]; let I = 0;   // your lamps light the drops (as the snow, #snowDraw)
+      if (l0 && l1 && l0.intensity > 0 && l0.parent) { const b = l0.parent, e = b.matrixWorld.elements, high = l0.distance > 200;
+        u.uHlP.value.set((l0.position.x + l1.position.x) * .5, l0.position.y, l0.position.z).applyMatrix4(b.matrixWorld);
+        u.uHlF.value.set(-e[8], -e[9], -e[10]).normalize(); u.uHlU.value.set(e[4], e[5], e[6]).normalize(); u.uHlLow.value = high ? 0 : 1;
+        I = (high ? 1.5 : 1) * clamp((this.s.data.world.headlights ?? .35) / .35, .3, 2.5) * (.3 + .7 * this.night); }
+      u.uHlI.value = I; }
+    /* splashes on the road under the car's plane */
+    const sp = this.splashMesh, U = this.splashU, w = this.w, car = w.car, vr = !!(w.vr || w.rs?.vr)?.presenting;
+    if (sp && car && this.s.data.graphics.rainSplash !== false && !w.tunnel) {
+      const n = Math.ceil(this.splashN * (vr ? .45 : 1) * clamp(this.rain, .1, 1));
+      sp.geometry.setDrawRange(0, n * 6);
+      U.uCam.value.copy(cam.position); U.uCarP.value.copy(car.position); U.uCarN.value.set(0, 1, 0).applyQuaternion(car.quaternion);
+      U.uTime.value += dt; U.uRate.value = 1.2 + 2.2 * this.rain; U.uOpacity.value = .55 * clamp(this.rain * 1.3, 0, 1);
+      U.uColor.value.copy(u.uColor.value).multiplyScalar(1.15);
+    } else if (sp) sp.geometry.setDrawRange(0, 0);
+  }
+  /** Rain splashes: little crowns that rise and fall on the road around you (a ring of cells round the camera on the
+   *  plane of the road under the car, none under the car itself). One draw, kept visible with an empty draw range so its
+   *  program compiles at load. */
+  #splashBuild(world) {
+    const N = this.splashN = 900;
+    this.splashU = { uCam: { value: new THREE.Vector3() }, uCarP: { value: new THREE.Vector3() }, uCarN: { value: new THREE.Vector3(0, 1, 0) }, uTime: { value: 0 }, uRate: { value: 2 },
+      uColor: { value: new THREE.Vector3(.5, .5, .5) }, uOpacity: { value: 0 }, uR: { value: 15 } };
+    const m = this.splashMesh = new THREE.Mesh(rainGeometry(N), new THREE.ShaderMaterial({ uniforms: this.splashU, transparent: true, depthWrite: false,
+      vertexShader: /* glsl */`
+        uniform vec3 uCam, uCarP, uCarN; uniform float uTime, uRate, uR; attribute vec2 aCorner; varying vec2 vQ; varying float vT, vA;
+        void main(){
+          float h1 = fract(dot(position, vec3(91.7, 47.3, 13.1))), h2 = fract(h1 * 5.17 + 0.21);
+          float cyc = uTime * uRate * (0.8 + 0.4 * h2) + h1, ep = floor(cyc); vT = fract(cyc);
+          vec2 jit = vec2(fract(sin(ep * 12.9 + h1 * 78.2) * 43758.5), fract(sin(ep * 39.3 + h2 * 11.7) * 24634.6)) - 0.5;   // a new spot each splash
+          vec2 b = vec2(uR * 2.0);
+          vec2 xz = mod(position.xz * b + jit * 1.5 - uCam.xz, b) - b * 0.5 + uCam.xz;
+          float y = uCarP.y - (uCarN.x * (xz.x - uCarP.x) + uCarN.z * (xz.y - uCarP.z)) / max(uCarN.y, 0.3) + 0.012;
+          vec3 c = vec3(xz.x, y, xz.y), toC = c - cameraPosition; float dist = length(toC);
+          vec3 side = normalize(cross(vec3(0.0, 1.0, 0.0), toC)); float sz = (0.03 + 0.05 * h2) * (0.4 + 0.8 * vT);
+          vec3 pos = c + side * aCorner.x * sz * 1.4 + vec3(0.0, 1.0, 0.0) * aCorner.y * sz;
+          vQ = aCorner;
+          vA = (1.0 - smoothstep(uR * 0.7, uR, length(xz - uCam.xz))) * smoothstep(1.2, 2.6, length(xz - uCarP.xz)) * smoothstep(0.8, 2.0, dist);
+          gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+        }`,
+      fragmentShader: /* glsl */`
+        uniform vec3 uColor; uniform float uOpacity; varying vec2 vQ; varying float vT, vA;
+        void main(){
+          float r = length(vec2(vQ.x, vQ.y * 1.3));                          // a crown: a rim that opens as it rises, then drops
+          float rim = smoothstep(0.35, 0.0, abs(r - (0.35 + 0.55 * vT))) * smoothstep(0.0, 0.15, vQ.y + 0.05);
+          float a = uOpacity * vA * rim * (1.0 - vT) * (1.0 - vT);
+          if (a < 0.003) discard;
+          gl_FragColor = vec4(uColor, a);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }` }));
+    m.frustumCulled = false; m.layers.set(6); m.renderOrder = 5; m.geometry.setDrawRange(0, 0); m.name = 'rainsplash';
+    world.scene.add(m);
   }
   /** realism 6: the flake box (built once; kept visible with an empty draw range so its program compiles at load). */
   #snowBuild(world) {
