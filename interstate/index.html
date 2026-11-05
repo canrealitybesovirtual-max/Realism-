@@ -880,6 +880,7 @@ button{font:inherit;color:inherit}
               <dt>Typefaces</dt><dd>Cormorant Garamond, Inter</dd>
               <dt>Saloon ’97</dt><dd>“art of rally Latest Version 2027” by FarHandle5255, Sketchfab, CC BY 4.0, reduced and baked for this game</dd>
               <dt>Highway patrol ’04</dt><dd>“Chevrolet Impala Highway Patrol”, Sketchfab (see cars/police.json)</dd>
+              <dt>Yamaha YZF-R6</dt><dd>“Yamaha YZF-R6 RACE” by dragos12_, Sketchfab, CC BY 4.0, split into its moving parts and compressed for this game</dd>
               <dt>Police siren</dt><dd>“police car siren synthesized dry” by newlocknew, freesound.org (sound 692525), cut into wail and yelp loops</dd>
               <dt>VR hands</dt><dd>“generic-hand” from WebXR Input Profiles (immersive-web), MIT licence</dd>
               <dt>Snow trees</dt><dd>“Snow Trees Pack LOWPOLY” by EFX (sketchfab.com/evan4129), Sketchfab, CC BY 4.0, textures re-encoded to WebP</dd>
@@ -1150,6 +1151,7 @@ const DEFAULTS = {
   traffic: { preset: 'commuter', ...structuredClone(TRAFFIC_PRESETS.commuter.values) },
   car: { finish: 'gloss', wheels: 'twin', wheelFinish: 'gloss', calipers: 'graphite', aero: 'lip', rideHeight: 0, suspension: 'sport', tyrePressure: 2.3, brakeBias: .64, drive: 'awd',
          engine: 'stock', brakes: 'stock', tyres: 'road', weight: 'stock', upholstery: 'black', trim: 'walnut', ambient: 'ice', wheelStyle: 'galaxy', model: 'celsior', paintColor: 'black', tint: 'none', exhaust: 'stock' },
+  bike: { rideF: 0, rideR: 0, rake: 0, offset: 0, power: 'stock', revLimit: 16000, sprocket: 45 },   // §14.14: the motorcycle's own setup
   world: { scenery: 'tunnel', time: 'afternoon', cycleMinutes: 45, weather: 'dynamic', crosswind: true, snowfall: true, headlights: .35, garage: 'warehouse' },   // build 1.31: garage: warehouse | studio
   photo: { focal: 50, focus: 0, aperture: 2.8, exposure: 0, roll: 0 },   // section 11: the photo-mode lens, kept between sessions
   vr: { quality: 'performance', refresh: 72, bodyMotion: .35, seatHeight: 0, hud: true, ratio: 14, stickSteer: true, hands: 'gloves' },   // build 1.15: headset, comfort, steering
@@ -1391,7 +1393,7 @@ class SaveSystem {
     const ctl = raw?.settings?.controls;
     if (ctl && (raw.version ?? 1) < 5) { if (ctl.keyboardSteerSpeed === 2.4) ctl.keyboardSteerSpeed = 4.5; if (ctl.steerLinearity === 1.4) ctl.steerLinearity = 1.15; }
     /* only the Lexus and the patrol car remain; any other saved body becomes the Lexus */
-    const car = raw?.settings?.car; if (car && !['celsior', 'police'].includes(car.model)) car.model = 'celsior';
+    const car = raw?.settings?.car; if (car && !['celsior', 'police', 'r6'].includes(car.model)) car.model = 'celsior';
     return raw;
   }
   writeLocal(settings, profile) {
@@ -1963,7 +1965,9 @@ class VehicleAudio {
   }
   /* ── Recorded engine (build 1.27, §6c): rpm layers crossfaded and pitched, a load filter, the starter ── */
   #loadSamples() {
-    const ctx = this.ctx, E = ENGINE_SFX, [setId, startId] = E.cars[this.s.data.car.model] || E.cars.celsior, set = E.sets[setId];
+    const ctx = this.ctx, E = ENGINE_SFX, bk = isBikeModel(this.s.data.car.model), [setId, startId] = bk ? ['lux', BIKE_SFX.starter] : E.cars[this.s.data.car.model] || E.cars.celsior;
+    const set = bk && BIKE_SFX.layers ? { gain: BIKE_SFX.gain, rasp: BIKE_SFX.rasp, sub: BIKE_SFX.sub, layers: BIKE_SFX.layers } : E.sets[setId];   // §14.14: the bike's own loops when it has them
+    this.bike = bk ? { red: clamp(+this.s.data.bike?.revLimit || 16000, 14000, 17000), own: !!BIKE_SFX.layers } : null; this.pitchK = bk && !BIKE_SFX.layers ? BIKE_SFX.pitch : 1;
     this.soundSet = setId;
     const names = [...set.layers.map(l => l[0]), E.rasp[0]], st = 'start-' + startId, tv = E.traffic.map(t => t[0]);
     Promise.all([Promise.all(names.map(n => E.load(ctx, n))), E.load(ctx, st).catch(() => null), Promise.all(tv.map(n => E.load(ctx, n).catch(() => null)))]).then(([bufs, startBuf, tbufs]) => {
@@ -2013,12 +2017,12 @@ class VehicleAudio {
   /** Per frame: weights between the two layers either side of the (compressed) rpm, equal-power; each layer pitched by
    *  audio rpm over its recorded rpm. Load opens the low-pass and lifts the level; the synth is faded to a thin bed. */
   #samplesUpdate(rpm, load, rn, running, t) {
-    const L = this.samples, n = L.length, aR = Math.max(300, 850 * Math.pow(Math.max(rpm, 120) / 850, .68)), x = Math.log(aR);
+    const L = this.samples, n = L.length, aR = this.bike?.own ? Math.max(300, rpm) : Math.max(300, 850 * Math.pow(Math.max(rpm, 120) / 850, .68)), x = Math.log(aR);
     let k = 0; while (k < n - 2 && x > L[k + 1].lr) k++;
     const f = n === 1 ? 0 : clamp((x - L[k].lr) / (L[k + 1].lr - L[k].lr), 0, 1);
     for (let i = 0; i < n; i++) {
       const l = L[i], w = i === k ? Math.cos(f * Math.PI / 2) : i === k + 1 ? Math.sin(f * Math.PI / 2) : 0;
-      l.w = w; l.rate = clamp(aR / l.rpm, .45, 2.4);
+      l.w = w; l.rate = clamp(aR / l.rpm * (this.pitchK || 1), .45, 2.4);
       this.#set(l.g.gain, w, .035); this.#set(l.s.playbackRate, l.rate, .02);
     }
     const starting = t < (this.startUntil || 0), on = running && !starting ? 1 : 0;
@@ -2259,8 +2263,8 @@ class VehicleAudio {
     this.#sirens(cp, carPos, carQuat);                                  // police update
 
     /* ── Engine ── */
-    const rpm = Math.max(0, src.rpm), rn = clamp(rpm / 7000, 0, 1.05), thr = clamp(src.throttle, 0, 1), running = src.running;
-    const fire = Math.max(18, rpm / 60 * 4);
+    const rpm = Math.max(0, src.rpm), rn = clamp(rpm / (this.bike ? this.bike.red : 7000), 0, 1.05), thr = clamp(src.throttle, 0, 1), running = src.running;
+    const fire = Math.max(18, rpm / 60 * (this.bike ? 2 : 4));          // §14.14: an inline four fires twice a turn
     this.#set(this.eFire.frequency, fire, .012); this.#set(this.eHalf.frequency, fire * .5, .012);
     this.#set(this.eInd.frequency, fire * 2, .012); this.#set(this.eLfo.frequency, fire * .25 + .7, .02);
     const load = running ? clamp(thr * (.55 + .45 * clamp(src.boost, 0, 1)), 0, 1) : 0;
@@ -2280,7 +2284,7 @@ class VehicleAudio {
       cab.events.length = 0;
       this.radio.update(cab.radio, cab.ign >= 1); cab.radio.info = this.radio.info;
     }
-    if (this.samples) this.#samplesUpdate(rpm, load, rn, running, t);
+    if (this.samples) this.#samplesUpdate(this.bike && !this.bike.own ? BIKE_SFX.audioRpm(rpm) : rpm, load, rn, running, t);
     this.wasRunning = running;
     this.synthK = damp(this.synthK, this.samples ? 0 : 1, 4, dt);             // build 1.28: no synth bed under the recordings
     const sk = this.synthK;
@@ -2991,10 +2995,10 @@ class CameraRig {
         const k = .32 * wgt * sstep(4, 20, vs);
         back.x = lerp(back.x, this.vel.x / vs, k); back.z = lerp(back.z, this.vel.z / vs, k); back.normalize();
       }
-      const dist = c.chaseDistance * (1 + clamp(speed / 70, 0, 1) * .08) + this.gLon;
-      desired.copy(tgt.pos).addScaledVector(back, -dist * Math.cos(this.pitchOff)); desired.y = tgt.pos.y + c.chaseHeight + dist * Math.sin(this.pitchOff);
+      const dist = (tgt.bike ? BIKE_CAM.chaseDist : c.chaseDistance) * (1 + clamp(speed / 70, 0, 1) * .08) + this.gLon;   // §14.14: closer and lower behind a bike
+      desired.copy(tgt.pos).addScaledVector(back, -dist * Math.cos(this.pitchOff)); desired.y = tgt.pos.y + (tgt.bike ? BIKE_CAM.chaseH : c.chaseHeight) + dist * Math.sin(this.pitchOff);
       desired.x += -back.z * this.gLat; desired.z += back.x * this.gLat; desired.y -= Math.abs(this.gLat) * .12;   // swings wide and settles a touch in a bend
-      lookAt.copy(tgt.pos).addScaledVector(back, 3.5); lookAt.y += .95;
+      lookAt.copy(tgt.pos).addScaledVector(back, 3.5); lookAt.y += tgt.bike ? BIKE_CAM.lookY : .95;
       const lam = lerp(22, 4.5, c.smoothing);
       if (this.snap) { this.pos.copy(desired); this.look.copy(lookAt); }
       else { this.pos.x = damp(this.pos.x, desired.x, lam, dt); this.pos.z = damp(this.pos.z, desired.z, lam, dt); this.pos.y = damp(this.pos.y, desired.y, lam * 1.4, dt); this.look.lerp(lookAt, 1 - Math.exp(-lam * 2 * dt)); }
@@ -3022,7 +3026,7 @@ class CameraRig {
       if (tgt.q && b) {
         this.pos.copy(this._o.set(E[0], E[1], E[2]).applyQuaternion(b.quaternion).add(b.position).applyQuaternion(tgt.q).add(tgt.pos));
         const qb = this._qb.copy(tgt.q).multiply(b.quaternion);
-        this._qc.copy(tgt.q).slerp(qb, clamp(.5 + .5 * wgt, 0, 1));
+        this._qc.copy(tgt.q).slerp(qb, tgt.bike ? BIKE_CAM.helmet : clamp(.5 + .5 * wgt, 0, 1));   // §14.14: on a bike the head stays levelled more than the bike leans
       } else { this.pos.copy(tgt.pos); this.pos.y += E[1]; this._qc.setFromAxisAngle(this._o.set(0, 1, 0), tgt.yaw); }
       mounted = true;
     } else {
@@ -3049,7 +3053,7 @@ class CameraRig {
       if (lookBack) cam.rotateY(Math.PI);
       if (this.mode === 'cockpit') { cam.rotateY(this.yawOff); cam.rotateX(-.07 + this.pitchOff * .9); }
       else { cam.rotateY(Math.atan(.9 * this.yawOff)); cam.rotateX(-.03 + Math.atan(.5 * this.pitchOff)); }
-    } else cam.lookAt(this.look);
+    } else { cam.lookAt(this.look); if (tgt.bike && this.mode === 'chase' && tgt.body) cam.rotateZ(tgt.body.rotation.z * BIKE_CAM.chaseRoll); }   // §14.14: a little of the lean
     /* Build 1.12: road texture and impacts. Value noise rather than sines, so the motion never
        repeats; it rotates the lens slightly (as a real mount does) instead of sliding it. A hit
        adds a sharp kick that dies away in a fraction of a second. */
@@ -6663,7 +6667,8 @@ const GEARS = [5.35, 3.24, 2.25, 1.64, 1.21, 1.0, .865, .72, .6], REVERSE = 4.8,
 /* Build 1.28: each car its own gearbox, ratios scaled to this final drive. The BMW: a five-speed manual (Getrag-like
    3.83 / 2.20 / 1.40 / 1.00 / 0.81 on a 3.64 axle); the Lexus: a five-speed automatic (3.36 / 2.18 / 1.42 / 1.00 /
    0.75 on 3.27). */
-const GEARBOX = { celsior: { ratios: [3.9, 2.53, 1.65, 1.16, .87], manual: false }, police: { ratios: [3.9, 2.53, 1.65, 1.16, .87], manual: false } };   // build 1.31
+const GEARBOX = { celsior: { ratios: [3.9, 2.53, 1.65, 1.16, .87], manual: false }, police: { ratios: [3.9, 2.53, 1.65, 1.16, .87], manual: false },   // build 1.31
+  r6: { ratios: [2.583, 2, 1.667, 1.444, 1.286, 1.15], manual: true, name: 'six-speed sequential' } };          // §14.14 (bikeConfigure sets them)
 const MF_C = 1.45, MF_B = Math.tan(Math.PI / (2 * MF_C));     // shape factors; peak exactly at normalised slip 1
 const mf = s => Math.sin(MF_C * Math.atan(MF_B * s));
 const mfSlope = s => { const bs = MF_B * s; return Math.cos(MF_C * Math.atan(bs)) * MF_C * MF_B / (1 + bs * bs); };
@@ -6699,6 +6704,7 @@ class VehicleDynamics {
   /** Reads the car setup (garage) and derives spring, damper, aero and brake constants. */
   configure() {
     const c = this.s.data.car, sus = SUSPENSION_SETUPS[c.suspension] || SUSPENSION_SETUPS.sport;
+    this.bk = null; this.fin = FINAL; this.revCut = 7050; this.revMax = 7250;      // §14.14: a car's; bikeConfigure (below) has the motorcycle's
     /* Performance parts (section 7): engine calibration, brakes, tyre compound, weight */
     const pe = PERF.engine[c.engine] || PERF.engine.stock, pb = PERF.brakes[c.brakes] || PERF.brakes.stock;
     const pt = PERF.tyres[c.tyres] || PERF.tyres.road, pw = PERF.weight[c.weight] || PERF.weight.stock;
@@ -6728,6 +6734,7 @@ class VehicleDynamics {
     this.pCold = clamp(c.tyrePressure ?? 2.3, 1.8, 3);
     this.mu0 = [1.12, 1.12, 1.15, 1.15].map(v => v * pt.grip);
     this.drive = c.drive === 'rwd' ? 'rwd' : 'awd';
+    if (isBikeModel(c.model)) bikeConfigure(this, c, this.s.data.bike);   // §14.14
   }
 
   place(s, u, yaw) {
@@ -6787,8 +6794,8 @@ class VehicleDynamics {
     if (target === -1 && this.vx > 1.2) return 'Stop before selecting reverse';
     if (target >= 1 && this.vx < -1.2) return 'Stop before selecting a forward gear';
     if (target >= 1) {
-      const rpmT = Math.abs(this.#wheelRpm()) * this.gears[target - 1] * FINAL;
-      if (dir < 0 && rpmT > 7250) return 'Too fast for that gear';
+      const rpmT = Math.abs(this.#wheelRpm()) * this.gears[target - 1] * this.fin;
+      if (dir < 0 && rpmT > this.revMax) return 'Too fast for that gear';
     }
     if (mode === 'auto') this.autoHold = 4;                                 // paddles in automatic: brief manual override
     this.#beginShift(target);
@@ -6801,7 +6808,7 @@ class VehicleDynamics {
     if (mode === 'clutch' && this.clutchPedal < .6 && g !== 0) { this.events.push({ type: 'grind' }); return 'Press the clutch to change gear'; }
     if (g === -1 && this.vx > 1.2) return 'Stop before selecting reverse';
     if (g >= 1 && this.vx < -1.2) return 'Stop before selecting a forward gear';
-    if (g >= 1 && Math.abs(this.#wheelRpm()) * this.gears[g - 1] * FINAL > 7250) return 'Too fast for that gear';
+    if (g >= 1 && Math.abs(this.#wheelRpm()) * this.gears[g - 1] * this.fin > this.revMax) return 'Too fast for that gear';
     if (mode === 'auto') this.autoHold = g >= 1 ? 0 : 4;
     this.#beginShift(clamp(g, -1, this.topGear));
     return null;
@@ -6811,7 +6818,7 @@ class VehicleDynamics {
     this.gear = target; this.locked = false; this.shiftUp = up;
     this.shiftDur = mode === 'clutch' ? 0 : (up ? .11 : .16); this.shiftT = this.shiftDur; this.shiftCool = .3;
   }
-  #ratio(g = this.gear) { return g === -1 ? -REVERSE * FINAL : g === 0 ? 0 : this.gears[Math.min(g, this.topGear) - 1] * FINAL; }
+  #ratio(g = this.gear) { return g === -1 ? -(this.bk ? this.bk.rev : REVERSE) * this.fin : g === 0 ? 0 : this.gears[Math.min(g, this.topGear) - 1] * this.fin; }
   #wheelRpm() { return (this.wheels[2].omega + this.wheels[3].omega) * .5 * 30 / Math.PI; }
 
   /* ── Fixed step (120 Hz) → two 240 Hz substeps ─────────────────────── */
@@ -6830,6 +6837,7 @@ class VehicleDynamics {
     const h = dt / 2;
     if (this.net) this.net.follow(this);                                // build 1.30: onto a slip road, off it again
     for (let k = 0; k < 2; k++) this.#sub(h, thr, brk, st.handbrake, st.clutch, st.steer, A);
+    if (this.bk) bikeLean(this, dt);                                    // §14.14
     this.#gearbox(dt, thr, brk, A);
     this.autoHold = Math.max(0, this.autoHold - dt); this.shiftCool = Math.max(0, this.shiftCool - dt);
     this.#pose();
@@ -6858,7 +6866,7 @@ class VehicleDynamics {
 
     /* Steering: speed-sensitive lock, second-order rack with self-aligning torque */
     const lock = this.steerLock(vx, this.steerDirect);
-    const wn = 19, cmd = clamp(steerIn, -1, 1) * lock;
+    const wn = this.bk ? this.bk.wn : 19, cmd = clamp(steerIn, -1, 1) * lock;   // §14.14: a bike's slower: the yaw follows the lean in
     this.steerV += (wn * wn * (cmd - this.steer) - 2 * .9 * wn * this.steerV + .008 * this.sat) * h;
     this.steerV = clamp(this.steerV, -2.4, 2.4);
     this.steer = clamp(this.steer + this.steerV * h, -.6, .6);
@@ -6909,8 +6917,9 @@ class VehicleDynamics {
     const wT = (W[2].omega + W[3].omega) * .5 * ratio;                  // transmission-side engine speed (rad/s)
     let thrE = thr;
     const rpm = this.wE * 30 / Math.PI;
-    if (this.running && rpm < 820) thrE = Math.max(thrE, clamp((820 - rpm) / 260, 0, 1) * (rpm < 650 ? .6 : .22));      // idle control (build 1.28: harder below 650 rpm, so a fresh start or a dip never hangs at 300 rpm)
-    if (rpm > 7050) this.limiterCut = true; else if (rpm < 6850) this.limiterCut = false;
+    const idl = this.bk ? this.bk.idle : 820;                           // §14.14
+    if (this.running && rpm < idl) thrE = Math.max(thrE, clamp((idl - rpm) / 260, 0, 1) * (rpm < idl - 170 ? .6 : .22));      // idle control (build 1.28: harder below 650 rpm, so a fresh start or a dip never hangs at 300 rpm)
+    if (rpm > this.revCut) this.limiterCut = true; else if (rpm < this.revCut - 200) this.limiterCut = false;
     if (this.limiterCut) thrE = 0;
     if (this.vx > 83.3) thrE *= clamp((84.6 - this.vx) / 1.3, 0, 1);                                    // 300 km/h limiter
     if (this.vx < -8) thrE = 0;
@@ -6919,10 +6928,10 @@ class VehicleDynamics {
       if (this.shiftUp) thrE *= .18;
       else { const target = Math.abs(wT) + 40; thrE = clamp((target - this.wE) * .02 + .25, 0, 1); }   // downshift blip
     }
-    const boostT = this.running ? thrE * sstep(1100, 2900, rpm) : 0;
+    const boostT = this.running && !this.bk ? thrE * sstep(1100, 2900, rpm) : 0;
     this.boost += (boostT - this.boost) * (1 - Math.exp(-h * (boostT > this.boost ? (.9 + rpm / 2400) * this.spoolMul : 5)));
-    let Te = this.running ? thrE * (engineMap(ENG_NA, rpm) + engineMap(ENG_BOOST, rpm) * this.boost) * this.torqueMul : 0;
-    Te -= (14 + .0058 * rpm) + 34 * (1 - thrE) * (rpm / 4000) * (this.running ? 1 : .2);                // friction and pumping
+    let Te = this.running ? thrE * (this.bk ? bikeTorque(this.bk, rpm) : engineMap(ENG_NA, rpm) + engineMap(ENG_BOOST, rpm) * this.boost) * this.torqueMul : 0;
+    Te -= this.bk ? bikeDrag(this.bk, rpm, thrE, this.running) : (14 + .0058 * rpm) + 34 * (1 - thrE) * (rpm / 4000) * (this.running ? 1 : .2);                // friction and pumping
     if (rpm < 30 && Te < 0) Te = 0;
 
     /* Clutch engagement */
@@ -6930,12 +6939,12 @@ class VehicleDynamics {
     if (this.gear === 0) e = 0;
     else if (mode === 'clutch') e = 1 - sstep(.12, .88, clutchPedal);
     else {
-      const rolling = Math.abs(wT) * 30 / Math.PI > 1150;
-      e = rolling ? 1 : Math.max(sstep(860, 1750, rpm), brk < .05 && thr < .05 ? .09 : 0);
+      const rolling = Math.abs(wT) * 30 / Math.PI > (this.bk ? this.bk.S.slip[2] : 1150);   // §14.14: a bike pulls away on a slipping clutch, high in the revs
+      e = rolling ? 1 : Math.max(this.bk ? sstep(this.bk.S.slip[0], this.bk.S.slip[1], rpm) : sstep(860, 1750, rpm), brk < .05 && thr < .05 ? .09 : 0);
       if (this.shiftT > 0) e = Math.min(e, clamp((1 - this.shiftT / this.shiftDur) * 1.25, 0, 1));
     }
     this.clutchE = e;
-    const cap = 980 * e, eta = .91, Ie = .24, Idrv = .07;
+    const cap = (this.bk ? this.bk.clutch : 980) * e, eta = .91, Ie = this.bk ? this.bk.Ie : .24, Idrv = this.bk ? .012 : .07;   // §14.14
     let Twheel = 0, Irefl = 0;
     if (this.locked && (e < .97 || Math.abs(Te) > cap)) this.locked = false;
     if (this.locked) { Twheel = Te * ratio * eta; Irefl = (Ie + Idrv) * ratio * ratio; }
@@ -6956,7 +6965,7 @@ class VehicleDynamics {
     /* Rear limited-slip differential: preload plus a ramp on input torque */
     const Trear = Twheel * (1 - fShare), Tfront = Twheel * fShare;
     const IeffR = this.Iw[2] + Irefl / 2;
-    const kL = Math.min(700, .45 * IeffR / h), lockCap = 90 + .32 * Math.abs(Trear);
+    const kL = Math.min(700, .45 * IeffR / h), lockCap = this.bk ? 0 : 90 + .32 * Math.abs(Trear);   // §14.14: the two rear patches are one tyre: open between them (a spool would fight every bend)
     const dl = clamp(kL * (W[3].omega - W[2].omega), -lockCap, lockCap);
     const Tdrive = [Tfront / 2, Tfront / 2, Trear / 2 + dl, Trear / 2 - dl];
 
@@ -7152,18 +7161,18 @@ class VehicleDynamics {
    *  down while the driven wheels are already spinning, which would only spin them harder. */
   #gearbox(dt, thr, brk, A) {
     if (this.trans !== 'auto' || this.autoHold > 0 || this.shiftT > 0 || this.gear < 1 || this.shiftCool > 0) return;
-    const wr = Math.abs(this.#wheelRpm()), rpmAt = g => wr * this.gears[g - 1] * FINAL, rpm = rpmAt(this.gear);
-    const roadRpm = Math.abs(this.vx) / this.R * 30 / Math.PI, rpmRoad = g => roadRpm * this.gears[g - 1] * FINAL;
-    const spinning = Math.max(this.wheels[2].kappa, this.wheels[3].kappa) > .14;
-    const up = lerp(2900, 6800, Math.pow(clamp(thr, 0, 1), 1.3)), down = lerp(1150, 3700, clamp(thr, 0, 1));
+    const wr = Math.abs(this.#wheelRpm()), rpmAt = g => wr * this.gears[g - 1] * this.fin, rpm = rpmAt(this.gear);
+    const roadRpm = Math.abs(this.vx) / this.R * 30 / Math.PI, rpmRoad = g => roadRpm * this.gears[g - 1] * this.fin;
+    const spinning = Math.max(this.wheels[2].kappa, this.wheels[3].kappa) > .14, kR = this.bk ? this.bk.shiftK : 1;   // §14.14: the bike's shift points scale with its red line
+    const up = lerp(2900, 6800, Math.pow(clamp(thr, 0, 1), 1.3)) * kR, down = lerp(1150, 3700, clamp(thr, 0, 1)) * kR;
     /* Upshifts: never while braking (the box holds the gear for engine braking and for the
        exit), unless the engine is at the limiter; and only into a gear that will not itself
        be below the downshift point, so the box never hunts between two gears. */
-    const canUp = this.gear < this.topGear && this.locked && (brk < .05 || rpm > 6900) && rpmRoad(this.gear + 1) > Math.max(1200, down + 450);
+    const canUp = this.gear < this.topGear && this.locked && (brk < .05 || rpm > 6900 * kR) && rpmRoad(this.gear + 1) > Math.max(1200 * kR, down + 450 * kR);
     if (canUp && rpm > up) this.#beginShift(this.gear + 1);
     else if (this.gear > 1 && !spinning) {
       const now = rpmRoad(this.gear), lower = rpmRoad(this.gear - 1);
-      if ((now < down && lower < 6300) || (thr > .92 && lower < 5700) || (brk > .35 && lower < 4700)) this.#beginShift(this.gear - 1);
+      if ((now < down && lower < 6300 * kR) || (thr > .92 && lower < 5700 * kR) || (brk > .35 && lower < 4700 * kR)) this.#beginShift(this.gear - 1);
     }
   }
 
@@ -7173,7 +7182,7 @@ class VehicleDynamics {
     const fwx = -sy, fwz = -cy, rwx = cy, rwz = -sy;
     const pr = tr.project(this.x, this.z, this.sCar, this.proj), F = tr.frame(pr.s, this.F);
     const nx0 = F.Rh.x * side, nz0 = F.Rh.z * side;                         // horizontal, away from the median
-    const front = CAR.length / 2 - this.cgFwd, rear = -(2.48 + this.cgFwd), half = CAR.width / 2;
+    const front = (this.bk ? this.bk.S.len / 2 : CAR.length / 2) - this.cgFwd, rear = -((this.bk ? this.bk.S.len / 2 : 2.48) + this.cgFwd), half = this.bk ? this.bk.S.hw : CAR.width / 2;
     const corners = [[front, half], [front, -half], [rear, half], [rear, -half]];
     /* build 1.30: a slip road has a rail each side and no median; rails open where roads meet */
     const walls = this._walls || (this._walls = [{}, {}]); let nw = 0;
@@ -7235,7 +7244,7 @@ class VehicleDynamics {
     m.set(rx, n.x, bx, 0, ry, n.y, by, 0, rz, n.z, bz, 0, 0, 0, 0, 1); q.setFromRotationMatrix(m);   // build 1.12: the makeBasis columns, without three temporaries per step
     this.q.x = q.x; this.q.y = q.y; this.q.z = q.z; this.q.w = q.w;
     /* renderer conventions: roll + lowers the left side, pitch + raises the nose, heave + raises the body */
-    this.body.roll = -this.rho; this.body.pitch = -this.p; this.body.heave = -this.h;
+    this.body.roll = this.bk ? -this.bk.lean : -this.rho; this.body.pitch = this.bk ? clamp(-this.p, -.05, .05) : -this.p; this.body.heave = -this.h;   // §14.14: a bike leans into the turn
   }
 
   /** Contact with another vehicle (section 5). World contact point (cx, cz), normal (nx, nz)
@@ -7470,7 +7479,7 @@ class Autopilot {
     const psiDes = Math.atan2(clamp(e * .85, -S.vu, S.vu), vs);
     const rMax = Math.min(1.1, S.ay * 1.3 / vs);
     const r = clamp(vs * kap + 3.2 * (psiDes - psi), -rMax, rMax);
-    const delta = r * CAR.wheelbase * (1 + KUS * vx * vx) / vs;
+    const delta = r * (sim.L || CAR.wheelbase) * (1 + KUS * vx * vx) / vs;   // §14.14: the bike's own wheelbase
     const lock = Math.max(.072, .56 / (1 + (Math.abs(vx) / 16) ** 2));
     let steer = clamp(delta / lock, -1, 1);
 
@@ -7498,7 +7507,7 @@ class Autopilot {
     const vs = Math.max(Math.abs(vx), 3), e = -pr.u;
     const psiDes = Math.atan2(clamp(e * .85, -S.vu, S.vu), vs), rMax = Math.min(1.1, S.ay * 1.3 / vs);
     const r = clamp(vs * K(pr.s + v * .4) + 3.2 * (psiDes - psi), -rMax, rMax);
-    const delta = r * CAR.wheelbase * (1 + KUS * vx * vx) / vs, lock = Math.max(.072, .56 / (1 + (Math.abs(vx) / 16) ** 2));
+    const delta = r * (sim.L || CAR.wheelbase) * (1 + KUS * vx * vx) / vs, lock = Math.max(.072, .56 / (1 + (Math.abs(vx) / 16) ** 2));
     const steer = clamp(delta / lock, -1, 1);
     this.steer = steer; this.tLane = -1; this.uAim = null;
     st.throttle = thr; st.brake = brk; st.steer = steer; st.handbrake = 0; st.clutch = 0; st.direct = true;
@@ -7655,6 +7664,7 @@ class DriveWorld {
     /* Traffic and scoring (sections 5 and 6) */
     onProgress('Filling the lanes');
     this.P = { s: null, u: 0, vs: 0, vu: 0, x: 0, z: 0, fx: 0, fz: -1, vx: 0, vz: 0, hw: CAR.width / 2, len: CAR.length, m: 1990, off: false };
+    { const bk = carObj.packCar?.bike; if (bk) { this.P.hw = bk.S.hw; this.P.len = bk.S.len; } }   // §14.14
     this._pp = {}; this.F3 = newFrame();
     this.traffic = new TrafficSystem(this.track, this.scene, settings, this.streamer.ahead);
     this.score = new ScoreSystem();
@@ -7890,7 +7900,7 @@ class DriveWorld {
     tu.uSunView.value.copy(this.day.sunDir).transformDirection(this.camera.matrixWorldInverse); tu.uSunColorT.value.set(...this.day.sunLight);
     this.#sunFollow();
     const ct = this.camTgt || (this.camTgt = { pos: null, yaw: 0, speed: 0, q: null, body: null, ride: 0, impact: 0 });   // build 1.12: one target object, reused
-    ct.pos = car.position; ct.yaw = this.yaw; ct.speed = Math.abs(this.v); ct.q = car.quaternion; ct.body = this.carObj.body; ct.ride = this.carObj.rideHeight || 0; ct.impact = sim.impact || 0;
+    ct.pos = car.position; ct.yaw = this.yaw; ct.speed = Math.abs(this.v); ct.q = car.quaternion; ct.body = this.carObj.body; ct.ride = this.carObj.rideHeight || 0; ct.impact = sim.impact || 0; ct.bike = !!this.carObj.packCar?.bike;
     /* Build 1.15: in the headset the rig rides the car instead of the chase rig */
     const vr = this.vr, inVR = !!(vr && vr.driving), co = this.carObj;
     co.mirrors.tick(dt, this, ctx, inVR);                 // mirror adjust: folding, the cockpit dot and mouse drag
@@ -8033,8 +8043,9 @@ class DriveWorld {
     this._cpPrev.copy(car.position);
     const fw = this._fw.set(0, 0, -1).applyQuaternion(car.quaternion), rt = this._rt.set(1, 0, 0).applyQuaternion(car.quaternion), up = this._up.set(0, 1, 0).applyQuaternion(car.quaternion);
     const spawn = (slot, rate) => { acc[slot] += rate * dt; const n = Math.floor(acc[slot]); acc[slot] -= n; return Math.min(n, 24); };
+    const bkW = this.carObj.packCar?.bike?.meta.wheels;                 // §14.14: a bike's two tyres (each pair of patches on one line)
     for (let i = 0; i < 4; i++) {
-      const side = i % 2 === 0 ? -1 : 1, wp = this._wp.set(side * CAR.track / 2, .02, i < 2 ? CAR.frontZ : CAR.rearZ).applyMatrix4(car.matrixWorld);
+      const side = i % 2 === 0 ? -1 : 1, wp = this._wp.set(side * (bkW ? .012 : CAR.track / 2), .02, i < 2 ? (bkW ? bkW.zf : CAR.frontZ) : (bkW ? bkW.zr : CAR.rearZ)).applyMatrix4(car.matrixWorld);
       const sp = src.slip[i], locked = (src.lockedMask >> i) & 1;
       /* tyre smoke: sliding power past what the rubber sheds as heat; water suppresses it */
       const sm = clamp((sp - 7000) / 30000, 0, 1.6) * (1 - wet * .85) * (src.off ? .2 : 1);
@@ -8231,7 +8242,7 @@ class DriveWorld {
     this.#sunFollow();
     if (R.cam !== 'free') {
       const ct = this.replayTgt || (this.replayTgt = { pos: null, yaw: 0, speed: 0, q: null, body: null, ride: 0, impact: 0 }), z = this._zeroIn || (this._zeroIn = { m: { dx: 0, dy: 0 }, s: { x: 0, y: 0 } });
-      ct.pos = car.position; ct.yaw = this.yaw; ct.speed = Math.abs(this.v); ct.q = car.quaternion; ct.body = this.carObj.body; ct.ride = this.carObj.rideHeight || 0;
+      ct.pos = car.position; ct.yaw = this.yaw; ct.speed = Math.abs(this.v); ct.q = car.quaternion; ct.body = this.carObj.body; ct.ride = this.carObj.rideHeight || 0; ct.bike = !!this.carObj.packCar?.bike;
       this.replayRig.update(Math.max(dt, 1e-4), ct, z.m, z.s, false);
     }
     this.#effects(dt, this.replay.sourceOf(H, this.track.length), true);
@@ -8273,7 +8284,7 @@ class DriveWorld {
     W.f = W.phase === 1 ? (1 - Math.cos(Math.PI * s)) / 2 : W.phase === 2 ? (1 + Math.cos(Math.PI * s)) / 2 : 0;
     W.move = W.phase === 1 ? 1 : W.phase === 2 ? -1 : 0;
     /* drawn for the cockpit camera only, never in the headset */
-    if (g.windscreen !== false && (this.activeRig || this.rig).mode === 'cockpit' && !this.vr?.driving) {
+    if (g.windscreen !== false && (this.activeRig || this.rig).mode === 'cockpit' && !this.vr?.driving && !co.packCar?.bike) {   // §14.14: the rider looks over the screen
       const key = co.bodyKey === 'celsior' ? 'celsior' : 'sedan';
       W.glass = this.#wsGlass(key); W.body = co.body; W.view = !!W.glass;
     }
@@ -8422,7 +8433,7 @@ class DriveWorld {
     point.set(c.x, c.y + .01, c.z); normal.set(n.x, n.y, n.z).normalize();
     return { point, normal };
   }
-  get gearInfo() { const g = this.sim.gear; return { gear: g === -1 ? 'R' : g === 0 ? 'N' : String(g), rpm: clamp(this.sim.rpm / 7000, 0, 1) }; }
+  get gearInfo() { const g = this.sim.gear; return { gear: g === -1 ? 'R' : g === 0 ? 'N' : String(g), rpm: clamp(this.sim.rpm / (this.sim.bk ? this.sim.bk.red : 7000), 0, 1) }; }
   get regionName() { const r = this.sim.track || this.track; return this.tunnel ? 'Tunnel' : BIOMES[r.regionAt(this.sim.sCar ?? this.sCar).type].name; }
   enter() {
     this.environment.update(0, true);                                  // sky, fog, light and exposure for the current hour and weather
@@ -8932,7 +8943,7 @@ function drawInfo(g, d, map) {
    ════════════════════════════════════════════════════════════════════════ */
 const CABIN_CEL = { eye: [-.39, 1.14, -.04], wheel: [-.396, .911, -.473], tilt: -.42, wheelR: .19, lock: 7.85 };
 /* The two drivable cars: the Lexus (default) and the highway patrol car. */
-const CAR_MODELS = { celsior: 'Saloon ’97 (classic Japanese luxury, automatic)', police: 'Highway patrol ’04 (police interceptor, automatic)' };
+const CAR_MODELS = { celsior: 'Saloon ’97 (classic Japanese luxury, automatic)', police: 'Highway patrol ’04 (police interceptor, automatic)', r6: 'Yamaha YZF-R6 (600 cc supersport, six-speed)' };
 const DEFAULT_CAR = 'celsior';
 /** Default wheel placement (the sedan's): front and rear axle z, half track, tyre radius. */
 const WHEEL_LAYOUT_SEDAN = { zf: CAR.frontZ, zr: CAR.rearZ, x: CAR.track / 2, r: CAR.tyreR };
@@ -9214,13 +9225,17 @@ const GLB_CARS = {
     strip: [{ mat: 'Interieur', box: [[-.545, .785, -.705], [-.165, 1.14, -.385]] }],
     cabinMats: /^(Interieur|Interieur_av|Interieur_porte|Interieur_sol|Siege|Speed|Plastique_orange)$/, unlitGlass: /^Projo_vitre$/,
     flash: { Flash_light: 'grille', Feux_blanc: 'rear' } },
+  /* the motorcycle (§14.14): its own build (buildBike), meshopt-compressed geometry */
+  r6: { title: 'Yamaha YZF-R6', spec: 'A 599 cc inline-four supersport: 118 hp at 14,500 rpm, 16,000 rpm red line, six-speed box, 190 kg. Lean it into the bends; tune its stance and engine in Stance and Performance. Model: “Yamaha YZF-R6 RACE” by dragos12_ (Sketchfab), CC BY 4.0.', file: './cars/r6.glb', meta: './cars/r6.json', paint: false, bike: true, meshopt: true,
+    cabin: { eye: [0, 1.42, .09], wheel: [0, .86, -.42], tilt: 0, wheelR: .16, lock: 1 } },
 };
 const GlbCars = {
   data: {}, p: {},
   load(id, file) {
     const C = GLB_CARS[id], url = file || C.file;
-    return (this.p[url] ??= Promise.all([import('three/addons/loaders/GLTFLoader.js'), fetch(url).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }), fetch(C.meta).then(r => r.json())])
-      .then(([{ GLTFLoader }, buf, meta]) => new Promise((res, rej) => new GLTFLoader().parse(buf, './', g => res({ scene: g.scene, meta }), rej)))
+    return (this.p[url] ??= Promise.all([import('three/addons/loaders/GLTFLoader.js'), fetch(url).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }), fetch(C.meta).then(r => r.json()),
+      C.meshopt ? import('three/addons/libs/meshopt_decoder.module.js') : null])
+      .then(([{ GLTFLoader }, buf, meta, mo]) => new Promise((res, rej) => { const L = new GLTFLoader(); if (mo) L.setMeshoptDecoder(mo.MeshoptDecoder); L.parse(buf, './', g => res({ scene: g.scene, meta }), rej); }))
       .then(d => (this.data[url] = d)).catch(e => { Log.warn('Car model ' + url + ' did not load', e); return null; }));
   },
   get(id, file) { return this.data[file || GLB_CARS[id].file] || null; },
@@ -9321,6 +9336,390 @@ function buildGlbCar(car, id, opt = {}) {
   const U = { uNight: { value: 0 }, uBrake: { value: 0 }, uCabin: { value: 0 } };
   const wheels = { zf: W.zf * s + dz, zr: W.zr * s + dz, x: (W.x - W.wx * .5 + CAR.tyreW * .5) * s, r: (W.rf + W.rr) / 2 * s };
   return { id, group, mat: paint, U, wheels, glb: { tail, lamps, bar, flash, police: !!C.flash }, ownCabin: true, cabin: C.cabin };
+}
+/* ════════════════════════════════════════════════════════════════════════
+   §14.14 The motorcycle (Yamaha YZF-R6)
+   cars/r6.glb + r6.json from tools/pack_bike.py: the user's "Yamaha YZF-R6 RACE" (Sketchfab, dragos12_, CC-BY-4.0),
+   real size (wheelbase 1.375 m), front -z, ground y 0, the moving parts in their own nodes with their origins on their
+   pivots (forkU / forkL on the steering axis, wheelF / wheelR on the axles, swing on the swingarm pivot), the lamps in
+   their own nodes, geometry meshopt-compressed (the loader gets the decoder: GLB_CARS.r6.meshopt).
+   Choices, so they are plain:
+     · Physics: the car's VehicleDynamics, unchanged in structure, with motorcycle numbers (bikeConfigure): 270 kg with
+       the rider, 1.375 m wheelbase, a virtual track (1.2 m) whose roll centres sit at the centre of gravity, so the
+       body never rolls out and cornering moves little load across it (a leaning bike has none; 0.3 m / 1.2 m keeps the
+       inner patches loaded past 1.2 g); two front and two rear contact patches stand for the two tyres (the rear pair
+       on an open differential, so they never fight a bend; the live car's wheels are hidden while it is the bike, so a
+       showroom copy of a car shows its clones again). Lean is not
+       simulated: it is the visual roll, atan(v·r / g) of the yaw rate the tyres make, eased through a second-order lag
+       (bikeLean) so the bike falls into a turn and stands up out of it; the steering rack is slower than the car's, so
+       the yaw follows the lean in, and the bars show a moment of counter-steer as the bike rolls in. It cannot fall
+       over (no capsize mode exists), stands upright below walking pace, and does no wheelies or stoppies (pitch is the
+       spring pitch of a low centre of gravity, clamped).
+     · Engine: a 599 cc inline four's torque curve (87 kW at 14 500 rpm, 61.7 Nm at 10 500), six-speed box
+       (2.583 … 1.150, primary 2.073, 16/45 chain), rev limiter and idle from the garage, light crank and clutch.
+     · Look: wet clear coat on the fairing (MeshPhysical, clearcoat 1 / roughness 0.03, the car paint's rain beads and
+       water film on the coat), glossy tyre sidewalls that darken and shine as the road gets wet, chrome and machined
+       parts sharpened (roughness x0.6-0.85), a smoked screen.
+     · Lights: both headlamp SpotLights move into the central projector (the car's photometric beam maps), the upper lamps
+       and the LED strips glow with them; the tail strip glows red and brightens on the brakes; the mirror-mounted front
+       indicators and the rear ones blink amber (stalk keys, hazard key).
+     · Mirrors: both live planar mirrors on the model's own mat_mirrorview glass (MIRROR_GLASS.r6), adjustable like the
+       cars' (no inner mirror).
+     · Stance (garage, bike.*): front / rear ride height (fork slides in its tubes, swingarm turns, the chassis pitches and
+       rises over the axles; the centre of gravity follows), fork rake (+-2 deg about the steering head) and triple-clamp
+       offset (+-10 mm); rake and offset set the trail, and the trail the steering's speed.
+     · Engine performance (bike.*): engine map, rev limit, rear sprocket.
+     · Sound: BIKE_SFX. No recordings yet: the Lexus V8 loops pitched up for an inline four, firing twice a revolution.
+       Put files in sfx/ and fill BIKE_SFX.layers to use them.
+     · VR: seated on the bike (its own eye point, the body motion setting applies to the lean); squeeze a grip to hold the
+       bar (the glove settles on it); the bars turn with your hands (both held), twisting the right grip back opens the
+       throttle, the triggers still work; taking both grips with the engine off starts it.
+   Not built: a rider (the chase camera shows the bike alone), a key on the bike (I starts it), a dash display.
+   ════════════════════════════════════════════════════════════════════════ */
+const BIKE_IDS = new Set(['r6']);
+const isBikeModel = id => BIKE_IDS.has(id);
+/** Engine, gearbox and chassis numbers (Yamaha YZF-R6, 2017-2020). */
+const BIKE_SPEC = {
+  r6: { mass: 190, rider: 80, L: 1.375, fw: .51, track: 1.2, hcg: .3, Iz: 52, Iy: 70, Ix: 38, mus: [7, 7, 9.5, 9.5], Iw: [.32, .32, .45, .45],
+    k: [9000, 9000, 11500, 11500], arb: 1600, bump: .055, droop: .065, CdA: .33, brake: 1750, bias: .7, mu: 1.18,
+    rpm: [1300, 3000, 5000, 7000, 9000, 10500, 12000, 13500, 14500, 15500, 16500, 17500],
+    nm:  [ 21,   30,   37,   45,   55, 61.7,   60,   59, 57.4,   51,   43,   34],
+    gears: [2.583, 2, 1.667, 1.444, 1.286, 1.15], primary: 2.073, front: 16, rear: 45, rev: 2.4,
+    idle: 1350, red: 16000, Ie: .026, clutch: 230, slip: [6850, 12350, 8350], wn: 9.5, len: 2.05, hw: .42 },   // slip: the automatic clutch's bite (rpm from, to) and where it locks (gearbox input rpm)
+};
+/** Stance and engine options in the garage (bike.*): stored on their own, so the cars' setup never changes the bike's. */
+const BIKE_POWER = {
+  stock: { name: 'Factory map', k: 1, desc: '118 hp at 14,500 rpm, Euro 4 exhaust.' },
+  race:  { name: 'Race ECU and full exhaust', k: 1.065, desc: 'A titanium system and a fuel map to match: more everywhere, louder.' },
+  track: { name: 'Track build (cams, intake, ECU)', k: 1.12, desc: 'Sharper cams and a bigger airbox: strong past 12,000 rpm.' },
+};
+/** Sound hook: leave layers null to use the cars' recorded V8 (pitched up, see VehicleAudio); fill it with the bike's
+ *  own loops when they arrive: [file in sfx/ (no extension, .m4a + .ogg), recorded rpm, loop length s], like ENGINE_SFX
+ *  sets (each file padded by ENGINE_SFX.pad). audioRpm maps the engine to the V8 layers' rpm (fallback only); pitch
+ *  lifts the fallback's playback rate. */
+const BIKE_SFX = {
+  layers: null, starter: 'gt', gain: 1, rasp: .18, sub: .12,
+  pitch: 1.32, audioRpm: rpm => 900 + (Math.max(rpm, 1300) - 1300) * .38,
+};
+const BIKE_CAM = { chaseDist: 3.9, chaseH: 1.22, lookY: .78, chaseRoll: .32, helmet: .5 };
+
+/** Physics: motorcycle numbers into a VehicleDynamics (end of configure). b: settings.data.bike. */
+function bikeConfigure(V, c, b = {}) {
+  const S = BIKE_SPEC[c.model]; if (!S) { V.bk = null; return; }
+  const pw = BIKE_POWER[b.power] || BIKE_POWER.stock, rideF = clamp((b.rideF || 0) / 1000, -.03, .03), rideR = clamp((b.rideR || 0) / 1000, -.03, .03);
+  const rake = 23.57 + clamp(+b.rake || 0, -2, 2), off = .0311 + clamp((b.offset || 0) / 1000, -.01, .01), R = .31;
+  const trail = (R * Math.sin(rake * Math.PI / 180) - off) / Math.cos(rake * Math.PI / 180);
+  const bk = V.bk = { S, idle: S.idle, red: clamp(+b.revLimit || S.red, 14000, 17000), Ie: S.Ie, clutch: S.clutch, trail, lean: 0, lv: 0, tgt: 0, rev: S.rev,
+    wn: S.wn * clamp(.097 / Math.max(trail, .07), .8, 1.3) };
+  bk.shiftK = bk.red / 7000;
+  V.m = S.mass + S.rider; V.mus = S.mus.slice(); V.ms = V.m - V.mus.reduce((a, x) => a + x, 0);
+  V.L = S.L; V.tw = S.track; V.R = R; V.a = V.L * (1 - S.fw); V.b = V.L * S.fw;                    // fw: the front wheel's share of the weight
+  V.cgFwd = -(-S.L / 2 + V.a);                                       // the model origin is half way between the axles
+  V.Iz = S.Iz; V.Iy = S.Iy; V.Ix = S.Ix; V.Iw = S.Iw.slice();
+  V.lx = [V.a, V.a, -V.b, -V.b]; V.ly = [V.tw / 2, -V.tw / 2, V.tw / 2, -V.tw / 2];
+  V.torqueMul = pw.k; V.spoolMul = 1;
+  V.gears = S.gears; V.topGear = S.gears.length; V.fin = S.primary * (clamp(+b.sprocket || S.rear, 42, 50) / S.front);
+  V.revCut = bk.red; V.revMax = bk.red + 250;
+  V.rh = 0; V.hcg = S.hcg + (rideF + rideR) * .5; V.hrcF = V.hrcR = V.hcg;
+  const mcF = V.ms * V.b / V.L / 2, mcR = V.ms * V.a / V.L / 2; V.mc = [mcF, mcF, mcR, mcR];
+  const sus = SUSPENSION_SETUPS[c.suspension] || SUSPENSION_SETUPS.sport;
+  V.k = S.k.map(v => v * sus.spring);
+  V.cb = V.k.map((kk, i) => 2 * .3 * Math.sqrt(kk * V.mc[i]) * sus.damp); V.cr = V.k.map((kk, i) => 2 * .55 * Math.sqrt(kk * V.mc[i]) * sus.damp);
+  V.arbF = V.arbR = S.arb; V.bump = S.bump; V.droop = S.droop; V.staticSprung = [0, 1, 2, 3].map(i => V.mc[i] * G);
+  V.CdA = S.CdA; V.ClF = V.ClR = 0;
+  V.brakeMax = [S.brake * S.bias / 2, S.brake * S.bias / 2, S.brake * (1 - S.bias) / 2, S.brake * (1 - S.bias) / 2];
+  const pt = PERF.tyres[c.tyres] || PERF.tyres.road; V.mu0 = [1, 1, 1, 1].map(() => S.mu * pt.grip); V.drive = 'rwd';
+}
+/** The torque the engine makes at rpm (full throttle, Nm at the crank). */
+function bikeTorque(bk, rpm) { const S = bk.S, X = S.rpm, Y = S.nm; if (rpm <= X[0]) return Y[0] * Math.max(0, rpm / X[0]); for (let i = 1; i < X.length; i++) if (rpm < X[i]) return Y[i - 1] + (Y[i] - Y[i - 1]) * (rpm - X[i - 1]) / (X[i] - X[i - 1]); return Y[Y.length - 1]; }
+/** Engine braking (Nm) with the throttle closed: the torque curve is already net of friction at full throttle; shut,
+ *  a small four brakes hard at high rpm. */
+function bikeDrag(bk, rpm, thr, running) { return .4 + (1 - thr) * (2 + 10 * rpm / 12000) * (running ? 1 : .3); }
+/** Per fixed step: the lean, a lagged atan(v r / g) (r: yaw rate, + right), upright when slow. Renderer roll is -lean
+ *  (roll + lowers the left). */
+function bikeLean(V, dt) {
+  const B = V.bk, v = Math.abs(V.vx), ay = V.r * V.vx;
+  B.tgt = Math.atan(clamp(ay / G, -1.25, 1.25)) * sstep(.7, 3.5, v);
+  const wn = 7.5, z = .82;
+  B.lv += (wn * wn * (B.tgt - B.lean) - 2 * z * wn * B.lv) * dt; B.lv = clamp(B.lv, -3, 3);
+  B.lean = clamp(B.lean + B.lv * dt, -.95, .95);
+}
+
+/** The bike's own materials from the model's: names kept, maps kept. */
+function bikeMaterial(car, src, role) {
+  const P = (o) => new THREE.MeshPhysicalMaterial(o), M = src, base = { map: M.map, normalMap: M.normalMap, normalScale: M.normalScale?.clone(), roughnessMap: M.roughnessMap, metalnessMap: M.metalnessMap,
+    color: M.color.clone(), roughness: M.roughness, metalness: M.metalness, name: M.name };
+  let m;
+  switch (role) {
+    case 'paint': {                                                     // the fairing, tank and tail: a deep wet clear coat
+      m = P({ ...base, roughness: Math.min(.8, M.roughness) * .85, clearcoat: 1, clearcoatRoughness: .03, envMapIntensity: 1.15, specularIntensity: 1 });
+      m.userData.paint = true;
+      return bikePaintPatch(m, car.paintU);
+    }
+    case 'tyre': m = P({ ...base, roughness: M.roughness, metalness: 0, clearcoat: .06, clearcoatRoughness: .3, sheen: .25, sheenRoughness: .7, sheenColor: new THREE.Color(.12, .12, .12), envMapIntensity: .9 }); m.userData.tyre = { r0: M.roughness }; break;
+    case 'rim': m = P({ ...base, roughness: M.roughness * .7, clearcoat: .7, clearcoatRoughness: .08, envMapIntensity: 1.1 }); break;
+    case 'gloss': m = P({ ...base, roughness: M.roughness * .8, clearcoat: .55, clearcoatRoughness: .06, envMapIntensity: 1 }); break;      // dash, inner fairing, switchgear
+    case 'metal': m = P({ ...base, roughness: M.roughness * .72, envMapIntensity: 1.15 }); break;                                            // frame, forks, engine: chrome and machined alloy
+    case 'disc': m = P({ ...base, roughness: M.roughness * .6, envMapIntensity: 1.1, alphaTest: M.alphaTest, transparent: false, side: THREE.DoubleSide }); break;
+    case 'pipe': m = P({ ...base, roughness: M.roughness * .62, clearcoat: .35, clearcoatRoughness: .12, envMapIntensity: 1.15 }); break;
+    case 'glass': m = P({ color: new THREE.Color(.06, .065, .07), roughness: .02, metalness: 0, transparent: true, opacity: .32, envMapIntensity: 1.4, depthWrite: false, side: THREE.DoubleSide, name: M.name, ior: 1.5 }); break;
+    case 'lens': m = P({ color: new THREE.Color(.9, .9, .9), roughness: .03, metalness: 0, transparent: true, opacity: .22, envMapIntensity: 1.3, depthWrite: false, name: M.name }); break;
+    default: m = M.clone();
+  }
+  return m;
+}
+/** The clear coat's water: the car paint's beads (upper faces stream back with the airflow, flanks sag), on the coat only. */
+function bikePaintPatch(m, U) {
+  return Atmos.patch(m, {
+    key: 'bikepaint', uniforms: U,
+    vertPars: 'varying vec3 vObj; varying vec3 vObjN;', vertMain: 'vObj = position; vObjN = normal;',
+    fragPars: /* glsl */`varying vec3 vObj; varying vec3 vObjN; uniform float uScuff, uDust, uWet, uWetT, uFlow;
+      float bikeBeads(vec2 q, float stretch, float cover) {
+        vec2 gi = floor(q), f = fract(q); float hgt = 0.0;
+        for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+          vec2 o = vec2(float(i), float(j)), id = gi + o;
+          if (hash12(id + 41.3) > cover) continue;
+          float r = mix(0.16, 0.36, hash12(id + 73.1));
+          vec2 c = o + 0.2 + 0.6 * vec2(hash12(id), hash12(id + 19.7)) - f; c.y /= stretch;
+          float d = length(c) / r; hgt = max(hgt, sqrt(max(1.0 - d * d, 0.0)));
+        }
+        return hgt;
+      }`,
+    frag: [
+      ['#include <roughnessmap_fragment>', 'roughnessFactor = mix(roughnessFactor, roughnessFactor * 0.55, uWet);'],
+      ['#include <lights_physical_fragment>', 'material.clearcoatRoughness *= 1.0 - 0.4 * uWet;'],
+      ['#include <clearcoat_normal_fragment_maps>', /* glsl */`
+      #ifndef PAINT_LITE
+      if (uWet > 0.003) {
+        vec3 on = normalize(vObjN); float upF = step(0.45, on.y);
+        vec2 plTop = vec2(vObj.x, vObj.z - uWetT), plSide = abs(on.x) > abs(on.z) ? vec2(vObj.z, -vObj.y) : vec2(vObj.x, -vObj.y);
+        const float cellM = 0.012;
+        vec2 q = mix(plSide, plTop, upF) / cellM;
+        float hb = bikeBeads(q, mix(1.35, 1.0 + 0.9 * uFlow, upF), 0.12 + 0.78 * uWet) * cellM * 0.28;
+        float lod = 1.0 - smoothstep(0.35, 0.8, length(fwidth(q)));
+        vec3 sp = -vViewPosition, sx = dFdx(sp), sy = dFdy(sp);
+        vec3 R1 = cross(sy, clearcoatNormal), R2 = cross(clearcoatNormal, sx);
+        float det = dot(sx, R1) * faceDirection;
+        vec3 bn = normalize(abs(det) * clearcoatNormal - sign(det) * (dFdx(hb) * R1 + dFdy(hb) * R2));
+        clearcoatNormal = normalize(mix(clearcoatNormal, bn, clamp(lod * uWet * 1.4, 0.0, 1.0)));
+      }
+      #endif`]],
+  });
+}
+const BIKE_ROLE = { mat_livery_0_638_001: 'paint', mat_fronttyre001: 'tyre', mat_backtyre001: 'tyre', mat_rim638_001: 'rim', mat_cockpit638_001: 'gloss',
+  mat_mechanics638_001: 'metal', mat_brake638: 'disc', mat_gear638: 'disc', mat_chain_1_001: 'disc', mat_muffler638_001: 'pipe', exmanifold638_638: 'pipe',
+  mat_glasstint638_001: 'glass', BASE_glass_edge: 'glass', mat_glassDOF638_001: 'glass', mat_glass638_001: 'lens' };
+/** A plain float copy of a (quantized) model geometry, placed by M (the mesh's matrix relative to its node). */
+function bikeGeo(g, M) {
+  const out = new THREE.BufferGeometry();
+  for (const [k, A] of Object.entries(g.attributes)) {
+    const n = A.count, s = A.itemSize, arr = new Float32Array(n * s), gt = [A.getX, A.getY, A.getZ, A.getW];
+    for (let i = 0; i < n; i++) for (let c = 0; c < s; c++) arr[i * s + c] = gt[c].call(A, i);
+    out.setAttribute(k, new THREE.BufferAttribute(arr, s));
+  }
+  if (g.index) out.setIndex(new THREE.BufferAttribute(g.index.array.slice(), 1));
+  out.applyMatrix4(M); out.computeBoundingSphere(); out.computeBoundingBox();
+  return out;
+}
+/** The drivable (or showroom) bike: the model's nodes rebuilt into a pose tree under the car's body. Returns the same
+ *  shape buildGlbCar does, plus `bike` (pose tree, measurements). */
+function buildBike(car, id) {
+  const C = GLB_CARS[id], D = GlbCars.get(id); if (!C || !D) return null;
+  const src = D.scene, meta = D.meta, group = new THREE.Group(); group.name = 'bike-' + id;
+  const stance = new THREE.Group(); stance.name = 'bike-stance'; group.add(stance);
+  src.updateMatrixWorld(true);
+  const mats = new Map(), lampHead = [], lampTail = [], ind = {};
+  const mat = (m, node) => {
+    const key = node + '|' + m.name;
+    if (mats.has(key)) return mats.get(key);
+    let out;
+    if (node === 'head' || node === 'tail') {                          // the lamps: the model's lamp texture, glowing white / red
+      out = m.clone(); out.emissive = node === 'head' ? new THREE.Color(1, .96, .9) : new THREE.Color(1, .035, .02); out.emissiveMap = m.map; out.emissiveIntensity = 0;
+      if (node === 'tail') out.color.setRGB(.5, .05, .04);
+      Atmos.patch(out, { key: 'bikelamp' }); (node === 'head' ? lampHead : lampTail).push(out);
+    } else if (/^ind/.test(node)) {                                     // indicator lenses: amber glass that lights
+      out = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(.55, .28, .04), roughness: .05, transparent: true, opacity: .7, emissive: new THREE.Color(1, .42, .04), emissiveIntensity: 0, depthWrite: false, name: m.name });
+      Atmos.patch(out, { key: 'bikeind' }); (ind[node] ??= []).push(out);
+    } else {
+      out = bikeMaterial(car, m, BIKE_ROLE[m.name]);
+      if (m.name === 'mat_gauge638') { out.emissive = new THREE.Color(1, 1, 1); out.emissiveMap = m.map; out.emissiveIntensity = 0; }
+      if (BIKE_ROLE[m.name] !== 'paint') Atmos.patch(out, { key: 'bike' + (BIKE_ROLE[m.name] || 'x') + (out.transparent ? 't' : '') });
+    }
+    mats.set(key, out); return out;
+  };
+  const part = name => {
+    const N = src.getObjectByName(name), g = new THREE.Group(); g.name = 'bike-' + name; if (!N) return g;
+    const inv = new THREE.Matrix4().copy(N.matrixWorld).invert();
+    N.traverse(o => {
+      if (!o.isMesh) return;
+      const mesh = new THREE.Mesh(bikeGeo(o.geometry, new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld)), mat(o.material, name));
+      mesh.name = o.material.name; mesh.castShadow = !mesh.material.transparent; mesh.receiveShadow = true; if (mesh.material.transparent) mesh.renderOrder = 2;
+      g.add(mesh);
+    });
+    return g;
+  };
+  const v3 = a => new THREE.Vector3(...a);
+  const W = meta.wheels, St = meta.steer, P0 = v3(St.p), D0 = v3(St.d).normalize();
+  /* the chassis and the lamps */
+  const chassis = part('chassis'); stance.add(chassis);
+  for (const n of ['head', 'tail', 'indFL', 'indFR', 'indRL', 'indRR']) { const g = part(n); g.position.copy(src.getObjectByName(n)?.position || g.position); stance.add(g); }
+  /* the front end: steering head (rake) -> steer (about the axis) -> offset -> forkU, slide -> forkL, wheel */
+  const head = new THREE.Group(); head.name = 'bike-head'; stance.add(head);
+  const steer = new THREE.Group(); head.add(steer);
+  const offset = new THREE.Group(); steer.add(offset);
+  const forkU = part('forkU'); offset.add(forkU);
+  const slide = new THREE.Group(); offset.add(slide);
+  const forkL = part('forkL'); slide.add(forkL);
+  const hubF = new THREE.Group(); hubF.position.set(0, W.yf, W.zf).sub(P0); slide.add(hubF);
+  const wheelF = part('wheelF'); hubF.add(wheelF);
+  /* the rear: swingarm pivot -> swing, wheel */
+  const SP = v3(meta.swing.p), swingP = new THREE.Group(); swingP.position.copy(SP); stance.add(swingP);
+  const swing = part('swing'); swingP.add(swing);
+  const hubR = new THREE.Group(); hubR.position.set(0, W.yr, W.zr).sub(SP); swingP.add(hubR);
+  const wheelR = part('wheelR'); hubR.add(wheelR);
+  /* grips (on the bars, so they turn with them) for the VR hands */
+  const grips = {};
+  for (const [side, g] of [['left', meta.grips[0]], ['right', meta.grips[1]]]) { const o = new THREE.Object3D(); o.position.copy(v3(g)).sub(P0); offset.add(o); grips[side] = o; }
+  const paint = mats.get('chassis|mat_livery_0_638_001') || bikeMaterial(car, new THREE.MeshStandardMaterial(), 'paint');
+  const tyres = [...mats.values()].filter(m => m.userData.tyre);
+  const gauge = mats.get('chassis|mat_gauge638');
+  const bike = { id, meta, S: BIKE_SPEC[id], group, stance, head, steer, offset, slide, hubF, wheelF, swingP, hubR, wheelR, grips, P0, D0, SP, ind, tyres, gauge,
+    L: W.zr - W.zf, len: meta.len, rho: (.3 * W.wf + .7 * W.wr) / 2,   // rho: the lean's pivot height (the tread's curve, weighted to the wider rear)
+    moving: [head, swingP], set: null };
+  const lamps = [...lampHead];
+  bikeStance(bike, car.s.data.bike);
+  const U = { uNight: { value: 0 }, uBrake: { value: 0 }, uCabin: { value: 0 } };
+  const wheels = { zf: W.zf, zr: W.zr, x: .1, r: (W.rf + W.rr) / 2 };
+  return { id, group, mat: paint, U, wheels, glb: { tail: lampTail[0] || tailGlassMaterial(), tails: lampTail, lamps, bar: {}, flash: [], police: false }, ownCabin: true,
+    cabin: { eye: meta.eye || [0, 1.42, .09], wheel: [0, .86, -.42], tilt: 0, wheelR: WHEEL_R0, lock: 1 }, bike };
+}
+/** The garage's stance on the pose tree: rake about the steering head (a point 0.55 m up the axis), offset across the axis. */
+function bikeStance(B, b = {}) {
+  const rk = clamp(+b.rake || 0, -2, 2) * Math.PI / 180, off = clamp(+b.offset || 0, -10, 10) / 1000;
+  const top = B.P0.clone().addScaledVector(B.D0, .55), q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), rk);   // + rake: the forks further out
+  const P = B.P0.clone().sub(top).applyQuaternion(q).add(top);
+  B.head.position.copy(P); B.head.quaternion.copy(q);
+  B.D = B.D0.clone().applyQuaternion(q);
+  const fwd = new THREE.Vector3(0, -B.D0.z, B.D0.y).negate();              // across the axis, toward the front (steer-local: before the rake)
+  if (fwd.z > 0) fwd.negate();
+  B.offset.position.copy(fwd).multiplyScalar(off);
+  const W = B.meta.wheels; B.restF = new THREE.Vector3(0, W.yf, W.zf).sub(B.P0).add(B.offset.position).applyQuaternion(q).add(P);   // the front axle with the fork at rest
+  B.set = { rideF: clamp((b.rideF || 0) / 1000, -.03, .03), rideR: clamp((b.rideR || 0) / 1000, -.03, .03) };
+}
+/** Per frame: suspension, steering, wheels, the lean's tyre profile. comps (m, + = compression, per wheel), steer: road-wheel angle. */
+const _bk = { m: null, v: null, m2: null };
+function bikeAnimate(car, B, spins, steer, comps, roll) {
+  const V = _bk.v ??= new THREE.Vector3(), Mi = _bk.m ??= new THREE.Matrix4();
+  const S = B.set || { rideF: 0, rideR: 0 }, W = B.meta.wheels, L = B.L;
+  /* the stance lifts and pitches the chassis over the axles */
+  const hs = (S.rideF + S.rideR) / 2, ps = Math.atan((S.rideF - S.rideR) / L);
+  B.stance.position.y = hs; B.stance.rotation.x = ps; B.stance.updateMatrix();
+  Mi.copy(B.stance.matrix).invert();
+  const cF = comps ? (comps[0] + comps[1]) / 2 : 0, cR = comps ? (comps[2] + comps[3]) / 2 : 0;
+  /* front: the axle wanted (body frame, on the ground less the travel) seen from the chassis; the fork slides to its height */
+  V.set(0, W.yf + cF, W.zf).applyMatrix4(Mi);
+  B.slide.position.copy(B.D0).multiplyScalar(clamp((V.y - B.restF.y) / B.D.y, -.07, .12));   // (rake and offset lift the axle too)
+  /* steering: about the (raked) axis; the bars show a moment of counter-steer while the bike rolls in (against the roll rate) */
+  const r = car.body.rotation.z || 0, now = performance.now() / 1000, dtv = clamp(now - (B.tPrev ?? now), 1e-3, .1), rr = (r - (B.rPrev ?? r)) / dtv;
+  B.tPrev = now; B.rPrev = r; B.cs = comps ? damp(B.cs || 0, clamp(rr * .05, -.06, .06), 12, dtv) : 0;
+  const ax = clamp((steer || 0) / Math.max(.6, B.D.y) + B.cs, -.6, .6);
+  B.steer.quaternion.setFromAxisAngle(B.D0, -ax);
+  /* rear: the swingarm turns so the axle is at its height */
+  V.set(0, W.yr + cR, W.zr).applyMatrix4(Mi);
+  const ry = W.yr - B.SP.y, rz = W.zr - B.SP.z, A = Math.hypot(ry, rz), phi = Math.atan2(rz, ry), Y = clamp((V.y - B.SP.y) / A, -1, 1);
+  B.swingP.rotation.x = clamp(Math.acos(Y) - phi, -.2, .2);
+  /* wheels */
+  const sp = (i) => Array.isArray(spins) || ArrayBuffer.isView(spins) ? spins[i] : (spins || 0);
+  B.wheelF.rotation.x = sp(0) * (.31 / W.rf); B.wheelR.rotation.x = sp(2) * (.31 / W.rr);       // the physics rolls both on 0.31 m
+  /* leaning on a round tyre: the bike turns about the middle of the tread's curve, not the crown, so it neither sinks
+     into the road nor floats (lateral shift and lift of the body origin) */
+  car.body.position.x = B.rho * Math.sin(r); car.body.position.y += B.rho * (1 - Math.cos(r));
+  void roll;
+}
+/** Lamps and indicators (from Car.setLights): head / tail follow the switch and the brakes (as the GLB cars'), the
+ *  indicators blink with the relay, the dash glows with the key. */
+function bikeLights(car, B, S) {
+  const on = S.blinkOn;
+  for (const [k, list] of Object.entries(B.ind)) { const left = k === 'indFL' || k === 'indRL', lit = on && (S.hazard || (left ? S.blink < 0 : S.blink > 0)); for (const m of list) m.emissiveIntensity = lit ? 6 : 0; }
+  if (B.gauge) B.gauge.emissiveIntensity = S.ign ? .55 : 0;
+}
+/** Wet tyres: the sidewall darkens a little and shines as water films it. */
+function bikeWet(B, wet) {
+  for (const m of B.tyres) { const r0 = m.userData.tyre.r0; m.roughness = lerp(r0, r0 * .42, wet); if (!m.userData.full) m.clearcoat = .06 + .5 * wet; m.clearcoatRoughness = lerp(.3, .12, wet); }   // (Mobile shading keeps its coat off)
+}
+/** Car.#applyModel hook: the car's own wheels, steering wheel, contact shadow and headlamps for a bike or back for a car. */
+function bikeApplyModel(car, mo) {
+  const B = mo?.bike || null;
+  for (const w of car.wheels) w.visible = !B;
+  if (car.wheelBase) car.wheelBase.visible = car.wheelBase.visible && !B;
+  car.shadowMesh.scale.set(B ? .36 : 1, 1, B ? .4 : 1); car.shadowMesh.position.z = B ? 0 : -.11;
+  car.bodyPosX = 0; car.body.position.x = 0;
+  for (const [i, l] of car.headlights.entries()) {
+    l.userData.p0 ??= l.position.clone();
+    if (B) { const H = B.meta.lamps.head || [0, .74, -.7]; l.position.set((i ? 1 : -1) * .05, H[1] - .03, H[2] - .04); }
+    else l.position.copy(l.userData.p0);
+  }
+  if (B) { car.rideHeight = 0; car.body.position.y = 0; bikeStance(B, car.s.data.bike); }
+}
+/** CabinControls without a rig (the bike): the key springs back from START, the indicator relay, its self-cancel. */
+function bikeCabTick(ctl, dt, d) {
+  const S = ctl.st, sim = d?.sim, running = !!sim?.running;
+  if (S.ign === 2) { S.crankT -= dt; if (running || S.crankT <= 0) S.ign = 1; }
+  if (sim?.robot && S.ign === 0) S.ign = 1;
+  const blinking = S.hazard || S.blink !== 0, ph = (ctl.t * 1.4) % 1 < .5;
+  if (blinking && ph !== S.blinkOn) { S.blinkOn = ph; S.events.push(ph ? 'tickOn' : 'tickOff'); } else if (!blinking) S.blinkOn = false;
+  const lean = sim?.bk ? sim.bk.lean : 0;                               // cancelled when the bike comes upright after the turn
+  if (S.blink && Math.abs(lean) > .25 && Math.sign(lean) === S.blink) S.turned = true;
+  if (S.blink && S.turned && Math.abs(lean) < .06) { S.blink = 0; S.turned = false; S.events.push('stalk'); }
+  S.temp = running ? Math.min(90, S.temp + dt * (1.5 + (sim?.rpm || 0) / 6000)) : Math.max(18, S.temp - dt * .05);
+}
+/** VR: the bars. A grip squeezed within 12 cm of a bar end holds it (the glove settles there); with both held the bars
+ *  turn with the line between the hands; twisting the right grip back opens the throttle (0.9 rad = full). */
+function bikeVrBars(V, d, pulse) {
+  const B = d.carObj.packCar?.bike; if (!B) return false;
+  const body = d.carObj.body, I = V.inp, w = V._bw ??= { a: new THREE.Vector3(), b: new THREE.Vector3(), q: new THREE.Quaternion(), x: new THREE.Vector3() };
+  body.updateMatrixWorld(true);
+  let held = 0;
+  for (const side of ['left', 'right']) {
+    const grip = V.grips[side], sq = side === 'left' ? I.sqL : I.sqR;
+    if (!grip || sq < .55) { V.hold[side] = null; continue; }
+    const gp = w.a.setFromMatrixPosition(grip.matrixWorld), bp = B.grips[side].getWorldPosition(w.b);
+    let h = V.hold[side];
+    if (!h) { if (gp.distanceTo(bp) < .12) { h = V.hold[side] = { bike: true, q0: grip.getWorldQuaternion(new THREE.Quaternion()) }; pulse?.(side, .3, 25); } else continue; }
+    held++;
+    if (side === 'right') {                                             // throttle: the wrist's roll about the bar since the grab
+      w.q.copy(grip.getWorldQuaternion(w.q)).multiply(h.q0.clone().invert());
+      w.x.set(1, 0, 0).transformDirection(body.matrixWorld);
+      h.twist = clamp(2 * Math.atan2(w.q.x * w.x.x + w.q.y * w.x.y + w.q.z * w.x.z, w.q.w) / .9, 0, 1);
+    }
+  }
+  V.twist = V.hold.right?.twist || 0;
+  if (V.hold.left && V.hold.right) {
+    const inv = (_bk.m2 ??= new THREE.Matrix4()).copy(body.matrixWorld).invert();
+    const L = w.a.setFromMatrixPosition(V.grips.left.matrixWorld).applyMatrix4(inv), R = w.b.setFromMatrixPosition(V.grips.right.matrixWorld).applyMatrix4(inv);
+    const ang = Math.atan2(R.z - L.z, R.x - L.x), vx = Math.abs(d.sim.vx ?? 0), lock = Math.max(.072, .56 / (1 + (vx / 16) ** 2));
+    if (!V.wheelHeld) {                                                 // both just taken: the hands' line as it is is straight ahead (less the steer already on)
+      V.bar0 = ang - (d.sim.steer || 0);
+      if (d.carObj.cab?.ign === 0) d.carObj.controls.act('ignition');   // and a cold engine starts (there is no key to turn on the bike)
+    }
+    V.wheelHeld = true; V.wheelAngle = ang - V.bar0; V.wheelSteer = clamp(V.wheelAngle / lock, -1, 1);
+  } else { V.wheelHeld = false; V.wheelAngle = 0; }
+  return held >= 0;
+}
+/** VR glove on a held grip: the world point of that bar end. */
+function bikeGripWorld(car, side, out) { const B = car.packCar?.bike; return B ? B.grips[side].getWorldPosition(out) : out; }
+/** Garage numbers for the Performance tab. */
+function bikeStats(b = {}, c = {}) {
+  const S = BIKE_SPEC.r6, pw = BIKE_POWER[b.power] || BIKE_POWER.stock, red = clamp(+b.revLimit || S.red, 14000, 17000), rear = clamp(+b.sprocket || S.rear, 42, 50);
+  const hp = Math.round(118 * pw.k * (red < 14500 ? .97 : 1)), fin = S.primary * rear / S.front, R = .31;
+  const vTop = Math.min(red / (S.gears[5] * fin) * Math.PI / 30 * R, Math.cbrt(2 * 87000 * pw.k * .9 / (AIR * S.CdA)));
+  const pt = PERF.tyres[c.tyres] || PERF.tyres.road, grip = S.mu * pt.grip * .98, stop = 27.78 ** 2 / (2 * 9.81 * Math.min(grip, 1.05));
+  return [
+    ['Power', `${hp} hp`, (hp - 90) / 60],
+    ['Weight', `${S.mass} kg wet`, (260 - S.mass) / 120],
+    ['Top speed', `${Math.round(vTop * 3.6)} km/h`, (vTop * 3.6 - 200) / 110],
+    ['100 to 0 km/h', `${stop.toFixed(1)} m`, (42 - stop) / 12],
+  ];
 }
 const FINISHES = {
   gloss: { name: 'Gloss black', metal: .45, rough: .42, cc: 1, ccRough: .028, flake: .06, peel: .07 },
@@ -9882,7 +10281,7 @@ class Car {
     this.models ??= {};
     if (!want && !this.models[id] && GLB_CARS[id]) {                 // build 1.31: a GLB body
       if (!GlbCars.get(id)) GlbCars.load(id).then(d => { if (d && this.s.data.car.model === id) this.applySettings(); else if (!d) bus.emit('toast', 'The car model could not be loaded'); });
-      else { try { const o = buildGlbCar(this, id, { own: true }); if (o) { this.models[id] = o; this.body.add(o.group); grimeBake(o.group, this.body, o.wheels); } } catch (e) { Log.error('The car model could not be built', e); } }
+      else { try { const o = GLB_CARS[id].bike ? buildBike(this, id) : buildGlbCar(this, id, { own: true }); if (o) { this.models[id] = o; this.body.add(o.group); if (!o.bike) grimeBake(o.group, this.body, o.wheels); } } catch (e) { Log.error('The car model could not be built', e); } }
     }
     const onCel = want && !!this.cel; this.isCel = onCel;
     const mo = want ? null : this.models[id] || null; this.packCar = mo;
@@ -9899,6 +10298,7 @@ class Car {
     this.#applyWheelLayout(mo?.wheels || WHEEL_LAYOUT_SEDAN);          // build 1.19: visible wheels sit in the body's own arches
     Object.assign(CABIN, onCel ? CABIN_CEL : mo?.cabin || CABIN_CEL);
     this.wheelBase.position.set(...CABIN.wheel); this.wheelBase.rotation.x = CABIN.tilt; this.wheelBase.scale.setScalar(CABIN.wheelR / WHEEL_R0);
+    bikeApplyModel(this, mo);                                          // §14.14: the motorcycle has its own wheels, no steering wheel
     this.#glassCut();
     bus.emit('car:model', id);
   }
@@ -9999,7 +10399,7 @@ class Car {
     /* parts per body, built once */
     this.up ??= {};
     for (const [id, U] of Object.entries(this.up)) U.group.visible = id === key;
-    if (!key) return;
+    if (!key || isBikeModel(key)) return;                              // §14.14: no boot lip or tailpipes on the bike
     const U = this.up[key] ??= this.#buildUpgrades(key);
     if (!U) return;
     U.lip.visible = c.aero === 'lip'; U.wing.visible = c.aero === 'raised';
@@ -10051,7 +10451,7 @@ class Car {
     const body = this.body, hidden = [], casters = [], added = [], buckets = new Map(), shadowParts = [];
     body.updateMatrixWorld(true);
     const inv = new THREE.Matrix4().copy(body.matrixWorld).invert();
-    const moving = new Set([this.wheelBase, this.pedA, this.pedB, ...(this.liners || [])].filter(Boolean));   // steering wheel, pedals, cabin-only shells
+    const moving = new Set([this.wheelBase, this.pedA, this.pedB, ...(this.liners || []), ...(this.packCar?.bike?.moving || [])].filter(Boolean));   // steering wheel, pedals, cabin-only shells; the bike's fork and swingarm
     const walk = (o, batchable) => {
       if (!o.visible || moving.has(o)) return;
       if (o === this.cel?.group) batchable = false;   // already merged per material
@@ -10097,6 +10497,7 @@ class Car {
     const b = this.body;
     b.position.y = this.rideHeight + heave;
     b.rotation.set(pitch, 0, roll, 'YXZ');
+    if (this.packCar?.bike) bikeAnimate(this, this.packCar.bike, spins, steer, comps, roll);   // §14.14
   }
   /** Lamps (build 1.28: from the light switch, §14.11): 0 off, 1 parking, 2 dipped, 3 main beam; brake lights.
    *  night (0…1) only sets how much the dash lighting is wanted; the switch decides the lamps. */
@@ -10136,6 +10537,7 @@ class Car {
       for (const F of G.flash) F.m.emissiveIntensity = on ? (F.kind === 'rear' ? policeFlash(t, F.sg, 'rear') * 4 : policeFlash(t, -F.sg) * 8) : 0;
       B.on = on;
     }
+    if (this.packCar?.bike) bikeLights(this, this.packCar.bike, S);   // §14.14: indicators, dash
   }
   setNight(n, braking = false, damage = 0) { this.setLights(n, braking); this.paintU.uScuff.value = damage; }
   /** Realism 7: road film (0..1), dried salt (0..1) and how wet the film is, on every grimed material; dirty lenses dim the lamps. */
@@ -10143,7 +10545,7 @@ class Car {
   /** Section 12: water on the body. wet 0…1 (bead coverage), flowDist: metres the
    *  water on the upper panels has been blown back (accumulated by the caller),
    *  flow 0…1: how strongly it is streaming. */
-  setWet(wet, flowDist = 0, flow = 0) { const u = this.paintU; u.uWet.value = wet; u.uWetT.value = flowDist % 5000; u.uFlow.value = flow; }
+  setWet(wet, flowDist = 0, flow = 0) { const u = this.paintU; u.uWet.value = wet; u.uWetT.value = flowDist % 5000; u.uFlow.value = flow; if (this.packCar?.bike) bikeWet(this.packCar.bike, wet); }
   dispose() {
     this.mirrors.dispose(); this.controls.dispose();
     disposeObject(this.group);
@@ -10194,6 +10596,8 @@ const MIRROR_GLASS = {
      reaches further forward than the saloon's). */
   police: { root: 'model', inner: { at: [.0076, 1.2228, -.3742], r: .16, mat: m => m.name === 'Miroir', wide: 1 },
             door: { at: [.924, 1.0014, -.5413], r: .13, mat: m => m.name === 'Miroir', wide: 1.3 }, house: { inner: [.015, .055], door: [.035, .16] } },
+  /* §14.14: the R6's two fairing mirrors (mat_mirrorview, r6.json mirror), no inner one; aimed straight back past the rider's elbows */
+  r6: { root: 'model', door: { at: [.33, 1.006, -.593], r: .1, mat: m => m.name === 'mat_mirrorview', wide: 1.25 }, house: { door: [.012, .05] }, want: { left: .2, right: .2 } },
 };
 /* Mirror adjust (graphics.mirrorAdjust; ?mirradj=off = the fixed mirrors exactly as before: no housing split, no
    pivots, no hover, no grabs). Each glass turns about its pivot (door: just behind the glass; inner: the ball joint
@@ -10263,7 +10667,7 @@ class CarMirrors {
       /* build 1.39: the glass stays where the model has it, but a driver adjusts it in its housing: the reflection is aimed
          halfway between the eye and the view wanted (the inner one back through the rear window, a touch down; a door
          one straight back with a sliver of the flank). The model's factory angle looked at the sky and into the car. */
-      const te = x.subVectors(eye, C0).normalize(), want = id === 'inner' ? new THREE.Vector3(0, -.03, 1) : new THREE.Vector3(sx * (id === 'right' ? .44 : .34), -.01, 1);   // the far (passenger) glass needs more outward to clear the flank
+      const te = x.subVectors(eye, C0).normalize(), want = id === 'inner' ? new THREE.Vector3(0, -.03, 1) : new THREE.Vector3(sx * (spec.want?.[id] ?? (id === 'right' ? .44 : .34)), -.01, 1);   // the far (passenger) glass needs more outward to clear the flank
       const ng = n.clone(); n.copy(te).add(want.normalize()).normalize();
       const u = new THREE.Vector3(0, 1, 0).cross(n).normalize(), v = n.clone().cross(u);
       let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
@@ -10280,7 +10684,7 @@ class CarMirrors {
       rig.glass[id] = live; rig.frames[id] = { C: C.clone().addScaledVector(n, .0012), n, u, v, hw, hh, wide: G.wide || 1, asp: hw / hh };
       (rig._tmp ??= {})[id] = { T, ng, G, sx };          // mirror adjust: the glass as the model has it, for the housing split
     };
-    place('inner', spec.inner, 1);
+    if (spec.inner) place('inner', spec.inner, 1);                    // §14.14: the bike has none
     if (spec.door) { place('right', spec.door, 1); place('left', spec.door, -1); }
     { try { this.#adjRig(key, rig); } catch (e) { Log.warn('mirror adjust could not be set up: ' + key, e); rig.adj = null; } delete rig._tmp; }
     return (this.rigs[key] = rig);
@@ -10518,7 +10922,8 @@ class CarMirrors {
     this.#targets(q, rig);
     if (!q || !rig) return;
     const f = this.frame++, ids = [];
-    if (o.cabin) {
+    if (o.cabin && !rig.frames.inner) ids.push(...(q === 'high' ? ['left', 'right'] : [f & 1 ? 'left' : 'right']));   // §14.14: the bike's two mirrors, no inner one
+    else if (o.cabin) {
       if (q === 'high') { ids.push('inner'); if (rig.frames.left) ids.push(f & 1 ? 'left' : 'right'); }
       else ids.push(f & 1 ? (rig.frames.left ? (f & 2 ? 'left' : 'right') : 'inner') : 'inner');
     } else if (rig.frames.left && f % 6 === 0) ids.push((f / 6) & 1 ? 'left' : 'right');   // seen from outside: the doors, slowly
@@ -10848,7 +11253,7 @@ class CabinControls {
     this.t += dt; this.sim = d?.sim;
     CABIN_OCC_U.uCabInv.value?.copy(car.body.matrixWorld).invert();        // cabin occlusion frame (§14.7)
     for (const k in this.rigs) if (this.rigs[k]) { this.rigs[k].root.visible = k === car.bodyKey; this.rigs[k].col.visible = k === car.bodyKey; }
-    if (!R) return;
+    if (!R) { if (car.packCar?.bike) bikeCabTick(this, dt, d); return; }   // §14.14: key, relay, self-cancel
     const sim = d?.sim, rpm = sim?.rpm || 0, v = Math.abs(d?.v || 0), running = !!sim?.running;
     /* key: START springs back to ON once the engine has caught (or after the crank time on the desktop) */
     if (S.ign === 2) { S.crankT -= dt; if (!this.vrHolding('key') && (running || S.crankT <= 0)) S.ign = 1; }
@@ -11184,11 +11589,12 @@ class GarageWorld {
     /* build 1.28: a walkable showroom. Both cars stand on the floor; walk up to one (WASD and the mouse, or the sticks in
        the headset), look at it (or point at it) and press E / click / the trigger to take it. The one you have is the
        live car; the other is a static copy (its body and the wheels, no cabin systems). */
-    this.slots = { celsior: { x: -1.75, z: .2, ry: .42 }, police: { x: 1.75, z: .2, ry: -.42 } };   // two cars: the Lexus and the patrol car
+    this.slots = { celsior: { x: -1.75, z: .2, ry: .42 }, police: { x: 1.75, z: .2, ry: -.42 },   // two cars: the Lexus and the patrol car
+      r6: { x: 0, z: -1.6, ry: 0, hw: .45, hl: .95, box: [[-.5, 0, -1.1], [.5, 1.3, 1.1]], ex: .75, ez: 1.4, ring: [.2, .42] } };   // §14.14: and the motorcycle between their tails
     this.display = {}; this.target = null;
     this.walk = { on: false, p: new THREE.Vector3(0, 1.65, 6.2), yaw: 0, pitch: -.14 };
     const ringG = new THREE.RingGeometry(2.55, 2.62, 96).rotateX(-Math.PI / 2);
-    this.rings = {}; for (const id of Object.keys(this.slots)) { const m = new THREE.Mesh(ringG, new THREE.MeshBasicMaterial({ color: 0x6e0f15, transparent: true, opacity: .5, depthWrite: false })); m.position.set(this.slots[id].x, .004, this.slots[id].z); m.scale.set(.48, 1, 1); this.rings[id] = m; scene.add(m); }
+    this.rings = {}; for (const id of Object.keys(this.slots)) { const m = new THREE.Mesh(ringG, new THREE.MeshBasicMaterial({ color: 0x6e0f15, transparent: true, opacity: .5, depthWrite: false })); m.position.set(this.slots[id].x, .004, this.slots[id].z); const rs = this.slots[id].ring; m.scale.set(rs ? rs[0] : .48, 1, rs ? rs[1] : 1); this.rings[id] = m; scene.add(m); }
     const lc = document.createElement('canvas'); lc.width = 768; lc.height = 256; this.labelC = lc; this.labelT = new THREE.CanvasTexture(lc); this.labelT.colorSpace = THREE.SRGBColorSpace;
     this.label = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.labelT, transparent: true, depthTest: false, toneMapped: false })); this.label.scale.set(1.65, .55, 1); this.label.visible = false; this.label.renderOrder = 10; scene.add(this.label);
     this.offModel = bus.on('car:model', () => { this.labelDirty = true; if (this.car.group.parent === this.scene) { this.#place();
@@ -11293,16 +11699,16 @@ class GarageWorld {
     if (!thr && !brk) D.v = damp(D.v, 0, 1.2, dt);
     D.steer = damp(D.steer, st * .55, 6, dt);
     const fx = -Math.sin(D.yaw), fz = -Math.cos(D.yaw);
-    D.yaw -= D.v / CAR.wheelbase * Math.tan(D.steer) * dt;
+    D.yaw -= D.v / (this.car.packCar?.bike?.L || CAR.wheelbase) * Math.tan(D.steer) * dt;
     D.x += fx * D.v * dt; D.z += fz * D.v * dt;
     /* inside the shed, clear of the other cars (circles), the door closed */
     D.x = clamp(D.x, -6.6, 6.6); D.z = clamp(D.z, WH_DOOR_Z - 44, WH_DOOR_Z - 2.6);
     for (const [id, S] of Object.entries(this.slots)) {                // the parked cars: segments along their length, ours sampled front, middle, rear
       if (id === this.car.bodyKey) continue;
-      const sy = S.ry + Math.PI, ax = -Math.sin(sy), az = -Math.cos(sy);
-      for (const k of [1.6, 0, -1.6]) {
-        const px = D.x + fx * k, pz = D.z + fz * k, t = clamp((px - S.x) * ax + (pz - S.z) * az, -1.7, 1.7);
-        const dx = px - (S.x + ax * t), dz = pz - (S.z + az * t), d = Math.hypot(dx, dz), r = 1.9;
+      const sy = S.ry + Math.PI, ax = -Math.sin(sy), az = -Math.cos(sy), mine = this.car.packCar?.bike;   // §14.14: each slot's own size, and ours
+      for (const k of mine ? [.8, 0, -.8] : [1.6, 0, -1.6]) {
+        const px = D.x + fx * k, pz = D.z + fz * k, t = clamp((px - S.x) * ax + (pz - S.z) * az, -(S.hl ?? 1.7), S.hl ?? 1.7);
+        const dx = px - (S.x + ax * t), dz = pz - (S.z + az * t), d = Math.hypot(dx, dz), r = (S.hw ?? 1) + (mine ? .45 : .9);
         if (d < r && d > 1e-4) { D.x += dx / d * (r - d); D.z += dz / d * (r - d); if ((dx * fx + dz * fz) * Math.sign(D.v) * Math.sign(k || 1) < 0) D.v *= .5; }
       }
     }
@@ -11335,15 +11741,15 @@ class GarageWorld {
   #displayCar(id) {
     const car = this.car, g = new THREE.Group(); g.name = 'display-' + id; this.scene.add(g);
     const build = () => {
-      let body = null, L = WHEEL_LAYOUT_SEDAN;
+      let body = null, L = WHEEL_LAYOUT_SEDAN, bike = false;
       try {
         if (id === 'celsior' && SaloonData.player) body = buildCelsior(car)?.group;
-        else if (GLB_CARS[id]) { const o = GlbCars.get(id) && buildGlbCar(car, id); if (o) { body = o.group; L = o.wheels; } }   // build 1.31
+        else if (GLB_CARS[id]) { const o = GlbCars.get(id) && (GLB_CARS[id].bike ? buildBike(car, id) : buildGlbCar(car, id)); if (o) { body = o.group; L = o.wheels; bike = !!o.bike; if (bike) bikeAnimate({ body: new THREE.Group(), s: car.s }, o.bike, 0, 0, null, 0); } }   // build 1.31; §14.14
       } catch (e) { Log.warn('Showroom copy failed', e); }
       if (!body) return false;
-      body.position.y = car.rideHeight || 0; g.add(body); this.#shadowNow();
+      body.position.y = bike ? 0 : car.rideHeight || 0; g.add(body); this.#shadowNow();
       const k = L.r / CAR.tyreR;
-      for (const w of car.wheels) { const c = w.clone(true), { sg, front } = w.userData; c.position.set(sg * L.x, L.r, front ? L.zf : L.zr); c.scale.setScalar(k); c.rotation.set(0, 0, sg * (front ? .012 : .02)); g.add(c); }
+      if (!bike) for (const w of car.wheels) { const c = w.clone(true), { sg, front } = w.userData; c.visible = true; c.position.set(sg * L.x, L.r, front ? L.zf : L.zr); c.scale.setScalar(k); c.rotation.set(0, 0, sg * (front ? .012 : .02)); g.add(c); }
       return true;
     };
     if (!build()) Promise.all([SaloonData.load('player'), ...(GLB_CARS[id] ? [GlbCars.load(id)] : [])]).then(() => { if (!g.children.length) build(); });
@@ -11417,7 +11823,7 @@ class GarageWorld {
     let best = null, bt = 7;
     for (const [id, S] of Object.entries(this.slots)) {
       const c = Math.cos(-S.ry), sn = Math.sin(-S.ry), lo = [o.x - S.x, o.y, o.z - S.z], ld = [d.x, d.y, d.z];
-      const rot = v => [v[0] * c + v[2] * sn, v[1], -v[0] * sn + v[2] * c], O = rot(lo), D = rot(ld), lo2 = [-1, 0, -2.55], hi = [1, 1.5, 2.65];
+      const rot = v => [v[0] * c + v[2] * sn, v[1], -v[0] * sn + v[2] * c], O = rot(lo), D = rot(ld), lo2 = S.box?.[0] || [-1, 0, -2.55], hi = S.box?.[1] || [1, 1.5, 2.65];
       let t0 = 0, t1 = bt; for (let k = 0; k < 3; k++) { if (Math.abs(D[k]) < 1e-6) { if (O[k] < lo2[k] || O[k] > hi[k]) { t0 = 1; t1 = 0; } continue; } let a = (lo2[k] - O[k]) / D[k], b = (hi[k] - O[k]) / D[k]; if (a > b) [a, b] = [b, a]; t0 = Math.max(t0, a); t1 = Math.min(t1, b); }
       if (t0 <= t1 && t0 < bt) { bt = t0; best = id; }
     }
@@ -11430,7 +11836,7 @@ class GarageWorld {
     g.fillStyle = 'rgba(8,8,10,.78)'; rrPath(g, 8, 8, W - 16, H - 16, 26); g.fill();
     g.fillStyle = '#e8e3da'; g.font = `300 64px "Cormorant Garamond", Georgia, serif`; g.textBaseline = 'middle'; g.fillText(name.split(' (')[0], 36, 72);
     g.font = `400 26px ${UIF}`; g.fillStyle = 'rgba(232,227,218,.72)'; g.fillText(name.split(' (')[1]?.replace(')', '') || '', 36, 132);
-    const st = carStats(this.s.data.car); g.fillText(`${st[0][1]} · ${st[1][1]} · ${GEARBOX[id]?.manual ? 'five-speed manual' : 'five-speed automatic'}`, 36, 172);
+    const st = carStats({ ...this.s.data.car, model: id }, this.s.data.bike); g.fillText(`${st[0][1]} · ${st[1][1]} · ${GEARBOX[id]?.name || (GEARBOX[id]?.manual ? 'five-speed manual' : 'five-speed automatic')}`, 36, 172);
     g.fillStyle = sel ? '#7fd69a' : '#f0c27a'; g.font = `600 26px ${UIF}`; g.fillText(sel ? (this.kind === 'warehouse' ? 'Your car · E or click: drive it to the door' : 'Your car') : 'E, click or trigger: take this car', 36, 214);
     this.labelT.needsUpdate = true;
   }
@@ -11490,7 +11896,7 @@ class GarageWorld {
   /** Walking stays outside the two cars and inside the studio. */
   #collide(p) {
     for (const S of Object.values(this.slots)) {
-      const c = Math.cos(-S.ry), sn = Math.sin(-S.ry), x = (p.x - S.x) * c + (p.z - S.z) * sn, z = -(p.x - S.x) * sn + (p.z - S.z) * c, ex = 1.25, ez = 2.85;
+      const c = Math.cos(-S.ry), sn = Math.sin(-S.ry), x = (p.x - S.x) * c + (p.z - S.z) * sn, z = -(p.x - S.x) * sn + (p.z - S.z) * c, ex = S.ex ?? 1.25, ez = S.ez ?? 2.85;
       if (Math.abs(x) < ex && Math.abs(z) < ez) { const px = ex - Math.abs(x), pz = ez - Math.abs(z); let nx = x, nz = z; if (px < pz) nx = Math.sign(x) * ex; else nz = Math.sign(z) * ez;
         const c2 = Math.cos(S.ry), s2 = Math.sin(S.ry); p.x = S.x + nx * c2 + nz * s2; p.z = S.z - nx * s2 + nz * c2; }
     }
@@ -12514,7 +12920,7 @@ class TrafficSystem {
     const th = Math.hypot(F.T.x, F.T.z), tx = F.T.x / th, tz = F.T.z / th, c = Math.cos(a.psi), sn = Math.sin(a.psi);
     const B = this.oB, A = this.oA;
     B.x = p.x; B.z = p.z; B.fx = a.dir * tx * c + F.Rh.x * sn; B.fz = a.dir * tz * c + F.Rh.z * sn; B.hl = a.T.len / 2; B.hw = a.T.hw * HITBOX_W;
-    A.x = P.x; A.z = P.z; A.fx = P.fx; A.fz = P.fz; A.hl = CAR.length / 2; A.hw = CAR.width / 2 * HITBOX_W;
+    A.x = P.x; A.z = P.z; A.fx = P.fx; A.fz = P.fz; A.hl = (P.len || CAR.length) / 2; A.hw = (P.hw || CAR.width / 2) * HITBOX_W;   // §14.14: the bike's own box
     const hit = obbSAT(A, B, this.hit); if (!hit) return;
     const vs = a.crash ? a.crash.vs : a.v, vu = a.crash ? a.crash.vu : a.uDot, m = a.T.mass;
     const ovx = a.dir * tx * vs + F.Rh.x * vu, ovz = a.dir * tz * vs + F.Rh.z * vu;
@@ -12957,7 +13363,8 @@ const PRICES = {
   'car.weight': { light: 30000, carbon: 65000 },
 };
 /** Figures for the performance panel, from the fitted parts. */
-function carStats(c) {
+function carStats(c, b) {
+  if (isBikeModel(c.model)) return bikeStats(b, c);                   // §14.14
   const pe = PERF.engine[c.engine] || PERF.engine.stock, pb = PERF.brakes[c.brakes] || PERF.brakes.stock;
   const pt = PERF.tyres[c.tyres] || PERF.tyres.road, pw = PERF.weight[c.weight] || PERF.weight.stock;
   const kg = 1990 - pw.kg - pb.kg, hp = Math.round(612 * pe.torque), grip = 1.08 * pt.grip, stop = 27.78 ** 2 / (2 * 9.81 * grip * (.95 + .05 * pb.torque));
@@ -13549,7 +13956,7 @@ const GARAGE_TABS = ['Body', 'Wheels', 'Interior', 'Stance', 'Performance'];
 const perfOpts = group => Object.entries(PERF[group]).map(([k, v]) => [k, v.name]);
 const GARAGE_SCHEMA = [
   { tab: 'Body', group: 'Car' },
-  { tab: 'Body', key: 'car.model', type: 'select', label: 'Model', desc: 'Every body rides on the same axles, wheels and physics. Paint finish, wheels, calipers and ride height apply to both. Saloon ’97: “art of rally Latest Version 2027” by FarHandle5255, CC BY 4.0; highway patrol ’04: “Chevrolet Impala Highway Patrol”.', options: Object.entries(CAR_MODELS) },
+  { tab: 'Body', key: 'car.model', type: 'select', label: 'Model', desc: 'Every body rides on the same axles, wheels and physics. Paint finish, wheels, calipers and ride height apply to both. Saloon ’97: “art of rally Latest Version 2027” by FarHandle5255, CC BY 4.0; highway patrol ’04: “Chevrolet Impala Highway Patrol”; Yamaha YZF-R6: “Yamaha YZF-R6 RACE” by dragos12_, CC BY 4.0 (it has its own wheels, stance and engine).', options: Object.entries(CAR_MODELS) },
   { tab: 'Body', key: 'world.garage', type: 'select', label: 'Garage', desc: 'Warehouse: walk up to your car and press E (or click it) to get in, then drive it to the roller door to pick where to go. Studio: the dark showroom with the turntable camera.', options: [['warehouse', 'Warehouse'], ['studio', 'Studio']] },
   { tab: 'Body', group: 'Paint' },
   { tab: 'Body', key: 'car.finish', type: 'select', price: true, label: 'Finish', desc: 'Every finish keeps the car black. Gloss carries the deepest reflections.', options: Object.entries(FINISHES).map(([k, f]) => [k, f.name]) },
@@ -13571,6 +13978,12 @@ const GARAGE_SCHEMA = [
   { tab: 'Stance', group: 'Suspension' },
   { tab: 'Stance', key: 'car.rideHeight', type: 'range', label: 'Ride height', desc: 'Lower drops the centre of gravity and adds downforce, but leaves less bump travel before the stops.', min: -40, max: 40, step: 5, fmt: v => (v > 0 ? '+' : '') + v + ' mm' },
   { tab: 'Stance', key: 'car.suspension', type: 'select', price: true, label: 'Damping and springs', desc: 'Applies to your next run.', options: Object.entries(SUSPENSION_SETUPS).map(([k, v]) => [k, v.name]) },
+  /* §14.14: the motorcycle's own stance (stored in bike.*, so the cars keep theirs) */
+  { tab: 'Stance', group: 'Motorcycle', when: d => isBikeModel(d.car.model) },
+  { tab: 'Stance', key: 'bike.rideF', type: 'range', label: 'Front ride height', desc: 'The fork slides in its clamps. Higher at the front slows the steering and lifts the centre of gravity.', min: -30, max: 30, step: 2, fmt: v => (v > 0 ? '+' : '') + v + ' mm', when: d => isBikeModel(d.car.model) },
+  { tab: 'Stance', key: 'bike.rideR', type: 'range', label: 'Rear ride height', desc: 'The shock’s length: up at the rear tips the bike onto its front and sharpens turn-in.', min: -30, max: 30, step: 2, fmt: v => (v > 0 ? '+' : '') + v + ' mm', when: d => isBikeModel(d.car.model) },
+  { tab: 'Stance', key: 'bike.rake', type: 'range', label: 'Fork rake', desc: 'Steering head angle (24° standard). More rake means more trail: steadier at speed, slower to tip in.', min: -2, max: 2, step: .25, fmt: v => (23.6 + v).toFixed(2) + '°', when: d => isBikeModel(d.car.model) },
+  { tab: 'Stance', key: 'bike.offset', type: 'range', label: 'Triple-clamp offset', desc: 'How far the fork sits ahead of the steering axis. More offset, less trail: quicker steering.', min: -10, max: 10, step: 1, fmt: v => (31 + v) + ' mm', when: d => isBikeModel(d.car.model) },
   { tab: 'Stance', group: 'Drivetrain' },
   { tab: 'Stance', key: 'car.drive', type: 'select', label: 'Drive', desc: 'All-wheel drive sends up to half the torque forward when the rears slip. Rear-wheel drive puts everything through the back tyres.', options: [['awd', 'All-wheel drive'], ['rwd', 'Rear-wheel drive']] },
   { tab: 'Stance', group: 'Tyres and brakes' },
@@ -13578,6 +13991,11 @@ const GARAGE_SCHEMA = [
   { tab: 'Stance', key: 'car.brakeBias', type: 'range', label: 'Brake balance', desc: 'Share of braking on the front axle. More rearward rotates the car on the brakes and locks the rears sooner.', min: .55, max: .72, step: .01, fmt: v => Math.round(v * 100) + '% front' },
   { tab: 'Performance', group: 'With the parts fitted now' },
   { tab: 'Performance', type: 'stats' },
+  /* §14.14: the motorcycle's engine */
+  { tab: 'Performance', group: 'Motorcycle engine', when: d => isBikeModel(d.car.model) },
+  { tab: 'Performance', key: 'bike.power', type: 'select', label: 'Engine build', optDesc: v => BIKE_POWER[v]?.desc, options: Object.entries(BIKE_POWER).map(([k, v]) => [k, v.name]), when: d => isBikeModel(d.car.model) },
+  { tab: 'Performance', key: 'bike.revLimit', type: 'range', label: 'Rev limit', desc: 'Where the limiter cuts in. The power peaks at 14,500 rpm; past 16,000 it falls away.', min: 14000, max: 17000, step: 250, fmt: v => fmtInt(v) + ' rpm', when: d => isBikeModel(d.car.model) },
+  { tab: 'Performance', key: 'bike.sprocket', type: 'range', label: 'Rear sprocket', desc: '45 teeth standard (16 at the front). Bigger: harder acceleration, lower top speed.', min: 42, max: 50, step: 1, fmt: v => v + ' teeth', when: d => isBikeModel(d.car.model) },
   { tab: 'Performance', group: 'Engine' },
   { tab: 'Performance', key: 'car.engine', type: 'select', price: true, label: 'Calibration and turbochargers', optDesc: v => PERF.engine[v]?.desc, options: perfOpts('engine') },
   { tab: 'Performance', group: 'Brakes' },
@@ -13919,8 +14337,8 @@ class UIManager {
   }
   #stats(owner) {
     const wrap = h('div', { class: 'stats' });
-    const paint = () => wrap.replaceChildren(...carStats(this.S.data.car).map(([k, val, t]) => h('div', { class: 'statbar' }, h('span', {}, k), h('div', { class: 'bar' }, h('i', { style: { width: `${Math.round(clamp(t, .03, 1) * 100)}%` } })), h('span', {}, val))));
-    for (const k of ['car.engine', 'car.brakes', 'car.tyres', 'car.weight']) this.#reg(k, paint, owner);
+    const paint = () => wrap.replaceChildren(...carStats(this.S.data.car, this.S.data.bike).map(([k, val, t]) => h('div', { class: 'statbar' }, h('span', {}, k), h('div', { class: 'bar' }, h('i', { style: { width: `${Math.round(clamp(t, .03, 1) * 100)}%` } })), h('span', {}, val))));
+    for (const k of ['car.engine', 'car.brakes', 'car.tyres', 'car.weight', 'car.model', 'bike.power', 'bike.revLimit', 'bike.sprocket']) this.#reg(k, paint, owner);
     return wrap;
   }
   #buildGarage() {
@@ -14312,7 +14730,7 @@ class App {
       if (path in PRICES) this.economy.track(path, value);
       if (path.startsWith('graphics.')) this.gfxDirty = true;
       else if (path.startsWith('audio.')) { this.audio.applyVolumes(); focusMute(); if (path === 'audio.spatial') this.vaudio?.setSpatial(value); }
-      else if (path.startsWith('car.')) this.carObj.applySettings();
+      else if (path.startsWith('car.') || path.startsWith('bike.')) this.carObj.applySettings();   // §14.14: bike.* too
       else if (path.startsWith('interface.')) { this.#applyInterface(); this.hud.refresh(); this.perf.setVisible(S.data.interface.showFps); if (this.ui.name === 'main') this.ui.refreshProfile(); }
     });
     bus.on('render:resize', ({ w, h }) => { this.menuWorld?.resize(w, h); this.driveWorld?.resize(w, h); this._garage?.resize(w, h); });
@@ -14986,6 +15404,7 @@ class VRSystem {
     if (I.thr > .03) st.throttle = Math.max(st.throttle, I.thr);
     if (I.brk > .03) st.brake = Math.max(st.brake, I.brk);
     if (I.hb) st.handbrake = 1;
+    if (this.twist > .02) st.throttle = Math.max(st.throttle, this.twist);   // §14.14: the bike's twist grip
     if (this.wheelHeld) st.steer = this.wheelSteer;
     else if (v.stickSteer !== false) {
       const a = Math.abs(I.stickX);
@@ -15031,6 +15450,8 @@ class VRSystem {
    *  around the column, hand over hand past half a turn. Road-wheel angle = wheel angle ÷ ratio,
    *  sent through the car's own speed-sensitive rack. */
   #wheel(d) {
+    if (bikeVrBars(this, d, (s, k, ms) => this.#pulseOne(s, k, ms))) return;   // §14.14: the motorcycle's bars and twist grip
+    this.twist = 0;
     const wb = d.carObj.wheelBase, R = WHEEL_R0, ratio = this.s.data.vr.ratio || 14;
     wb.updateMatrixWorld(true);
     const inv = this._m3.copy(wb.matrixWorld).invert(), held = [];
@@ -15145,7 +15566,8 @@ class VRSystem {
       else { for (const f of U.fingers) f.rotation.x = -1.25 * Math.max(sq, h ? 1 : 0); U.th.rotation.x = -.7 * tr; }
       if (h && g.parent) {                                      // the glove settles on the rim where the hand is
         const a = this.holdAng[side], wb = d.carObj.wheelBase, w = this._v.set(Math.cos(a) * WHEEL_R0, Math.sin(a) * WHEEL_R0, .01);
-        wb.localToWorld(w); g.parent.worldToLocal(w); g.position.lerp(w, .6);
+        if (h.bike) bikeGripWorld(d.carObj, side, w); else wb.localToWorld(w);   // §14.14: or on the bike's grip
+        g.parent.worldToLocal(w); g.position.lerp(w, .6);
       } else g.position.multiplyScalar(.6);
     }
     this.#armsIK();
