@@ -9745,6 +9745,94 @@ function celsiorTrafficLamps() {
   return g;
 }
 
+/* Traffic Lexus from the drivable car's own model (the baked one painted its photo colours into the vertices: every
+ * vertex on a paint / trim edge took a mix, so each car showed bare blotches and dark seams in its paint). Exterior
+ * meshes only, simplified once at run start with meshoptimizer (borders locked so panels stay closed): near copy ~24k
+ * triangles, far copy ~5k. Same textures as your car; the body takes each car's colour through a clear-coated paint
+ * (road film low down, wet sheen); lamps glow from the per-car iLamp (tail / brake, indicators by side, headlamps).
+ * ?celtraf=off = the old baked body. */
+const CEL_TRAF = { on: !/[?&]celtraf=off\b/.test(location.search), ready: null, geo: null,
+  near: { chrome: .12, Material_27: .14, vehiclelights128: .06, Material_68: .05, body: .7, Lexus_LS_Mk2_1997_carpaint: .6, textured_reflector: .8 },
+  far: { chrome: .025, Material_27: .04, body: .2, Lexus_LS_Mk2_1997_carpaint: .2, textured_reflector: .25, jzs161_matte__spec_1: .3, material: .3, matte_colors: .3 },
+  farSkip: /^(vehiclelights128|Material_68|Material_106|silver__spec|Material_38|metal|supra_plate)$/,
+  skip: /^(plastic|gauge_needle|Material_39|sticker_01|int_texture__spec|Material_49|celsior_ucf10_texture_[12]__spec|Matte__FF464646__spec|INT_Decals_Emissive|Material_26)$/ };
+async function celsiorTrafficPrep() {
+  if (!CEL_TRAF.on) return null;
+  return (CEL_TRAF.ready ??= (async () => {
+    const D = await SaloonData.load('player'); if (!D) return null;
+    const { MeshoptSimplifier: MS } = await import('./vendor/meshopt/meshopt_simplifier.js'); await MS.ready;
+    const bin = b64bytes(D.bin), parts = [], t0 = performance.now();
+    for (const m of D.meshes) {
+      if (CEL_TRAF.skip.test(m.mat)) continue;
+      const n = m.n, pos = dq(new Uint16Array(bin.buffer, m.pos[0], n * 3), n, m.pmin, m.pmax, 3);
+      const nor = new Int8Array(bin.buffer, m.nor[0], n * 3), uv = dq(new Uint16Array(bin.buffer, m.uv[0], n * 2), n, m.umin, m.umax, 2);
+      const ic = m.idx[1] / (m.i32 ? 4 : 2), I = new Uint32Array(m.i32 ? new Uint32Array(bin.buffer, m.idx[0], ic) : new Uint16Array(bin.buffer, m.idx[0], ic));
+      const simp = k => { if (!k || k >= 1) return I; const tgt = Math.max(3, Math.floor(I.length * k / 3) * 3); const o = MS.simplify(I, pos, 3, tgt, .02, ['LockBorder'])[0]; return o.length >= 3 ? o.slice() : I; };
+      const lens = /reflector/i.test(m.mat);
+      const split = idx => { if (!lens) return [idx, null]; const f = [], r = []; for (let t = 0; t < idx.length; t += 3) ((pos[idx[t] * 3 + 2] + pos[idx[t + 1] * 3 + 2] + pos[idx[t + 2] * 3 + 2]) / 3 > 1.5 ? r : f).push(idx[t], idx[t + 1], idx[t + 2]); return [new Uint32Array(f), new Uint32Array(r)]; };
+      const nearI = split(simp(CEL_TRAF.near[m.mat])), farI = CEL_TRAF.farSkip.test(m.mat) ? [null, null] : split(simp(CEL_TRAF.far[m.mat] ?? .5));
+      parts.push({ m, pos, nor, uv, nearI, farI });
+    }
+    CEL_TRAF.parts = parts; CEL_TRAF.D = D;
+    Log.info?.('traffic saloon simplified in ' + Math.round(performance.now() - t0) + ' ms');
+    return parts;
+  })().catch(e => { Log.warn('traffic saloon: kept the baked body', e); return null; }));
+}
+/** The materials (built once, shared by every traffic Lexus). Non-paint parts drop the instance colour. */
+function celsiorTrafficMats(U, paint) {
+  if (CEL_TRAF.mats) return CEL_TRAF.mats;
+  const D = CEL_TRAF.D, tl = new THREE.TextureLoader(), texs = {}, mats = {};
+  const tex = k => texs[k] ??= (() => { const t = tl.load(D.textures[k].uri); t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4; t.userData.shared = true; return t; })();
+  const noTint = ['#include <color_fragment>', '#ifdef USE_INSTANCING_COLOR\n diffuseColor.rgb /= max(vColor, vec3(1e-3));\n#endif'];
+  const wet = ['#include <roughnessmap_fragment>', 'roughnessFactor *= 1.0 - .35 * uWet;'];
+  const lampV = { vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;' + TAIL_LENS_VERT_PARS, vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif' + TAIL_LENS_VERT };
+  const metalName = /chrome|silver|metal/i;
+  for (const p of CEL_TRAF.parts) {
+    const m = p.m; if (mats[m.mat]) continue;
+    if (m.paintKind === 'upper') { mats[m.mat] = paint; continue; }
+    const LK = CEL_LOOK[m.mat] || {}, c = LK.color ? [LK.color, LK.color, LK.color] : m.color;
+    const o = { color: new THREE.Color(c[0], c[1], c[2]), roughness: LK.rough ?? Math.max(.05, m.rough), metalness: m.paintKind ? .35 : metalName.test(m.mat) ? 1 : 0, side: THREE.DoubleSide,
+      map: m.tex != null ? tex(m.tex) : null, transparent: m.blend, depthWrite: !m.blend, envMapIntensity: 1 };
+    const lens = /reflector/i.test(m.mat);
+    const mat = m.clearcoat || LK.cc || m.paintKind ? new THREE.MeshPhysicalMaterial({ ...o, clearcoat: 1, clearcoatRoughness: .05 }) : new THREE.MeshStandardMaterial(o);
+    if (lens) { mat.emissive = new THREE.Color(1, 1, 1); mat.emissiveMap = mat.map; }
+    Atmos.patch(mat, { key: 'tcel' + m.mat, uniforms: U, ...(lens ? lampV : {}), fragPars: 'uniform float uWet, uNight;' + (lens ? 'varying vec4 vLampI;' + TAIL_LENS_PARS : ''),
+      frag: lens ? [noTint, wet, ['#include <emissivemap_fragment>', 'totalEmissiveRadiance *= (.08 + uNight * 1.6 + vLampI.w * 4.0) * step(.55, dot(totalEmissiveRadiance, vec3(.33)));']] : [noTint, wet] });
+    mat.userData.shared = true; mats[m.mat] = mat;
+    if (lens) {                                                      // the rear lens: solid, faceted, zones from a blurred read of the photo
+      const t = Atmos.patch(new THREE.MeshPhysicalMaterial({ map: mat.map, color: 0xffffff, roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
+        emissive: new THREE.Color(1, 1, 1), envMapIntensity: 1.2 }), { key: 'tceltail', uniforms: U, ...lampV, fragPars: 'uniform float uNight; varying vec4 vLampI; vec3 gTlE;' + TAIL_LENS_PARS,
+        frag: [noTint, ['#include <map_fragment>', CEL_TAIL_ZONES + `
+          float sideL = step(vTlP.x, 0.0), ind = mix(vLampI.z, vLampI.y, sideL);
+          gTlE = red * vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8) * (.55 + .9 * tc) + amb * vec3(1.0, .38, .04) * (.04 + ind * 3.2) * (.6 + .8 * tc); }`],
+          ['#include <emissivemap_fragment>', 'totalEmissiveRadiance = gTlE;']] });
+      t.userData.shared = true; mats.tail = t;
+    }
+  }
+  return (CEL_TRAF.mats = mats);
+}
+/** One merged geometry (groups per material) for the near or far copy; iLamp for the lamp materials. */
+function celsiorTrafficGlb(U, paint) {
+  if (!CEL_TRAF.parts) return null;
+  const M = celsiorTrafficMats(U, paint), list = [], build = far => {
+    const geos = [], mats = [];
+    for (const p of CEL_TRAF.parts) {
+      const [a, b] = far ? p.farI : p.nearI;
+      for (const [idx, key] of [[a, p.m.mat], [b, 'tail']]) {
+        if (!idx || !idx.length) continue;
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(p.pos, 3)); g.setAttribute('normal', new THREE.BufferAttribute(p.nor, 3, true)); g.setAttribute('uv', new THREE.BufferAttribute(p.uv, 2));
+        g.setIndex(new THREE.BufferAttribute(idx, 1)); geos.push(g.toNonIndexed()); mats.push(M[key]); g.dispose();
+      }
+    }
+    const body = BufferGeometryUtils.mergeGeometries(geos, true); geos.forEach(g => g.dispose());
+    body.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4));
+    body.computeBoundingSphere(); body.userData.shared = true;
+    return { body, mats };
+  };
+  const nr = build(false), fr = build(true);
+  return { glb: { body: nr.body, mats: nr.mats, far: fr.body, farMats: fr.mats } };
+}
 /* Realism 7: road grime and salt on your car (graphics.grime).
    The traffic's low road film (ROAD_GRIME_GLSL: colour and low band, shared with trafficAssets' paint) now builds up on
    the player's body over a run. Where it lands is baked once per body into a vertex attribute (grimeBake, body space):
@@ -9955,16 +10043,16 @@ function cabinGrainOn(mat, kind, rough) {
  * solid lens like the other cars' (tlCells facets, depth), keeping the photo's zones: red tail / brake, amber indicator,
  * clear reverse lamp. Dark photo areas count as red lens. ?celtail=off keeps the photo lens. */
 const CEL_TAIL = { on: !/[?&]celtail=off\b/.test(location.search) };
+const CEL_TAIL_ZONES = /* glsl */`{ vec3 tm = texture2D(map, vMapUv, 3.5).rgb; float mx = max(tm.r, max(tm.g, tm.b)) + 1e-4; vec3 hc = tm / mx;   // zones from a blurred read (the photo's grain made speckles)
+        float red = max(smoothstep(0.55, 0.35, hc.g) * step(0.5, hc.r), smoothstep(0.16, 0.05, mx));
+        float amb = (1.0 - red) * smoothstep(0.35, 0.55, hc.g) * smoothstep(0.55, 0.3, hc.b), clr = max(0.0, 1.0 - red - amb);
+        float tc = tlCells();
+        diffuseColor.rgb = red * mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc) + amb * vec3(.4, .16, .02) * (.7 + .3 * tc) + clr * vec3(.32, .33, .34) * (.75 + .25 * tc);`;
 function celTailMaterial(map) {
   return Atmos.patch(new THREE.MeshPhysicalMaterial({ map, color: 0xffffff, roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
     emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2 }), { key: 'celtail',
     vertPars: TAIL_LENS_VERT_PARS, vertMain: TAIL_LENS_VERT, fragPars: TAIL_LENS_PARS + '\nfloat gTlRed;',
-    frag: [['#include <map_fragment>', `{ vec3 tm = diffuseColor.rgb; float mx = max(tm.r, max(tm.g, tm.b)) + 1e-4; vec3 hc = tm / mx;
-        float red = max(smoothstep(0.55, 0.35, hc.g) * step(0.5, hc.r), smoothstep(0.16, 0.05, mx));
-        float amb = (1.0 - red) * smoothstep(0.35, 0.55, hc.g) * smoothstep(0.55, 0.3, hc.b), clr = max(0.0, 1.0 - red - amb);
-        float tc = tlCells(); gTlRed = red;
-        diffuseColor.rgb = red * mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc) + amb * vec3(.4, .16, .02) * (.7 + .3 * tc) + clr * vec3(.32, .33, .34) * (.75 + .25 * tc);
-        gTlRed *= .55 + .9 * tc; }`],
+    frag: [['#include <map_fragment>', CEL_TAIL_ZONES + ` gTlRed = red * (.55 + .9 * tc); }`],
       ['#include <emissivemap_fragment>', 'totalEmissiveRadiance *= gTlRed;']] });
 }
 function buildCelsior(car) {
@@ -13182,7 +13270,10 @@ function trafficTypeAssets(A) {
   for (let i = A.types.length; i < TRAFFIC_TYPES.length; i++) {
     const T = TRAFFIC_TYPES[i];
     if (T.model === 'glb') { A.types.push(policeTrafficGeometry(A.U) || buildTrafficGeometry(TRAFFIC_TYPES[0])); continue; }   // build 1.31
-    if (T.model === 'celsior' && cel === undefined) cel = celsiorTrafficGeometry();
+    if (T.model === 'celsior' && cel === undefined) { try { cel = celsiorTrafficGlb(A.U, A.mats[0]); } catch (e) { Log.warn('traffic saloon build failed', e); cel = null; } cel ||= celsiorTrafficGeometry(); }
+    if (T.model === 'celsior' && cel?.glb) { const G = cel.glb, own = src => { const g = new THREE.BufferGeometry(); for (const k in src.attributes) if (k !== 'iLamp') g.setAttribute(k, src.attributes[k]);   // per class: its own iLamp
+        g.groups = src.groups.map(x => ({ ...x })); g.boundingSphere = src.boundingSphere; g.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4)); g.userData.shared = true; return g; };
+      A.types.push({ glb: { body: own(G.body), mats: G.mats, far: own(G.far), farMats: G.farMats } }); continue; }
     A.types.push(T.model === 'celsior' && cel ? { body: cel, lamps: celsiorTrafficLamps() } : T.semi ? buildSemiGeometry(T) : buildTrafficGeometry(T));
   }
   return A;
@@ -13205,7 +13296,7 @@ class TrafficRenderer {
         const body = new THREE.InstancedMesh(g.glb.body, g.glb.mats, TRAFFIC_TOTAL); body.castShadow = true; body.receiveShadow = true; body.frustumCulled = false;
         body.setColorAt(0, white); body.count = 0;
         if (!g.glb.far) { const fg = g.glb.far = g.glb.body.clone(); fg.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4)); fg.userData.shared = true; }
-        const far = new THREE.InstancedMesh(g.glb.far, g.glb.mats, TRAFFIC_TOTAL); far.castShadow = false; far.receiveShadow = true; far.frustumCulled = false;
+        const far = new THREE.InstancedMesh(g.glb.far, g.glb.farMats || g.glb.mats, TRAFFIC_TOTAL); far.castShadow = false; far.receiveShadow = true; far.frustumCulled = false;
         far.setColorAt(0, white); far.count = 0; this.root.add(body, far);
         return { body, far, lamps: null, lampsFar: null, iLamp: g.glb.body.attributes.iLamp, iLampFar: g.glb.far.attributes.iLamp, n: 0, nf: 0, nl: 0, nlf: 0 };
       }
@@ -15974,7 +16065,7 @@ class App {
     try {
       await step('Building the interstate');
       const mdl = this.settings.data.car.model;
-      await Promise.race([Promise.all([SaloonData.load('traffic'), GlbCars.load('police', POLICE_LO), mdl === 'celsior' ? SaloonData.load('player') : null, GLB_CARS[mdl] ? GlbCars.load(mdl) : null]), wait(8000)]); applySaloonTraffic(); applyPoliceTraffic(); this.carObj.applySettings();
+      await Promise.race([Promise.all([SaloonData.load('traffic'), GlbCars.load('police', POLICE_LO), celsiorTrafficPrep(), mdl === 'celsior' ? SaloonData.load('player') : null, GLB_CARS[mdl] ? GlbCars.load(mdl) : null]), wait(8000)]); applySaloonTraffic(); applyPoliceTraffic(); this.carObj.applySettings();
       this.driveWorld = new DriveWorld(this.rs, this.settings, this.carObj, t => { cap.textContent = t; });
       this.driveWorld.setChase(mode);                                  // police update
       this.driveWorld.vr = this.vr;                                    // build 1.15
