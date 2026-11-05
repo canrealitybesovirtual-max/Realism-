@@ -1352,3 +1352,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: hitch pass
 - Auto quality: a sample with one stall now leaves that frame out instead of being skipped (constant stalls had stopped auto quality from ever stepping down); desktop starts at 1x without GTAO and climbs. roomCompile only where the browser has KHR_parallel_shader_compile (otherwise it is a stall itself).
 - Measured headless (render stubbed): the game's JS is ~1-2 % of the time, 2 long tasks in 18 s; no new shader programs while playing in the safe room. Hitches are on the GPU side (compiles, shadow redraws, resolution changes).
+- Measured headless (SwiftShader, real render): 2 new shader programs in a whole run through 3 rooms; the worst frames were at door openings. A room change redrew every shadow map in one frame; flushShadows now queues them (userData.shRoom) and draws one a frame (maps never drawn yet go at once).
