@@ -1342,3 +1342,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - troffCap(L, room) (roomBuilder and the stairwell builder): stairwell 1 fitting, small room (< 30 m2) 1, long room (one side >= 2.2x the other) 3, every other room (medium, large square) 2. assignLights and the flicker handle a room with one fitting (the second pool spot / area light off).
 - PERF_NO_RECT (default; ?rects=on brings them back): the two pool RectAreaLights stay as objects the code sets but are not in the scene, so no LTC area-light shading per pixel; CONFIG.light.spot 22 -> 30 carries their light. Syntax parse only.
 - Head / neck hits always kill (enemyShot: dmg 1e4, not scaled by the round's remaining energy or penDmgK). Before, a head round at reduced energy (range, buckshot pellet, through a wall: 400 x E down to 0.2) or a neck hit (120) could leave him alive. Syntax parse only.
+
+## Dead code scan (CQC, Interstate)
+- acorn + eslint-scope scan for module bindings nothing reads: only natXR (CQC) and CEL_TAIL_ZONES (Interstate) were left; removed. vmTint no longer makes a Color every frame. Unused code never runs, so it was not costing frame rate; the frame-rate work is the lighting / quality changes above.
