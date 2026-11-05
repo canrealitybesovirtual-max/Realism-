@@ -19880,7 +19880,52 @@ function seatBox(p, out) {                                          // the part'
   p.root.traverse((o) => { if (!o.isMesh || !o.geometry) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); out.union(b.copy(o.geometry.boundingBox).applyMatrix4(M)); });
   return out;
 }
-const _spB = new THREE.Box3();
+const _spB = new THREE.Box3(), _spL = new THREE.Vector3();
+/* An optic on another gun gets a riser mount (?optmount=off: none, the old flush seat): a low Picatinny riser under the optic
+ * (base plate, rail with recoil slots, cross-bolts with nuts) whose jaws clamp down both sides of the slide / receiver top,
+ * so the optic visibly sits on a part that holds it, clear of the gun's body and sights. Child of the optic (it comes off
+ * with it), hidden when the optic is taken off (wbGrabbed). Geometry per size, one shared material. */
+const OPTM = { on: !/[?&]optmount=off\b/.test(QS), lift: 0.0065, liftScope: 0.011, jaw: 0.0075, mat: null };
+function optMountMat() {
+  return OPTM.mat || (OPTM.mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.012, 0.012, 0.013), roughness: 0.42, metalness: 0.65, name: 'optMount' }));
+}
+// Half width of the gun's top at height y, model z: rays in from both sides (default 11.5 mm).
+function optGunHalf(g, y, z) {
+  const list = gunMeshes(g), W = g.model.matrixWorld, inv = new THREE.Matrix4().copy(W).invert(); let hx = 0;
+  for (const sx of [1, -1]) {
+    _gsO.set(sx * 0.12, y, z).applyMatrix4(W); _gsD.set(-sx, 0, 0).transformDirection(W);
+    _gsRC.set(_gsO, _gsD); _gsRC.far = 0.12;
+    const h = _gsRC.intersectObjects(list, false)[0]; if (h) hx = Math.max(hx, Math.abs(h.point.applyMatrix4(inv).x));
+  }
+  return hx > 0.004 && hx < 0.03 ? hx : 0.0115;
+}
+function optMount(g, p, B, lift, S) {
+  const it = p.item, old = it.optMount;
+  if (old) { old.parent?.remove(old); old.traverse((o) => o.geometry?.dispose()); }
+  const M = new THREE.Group(); M.name = 'optMount'; it.optMount = M;
+  const mat = optMountMat(), add = (geo, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; M.add(m); return m; };
+  // footprint: under the optic's middle, as long as half the optic (35-110 mm), kept over the gun
+  const len = B.max.z - B.min.z, bl = Math.min(0.11, Math.max(0.035, len * 0.55)), Lz = g.model.worldToLocal(_spL.setFromMatrixPosition(p.root.matrixWorld)).z;
+  let cz = (B.min.z + B.max.z) / 2;
+  const gb = g._gunZ || (g._gunZ = (() => { const b = new THREE.Box3(), t = new THREE.Box3(), inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), m4 = new THREE.Matrix4();
+    for (const o of gunMeshes(g)) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); m4.multiplyMatrices(inv, o.matrixWorld); b.union(t.copy(o.geometry.boundingBox).applyMatrix4(m4)); } return [b.min.z, b.max.z]; })());
+  cz = Math.min(Math.max(cz, gb[0] - Lz + bl / 2 + 0.008), gb[1] - Lz - bl / 2 - 0.008);
+  const yTop = B.min.y, ySeat = yTop - lift, tooth = 0.0022, bw = 0.0212;
+  const hx = optGunHalf(g, S.top - 0.004, Lz + cz), jw = Math.max(bw / 2, hx + 0.0012);
+  add(new THREE.BoxGeometry(Math.max(bw, 2 * jw + 0.003), lift - tooth, bl), 0, ySeat + (lift - tooth) / 2, cz);          // riser body
+  const nT = Math.max(2, Math.floor(bl / 0.01)), tG = new THREE.BoxGeometry(bw, tooth, 0.0052);
+  for (let i = 0; i < nT; i++) add(tG, 0, yTop - tooth / 2, cz - (nT - 1) * 0.005 + i * 0.01);                            // rail teeth (recoil slots between)
+  const jG = new THREE.BoxGeometry(0.0026, OPTM.jaw, bl * 0.82);
+  for (const sx of [1, -1]) add(jG, sx * (jw + 0.0013), ySeat - OPTM.jaw / 2 + 0.0015, cz);                                 // jaws down the sides of the top
+  const bG = new THREE.CylinderGeometry(0.0019, 0.0019, 2 * jw + 0.009, 10).rotateZ(Math.PI / 2), nG = new THREE.CylinderGeometry(0.0034, 0.0034, 0.0026, 6).rotateZ(Math.PI / 2);
+  for (const dz of [-0.32, 0.32]) {                                                                                         // cross-bolts through the jaws, hex nut one side
+    const z = cz + dz * bl, y = ySeat - OPTM.jaw * 0.45;
+    add(bG, 0, y, z); add(nG, jw + 0.0039, y, z); add(new THREE.CylinderGeometry(0.0031, 0.0031, 0.0016, 12).rotateZ(Math.PI / 2), -(jw + 0.0034), y, z);
+  }
+  p.root.add(M);
+  return M;
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcOptM = { OPTM, optMount, wbSnap: (g, p) => wbSnap(g, p), seatPart: (g, p) => seatPart(g, p), gunSpan: (...a) => gunSpan(...a), seatBox: (p) => seatBox(p, new THREE.Box3()) };
 function seatPart(g, p) {
   const k = partKind(p.item); if (!k || !g.model) return false;
   const model = g.model, d = g.def;
@@ -19890,7 +19935,9 @@ function seatPart(g, p) {
   if (k === 'optic') {
     const S = gunSpan(g, L.z + B.min.z - 0.004, L.z + B.max.z + 0.004, 0.016);
     if (!S) return false;
-    L.set(0, S.top + 0.0006 - B.min.y, L.z);
+    const lift = OPTM.on ? (len > 0.14 ? OPTM.liftScope : OPTM.lift) : 0;   // a riser mount under it (optMount), clamped to the gun
+    L.set(0, S.top + 0.0006 + lift - B.min.y, L.z);
+    if (lift) { model.getWorldQuaternion(p.root.quaternion); p.root.position.copy(model.localToWorld(_spL.copy(L))); p.root.updateMatrixWorld(true); optMount(g, p, B, lift, S); }
   } else if (k === 'grip') {
     const zf = d.muzzle ? d.muzzle[2] : -0.3, z = Math.min(L.z, palmZ - 0.12);   // ahead of the magazine well
     const zc = Math.max(z, zf * 0.7), S = gunSpan(g, zc + B.min.z, zc + B.max.z, 0.02, -0.12, 0.05);
@@ -19973,6 +20020,7 @@ function optSight(g, own) {
 function wbGrabbed(it) {
   if (RAIL.on && it.pl2 && !it.tableSpot) it.tableSpot = railPl2Spot();   // step 112: a PL-2 off a gun keeps a place on the table
   it.rail = null; it.snapped = false;                                // any-gun fit
+  if (it.optMount) { it.optMount.parent?.remove(it.optMount); it.optMount.traverse((o) => o.geometry?.dispose()); it.optMount = null; }   // its riser comes off with it
   wbUnhook(it);
   const sg = it.stuck ? it.stuck.g : null, g = sg && muzIsDev(it) ? sg : null;
   if (g) muzOff(g, it.prop);                                        // step 103: what was in front of it goes back on the table
