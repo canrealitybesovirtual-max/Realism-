@@ -883,9 +883,10 @@ button{font:inherit;color:inherit}
               <dt>Yamaha YZF-R6</dt><dd>“Yamaha YZF-R6 RACE” by dragos12_, Sketchfab, CC BY 4.0, split into its moving parts and compressed for this game</dd>
               <dt>Police siren</dt><dd>“police car siren synthesized dry” by newlocknew, freesound.org (sound 692525), cut into wail and yelp loops</dd>
               <dt>VR hands</dt><dd>“generic-hand” from WebXR Input Profiles (immersive-web), MIT licence</dd>
+              <dt>Traffic cars</dt><dd>“Generic passenger car pack” by Comrade1280 (sketchfab.com/comrade1280), Sketchfab, CC BY 4.0, re-framed, paint masked for the game's colours and compressed</dd>
               <dt>Snow trees</dt><dd>“Snow Trees Pack LOWPOLY” by EFX (sketchfab.com/evan4129), Sketchfab, CC BY 4.0, textures re-encoded to WebP</dd>
             </dl>
-            <p>Apart from the saloon, the patrol car and the snow trees, every texture, sound and surface in this game is generated in code at load time. Nothing is downloaded except the rendering library and the two typefaces.</p>
+            <p>Apart from the saloon, the patrol car, the traffic cars, the motorcycle and the snow trees, every texture, sound and surface in this game is generated in code at load time. Nothing is downloaded except the rendering library and the two typefaces.</p>
           </div>
         </div>
         <div class="panel-foot"><div class="hints" data-hints="panel"></div><div class="actions"><button class="btn" data-nav data-back>Back</button></div></div>
@@ -10305,6 +10306,8 @@ const GLB_CARS = {
     strip: [{ mat: 'Interieur', box: [[-.545, .785, -.705], [-.165, 1.14, -.385]] }],
     cabinMats: /^(Interieur|Interieur_av|Interieur_porte|Interieur_sol|Siege|Speed|Plastique_orange)$/, bodyMats: /^Body_[LR]$/, blackCabin: .14, unlitGlass: /^Projo_vitre$/,
     flash: { Flash_light: 'grille', Feux_blanc: 'rear' } },
+  /* car pack: the traffic's passenger cars (not drivable; applyPackTraffic / packTrafficGeometry) */
+  pack: { file: './cars/traffic-pack.glb', meta: './cars/traffic-pack.json', traffic: true, meshopt: true, paint: false },
   /* the motorcycle (§14.14): its own build (buildBike), meshopt-compressed geometry */
   r6: { title: 'Yamaha YZF-R6', spec: 'A 599 cc inline-four supersport: 118 hp at 14,500 rpm, 16,000 rpm red line, six-speed box, 190 kg. Lean it into the bends; tune its stance and engine in Stance and Performance. Model: “Yamaha YZF-R6 RACE” by dragos12_ (Sketchfab), CC BY 4.0.', file: './cars/r6.glb', meta: './cars/r6.json', paint: false, bike: true, meshopt: true,
     cabin: { eye: [0, 1.42, .09], wheel: [0, .86, -.42], tilt: 0, wheelR: .16, lock: 1 } },
@@ -13656,6 +13659,81 @@ function policeTrafficGeometry(U) {
   return { glb: { body, mats } };
 }
 
+/* Car pack: the passenger-car traffic wears the user's "Generic passenger car pack" (Comrade1280, Sketchfab, CC-BY-4.0;
+   cars/traffic-pack.glb + .json from tools/pack_carpack.py: ten bodies, ~4-5k triangles each, 1024 px textures). Each
+   class is one GLB body: one instanced draw per material (paint, the shared traffic glass, the lamps by kind). The paint
+   map carries a mask in its alpha (1 = paint, turned to a neutral grey there): the car's colour multiplies it, trim,
+   bumpers, chrome and badges keep the photo. Lamps are the pack's lens photos lit by the car's iLamp (head / tail /
+   indicators by side). Wheels are the game's own, on the measured axles. The Lexus stays as one class of its own
+   (share .05); without the pack every passenger class wears the Lexus as before. */
+const TRAFFIC_PACK = { compact: { share: .13, mass: 1150, speed: .96, frontal: .22 }, hatch: { share: .14, mass: 1350, speed: .98, frontal: .23 }, sedan: { share: .20, mass: 1600, speed: 1, frontal: .24 },
+  wagon: { share: .08, mass: 1680, speed: 1, frontal: .25 }, suv: { share: .16, mass: 2050, speed: .99, frontal: .32 }, coupe: { share: .06, mass: 1500, speed: 1.03, frontal: .22 },
+  minivan: { share: .08, mass: 1900, speed: .95, frontal: .30 }, pickup: { share: .08, mass: 2300, speed: .96, frontal: .36 }, offroad: { share: .04, mass: 2150, speed: .93, frontal: .34 }, sport: { share: .03, mass: 1450, speed: 1.06, frontal: .20 } };
+function applyPackTraffic() {
+  const D = GlbCars.get('pack'); if (!D || !D.meta?.cars || applyPackTraffic.done) return;
+  applyPackTraffic.done = true;
+  const fit = (T, id) => { const m = D.meta.cars[id], W = m.wheels, P = TRAFFIC_PACK[id];
+    Object.assign(T, { model: 'pack', packId: id, len: m.len, hw: m.hw, wheels: [[W.zf, W.rf, W.w, 1], [W.zr, W.rr, W.w, 0]], wheelX: W.x, share: P.share, mass: P.mass, speed: P.speed, frontal: P.frontal });
+    T.wb = Math.abs(T.wheels[1][0] - T.wheels[0][0]); };
+  const base = TRAFFIC_TYPES[0], lexus = { ...base, id: 'lexus', share: .05, mass: 1750, speed: 1.02, model: 'celsior', len: 4.86, hw: .92, wheels: [[-1.535, .341, .225, 1], [1.275, .341, .225, 0]], index: TRAFFIC_TYPES.length, truck: false };
+  lexus.wb = Math.abs(lexus.wheels[1][0] - lexus.wheels[0][0]);
+  if (applySaloonTraffic.done) TRAFFIC_TYPES.push(lexus);           // the Lexus body needs the saloon data
+  for (const id in TRAFFIC_PACK) {
+    if (!D.meta.cars[id]) continue;
+    let T = TRAFFIC_TYPES.find(t => t.id === id && t.cls === 'car');
+    if (!T) { T = { ...base, id, index: TRAFFIC_TYPES.length, truck: false, police: false, extra: undefined }; TRAFFIC_TYPES.push(T); }   // the sedan's loft as the no-model fallback
+    fit(T, id);
+  }
+}
+/** One class of the pack: the body merged per material (paint, glass, lamps by kind), iLamp per instance. */
+function packTrafficGeometry(A, T) {
+  const D = GlbCars.get('pack'); if (!D) return null;
+  const root = D.scene.getObjectByName(T.packId); if (!root) return null;
+  const U = A.U, M = Assets.packMats ??= {};
+  const noTint = ['#include <color_fragment>', '#ifdef USE_INSTANCING_COLOR\n diffuseColor.rgb /= max(vColor, vec3(1e-3));\n#endif'];
+  const lampV = { vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;', vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif' };
+  const lampMat = (kind, src) => M['lamp_' + kind] ??= (() => {
+    const glow = { head: 'vec3(1.0, .95, .86) * (mix(.03, 3.2, uNight) + vLampI.w * 6.0)', tail: 'vec3(1.0, .05, .025) * (.06 + uNight * 1.0 + vLampI.x * 2.6)',
+      indL: 'vec3(1.0, .38, .04) * (.03 + vLampI.y * 3.2)', indR: 'vec3(1.0, .38, .04) * (.03 + vLampI.z * 3.2)' }[kind] || 'vec3(0.0)';
+    const m = Atmos.patch(new THREE.MeshStandardMaterial({ map: src.map, emissive: new THREE.Color(1, 1, 1), emissiveMap: src.map, roughness: .14, metalness: 0, envMapIntensity: 1 }), { key: 'trafpackL' + kind, uniforms: U, ...lampV,
+      fragPars: 'uniform float uNight; varying vec4 vLampI;',
+      frag: [noTint, ['#include <emissivemap_fragment>', `{ float lum = dot(totalEmissiveRadiance, vec3(.3333)); totalEmissiveRadiance = (${glow}) * (.3 + .7 * lum); }`]] });
+    m.userData.shared = true; return m; })();
+  const geos = [], mats = [];
+  root.updateMatrixWorld(true);
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    const g = o.geometry.clone().applyMatrix4(o.matrixWorld), n = g.attributes.position.count;
+    for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+    if (!g.attributes.normal) g.computeVertexNormals();
+    const nm = o.material.name || '', lk = /^optics_(\w+)/.exec(nm);
+    let mat;
+    if (lk) mat = lampMat(lk[1], o.material);
+    else if (/^glass/.test(nm)) mat = A.mats[1];
+    else {                                                             // the paint: colour where the mask says, clear coat there, road film low down
+      const s = o.material;
+      mat = Atmos.patch(new THREE.MeshPhysicalMaterial({ map: s.map, roughnessMap: s.roughnessMap, metalnessMap: s.metalnessMap, roughness: 1, metalness: 1, clearcoat: 1, clearcoatRoughness: .05, envMapIntensity: 1 }),
+        { key: 'trafpackP', uniforms: U, vertPars: 'varying float vObjY;', vertMain: 'vObjY = position.y;', fragPars: 'varying float vObjY; uniform float uWet;' + ROAD_GRIME_GLSL,
+          frag: [['#include <color_fragment>', `float pkMask = diffuseColor.a; diffuseColor.a = 1.0;
+          #ifdef USE_INSTANCING_COLOR
+            diffuseColor.rgb = mix(diffuseColor.rgb / max(vColor, vec3(1e-3)), diffuseColor.rgb, pkMask);
+          #endif
+            float lowDirt = roadGrimeLow(vObjY); diffuseColor.rgb = mix(diffuseColor.rgb, ROAD_GRIME, lowDirt * .34 * (1.0 - .5 * uWet)); diffuseColor.rgb *= 1.0 - .12 * uWet;`],
+          ['#include <roughnessmap_fragment>', 'roughnessFactor = mix(roughnessFactor, .78, lowDirt * .65 * (1.0 - .6 * uWet)) * (1.0 - .4 * uWet);'],
+          ['#include <lights_physical_fragment>', 'material.clearcoat *= mix(.2, 1.0, pkMask);']] });
+      mat.userData.shared = true;
+      for (const t of [s.map, s.roughnessMap]) if (t) { t.anisotropy = 4; t.userData.shared = true; }
+    }
+    geos.push(g); mats.push(mat);
+  });
+  if (!geos.length) return null;
+  const body = BufferGeometryUtils.mergeGeometries(geos, true); geos.forEach(g => g.dispose());
+  body.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4));
+  body.computeBoundingSphere(); body.userData.shared = true;
+  return { glb: { body, mats } };
+}
+
 /** Shared materials and geometry for every run (built once, kept for the session). */
 function trafficAssets() {
   if (Assets.traffic) return trafficTypeAssets(Assets.traffic);
@@ -13718,6 +13796,7 @@ function trafficTypeAssets(A) {
   for (let i = A.types.length; i < TRAFFIC_TYPES.length; i++) {
     const T = TRAFFIC_TYPES[i];
     if (T.model === 'glb') { A.types.push(policeTrafficGeometry(A.U) || buildTrafficGeometry(TRAFFIC_TYPES[0])); continue; }   // build 1.31
+    if (T.model === 'pack') { let g = null; try { g = packTrafficGeometry(A, T); } catch (e) { Log.warn('traffic pack build failed', e); } A.types.push(g || buildTrafficGeometry(T)); continue; }   // car pack
     if (T.model === 'celsior' && cel === undefined) { try { cel = celsiorTrafficGlb(A.U, A.mats[0]); } catch (e) { Log.warn('traffic saloon build failed', e); cel = null; } cel ||= celsiorTrafficGeometry(); }
     if (T.model === 'celsior' && cel?.glb) { const G = cel.glb, own = src => { const g = new THREE.BufferGeometry(); for (const k in src.attributes) if (k !== 'iLamp') g.setAttribute(k, src.attributes[k]);   // per class: its own iLamp
         g.groups = src.groups.map(x => ({ ...x })); g.boundingSphere = src.boundingSphere; g.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4)); g.userData.shared = true; return g; };
@@ -16513,7 +16592,7 @@ class App {
     try {
       await step('Building the interstate');
       const mdl = this.settings.data.car.model;
-      await Promise.race([Promise.all([SaloonData.load('traffic'), GlbCars.load('police', POLICE_LO), celsiorTrafficPrep(), mdl === 'celsior' ? SaloonData.load('player') : null, GLB_CARS[mdl] ? GlbCars.load(mdl) : null]), wait(8000)]); applySaloonTraffic(); applyPoliceTraffic(); this.carObj.applySettings();
+      await Promise.race([Promise.all([SaloonData.load('traffic'), GlbCars.load('police', POLICE_LO), GlbCars.load('pack'), celsiorTrafficPrep(), mdl === 'celsior' ? SaloonData.load('player') : null, GLB_CARS[mdl] ? GlbCars.load(mdl) : null]), wait(8000)]); applySaloonTraffic(); applyPoliceTraffic(); applyPackTraffic(); this.carObj.applySettings();
       this.driveWorld = new DriveWorld(this.rs, this.settings, this.carObj, t => { cap.textContent = t; });
       this.driveWorld.setChase(mode);                                  // police update
       this.driveWorld.vr = this.vr;                                    // build 1.15
