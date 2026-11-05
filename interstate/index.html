@@ -5715,7 +5715,7 @@ const TreeAssets = {
     for (const K of TREE_KINDS) {
       let src = null; root.traverse(o => { if (!src && o.isMesh && (o.name === K.mesh || o.parent?.name === K.mesh || o.name.startsWith(K.mesh + '_'))) src = o; });
       if (!src) { out.push(null); continue; }
-      const g = src.geometry.clone().applyMatrix4(src.matrixWorld);
+      const g = geoFloat(src.geometry.clone()).applyMatrix4(src.matrixWorld);
       g.computeBoundingBox(); const b = g.boundingBox, h = b.max.y - b.min.y || 1, cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
       g.translate(-cx, -b.min.y, -cz); g.scale(1 / h, 1 / h, 1 / h);
       if (b.max.z - b.min.z > (b.max.x - b.min.x) * 1.5) g.rotateY(Math.PI / 2);   // long cards (the tree line) run along x
@@ -11664,7 +11664,7 @@ class Car {
     walk(body, true);
     for (const list of buckets.values()) {
       if (list.length < 2) continue;
-      const geos = list.map(([o, rel]) => o.geometry.clone().applyMatrix4(rel)), merged = BufferGeometryUtils.mergeGeometries(geos); geos.forEach(g => g.dispose());
+      const geos = list.map(([o, rel]) => geoFloat(o.geometry.clone()).applyMatrix4(rel)), merged = BufferGeometryUtils.mergeGeometries(geos); geos.forEach(g => g.dispose());
       if (!merged) continue;
       const mesh = new THREE.Mesh(merged, list[0][0].material); mesh.receiveShadow = list[0][0].receiveShadow; mesh.castShadow = false; mesh.name = 'car-batch';
       body.add(mesh); added.push(mesh); for (const [o] of list) { o.visible = false; hidden.push(o); }
@@ -13686,7 +13686,7 @@ function policeTrafficGeometry(U) {
   D.scene.updateMatrixWorld(true);
   D.scene.traverse(o => {
     if (!o.isMesh) return;
-    const g = o.geometry.clone().applyMatrix4(o.matrixWorld), n = g.attributes.position.count;
+    const g = geoFloat(o.geometry.clone()).applyMatrix4(o.matrixWorld), n = g.attributes.position.count;
     for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
     if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
     if (!g.attributes.normal) g.computeVertexNormals();
@@ -13733,6 +13733,15 @@ function applyPackTraffic() {
   }
 }
 /** One class of the pack: the body merged per material (paint, glass, lamps by kind), iLamp per instance. */
+// A quantized glTF geometry (meshopt / KHR_mesh_quantization: 16-bit integers, the scale in the node) to float attributes.
+// Without this, applyMatrix4 writes metres back into the integer arrays (values up to 65535 m: the black sheets that hung
+// over the road and the sky from every pack traffic car).
+function geoFloat(g) {
+  for (const k of Object.keys(g.attributes)) { const at = g.attributes[k]; if (at.isInterleavedBufferAttribute || !(at.array instanceof Float32Array)) {
+    const f = new Float32Array(at.count * at.itemSize); for (let i = 0; i < at.count; i++) for (let c = 0; c < at.itemSize; c++) f[i * at.itemSize + c] = at.getComponent(i, c);
+    g.setAttribute(k, new THREE.BufferAttribute(f, at.itemSize)); } }
+  return g;
+}
 function packTrafficGeometry(A, T) {
   const D = GlbCars.get('pack'); if (!D) return null;
   const root = D.scene.getObjectByName(T.packId); if (!root) return null;
@@ -13750,7 +13759,7 @@ function packTrafficGeometry(A, T) {
   root.updateMatrixWorld(true);
   root.traverse(o => {
     if (!o.isMesh) return;
-    const g = o.geometry.clone().applyMatrix4(o.matrixWorld), n = g.attributes.position.count;
+    const g = geoFloat(o.geometry.clone()).applyMatrix4(o.matrixWorld), n = g.attributes.position.count;
     for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
     if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
     if (!g.attributes.normal) g.computeVertexNormals();

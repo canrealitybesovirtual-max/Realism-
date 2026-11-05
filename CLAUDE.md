@@ -1356,3 +1356,5 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Interstate: menu road band
 - Headless check of the menu scene: a dark diagonal band across the road was the shared edge of the road's two 600 m triangles (bump map slopes break along triangle edges; not a shadow: it stayed with shadows off). Menu road subdivided 24 x 28 and drawn without the bump map.
+- Floating black layer over the map (found headless: a raycast through it hit "traffic" meshes 12-26 m away; every pack traffic car's geometry spanned 65535 m): the car pack (and other meshopt GLBs) store quantized 16-bit positions; geometry.clone().applyMatrix4 wrote metres back into the integer arrays. geoFloat(g) converts attributes to Float32 first; used in packTrafficGeometry, policeTrafficGeometry, the tree prep and the car-body batcher.
+- Measured on Low (headless): 649 draw calls, 1.6 M triangles in a run.
