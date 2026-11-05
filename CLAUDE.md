@@ -1366,3 +1366,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Road streaming ahead on Low / Quest: ~900 / 750 m (was ~1330 / 1000).
 - Police traffic (31 materials, x2 for near / far = 62 draws): untextured opaque parts share two vertex-coloured materials (metal / non-metal, colour from each part's own), glass parts share one; textured parts, the light bar and tail lenses keep theirs.
 - Fix (no roads or trees on the map): the road-streaming edit put a // comment in the middle of setDrawDistance's line, which commented out maxPool, so the main road never got any chunks (pool 0). maxPool restored.
+
+## CQC: safe room appearing inside a stairwell
+- Cause: after peeking into the next room (frontier n+1) and walking back two rooms (into room n-1, e.g. a stairwell), room n was still the planned safe slot, so it was swapped for the safe room while you stood behind it. The safe room (8 x 6 m) is bigger than many rooms and overlapped the room you were in: gun locker rifles standing in the stairwell, GUNSMITH screen and bench lamp floating beside the stairs.
+- updateStreaming: entering a non-safe room behind the safe slot pulls the frontier back to it (safe room = the room behind you), like walking back into a kept safe room already did. ?dev exposes normalParams, anchorY. Checked: module parse; slot geometry probe headless (safe room n overlaps room n-1 at slots 20, 44, 54, 67 of the default plan).
