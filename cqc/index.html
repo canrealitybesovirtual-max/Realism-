@@ -21927,7 +21927,7 @@ function vmGunFit(g, key) {
     if (!N0 || !B.sides.R) { VM.fit[t] = null; return; }
     const S = VMH_FIT[t], X = key === 'sniper' ? VM_FIT[t] : null;   // VM_FIT was solved on the sniper take only
     const M = X ? new THREE.Matrix4().fromArray(X.M) : S && S.R && VMH.byType[t] === key ? new THREE.Matrix4().fromArray(S.R) : vmhSolve(B, 'R', g, vmhRegister(B, g).m).m;
-    if (key === 'ak') vmSupportFix(B, g, M);                       // the AK take's support hand onto this gun's handguard
+    if (key === 'ak' || key === 'sniper') vmSupportFix(B, g, M);                       // the AK take's support hand onto this gun's handguard
     const s = (X && X.s) || 1, Ni = N0.matrixWorld.clone().invert();
     // the idle frame: gun root in rig units = U^-1 x M^-1 (x your gun's scale, about its grip); then into the node's frame
     const L = Ni.clone().multiply(B.U.clone().invert()).multiply(M.clone().invert()).multiply(new THREE.Matrix4().makeScale(s, s, s));
@@ -29850,6 +29850,7 @@ const WS_ITEMS = [
   { id: 'awp.slingpts', gun: 'awp', cat: 'hardware', hw: true, name: 'Sling points', price: 35, desc: 'QD flush cups on the left of the fore-end and the butt', requires: [], model: 'cups', fx: { wt: 0.02 } },
   { id: 'awp.scope', gun: 'awp', cat: 'optic', name: 'Variable scope 3-25x56', price: 2600, desc: 'Long-range identification, zooms; slower to aim, its lens glints', requires: ['awp.mount'], model: 'scope',
     fx: { acc: 20, ads: -14, sway: 4, vis: 12, move: -1.5, wt: 0.9 }, owned: true },
+  { id: 'awp.dot', gun: 'awp', cat: 'optic', name: 'Red dot on a riser', price: 650, desc: 'CompM4-class 2 MOA dot over the receiver: fast, no glint, no magnification', requires: ['awp.mount'], model: 'dot', fx: { ads: 10, acc: -8, sway: -2, vis: -6, wt: 0.33 }, owned: true },
   { id: 'awp.s10', gun: 'awp', cat: 'optic', name: 'Fixed 10x42 scope', price: 1400, desc: 'Lighter, one power, mil-dot; its smaller lens glints less', requires: ['awp.mount'], model: 's10', fx: { acc: 15, ads: -8, vis: 8, wt: 0.62 } },
   { id: 'awp.kf', gun: 'awp', cat: 'optic', addon: true, name: 'Scope killflash', price: 150, desc: 'Honeycomb on the 3-25x objective: no glint toward them', requires: ['awp.scope'], model: 'kf', fx: { vis: -10, acc: -1, wt: 0.03 } },
   { id: 'awp.shade', gun: 'awp', cat: 'optic', addon: true, name: 'Scope sunshade', price: 80, desc: '75 mm on the 3-25x objective: less glare and glint; longer', requires: ['awp.scope'], model: 'shade', fx: { vis: -4, acc: 2, ads: -1, wt: 0.07 } },
@@ -29868,7 +29869,7 @@ const WORKSHOP = {
   sel: null, cat: {}, pick: null, guns: [],
   hover: null, flashId: null, flashUntil: 0, hits: [], dirty: true, awake: false, lastDraw: -99, lastCheck: -99, msg: '', msgT: -99, msgLive: false,
   hands: new Map(), deskHit: null, deskHitO: { u: 0, v: 0 }, deskHinted: false, wheelT: 0, sigA: -1, sigB: -1, sigC: -1,
-  items: WS_ITEMS, byId: new Map(), fitted: new Set(['awp.scope']),
+  items: WS_ITEMS, byId: new Map(), fitted: new Set(['awp.dot']),   // the AWM's default build: a red dot, the 3-25x off (it stays owned)
   // Supplies: what the terminal's RESTOCK used to give for free, one category at a time.
   supplies: [
     { id: 'ammo', name: 'Restock ammo', price: 250, desc: 'Every pouch magazine full (shells too); lost bench guns come back' },
@@ -29886,6 +29887,13 @@ try {
     if (o.cat && typeof o.cat === 'object') for (const k of Object.keys(o.cat)) if (WS_CAT_NAME[o.cat[k]]) WORKSHOP.cat[k] = o.cat[k];
   }
 } catch (e) { /* defaults */ }
+try {                                                              // once: the AWM moves to the red dot, its scope comes off (still owned)
+  if (!localStorage.getItem('cqc.awmdot.v1')) {
+    localStorage.setItem('cqc.awmdot.v1', '1');
+    for (const id of ['awp.scope', 'awp.s10', 'awp.kf', 'awp.shade', 'awp.cover']) WORKSHOP.fitted.delete(id);
+    WORKSHOP.fitted.add('awp.dot'); WORKSHOP.byId.get('awp.dot').owned = true;
+  }
+} catch (e) { /* this visit */ }
 function wsSave() {
   const owned = {};
   for (const it of WS_ITEMS) owned[it.id] = it.owned;
@@ -46058,6 +46066,7 @@ const WB_AWM = [['awm', false, 0.72, 2.44, Math.PI / 2, 'awm:bipod', 'awp.bipod'
    base; its identity (precision, stability, identification) stays: optics buy accuracy with aim time and glint,
    the bipod and cheek riser buy stability (the bipod only rested: AWM_REST), the can trades length and weight. */
 const AWM_FX = {
+  'awp.dot': { m: 0.33, lever: 0.12, ads: 0.8, aim: 0.75, stat: { acc: -8, vis: -6 } },   // the red dot: quick, no glint
   'awp.mount': {},                                                            // rail and rings: the base rifle has them
   'awp.bipodif': { m: 0.05, lever: 0.45 },
   'awp.stockmod': { m: 0.16, lever: 0.2 },
@@ -46369,8 +46378,25 @@ function awmSyncGun(g) {
   for (const id of AWM_BENCH) { const have = awmHave(g, id); if (have && (!awmWant(id) || (id === 'awp.scope' && awmWant('awp.s10')))) g17Detach(g, have); }
   if (!awmWant('awp.scope') || awmWant('awp.s10')) for (const id of ['awp.kf', 'awp.shade']) { const have = awmHave(g, id); if (have) g17Detach(g, have); }   // they ride the 3-25x
   for (const id of AWM_BENCH) if (awmWant(id) && !awmHave(g, id) && !(id === 'awp.scope' && awmWant('awp.s10')) && !((id === 'awp.kf' || id === 'awp.shade') && !awmOn(g, 'scope'))) awmAttach(g, id);   // one optic: the 10x wins; shade / killflash only on the 3-25x
+  awmDotSync(g);
   muzSync(g);
   awmRefresh(g);
+}
+// The AWM's red dot: the M4's CompM4-class dot (m4MakeAtt) seated over the receiver on a riser (seatPart, the any-gun
+// fit: optSight takes the sight line from it). One optic: the store keeps the dot and the scopes apart.
+function awmDotSync(g) {
+  const want = awmWant('awp.dot') && !awmWant('awp.scope') && !awmWant('awp.s10'), have = (g.atts || []).find((p) => !p.removing && p.item.awmDot);
+  if (have && !want) { g17Detach(g, have); return; }
+  if (!want || have) { g.awmDotWait = false; return; }
+  if (!M4A.ready) { g.awmDotWait = true; return; }                 // the M4 kit is still loading: awmTick tries again
+  g.awmDotWait = false;
+  const p = m4MakeAtt('dot'); if (!p) return;
+  p.item.awmDot = true; p.item.snapped = true;
+  const model = g.model; model.updateMatrixWorld(true);
+  p.root.position.copy(model.localToWorld(new THREE.Vector3(0, 0.08, -0.14))); model.getWorldQuaternion(p.root.quaternion); p.root.updateMatrixWorld(true);
+  if (!seatPart(g, p)) { removeProp(p); return; }
+  wbFreeze(g, p);
+  if (!WB.atts.includes(p)) WB.atts.push(p);
 }
 function awmApplyStore() { for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === 'awp' && !q.removing) awmSyncGun(q.item); }
 // The killflash follows the stack: back onto the objective when the shade comes off.
@@ -46412,6 +46438,7 @@ function awmGunIds(g, out) {
   out.clear();
   for (const id of ['awp.mount', 'awp.bipodif', 'awp.stockmod', 'awp.muzzle', 'awp.slingpts']) if (awmOwned(id)) out.add(id);
   const opt = awmOptic(g); if (opt) out.add(opt === 's10' ? 'awp.s10' : 'awp.scope');
+  if ((g.atts || []).some((p) => !p.removing && p.item.awmDot)) out.add('awp.dot');
   if (awmWant('awp.mag10')) out.add('awp.mag10');
   const ch = muzChain(g), add = (p) => { if (p.removing || (muzIsDev(p.item) && p !== ch[0])) return; const id = awmPartId(p.item); if (id) out.add(id); };   // the rest of a chain: muzFx
   for (const p of g.atts || []) add(p);
@@ -46537,6 +46564,7 @@ function awmTick(dt) {
   const now = wnow(), G = AWMA.glint;
   for (const g of AWMA.guns) {
     if (!g.prop || g.prop.removing) { AWMA.guns.delete(g); continue; }
+    if (g.awmDotWait && M4A.ready && !(WB.open && WB.gun === g)) awmSyncGun(g);
     const A = g.awm;
     if (!A) continue;
     if (A.bipod && A.bipod.bip) awmBipodTick(g, A.bipod, dt, now);

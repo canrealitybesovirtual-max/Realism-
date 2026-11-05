@@ -1328,3 +1328,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Shadow maps 1024 on the computer (were 1536). Auto quality: Medium has no GTAO (AO only High and up); desktop max pixel ratio 1.25 (was 1.5). Syntax parse only.
 - Follow-up: vmHipAim turned only your gun toward the crosshair point (it changes as you turn and look at near / far things), so the gun swung out of the take's support hand; the arms (V.base) now take the same turn. vmSupportFix aims the fore-end line 2.2 cm from a palm point nearer the knuckles (fingers were over the gun), and corrects from 3 cm off.
 - Follow-up (doors still jittery): the drawn leaf now follows its physics body with a smooth ease (1 - e^(-14 dt); snaps on a jump over 0.5 m), so uneven frame times and contact corrections no longer show as a shake. Slower still: press cap 0.5 rad/s, drive k 4.5 / c 6.5 over 5.5 s, close k 4.5 / c 6, hand cap 1.8, shoulder push k 8. Syntax parse only.
+
+## CQC: AWM red dot build
+- New store row awp.dot (optic, owned): the M4's CompM4-class dot (m4MakeAtt('dot')) on the any-gun riser over the AWM's receiver (seatPart; optSight gives the sight line, the reticle glass is the M4 dot's). awmDotSync from awmSyncGun (attach / detach; waits for the M4 kit via awmTick); AWM_FX 'awp.dot'; awmGunIds counts it. Default fitted optic is the dot; once per save (cqc.awmdot.v1) the 3-25x / 10x / shade / killflash / covers come off and the dot goes on (scopes stay owned, FIT brings them back).
+- vmSupportFix now also runs for the sniper rig (AWM's support hand onto its fore-end).
+- Syntax parse only.
