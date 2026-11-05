@@ -1287,3 +1287,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Trees blown white: tree ambient horizon x0.75 (was 1.1), sun term .028 (was .045).
 - Van shut lines broke into dashes (sank into the faceted shell between sections): lines 16 mm wide, lifted 15 mm.
 - Follow-up (white speckle on the road): asphalt normal flattened by wetness (x0.85) and specular anti-aliasing (roughness widened by fwidth of the normal).
+- Bridge decks see-through from below: decks use a DoubleSide copy of the concrete material (M.deckConcrete). Garage has a "Back to studio" corner button (visible while walking too); main and pause menus already had one.
