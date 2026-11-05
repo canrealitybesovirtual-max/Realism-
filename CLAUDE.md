@@ -1294,3 +1294,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: door-open hitch
 - roomWarm drew a new room with one override material, so its real shader programs compiled on the first frame it showed through the door (seconds on a Mac). roomCompile(r) (end of roomWarm and after activateRoom, once per room) runs renderer.compileAsync on room.group and room.doorGroup with the scene's lights (made visible for the call), in the background. Syntax parse only.
+
+## CQC: desktop AWM viewmodel smaller on screen
+- VM_HIP (vmGunPlace, hip only): the sniper rig and your AWM mirror move 9 cm out, 4.5 cm down, 3.5 cm right in camera space (arms with them); aiming still eases to the real sight line. The hold itself (VM_FIT.awp on the pack's Kar98-style take) is unchanged. Syntax parse only.
