@@ -1310,3 +1310,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: calmer doors
 - Opening speed caps: press 0.7 rad/s (was 1.05), VR hand 2.2 (was 3.0); press drive k 7 / c 7 over 4.2 s (was 12 / 7), close k 6 / c 6; shoulder push k 14 / c 5 (was 30 / 6); VR grip k 70 / c 16 (was 140 / 22) with the hand's target angle smoothed (door.hT, 0.3 a frame) so tracking noise doesn't shake the leaf; leaf angular damping 2.2 (was 0.9). Kicks unchanged. Syntax parse only.
+
+## CQC outdoor: optimisation pass (knobs only)
+- Fog denser (0.042 / headset 0.058) so the camera far plane comes in: 92 m (headset 66). Forest LOD [18, 36, 88] (headset [10, 24, 58]), forest 78 x 72 m (54 x 50), grid steps 4.0-6.6 m (x1.4 headset), ground cover culled nearer, terrain 110 x 120 m (80 x 88). Rain 2600 / 600 streaks in a smaller box, splashes 220 / 50, drips 320 / 70. Lamps per pixel 6 (headset / lite 3), nearest first. Syntax parse only.
