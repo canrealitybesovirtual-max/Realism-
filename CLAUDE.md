@@ -1364,3 +1364,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - mergeByMaterial(geos, mats): parts sharing a material merge into one group (one draw per material per instanced class). Pack traffic: the four lamp kinds share one material (lamp_all, kind from the aLk attribute), paint materials cached per source texture. Police traffic: one clone per source material (srcMat), then merged.
 - Your cabin interior and column (cabin-* / column-* rigs) are not drawn from outside views on Low / Quest (car.cabHide from RenderSystem.render; CabinControls.update applies it).
 - Road streaming ahead on Low / Quest: ~900 / 750 m (was ~1330 / 1000).
+- Police traffic (31 materials, x2 for near / far = 62 draws): untextured opaque parts share two vertex-coloured materials (metal / non-metal, colour from each part's own), glass parts share one; textured parts, the light bar and tail lenses keep theirs.

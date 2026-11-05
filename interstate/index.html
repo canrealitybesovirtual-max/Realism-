@@ -13693,6 +13693,13 @@ function policeTrafficGeometry(U) {
     if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
     if (!g.attributes.normal) g.computeVertexNormals();
     const nm = o.material.name || '', tailM = TAIL_GLASS.test(nm), barM = /^Giro_(bleu|red)_text$/.test(nm), blue = /bleu/.test(nm);
+    { const sm = o.material, c = sm.color || new THREE.Color(1, 1, 1), plain = !tailM && !barM && !sm.map && !sm.transparent && !/vitre|glass|miroir/i.test(nm);   // PERF: untextured parts share two materials (colour per vertex)
+      const col = new Float32Array(n * 3); for (let i = 0; i < n; i++) { col[i * 3] = plain ? c.r : 1; col[i * 3 + 1] = plain ? c.g : 1; col[i * 3 + 2] = plain ? c.b : 1; }
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      if (plain) { const metal = (sm.metalness ?? 0) > .5, key = metal ? '_plainM' : '_plain';
+        const pm = srcMat.get(key) || (srcMat.set(key, Atmos.patch(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: metal ? .3 : .6, metalness: metal ? .9 : .05 }), { key: 'trafpolP' + (metal ? 'M' : '') })), srcMat.get(key));
+        pm.userData.shared = true; geos.push(g); mats.push(pm); return; }
+      if (sm.transparent || /vitre|glass/i.test(nm)) { const gk = srcMat.get('_glass'); if (gk && !tailM) { geos.push(g); mats.push(gk); return; } } }
     const base = tailM ? new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .08, metalness: 0 }) : o.material.clone();   // tail lens: opaque, depth in the shader
     const mat = Atmos.patch(base, { key: 'trafpol' + (tailM ? 'T' : barM ? (blue ? 'B' : 'R') : base.transparent ? 't' : ''), uniforms: U,
       vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;' + (tailM ? TAIL_LENS_VERT_PARS : ''), vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif' + (tailM ? TAIL_LENS_VERT : ''),
@@ -13700,7 +13707,7 @@ function policeTrafficGeometry(U) {
       frag: tailM ? [['#include <emissivemap_fragment>', '{ float tc = tlCells(); diffuseColor.rgb = mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc); totalEmissiveRadiance = vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8) * (.55 + .9 * tc); }']]
         : barM ? [['#include <emissivemap_fragment>', `{ float on = step(.5, vLampI.w) * polFlash(uTrafT, ${blue ? '1.0' : '-1.0'});   // police update: the drivable car's pattern
             totalEmissiveRadiance = ${blue ? 'vec3(.1, .25, 1.0)' : 'vec3(1.0, .05, .03)'} * (on * 7.0 + step(.5, vLampI.w) * .2); }`]] : [] });
-    mat.userData.shared = true; const m1 = srcMat.get(o.material) || (srcMat.set(o.material, mat), mat); geos.push(g); mats.push(m1);
+    mat.userData.shared = true; const m1 = srcMat.get(o.material) || (srcMat.set(o.material, mat), mat); if ((o.material.transparent || /vitre|glass/i.test(nm)) && !tailM && !srcMat.get('_glass')) srcMat.set('_glass', m1); geos.push(g); mats.push(m1);
   });
   const { body, mats: um } = mergeByMaterial(geos, mats); mats.length = 0; mats.push(...um);
   body.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4));
