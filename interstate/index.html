@@ -12946,7 +12946,7 @@ class GarageWorld {
    beside the median (the fast lane); lane indices grow outward.
    ════════════════════════════════════════════════════════════════════════ */
 const TRAFFIC_CAP = 190, ONCOMING_CAP = 80, TRAFFIC_TOTAL = TRAFFIC_CAP + ONCOMING_CAP, WHEELS_PER = 10;
-const LAMP = { head: 0, tail: 1, indL: 2, indR: 3, brake: 4 };
+const LAMP = { head: 0, tail: 1, indL: 2, indR: 3, brake: 4, mark: 5 };   // mark: amber side / roof marker, lit at night
 const gauss = () => { let u = 0; while (!u) u = Math.random(); return clamp(Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random()), -2.5, 2.5); };
 const wrapRel = (d, L) => d - L * Math.round(d / L);
 const minJerk = t => t * t * t * (10 + t * (-15 + 6 * t));
@@ -13102,86 +13102,127 @@ function packTrafficParts(P) {
   return { body, lamps };
 }
 function buildSemiGeometry(T) {
-  const bx = (w, h, d, x, y, z, rx = 0, ry = 0) => { const g = new THREE.BoxGeometry(w, h, d); if (rx) g.rotateX(rx); if (ry) g.rotateY(ry); return g.translate(x, y, z); };
-  const cyl = (r, l, x, y, z, seg = 16) => new THREE.CylinderGeometry(r, r, l, seg).rotateX(Math.PI / 2).translate(x, y, z);
-  const lampOf = P => (kind, w, h, x, y, z, d = .05) => { const g = stripToPN(tBox(w, h, d, x, y, z, Math.min(.015, h * .3))); g.setAttribute('lampKind', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count).fill(kind), 1)); P.lamps.push(g); };
-  /* ── tractor (vehicle frame: nose toward −z, front bumper at −8.3) ── */
+  /* helpers: plain boxes (12 triangles) for fittings, rounded boxes (108) for panels, cylinders, and an open arc shell for mudguards */
+  const bx = (w, h, d, x, y, z, rx = 0, ry = 0, rz = 0) => { const g = new THREE.BoxGeometry(w, h, d); if (rz) g.rotateZ(rz); if (rx) g.rotateX(rx); if (ry) g.rotateY(ry); return g.translate(x, y, z); };
+  const rb = (w, h, d, x, y, z, r = .02, rx = 0, seg = 1) => { const g = new RoundedBoxGeometry(w, h, d, seg, Math.max(.001, Math.min(r, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3))); if (rx) g.rotateX(rx); return g.translate(x, y, z); };
+  const cz = (r, l, x, y, z, seg = 16) => new THREE.CylinderGeometry(r, r, l, seg).rotateX(Math.PI / 2).translate(x, y, z);   // axis along z
+  const cx = (r, l, x, y, z, seg = 12) => new THREE.CylinderGeometry(r, r, l, seg).rotateZ(Math.PI / 2).translate(x, y, z);   // axis along x
+  const cy = (r, l, x, y, z, seg = 10) => new THREE.CylinderGeometry(r, r, l, seg).translate(x, y, z);                       // axis along y
+  const ribbon = (A, B, out) => {                                      // smooth strip between two polylines, facing `out` at its first quad
+    const pos = [], idx = [], n = A.length;
+    for (let i = 0; i < n; i++) pos.push(A[i][0], A[i][1], A[i][2], B[i][0], B[i][1], B[i][2]);
+    for (let i = 0; i < n - 1; i++) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+    const N = g.attributes.normal;
+    if (N.getX(0) * out[0] + N.getY(0) * out[1] + N.getZ(0) * out[2] < 0) { for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; } g.setIndex(idx); g.computeVertexNormals(); }
+    return g;
+  };
+  /* mudguard: an arc shell of thickness t, axis along x through (x, y, z); a0..a1 from ahead (−z) over the top to behind */
+  const guard = (R, w, x, y, z, a0 = .26, a1 = 2.88, t = .03, seg = 14) => {
+    const ring = (r, sx) => { const o = []; for (let k = 0; k <= seg; k++) { const a = a0 + (a1 - a0) * k / seg; o.push([x + sx * w / 2, y + r * Math.sin(a), z - r * Math.cos(a)]); } return o; };
+    const oL = ring(R, -1), oR = ring(R, 1), iL = ring(R - t, -1), iR = ring(R - t, 1), rad = [0, oL[0][1] - y, oL[0][2] - z];
+    return [ribbon(oL, oR, rad), ribbon(iL, iR, [0, -rad[1], -rad[2]]), ribbon(oL, iL, [-1, 0, 0]), ribbon(oR, iR, [1, 0, 0]), ribbon([oL[0], oR[0]], [iL[0], iR[0]], [0, -1, 0]), ribbon([oL[seg], oR[seg]], [iL[seg], iR[seg]], [0, -1, 0])];
+  };
+  const lampOf = P => (kind, w, h, x, y, z, d = .03, rx = 0) => { const g = bx(w, h, d, x, y, z, rx).toNonIndexed(); g.deleteAttribute('uv'); g.setAttribute('lampKind', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count).fill(kind), 1)); P.lamps.push(g); };
+  const MARK = LAMP.mark;
+  /* ── tractor (vehicle frame: nose toward −z). Cab shell from zC to zB, 2.49 m wide, roof at 3.98 m (the trailer's 4.0) ── */
   const P = { paint: [], glass: [], trim: [], box: [], lamps: [] }, lamp = lampOf(P);
-  const zF = -8.22, zB = -5.95, W = 1.245;
-  /* cab shell: squarish loft, raked a little above the dash line, arched over the front wheels */
-  P.paint.push(loftGeometry([[zF, 1.2, 1.02, 3.62], [zF + .03, 1.235, 1.0, 3.78], [zF + .12, W, .98, 3.86], [zF + .4, W, .98, 3.9], [zB - .05, W, .98, 3.9], [zB, 1.225, 1.0, 3.86]],
-    { n: 11, top: .975, bot: 1, ring: 40, step: .08, arches: [{ z: -7.35, y: .52, R: .62 }] }));
-  /* windscreen raked back 6°, two-part with the centre seam of a big cab, frame band around it */
-  const rk = -.1;
-  P.glass.push(tBox(2.26, .98, .03, 0, 2.66, zF - .012, .02, rk));
-  P.trim.push(tBox(2.4, 1.12, .02, 0, 2.66, zF - .002, .03, rk));
-  P.trim.push(tBox(2.36, .13, .42, 0, 3.24, zF - .16, .02, -.22));                     // sun visor
+  const zC = -8.2, zB = -5.85, W = 1.245, rk = .33 / 1.67, rkA = Math.atan(rk), rkN = Math.hypot(1, rk);   // windscreen rake: dz per dy (11°)
+  const onScreen = (y, off) => [y + off * rk / rkN, zC + (y - 2.05) * rk - off / rkN];                  // a point `off` m in front of the raked plane at height y
+  /* cab shell: nearly square sections with ~12 cm corner radii, a vertical lower front (grille, bumper), the upper front raked back
+     as one plane (the windscreen and A-pillars), the roof rounding over to the high-roof sleeper, arched over the front wheel */
+  P.paint.push(loftGeometry([[zC, 1.16, 1.02, 2.05], [zC + .05, 1.228, .99, 2.3], [zC + .11, W, .98, 2.6], [zC + .22, W, .98, 3.16], [zC + .33, W, .98, 3.72], [zC + .55, W, .98, 3.93], [zC + .9, W, .98, 3.98], [zB - .1, W, .98, 3.98], [zB, 1.2, 1.0, 3.9]],
+    { n: 10, top: .975, bot: 1, ring: 44, step: .08, arches: [{ z: -7.35, y: .52, R: .64 }] }));
+  /* windscreen: one piece on the raked plane, in a dark frame; wiper cowl strip under it */
+  { const [gy, gz] = onScreen(2.88, .035), [fy, fz] = onScreen(2.88, .018);
+    P.glass.push(rb(2.2, 1.5, .03, 0, gy, gz, .02, rkA));
+    P.trim.push(rb(2.36, 1.62, .02, 0, fy, fz, .03, rkA)); }
+  /* sun visor over the screen with five amber marker lamps on the roof edge */
+  { const [vy, vz] = onScreen(3.7, .2); P.paint.push(rb(2.42, .09, .44, 0, vy + .03, vz, .02, -.32));
+    for (let k = -2; k <= 2; k++) lamp(MARK, .09, .045, k * .5, vy + .09, vz - .19, .05); }
   for (const s of [1, -1]) {
-    P.glass.push(tBox(.03, .72, .9, s * (W + .004), 2.62, -7.55, .01));               // door glass
-    P.glass.push(tBox(.03, .5, .32, s * (W + .004), 2.72, -6.62, .01));               // sleeper window
-    P.trim.push(bx(.02, 1.8, .015, s * (W + .006), 1.95, -6.98));                     // door shut line
-    P.trim.push(bx(.02, .015, .9, s * (W + .006), 1.06, -7.55));
-    P.trim.push(tBox(.06, .04, .22, s * (W + .03), 1.95, -7.1, .015));               // handle
-    /* steps under the door */
-    for (const [y] of [[.48], [.82]]) P.trim.push(tBox(.06, .05, .62, s * (W - .1), y, -7.62, .01), bx(.3, .02, .58, s * (W - .22), y + .02, -7.62));
-    /* mirrors: arm from the A-pillar, main glass and wide-angle below, kerb mirror on the nose */
-    P.trim.push(tBox(.42, .05, .05, s * (W + .2), 3.0, zF + .18, .02), tBox(.05, .05, .5, s * (W + .4), 2.75, zF + .18, .02, Math.PI / 2));
-    P.trim.push(tBox(.09, .52, .26, s * (W + .44), 2.72, zF + .2, .03), tBox(.09, .26, .22, s * (W + .44), 2.28, zF + .2, .03));
-    P.glass.push(bx(.01, .46, .2, s * (W + .39), 2.72, zF + .2), bx(.01, .2, .17, s * (W + .39), 2.28, zF + .2));
-    /* cab extenders bridging toward the trailer, and the side skirt / tank cover between the axles */
-    P.paint.push(tBox(.035, 2.5, .62, s * (W - .01), 2.62, zB + .28, .01));
-    P.paint.push(tBox(.05, .55, 1.25, s * (W - .02), .78, -5.75, .03));
-    P.box.push(cyl(.27, 1.15, s * (W - .3), .72, -5.75, 18));                        // fuel tank (aluminium)
-    /* chassis rails, mudguards over the drive axles and their flaps */
-    P.trim.push(bx(.1, .28, 5.5, s * .44, .98, -5.05));
-    P.trim.push(tBox(.62, .035, 2.45, s * (W - .3), 1.12, -3.9, .015), tBox(.6, .5, .015, s * (W - .3), .66, -2.55, .005));
-    /* lamps: headlamp clusters in the bumper corners, indicators outboard, fogs low, roof markers */
-    lamp(LAMP.head, .44, .15, s * .78, 1.22, zF - .02);
-    lamp(s < 0 ? LAMP.indL : LAMP.indR, .14, .07, s * 1.08, 1.22, zF - .015);
-    lamp(LAMP.head, .14, .07, s * .9, .74, zF - .2);
-    lamp(LAMP.head, .07, .05, s * .7, 3.94, zF + .3, .04);
-    lamp(LAMP.tail, .2, .1, s * .95, .98, -2.48);
-    lamp(s < 0 ? LAMP.indL : LAMP.indR, .1, .1, s * .72, .98, -2.48);
-    lamp(s < 0 ? LAMP.indL : LAMP.indR, .03, .06, s * (W + .02), 1.3, -7.85, .12);   // side repeater
+    /* door: glass, shut lines, handle; a kerb-view window low in the passenger door */
+    P.glass.push(rb(.03, .82, 1.0, s * (W + .004), 2.6, -7.46, .01));
+    P.trim.push(bx(.02, 1.78, .014, s * (W + .006), 2.33, -7.985), bx(.02, 1.78, .014, s * (W + .006), 2.33, -6.86), bx(.02, .014, 1.14, s * (W + .006), 1.45, -7.42));
+    P.trim.push(rb(.05, .035, .26, s * (W + .026), 2.03, -7.02, .01));
+    if (s > 0) { P.glass.push(rb(.03, .3, .5, W + .004, 1.85, -7.25, .01)); P.trim.push(bx(.02, .36, .56, W + .003, 1.85, -7.25)); }
+    /* steps behind the front wheel: dark well under the shell, three treads */
+    P.trim.push(bx(.32, .56, .56, s * (W - .18), .75, -6.9), rb(.03, .46, .6, s * (W + .004), 1.22, -6.9, .01));
+    for (const [y, dx] of [[.52, .12], [.84, .1], [1.17, .07]]) P.box.push(bx(.3, .045, .3, s * (W - dx), y, -6.9));
+    /* mirrors: arm from the A-pillar, one tall housing (main glass over the wide-angle), kerb mirror over the passenger door */
+    { const [my, mz] = onScreen(3.12, -.02);
+      P.trim.push(bx(.46, .045, .05, s * (W + .2), my, mz + .06), bx(.045, .64, .05, s * (W + .42), my - .3, mz + .06));
+      P.trim.push(rb(.11, .92, .28, s * (W + .47), 2.56, mz + .16, .035));
+      P.glass.push(bx(.09, .42, .01, s * (W + .47), 2.74, mz + .305), bx(.09, .25, .01, s * (W + .47), 2.3, mz + .305)); }
+    if (s > 0) { P.trim.push(bx(.04, .22, .04, W + .08, 3.5, -7.4), rb(.32, .17, .1, W + .14, 3.38, -7.4, .02)); P.glass.push(bx(.26, .13, .01, W + .14, 3.36, -7.345)); }
+    /* side air deflectors at the cab's rear edge, splayed a little toward the trailer */
+    P.paint.push(rb(.04, 2.5, .56, 0, 2.62, 0, .015).rotateY(s * -.05).translate(s * (W - .01), 0, zB + .3));
+    P.trim.push(bx(.02, 2.45, .02, s * (W + .005), 2.62, zB + .04));
+    /* headlamps in a dark recess at the bumper corners, wrapping round the corner; fog lamps low */
+    P.trim.push(rb(.58, .26, .1, s * .9, 1.1, zC - .1, .03), bx(.06, .26, .26, s * 1.235, 1.1, zC + .09));
+    lamp(LAMP.head, .46, .15, s * .88, 1.085, zC - .155, .03);
+    lamp(s < 0 ? LAMP.indL : LAMP.indR, .46, .04, s * .88, 1.205, zC - .15, .03);
+    lamp(s < 0 ? LAMP.indL : LAMP.indR, .03, .15, s * 1.262, 1.1, zC + .1, .22);
+    lamp(LAMP.head, .14, .09, s * .84, .56, zC - .1, .03);
+    lamp(s < 0 ? LAMP.indL : LAMP.indR, .03, .05, s * (W + .006), 1.6, -7.93, .1);        // side repeater on the door
+    /* chassis rail, mudguards over the drive tandem (two arcs and a bridge), flaps, rear lamps */
+    P.trim.push(bx(.1, .26, 5.9, s * .46, .9, -5.3));
+    for (const z of [-4.55, -3.25]) P.trim.push(...guard(.6, .68, s * .96, .52, z));
+    P.trim.push(bx(.68, .025, .22, s * .96, 1.1, -3.9), bx(.62, .45, .015, s * .96, .62, -2.58));
+    lamp(LAMP.tail, .22, .1, s * .95, .98, -2.375);
+    lamp(s < 0 ? LAMP.indL : LAMP.indR, .1, .1, s * .72, .98, -2.375);
+    lamp(MARK, .04, .05, s * 1.28, .98, -4.0, .1);                                       // side marker on the guard line
   }
-  /* grille: dark field with chrome-less slats, a badge, then the bumper and a lower spoiler */
-  P.trim.push(tBox(1.6, .78, .03, 0, 1.72, zF - .008, .03));
-  for (let k = 0; k < 6; k++) P.paint.push(bx(1.55, .05, .03, 0, 1.4 + k * .12, zF - .02));
-  P.box.push(tBox(.42, .09, .02, 0, 2.18, zF - .03, .02));
-  P.trim.push(tBox(2.48, .46, .32, 0, .9, zF + .05, .05), tBox(2.3, .2, .25, 0, .58, zF + .12, .04), tBox(.5, .16, .02, 0, .9, zF - .12, .01));
-  P.trim.push(tBox(1.5, .4, .9, 0, .78, -7.7, .04));                                   // front cross member / under-cab
-  P.trim.push(tBox(2.1, .1, .2, 0, 3.96, -6.4, .03));                                  // roof light bar
-  P.trim.push(tBox(.9, .14, .9, 0, 1.2, SEMI_TRAILER.kz, .03), tBox(.9, .05, .5, 0, 1.15, SEMI_TRAILER.kz + .62, .02, -.3));   // fifth wheel and its ramp
-  P.trim.push(tBox(2.2, .12, .12, 0, .98, -2.45, .02));                                // rear light bar
-  P.box.push(cyl(.14, .9, -.25, .72, -4.9, 12), cyl(.14, .9, .25, .72, -4.9, 12));    // air tanks
-  P.trim.push(tBox(.5, .5, .6, .62, .78, -6.65, .05));                                 // battery box
+  /* grille between the headlamps and the screen: dark field, four aluminium slats, badge bar */
+  P.trim.push(rb(1.96, .62, .04, 0, 1.53, zC - .01, .02));
+  for (let k = 0; k < 4; k++) P.box.push(bx(1.9, .035, .03, 0, 1.31 + k * .145, zC - .03));
+  P.box.push(rb(.9, .07, .025, 0, 1.95, zC - .02, .01));
+  /* bumper: upper band in the cab colour with the plate, dark lower bumper with the air slot, cross member behind */
+  P.paint.push(rb(2.5, .4, .3, 0, 1.0, zC + .02, .06));
+  P.trim.push(rb(2.42, .4, .3, 0, .6, zC + .06, .06), bx(.9, .12, .04, 0, .68, zC - .105), bx(1.6, .4, .8, 0, .78, -7.6));
+  P.box.push(bx(.52, .11, .012, 0, 1.0, zC - .137));
+  /* behind the cab: catwalk, fifth wheel and its ramp, cross members, rear light bar */
+  P.trim.push(bx(1.9, .03, .5, 0, 1.12, -5.55), bx(.82, .2, .1, 0, .9, -7.9), bx(.82, .2, .1, 0, .9, -6.4), bx(.82, .2, .1, 0, .9, -5.0), bx(.82, .2, .1, 0, .9, -2.5));
+  P.trim.push(rb(.9, .1, .9, 0, 1.16, SEMI_TRAILER.kz, .02), rb(.9, .05, .5, 0, 1.1, SEMI_TRAILER.kz + .62, .02, -.3), bx(2.3, .14, .14, 0, .98, -2.45));
+  /* fuel tank on the left with its straps; exhaust box and battery box on the right; air tanks under the frame */
+  P.box.push(cz(.3, 1.3, -(W - .34), .74, -5.9, 18));
+  for (const z of [-6.35, -5.45]) P.trim.push(cz(.315, .04, -(W - .34), .74, z, 18));
+  P.trim.push(rb(.56, .62, .9, W - .33, .72, -6.05, .03), rb(.55, .5, .5, W - .33, .68, -5.35, .03), bx(.5, .02, .9, W - .33, 1.04, -6.05));
+  P.box.push(cx(.14, .9, .25, .55, -4.95, 10), cx(.14, .9, -.25, .55, -4.95, 10));
   const tractor = packTrafficParts(P);
-  /* ── trailer (its own frame: kingpin at the origin, rear toward +z) ── */
-  const Q = { paint: [], glass: [], trim: [], box: [], lamps: [] }, tl = lampOf(Q), S = SEMI_TRAILER;
-  const L = S.rear - S.front, zc = (S.front + S.rear) / 2, TW = 2.48;
-  (Q.cloth = []).push(tBox(TW, 2.66, L - .04, 0, 2.66, zc, .02));                  // curtains: woven PVC (was the car paint: read as gold foil)
-  Q.trim.push(bx(TW + .02, .12, L, 0, 3.97, zc), bx(TW + .02, .24, L, 0, 1.24, zc));  // top and bottom rails
+  /* ── trailer (its own frame: kingpin at the origin, rear toward +z): 13.6 m curtain-sider, floor at 1.12 m, roof at 4.0 m ── */
+  const Q = { paint: [], glass: [], trim: [], box: [], lamps: [], cloth: [] }, tl = lampOf(Q), S = SEMI_TRAILER;
+  const L = S.rear - S.front, zc = (S.front + S.rear) / 2, TW = 2.5, hw = TW / 2;
+  Q.cloth.push(rb(TW - .03, 2.62, L - .26, 0, 2.63, zc, .01));                            // curtains (trailer colour, folds in the shader)
+  Q.box.push(rb(TW + .01, .09, L, 0, 3.955, zc, .035));                                     // roof (grey)
+  Q.trim.push(bx(TW + .02, .055, L, 0, 3.9, zc), bx(TW + .02, .2, L, 0, 1.22, zc));        // curtain track and floor rail
+  Q.paint.push(rb(TW, 2.68, .12, 0, 2.6, S.front + .06, .02));                             // front bulkhead
+  Q.trim.push(bx(2.3, .08, 2.8, 0, 1.08, .4), cy(.045, .12, 0, 1.0, 0), bx(1.7, .05, .05, 0, .72, .9));   // apron, kingpin, leg brace
+  for (const z of [2.2, 4.2, 6.2]) Q.trim.push(bx(1.3, .1, .08, 0, .95, z));
   for (const s of [1, -1]) {
-    for (const z of [S.front + .04, S.rear - .04]) Q.trim.push(bx(.07, 2.8, .07, s * (TW / 2 + .004), 2.6, z));
-    for (let z = S.front + .55; z < S.rear - .3; z += .62) Q.trim.push(bx(.012, .9, .035, s * (TW / 2 + .006), 1.75, z), bx(.03, .06, .06, s * (TW / 2 + .015), 1.38, z));   // straps and buckles
-    Q.trim.push(bx(.11, .7, .11, s * .92, .82, 1.1), bx(.24, .04, .3, s * .92, .47, 1.1));   // landing legs and feet
-    for (const y of [.62, .86]) Q.trim.push(bx(.04, .1, 5.0, s * 1.2, y, 4.05));             // side guard rails
-    for (const z of [1.7, 4.0, 6.4]) Q.trim.push(bx(.04, .5, .06, s * 1.19, .86, z));
-    Q.trim.push(bx(.7, .03, 4.05, s * .93, 1.07, S.axleC), bx(.6, .5, .015, s * .93, .66, S.axles[2] + .65));   // mudguards and flaps
-    Q.trim.push(bx(.1, 2.66, .06, s * 1.2, 2.66, S.rear + .02));                       // rear door frame
-    for (const x of [.35, .85]) Q.trim.push(bx(.035, 2.5, .045, s * x, 2.66, S.rear + .05), bx(.09, .12, .06, s * x, 1.95, S.rear + .06));   // lock bars and handles
-    for (let k = 0; k < 4; k++) Q.trim.push(bx(.05, .12, .05, s * 1.19, 1.6 + k * .7, S.rear + .055));   // hinges
-    tl(LAMP.tail, .36, .13, s * .92, 1.0, S.rear + .03);
-    tl(s < 0 ? LAMP.indL : LAMP.indR, .12, .13, s * .58, 1.0, S.rear + .03);
-    tl(LAMP.brake, .12, .13, s * .4, 1.0, S.rear + .031);
-    tl(LAMP.tail, .05, .04, s * (TW / 2 - .05), 4.02, S.rear - .02, .04);             // top outline lamps
+    Q.trim.push(bx(.1, 2.72, .1, s * hw, 2.6, S.front + .11), bx(.1, 2.75, .1, s * (hw - .05), 2.6, S.rear - .05));   // corner posts
+    for (let z = S.front + .55; z < S.rear - .35; z += .6) Q.trim.push(bx(.012, 2.3, .03, s * (hw - .006), 2.6, z), bx(.035, .14, .06, s * (hw + .01), 1.42, z));   // straps and buckles
+    for (const z of [2.9, 5.6]) Q.paint.push(rb(.03, .6, 2.6, s * 1.17, .82, z, .01));   // side skirts
+    Q.trim.push(bx(.12, .72, .12, s * .9, .78, .9), bx(.28, .05, .32, s * .9, .4, .9));    // landing legs
+    Q.trim.push(bx(.14, .42, L - 1.1, s * .5, .91, zc + .35));                              // main beam
+    for (const z of S.axles) { Q.trim.push(...guard(.6, .66, s * .92, .5, z), cy(.15, .2, s * .72, .86, z + .15, 10)); }   // guards, air bags
+    Q.trim.push(bx(.6, .45, .015, s * .92, .62, S.axles[2] + .68));                         // mudflap
+    /* rear: door, two lock bars with keepers and handles, hinges, bumper rubbers */
+    Q.box.push(bx(1.1, 2.55, .04, s * .585, 2.6, S.rear - .02));
+    for (const x of [.32, .86]) { Q.trim.push(cy(.017, 2.42, s * x, 2.6, S.rear + .035, 8), bx(.045, .32, .03, s * x, 1.9, S.rear + .06)); for (const y of [1.5, 3.66]) Q.trim.push(bx(.06, .05, .07, s * x, y, S.rear + .03)); }
+    for (const y of [1.55, 2.25, 2.95, 3.6]) Q.trim.push(bx(.06, .14, .05, s * 1.19, y, S.rear + .03));
+    Q.trim.push(bx(.14, .16, .08, s * .98, 1.2, S.rear + .03), bx(.08, .36, .08, s * .75, .76, S.rear - .28));
+    /* lamps: cluster on the rear cross member, outline lamps, amber side markers */
+    tl(LAMP.tail, .3, .14, s * .98, .95, S.rear - .005);
+    tl(s < 0 ? LAMP.indL : LAMP.indR, .2, .14, s * .7, .95, S.rear - .005);
+    tl(LAMP.brake, .2, .14, s * .48, .95, S.rear - .005);
+    tl(LAMP.tail, .06, .05, s * 1.18, 3.96, S.rear - .0);
+    tl(MARK, .06, .05, s * 1.18, 3.96, S.front - .0);
+    for (const z of [0, 3, 6, 9, 11.6]) tl(MARK, .03, .05, s * (hw + .012), 1.2, z, .1);
   }
-  Q.trim.push(bx(.02, 2.6, .03, 0, 2.66, S.rear + .025), bx(TW, .14, .05, 0, 3.93, S.rear + .03), bx(TW, .2, .05, 0, 1.28, S.rear + .03));
-  Q.trim.push(bx(2.3, .14, .12, 0, .55, S.rear - .3), bx(.08, .5, .08, .7, .8, S.rear - .3), bx(.08, .5, .08, -.7, .8, S.rear - .3));   // underrun bar
-  Q.box.push(bx(.52, .11, .01, 0, .55, S.rear - .235));                                // plate
-  for (const s of [1, -1]) Q.trim.push(bx(.14, .42, L - 1.2, s * .48, .9, zc + .4));  // main beams
-  Q.trim.push(bx(2.2, .12, 2.6, 0, 1.08, .3));                                         // kingpin plate
-  Q.trim.push(bx(.7, .3, .1, 0, 1.5, S.front - .05), bx(.3, .15, .08, .4, 1.9, S.front - .06));   // front wall connectors
+  Q.trim.push(bx(TW, .1, .1, 0, 3.9, S.rear - .05), bx(TW, .25, .14, 0, 1.2, S.rear - .07), bx(TW, .22, .1, 0, .95, S.rear - .06));   // header, sill, lamp member
+  Q.trim.push(bx(2.3, .12, .1, 0, .55, S.rear - .28));                                     // underrun bar
+  Q.box.push(bx(.52, .11, .012, 0, .55, S.rear - .224));                                   // plate
   const trailer = packTrafficParts(Q);
   return { ...tractor, trailer };
 }
@@ -13476,11 +13517,12 @@ function trafficAssets() {
       else if (lk < 1.5) lc = vec3(1.0, .045, .025) * (mix(.16, 1.5, uNight) + iLamp.x * 3.6);
       else if (lk < 2.5) lc = vec3(1.0, .38, .04) * (.05 + iLamp.y * 3.2);
       else if (lk < 3.5) lc = vec3(1.0, .38, .04) * (.05 + iLamp.z * 3.2);
-      else lc = vec3(1.0, .045, .025) * (.04 + iLamp.x * 3.6);
+      else if (lk < 4.5) lc = vec3(1.0, .045, .025) * (.04 + iLamp.x * 3.6);
+      else lc = vec3(1.0, .5, .08) * mix(.05, 1.4, uNight);             // marker lamps (semi)
       vLamp = lc; vLk = lk;` + TAIL_LENS_VERT,
     fragPars: 'varying vec3 vLamp; varying float vLk; uniform float uNight;' + TAIL_LENS_PARS, frag: [['#include <color_fragment>', `diffuseColor.rgb = vLamp;
       if (vLk > .5) {                                                   // red / amber lenses: facets behind the glass, a lens colour by day, a sky glint
-        float tc = tlCells(); vec3 lensC = vLk < 2.5 || vLk > 3.5 ? vec3(.3, .014, .01) : vec3(.36, .13, .02);
+        float tc = tlCells(); vec3 lensC = vLk < 2.5 || (vLk > 3.5 && vLk < 4.5) ? vec3(.3, .014, .01) : vec3(.36, .13, .02);
         vec3 V = normalize(vTlV), N = normalize(vTlN); float fr = pow(1.0 - abs(dot(V, N)), 4.0);
         diffuseColor.rgb = lensC * (.2 + .18 * tc) * (1.0 - .8 * uNight) + vLamp * (.55 + .9 * tc) + vec3(.55, .6, .68) * fr * .35 * (1.0 - .7 * uNight);
       }`]] });
