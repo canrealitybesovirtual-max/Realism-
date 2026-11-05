@@ -1297,3 +1297,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: desktop AWM viewmodel smaller on screen
 - VM_HIP (vmGunPlace, hip only): the sniper rig and your AWM mirror move 9 cm out, 4.5 cm down, 3.5 cm right in camera space (arms with them); aiming still eases to the real sight line. The hold itself (VM_FIT.awp on the pack's Kar98-style take) is unchanged. Syntax parse only.
+
+## CQC: fewer ceiling lights, AWM on PC (hands, scope removal)
+- troffCap(L) at the start of roomBuilder: at most 4 ceiling fittings a room (spread along the long axis, the middle ones first for the pool lights); covers the large-room grid, the range and the facility rooms. Stairwells unchanged (2-3).
+- Desktop AWM uses the AK rifle take (VM.byType.awp 'ak', the step 98 VMH_FIT.awp hand fit): hands on the grip and fore-end. VM_FIT (sniper-take solve) only for the sniper rig. A bolt gun on a rig without its own bolt timing works the bolt 0.6 s after the shot (vmShot). VM_HIP keyed by gun type (awp: 3 cm right, 3.5 cm down, 7 cm out).
+- Store REMOVE of an AWM part while the AWM is in the vise now takes it off at once (awmSyncGun used to skip a clamped gun, and RELEASE then wrote the part back as fitted).
+- Syntax parse only.

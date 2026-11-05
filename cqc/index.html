@@ -6478,6 +6478,14 @@ function fixtureAt(wall, u, w, d) {
 // Lights, sprinklers and the smoke detector. Two troffers along the long axis
 // (the light pool lights exactly two per room); sprinkler heads on a ~2.6 m grid,
 // clear of the troffers and of full-height walls.
+// At most 4 ceiling fittings: spread along the room's long axis, the middle ones first (they take the pool's shadowed lights).
+function troffCap(L) {
+  const T = L.troffers; if (!T || T.length <= 4 || L.yard) return;
+  const ax = T.reduce((m, t) => Math.max(m, Math.abs(t[0])), 0) > T.reduce((m, t) => Math.max(m, Math.abs(t[1])), 0) ? 0 : 1;
+  const s = T.slice().sort((a, b) => a[ax] - b[ax]), n = s.length, pick = [0, 1, 2, 3].map((i) => s[Math.round((i + 0.5) * n / 4 - 0.5)]);
+  pick.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
+  L.troffers = pick;
+}
 function ceilingPlan(L, w, d, R) {
   const rr = (a, b) => a + (b - a) * R();
   if (!L.troffers.length && TFILL.on && w * d >= 40) {
@@ -7326,6 +7334,7 @@ function* roomBuilder(room) {
   if (!room.layout) room.layout = yield* generateLayout(room);
   const { w, d, h } = room, M = KIT.mat, G = KIT.geo, P = KIT.proto, D = CONFIG.door, T = CONFIG.stream.wallT;
   const L = room.layout, g = room.group, dg = room.doorGroup, RM = room.mats = roomMaterials(room);
+  troffCap(L);                                                     // 2-4 fittings a room (the user: not a million lights)
   const own = (geo) => { room.ownGeo.push(geo); return geo; };
   const put = (parent, obj, x, y, z, ry = 0) => { obj.position.set(x, y, z); obj.rotation.y = ry; parent.add(obj); return obj; };
   const opening = (x) => ({ x, width: D.width, height: D.height });
@@ -21613,7 +21622,7 @@ const VM = {
     sniper: { file: 'vm-sniper.glb', head: 'Camera', headPosOnly: true, arms: ['Object_9'], bolt: 0.5, gunNode: 'Body_057', magNode: 'Mag_060', boltNode: 'Bolt_059', clips: { idle: 'Rig|SRifle_Idle', walk: 'Rig|SRifle_Walk', fire: 'Rig|SRifle_Shot_nosight', reloadFast: 'Rig|SRifle_Reload', reloadFull: 'Rig|SRifle_Reload_Full' } },
   },
   // step 89: every gun has a rig (the g17 moved to the M1911 take: life-size hands and a solved fit, VMH_FIT)
-  byType: { akmn: 'ak', akm: 'ak', m4a1s: 'ak', smg: 'ak', rifle: 'ak', shotgun: 'ak', awp: 'sniper',
+  byType: { akmn: 'ak', akm: 'ak', m4a1s: 'ak', smg: 'ak', rifle: 'ak', shotgun: 'ak', awp: 'ak',      // the AWM on the rifle take: hands on the grip and fore-end (the Kar98 take's support hand sat wrong)
     g17: 'pistol2', m1911: 'pistol2', pistol: 'pistol2', fn509: 'pistol2', ppk: 'pistol2' },
   // the reload clips' moments: the old magazine leaves, the new one is seated (fractions of the clip)
   marks: { out: 0.3, in: 0.62 },
@@ -21810,7 +21819,7 @@ function vmTick(dt) {
 function vmShot(g) {
   if (!VM.vis || VM.gun !== g || !VM.cur) return;
   const V = VM.cur, d = vmPlay(V, 'fire', 0.03);
-  if (V.R.bolt && g.def.manual) VM.boltAt = performance.now() / 1000 + d * V.R.bolt;
+  if (g.def.manual) VM.boltAt = performance.now() / 1000 + (V.R.bolt ? d * V.R.bolt : 0.6);   // a bolt gun on a rifle rig still works its bolt after the shot
   VM.flashT = g.sup && !g.muzCompLast ? 0 : 0.05;
   if (VM.flash) { VM.flash.scale.setScalar((g.def.cls === 'pistol' ? 0.09 : 0.14) * (0.8 + Math.random() * 0.4)); VM.flash.rotation.z = Math.random() * Math.PI * 2; }
 }
@@ -21888,7 +21897,7 @@ function vmGunFit(g, key) {
   vmhBake(key).then((B) => {
     const R = VM.rigs[key], N0 = B && R.gunNode ? B.root.getObjectByName(R.gunNode) : null;
     if (!N0 || !B.sides.R) { VM.fit[t] = null; return; }
-    const S = VMH_FIT[t], X = VM_FIT[t];
+    const S = VMH_FIT[t], X = key === 'sniper' ? VM_FIT[t] : null;   // VM_FIT was solved on the sniper take only
     const M = X ? new THREE.Matrix4().fromArray(X.M) : S && S.R && VMH.byType[t] === key ? new THREE.Matrix4().fromArray(S.R) : vmhSolve(B, 'R', g, vmhRegister(B, g).m).m;
     const s = (X && X.s) || 1, Ni = N0.matrixWorld.clone().invert();
     // the idle frame: gun root in rig units = U^-1 x M^-1 (x your gun's scale, about its grip); then into the node's frame
@@ -21971,13 +21980,13 @@ function vmHipAim(H, g) {
   _vhaM.makeTranslation(_vhaE.x, _vhaE.y, _vhaE.z).multiply(_vhaR).multiply(_vhaR.makeTranslation(-_vhaE.x, -_vhaE.y, -_vhaE.z));
   H.premultiply(_vhaM);
 }
-const VM_HIP = { sniper: [0.035, -0.045, -0.09] };              // camera space metres at the hip (x right, y up, -z ahead)
+const VM_HIP = { awp: [0.03, -0.035, -0.07] };              // camera space metres at the hip (x right, y up, -z ahead)
 function vmGunPlace(V, F, g) {
   const W = _v9, mm = vmMirOf(VM.mir, g.model);
   // hip: where the pack's gun is this frame (vmPlace has posed the rig)
   W.H.multiplyMatrices(V.node.matrixWorld, F.L);
   vmHipAim(W.H, g);                                                // PC: the drawn barrel's sight line points at the crosshair point the shot goes to
-  { const o = VM_HIP[V.key];   // long guns sat too close: pushed out, down and right (arms come with it)
+  { const o = VM_HIP[g.type];   // long guns sat too close: pushed out, down and right (arms come with it)
     if (o) { W.M.makeTranslation(o[0], o[1], o[2]); W.H.premultiply(W.M); V.base.matrix.premultiply(W.M); V.base.matrixWorldNeedsUpdate = true; } }
   // the pack's magazine (and a bolt gun's bolt) moves carried onto yours
   const Dm = vmDelta(V, F, V.magNode, F.magRest, W.D), mag = vmMirOf(mm, g.mag && g.mag.root);
@@ -46297,7 +46306,11 @@ function awmStick(g, p) {
 }
 // Make one AWM match the store's build (not while it is in the vise: the bench owns it until RELEASE).
 function awmSyncGun(g) {
-  if (!AWMA.ready || !g || g.type !== 'awp' || !g.prop || g.prop.removing || (WB.open && WB.gun === g)) return;
+  if (!AWMA.ready || !g || g.type !== 'awp' || !g.prop || g.prop.removing) return;
+  if (WB.open && WB.gun === g) {                                    // in the vise: a store REMOVE still takes the part off now (RELEASE used to write it back)
+    for (const id of AWM_BENCH) { const have = awmHave(g, id); if (have && !awmWant(id)) g17Detach(g, have); }
+    awmRefresh(g); return;
+  }
   awmHw(g); AWMA.guns.add(g);
   for (const id of AWM_BENCH) { const have = awmHave(g, id); if (have && (!awmWant(id) || (id === 'awp.scope' && awmWant('awp.s10')))) g17Detach(g, have); }
   if (!awmWant('awp.scope') || awmWant('awp.s10')) for (const id of ['awp.kf', 'awp.shade']) { const have = awmHave(g, id); if (have) g17Detach(g, have); }   // they ride the 3-25x
