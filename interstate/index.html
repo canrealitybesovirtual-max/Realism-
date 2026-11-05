@@ -17251,9 +17251,24 @@ class VRSystem {
     if (d.distanceTo(f) < .035) { if ((W.hold += 1 / (this.rate || 72)) > .2) { W.hold = -1; this.#pulseOne('right', .5, 40); this.app.pause(true); } }
     else if (W.hold >= 0) W.hold = 0; else if (d.distanceTo(f) > .08) W.hold = 0;
   }
+  /** The watch on the drawn left forearm (rig-space wrist W and elbow E from the arm IK): 3.2 cm up from the wrist joint,
+   *  on the side the back of the hand faces, case up off the arm, strap round it, 12 toward the fingers. */
+  #watchOnArm(g, W, E) {
+    const r = this.watch.root, T = this._wT ??= { p: new THREE.Vector3(), z: new THREE.Vector3(), y: new THREE.Vector3(), x: new THREE.Vector3(), m: new THREE.Matrix4(), q: new THREE.Quaternion() };
+    T.z.copy(E).sub(W); if (T.z.lengthSq() < 1e-8) return; T.z.normalize();                 // toward the elbow (rig space)
+    g.getWorldQuaternion(T.q); T.y.set(0, 1, 0).applyQuaternion(T.q);                          // back of the hand, world
+    this.rig.getWorldQuaternion(this._wRq ??= new THREE.Quaternion()); T.y.applyQuaternion(this._wRq.invert());   // to rig space
+    T.y.addScaledVector(T.z, -T.y.dot(T.z)); if (T.y.lengthSq() < 1e-6) return; T.y.normalize();
+    T.x.crossVectors(T.y, T.z);
+    T.p.copy(W).addScaledVector(T.z, .032).addScaledVector(T.y, .028);                       // band (y -.026) round the forearm axis
+    T.m.makeBasis(T.x, T.y, T.z).setPosition(T.p).premultiply(this.rig.matrixWorld);           // world
+    g.updateWorldMatrix(true, false); T.m.premultiply((this._wGi ??= new THREE.Matrix4()).copy(g.matrixWorld).invert());
+    T.m.decompose(r.position, r.quaternion, r.scale);
+  }
   /** The watch on the back of the left wrist: on the hand model's wrist joint when it is in (2.6 cm toward the elbow,
    *  lifted off the back of the hand), else the simple glove's wrist (z .085, back of the hand +y). Glove space. */
   #watchPlace(g, root) {
+    if (this.presenting && this.arms?.left?.g.visible) return;   // #watchOnArm places it each frame
     const U = g.userData;
     if (false && U.wrist && U.knuckle) {                                 // the hand model's joints are not in grip space before it is posed (emulator: 14 cm off): the cuff spot is used
       const w = (this._ww ??= new THREE.Vector3()), k = (this._wk ??= new THREE.Vector3());
@@ -17447,6 +17462,7 @@ class VRSystem {
       /* place the two segments: each mesh runs along +y from its start, scaled to the bone length */
       const seg = (m, from, to) => { V.t.copy(to).sub(from); const l = V.t.length(); m.position.copy(from); m.quaternion.setFromUnitVectors(V.y, V.t.multiplyScalar(1 / Math.max(l, 1e-5))); m.scale.set(1, l, 1); };
       seg(A.f, V.W, V.E); seg(A.u, V.E, V.S); A.e.position.copy(V.E);
+      if (side === 'left' && this.watch?.root.parent === g) this.#watchOnArm(g, V.W, V.E);   // the watch rides the drawn forearm, just above the wrist
     }
   }
   #glove(sg) {
