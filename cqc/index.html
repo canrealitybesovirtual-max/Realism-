@@ -2890,8 +2890,9 @@ const CONFIG = {
     doorFree: 0.9,                // s the closer lets the leaf swing free after a kick
     doorDamping: 0.35,
     man: { dmg: 8, stumble: 0.85 },
-    rag: 2.6,                     // N s into a body part
-    propPerKg: 2.6, propMax: 55
+    rag: 2.6,                     // (old flat N s into a body part; kickJ now)
+    propPerKg: 2.6, propMax: 55,  // (old: 2.6 m/s whatever it weighed; kickJ now, propMax still caps it)
+    leg: 10, foot: 6, e: 0.3      // kickJ: a ~10 kg leg's sole at ~6 m/s, restitution 0.3: v = foot (1 + e) leg / (leg + m), so a can flies, a table barely moves
   },
   jump: {
     on: true,
@@ -9251,7 +9252,7 @@ function buildPropKit() {
     K.paint = { proto: g, name: 'paint tin', mass: 2.6, shape: 'cylinder', half: [r, h / 2, r], friction: 0.45, restitution: 0.12, y: h / 2 + 0.001 }; }
   // a torn cardboard flap (what a shot-up box comes apart into)
   { const g = new THREE.Group(); g.add(mesh(rbox(0.3, 0.006, 0.26, 0.002), KIT.mat.cardboard || M.wood));
-    K.flap = { proto: g, name: 'cardboard flap', mass: 0.25, half: [0.15, 0.004, 0.13] }; }
+    K.flap = { proto: g, name: 'cardboard flap', mass: 0.06, half: [0.15, 0.004, 0.13] }; }   // 0.3 x 0.26 m of corrugated board (~0.75 kg/m2)
   if (K.box) K.box.brk = { hp: 2.4, fx: 'wood', flaps: 3 };
   if (K.smallCrate) K.smallCrate.brk = { hp: 3.5, fx: 'wood', boards: 4 };
 }
@@ -9380,12 +9381,13 @@ function shelfBlast(P, r, J) {
       if (b.awake) continue;
       const wx = rWX(room, b.x), wy = room.origin.y + b.y, wz = rWZ(room, b.z), dx = wx - P.x, dy = wy - P.y, dz = wz - P.z, d = Math.hypot(dx, dy, dz);
       if (d > r) continue;
-      const k = J * (1 - d / r) / Math.max(d, 0.3);
-      shelfWake(room, b, { x: dx * k, y: Math.abs(dy) * k * 0.5 + J * 0.15 * (1 - d / r), z: dz * k }, SHELF.p.set(wx - dx * 0.2, wy - dy * 0.2, wz - dz * 0.2));
+      const hx = b.d / 2, hy = b.h / 2, hz = b.w / 2, m = Math.max(0.5, b.d * b.h * b.w * SHELF.dens);
+      const Jb = Math.min(blastI(d) * 2 * (hx * hy + hy * hz + hx * hz), m * 18) * J, k = Jb / Math.max(d, 0.05);   // the frag's own blast push (area-based); J scales it
+      shelfWake(room, b, { x: dx * k, y: dy * k + Jb * 0.15, z: dz * k }, SHELF.p.set(wx - dx * 0.2, wy - dy * 0.2, wz - dz * 0.2));
     }
   }
 }
-if (/[?&]dev\b/.test(location.search)) window.__cqcShelf = { SHELF, shelfWake, shelfBlast, shelfTick, shelfBoxesBuild };
+if (/[?&]dev\b/.test(location.search)) window.__cqcShelf = { SHELF, shelfWake, shelfBlast, shelfTick, shelfBoxesBuild, fragBlast: (P) => fragBlast(P, false), blastI, colArea, kickJ: (m) => kickJ(m), bulletP: (d, E) => bulletP(d, E), PEN };
 // a knock hard enough (a throw, a fall, a run-in) breaks glass: the speed drops suddenly
 const _brkV = new THREE.Vector3();
 function propsBreakTick() {
@@ -14371,6 +14373,19 @@ function nadeDetonate(p) {
   if (it.type === 'frag') fragBlast(P, inHand); else flashBlast(P, inHand);
 }
 const _fragDir = new THREE.Vector3(), _fragO = new THREE.Vector3();
+// Blast push (frag): the positive-phase impulse per m2 of an M67's ~185 g of Comp B (~0.2 kg TNT), reflected on the
+// face it meets: ~160 Pa s at 1 m, falling about as 1/R, gone by 5 m (Kingery-Bulmash, rounded). The push on a thing is
+// that x its mean projected area (a quarter of its surface), so light, large things (flaps, boxes) fly, dense ones slide.
+function blastI(d) { return d >= 5 ? 0 : 160 / Math.max(d, 0.5) * (1 - (d / 5) * (d / 5)); }
+function colArea(c) {
+  try {
+    const t = c.shapeType ? c.shapeType() : -1, S = RAPIER.ShapeType;
+    if (S && t === S.Cuboid) { const h = c.halfExtents(); return 2 * (h.x * h.y + h.y * h.z + h.x * h.z); }
+    if (S && (t === S.Capsule || t === S.Cylinder)) { const r = c.radius(), hh = c.halfHeight(); return t === S.Capsule ? Math.PI * r * r + Math.PI * r * hh : (Math.PI * r * r + 2 * Math.PI * r * hh) / 2; }
+    if (S && t === S.Ball) return Math.PI * c.radius() ** 2;
+  } catch (e) { /* unknown shape */ }
+  return 0.08;
+}
 function fragBlast(P, inHand) {
   const C = CONFIG.nade, N = CONFIG.polish.nade, now = wnow();
   blastLight(P, [1, 0.6, 0.28], C.fragLight * N.flash.light, 0.16 * N.flash.dur, 16);   // step 115: x flash.light / dur
@@ -14379,7 +14394,7 @@ function fragBlast(P, inHand) {
   nadeSound('frag', P);
   enemiesHear(P);
   fixturesBlast(P, 1);                     // step 87: the tubes stutter, the fittings shed dust
-  shelfBlast(P, 4.5, 9);                   // SHELF: boxes blown off the shelves
+  shelfBlast(P, 5, 1);                     // SHELF: boxes blown off the shelves (the same blast push as loose props)
   trickleBlast(P);                         // step 88: and the ceiling over it
   // Dust and smoke that hang in the room, a scorch on the floor (step 115: the cloud, soot on the floor and the walls).
   _nd.d.set(0, 1, 0);
@@ -14432,9 +14447,10 @@ function fragBlast(P, inHand) {
     const Hm = hurt && hurt.get(e), kx = Hm && Hm.severe ? N.gore.throw : 1;
     for (const r of e.rag) {
       const t = r.body.translation(); _nd.c.set(t.x, t.y, t.z);
-      const d = _nd.c.distanceTo(P); if (d > 5) continue;
-      _nd.d.subVectors(_nd.c, P).normalize().multiplyScalar(2.2 * kx * Math.pow(1 - d / 5, 1.5));
-      r.body.applyImpulse({ x: _nd.d.x, y: _nd.d.y + 0.4 * kx, z: _nd.d.z }, true);
+      const d = _nd.c.distanceTo(P), I = blastI(d); if (I <= 0) continue;
+      const m = r.body.mass(), J = Math.min(I * colArea(r.col) * kx, m * 12 * kx);   // area-based: a forearm is shoved harder than the chest
+      _nd.d.subVectors(_nd.c, P).normalize().multiplyScalar(J);
+      r.body.applyImpulse({ x: _nd.d.x, y: _nd.d.y + J * 0.15, z: _nd.d.z }, true);
     }
   }
   nadeGoreAfter(hurt);                     // step 115: mist, sprays, bits, pools
@@ -14442,16 +14458,19 @@ function fragBlast(P, inHand) {
   for (const q of props) {
     if (q.kinematic || !q.inWorld || q.removing) continue;
     const t = q.body.translation(); _nd.c.set(t.x, t.y, t.z);
-    const d = _nd.c.distanceTo(P); if (d > 5) continue;
-    _nd.d.subVectors(_nd.c, P).normalize().multiplyScalar(q.mass * 6 * Math.pow(1 - d / 5, 1.5));
-    q.body.applyImpulse({ x: _nd.d.x, y: _nd.d.y + q.mass * 0.8 * (1 - d / 5), z: _nd.d.z }, true);
+    const d = _nd.c.distanceTo(P), I = blastI(d); if (I <= 0) continue;
+    const J = Math.min(I * colArea(q.collider), q.mass * 18);        // blast impulse ~ exposed area, not mass: a flap flies, a block slides
+    _nd.d.subVectors(_nd.c, P).normalize().multiplyScalar(J);
+    q.body.applyImpulse({ x: _nd.d.x, y: _nd.d.y + J * 0.15, z: _nd.d.z }, true);
   }
   for (const room of stream.rooms.values()) {
     const door = room.door; if (!room.active || !door || !door.body) continue;
     const t = door.body.translation(); _nd.c.set(t.x, t.y, t.z);
-    const d = _nd.c.distanceTo(P); if (d > 4) continue;
-    _nd.d.subVectors(_nd.c, P).normalize().multiplyScalar(45 * (1 - d / 4));
-    door.body.applyImpulse({ x: _nd.d.x, y: 0, z: _nd.d.z }, true); door.drive = null; door.body.wakeUp();
+    const d = _nd.c.distanceTo(P), I = blastI(d); if (I <= 0) continue;
+    _nd.d.subVectors(_nd.c, P).normalize();
+    const q = door.body.rotation(), nx = 2 * (q.x * q.z + q.w * q.y), nz = 1 - 2 * (q.x * q.x + q.y * q.y);   // the leaf's face normal (local z)
+    const J = Math.min(I * 1.8 * Math.abs(_nd.d.x * nx + _nd.d.z * nz), 160);   // 0.9 x 2.0 m face, square to the blast
+    door.body.applyImpulse({ x: _nd.d.x * J, y: 0, z: _nd.d.z * J }, true); door.drive = null; door.body.wakeUp();
   }
   // You.
   headWorld(_nd.h);
@@ -16791,7 +16810,10 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   _hn.set(hit.normal.x, hit.normal.y, hit.normal.z);
   if (_hn.dot(dir) > 0) _hn.negate();
   const h = hit.collider.handle;
-  const imp = { x: dir.x * d.impulse * k, y: dir.y * d.impulse * k, z: dir.z * d.impulse * k };
+  // The push is the round's real momentum (sqrt(2 m E) of the energy it still has: 9 mm ~2.9, 5.56 ~3.7, 7.62x39 ~5.6,
+  // .338 ~14.6 kg m/s fresh), as if it stopped in what it hit. ?pen=off keeps the old d.impulse x k.
+  const pm = bulletP(d, k);
+  const imp = { x: dir.x * pm, y: dir.y * pm, z: dir.z * pm };
   const prop = propByCollider.get(h);
   if (prop) {
     prop.body.applyImpulseAtPoint(imp, _fp, true);
@@ -23845,7 +23867,7 @@ function propHole(prop, kind, wp, wn, sc = 1) {          // a hole that rides on
   putDecal(decalLayer(prop, prop.root, kind), kind, _phP.x, _phP.y, _phP.z, _phN.x, _phN.y, _phN.z, Math.random() * Math.PI * 2, (0.85 + Math.random() * 0.3) * sc);
 }
 function tableHit(prop, collider, P, N, dir, d, E) {
-  const k0 = d.impulse * E;
+  const k0 = bulletP(d, E);                       // the round's real momentum
   prop.body.applyImpulseAtPoint({ x: dir.x * k0, y: dir.y * k0, z: dir.z * k0 }, P, true);
   const top = collider.handle === prop.collider.handle;
   const kind = top ? 'wood' : 'metal';
@@ -26101,7 +26123,7 @@ function enemyShot(hit, dir, d, E) {
   P10.muteImpact = false;
   if (e.downed) {                                              // step 91: any further round ends him where he lies (silent)
     if (d === FRAG_D && e.downAt >= NADE.blastT) return;          // step 115: not the blast that put him down (its other fragments)
-    enemyDie(e, h.seg, dir, hit.p, d.impulse * E); return;
+    enemyDie(e, h.seg, dir, hit.p, bulletP(d, E) / 4); return;
   }
   if (e.surr) surrShot(e);                                      // step 117: a man who gave up dies from this round (scored as a kill)
   e.hp -= MOD.oneShot ? 1e4 : dmg * clamp(E, 0.2, 1.2) * penDmgK();   // step 57: one-shot kills; step 119: a tumbling round hurts more
@@ -26124,7 +26146,7 @@ function enemyShot(hit, dir, d, E) {
   if (e.hp <= 0) {
     const dn = downedFor(e), hd = h.part === 'head' || h.part === 'neck';   // step 91: head / neck = dead and silent; anything else = down alive
     e.killPart = h.part; if (h.part !== 'head' && !(dn && hd) && Math.random() < 0.6) voxGrunt(e, 0.85, true);
-    if (dn && !hd) enemyDown(e, h, dir, hit.p); else enemyDie(e, h.seg, dir, hit.p, d.impulse * E);
+    if (dn && !hd) enemyDown(e, h, dir, hit.p); else enemyDie(e, h.seg, dir, hit.p, bulletP(d, E) / 4);
   }
   else if (!plate || Math.random() < 0.35) voxGrunt(e, plate ? 0.6 : 1);   // step 69: hit (a plate knocks the wind out of him sometimes)
 }
@@ -26230,7 +26252,7 @@ function enemyDie(e, hitSeg, dir, P, impulse) {
     body.setLinvel(v0, true);
     const desc = shape === 'box' ? RAPIER.ColliderDesc.cuboid(size[0], size[1], size[2])
       : shape === 'ball' ? RAPIER.ColliderDesc.ball(size[0]) : RAPIER.ColliderDesc.capsule(size[0], size[1]);
-    desc.setTranslation(off[0], off[1], off[2]).setMass(mass * RAG_MASS).setFriction(0.9).setRestitution(0).setCollisionGroups(ragGroups);   // step 69: plate carrier and gear: heavier
+    desc.setTranslation(off[0], off[1], off[2]).setMass(mass * RAG_LIMB + (RAG_GEAR[seg] || 0)).setFriction(0.9).setRestitution(0).setCollisionGroups(ragGroups);   // step 69: plate carrier and gear: heavier
     const col = world.createCollider(desc, body);
     const r = { seg, bone: b, body, col, parent };
     rag.push(r); bySeg[seg] = r;
@@ -26356,7 +26378,10 @@ function lootDesk() {
   return true;
 }
 const RAG_SWING = { neck: 0.7, spine: 0.55, thighL: 1.35, thighR: 1.35, upperArmL: 1.9, upperArmR: 1.9 };   // rad from the pose he died in (step 69: arms too, tighter)
-const RAG_MASS = 1.3;
+// Real segment masses (de Leva, 80 kg man) are the RAG table's; the kit sits where it is worn, not on his forearms:
+// plate carrier with magazines on the chest (+11 kg), belt and pouches on the hips (+3), helmet (+1.4). Limbs x1.06 (boots,
+// sleeves, gloves). ~94 kg in all (was 102 with the gear spread over every limb, which made arms and legs swing heavy).
+const RAG_GEAR = { spine: 11, pelvis: 3, neck: 1.4 }, RAG_LIMB = 1.06;
 const RAGDBG = { self: !/[?&]ragself=off/.test(location.search), lim: !/[?&]raglim=off/.test(location.search) };   // step 69: a man in gear (plate carrier, magazines) is ~100 kg
 const _ragSw = { p: new THREE.Quaternion(), c: new THREE.Quaternion(), d: new THREE.Quaternion(), i: new THREE.Quaternion() };
 function ragSwingLimit(r) {
@@ -26522,8 +26547,12 @@ function enemiesPostPhysics(dt = 1 / 72) {
   }
 }
 // Shooting a body moves it.
+// A round's real momentum (kg m/s) for the energy E it carries (step 119's round: sqrt(2 m J)); ?pen=off: the old d.impulse x E.
+function bulletP(d, E) { return PEN.live && PEN.R && PEN.R.m ? Math.sqrt(2 * PEN.R.m / 1000 * Math.max(0, E) * PEN.j) : d.impulse * E; }
+// A kick's impulse on a mass m (kg): the sole as a ~10 kg leg at ~6 m/s meeting it (restitution e), capped at what a leg can deliver.
+function kickJ(m) { const K = CONFIG.kick; return Math.min(m * K.foot * (1 + K.e) * K.leg / (K.leg + m), K.propMax); }
 function ragdollHit(rh, P, N, dir, d, E) {
-  const k = d.impulse * E * 2;
+  const k = bulletP(d, E);                                        // a body is barely moved by a round (was 2x an inflated push: corpses jumped)
   rh.r.body.applyImpulseAtPoint({ x: dir.x * k, y: dir.y * k, z: dir.z * k }, { x: P.x, y: P.y, z: P.z }, true);
   for (const r of rh.e.rag || []) r.body.wakeUp();               // step 80: the whole body takes it, then settles again
   rh.e.stillT = 0; rh.e.ragT = Math.min(rh.e.ragT || 0, RAG_SETTLE.dampFrom - 0.8); rh.e.ragDamp = undefined;   // step 87: a hit loosens him again
@@ -40475,11 +40504,12 @@ function kickStrike(B, D, s, now) {
       P10.pending.push({ at: P10.time + 0.2, fn: () => enemiesHear(at) });   // they hear it once it has swung (step 22.3: never through a shut door)
     } else if (rh && rh.r && rh.r.body) {
       kind = 'body';
-      J.copy(D).multiplyScalar(K.rag); J.y = K.rag * 0.25;
+      const jr = kickJ(rh.r.body.mass());
+      J.copy(D).multiplyScalar(jr); J.y = jr * 0.25;
       rh.r.body.applyImpulseAtPoint({ x: J.x, y: J.y, z: J.z }, { x: P.x, y: P.y, z: P.z }, true);
     } else if (q && !q.kinematic && !q.removing && !(q.holders && q.holders.length)) {
       kind = 'prop';
-      const m = Math.min(q.mass * K.propPerKg, K.propMax);
+      const m = kickJ(q.mass);
       J.copy(D).multiplyScalar(m); J.y = m * 0.22;
       q.body.applyImpulseAtPoint({ x: J.x, y: J.y, z: J.z }, { x: P.x, y: P.y, z: P.z }, true);
       k = clamp(q.mass / 8, 0.4, 1);
