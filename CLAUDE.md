@@ -1185,3 +1185,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - VR buttons: right stick click cycles the view (VR_VIEWS: cockpit, chase (behind and above, heading only, smoothed), hood; saved in vr.view), Y is the horn, pause = the headset's menu button (session visibilitychange to blurred / hidden while running) or touching the watch on the left wrist (vr-watch on the left glove: time + PAUSE face, right index tip / grip within 3.5 cm for 0.2 s). VR_HELP updated.
 - Key: the Lexus keeps its own column shroud (~0.1 m radius round the column; the key was on the game's 0.044 m cone, so a ray along the key hit the shroud 6.7 cm out: key and ring inside the plastic). KEY_SPOT_CEL = keySpot(.1): ray-checked against the saloon's triangles, the shroud face is 3 mm behind the boss and nothing is in front of the key for 1.1 m. The patrol car keeps KEY_SPOT (its own column is cut out).
 - Checked: module parse; ray tests in Python on saloon-player.json. Not run in a browser this round.
+
+## Interstate: motorcycle comfort (motion sickness; headset check needed)
+- Headset seat view on the bike (VRRig #placeRig): the eye came from the leaned body (eye ~1.2 m up, so a 45 deg lean swung it ~0.8 m sideways) and the view took bodyMotion (.35) of the lean (~19 deg horizon roll), plus the two-track model's yaw jitter. Now the eye is the seat point in the bike's road frame (lean ignored), the view takes vr.bikeLean x 0.25 of the lean (setting "Motorcycle lean in view", default 0 = level horizon), and the rig's rotation is low-passed (rate 9/s, snaps past 0.6 rad) to remove the jitter.
+- Computer: BIKE_CAM.helmet .5 -> .15 (helmet view rolls 15 % of the lean), chase roll .32 -> .08.
+- Checked: module parse only.

@@ -1154,7 +1154,7 @@ const DEFAULTS = {
   bike: { rideF: 0, rideR: 0, rake: 0, offset: 0, power: 'stock', revLimit: 16000, sprocket: 45 },   // §14.14: the motorcycle's own setup
   world: { scenery: 'tunnel', time: 'afternoon', cycleMinutes: 45, weather: 'dynamic', crosswind: true, snowfall: true, headlights: .35, garage: 'warehouse' },   // build 1.31: garage: warehouse | studio
   photo: { focal: 50, focus: 0, aperture: 2.8, exposure: 0, roll: 0 },   // section 11: the photo-mode lens, kept between sessions
-  vr: { quality: 'performance', refresh: 72, bodyMotion: .35, seatHeight: 0, hud: true, ratio: 14, stickSteer: true, hands: 'gloves' },   // build 1.15: headset, comfort, steering
+  vr: { quality: 'performance', refresh: 72, bodyMotion: .35, bikeLean: 0, seatHeight: 0, hud: true, ratio: 14, stickSteer: true, hands: 'gloves' },   // build 1.15: headset, comfort, steering
 };
 const DEFAULT_PROFILE = { money: 0, bestScore: 0, runs: 0, distanceKm: 0, owned: [], equipped: {}, createdAt: 0 };
 /* owned/equipped are free-form (lists and maps of catalogue ids) and merged leniently below */
@@ -1279,6 +1279,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'vr', key: 'vr.quality', type: 'select', label: 'VR quality', desc: 'Performance holds the frame rate in dense traffic on Quest 3S. Quality renders sharper and further. Applies the next time you enter VR; your flat-screen graphics are kept.', options: [['performance', 'Performance'], ['balanced', 'Balanced'], ['quality', 'Quality']] },
   { tab: 'vr', key: 'vr.refresh', type: 'select', label: 'Refresh rate', desc: '90 Hz is smoother but leaves less time per frame. Applies the next time you enter VR.', options: [[72, '72 Hz'], [90, '90 Hz']] },
   { tab: 'vr', group: 'Comfort' },
+  { tab: 'vr', key: 'vr.bikeLean', type: 'range', label: 'Motorcycle lean in view', desc: 'How much of the bike\u2019s lean tilts your view. 0 keeps the horizon level (most comfortable).', min: 0, max: 1, step: .05, fmt: pct },
   { tab: 'vr', key: 'vr.bodyMotion', type: 'range', label: 'Body motion', desc: 'How much of the car\u2019s pitch and roll reaches your view. Lower is calmer; the road\u2019s slope and banking always come through.', min: 0, max: 1, step: .05, fmt: pct },
   { tab: 'vr', key: 'vr.seatHeight', type: 'range', label: 'Seat height', desc: 'Raise or lower your eyes in the cabin. Click the left stick to re-centre.', min: -.12, max: .12, step: .01, fmt: v => (v > 0 ? '+' : '') + Math.round(v * 100) + ' cm' },
   { tab: 'vr', key: 'vr.hands', type: 'select', label: 'Hands', desc: 'Articulated hands on the controllers: fingers close with the grip and trigger and wrap the rim when you hold the wheel.', options: [['gloves', 'Black driving gloves'], ['skin', 'Bare hands']] },
@@ -10239,7 +10240,7 @@ const BIKE_SFX = {
   layers: null, starter: 'gt', gain: 1, rasp: .18, sub: .12,
   pitch: 1.32, audioRpm: rpm => 900 + (Math.max(rpm, 1300) - 1300) * .38,
 };
-const BIKE_CAM = { chaseDist: 3.9, chaseH: 1.22, lookY: .78, chaseRoll: .32, helmet: .5 };
+const BIKE_CAM = { chaseDist: 3.9, chaseH: 1.22, lookY: .78, chaseRoll: .08, helmet: .15 };   // comfort: little roll on the screen (was .32 / .5: motion sickness)
 
 /** Physics: motorcycle numbers into a VehicleDynamics (end of configure). b: settings.data.bike. */
 function bikeConfigure(V, c, b = {}) {
@@ -16422,6 +16423,13 @@ class VRSystem {
       eye = this._v.set(E[0] * (view === 'hood' ? 0 : 1), (view === 'hood' ? CABIN.eye[1] + E[1] : E[1]) + (v.seatHeight || 0), view === 'hood' ? CABIN.eye[2] + E[2] : E[2]).applyMatrix4(body.matrixWorld);
       body.getWorldQuaternion(this._q1);
       q = this._q2.copy(d.car.quaternion).slerp(this._q1, clamp(v.bodyMotion ?? .35, 0, 1));
+      if (d.carObj.packCar?.bike && view === 'cockpit') {                // the bike: the head rides level (comfort). The seat's eye in the bike's road frame, not the
+        const lk = clamp(v.bikeLean ?? 0, 0, 1);                          // leaned body (the lean swung the eye ~0.8 m sideways and rolled the world ~19 deg)
+        eye.set(E[0], E[1] + (v.seatHeight || 0) + body.position.y, E[2]).applyMatrix4(d.car.matrixWorld);
+        q = this._q2.copy(d.car.quaternion).slerp(this._q1, lk * .25);
+        const qs = this._bikeQ ??= q.clone(), now = performance.now(), dt = Math.min(.1, (now - (this._bikeT || now)) / 1000); this._bikeT = now;
+        if (qs.angleTo(q) > .6) qs.copy(q); else qs.slerp(q, 1 - Math.exp(-dt * 9)); q.copy(qs);   // smooths the yaw jitter of the two-track model
+      } else this._bikeQ = null;
     }
     this._m1.compose(eye, q, this._s.set(1, 1, 1));
     this._m2.compose(this.seat.p, this._q3.setFromAxisAngle(this._up, this.seat.yaw), this._s).invert();
