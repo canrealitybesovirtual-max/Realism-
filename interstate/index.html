@@ -9774,7 +9774,7 @@ async function celsiorTrafficPrep() {
         if (o.length > tgt * 1.6) { const s2 = MS.simplifySloppy(W, pos, 3, null, tgt, far ? .25 : .08)[0]; if (s2.length >= 3 && s2.length < o.length) o = s2; }
         return o.length >= 3 ? o.slice() : I; };
       const lens = /reflector/i.test(m.mat);
-      const split = idx => { if (!lens) return [idx, null]; const f = [], r = []; for (let t = 0; t < idx.length; t += 3) ((pos[idx[t] * 3 + 2] + pos[idx[t + 1] * 3 + 2] + pos[idx[t + 2] * 3 + 2]) / 3 > 1.5 ? r : f).push(idx[t], idx[t + 1], idx[t + 2]); return [new Uint32Array(f), new Uint32Array(r)]; };
+      const split = idx => { if (!lens) return [idx, null]; const f = [], r = []; for (let t = 0; t < idx.length; t += 3) ((pos[idx[t] * 3 + 2] + pos[idx[t + 1] * 3 + 2] + pos[idx[t + 2] * 3 + 2]) / 3 > 1.5 ? r : f).push(idx[t], idx[t + 1], idx[t + 2]); return [new Uint32Array(f), new Uint32Array(celTailOuter(i => pos[i * 3], i => pos[i * 3 + 1], i => pos[i * 3 + 2], r))]; };
       const nearI = split(simp(CEL_TRAF.near[m.mat])), farI = CEL_TRAF.farSkip.test(m.mat) ? [null, null] : split(simp(CEL_TRAF.far[m.mat] ?? .4, true));
       parts.push({ m, pos, nor, uv, nearI, farI });
     }
@@ -10052,6 +10052,17 @@ const CEL_TAIL_ZONES = /* glsl */`{ float ax = abs(vTlP.x);                     
         float amb = smoothstep(.66, .7, ax), clr = (1.0 - amb) * (1.0 - smoothstep(.36, .4, ax)) * smoothstep(.2, .24, ax) * step(vTlP.y, .82), red = max(0.0, 1.0 - amb - clr);
         float tc = tlCells();
         diffuseColor.rgb = red * mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc) + amb * vec3(.4, .16, .02) * (.7 + .3 * tc) + clr * vec3(.32, .33, .34) * (.75 + .25 * tc);`;
+/** The rear lens is two shells 1 cm apart (outer lens, inner reflector); drawn with one material they showed each
+ *  other through as speckle. Keeps the outer shell: per 1 cm cell (projected on the lens's facing axis) only the
+ *  triangles within 3 mm of the outermost. zAt(i) etc. read vertex positions. */
+function celTailOuter(px, py, pz, idx) {
+  const cen = t => [(px(idx[t]) + px(idx[t + 1]) + px(idx[t + 2])) / 3, (py(idx[t]) + py(idx[t + 1]) + py(idx[t + 2])) / 3, (pz(idx[t]) + pz(idx[t + 1]) + pz(idx[t + 2])) / 3];
+  const key = c => { const side = Math.abs(c[0]) > .74; return side ? 's' + Math.sign(c[0]) + ',' + Math.round(c[1] / .01) + ',' + Math.round(c[2] / .01) : 'r' + Math.round(c[0] / .01) + ',' + Math.round(c[1] / .01); };
+  const out = c => Math.abs(c[0]) > .74 ? Math.abs(c[0]) : c[2], best = new Map();
+  for (let t = 0; t < idx.length; t += 3) { const c = cen(t), k = key(c), o = out(c); if (!(best.get(k) >= o)) best.set(k, o); }
+  const keep = []; for (let t = 0; t < idx.length; t += 3) { const c = cen(t); if (out(c) >= best.get(key(c)) - .003) keep.push(idx[t], idx[t + 1], idx[t + 2]); }
+  return keep;
+}
 function celTailMaterial(map) {
   return Atmos.patch(new THREE.MeshPhysicalMaterial({ map, color: 0xffffff, roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
     emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2 }), { key: 'celtail',
@@ -10094,7 +10105,7 @@ function buildCelsior(car) {
       const P = g.attributes.position, I = g.index.array, front = [], rear = [];
       for (let t = 0; t < I.length; t += 3) ((P.getZ(I[t]) + P.getZ(I[t + 1]) + P.getZ(I[t + 2])) / 3 > 1.5 ? rear : front).push(I[t], I[t + 1], I[t + 2]);
       if (rear.length) {
-        const rg = g.clone(); rg.setIndex(rear); g.setIndex(front);
+        const rg = g.clone(); rg.setIndex(celTailOuter(i => P.getX(i), i => P.getY(i), i => P.getZ(i), rear)); g.setIndex(front);
         celTail ??= celTailMaterial(mat.map);
         const rm = new THREE.Mesh(rg, celTail); rm.castShadow = false; rm.receiveShadow = true; group.add(rm);
       }
