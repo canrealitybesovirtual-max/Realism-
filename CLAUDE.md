@@ -1358,3 +1358,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Headless check of the menu scene: a dark diagonal band across the road was the shared edge of the road's two 600 m triangles (bump map slopes break along triangle edges; not a shadow: it stayed with shadows off). Menu road subdivided 24 x 28 and drawn without the bump map.
 - Floating black layer over the map (found headless: a raycast through it hit "traffic" meshes 12-26 m away; every pack traffic car's geometry spanned 65535 m): the car pack (and other meshopt GLBs) store quantized 16-bit positions; geometry.clone().applyMatrix4 wrote metres back into the integer arrays. geoFloat(g) converts attributes to Float32 first; used in packTrafficGeometry, policeTrafficGeometry, the tree prep and the car-body batcher.
 - Measured on Low (headless): 649 draw calls, 1.6 M triangles in a run.
+
+## Interstate: fewer draw calls (Low preset; measured headless)
+- Breakdown per frame on Low (onBeforeRender counts): traffic ~190 draws, road chunks ~145, your car ~120 (cabin, column, body), trees 1 per kind.
+- mergeByMaterial(geos, mats): parts sharing a material merge into one group (one draw per material per instanced class). Pack traffic: the four lamp kinds share one material (lamp_all, kind from the aLk attribute), paint materials cached per source texture. Police traffic: one clone per source material (srcMat), then merged.
+- Your cabin interior and column (cabin-* / column-* rigs) are not drawn from outside views on Low / Quest (car.cabHide from RenderSystem.render; CabinControls.update applies it).
+- Road streaming ahead on Low / Quest: ~900 / 750 m (was ~1330 / 1000).

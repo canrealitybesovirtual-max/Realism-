@@ -2706,6 +2706,8 @@ class RenderSystem {
     if (this.vr?.presenting && this.r.xr.isPresenting) { this.vr.render(world); return; }   // build 1.15: one forward pass per eye
     if (this.vr?.precompiling) return;                                 // build 1.17: entering the headset; the flat chain is released
     const mv = world.mirrorView?.(); if (mv) world.carObj.mirrors.render(this.r, world, mv);   // build 1.27: mirror targets before the chain
+    { const lite = this.s.data.graphics.preset === 'low' || this.s.data.graphics.preset === 'quest';   // PERF: from outside (chase, bumper, cinematic) on Low the cabin interior and column are not drawn (~40 draws)
+      if (world.carObj && mv) world.carObj.cabHide = lite && !mv.cabin; }
     if (this.post) { this.post.setWorld(world); this.post.render(dt); }
     else this.r.render(world.scene, world.camera);
   }
@@ -5491,7 +5493,7 @@ class RoadStreamer {
     this.behind = 300; this.dir = 1; this.setDrawDistance(settings.data.graphics.drawDistance);
   }
   setDrawDistance(dd) {
-    this.dirty = true; this.ahead = lerp(1000, 3000, clamp((dd - .4) / .6, 0, 1)); this.maxPool = Math.ceil((this.ahead + this.behind) / CHUNK_LEN) + 3;
+    this.dirty = true; this.ahead = dd <= .55 ? lerp(700, 950, clamp((dd - .3) / .25, 0, 1)) : lerp(1000, 3000, clamp((dd - .4) / .6, 0, 1));   // PERF: Low / Quest stream ~900 / 750 m of road ahead (was 1330 / 1000): fewer chunks, fewer draws this.maxPool = Math.ceil((this.ahead + this.behind) / CHUNK_LEN) + 3;
     if (!this.secondary) while (this.pool.length < this.maxPool) this.pool.push(new RoadChunk(this));   // others grow when needed
   }
   /** Chunks the window around s needs, nearest first (dir: which way the window looks ahead). */
@@ -12470,7 +12472,7 @@ class CabinControls {
     const car = this.car, S = this.st, R = this.#rig(car.bodyKey);
     this.t += dt; this.sim = d?.sim;
     CABIN_OCC_U.uCabInv.value?.copy(car.body.matrixWorld).invert();        // cabin occlusion frame (§14.7)
-    for (const k in this.rigs) if (this.rigs[k]) { this.rigs[k].root.visible = k === car.bodyKey; this.rigs[k].col.visible = k === car.bodyKey; }
+    for (const k in this.rigs) if (this.rigs[k]) { this.rigs[k].root.visible = k === car.bodyKey && !car.cabHide; this.rigs[k].col.visible = k === car.bodyKey && !car.cabHide; }   // cabHide: Low preset, seen from outside
     if (!R) { if (car.packCar?.bike) bikeCabTick(this, dt, d); return; }   // §14.14: key, relay, self-cancel
     const sim = d?.sim, rpm = sim?.rpm || 0, v = Math.abs(d?.v || 0), running = !!sim?.running;
     /* key: START springs back to ON once the engine has caught (or after the crank time on the desktop) */
@@ -13681,7 +13683,7 @@ function applyPoliceTraffic() {
 }
 function policeTrafficGeometry(U) {
   const D = GlbCars.get('police', POLICE_LO); if (!D) return null;
-  const geos = [], mats = [];
+  const geos = [], mats = [], srcMat = new Map();   // PERF: one clone per source material, so parts sharing it merge into one draw
   U.uTrafT ??= { value: 0 };
   D.scene.updateMatrixWorld(true);
   D.scene.traverse(o => {
@@ -13698,9 +13700,9 @@ function policeTrafficGeometry(U) {
       frag: tailM ? [['#include <emissivemap_fragment>', '{ float tc = tlCells(); diffuseColor.rgb = mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc); totalEmissiveRadiance = vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8) * (.55 + .9 * tc); }']]
         : barM ? [['#include <emissivemap_fragment>', `{ float on = step(.5, vLampI.w) * polFlash(uTrafT, ${blue ? '1.0' : '-1.0'});   // police update: the drivable car's pattern
             totalEmissiveRadiance = ${blue ? 'vec3(.1, .25, 1.0)' : 'vec3(1.0, .05, .03)'} * (on * 7.0 + step(.5, vLampI.w) * .2); }`]] : [] });
-    mat.userData.shared = true; geos.push(g); mats.push(mat);
+    mat.userData.shared = true; const m1 = srcMat.get(o.material) || (srcMat.set(o.material, mat), mat); geos.push(g); mats.push(m1);
   });
-  const body = BufferGeometryUtils.mergeGeometries(geos, true); geos.forEach(g => g.dispose());
+  const { body, mats: um } = mergeByMaterial(geos, mats); mats.length = 0; mats.push(...um);
   body.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4));
   body.computeBoundingSphere(); body.userData.shared = true;
   return { glb: { body, mats } };
@@ -13742,17 +13744,28 @@ function geoFloat(g) {
     g.setAttribute(k, new THREE.BufferAttribute(f, at.itemSize)); } }
   return g;
 }
+// PERF: geometries that share a material are merged into one group, so an instanced class draws once per material
+// (not once per source mesh). Returns the grouped geometry and its material list.
+function mergeByMaterial(geos, mats) {
+  const order = [], bins = new Map();
+  geos.forEach((g, i) => { const m = mats[i]; if (!bins.has(m)) { bins.set(m, []); order.push(m); } bins.get(m).push(g); });
+  const parts = order.map((m) => { const L = bins.get(m); return L.length === 1 ? L[0] : BufferGeometryUtils.mergeGeometries(L, false); });
+  const body = BufferGeometryUtils.mergeGeometries(parts, true);
+  for (const g of new Set([...geos, ...parts])) g.dispose();
+  return { body, mats: order };
+}
 function packTrafficGeometry(A, T) {
   const D = GlbCars.get('pack'); if (!D) return null;
   const root = D.scene.getObjectByName(T.packId); if (!root) return null;
   const U = A.U, M = Assets.packMats ??= {};
   const noTint = ['#include <color_fragment>', '#ifdef USE_INSTANCING_COLOR\n diffuseColor.rgb /= max(vColor, vec3(1e-3));\n#endif'];
-  const lampV = { vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;', vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif' };
-  const lampMat = (kind, src) => M['lamp_' + kind] ??= (() => {
-    const glow = { head: 'vec3(1.0, .95, .86) * (mix(.03, 3.2, uNight) + vLampI.w * 6.0)', tail: 'vec3(1.0, .05, .025) * (.06 + uNight * 1.0 + vLampI.x * 2.6)',
-      indL: 'vec3(1.0, .38, .04) * (.03 + vLampI.y * 3.2)', indR: 'vec3(1.0, .38, .04) * (.03 + vLampI.z * 3.2)' }[kind] || 'vec3(0.0)';
-    const m = Atmos.patch(new THREE.MeshStandardMaterial({ map: src.map, emissive: new THREE.Color(1, 1, 1), emissiveMap: src.map, roughness: .14, metalness: 0, envMapIntensity: 1 }), { key: 'trafpackL' + kind, uniforms: U, ...lampV,
-      fragPars: 'uniform float uNight; varying vec4 vLampI;',
+  const lampV = { vertPars: 'attribute vec4 iLamp; attribute float aLk; varying vec4 vLampI; varying float vLk;', vertMain: 'vLk = aLk;\n#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif' };
+  // PERF: one lamp material for all four kinds (head / tail / left / right indicator by the aLk attribute): one draw, not four
+  const LK = { head: 0, tail: 1, indL: 2, indR: 3 };
+  const lampMat = (kind, src) => M.lamp_all ??= (() => {
+    const glow = 'vLk < .5 ? vec3(1.0, .95, .86) * (mix(.03, 3.2, uNight) + vLampI.w * 6.0) : vLk < 1.5 ? vec3(1.0, .05, .025) * (.06 + uNight * 1.0 + vLampI.x * 2.6) : vLk < 2.5 ? vec3(1.0, .38, .04) * (.03 + vLampI.y * 3.2) : vec3(1.0, .38, .04) * (.03 + vLampI.z * 3.2)';
+    const m = Atmos.patch(new THREE.MeshStandardMaterial({ map: src.map, emissive: new THREE.Color(1, 1, 1), emissiveMap: src.map, roughness: .14, metalness: 0, envMapIntensity: 1 }), { key: 'trafpackLall', uniforms: U, ...lampV,
+      fragPars: 'uniform float uNight; varying vec4 vLampI; varying float vLk;',
       frag: [noTint, ['#include <emissivemap_fragment>', `{ float lum = dot(totalEmissiveRadiance, vec3(.3333)); totalEmissiveRadiance = (${glow}) * (.3 + .7 * lum); }`]] });
     m.userData.shared = true; return m; })();
   const geos = [], mats = [];
@@ -13765,11 +13778,12 @@ function packTrafficGeometry(A, T) {
     if (!g.attributes.normal) g.computeVertexNormals();
     const nm = o.material.name || '', lk = /^optics_(\w+)/.exec(nm);
     let mat;
+    g.setAttribute('aLk', new THREE.BufferAttribute(new Float32Array(n).fill(lk ? (LK[lk[1]] ?? 0) : -1), 1));
     if (lk) mat = lampMat(lk[1], o.material);
     else if (/^glass/.test(nm)) mat = A.mats[1];
     else {                                                             // the paint: colour where the mask says, clear coat there, road film low down
       const s = o.material;
-      mat = Atmos.patch(new THREE.MeshPhysicalMaterial({ map: s.map, roughnessMap: s.roughnessMap, metalnessMap: s.metalnessMap, roughness: 1, metalness: 1, clearcoat: 1, clearcoatRoughness: .05, envMapIntensity: 1 }),
+      mat = M['paint_' + s.uuid] ??= Atmos.patch(new THREE.MeshPhysicalMaterial({ map: s.map, roughnessMap: s.roughnessMap, metalnessMap: s.metalnessMap, roughness: 1, metalness: 1, clearcoat: 1, clearcoatRoughness: .05, envMapIntensity: 1 }),
         { key: 'trafpackP', uniforms: U, vertPars: 'varying float vObjY;', vertMain: 'vObjY = position.y;', fragPars: 'varying float vObjY; uniform float uWet;' + ROAD_GRIME_GLSL,
           frag: [['#include <color_fragment>', `float pkMask = diffuseColor.a; diffuseColor.a = 1.0;
           #ifdef USE_INSTANCING_COLOR
@@ -13784,7 +13798,7 @@ function packTrafficGeometry(A, T) {
     geos.push(g); mats.push(mat);
   });
   if (!geos.length) return null;
-  const body = BufferGeometryUtils.mergeGeometries(geos, true); geos.forEach(g => g.dispose());
+  const { body, mats: um } = mergeByMaterial(geos, mats); mats.length = 0; mats.push(...um);
   body.setAttribute('iLamp', new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC_TOTAL * 4), 4));
   body.computeBoundingSphere(); body.userData.shared = true;
   return { glb: { body, mats } };
