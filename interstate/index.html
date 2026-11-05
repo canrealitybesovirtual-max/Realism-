@@ -9804,13 +9804,13 @@ function celsiorTrafficMats(U, paint) {
     Atmos.patch(mat, { key: 'tcel' + m.mat, uniforms: U, ...(lens ? lampV : {}), fragPars: 'uniform float uWet, uNight;' + (lens ? 'varying vec4 vLampI;' + TAIL_LENS_PARS : ''),
       frag: lens ? [noTint, wet, ['#include <emissivemap_fragment>', 'totalEmissiveRadiance *= (.08 + uNight * 1.6 + vLampI.w * 4.0) * step(.55, dot(totalEmissiveRadiance, vec3(.33)));']] : [noTint, wet] });
     mat.userData.shared = true; mats[m.mat] = mat;
-    if (lens) {                                                      // the rear lens: solid, faceted, zones from a blurred read of the photo
-      const t = Atmos.patch(new THREE.MeshPhysicalMaterial({ map: mat.map, color: 0xffffff, roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
-        emissive: new THREE.Color(1, 1, 1), envMapIntensity: 1.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -6 }), { key: 'tceltail', uniforms: U, ...lampV, fragPars: 'uniform float uNight; varying vec4 vLampI; vec3 gTlE;' + TAIL_LENS_PARS,
-        frag: [noTint, ['#include <map_fragment>', CEL_TAIL_ZONES + `
-          float sideL = step(vTlP.x, 0.0), ind = mix(vLampI.z, vLampI.y, sideL);
-          gTlE = red * vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8) * (.55 + .9 * tc) + amb * vec3(1.0, .38, .04) * (.04 + ind * 3.2) * (.6 + .8 * tc); }`],
-          ['#include <emissivemap_fragment>', 'totalEmissiveRadiance = gTlE;']] });
+    if (lens) {                                                      // the rear lens: plain red glass, lit by the car's brakes and indicators
+      const t = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
+        emissive: new THREE.Color().setRGB(1, .035, .02), envMapIntensity: 1.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -6 }), { key: 'tceltail', uniforms: U,
+        vertPars: 'attribute vec4 iLamp; varying vec4 vLampI; varying float vTlX;', vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif\n vTlX = position.x;',
+        fragPars: 'uniform float uNight; varying vec4 vLampI; varying float vTlX;',
+        frag: [noTint, ['#include <emissivemap_fragment>', `{ float ind = mix(vLampI.z, vLampI.y, step(vTlX, 0.0)), outer = smoothstep(.66, .7, abs(vTlX));
+          totalEmissiveRadiance = mix(vec3(1.0, .035, .02) * (.15 + uNight * 1.1 + vLampI.x * 2.8), vec3(1.0, .38, .04) * (.04 + ind * 3.2), outer); }`]] });
       t.userData.shared = true; mats.tail = t;
     }
   }
@@ -10063,12 +10063,9 @@ function celTailOuter(px, py, pz, idx) {
   const keep = []; for (let t = 0; t < idx.length; t += 3) { const c = cen(t); if (out(c) >= best.get(key(c)) - .003) keep.push(idx[t], idx[t + 1], idx[t + 2]); }
   return keep;
 }
-function celTailMaterial(map) {
-  return Atmos.patch(new THREE.MeshPhysicalMaterial({ map, color: 0xffffff, roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
-    emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -6 }), { key: 'celtail',
-    vertPars: TAIL_LENS_VERT_PARS, vertMain: TAIL_LENS_VERT, fragPars: TAIL_LENS_PARS + '\nfloat gTlRed;',
-    frag: [['#include <map_fragment>', CEL_TAIL_ZONES + ` gTlRed = red * (.55 + .9 * tc); }`],
-      ['#include <emissivemap_fragment>', 'totalEmissiveRadiance *= gTlRed;']] });
+function celTailMaterial() {                                           // plain red lens glass: no photo, no facet pattern (both read as speckle)
+  return Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
+    emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -6 }), { key: 'celtail' });
 }
 function buildCelsior(car) {
   const D = SaloonData.player; if (!D) return null;
@@ -10106,7 +10103,7 @@ function buildCelsior(car) {
       for (let t = 0; t < I.length; t += 3) ((P.getZ(I[t]) + P.getZ(I[t + 1]) + P.getZ(I[t + 2])) / 3 > 1.5 ? rear : front).push(I[t], I[t + 1], I[t + 2]);
       if (rear.length) {
         const rg = g.clone(); rg.setIndex(celTailOuter(i => P.getX(i), i => P.getY(i), i => P.getZ(i), rear)); g.setIndex(front);
-        celTail ??= celTailMaterial(mat.map);
+        celTail ??= celTailMaterial();
         const rm = new THREE.Mesh(rg, celTail); rm.castShadow = false; rm.receiveShadow = true; group.add(rm);
       }
     }
