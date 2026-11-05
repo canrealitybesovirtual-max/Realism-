@@ -8542,7 +8542,7 @@ function updateStreaming() {
     const t0 = performance.now();
     const nowB = performance.now() / 1000;                     // step 52: little background work while the action needs the frame
     const budget = PACE.moveStart && nowB - PACE.moveStart < 0.05 ? 0 : S.buildBudgetMs * (paceBusy(nowB) ? CONFIG.pace.buildBusyK : 1)
-      * (stream.building.plan && stream.building.plan.type === 'yard' && stream.current && stream.current.kind === 'safe' ? 2.5 : 1);   // outdoor start: the big yard builds faster while you wait in the safe room
+      * (stream.building.plan && stream.building.plan.type === 'yard' && stream.current && stream.current.kind === 'safe' ? (YLOAD.building ? (renderer.xr.isPresenting ? 7 : 14) : 2.5) : 1);   // behind the loading screen the outdoor map builds flat out   // outdoor start: the big yard builds faster while you wait in the safe room
     while (performance.now() - t0 < budget) {
       if (stream.building.plan && stream.building.plan.type === 'yard') stream.building.ySteps = (stream.building.ySteps || 0) + 1;   // the outdoor map's loading panel counts its steps
       if (stream.building.builder.next().done) { if (stream.building.ySteps) yardLoadDone(stream.building.ySteps); stream.ready.push(stream.building); stream.building = null; break; }
@@ -42806,6 +42806,27 @@ function scopeGun() {
   return null;
 }
 const _scE = new THREE.Vector3();
+/* Scope pictures (SCOPE, the AKM 2x, the M4 ACOG): drawing the scene into an off-screen target needs its own shader
+ * variants (no tone mapping / sRGB output there), so the first look through a scope compiled every visible material on
+ * the spot: a long hitch each time, and again in every new room. pipWarm compiles them for that target in the background
+ * (compileAsync, parallel on the Quest) once per room and target, and the picture waits (stays as it was) until done. */
+const PIPW = new WeakMap();
+function pipWarm(rt, cam) {
+  if (!rt || !renderer.compileAsync) return true;
+  const room = stream.current ? stream.current.slot : -1, W = PIPW.get(rt) || {};
+  if (W.room === room && W.ok) return true;
+  if (W.room !== room || (!W.busy && !W.ok)) {
+    W.room = room; W.ok = false; W.busy = true; PIPW.set(rt, W);
+    const prev = renderer.getRenderTarget(), xrOn = renderer.xr.enabled;
+    let p = null;
+    try { renderer.xr.enabled = false; renderer.setRenderTarget(rt); p = renderer.compileAsync(scene, cam); }
+    catch (e) { W.ok = true; }
+    finally { renderer.setRenderTarget(prev); renderer.xr.enabled = xrOn; }
+    if (p) p.then(() => { if (W.room === room) { W.ok = true; W.busy = false; } }, () => { W.ok = true; W.busy = false; });
+    else { W.ok = true; W.busy = false; }
+  }
+  return W.ok;
+}
 function scopeTick(dt) {
   const g = scopeGun(), S = g ? g.parts.scope : null;
   SCOPE.gun = g;
@@ -42840,6 +42861,7 @@ function scopeTick(dt) {
   lens.visible = false;
   try {
     renderer.xr.enabled = false;
+    if (!pipWarm(S.rt, SCOPE.cam)) return;                             // its shaders for this target are still compiling in the background
     renderer.setRenderTarget(S.rt);
     renderer.clear();
     renderer.render(scene, SCOPE.cam);
@@ -44434,7 +44456,7 @@ function akmPipTick() {
   lens.getWorldQuaternion(P.cam.quaternion); P.cam.updateMatrixWorld(true);
   const prevRT = renderer.getRenderTarget(), xrOn = renderer.xr.enabled;
   lens.visible = false;
-  try { renderer.xr.enabled = false; renderer.setRenderTarget(P.rt); renderer.clear(); renderer.render(scene, P.cam); }
+  try { renderer.xr.enabled = false; if (!pipWarm(P.rt, P.cam)) return; renderer.setRenderTarget(P.rt); renderer.clear(); renderer.render(scene, P.cam); }
   catch (e) { console.warn('step 102: 2x view failed', e); }
   finally { renderer.setRenderTarget(prevRT); renderer.xr.enabled = xrOn; lens.visible = true; }
 }
@@ -49110,7 +49132,10 @@ function yardLoadMake() {
   const me = YLOAD.mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.09), m);
   me.position.set(0, -0.11, -0.9); me.renderOrder = 100002; me.frustumCulled = false;
   camera.add(me);
-  try { renderer.compileAsync(me, camera, scene).catch(() => {}); } catch (e) { /* compiled on first show */ }
+  /* the loading screen: a dark card filling the view behind the panel while the map builds (the build runs flat out under it) */
+  const cvr = YLOAD.cover = new THREE.Mesh(new THREE.PlaneGeometry(6, 4), new THREE.MeshBasicMaterial({ color: 0x07080a, depthTest: false, depthWrite: false, fog: false, toneMapped: false }));
+  cvr.position.set(0, 0, -0.95); cvr.renderOrder = 100001; cvr.frustumCulled = false; cvr.visible = false; camera.add(cvr);
+  try { renderer.compileAsync(me, camera, scene).catch(() => {}); renderer.compileAsync(cvr, camera, scene).catch(() => {}); } catch (e) { /* compiled on first show */ }
   me.visible = false;
 }
 function yardLoadDraw(pct, ready) {
@@ -49130,8 +49155,10 @@ function yardLoadTick() {
   const b = stream.building, now = performance.now() / 1000;
   const building = !!(b && b.plan && b.plan.type === 'yard');
   const ready = !building && now - YLOAD.doneAt < 1.5;
-  if (!building && !ready) { if (YLOAD.mesh && YLOAD.mesh.visible) YLOAD.mesh.visible = false; YLOAD.pct = -1; return; }
+  YLOAD.building = building;
+  if (!building && !ready) { if (YLOAD.mesh && YLOAD.mesh.visible) YLOAD.mesh.visible = YLOAD.cover.visible = false; YLOAD.pct = -1; return; }
   if (!YLOAD.mesh) yardLoadMake();
+  YLOAD.cover.visible = building || now - YLOAD.doneAt < 0.6;          // the loading screen until it is built (then fades to the READY panel)
   let pct = 100;
   if (building) {
     let tot = 0; try { tot = +localStorage.getItem(YLOAD.key) || 0; } catch (e) { /* private mode */ }
@@ -49154,12 +49181,18 @@ function yardTick(dt, t) {
   if (camera.far !== far) { camera.far = far; camera.updateProjectionMatrix(); }
   if (inY && Y.env && !Y.envOld) { Y.envOld = scene.environment; scene.environment = Y.env.texture; }   // the night sky's light on everything (same 256 px PMREM size: no recompile)
   else if (!inY && Y.envOld) { scene.environment = Y.envOld; Y.envOld = null; }
-  if (inY && !Y.warmed && renderer.compileAsync) { Y.warmed = true; try { renderer.compileAsync(scene, camera).catch(() => {}); } catch (e) { /* older three */ } }   // the men and their guns under the yard's lights: compiled off the main path (they were linked mid-fight when first seen)
+  if ((inY || (yard && yard.active)) && !Y.warmed && renderer.compileAsync) { Y.warmed = true; try { renderer.compileAsync(scene, camera).catch(() => {}); } catch (e) { /* older three */ } }   // the men and their guns under the yard's lights: compiled off the main path (they were linked mid-fight when first seen)
   if (inY !== Y.wasIn) { Y.wasIn = inY; yardRainAudio(inY); }
   if (inY) { scene.environmentIntensity *= YC.envK; if (pool.fill) pool.fill.intensity *= 0.18; }
   yardLightning(inY, dt);                                         // outdoor: distant lightning in the cloud, thunder after it
   if (Y.glint && Y.glint.visible && performance.now() - (Y.glintAt || 0) > 250) Y.glint.visible = Y.laser.visible = false;
   if (yard) {
+    /* the panorama's ground plane (420 m) and the forest floor cut through the stairwell down to the block and the rooms
+       under the yard: you saw a floor at yard level and walked through it, men half buried in it. Shown only while you
+       are in the yard (or above its ground). */
+    { const below = !inY && level.floor < yard.origin.y - 0.4;
+      if (yard.natGround === undefined) yard.natGround = yard.group.getObjectByName('nat ground') || null;
+      for (const o of [yard.yardOuter, yard.natGround]) if (o && o.visible === below) o.visible = !below; }
     YU.uYTime.value = t;
     yard.group.updateMatrixWorld();
     YU.uYInv.value.copy(yard.group.matrixWorld).invert();
