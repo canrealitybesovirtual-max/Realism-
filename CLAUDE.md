@@ -1307,3 +1307,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: AWM damage and head gore
 - enemyShot: an AWM round (d === WEAPON_DEFS.awp) is lethal anywhere and ignores plates; a body / limb hit takes the step 91 downed path (he falls and crawls, bleeds out), head / neck = dead.
 - awmHeadGore(e, P, dir) after g90Hit on an AWM head / neck hit: five merged craters (30-45 mm, cap 120 mm) over the side of the head facing you (face torn open, two pour), three extra mist / drop cones with a head spray decal each, a burst back out of the entry, 14 more tissue chunks. Scaled by g90K (off with gore off / mild). Syntax parse only.
+
+## CQC: calmer doors
+- Opening speed caps: press 0.7 rad/s (was 1.05), VR hand 2.2 (was 3.0); press drive k 7 / c 7 over 4.2 s (was 12 / 7), close k 6 / c 6; shoulder push k 14 / c 5 (was 30 / 6); VR grip k 70 / c 16 (was 140 / 22) with the hand's target angle smoothed (door.hT, 0.3 a frame) so tracking noise doesn't shake the leaf; leaf angular damping 2.2 (was 0.9). Kicks unchanged. Syntax parse only.
