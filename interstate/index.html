@@ -9947,13 +9947,29 @@ function cabinGrainOn(mat, kind, rough) {
   if (rough != null) mat.roughness = Math.max(mat.roughness, rough);
   mat.needsUpdate = true; return mat;
 }
+/* The saloon's tail lamps: its photo-textured lens (alpha blended, mostly black where the photo was dark) is redrawn as a
+ * solid lens like the other cars' (tlCells facets, depth), keeping the photo's zones: red tail / brake, amber indicator,
+ * clear reverse lamp. Dark photo areas count as red lens. ?celtail=off keeps the photo lens. */
+const CEL_TAIL = { on: !/[?&]celtail=off\b/.test(location.search) };
+function celTailMaterial(map) {
+  return Atmos.patch(new THREE.MeshPhysicalMaterial({ map, color: 0xffffff, roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
+    emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2 }), { key: 'celtail',
+    vertPars: TAIL_LENS_VERT_PARS, vertMain: TAIL_LENS_VERT, fragPars: TAIL_LENS_PARS + '\nfloat gTlRed;',
+    frag: [['#include <map_fragment>', `{ vec3 tm = diffuseColor.rgb; float mx = max(tm.r, max(tm.g, tm.b)) + 1e-4; vec3 hc = tm / mx;
+        float red = max(smoothstep(0.55, 0.35, hc.g) * step(0.5, hc.r), smoothstep(0.16, 0.05, mx));
+        float amb = (1.0 - red) * smoothstep(0.35, 0.55, hc.g) * smoothstep(0.55, 0.3, hc.b), clr = max(0.0, 1.0 - red - amb);
+        float tc = tlCells(); gTlRed = red;
+        diffuseColor.rgb = red * mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc) + amb * vec3(.4, .16, .02) * (.7 + .3 * tc) + clr * vec3(.32, .33, .34) * (.75 + .25 * tc);
+        gTlRed *= .55 + .9 * tc; }`],
+      ['#include <emissivemap_fragment>', 'totalEmissiveRadiance *= gTlRed;']] });
+}
 function buildCelsior(car) {
   const D = SaloonData.player; if (!D) return null;
   const bin = b64bytes(D.bin), M = car.mats, group = new THREE.Group(); group.name = 'saloon97';
   const tl = new THREE.TextureLoader(), texs = {};
   const tex = k => texs[k] ??= (() => { const t = tl.load(D.textures[k].uri); t.flipY = false; t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; car.tex['cel' + k] = t; return t; })();
   const metalName = /chrome|silver|metal|brake|disc/i;
-  let lampMat = null, decals = null, needleMesh = null;
+  let lampMat = null, decals = null, needleMesh = null, celTail = null;
   for (const m of D.meshes) {
     const n = m.n, g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(dq(new Uint16Array(bin.buffer, m.pos[0], n * 3), n, m.pmin, m.pmax, 3), 3));
@@ -9977,6 +9993,15 @@ function buildCelsior(car) {
     if (mat !== M.paint && !m.blend && !/reflector/i.test(m.mat)) cabinOcclusion(mat);   // build 1.28
     const mesh = new THREE.Mesh(g, mat); mesh.castShadow = mesh.userData.caster = !m.blend; mesh.receiveShadow = true; if (m.blend) mesh.renderOrder = 2;
     if (m.mat === 'gauge_needle') needleMesh = mesh;
+    if (/reflector/i.test(m.mat) && CEL_TAIL.on) {                     // the rear lenses: out of the photo-textured blend into a solid faceted lens
+      const P = g.attributes.position, I = g.index.array, front = [], rear = [];
+      for (let t = 0; t < I.length; t += 3) ((P.getZ(I[t]) + P.getZ(I[t + 1]) + P.getZ(I[t + 2])) / 3 > 1.5 ? rear : front).push(I[t], I[t + 1], I[t + 2]);
+      if (rear.length) {
+        const rg = g.clone(); rg.setIndex(rear); g.setIndex(front);
+        celTail ??= celTailMaterial(mat.map);
+        const rm = new THREE.Mesh(rg, celTail); rm.castShadow = false; rm.receiveShadow = true; group.add(rm);
+      }
+    }
     if (m.mat === 'Material_68') {                                    // build 1.28: its gear lever and knob come out; the working one (§14.11) replaces them
       const P = g.attributes.position, I = g.index.array, keep = [], inBox = k => { const x = P.getX(k), y = P.getY(k), z = P.getZ(k); return x > -.04 && x < .055 && y > .645 && y < .765 && z > -.4 && z < -.35; };
       for (let t = 0; t < I.length; t += 3) if (!(inBox(I[t]) && inBox(I[t + 1]) && inBox(I[t + 2]))) keep.push(I[t], I[t + 1], I[t + 2]);
@@ -9984,7 +10009,7 @@ function buildCelsior(car) {
     }
     group.add(mesh);
   }
-  return { group, lampMat, decals, needleMesh };
+  return { group, lampMat, decals, needleMesh, tail: celTail };
 }
 
 /* Build 1.31: cars from GLB files (cars/*.glb), prepared offline (tools: carprep): real size, front toward -z, ground at
@@ -11338,6 +11363,7 @@ class Car {
       }
     }
     if (this.cel?.lampMat) this.cel.lampMat.emissiveIntensity = .1 + 2.4 * lamp + (braking ? 1.2 : 0);   // build 1.16: the saloon's lenses
+    if (this.cel?.tail) this.cel.tail.emissiveIntensity = .15 + 1.1 * Math.min(1, lamp) + (braking ? 2.6 : 0);   // its rear lenses (celTailMaterial)
     if (this.cel?.decals) this.cel.decals.emissiveIntensity = S.ign ? (L ? 1.1 : .35 + .5 * night) : 0;
         const G = this.packCar?.glb;
     const B = this.beacon ??= { on: false, r: 0, b: 0 }; B.on = false; B.r = B.b = 0;
@@ -11826,11 +11852,16 @@ class CarMirrors {
    driver along the column, x to the right. */
 /* Build 1.37: the ignition lock sits in the right side of the column shroud (wheel-tilt frame; the shroud is a cone along
    z from -.115, radius .042, to -.305, radius .052), its barrel facing out and back toward the driver. p: the barrel face. */
-const KEY_SPOT = (() => { const z = -.19, r = .042 + .01 * (-.115 - z) / .19, a = -.3, n = [.78, -.24, .58], L = Math.hypot(...n), nn = n.map(x => x / L);
-  return { p: [r * Math.cos(a) + nn[0] * .011, r * Math.sin(a) + nn[1] * .011, z + nn[2] * .011], n: nn, base: [r * Math.cos(a), r * Math.sin(a), z] }; })();
+const keySpot = (rr) => { const z = -.19, r = rr ?? .042 + .01 * (-.115 - z) / .19, a = -.3, n = [.78, -.24, .58], L = Math.hypot(...n), nn = n.map(x => x / L);
+  return { p: [r * Math.cos(a) + nn[0] * .011, r * Math.sin(a) + nn[1] * .011, z + nn[2] * .011], n: nn, base: [r * Math.cos(a), r * Math.sin(a), z] }; };
+const KEY_SPOT = keySpot();
+/* The saloon keeps its own column shroud (Material_68, measured in the wheel-tilt frame: ~0.075-0.14 m round the column
+   from z -0.30 to 0, its right face ~0.095-0.1 m out at the key's angle), so its key sits on that face, not on the game's
+   thinner cone (where the key and its ring were buried inside the model's shroud). */
+const KEY_SPOT_CEL = keySpot(.1);
 const CABIN_LAYOUT = {
   celsior: {
-    key: KEY_SPOT, stalkL: [-.043, .004, -.128], stalkR: [.043, .004, -.128],
+    key: KEY_SPOT_CEL, stalkL: [-.043, .004, -.128], stalkR: [.043, .004, -.128],
     /* build 1.32: touch targets exactly on the dash texture's own buttons (picked off renders of the textured dash): the hazard
        switch between the vents, the head unit's AM / FM1-2 / TAPE / CD, presets 1-6, TUNE-SEEK up / down; w x h = the printed button */
     touch: [
@@ -16160,8 +16191,11 @@ const VR_QUALITY = {
   balanced:    { scale: 1,   foveation: .75, g: { preset: 'medium', shadows: 'low', vegetation: .45, drawDistance: .5,  particles: .45, anisotropy: 4, lite: true } },
   quality:     { scale: 1.2, foveation: .5,  g: { preset: 'medium', shadows: 'low', vegetation: .7,  drawDistance: .7,  particles: .6, anisotropy: 8, lite: false } },
 };
+/* Headset views (vr.view; the right stick click cycles them). cockpit: the driver's seat; chase: behind and above the car,
+ * turning with its heading only; hood: on the bonnet (offsets from the driver's eye). */
+const VR_VIEWS = { cockpit: { name: 'Cockpit' }, chase: { name: 'Chase view', at: [0, 2.1, 6.4] }, hood: { name: 'Hood view', at: [0, .12, -1.35] } };
 const VR_GFX_OFF = { ssao: false, reflections: 'off', volumetrics: false, ssgi: false, bloom: false, motionBlur: false, dof: false, lensFlare: false, lensRain: false, windscreen: false, filmGrain: false, chromaticAberration: false, dynamicResolution: false };
-const VR_HELP = 'Right trigger: throttle. Left trigger: brake. Squeeze a grip on the rim and turn the wheel, or steer with the left stick. A and X: shift up and down. B: handbrake. Click the right stick for the horn, the left stick to re-centre your seat. Y: pause.';
+const VR_HELP = 'Right trigger: throttle. Left trigger: brake. Squeeze a grip on the rim and turn the wheel, or steer with the left stick. A and X: shift up and down. B: handbrake. Y: horn. Click the right stick to change the view (cockpit, chase, hood), the left stick to re-centre your seat. Pause with the headset’s menu button or by touching the watch on your left wrist.';
 
 /** Build 1.21: poses a WebXR "generic-hand" skeleton (flat joint list under the armature). Returns pose(curls) with
  *  curls 0 (straight) … 1 (fist) per finger. */
@@ -16277,6 +16311,8 @@ class VRSystem {
     this.rate = session.frameRate || +this.s.data.vr.refresh || 72;
     this.presenting = true; this.needCentre = 4;
     try { this.r.xr.getReferenceSpace()?.addEventListener('reset', () => { this.needCentre = 2; }); } catch {}
+    /* the headset's own menu button (Quest: the left controller's menu / Oculus button) blurs the session: pause there */
+    session.addEventListener('visibilitychange', () => { if (session.visibilityState !== 'visible' && this.app.state === 'run') this.app.pause(true); });
     const A = this.app; A.input.releaseLock();
     if (A.state === 'menu' && !A.busy) A.startRun();
     else if (A.state === 'paused') A.resume();
@@ -16336,9 +16372,9 @@ class VRSystem {
     if (A.state === 'run') {
       if (eA) input.pressedNow.add('shiftUp');
       if (eX) input.pressedNow.add('shiftDown');
-      if (eRS) input.pressedNow.add('horn');
+      if (eRS) this.cycleView();                                           // right stick click: cockpit / chase / hood
+      if (eY) input.pressedNow.add('horn');                               // Y: horn (pause = the headset's menu button or the wrist watch)
       if (eLS) { this.needCentre = 1; this.note('Seat re-centred', 1200); }
-      if (eY) A.pause(true);
     } else if (A.state === 'paused') {
       if (eA) A.resume(); else if (eB) A.restartRun(); else if (eX) A.endRun(); else if (eY) this.exit();
     } else if (A.state === 'summary') { if (eA) A.summaryAction(true); else if (eY) this.exit(); }
@@ -16373,18 +16409,59 @@ class VRSystem {
    *  follows the road's slope and banking fully and the body's pitch and roll as far as the comfort
    *  setting allows. */
   #placeRig(d) {
-    const v = this.s.data.vr, body = d.carObj.body;
+    const v = this.s.data.vr, body = d.carObj.body, view = VR_VIEWS[v.view] ? v.view : 'cockpit';
     d.car.updateMatrixWorld(true);
-    const eye = this._v.set(CABIN.eye[0], CABIN.eye[1] + (v.seatHeight || 0), CABIN.eye[2]).applyMatrix4(body.matrixWorld);
-    body.getWorldQuaternion(this._q1);
-    const q = this._q2.copy(d.car.quaternion).slerp(this._q1, clamp(v.bodyMotion ?? .35, 0, 1));
+    let eye, q;
+    if (view === 'chase') {                                               // behind and above, turning with the car's heading only (no pitch / roll: comfort)
+      const yaw = this._e2 ??= new THREE.Euler(); yaw.setFromQuaternion(d.car.quaternion, 'YXZ');
+      q = this._q2.setFromAxisAngle(this._up, yaw.y); const C = VR_VIEWS.chase.at;
+      eye = this._v.set(C[0], C[1] + (v.seatHeight || 0), C[2]).applyQuaternion(q).add(d.car.position);
+      const sm = this._chaseP ??= eye.clone(); if (sm.distanceTo(eye) > 8) sm.copy(eye); else sm.lerp(eye, .35); eye.copy(sm);
+    } else {
+      const E = view === 'hood' ? VR_VIEWS.hood.at : CABIN.eye;
+      eye = this._v.set(E[0] * (view === 'hood' ? 0 : 1), (view === 'hood' ? CABIN.eye[1] + E[1] : E[1]) + (v.seatHeight || 0), view === 'hood' ? CABIN.eye[2] + E[2] : E[2]).applyMatrix4(body.matrixWorld);
+      body.getWorldQuaternion(this._q1);
+      q = this._q2.copy(d.car.quaternion).slerp(this._q1, clamp(v.bodyMotion ?? .35, 0, 1));
+    }
     this._m1.compose(eye, q, this._s.set(1, 1, 1));
     this._m2.compose(this.seat.p, this._q3.setFromAxisAngle(this._up, this.seat.yaw), this._s).invert();
     this._m1.multiply(this._m2).decompose(this.rig.position, this.rig.quaternion, this._s);
     this.rig.scale.set(1, 1, 1); this.rig.updateMatrixWorld(true);
   }
+  /** Right stick click: the next headset view (saved in vr.view). */
+  cycleView() {
+    const k = Object.keys(VR_VIEWS), cur = VR_VIEWS[this.s.data.vr.view] ? this.s.data.vr.view : 'cockpit', nx = k[(k.indexOf(cur) + 1) % k.length];
+    this.s.set('vr.view', nx); this._chaseP = null; this.note(VR_VIEWS[nx].name, 1300); this.pulse(.25, 25);
+  }
+  /** A watch on the left wrist (as in CQC): touch its face with the right hand to pause. It shows the time and PAUSE. */
+  #watch() {
+    const g = this.gloves.left; if (!g) return;
+    if (!this.watch) {
+      const c = document.createElement('canvas'); c.width = c.height = 128; const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+      const root = new THREE.Group(); root.name = 'vr-watch';
+      const caseM = new THREE.MeshStandardMaterial({ color: 0x1a1b1d, roughness: .35, metalness: .85 }), strap = new THREE.MeshStandardMaterial({ color: 0x101011, roughness: .8, metalness: 0 });
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(.021, .021, .011, 32), caseM); body.rotation.z = Math.PI / 2; root.add(body);
+      const face = new THREE.Mesh(new THREE.CircleGeometry(.018, 32), new THREE.MeshBasicMaterial({ map: t, toneMapped: false })); face.position.x = -.0058; face.rotation.y = -Math.PI / 2; root.add(face);
+      const band = new THREE.Mesh(new THREE.TorusGeometry(.03, .006, 6, 24, Math.PI * 1.2), strap); band.rotation.set(0, Math.PI / 2, Math.PI * .4); band.position.x = .026; root.add(band);
+      root.position.set(-.028, .012, .085); g.add(root);                // over the back of the left wrist, face outward
+      this.watch = { root, face, c, t, min: -1, hold: 0 };
+    }
+    const W = this.watch, now = new Date(), m = now.getHours() * 60 + now.getMinutes();
+    if (m !== W.min) {                                                    // redrawn once a minute
+      W.min = m; const x = W.c.getContext('2d'); x.fillStyle = '#0b0c0e'; x.fillRect(0, 0, 128, 128);
+      x.fillStyle = '#e8e3da'; x.font = '600 34px system-ui'; x.textAlign = 'center'; x.fillText(String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0'), 64, 62);
+      x.fillStyle = '#c9a46a'; x.font = '700 20px system-ui'; x.fillText('PAUSE', 64, 96); W.t.needsUpdate = true;
+    }
+    const gr = this.grips.right; if (!gr || !W.root.parent?.parent || this.app.state !== 'run') { W.hold = 0; return; }
+    const d = this._v3 ??= new THREE.Vector3(), f = this._v4 ??= new THREE.Vector3();
+    W.face.getWorldPosition(f); d.setFromMatrixPosition(gr.matrixWorld);
+    const tip = this.gloves.right?.userData?.tips?.[1]; if (tip) tip.getWorldPosition(d);   // the index fingertip, when the hand model is in
+    if (d.distanceTo(f) < .035) { if ((W.hold += 1 / (this.rate || 72)) > .2) { W.hold = -1; this.#pulseOne('right', .5, 40); this.app.pause(true); } }
+    else if (W.hold >= 0) W.hold = 0; else if (d.distanceTo(f) > .08) W.hold = 0;
+  }
   /** Each frame of a live run, from DriveWorld.update once the car has its pose. */
   drive(d) {
+    this.#watch();
     if (this.needCentre > 0 && --this.needCentre === 0) this.#recentre();
     this.#placeRig(d);
     /* the world camera becomes the head in world space (last frame's head, carried with the car) */
