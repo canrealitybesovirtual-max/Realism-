@@ -3693,6 +3693,17 @@ class Network {
 /* ── Building the network ─────────────────────────────────────────────── */
 const RAMP = { R: 115, G: 16, tap: 280, run: 150, flyG: 45, flyRun: 220, clear: 7.9,
   fly: { toA: 500, toB: 2100, toK: 1, fromB: 2100, fromA: 300, fromK: 1.4 } };
+/* Build 1.42 (§13.2d): a stack interchange at the junctions marked `stack` on the freeway route. Over the two flyovers
+   (7.9 m over A) three more directional ramps are added, each lifted over everything built before it (A, B, the loop
+   ramps, the flyovers and the earlier stack ramps: clear m over paving, clearDeck m over another ramp's deck), with a
+   cone of `cone` grade either side of each crossing, so they come out one level above the other where they cross:
+     stk-a  A's far carriageway -> B's near one, a long S-curve (S.len m) crossing A near where fly-from does (its X)
+     stk-c  A's far carriageway -> B's far one, a semicircle over both roads (loopMid) crossing A at that X too
+     stk-d  B's far carriageway -> A's far one, the mirror semicircle at the fly-to crossing.
+   aRun = the straight elevated approach beside A, bRun the run beside the road joined. Every ramp is checked
+   (rampCheck 'stk': R >= 100 m, grade <= 6.2 %) and dropped when it fails. Decks: box girder with concrete parapets
+   (RoadChunk), tall hammerhead piers (NetStatics), gantry signs under the stack on A (netFinish). */
+const STACK = { clear: 9.2, clearDeck: 9.0, cone: .055, g: 45, aRun: 360, bRun: 220, dd: 175, dRun: 300, flyToA: 720, loopK: 2.1, S: { len: 2000, run: 700, bRun: 520 }, C: { dX: 800 }, gantries: 3, gantryClear: 11.5, viaduct: 5 };
 
 /** Point on road r at travel distance x from station st (dir = +1 / -1 along s), lateral u; y on its surface
  *  (or the plane of its carriageway, continued past the paving). */
@@ -3743,7 +3754,7 @@ function hermiteMid(k) {
   };
 }
 /** Smooth the plan of the middle (tags 1..3) so curvature builds up instead of jumping; then the long section. */
-function finishRamp({ pts, tag }, lift) {
+function finishRamp({ pts, tag }, lift, cone = .04) {
   const n = pts.length, X = pts.map(p => p.x), Z = pts.map(p => p.z);
   const lo = tag.indexOf(1), hi = tag.lastIndexOf(3);
   for (let pass = 0; pass < 3; pass++) {
@@ -3770,8 +3781,8 @@ function finishRamp({ pts, tag }, lift) {
     // a string pulled over what it must clear: keep the ends on their roads, stay above the clearance line, smooth the rest
     const need = lift(pts), y = Float64Array.from(pts, p => p.y), lo = Float64Array.from(need, v => (Number.isFinite(v) ? v : -1e9));
     for (let i = 0; i < n; i++) if (i <= a + 15 || i >= b - 15) lo[i] = -1e9;                 // the tapers lie on their roads
-    for (let i = 1; i < n; i++) lo[i] = Math.max(lo[i], lo[i - 1] - .04 * (l[i] - l[i - 1]));   // a 4 % cone either side of the
-    for (let i = n - 2; i >= 0; i--) lo[i] = Math.max(lo[i], lo[i + 1] - .04 * (l[i + 1] - l[i])); // clearance, so the climb is gentle
+    for (let i = 1; i < n; i++) lo[i] = Math.max(lo[i], lo[i - 1] - cone * (l[i] - l[i - 1]));   // a 4 % cone either side of the
+    for (let i = n - 2; i >= 0; i--) lo[i] = Math.max(lo[i], lo[i + 1] - cone * (l[i + 1] - l[i])); // clearance, so the climb is gentle (build 1.42: steeper on a stack)
     for (let i = a + 1; i < b; i++) y[i] = lerp(y[a], y[b], (l[i] - l[a]) / (l[b] - l[a]));
     for (let i = a + 1; i < b; i++) y[i] = Math.max(y[i], lo[i]);
     const h = 30, tmp = new Float64Array(n);
@@ -3852,12 +3863,70 @@ function netFinish(A, loops, out) {
   const signs = out.signs.filter(e => !e.road.inFx?.(mod(e.st + e.dir * e.x, e.road.length)));   // build 1.41: no sign in a tunnel or on a viaduct
   const net = new Network([A, ...loops.map(l => l.track), ...ramps]);
   net.finish();
+  netStackFinish(A, ramps);                                           // build 1.42: stack ramps are viaducts wherever they are off the ground
   net.A = A; net.loops = loops; net.ramps = ramps; net.signs = signs; net.zones = zones;
   // the ring's own structures stay clear of the junctions
   const inZone = s => zones.some(([a, b]) => Math.abs(mod(s - (a + b) / 2 + L / 2, L) - L / 2) < (b - a) / 2);
   A.overpasses = A.overpasses.filter(o => !inZone(o.s)); A.gantries = A.gantries.filter(o => !inZone(o.s)); A.roadSigns = A.roadSigns.filter(o => !inZone(o.s));
   A.inZone = inZone;
+  netStackGantries(A, ramps);                                         // build 1.42: sign gantries under the stack
   return net;
+}
+/** Build 1.42 (§13.2d): a stack ramp stands on piers wherever its deck is STACK.viaduct m or more over the land (not
+ *  only over another road): K1 -> 0 there (no embankment) and the span list the piers are built from. */
+function netStackFinish(A, ramps) {
+  for (const r of ramps) {
+    if (!r.stack) continue;
+    const n = r.n, span = new Uint8Array(n);
+    for (let i = 0; i < n; i++) span[i] = r.K1[i] < .5 || r.P[i * 3 + 1] - terrainHeight(r.P[i * 3], r.P[i * 3 + 2]) > STACK.viaduct ? 1 : 0;
+    for (let i = 1; i + 1 < n; i++) if (!span[i] && span[i - 1] && span[i + 1]) span[i] = 1;
+    const into = new Float32Array(n).fill(0); let run = 0;
+    for (let i = 0; i < n; i++) { run = span[i] ? run + r.ds : 0; into[i] = run; }
+    run = 0; for (let i = n - 1; i >= 0; i--) { run = span[i] ? run + r.ds : 0; into[i] = Math.min(into[i], run); }
+    for (let i = 0; i < n; i++) r.K1[i] = span[i] ? 1 - sstep(0, 20, into[i]) : 1;
+    r.spans = [];
+    for (let i = 0; i < n; i++) if (span[i] && (i === 0 || !span[i - 1])) { let j = i; while (j + 1 < n && span[j + 1]) j++; if ((j - i) * r.ds > 30) r.spans.push([i * r.ds, j * r.ds]); }
+  }
+}
+/** Build 1.42 (§13.2d): the lowest deck over station s of A (Infinity = open sky) and gantry signs on A under the stack
+ *  where every deck is at least STACK.gantryClear m up: STACK.gantries of them, 120 m apart or more. */
+function stackDeckOver(A, ramps, s, F, q, pr) {
+  A.frame(s, F); let low = Infinity;
+  for (const r of ramps) {
+    if (!r.oneWay) continue;
+    for (const u of [-A.laneEnd, 0, A.laneEnd]) {
+      const x = F.P.x + F.Rh.x * u, z = F.P.z + F.Rh.z * u;
+      pr.over = 0; r.project(x, z, null, pr); if (!Number.isFinite(pr.u) || pr.over > 1 || Math.abs(pr.u) > r.roadOuter + 1.5) continue;
+      r.frame(pr.s, q); low = Math.min(low, q.P.y - (r.stack ? 2.4 : 1.1) - (F.P.y + F.R.y * u));
+    }
+  }
+  return low;
+}
+function netStackGantries(A, ramps) {
+  const stk = ramps.filter(r => r.stack); if (!stk.length) return;
+  const F = newFrame(), G = newFrame(), pr = {}, L = A.length;
+  // the stack's stations on A: where its ramps cross A's paving
+  let s0 = Infinity, s1 = -Infinity, ref = null;
+  for (const r of stk) for (let i = 0; i < r.n; i += 5) {
+    pr.over = 0; A.project(r.P[i * 3], r.P[i * 3 + 2], ref, pr); if (!Number.isFinite(pr.u) || Math.abs(pr.u) > A.roadOuter) continue;
+    if (ref === null) ref = pr.s;
+    const d = mod(pr.s - ref + L / 2, L) - L / 2; s0 = Math.min(s0, d); s1 = Math.max(s1, d);
+  }
+  if (ref === null) return;
+  const picks = [], want = STACK.gantries, rng = mulberry32(A.seed * 131 + 42), cands = [];
+  for (let d = s0 - 160; d <= s1 + 160; d += 20) {
+    const s = mod(ref + d, L), low = stackDeckOver(A, ramps, s, F, G, pr);
+    if (low < STACK.gantryClear) continue;
+    if (A.inFx?.(s) || (A.crossS || []).some(c => Math.abs(mod(c - s + L / 2, L) - L / 2) < 120)) continue;
+    cands.push({ s, d, low });
+  }
+  if (!cands.length) return;
+  // under a deck first (the photo: a sign under the crossing ramps), then the others, nearest the middle, 120 m apart
+  cands.sort((a, b) => (a.low === Infinity) - (b.low === Infinity) || Math.abs(a.d - (s0 + s1) / 2) - Math.abs(b.d - (s0 + s1) / 2));
+  for (const c of cands) { if (picks.length >= want) break; if (picks.every(p => Math.abs(p.d - c.d) >= 120)) picks.push(c); }
+  for (const p of picks) A.gantries.push({ s: p.s, variant: Math.floor(rng() * 1e6), stack: true });
+  A.gantries.sort((a, b) => a.s - b.s);
+  A.stackS = [mod(ref + s0, L), mod(ref + s1, L)];
 }
 
 /** Build 1.41: one junction between A and road B near A's station s: loop ramps both ways, flyovers to A's far
@@ -3891,15 +3960,17 @@ function netJunction(A, B, s, sp, out) {
     // flyovers to and from the ring's far carriageway, bridged over the ring
     const aFar = sideOf(A, sA, -sigA, -sigA), R = RAMP.R;
     const clearRing = pts => pts.map(p => { const d = Math.abs(A.project(p.x, p.z, sA, pr).u); if (d > A.roadOuter + 3) return -Infinity; A.frame(pr.s, F2); return A.surfacePoint(F2, clamp(pr.u, -A.roadOuter, A.roadOuter), q).y + RAMP.clear; });
-    const P = RAMP.fly;
+    const P = sp.stack && A.route ? { ...RAMP.fly, toA: STACK.flyToA } : RAMP.fly;   // build 1.42: fly-to leaves later at a stack (room for stk-d to merge)
     const fly = [];
     fly.push(['fly-to', { pts: finishRamp(rampPoints(aFar, R + P.toA, RAMP.flyG, RAMP.flyRun, hermiteMid(P.toK), bNear, R + P.toB, RAMP.flyG, RAMP.flyRun), clearRing), from: aFar, to: bNear, x0: R + P.toA }]);
     fly.push(['fly-from', { pts: finishRamp(rampPoints(bNear, -(R + P.fromB), RAMP.flyG, RAMP.flyRun, hermiteMid(P.fromK), aFar, -(R + P.fromA), RAMP.flyG, RAMP.flyRun), clearRing), from: bNear, to: aFar, x0: -(R + P.fromB) }]);
     if (!rampsBad(fly)) made.push(...fly);
+    if (sp.stack && A.route && made.length === 4) netStack(A, B, sA, sB, sigA, sigB, aFar, bNear, made, F, F2, q, pr);   // build 1.42: the stack
   }
   for (const [kind, m] of made) {
     const rr = new RampRoad(sp.name + '-' + kind, m.pts, 1);
     rr.from = m.from.r; rr.to = m.to.r; rr.toU = m.to.uc; rr.kind = kind; rr.loopR = m.R || 0;   // build 1.32: toU, the carriageway it joins
+    rr.stack = !!m.stack;                                                                 // build 1.42: a stack ramp (box-girder deck, parapets, tall piers)
     rr.links = [m.from.r, m.to.r]; m.from.r.links = m.from.r.links || []; m.to.r.links = m.to.r.links || [];
     m.from.r.links.push(rr); m.to.r.links.push(rr);
     out.ramps.push(rr);
@@ -3913,8 +3984,58 @@ function netJunction(A, B, s, sp, out) {
   return sA;
 }
 
+/** Build 1.42 (§13.2d): the stack's three upper ramps at a flyover junction (see STACK). Each is lifted over every
+ *  road and ramp made before it; a ramp that fails rampCheck is left out. Pushes into `made`. */
+function netStack(A, B, sA, sB, sigA, sigB, aFar, bNear, made, F, F2, q, pr) {
+  const S = STACK, bFar = sideOf(B, sB, -sigB, -sigB);
+  const below = made.map(([, m]) => new RampRoad('tmp', m.pts, 1));
+  const clearAll = pts => pts.map(p => {
+    let need = -Infinity;
+    for (const r of [A, B]) {
+      pr.over = 0; r.project(p.x, p.z, null, pr); if (!Number.isFinite(pr.u) || Math.abs(pr.u) > r.roadOuter + 3) continue;
+      r.frame(pr.s, F2); need = Math.max(need, r.surfacePoint(F2, clamp(pr.u, -r.roadOuter, r.roadOuter), q).y + S.clear);
+    }
+    for (const r of below) {
+      pr.over = 0; r.project(p.x, p.z, null, pr); if (!Number.isFinite(pr.u) || pr.over > 1 || Math.abs(pr.u) > r.roadOuter + 6) continue;   // two decks side by side need 2 x 4.5 m
+      r.frame(pr.s, F2); need = Math.max(need, F2.P.y + S.clearDeck);
+    }
+    return need;
+  });
+  const sramp = (kind, from, xa, aRun, mid, to, yb, bRun) => {
+    const m = { pts: finishRamp(rampPoints(from, xa, S.g, aRun, mid, to, yb, S.g, bRun), clearAll, S.cone), from, to, x0: xa, stack: true };
+    if (typeof DBG !== 'undefined') (DBG.stackPts || (DBG.stackPts = {}))[kind] = m.pts;
+    if (!rampCheck(m.pts, kind)) { if (typeof Log !== 'undefined') Log.warn('network: stack ramp ' + kind + ' dropped (radius or grade)', rampCheck(m.pts, kind, true)); return null; }
+    made.push([kind, m]); below.push(new RampRoad('tmp', m.pts, 1));
+    return m;
+  };
+  // where the flyovers cross A: the +d X (fly-from) and the -d X (fly-to), measured on the ramps themselves
+  const crossAt = (m, fallback) => { let best = fallback, bd = Infinity; for (const p of m.pts) { pr.over = 0; A.project(p.x, p.z, sA, pr); if (!Number.isFinite(pr.u)) continue; const d = Math.abs(pr.u); if (d < bd) { bd = d; best = pr.s; } } return bd < 5 ? best : fallback; };
+  const rel = s => (mod(s - sA + A.length / 2, A.length) - A.length / 2) * sigA;        // along aNear's travel (+ = behind the junction)
+  const mFrom = made.find(([k]) => k === 'fly-from'), mTo = made.find(([k]) => k === 'fly-to');
+  const dX = mFrom ? rel(crossAt(mFrom[1], sA + sigA * S.C.dX)) : S.C.dX;
+  // the semicircles' radius: the distance between the two outer approaches
+  const A0 = netPoint(A, sA, -sigA, -200, aFar.uc + aFar.sideU * S.g, F, {}), B0 = netPoint(B, sB, -sigB, 200, bFar.uc + bFar.sideU * S.g, F, {});
+  const Rs = Math.hypot(B0.x - A0.x, B0.z - A0.z) / 2, offA = Math.abs(aFar.uc) + S.g, phi = Math.acos(clamp(1 - offA / Rs, -1, 1)), back = Rs * Math.sin(phi);
+  // lay a ramp (plan only), measure where it crosses A and move it along A until that is on the X (3 steps)
+  const aim = (lay, d0) => { let d = d0, best = d0, be = Infinity; for (let it = 0; it < 3; it++) { const dA = rel(crossAt({ pts: finishRamp(lay(d)) }, sA + sigA * dX)), e = Math.abs(dA - dX); if (e < be) { be = e; best = d; } if (e < 4) break; d += dX - dA; } return best; };
+  // stk-c: a U (Hermite, tangent at both ends: A may curve here) A far -> B far whose A crossing lands on the +d X (over fly-from: level 3)
+  const layC = d => rampPoints(aFar, -(d + RAMP.tap + S.aRun), S.g, S.aRun, hermiteMid(S.loopK), bFar, d, S.g, S.bRun);
+  const dc = aim(layC, dX + back);
+  sramp('stk-c', aFar, -(dc + RAMP.tap + S.aRun), S.aRun, hermiteMid(S.loopK), bFar, dc, S.bRun);
+  // stk-d: semicircle B far -> A far round the junction itself, outside the loop ramp there (concentric, never crossing it),
+  // over A and B at level 2; it merges onto A's far carriageway just before fly-to leaves it
+  const dd = S.dd;
+  sramp('stk-d', bFar, -(dd + RAMP.tap + S.dRun), S.dRun, hermiteMid(S.loopK), aFar, dd, S.dRun);
+  // stk-a, last and highest: the S-curve A far -> B near crossing A at the X over stk-c (level 4); laid once to measure
+  // where it crosses, then shifted along A onto the X (twice: B bends away past its tangent)
+  const layA = d => rampPoints(aFar, -(d + RAMP.tap + S.S.run), S.g, S.S.run, hermiteMid(1), bNear, -(d - S.S.len), S.g, S.S.bRun);   // a long run: it climbs over stk-c's own diverge
+  const dA0 = aim(layA, dX + .3 * S.S.len);
+  sramp('stk-a', aFar, -(dA0 + RAMP.tap + S.S.run), S.S.run, hermiteMid(1), bNear, -(dA0 - S.S.len), S.S.bRun);
+  if (typeof DBG !== 'undefined') DBG.stack = { dX, Rs, back, dc, dd, dA0 };
+}
+
 /** Build 1.41: is a slip road's centreline drivable? Plan radius (over 30 m chords) and grade (over 40 m) along it. */
-function rampCheck(pts, kind) {
+function rampCheck(pts, kind, why) {
   const n = pts.length; let minR = Infinity, maxG = 0;
   for (let i = 15; i + 15 < n; i += 3) {
     const a = pts[i - 15], b = pts[i], c = pts[i + 15];
@@ -3923,8 +4044,9 @@ function rampCheck(pts, kind) {
     if (cr > 1e-6) minR = Math.min(minR, ab * bc * ca / (4 * cr));
   }
   for (let i = 0; i + 20 < n; i += 5) { const a = pts[i], b = pts[i + 20], d = Math.hypot(b.x - a.x, b.z - a.z); if (d > 1) maxG = Math.max(maxG, Math.abs(b.y - a.y) / d); }
-  const fly = kind.startsWith('fly');
-  return minR >= (fly ? 170 : 80) && maxG <= (fly ? .065 : .07);
+  const fly = kind.startsWith('fly'), stk = kind.startsWith('stk');
+  if (why) return `radius ${minR.toFixed(0)} m, grade ${(maxG * 100).toFixed(1)} %`;
+  return minR >= (stk ? 100 : fly ? 170 : 80) && maxG <= (stk ? .062 : fly ? .065 : .07);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -4250,7 +4372,7 @@ function routeFeatures(A) {
  *  viaducts; each road keeps ROUTE.side.clear from A (except where they meet), from the others and from the
  *  terrain features. */
 const NET_FREEWAY = [
-  { name: 'B', inside: false, lanes: 2, fly: true, seed: 31 },
+  { name: 'B', inside: false, lanes: 2, fly: true, seed: 31, stack: true },   // build 1.42: the stack interchange
   { name: 'D', inside: false, lanes: 2, fly: true, seed: 47 },
   { name: 'C', inside: true, lanes: 1, seed: 59, o: { bends: [5, 8], len: [5000, 12000], R: [420, 1400], tan: [200, 900] } },
   { name: 'E', inside: false, lanes: 2, seed: 71 },
@@ -4814,6 +4936,12 @@ function guardrailTextures() {
   return { map: tex(cc, true), normal: tex(nc, false), rough: tex(rc, false) };
 }
 const WBEAM = [[0, .48], [.05, .53], [.015, .59], [.06, .655], [.015, .72], [.05, .78], [0, .83]];
+/* build 1.42: a stack ramp's deck profile across (u as a share of the half width, y, normal u, normal y): left parapet
+   inner face up, over, outer face down, fascia, web, soffit, web, fascia, right parapet up, over, inner face down */
+const STACK_DECK = [
+  [-.93, -.04, 1, 0], [-.93, .95, 1, 0], [-.93, .95, 0, 1], [-1, .95, 0, 1], [-1, .95, -1, 0], [-1, -.04, -1, 0], [-1, -.5, -1, 0],
+  [-1, -.5, -.72, -.69], [-.74, -2.4, -.72, -.69], [-.74, -2.4, 0, -1], [.74, -2.4, 0, -1], [.74, -2.4, .72, -.69], [1, -.5, .72, -.69],
+  [1, -.5, 1, 0], [1, -.04, 1, 0], [1, .95, 1, 0], [1, .95, 0, 1], [.93, .95, 0, 1], [.93, .95, -1, 0], [.93, -.04, -1, 0]];
 const POSTS_PER_SIDE = 50;
 const BOX_INDEX = [0, 2, 1, 2, 3, 1, 4, 6, 5, 6, 7, 5, 8, 10, 9, 10, 11, 9, 12, 14, 13, 14, 15, 13, 16, 18, 17, 18, 19, 17, 20, 22, 21, 22, 23, 21];
 
@@ -4920,8 +5048,9 @@ class RoadChunk {
     // Build 1.30: slip roads stand on a concrete deck (hidden in their embankments, the bridge where they fly)
     // build 1.41: so do the viaducts of the main road and a side road's bridge over it (shown only near a span)
     if (tr.oneWay || tr.spans?.length) {
-      const dg = dynGeo(ROAD_ROWS * 6, (ROAD_ROWS - 1) * 5 * 6, { position: 3, normal: 3, uv: 2, color: 3 });
-      gridIndex(ROAD_ROWS, 6, dg.index.array, 0, 0);
+      const NP = tr.stack ? STACK_DECK.length : 6;                      // build 1.42: a stack ramp's box girder with parapets
+      const dg = dynGeo(ROAD_ROWS * NP, (ROAD_ROWS - 1) * (NP - 1) * 6, { position: 3, normal: 3, uv: 2, color: 3 });
+      gridIndex(ROAD_ROWS, NP, dg.index.array, 0, 0);
       this.deck = add(dg, M.concrete, { cast: true });
     }
     // Tree instances cached per chunk (copied into the shared instanced meshes)
@@ -4952,6 +5081,7 @@ class RoadChunk {
         const tr = this.sys.track; tr.frame(this.s0 + this.len / 2, this.F); this.cx = this.F.P.x; this.cz = this.F.P.z;
         for (const m of this.meshes) { m.geometry.computeBoundingSphere(); m.visible = true; }
         this.walls.visible = this.urban > .45 && !this.sys.tunnel; this.verge.visible = !this.sys.tunnel; this.barrier.visible = !tr.oneWay; this.ready = true;
+        if (tr.stack) this.steel.visible = false;                                                                      // build 1.42: parapets instead
         if (this.sys.portals) { this.tunnel.visible = this.lamps.visible = !!this.tunSpan; if (this.inTun) this.verge.visible = false; }   // build 1.41
         if (this.deck && !tr.oneWay) this.deck.visible = this.onDeck;
         return true;
@@ -5044,6 +5174,7 @@ class RoadChunk {
   /** Build 1.30: the slip road's deck, 1.1 m of concrete under its whole width (flat-shaded sides and soffit). */
   #deck() {
     const tr = this.sys.track, g = this.deck.geometry, W = tr.roadOuter + .05, D = 1.1;
+    if (tr.stack) return this.#stackDeck();
     const prof = [[-W, -.04], [-W, -D], [-W, -D], [W, -D], [W, -D], [W, -.04]];
     const nrm = [[-1, 0], [-1, 0], [0, -1], [0, -1], [1, 0], [1, 0]];
     this.#profile(g, 0, prof, 0, F => tr.surfOffset(0), () => .58, i => nrm[i]);
@@ -5052,6 +5183,25 @@ class RoadChunk {
     for (let r = 0; r < ROAD_ROWS; r++) {
       tr.frame(this.s0 + this.len * r / (ROAD_ROWS - 1), F);
       for (const [i, u] of [[0, -W], [5, W]]) { const dy = tr.surfOffset(u) - tr.surfOffset(0); const v = r * 6 + i; P[v * 3] += F.U.x * dy; P[v * 3 + 1] += F.U.y * dy; P[v * 3 + 2] += F.U.z * dy; }
+    }
+    this.#done(g, 'position', 'normal', 'uv', 'color');
+  }
+  /** Build 1.42 (§13.2d): a stack ramp's deck: a trapezoidal box girder 2.4 m deep (vertical fascia, sloping webs, flat
+   *  soffit) with a 0.95 m concrete parapet on each edge; the parapets drop into the deck where the ramp lies on the
+   *  road it leaves or joins (the same rule that drops the W-beam there). */
+  #stackDeck() {
+    const tr = this.sys.track, g = this.deck.geometry, W = tr.roadOuter + .05, J = STACK_DECK.length;
+    const prof = STACK_DECK.map(([u, y]) => [u * W, y]), nrm = STACK_DECK.map(p => [p[2], p[3]]);
+    this.#profile(g, 0, prof, 0, () => tr.surfOffset(0), py => py > 0 ? .64 : py > -.5 ? .6 : .5 + .08 * sstep(-2.4, -.5, py), i => nrm[i]);
+    const P = g.attributes.position.array, F = this.F;
+    for (let r = 0; r < ROAD_ROWS; r++) {
+      const s = this.s0 + this.len * r / (ROAD_ROWS - 1); tr.frame(s, F);
+      for (let i = 0; i < J; i++) {
+        const [u, y] = prof[i], side = u < 0 ? -1 : 1;
+        let dy = tr.surfOffset(u) - tr.surfOffset(0);                   // the top follows the crossfall
+        if (y > 0 && tr.railGap && tr.railOpen(s, side)) dy -= y + .04; // parapet folded away on another road's paving
+        const v = r * J + i; P[v * 3] += F.U.x * dy; P[v * 3 + 1] += F.U.y * dy; P[v * 3 + 2] += F.U.z * dy;
+      }
     }
     this.#done(g, 'position', 'normal', 'uv', 'color');
   }
@@ -5718,21 +5868,33 @@ class NetStatics {
       grp.add(posts, face, bk); scene.add(grp); this.objs.push(grp);
     }
     // piers: one column and a crosshead every ~28 m along each bridge, off the paving of the road below
-    const cols = [], heads = [];
+    const cols = [], heads = [], pq = {}, G2 = newFrame();
+    // build 1.42: would a column at (x, z) from gy up to top pass through another road's deck? (a stack ramp over a flyover)
+    const throughDeck = (r, x, z, gy, top) => {
+      for (const o of net.roads) {
+        if (o === r || !o.K1) continue;
+        pq.over = 0; o.project(x, z, null, pq); if (!Number.isFinite(pq.u) || pq.over > 1 || Math.abs(pq.u) > o.roadOuter + 1.4 || o.bridgeK(pq.s) > .5) continue;
+        o.frame(pq.s, G2); const dy = G2.P.y; if (dy > gy + 1 && dy - (o.stack ? 2.4 : 1.1) < top) return true;
+      }
+      return false;
+    };
     for (const r of net.roads) for (const [a, b] of r.spans || []) {      // build 1.41: every road's spans (A's viaducts, side roads over A)
-      const k = Math.max(1, Math.round((b - a) / 28)), wide = !r.oneWay;   // a two-way deck stands on a pair of columns
+      const stk = !!r.stack, gap = stk ? 36 : 28;
+      const k = Math.max(1, Math.round((b - a) / gap)), wide = !r.oneWay;   // a two-way deck stands on a pair of columns
       for (let i = 1; i < k; i++) {
         const s = a + (b - a) * i / k; r.frame(s, F);
-        const yaw = Math.atan2(F.Rh.x, F.Rh.z), top = F.P.y - 1.1;
+        const yaw = Math.atan2(F.Rh.x, F.Rh.z), top = F.P.y - (stk ? 2.4 : 1.1);
         const c0 = cols.length;
         for (const cu of wide ? [-.42, .42] : [0]) {
           const u = cu * r.roadOuter, x = F.P.x + F.Rh.x * u, z = F.P.z + F.Rh.z * u;
           if (net.onOtherPaving(r, x, z, 2.2)) continue;
           const gy = net.ground(x, z) - .4, h = top - gy;
           if (h < 1.5) continue;
-          cols.push({ x, y: gy + h / 2, z, sx: wide ? 2.2 : 1.7, sy: h, sz: wide ? 1.6 : 1.3, yaw });
+          if (stk && throughDeck(r, x, z, gy, top)) continue;
+          const w = stk ? 2 + Math.min(1.6, h * .045) : 0;                  // build 1.42: a stack pier grows with its height
+          cols.push({ x, y: gy + h / 2, z, sx: stk ? w : wide ? 2.2 : 1.7, sy: h, sz: stk ? w * .8 : wide ? 1.6 : 1.3, yaw });
         }
-        if (cols.length > c0) heads.push({ x: F.P.x, y: top - .45, z: F.P.z, sx: 1.3, sy: .9, sz: 2 * r.roadOuter - 2, yaw });
+        if (cols.length > c0) heads.push(stk ? { x: F.P.x, y: top - .75, z: F.P.z, sx: 2.2, sy: 1.5, sz: 2 * r.roadOuter + .6, yaw } : { x: F.P.x, y: top - .45, z: F.P.z, sx: 1.3, sy: .9, sz: 2 * r.roadOuter - 2, yaw });
       }
     }
     const inst = (list) => {
