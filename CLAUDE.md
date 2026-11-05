@@ -1319,3 +1319,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: auto quality no longer causes repeated stalls
 - Every auto-quality level change resizes the renderer and the whole post chain (a stall on a Mac). One stall made the 1 s sample read as a low frame rate, it dropped two levels (resize), climbed back later (resize) and repeated. perfTick now skips a computer sample with any frame over 0.2 s; a level that failed once is never retried, and raises are at least 25 s apart. Syntax parse only.
+
+## CQC: PC support hand on the handguard (AK take guns)
+- vmSupportFix (vmGunFit, ak rig): the fits were solved for the firing hand only, so the take's support hand could hang beside a gun (M4A1-S: left of the handguard). The gun is turned about the firing wrist (B.sides.R.W) until its front-part line (mean x / y of the drawn points ahead of 45 % of its length, bore -z) passes 4 cm from the support palm (wrist 0.4, knuckles 0.6), at most 20 deg; no change when it is already within 5 cm. Syntax parse only, not seen.

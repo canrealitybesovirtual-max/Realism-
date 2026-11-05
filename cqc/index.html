@@ -21892,6 +21892,28 @@ function vmWait(g) {
   VM.vis = false;
 }
 // Where gun g sits in rig key: { L (gun root in the gun node's frame), Li, s, magRest, boltRest }; false = solving, null = failed.
+// A fit solved for the firing hand alone can leave the take's support hand beside the gun (M4: the hand hung left of a
+// shorter, higher handguard). Turn the gun about the firing wrist until its fore-end line passes 4 cm from the support
+// palm (at most 20 deg). M maps rig metres -> gun root; the gun's bore is -z in its root frame.
+function vmSupportFix(B, g, M) {
+  try {
+    const L = B.sides.L, R = B.sides.R; if (!L || !R) return;
+    const S = vmhGunSurface(g), P = S && S.pts; if (!P || P.length < 30) return;
+    let zmin = Infinity, zmax = -Infinity; for (let i = 2; i < P.length; i += 3) { zmin = Math.min(zmin, P[i]); zmax = Math.max(zmax, P[i]); }
+    let mx = 0, my = 0, n = 0; const zc = zmin + (zmax - zmin) * 0.45;   // the front part (handguard, barrel): its mean line
+    for (let i = 0; i < P.length; i += 3) if (P[i + 2] < zc) { mx += P[i]; my += P[i + 1]; n++; }
+    if (!n) return;
+    const Mi = M.clone().invert(), A = new THREE.Vector3(mx / n, my / n, 0).applyMatrix4(Mi), D = new THREE.Vector3(0, 0, -1).transformDirection(Mi);
+    const Lp = new THREE.Vector3().addVectors(L.I, L.K).multiplyScalar(0.3).addScaledVector(L.W, 0.4);
+    const q = A.clone().addScaledVector(D, Lp.clone().sub(A).dot(D)), o = Lp.clone().sub(q), d = o.length();
+    if (d < 0.05) return;
+    const T = q.clone().addScaledVector(o, (d - 0.04) / d), Pv = R.W, a = q.clone().sub(Pv).normalize(), b = T.clone().sub(Pv).normalize();
+    let ang = Math.acos(Math.min(1, Math.max(-1, a.dot(b)))); if (ang < 1e-3) return;
+    const ax = new THREE.Vector3().crossVectors(a, b).normalize(); ang = Math.min(ang, 0.35);
+    const Rp = new THREE.Matrix4().makeTranslation(Pv.x, Pv.y, Pv.z).multiply(new THREE.Matrix4().makeRotationAxis(ax, ang)).multiply(new THREE.Matrix4().makeTranslation(-Pv.x, -Pv.y, -Pv.z));
+    M.multiply(Rp.invert());
+  } catch (e) { /* keep the solved fit */ }
+}
 function vmGunFit(g, key) {
   const t = g.type, F = VM.fit[t];
   if (F !== undefined) return F;
@@ -21901,6 +21923,7 @@ function vmGunFit(g, key) {
     if (!N0 || !B.sides.R) { VM.fit[t] = null; return; }
     const S = VMH_FIT[t], X = key === 'sniper' ? VM_FIT[t] : null;   // VM_FIT was solved on the sniper take only
     const M = X ? new THREE.Matrix4().fromArray(X.M) : S && S.R && VMH.byType[t] === key ? new THREE.Matrix4().fromArray(S.R) : vmhSolve(B, 'R', g, vmhRegister(B, g).m).m;
+    if (key === 'ak') vmSupportFix(B, g, M);                       // the AK take's support hand onto this gun's handguard
     const s = (X && X.s) || 1, Ni = N0.matrixWorld.clone().invert();
     // the idle frame: gun root in rig units = U^-1 x M^-1 (x your gun's scale, about its grip); then into the node's frame
     const L = Ni.clone().multiply(B.U.clone().invert()).multiply(M.clone().invert()).multiply(new THREE.Matrix4().makeScale(s, s, s));
