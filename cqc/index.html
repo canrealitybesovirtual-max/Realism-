@@ -2078,7 +2078,30 @@ const RAPIER = RAPIER_MODULE.World ? RAPIER_MODULE : RAPIER_MODULE.default;
 // in the address (an address flag still wins: it is in location.search too). QS replaces location.search everywhere below.
 const OPT_KEY = 'cqc.opts.v1';
 const OPT = (() => { try { const o = JSON.parse(localStorage.getItem(OPT_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } })();
-const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('');
+// PERF (weak laptop GPUs): the LITE graphics profile, fixed at load because it picks cheaper shader programs (each
+// feature below is a load-time ?flag=off, so lite programs simply lack the code; nothing is a zeroed uniform).
+// ?lite=on|off, OPTIONS "Lite graphics" (OPT.lite on / off), else auto: a computer with an integrated or low-end GPU
+// (Intel, Apple M1-M4 without Pro / Max / Ultra, Safari's "Apple GPU", software renderers). Lite also caps the render
+// scale at 1x, starts auto quality low, picks Sharp (post chain bypassed) once, uses the headset's outdoor counts,
+// 3 diffuse fill lights (not 8 full BRDF ones) and nearer enemy LODs. An OPTIONS switch set ON beats a lite flag.
+const LITE = (() => {
+  const m = /[?&]lite=(on|off)\b/.exec(location.search), o = OPT.lite, ua = navigator.userAgent;
+  const headset = /OculusBrowser|Quest|Pico|Wolvic/i.test(ua);
+  let gpu = '';
+  if (!headset) try {
+    const c = document.createElement('canvas'), gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (gl) {
+      const x = gl.getExtension('WEBGL_debug_renderer_info');
+      gpu = String(x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+      const lc = gl.getExtension('WEBGL_lose_context'); if (lc) lc.loseContext();
+    }
+  } catch (e) { /* unknown GPU: not lite by itself */ }
+  const weak = /Intel|Apple M[1-4](?!\s*(Pro|Max|Ultra))|Apple GPU|SwiftShader|llvmpipe|Mali|Adreno|PowerVR|AMD Radeon(\(TM\))? Graphics|Radeon Vega/i.test(gpu);
+  const on = headset ? false : m ? m[1] === 'on' : o === 'on' ? true : o === 'off' ? false : weak;
+  return { on, auto: !m && o !== 'on' && o !== 'off', weak, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
+})();
+const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('')
+  + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '');   // PERF: lite = the cheap programs
 
 /* ============================================================================
  *  CONFIG — every tunable number for step 1 lives here.
@@ -2995,6 +3018,14 @@ if (IS_HEADSET) {
   CONFIG.perf.desktop.msaa = 0;
   CONFIG.post.gtaoSamples = 8;
 }
+if (LITE.on && !IS_HEADSET) {                                    // PERF: lite (weak laptop GPU), see LITE
+  CONFIG.perf.desktop.maxPixelRatio = 1;                         // Retina 2x = 4x the pixels: never on an integrated GPU
+  CONFIG.post.smaa = false; CONFIG.post.gtaoSamples = 8;         // Cinematic, if picked anyway: lighter chain
+  CONFIG.shadow.desktop = Math.min(CONFIG.shadow.desktop, 1024); // Real lighting, if on: smaller maps
+  CONFIG.boost.levels = [0.6, 0.7, 0.8, 0.9, 1.0];               // finer steps for the dynamic resolution
+  CONFIG.detail.minPx = 2; CONFIG.detail.shadowPx = 10;        // small parts stop drawing sooner (fewer draw calls)
+  CONFIG.enemy.offscreenPoseHz = 10;                            // men you cannot see: posed 10x a second (20)
+}
 
 // Saved between visits: the quality you pinned with Q, and the VR framebuffer
 // scale this headset earned in its last session.
@@ -3050,7 +3081,7 @@ function savePerf() {
  * ========================================================================== */
 const GFX_KEY = 'cqcvr.gfx.v1';
 const GFX_MODES = ['standard', 'soft'];   // step 25.1: a saved 'cinematic' is not in the list, so it loads soft
-const GFX = { shadows: IS_HEADSET ? 'standard' : 'soft',   /* step 47: mobile too */ active: 'standard', pcss: false, horizon: false, safe: false, notes: [] };
+const GFX = { shadows: IS_HEADSET || LITE.on ? 'standard' : 'soft',   /* PERF: lite = standard */   /* step 47: mobile too */ active: 'standard', pcss: false, horizon: false, safe: false, notes: [] };
 try {
   const saved = JSON.parse(localStorage.getItem(GFX_KEY) || '{}');
   if (GFX_MODES.includes(saved.shadows)) GFX.shadows = saved.shadows;
@@ -3312,6 +3343,16 @@ const MENU = (() => {
   out.startLevel = Math.max(1, Math.min(10, Math.round(out.startLevel)));
   out.maxMen = Math.max(1, Math.min(3, Math.round(out.maxMen)));
   out.modeNext = out.mode;   // a mode picked on the terminal waits for DEPLOY NEW RUN
+  // PERF: the first load that finds a weak GPU starts in Sharp (post chain bypassed) once; your later choice stays.
+  if (LITE.on && LITE.auto && !/OculusBrowser|Quest|Pico|Wolvic/i.test(navigator.userAgent)) {
+    try {
+      if (!localStorage.getItem('cqc.lite.seen.v1')) {
+        localStorage.setItem('cqc.lite.seen.v1', '1');
+        if (!out.boost && !out.extreme) { out.boost = true; LITE.switched = true; }
+        const o = { ...out }; delete o.modeNext; localStorage.setItem(MENU_KEY, JSON.stringify(o));
+      }
+    } catch (e) { /* storage blocked: this visit only */ if (!out.extreme) out.boost = true; }
+  }
   return out;
 })();
 const MENU_FX = { dmgK: 1, scoreK: 1 };
@@ -4609,7 +4650,8 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = CONFIG.exposure;
 nvgToneChunk();                                   // step 118: the night vision tone map, before anything compiles
-const TFILL = { on: !/[?&]tfill=off\b/.test(QS), max: 8, maxXR: 3, I: 14, P: Array.from({ length: 11 }, () => new THREE.Vector4()), idx: [], dist: new Float32Array(96), head: new THREE.Vector3(), col: new THREE.Color(), was: 0 };
+const TFILL = { on: !/[?&]tfill=off\b/.test(QS), max: LITE.on ? 3 : 8, maxXR: 3,   // PERF: lite = 3 diffuse-only fill lights (compiled that way)
+  I: 14, P: Array.from({ length: 11 }, () => new THREE.Vector4()), idx: [], dist: new Float32Array(96), head: new THREE.Vector3(), col: new THREE.Color(), was: 0 };
 tfillChunk();                                     // room fill: every ceiling fitting lights the room (before anything compiles)
 renderer.shadowMap.enabled = REAL_LIGHT;         // step 58: Real lighting off = no shadow maps
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -4623,7 +4665,7 @@ renderer.xr.setFramebufferScaleFactor(perf.xr.scale);       // learned per heads
 renderer.xr.setFoveation(CONFIG.xr.foveation);
 document.body.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', () => { BOOT.lost++; bootSave(BOOT.stage, BOOT.pct); console.warn('[start] the graphics context was lost during: ' + BOOT.stage); });   // step 40
-maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET ? 4 : 8);   // higher costs Quest bandwidth for no visible gain
+maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET || LITE.on ? 4 : 8);   // PERF: lite = 4   // higher costs Quest bandwidth for no visible gain
 /* ---------------------------------------------------------------------------
  *  SURFACES (?surf=off). The room shells (every wing's floor, wall paint and ceiling: applyMacro's three programs)
  *  were procedural maps repeating every 1.2-2 m, flat up close. Three layers on top, in the same programs:
@@ -9792,10 +9834,17 @@ function initPerf() {
   const top = Math.max(1, Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));
   perf.levels = LEVELS.filter((L) => L.pr <= top + 0.01);
   if (Number.isInteger(perf.mode) && perf.mode >= perf.levels.length) perf.mode = 'auto';
-  // Auto starts at the top on a Mac and on mobile (step 47), in the middle in the headset's 2D view.
-  const start = perf.mode !== 'auto' ? perf.mode : (IS_HEADSET ? Math.floor((perf.levels.length - 1) / 2) : perf.levels.length - 1);   // step 47: mobile starts at the top
-  applyLevel(start);
+  applyLevel(perf.mode !== 'auto' ? perf.mode : perfStart(perf.levels.length));   // PERF: auto starts low and climbs
   perf.holdUntil = performance.now() / 1000 + 2.5;   // let the first frames settle
+}
+// PERF: where Auto starts. It used to start at the top (Ultra 2x with Sharpness on a Retina Mac: 4x the pixels and
+// the whole post chain) and stepped down one level every ~4 s. Now: lite one below its top (<= 1x), any other
+// computer at the highest level of at most 1.25x; strong GPUs climb from there in a few seconds.
+function perfStart(n) {
+  if (IS_HEADSET) return Math.floor((n - 1) / 2);
+  if (LITE.on) return Math.max(0, n - 2);
+  let i = 0; perf.levels.forEach((L, k) => { if (L.pr <= 1.25 + 1e-3) i = k; });
+  return Math.min(i, n - 1);
 }
 function applyLevel(i) {
   perf.level = Math.max(0, Math.min(perf.levels.length - 1, i));
@@ -9839,10 +9888,17 @@ function deskPerf(fps, now) {
   const D = CONFIG.perf.desktop;
   if (fps < D.targetFps - D.dropBelow) {
     perf.good = 0;
-    if (++perf.bad >= D.dropAfter && perf.level > 0) {
+    // PERF: a far-off frame rate (under 70 % of the target) drops two levels after one sample, a short hold after;
+    // still far off at the lowest level for 3 samples = one graphics mode lighter (Cinematic -> Sharp -> Max FPS), once each.
+    const severe = fps < D.targetFps * 0.7;
+    if ((++perf.bad >= D.dropAfter || severe) && perf.level > 0) {
       perf.failed[perf.level] = (perf.failed[perf.level] || 0) + 1;
-      applyLevel(perf.level - 1);
-      perf.bad = 0; perf.holdUntil = now + 2;
+      applyLevel(perf.level - (severe ? 2 : 1));
+      perf.bad = 0; perf.holdUntil = now + (severe ? 1.2 : 2);
+    } else if (severe && perf.level === 0 && perf.bad >= 3 && perfModeNow() < 2 && (perf.escalated || 0) < 2) {
+      perf.escalated = (perf.escalated || 0) + 1; perf.bad = 0;
+      setPerfMode(perfModeNow() + 1);
+      toast(`Frame rate too low: switched to ${perfModeNow() === 2 ? 'Max FPS' : 'Sharp'} (B or the terminal GRAPHICS page changes it)`, 4500);
     }
   } else if (fps >= D.targetFps - D.raiseAbove) {
     perf.bad = 0;
@@ -10012,7 +10068,7 @@ function applyBoost() {
   perf.levels = perfLevels(); perf.failed = []; perf.good = perf.bad = 0;
   if (Number.isInteger(perf.mode) && perf.mode >= perf.levels.length) perf.mode = 'auto';
   const n = perf.levels.length;
-  applyLevel(perf.mode !== 'auto' ? perf.mode : (on || !IS_HEADSET ? n - 1 : Math.floor((n - 1) / 2)));
+  applyLevel(perf.mode !== 'auto' ? perf.mode : perfStart(n));   // PERF: auto starts low (was the top level)
   perf.holdUntil = performance.now() / 1000 + 2;
   if (xr) { perf.xr.fov = CONFIG.xr.foveation; renderer.xr.setFoveation(perf.xr.fov); shadowSched.every = CONFIG.perf.xr.shadowEvery; }
   else renderer.xr.setFramebufferScaleFactor(xrScaleNow());
@@ -10322,7 +10378,7 @@ function mobApplyGfx(announce) {
   if (S.quality === 'auto' || BOOST.on) perf.mode = 'auto';
   else { let i = -1; perf.levels.forEach((L, k) => { if (L.name === names[S.quality]) i = k; });
     if (i < 0) i = perf.levels.length - 1; perf.mode = i; }
-  applyLevel(perf.mode === 'auto' ? perf.levels.length - 1 : perf.mode);
+  applyLevel(perf.mode === 'auto' ? perfStart(perf.levels.length) : perf.mode);
   perf.good = perf.bad = 0; perf.failed = []; perf.holdUntil = performance.now() / 1000 + 2; savePerf();
   postEnabled = !!S.effects; if (ui.post) ui.post.textContent = BOOST.on ? `off (${EXTREME.on ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off';
   if (GFX.shadows !== S.shadows) gfxSet(S.shadows, false);
@@ -10800,7 +10856,7 @@ try {
  * target), chroma fringes x0.4, bloom radius 0.55 -> 0.4, render scale allowed up to the screen (max 2x;
  * auto quality still drops it to hold the frame rate). Headset: fixed foveation 0.5 -> 0.35 at session start
  * (the existing adaptive foveation still raises it while frames drop). Textures already use anisotropy 8 / 4. */
-const SHARP = { on: !/[?&]sharp=off/.test(QS), cas: 0.6, chromaK: 0.4, bloomR: 0.4, maxPr: 2, fov: 0.35, base: null };
+const SHARP = { on: !/[?&]sharp=off/.test(QS), cas: 0.6, chromaK: 0.4, bloomR: 0.4, maxPr: LITE.on ? 1 : 2, fov: 0.35, base: null };   // PERF: lite never raises the render scale past 1x
 if (SHARP.on && typeof comfort.sharp !== 'boolean') comfort.sharp = true;
 function sharpApply() {
   if (!SHARP.on) return;
@@ -24733,7 +24789,7 @@ function enemyLodTick(e) {
     S.lodSet = false;
   }
   if (!S.lodList && !(S.gunList && S.gunList.length)) return;
-  const L = ENEMY_LOD, D = renderer.xr.isPresenting ? L.dXR : L.d;
+  const L = ENEMY_LOD, D = renderer.xr.isPresenting || LITE.on ? L.dXR : L.d;   // PERF: lite = the headset's nearer LOD steps
   e.root.getWorldPosition(L.p); camera.getWorldPosition(L.c);
   const d = L.p.distanceTo(L.c), cur = S.lod | 0;
   let lv = d < D[0] ? 0 : d < D[1] ? 1 : 2;
@@ -25063,6 +25119,7 @@ function enemyCurl(e, k) {
   for (const f of S.fingers) if (f.b) f.b.quaternion.copy(f.base).multiply(_sk.q.setFromAxisAngle(f.axis, f.ang * k));
 }
 // Driver -> skin. Arms take their twist from the driver's real elbow bend.
+const _skW = { d1: new THREE.Vector3(), d2: new THREE.Vector3(), n1: new THREE.Vector3(), n2: new THREE.Vector3(), h: new THREE.Vector3(), F: new THREE.Quaternion() };
 function enemySkinSync(e) {
   const S = e.skin;
   if (!S) return;
@@ -25076,17 +25133,19 @@ function enemySkinSync(e) {
     if (k.startsWith('upperArm') || k.startsWith('foreArm')) {
       const s = k.slice(-1);
       const a = wpos(B['upperArm' + s], _sk.a), b = wpos(B['foreArm' + s], _sk.b), c = wpos(B['hand' + s], _sk.c);
-      const d1 = b.clone().sub(a), d2 = c.clone().sub(b);
-      const h = new THREE.Vector3().crossVectors(d1.clone().normalize(), d2.clone().normalize());
+      // PERF: scratch vectors (this ran per arm bone per man per frame with 6 allocations each)
+      const W = _skW, d1 = W.d1.subVectors(b, a), d2 = W.d2.subVectors(c, b);
+      const h = W.h.crossVectors(W.n1.copy(d1).normalize(), W.n2.copy(d2).normalize());
       if (h.length() < 0.15) h.set(1, 0, 0).applyQuaternion(wquat(B['upperArm' + s], _sk.q));
-      F = frameQ(h, (k.startsWith('upperArm') ? d1 : d2).negate(), new THREE.Quaternion());
-    } else F = wquat(B[k], new THREE.Quaternion());
+      F = frameQ(h, (k.startsWith('upperArm') ? d1 : d2).negate(), W.F);
+    } else F = wquat(B[k], _skW.F);
     const tw = F.multiply(S.O[k]);                                // world frame x the offset measured on the model
     t.parent.updateWorldMatrix(true, false);
     t.quaternion.copy(wquat(t.parent, _sk.q).invert().multiply(tw));
     if (k === 'pelvis') { wpos(B.pelvis, _sk.s); t.position.copy(t.parent.worldToLocal(_sk.s)); }
-    t.updateWorldMatrix(false, true);
+    t.updateWorldMatrix(false, false);   // PERF: own matrix only (was its whole subtree per driven bone: O(n^2)); every later bone refreshes its parents above, one subtree pass after the loop
   }
+  S.holder.updateWorldMatrix(false, true);                        // PERF: the whole skin once, as the per-bone subtree updates left it
   const m0 = S.meshes[0];
   if (m0) {                                                       // the culling sphere follows him (mesh space)
     m0.updateWorldMatrix(true, false);
@@ -29366,7 +29425,7 @@ const OPT_GROUPS = [
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
     ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
-  ['look', 'GRAPHICS', [['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
+  ['look', 'GRAPHICS', [['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
     ['beam', 'Flashlight beam pattern'], ['shelflight', 'Locker shelf light'], ['paint', 'Gun finishes'], ['elod', 'Enemy detail LODs'], ['wetx', 'Outdoor rain runs, drips'], ['lightning', 'Lightning']]],
   ['fx', 'EFFECTS', [['trickle', 'Dust from bullet holes'], ['mblast', 'Muzzle blast dust'], ['wisp', 'Barrel smoke'], ['torchhaze', 'Torch beams in haze'], ['laserbeam', 'Laser beam in smoke'], ['tracer', 'Tracer rounds']]],
@@ -29376,9 +29435,18 @@ const OPT_GROUPS = [
     ['vmsleeves', 'Tactical sleeves (VR)'], ['glove104', 'Gloved hands'], ['vm', 'Viewmodel arms (PC)'], ['benchzoom', 'Bench zoom (PC)'], ['wszoom', 'Workshop zoom (PC)'],
     ['buildview', 'Workshop 3D build view'], ['workshop', 'Gunsmith computer'], ['nvg', 'Night vision'], ['kitcards', 'Kit cards on the bench', 'on']]]];
 const OPTS_UI = { g: 'physics', boot: null };
-function optNow(k, onVal) { const v = OPT[k]; return onVal ? v === onVal : v !== 'off'; }
+// PERF: 'lite' is on / off / auto (weak GPU); a switch lite turns off reads OFF in lite and is stored ON when you turn it back on.
+const liteForced = (k) => LITE.flags.includes(k) && (OPT.lite === 'on' || (OPT.lite !== 'off' && LITE.weak));
+function optNow(k, onVal) {
+  const v = OPT[k];
+  if (k === 'lite') return v === 'on' || (v !== 'off' && LITE.weak);
+  if (!onVal && liteForced(k)) return v === 'on';
+  return onVal ? v === onVal : v !== 'off';
+}
 function optSet(k, on, onVal) {
-  if (onVal) { if (on) OPT[k] = onVal; else delete OPT[k]; } else if (on) delete OPT[k]; else OPT[k] = 'off';
+  if (k === 'lite') OPT.lite = on ? 'on' : 'off';
+  else if (!onVal && liteForced(k)) { if (on) OPT[k] = 'on'; else delete OPT[k]; }
+  else if (onVal) { if (on) OPT[k] = onVal; else delete OPT[k]; } else if (on) delete OPT[k]; else OPT[k] = 'off';
   try { localStorage.setItem(OPT_KEY, JSON.stringify(OPT)); } catch (e) { /* this visit only */ }
 }
 function termOptions(W, H, now) {
@@ -31003,7 +31071,7 @@ const PAINT = {
   on: !/[?&]paint=off\b/.test(QS),
   key: 'cqc.paint.v1',
   drops: false,                                   // his drops keep the factory finish (true: they wear yours)
-  mapPx: IS_HEADSET ? 512 : 1024,                 // the copies of a drawn map, longest side
+  mapPx: IS_HEADSET || LITE.on ? 512 : 1024,   // PERF: lite = 512                 // the copies of a drawn map, longest side
   grey: 0.75, detail: 0.75,                       // its mean (sRGB) and contrast (exponent on luminance / mean)
   attRough: [0.2, 0.82],                          // attachment materials painted: no glass, chrome or rubber
   fin: {}, grp: {}, page: false, sect: 'solid', pick: null,   // saved finishes / camos { type: { group: id } }, group shown per gun, the page, SOLID / CAMO, { t, gid, fid } touched
@@ -32549,13 +32617,13 @@ function tfillChunk() {
     vec3 tfLo = uTfP[ 9 ].xyz, tfHi = uTfP[ 10 ].xyz;
     if ( all( greaterThan( tfW, tfLo ) ) && all( lessThan( tfW, tfHi ) ) ) {
       vec3 tfDn = ( viewMatrix * vec4( 0.0, -1.0, 0.0, 0.0 ) ).xyz;
-      for ( int i = 0; i < 8; i ++ ) {
+      for ( int i = 0; i < ${Math.max(TFILL.max, TFILL.maxXR)}; i ++ ) {
         vec4 tP = uTfP[ i ]; if ( tP.w <= 0.0 ) break;
         vec3 tLv = ( viewMatrix * vec4( tP.xyz, 1.0 ) ).xyz - geometryPosition; float tD2 = dot( tLv, tLv );
         vec3 tLn = tLv * inversesqrt( tD2 ); float tCe = dot( -tLn, tfDn ); if ( tCe <= 0.0 ) continue;
         IncidentLight tfL; tfL.direction = tLn; tfL.color = tfK.xyz * ( tP.w * tCe / ( tD2 + 0.35 ) ); tfL.visible = true;
-        if ( tfK.w > 0.5 ) { RE_Direct( tfL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight ); }
-        else reflectedLight.directDiffuse += saturate( dot( geometryNormal, tLn ) ) * tfL.color * BRDF_Lambert( material.diffuseColor );
+        ${LITE.on ? '' : 'if ( tfK.w > 0.5 ) { RE_Direct( tfL, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight ); } else'}
+        reflectedLight.directDiffuse += saturate( dot( geometryNormal, tLn ) ) * tfL.color * BRDF_Lambert( material.diffuseColor );
       }
     }
   }
@@ -32579,7 +32647,8 @@ function tfillTick() {
       const dx = rWX(cur, tr.x) - TFILL.head.x, dy = y - TFILL.head.y, dz = rWZ(cur, tr.z) - TFILL.head.z;
       dist[idx.length] = dx * dx + dy * dy + dz * dz; idx.push(i);
     }
-    const ord = idx.map((_, j) => j).sort((a, b) => dist[a] - dist[b]);
+    const ord = TFILL.ord || (TFILL.ord = []); ord.length = idx.length; for (let j = 0; j < idx.length; j++) ord[j] = j;   // PERF: reused, no array a frame
+    ord.sort(TFILL.cmp || (TFILL.cmp = (a, b) => dist[a] - dist[b]));
     const cut = ord.length > K ? Math.sqrt(dist[ord[K]]) : Infinity;
     for (let j = 0; j < Math.min(K, ord.length); j++) {
       const tr = T[idx[ord[j]]], d = Math.sqrt(dist[ord[j]]);
@@ -34238,7 +34307,7 @@ function bloodCanvas(kind, seed) {
   }
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = IS_HEADSET ? 4 : 8;
+  t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
   t.userData.canvas = cv;
   return t;
 }
@@ -34256,7 +34325,7 @@ function bloodNormalTex(src, strength) {
   }
   g.putImageData(out, 0, 0);
   const t = new THREE.CanvasTexture(cv);
-  t.anisotropy = IS_HEADSET ? 4 : 8;
+  t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
   return t;
 }
 
@@ -34403,7 +34472,7 @@ function printCanvas(alpha, seed, wet = false) {   // step 94: wet = a water pri
   lugs(S * 0.66, S * 0.5, S * 0.21, S * 0.13, 7, 5);          // forefoot
   lugs(S * 0.25, S * 0.5, S * 0.12, S * 0.105, 4, 4);         // heel
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
   return t;
 }
 // Step 111: a bloody palm, fingers toward +x, dragged back a little as the body was pulled past it
@@ -34421,7 +34490,7 @@ function handPrintCanvas(alpha, seed, left) {
   });
   for (let k = 0; k < 2; k++) if (R() > 0.15) blob(0.5 + k * 0.07, 0.5 + (0.17 + k * 0.05) * ty, 0.04, 0.026, 0.8, 0.6 * ty);   // thumb
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
   return t;
 }
 function goreInitPool(im) {                                     // every pool in a layer starts dry; a new one is set fresh
@@ -34875,7 +34944,7 @@ const G90_DROP = { c: [0.17, 0.008, 0.006], a: 0.95, sp: [2.2, 6.5], life: [0.6,
 const g90K = () => (GORE_X && CONFIG.polish.blood.on ? (MENU.bodyCamRealism ? CONFIG.gore.x.bodyCam : 1) : 0);
 function g90Tex(cv) {
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
   return t;
 }
 // What the exit side leaves on a wall: a dense wet core, high-velocity streaks flung outward (longer and
@@ -34933,7 +35002,7 @@ function g90GibCanvas(seed) {
 function g90Kit() {
   if (!GORE_X) return;
   G90U.uGoreX.value = 1;
-  const X = CONFIG.gore.x, n = G90.n = IS_HEADSET ? X.dropsHeadset : X.drops, nc = G90.nc = Math.min(X.chunks, n >> 2);
+  const X = CONFIG.gore.x, n = G90.n = IS_HEADSET || LITE.on ? X.dropsHeadset : X.drops, nc = G90.nc = Math.min(X.chunks, n >> 2);
   Object.assign(G90, { p: new Float32Array(n * 3), v: new Float32Array(n * 3), life: new Float32Array(n), max: new Float32Array(n), w: new Float32Array(n), len: new Float32Array(n),
     fy: new Float32Array(n), kind: new Uint8Array(n), sid: new Int8Array(n), room: new Array(n).fill(null), wall: new Float32Array(nc * 6), hasWall: new Uint8Array(nc), next: nc });
   const geo = new THREE.InstancedBufferGeometry();
@@ -35800,7 +35869,7 @@ function glassCanvas(seed) {
     g.fillRect(S / 2 + Math.cos(a) * r, S / 2 + Math.sin(a) * r, 1 + R() * 1.5, 1 + R() * 1.5);
   }
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET ? 4 : 8; t.userData.canvas = cv;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8; t.userData.canvas = cv;
   return t;
 }
 // Fresh blood under the boot: 1 in a pool still spreading, 1 -> 0 while it dries (GORE.dry), 0 for a pool from room memory.
@@ -43599,6 +43668,7 @@ function freeItemHand(h, it, p, P, Q) {
     dirtyShadows();                              // the warm-up man must not stay in the shadow maps
     initPerf();
     applyBoost();                                // step 12: performance boost (saved with the settings)
+    if (LITE.on) console.info(`[perf] lite graphics (${LITE.auto ? 'auto: ' : ''}${LITE.gpu || 'set by you'})${LITE.switched ? ', Sharp mode picked once' : ''}`);   // PERF
     applyLook();
     // iOS Safari has no WebXR, so the VR button only appears where it can work.
     setupVRStart();   // start menu: play space + Enter VR (never asks for bounded-floor)
@@ -48336,7 +48406,7 @@ function yardQuadsGeo(n, seedFn, rain) {
 function yardSkyLoad() {
   const Y = yardState();
   if (Y.skyLoading) return; Y.skyLoading = true;
-  const xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || !!renderer.xr.isPresenting;
+  const xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || !!renderer.xr.isPresenting || LITE.on;   // PERF: lite = the 2k sky
   fetch('sky/sky.json').then((r) => (r.ok ? r.json() : null)).then((m) => {
     if (!m) return;
     YSKY.meta = m;
@@ -48419,7 +48489,7 @@ function yardLitMesh(o) {
   o.material = Array.isArray(o.material) ? o.material.map(yardLitMat) : yardLitMat(o.material);
 }
 function* yardBuilder(room) {
-  const Y = yardState(), xr = /OculusBrowser|Quest/i.test(navigator.userAgent);
+  const Y = yardState(), xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on;   // PERF: lite = the headset's rain / texture / drip counts
   room.yard = yardLayout();
   const L = room.yard, { hw, hd } = L, D = CONFIG.door, T = CONFIG.stream.wallT, KG = KIT.geo, KM = KIT.mat;
   room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
@@ -49202,7 +49272,7 @@ function yardTick(dt, t) {
   let yard = null;
   for (const r of stream.rooms.values()) if (r.yard && r.active) yard = r;
   const cur = stream.current, inY = !!(cur && cur.yard), vis = !!(yard && yard.visible);
-  const far = inY ? (renderer.xr.isPresenting ? YC.farXR : YC.far) : 60;
+  const far = inY ? (renderer.xr.isPresenting || LITE.on ? YC.farXR : YC.far) : 60;   // PERF: lite = the headset's draw distance
   if (camera.far !== far) { camera.far = far; camera.updateProjectionMatrix(); }
   if (inY && Y.env && !Y.envOld) { Y.envOld = scene.environment; scene.environment = Y.env.texture; }   // the night sky's light on everything (same 256 px PMREM size: no recompile)
   else if (!inY && Y.envOld) { scene.environment = Y.envOld; Y.envOld = null; }
@@ -49221,7 +49291,7 @@ function yardTick(dt, t) {
     YU.uYTime.value = t;
     yard.group.updateMatrixWorld();
     YU.uYInv.value.copy(yard.group.matrixWorld).invert();
-    YU.uYFog.value.set(renderer.xr.isPresenting ? YC.fog.densXR : YC.fog.dens, YC.fog.fall, yard.origin.y, YC.fog.max);
+    YU.uYFog.value.set(renderer.xr.isPresenting || LITE.on ? YC.fog.densXR : YC.fog.dens, YC.fog.fall, yard.origin.y, YC.fog.max);
     const dark = nightDark(yard);
     // Lamps nearest you first, so the shaders only loop over the ones that matter (uYLampN: 10 computer, 5 headset).
     const ord = Y.lampOrd || (Y.lampOrd = Array.from({ length: YARD_NL }, (_, i) => i)), dist = Y.lampDist || (Y.lampDist = new Float32Array(YARD_NL));
@@ -49239,7 +49309,7 @@ function yardTick(dt, t) {
       YU.uYLampZ.value[j] = l.zone === undefined ? -1 : l.zone;
       Dv.set(rF(yard) * l.d[0], l.d[1], rF(yard) * l.d[2], l.cos);
     }
-    YU.uYLampN.value = renderer.xr.isPresenting ? 5 : 10;
+    YU.uYLampN.value = renderer.xr.isPresenting || LITE.on ? 5 : 10;   // PERF: lite = 5 lamps per pixel
     // Steam from the lane's drain grates (warm drain air in the cold rain): haze puffs within 25 m, 1.5/s each (headset 0.5/s, forced past its haze-off).
     if (inY && !dark) {
       const xr = renderer.xr.isPresenting, rate = xr ? 0.5 : 1.5, ST = Y.steam || (Y.steam = { acc: [0, 0, 0], v: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), o: { n: 1, c: [0.6, 0.62, 0.65], a: 0.06, sp: [0.12, 0.35], life: [3.5, 6], size: [0.09, 0.16], grow: 0.3, drag: 1.3, buoy: 0.22, force: true } });
@@ -49260,7 +49330,7 @@ function yardTick(dt, t) {
       if (Y.outerMat) Y.outerMat.uniforms.uC.value.set(rWX(yard, 0), yard.origin.y + 1.7, rWZ(yard, 0));
       const k = renderer.xr.isPresenting ? 0.55 : 1;
       for (const m of [Y.rainMat, Y.splashMat]) { m.uniforms.uFloorY.value = yard.origin.y + 0.012; m.uniforms.uCam.value.copy(_yt.v); m.uniforms.uRainK.value = k; m.uniforms.uPx.value = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / Math.max(400, renderer.domElement.height); }
-      YU.uYQ.value = renderer.xr.isPresenting || (NAT && NAT.xr) ? 0 : 1;   // nature: one triplanar plane in the headset
+      YU.uYQ.value = renderer.xr.isPresenting || LITE.on || (NAT && NAT.xr) ? 0 : 1;   // PERF: lite = one triplanar plane   // nature: one triplanar plane in the headset
       if (NAT && NAT.drip && NAT.drip.material.uniforms) { NAT.drip.material.uniforms.uPx.value = Y.rainMat.uniforms.uPx.value; NAT.drip.material.uniforms.uK.value = k; }
       natTick(yard);                                                  // nature: forest LOD buckets (at most 4 Hz, when you moved)
     }
@@ -49379,7 +49449,7 @@ function natState() {
   if (!NAT) NAT = { on: NAT_ON, loading: null, ready: false, failed: false, A: {}, T: {}, M: null, F: null, I: null, terrain: null, drip: null, xr: false, lastX: 1e9, lastZ: 1e9, lastT: -1e9 };
   return NAT;
 }
-const natXR = () => /OculusBrowser|Quest/i.test(navigator.userAgent) || !!(renderer && renderer.xr && renderer.xr.isPresenting);
+const natXR = () => LITE.on || /OculusBrowser|Quest/i.test(navigator.userAgent) || !!(renderer && renderer.xr && renderer.xr.isPresenting);   // PERF: lite = the headset's forest
 // Fetched at boot when the start mode has a yard (the first rooms are built without returning to the event loop), else
 // when the yard is first planned; the time-sliced builder waits for it (12 s at most).
 function natLoad() {
