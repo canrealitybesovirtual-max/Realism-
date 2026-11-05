@@ -9755,7 +9755,7 @@ const CEL_TRAF = { on: !/[?&]celtraf=off\b/.test(location.search), ready: null, 
   near: { chrome: .12, Material_27: .14, vehiclelights128: .06, Material_68: .05, body: .7, Lexus_LS_Mk2_1997_carpaint: .6, textured_reflector: .8 },
   far: { chrome: .025, Material_27: .04, body: .2, Lexus_LS_Mk2_1997_carpaint: .2, textured_reflector: .25, jzs161_matte__spec_1: .3, material: .3, matte_colors: .3 },
   farSkip: /^(vehiclelights128|Material_68|Material_106|silver__spec|Material_38|metal|supra_plate)$/,
-  skip: /^(plastic|gauge_needle|Material_39|sticker_01|int_texture__spec|Material_49|celsior_ucf10_texture_[12]__spec|Matte__FF464646__spec|INT_Decals_Emissive|Material_26)$/ };
+  skip: /^(Material_106|plastic|gauge_needle|Material_39|sticker_01|int_texture__spec|Material_49|celsior_ucf10_texture_[12]__spec|Matte__FF464646__spec|INT_Decals_Emissive|Material_26)$/ };
 async function celsiorTrafficPrep() {
   if (!CEL_TRAF.on) return null;
   return (CEL_TRAF.ready ??= (async () => {
@@ -9794,7 +9794,7 @@ function celsiorTrafficMats(U, paint) {
   const metalName = /chrome|silver|metal/i;
   for (const p of CEL_TRAF.parts) {
     const m = p.m; if (mats[m.mat]) continue;
-    if (m.paintKind === 'upper') { mats[m.mat] = paint; continue; }
+    if (m.paintKind === 'upper') { paint.side = THREE.DoubleSide; mats[m.mat] = paint; continue; }   // the roof's faces point in: drawn from both sides
     const LK = CEL_LOOK[m.mat] || {}, c = LK.color ? [LK.color, LK.color, LK.color] : m.color;
     const o = { color: new THREE.Color(c[0], c[1], c[2]), roughness: LK.rough ?? Math.max(.05, m.rough), metalness: m.paintKind ? .35 : metalName.test(m.mat) ? 1 : 0, side: THREE.DoubleSide,
       map: m.tex != null ? tex(m.tex) : null, transparent: m.blend, depthWrite: !m.blend, envMapIntensity: 1 };
@@ -10087,6 +10087,7 @@ function buildCelsior(car) {
       if (!m.blend && decals !== mat) grimeMat(mat);                   // realism 7 (glass stays clear; grimeBake keeps the cabin clean)
     }
     if (mat !== M.paint && !m.blend && !/reflector/i.test(m.mat)) cabinOcclusion(mat);   // build 1.28
+    if (m.mat === 'Material_106' && CEL_TAIL.on) continue;               // its photo-glass layer over the tail lenses made the white speckles
     const mesh = new THREE.Mesh(g, mat); mesh.castShadow = mesh.userData.caster = !m.blend; mesh.receiveShadow = true; if (m.blend) mesh.renderOrder = 2;
     if (m.mat === 'gauge_needle') needleMesh = mesh;
     if (/reflector/i.test(m.mat) && CEL_TAIL.on) {                     // the rear lenses: out of the photo-textured blend into a solid faceted lens
@@ -13076,8 +13077,8 @@ function buildTrafficGeometry(T) {
    ════════════════════════════════════════════════════════════════════════ */
 const SEMI_TRAILER = { kz: -3.9, front: -1.35, rear: 12.25, axles: [7.6, 8.91, 10.22], wr: .5, ww: .58, axleC: 8.91 };
 function packTrafficParts(P) {
-  const order = ['paint', 'glass', 'trim', 'box'], geos = [], mats = [];
-  for (let k = 0; k < order.length; k++) if (P[order[k]].length) { geos.push(BufferGeometryUtils.mergeGeometries(P[order[k]].map(stripToPN))); mats.push(k); }
+  const order = ['paint', 'glass', 'trim', 'box', null, 'cloth'], geos = [], mats = [];
+  for (let k = 0; k < order.length; k++) if (order[k] && P[order[k]]?.length) { geos.push(BufferGeometryUtils.mergeGeometries(P[order[k]].map(stripToPN))); mats.push(k); }
   const body = BufferGeometryUtils.mergeGeometries(geos, true);
   body.groups.forEach((gr, i) => (gr.materialIndex = mats[i]));
   geos.forEach(g => g.dispose());
@@ -13144,7 +13145,7 @@ function buildSemiGeometry(T) {
   /* ── trailer (its own frame: kingpin at the origin, rear toward +z) ── */
   const Q = { paint: [], glass: [], trim: [], box: [], lamps: [] }, tl = lampOf(Q), S = SEMI_TRAILER;
   const L = S.rear - S.front, zc = (S.front + S.rear) / 2, TW = 2.48;
-  Q.paint.push(tBox(TW, 2.66, L - .04, 0, 2.66, zc, .02));                           // curtains / box
+  (Q.cloth = []).push(tBox(TW, 2.66, L - .04, 0, 2.66, zc, .02));                  // curtains: woven PVC (was the car paint: read as gold foil)
   Q.trim.push(bx(TW + .02, .12, L, 0, 3.97, zc), bx(TW + .02, .24, L, 0, 1.24, zc));  // top and bottom rails
   for (const s of [1, -1]) {
     for (const z of [S.front + .04, S.rear - .04]) Q.trim.push(bx(.07, 2.8, .07, s * (TW / 2 + .004), 2.6, z));
@@ -13261,9 +13262,14 @@ function trafficAssets() {
     fragPars: 'varying vec3 vBake; varying vec2 vBakeM; uniform float uWet;',
     frag: [['#include <color_fragment>', 'diffuseColor.rgb = mix(pow(vBake, vec3(2.2)), diffuseColor.rgb * .92, vBakeM.x) * (1.0 - .12 * uWet);'],
            ['#include <roughnessmap_fragment>', 'roughnessFactor = vBakeM.y * (1.0 - .4 * uWet);']] });
-  for (const m of [paint, glass, trim, box, lamp, rubber, rim, shadowMat, baked]) m.userData.shared = true;
+  const cloth = Atmos.patch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .82, metalness: 0, envMapIntensity: .5 }), { key: 'trafficcloth', uniforms: U,
+    vertPars: 'varying vec3 vClP;', vertMain: 'vClP = position;', fragPars: 'varying vec3 vClP; uniform float uWet;',
+    frag: [['#include <color_fragment>', `float fz = vClP.z * 5.2 + sin(vClP.y * 2.1 + vClP.z * .7) * .6, fold = .5 + .5 * sin(fz * 6.2832);   // tensioned curtain: soft folds between the straps
+      diffuseColor.rgb *= mix(.8, 1.04, fold) * mix(.78, 1.0, smoothstep(1.2, 2.2, vClP.y)) * (1.0 - .15 * uWet);`],
+      ['#include <roughnessmap_fragment>', 'roughnessFactor = mix(.9, .7, fold) * (1.0 - .35 * uWet);']] });
+  for (const m of [paint, glass, trim, box, lamp, rubber, rim, shadowMat, baked, cloth]) m.userData.shared = true;
   shadowMat.map.userData.shared = true;
-  const mats = [paint, glass, trim, box, baked];
+  const mats = [paint, glass, trim, box, baked, cloth];
   const shadowGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2); shadowGeo.userData.shared = true;
   Assets.traffic = { U, mats, lamp, rubber, rim, shadowMat, shadowGeo, wheel: trafficWheelGeometry(), types: [], models: null };
   return trafficTypeAssets(Assets.traffic);
