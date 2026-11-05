@@ -810,7 +810,7 @@ button{font:inherit;color:inherit}
           </div>
         </aside>
       </div>
-      <div class="build-tag">Build 1.40</div>
+      <div class="build-tag">Build 1.41</div>
       <div class="foot-hints" data-hints="menu"></div>
     </section>
 
@@ -1257,7 +1257,7 @@ const SETTINGS_SCHEMA = [
   { tab: 'assists', key: 'assists.telemetry', type: 'toggle', label: 'Telemetry overlay', desc: 'Tyre loads, slip, temperatures, suspension travel and assist activity. Also toggled with T.' },
   // World
   { tab: 'world', group: 'Route' },
-  { tab: 'world', key: 'world.scenery', type: 'select', label: 'Scenery', desc: 'Tunnel: one endless lit bore over your carriageway, no oncoming traffic, no sky or weather (lightest to render, best on Quest). Open road: the snowy interstate with day, night and weather. Applies to your next run.', options: [['tunnel', 'Tunnel'], ['open', 'Open road']] },
+  { tab: 'world', key: 'world.scenery', type: 'select', label: 'Scenery', desc: 'Tunnel: one endless lit bore over your carriageway, no oncoming traffic, no sky or weather (lightest to render, best on Quest). Open road: the snowy interstate with day, night and weather: a 36 km freeway with tunnels, viaducts and four interchanges to other freeways. Applies to your next run.', options: [['tunnel', 'Tunnel'], ['open', 'Open road']] },
   { tab: 'world', key: 'world.headlights', type: 'range', label: 'Headlight brightness', desc: 'How hard your own headlights light the road and walls.', min: .1, max: 1, step: .05, fmt: pct },
   { tab: 'world', group: 'Time of day', when: d => d.world.scenery !== 'tunnel' },
   { tab: 'world', key: 'world.time', type: 'select', label: 'Time of day', desc: 'Applies to your next run. Fixed hours stay put; the full cycle runs from late afternoon.', options: [['afternoon', 'Afternoon'], ['golden', 'Golden hour'], ['dusk', 'Dusk'], ['night', 'Night'], ['dawn', 'Dawn'], ['cycle', 'Full cycle']], when: d => d.world.scenery !== 'tunnel' },
@@ -1735,7 +1735,7 @@ function roadSurfWheel(tr, u, s, o, tunnel) {
     snow = sstep(tr.roadOuter - .2, tr.roadOuter + .4, aU);
   }
   o.rumble = Math.min(1, rumble); o.paint = Math.min(1, paint); o.crunch = crunch; o.snow = snow;
-  o.bridge = tr.bridgeK ? clamp(1 - tr.bridgeK(clamp(s, 0, tr.length)), 0, 1) : 0;
+  o.bridge = tr.deckK ? clamp(1 - tr.deckK(s), 0, 1) : tr.bridgeK ? clamp(1 - tr.bridgeK(clamp(s, 0, tr.length)), 0, 1) : 0;   // build 1.41: deckK (a tunnel carries no earth but is no deck)
   return o;
 }
 class VoicePool {
@@ -3126,7 +3126,18 @@ function roadGripAt(tr, s, u, wet) {
 }
 function terrainBase(x, z) { return (vnoise2(x / 6000 + 3.1, z / 6000 - 1.7) - .5) * 120 + (vnoise2(x / 2400 - 4.4, z / 2400 + 2.2) - .5) * 52; }
 function terrainRug(x, z) { return sstep(.3, .78, vnoise2(x / 2300 + 8.3, z / 2300 + 5.9)); }
-function terrainHeight(x, z) { return terrainBase(x, z) + (fbm2(x / 650, z / 650, 4) - .5) * 2 * (4 + 28 * terrainRug(x, z)) + (vnoise2(x / 70, z / 70) - .5) * 1.6; }
+function terrainHeight(x, z) { return terrainBase(x, z) + (fbm2(x / 650, z / 650, 4) - .5) * 2 * (4 + 28 * terrainRug(x, z)) + (vnoise2(x / 70, z / 70) - .5) * 1.6 + (TERRAIN_FX.length ? terrainFx(x, z) : 0); }
+/* build 1.41 (§13.2c): ridges over the main road's tunnels and valleys under its viaducts, set when a run is laid out */
+let TERRAIN_FX = [];
+function terrainFx(x, z) {
+  let h = 0;
+  for (const f of TERRAIN_FX) {
+    const dx = x - f.cx, dz = z - f.cz; if (dx * dx + dz * dz > f.r2) continue;
+    const a = (dx * f.ax + dz * f.az) / f.Lh, b = (dz * f.ax - dx * f.az) / f.W, r = a * a + b * b;
+    if (r < 1) h += f.H * (1 - r) * (1 - r);
+  }
+  return h;
+}
 
 /* Regions along the loop. Weights are smoothed so changes blend over ~600 m. */
 const BIOMES = {
@@ -3180,7 +3191,9 @@ class Track {
   /* Centripetal Catmull–Rom through closed control points, resampled every
      ~2 m by arc length. Positions and tangents stored in flat arrays. */
   #sample(cp) {
-    const N = cp.length, SUB = 400, dense = [];
+    const N = cp.length, dense = [];
+    let SUB = 400;                                                     // build 1.41: dense control points (§13.2c) need fewer
+    if (N > 120) { let c = 0; for (let i = 0; i < N; i++) { const a = cp[i], b = cp[(i + 1) % N]; c += Math.hypot(b.x - a.x, b.z - a.z); } SUB = Math.max(6, Math.ceil(c / N / 2)); }
     const d = (a, b) => Math.pow(Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z), .5) || 1e-4;
     for (let i = 0; i < N; i++) {
       const p0 = cp[(i - 1 + N) % N], p1 = cp[i], p2 = cp[(i + 1) % N], p3 = cp[(i + 2) % N];
@@ -3318,6 +3331,7 @@ class Track {
     const x = F.P.x + F.Rh.x * u, z = F.P.z + F.Rh.z * u;
     o.x = x; o.z = z;
     o.y = this.net ? this.net.ground(x, z, this, F, u) : this.earth(F, u < 0 ? -1 : 1, Math.abs(u) - this.railU, x, z);   // build 1.30: one ground for every road near
+    if (!this.net && this.K1) { const k = this.bridgeK(F.s); if (k < 1) o.y = lerp(terrainHeight(x, z), o.y, k); }   // build 1.41: no earth on a viaduct or over a tunnel
     return o;
   }
   /** This road's own earthworks d metres beyond its rail on one side, at world (x, z). */
@@ -3331,7 +3345,12 @@ class Track {
   }
   /** Build 1.30: no guardrail here on this side (a slip road leaves or joins). */
   railOpen(s, side) { const g = this.railGap; if (!g) return false; const i = Math.round(mod(s, this.length) / this.ds) % this.n; return g[side > 0 ? 0 : 1][i] === 1; }
-  bridgeK() { return 1; }
+  /** build 1.41: 1 = this road carries its own earthworks here, 0 = it does not (a viaduct or a tunnel, §13.2c) */
+  bridgeK(s) { const K = this.K1; if (!K) return 1; const f = mod(s, this.length) / this.ds, i = Math.floor(f) % this.n, j = (i + 1) % this.n, t = f - Math.floor(f); return K[i] + (K[j] - K[i]) * t; }
+  /** build 1.41: 0 on a viaduct's deck (road sound), 1 elsewhere (a tunnel is not a deck) */
+  deckK(s) { const K = this.KD; if (!K) return 1; const f = mod(s, this.length) / this.ds, i = Math.floor(f) % this.n, j = (i + 1) % this.n, t = f - Math.floor(f); return K[i] + (K[j] - K[i]) * t; }
+  /** build 1.41: is s inside one of this road's tunnels (pad metres each way)? Returns the span index or -1. */
+  tunnelAt(s, pad = 0) { const T = this.tunnelSpans; if (!T) return -1; s = mod(s, this.length); for (let i = 0; i + 1 < T.length; i += 2) if (s >= T[i] - pad && s < T[i + 1] + pad) return i >> 1; return -1; }
   /** Height of the ground (road or verge) at lateral offset u. */
   groundY(F, u) { return Math.abs(u) <= this.roadOuter ? this.surfacePoint(F, u, this._g).y : this.vergePoint(F, u, this._g).y; }
   _g = v3();
@@ -3388,7 +3407,7 @@ class Track {
    bridge carries no earth (the road under it keeps its own verge).
    Only on Open road scenery; the tunnel stays a single bore.
    ════════════════════════════════════════════════════════════════════════ */
-const NET_ROAD_NAMES = { A: 'A1', B: 'A12', C: 'A9', D: 'A30' };
+const NET_ROAD_NAMES = { A: 'A1', B: 'A12', C: 'A9', D: 'A30', E: 'A14', F: 'A21', G: 'A47' };   // build 1.41: E, F and G on the freeway route
 function lerpA(A, i, j, t, o) { o.x = A[i * 3] + (A[j * 3] - A[i * 3]) * t; o.y = A[i * 3 + 1] + (A[j * 3 + 1] - A[i * 3 + 1]) * t; o.z = A[i * 3 + 2] + (A[j * 3 + 2] - A[i * 3 + 2]) * t; return o; }
 function smoothOpen(src, w) {
   const n = src.length, out = new Float32Array(n), h = w >> 1;
@@ -3613,7 +3632,7 @@ class Network {
   /** After every road exists: bridge spans, guardrail gaps, noise-wall gaps and paint gaps. */
   finish() {
     const F = newFrame(), p = v3();
-    for (const X of this.roads) if (X.oneWay) this.#bridges(X, F, p);
+    for (const X of this.roads) if (X.oneWay || X.crossings) this.#bridges(X, F, p);   // build 1.41: a side road crossing A is bridged over it
     for (const X of this.roads) this.#gaps(X, F);
   }
   #bridges(X, F, p) {
@@ -3640,6 +3659,7 @@ class Network {
     let any = false;
     for (let i = 0; i < n; i++) {
       const s = i * X.ds; X.frame(s, F);
+      if (X.K1 && X.bridgeK(s) < .5) continue;                          // build 1.41: on a bridge the rails stay, whatever is under it
       let near = false;
       for (const r of this.roads) if (r !== X && this.rel(r, F.P.x, F.P.z) < 120) { near = true; break; }
       if (!near) continue;
@@ -3766,7 +3786,8 @@ function finishRamp({ pts, tag }, lift) {
 
 /** The whole network around ring A (seeded; the same every run). */
 function buildNetwork(A) {
-  const F = newFrame(), F2 = newFrame(), q = v3();
+  if (A.route) return buildFreewayNetwork(A);                        // build 1.41: the freeway route has its own layout (§13.2c)
+  const F = newFrame();
   const L = A.length;
   let cx = 0, cz = 0; for (let i = 0; i < A.n; i++) { cx += A.P[i * 3]; cz += A.P[i * 3 + 2]; } cx /= A.n; cz /= A.n;
   A.frame(0, F); const inSign = Math.sign(F.Rh.x * (cx - F.P.x) + F.Rh.z * (cz - F.P.z)) || 1;   // +1: Rh points into the ring
@@ -3775,7 +3796,7 @@ function buildNetwork(A) {
     { name: 'D', outside: true, R: 2300, lanes: 2, seed: 47 },
     { name: 'C', outside: false, R: 1450, lanes: 1, seed: 59 },
   ];
-  const sites = [], loops = [], ramps = [], signs = [], zones = [];
+  const out = { sites: [], ramps: [], signs: [], zones: [] }, sites = out.sites, loops = [];
   const nearSite = (s, gap) => Math.abs(mod(s - 60 + L / 2, L) - L / 2) < 2600 || sites.some(t => Math.abs(mod(s - t + L / 2, L) - L / 2) < gap);
   for (const sp of specs) {
     const sep = 2 * RAMP.R + 2 * RAMP.G + (A.laneEnd - A.laneW / 2) + (2.2 + (sp.lanes - .5) * 3.7) - 8;
@@ -3815,46 +3836,15 @@ function buildNetwork(A) {
       const err = md - sep; if (Math.abs(err) < .3) break;
       ox -= best.nx * err; oz -= best.nz * err;
     }
-    // stations where they meet
-    let sB = 0, md = Infinity; const pr = {};
-    for (let i = 0; i < B.n; i++) { const x = B.P[i * 3], z = B.P[i * 3 + 2]; if (Math.hypot(x - F.P.x, z - F.P.z) > 1500) continue; A.project(x, z, best.s, pr); const d = Math.abs(pr.u); if (d < md) { md = d; sB = i * B.ds; } }
-    B.frame(sB, F2); A.project(F2.P.x, F2.P.z, best.s, pr); const sA = pr.s; A.frame(sA, F);
-    const sigA = Math.sign(F.Rh.x * (F2.P.x - F.P.x) + F.Rh.z * (F2.P.z - F.P.z)) || 1;   // the ring's side that faces the loop
-    const sigB = Math.sign(F2.Rh.x * (F.P.x - F2.P.x) + F2.Rh.z * (F.P.z - F2.P.z)) || 1;
-    if (sigB < 0 && typeof Log !== 'undefined') Log.warn('network: loop ' + sp.name + ' faces the ring with its -u side');
-    sites.push(sA); loops.push({ track: B, R: sp.R, ox, oz, name: sp.name });
-    const aNear = sideOf(A, sA, sigA, sigA), bNear = sideOf(B, sB, sigB, sigB);
-    // loop ramps: ring -> loop and loop -> ring, each solved for its own radius
-    const loopRamp = (from, to) => {
-      let R = RAMP.R;
-      for (let it = 0; it < 5; it++) {
-        const A0 = netPoint(from.r, from.st, from.dir, -(R + 40), from.uc + from.sideU * RAMP.G, F, {}), B0 = netPoint(to.r, to.st, to.dir, R + 40, to.uc + to.sideU * RAMP.G, F, {});
-        R = Math.hypot(B0.x - A0.x, B0.z - A0.z) / 2;
-      }
-      const x0 = -(R + 40) - RAMP.run - RAMP.tap;
-      return { pts: finishRamp(rampPoints(from, x0, RAMP.G, RAMP.run, loopMid, to, R + 40, RAMP.G, RAMP.run)), R, from, to, x0 };
-    };
-    const made = [['to', loopRamp(aNear, bNear)], ['from', loopRamp(bNear, aNear)]];
-    if (sp.fly) {
-      // flyovers to and from the ring's far carriageway, bridged over the ring
-      const aFar = sideOf(A, sA, -sigA, -sigA), R = RAMP.R;
-      const clearRing = pts => pts.map(p => { const d = Math.abs(A.project(p.x, p.z, sA, pr).u); if (d > A.roadOuter + 3) return -Infinity; A.frame(pr.s, F2); return A.surfacePoint(F2, clamp(pr.u, -A.roadOuter, A.roadOuter), q).y + RAMP.clear; });
-      const P = RAMP.fly;
-      made.push(['fly-to', { pts: finishRamp(rampPoints(aFar, R + P.toA, RAMP.flyG, RAMP.flyRun, hermiteMid(P.toK), bNear, R + P.toB, RAMP.flyG, RAMP.flyRun), clearRing), from: aFar, to: bNear, x0: R + P.toA }]);
-      made.push(['fly-from', { pts: finishRamp(rampPoints(bNear, -(R + P.fromB), RAMP.flyG, RAMP.flyRun, hermiteMid(P.fromK), aFar, -(R + P.fromA), RAMP.flyG, RAMP.flyRun), clearRing), from: bNear, to: aFar, x0: -(R + P.fromB) }]);
-    }
-    for (const [kind, m] of made) {
-      const rr = new RampRoad(sp.name + '-' + kind, m.pts, 1);
-      rr.from = m.from.r; rr.to = m.to.r; rr.toU = m.to.uc; rr.kind = kind; rr.loopR = m.R || 0;   // build 1.32: toU, the carriageway it joins
-      rr.links = [m.from.r, m.to.r]; m.from.r.links = m.from.r.links || []; m.to.r.links = m.to.r.links || [];
-      m.from.r.links.push(rr); m.to.r.links.push(rr);
-      ramps.push(rr);
-      // signs before the exit: 1 km and 400 m, on the right of the road being left
-      signs.push({ road: m.from.r, st: m.from.st, dir: m.from.dir, sideU: m.from.sideU, x: m.x0 - 1000, to: m.to.r, dist: 1000 });
-      signs.push({ road: m.from.r, st: m.from.st, dir: m.from.dir, sideU: m.from.sideU, x: m.x0 - 400, to: m.to.r, dist: 400 });
-    }
-    zones.push([sA - 3200, sA + 3200]);
+    loops.push({ track: B, R: sp.R, ox, oz, name: sp.name });
+    netJunction(A, B, best.s, sp, out);
   }
+  return netFinish(A, loops, out);
+}
+/** The network from A, its other roads and the junctions' slip roads (shared by both layouts). */
+function netFinish(A, loops, out) {
+  const L = A.length, { ramps, zones } = out;
+  const signs = out.signs.filter(e => !e.road.inFx?.(mod(e.st + e.dir * e.x, e.road.length)));   // build 1.41: no sign in a tunnel or on a viaduct
   const net = new Network([A, ...loops.map(l => l.track), ...ramps]);
   net.finish();
   net.A = A; net.loops = loops; net.ramps = ramps; net.signs = signs; net.zones = zones;
@@ -3863,6 +3853,520 @@ function buildNetwork(A) {
   A.overpasses = A.overpasses.filter(o => !inZone(o.s)); A.gantries = A.gantries.filter(o => !inZone(o.s)); A.roadSigns = A.roadSigns.filter(o => !inZone(o.s));
   A.inZone = inZone;
   return net;
+}
+
+/** Build 1.41: one junction between A and road B near A's station s: loop ramps both ways, flyovers to A's far
+ *  carriageway when sp.fly, exit signs. Factored out of buildNetwork (same code); on the freeway route the ramps
+ *  are checked (rampCheck): a junction whose loop ramps fail returns null, a failing flyover pair is left out.
+ *  Pushes into out.sites / ramps / signs / zones; returns A's station of the junction. */
+function netJunction(A, B, s, sp, out) {
+  const F = newFrame(), F2 = newFrame(), q = v3(); A.frame(s, F);
+  const rampsBad = list => A.route ? list.some(([kind, m]) => !rampCheck(m.pts, kind)) : false;
+  // stations where they meet
+  let sB = 0, md = Infinity; const pr = {};
+  for (let i = 0; i < B.n; i++) { const x = B.P[i * 3], z = B.P[i * 3 + 2]; if (Math.hypot(x - F.P.x, z - F.P.z) > 1500) continue; A.project(x, z, s, pr); const d = Math.abs(pr.u); if (d < md) { md = d; sB = i * B.ds; } }
+  B.frame(sB, F2); A.project(F2.P.x, F2.P.z, s, pr); const sA = pr.s; A.frame(sA, F);
+  const sigA = Math.sign(F.Rh.x * (F2.P.x - F.P.x) + F.Rh.z * (F2.P.z - F.P.z)) || 1;   // the ring's side that faces the loop
+  const sigB = Math.sign(F2.Rh.x * (F.P.x - F2.P.x) + F2.Rh.z * (F.P.z - F2.P.z)) || 1;
+  if (sigB < 0 && typeof Log !== 'undefined') Log.warn('network: loop ' + sp.name + ' faces the ring with its -u side');
+  const aNear = sideOf(A, sA, sigA, sigA), bNear = sideOf(B, sB, sigB, sigB);
+  // loop ramps: ring -> loop and loop -> ring, each solved for its own radius
+  const loopRamp = (from, to) => {
+    let R = RAMP.R;
+    for (let it = 0; it < 5; it++) {
+      const A0 = netPoint(from.r, from.st, from.dir, -(R + 40), from.uc + from.sideU * RAMP.G, F, {}), B0 = netPoint(to.r, to.st, to.dir, R + 40, to.uc + to.sideU * RAMP.G, F, {});
+      R = Math.hypot(B0.x - A0.x, B0.z - A0.z) / 2;
+    }
+    const x0 = -(R + 40) - RAMP.run - RAMP.tap;
+    return { pts: finishRamp(rampPoints(from, x0, RAMP.G, RAMP.run, loopMid, to, R + 40, RAMP.G, RAMP.run)), R, from, to, x0 };
+  };
+  const made = [['to', loopRamp(aNear, bNear)], ['from', loopRamp(bNear, aNear)]];
+  if (rampsBad(made)) return null;
+  if (sp.fly) {
+    // flyovers to and from the ring's far carriageway, bridged over the ring
+    const aFar = sideOf(A, sA, -sigA, -sigA), R = RAMP.R;
+    const clearRing = pts => pts.map(p => { const d = Math.abs(A.project(p.x, p.z, sA, pr).u); if (d > A.roadOuter + 3) return -Infinity; A.frame(pr.s, F2); return A.surfacePoint(F2, clamp(pr.u, -A.roadOuter, A.roadOuter), q).y + RAMP.clear; });
+    const P = RAMP.fly;
+    const fly = [];
+    fly.push(['fly-to', { pts: finishRamp(rampPoints(aFar, R + P.toA, RAMP.flyG, RAMP.flyRun, hermiteMid(P.toK), bNear, R + P.toB, RAMP.flyG, RAMP.flyRun), clearRing), from: aFar, to: bNear, x0: R + P.toA }]);
+    fly.push(['fly-from', { pts: finishRamp(rampPoints(bNear, -(R + P.fromB), RAMP.flyG, RAMP.flyRun, hermiteMid(P.fromK), aFar, -(R + P.fromA), RAMP.flyG, RAMP.flyRun), clearRing), from: bNear, to: aFar, x0: -(R + P.fromB) }]);
+    if (!rampsBad(fly)) made.push(...fly);
+  }
+  for (const [kind, m] of made) {
+    const rr = new RampRoad(sp.name + '-' + kind, m.pts, 1);
+    rr.from = m.from.r; rr.to = m.to.r; rr.toU = m.to.uc; rr.kind = kind; rr.loopR = m.R || 0;   // build 1.32: toU, the carriageway it joins
+    rr.links = [m.from.r, m.to.r]; m.from.r.links = m.from.r.links || []; m.to.r.links = m.to.r.links || [];
+    m.from.r.links.push(rr); m.to.r.links.push(rr);
+    out.ramps.push(rr);
+    // signs before the exit: 1 km and 400 m, on the right of the road being left
+    out.signs.push({ road: m.from.r, st: m.from.st, dir: m.from.dir, sideU: m.from.sideU, x: m.x0 - 1000, to: m.to.r, dist: 1000 });
+    out.signs.push({ road: m.from.r, st: m.from.st, dir: m.from.dir, sideU: m.from.sideU, x: m.x0 - 400, to: m.to.r, dist: 400 });
+    if (A.route && m.from.r === A) out.signs.push({ road: A, st: m.from.st, dir: m.from.dir, sideU: m.from.sideU, x: m.x0 - 2000, to: m.to.r, dist: 2000 });   // build 1.41: 2 km too on the freeway
+  }
+  { const z = A.route ? (sp.fly ? 2600 : 1500) : 3200; out.zones.push([sA - z, sA + z]); }   // build 1.41: narrower on the freeway route
+  out.sites.push(sA);
+  return sA;
+}
+
+/** Build 1.41: is a slip road's centreline drivable? Plan radius (over 30 m chords) and grade (over 40 m) along it. */
+function rampCheck(pts, kind) {
+  const n = pts.length; let minR = Infinity, maxG = 0;
+  for (let i = 15; i + 15 < n; i += 3) {
+    const a = pts[i - 15], b = pts[i], c = pts[i + 15];
+    const ab = Math.hypot(b.x - a.x, b.z - a.z), bc = Math.hypot(c.x - b.x, c.z - b.z), ca = Math.hypot(a.x - c.x, a.z - c.z);
+    const cr = Math.abs((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)) / 2;
+    if (cr > 1e-6) minR = Math.min(minR, ab * bc * ca / (4 * cr));
+  }
+  for (let i = 0; i + 20 < n; i += 5) { const a = pts[i], b = pts[i + 20], d = Math.hypot(b.x - a.x, b.z - a.z); if (d > 1) maxG = Math.max(maxG, Math.abs(b.y - a.y) / d); }
+  const fly = kind.startsWith('fly');
+  return minR >= (fly ? 170 : 80) && maxG <= (fly ? .065 : .07);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   §13.2c Freeway route (build 1.41)
+   Open road used to be a ring (a wobbly circle) with three more circles
+   beside it. Now the main road (A) is a long closed freeway course laid out
+   the way a highway engineer would: long tangents, sweeping curves of
+   600–2600 m radius entered and left on clothoid transitions (curvature
+   builds up linearly, never jumps), S-bends where a curve is followed by one
+   the other way, and a vertical profile that follows the land at no more
+   than ROUTE.grade with smooth crests and sags. The course is drawn as a
+   turtle path (tangent, transition, arc, transition, tangent ...) whose turns
+   add up to one full turn; the tangents are then lengthened or shortened
+   (least squares, weighted by length) so it closes exactly. Every seed is
+   checked: no part of the road comes within ROUTE.clear of another part,
+   and it fits in ROUTE.reach of the origin (the distant hills ring).
+   The side roads (§13.2b) are drawn the same way: each starts with a long
+   tangent beside A where they meet, then wanders off as its own freeway.
+   Then the land is shaped round the road (TERRAIN_FX, added to
+   terrainHeight): a ridge over each tunnel (the road keeps its grade and goes
+   through it; the spans are measured from the terrain afterwards, so a
+   tunnel is only where the hill covers the whole bore) and a valley under
+   each viaduct (spans where the ground falls well below the deck).
+   ?route=ring brings back the old ring and its circular loops.
+   ════════════════════════════════════════════════════════════════════════ */
+const ROUTE = {
+  on: !/[?&]route=ring\b/.test(typeof location !== 'undefined' ? location.search : ''),
+  seed: 1, pick: 12, tries: 400, len: [34000, 50000], reach: 7600, clear: 1250, sep: 2600,
+  bends: [16, 21], R: [650, 2600], tan: [350, 2800], tanPow: 1.1, sBend: .5, sBack: [.35, 1.15], maxTurn: 2.2,
+  poly: { n: [7, 10], r: 6600, k: [.62, 1.1], bay: .55, bayK: .5, sLong: 2600, sProb: .7, maxTurn: 2.4 },   // the main road's skeleton (polySegs)
+  grade: .045, smooth: 520, smooth2: 140, cpEvery: 24,
+  /* tunnels and viaducts on A: how many, their planned length, the cover (m of hill over the road) a portal needs */
+  tunnels: 3, tunLen: [520, 900], cover: 12, coverIn: 26,
+  viaducts: 3, viaLen: [260, 440], under: 9, depth: 24,
+  start: 2600, gapFx: 2000,
+  side: { bends: [7, 11], R: [500, 1900], tan: [220, 1300], sBend: .4, sBack: [.3, .9], maxTurn: 2.5, len: [6000, 18000], first: 1500, reach: 11500, clear: 750, clearA: 600 },
+};
+
+/** Turtle course: tangents and bends (clothoid in, arc, clothoid out) turning sign x 2pi in all, closed by
+ *  adjusting the tangent lengths. o: bends, R, tan, sBend, maxTurn, first (a fixed first tangent, m), sign.
+ *  Returns { x, z, n, ds, L } (closed, one point every ~step m) or null when this draw does not work out. */
+function courseTurtle(rng, o, sign = 1, step = 4) {
+  const segs = o.poly ? polySegs(rng, o) : turtleSegs(rng, o, sign);
+  return segs ? closeCourse(segs, o, sign, step) : null;
+}
+/** Bends and tangents drawn at random: turns mostly one way (adding up to a full turn), S-bends between. */
+function turtleSegs(rng, o, sign) {
+  const nb = o.bends[0] + Math.floor(rng() * (o.bends[1] - o.bends[0] + 1)), d = [];
+  for (let i = 0; i < nb; i++) {
+    const back = i > 0 && d[i - 1] > 0 && i < nb - 1 && rng() < o.sBend;     // an S-bend: the next curve turns back
+    d.push(back ? -(o.sBack[0] + rng() * (o.sBack[1] - o.sBack[0])) : .3 + rng() * 1.25);
+  }
+  let pos = 0, neg = 0; for (const v of d) { if (v > 0) pos += v; else neg += v; }
+  const k = (2 * Math.PI - neg) / pos; for (let i = 0; i < nb; i++) if (d[i] > 0) d[i] *= k;
+  if (Math.max(...d) > o.maxTurn) return null;
+  const segs = [];
+  segs.push(o.first ? { L: o.first, fixed: true } : { L: o.tan[0] + rng() * (o.tan[1] - o.tan[0]) * .6 });   // s = 0 starts on a tangent
+  for (let i = 0; i < nb; i++) {
+    let R = Math.exp(Math.log(o.R[0]) + rng() * Math.log(o.R[1] / o.R[0])) * (d[i] < 0 ? .8 : 1);
+    const Ls = clamp(R * (.1 + rng() * .1), 70, 300); if (2 * Ls / R > .8 * Math.abs(d[i])) R = 2 * Ls / (.8 * Math.abs(d[i]));   // a short turn: a wider curve, never a short transition
+    segs.push({ R, d: d[i] * sign, Ls });
+    const sNext = i + 1 < nb && d[i + 1] < 0;
+    segs.push({ L: sNext ? 60 + rng() * 140 : o.tan[0] + Math.pow(rng(), o.tanPow || 1.4) * (o.tan[1] - o.tan[0]), short: sNext });
+  }
+  return segs;
+}
+/** The main road's plan: a skeleton polygon (o.poly.n corners round the origin at random radii, every other one
+ *  sometimes pulled in, so the course has real lobes and bays, not a blob), each corner rounded by clothoid + arc +
+ *  clothoid with the biggest radius that leaves a tangent on both edges, long edges broken by a gentle S-bend.
+ *  Counter-clockwise (+u = the inside). */
+function polySegs(rng, o) {
+  const P = o.poly, m = P.n[0] + Math.floor(rng() * (P.n[1] - P.n[0] + 1)), V = [];
+  for (let k = 0; k < m; k++) {
+    const th = (k + (rng() - .5) * .55) / m * Math.PI * 2, r = P.r * (P.k[0] + rng() * (P.k[1] - P.k[0])) * (k % 2 && rng() < P.bay ? P.bayK : 1);
+    V.push([Math.cos(th) * r, Math.sin(th) * r]);
+  }
+  const E = V.map((v, k) => { const w = V[(k + 1) % m], dx = w[0] - v[0], dz = w[1] - v[1]; return { l: Math.hypot(dx, dz), ph: Math.atan2(dz, dx) }; });
+  const d = V.map((v, k) => angleDiff(E[k].ph, E[(k - 1 + m) % m].ph));       // turn at corner k (+ = left)
+  if (Math.abs(d.reduce((a, b) => a + b, 0) - 2 * Math.PI) > 1e-6) return null;  // not a simple counter-clockwise polygon
+  if (d.some(v => Math.abs(v) > P.maxTurn)) return null;
+  const R = d.map(v => Math.exp(Math.log(o.R[0]) + rng() * Math.log(o.R[1] / o.R[0])) * (v < 0 ? .85 : 1));
+  const Ls = k => Math.max(Math.min(clamp(R[k] * .14, 70, 300), .4 * Math.abs(d[k]) * R[k]), Math.min(70, .45 * Math.abs(d[k]) * R[k]));
+  const setb = k => R[k] * Math.tan(Math.abs(d[k]) / 2) + Ls(k) / 2;           // tangent point to corner, near enough
+  for (let it = 0; it < 30; it++) {                                            // shrink radii until every edge keeps a tangent
+    let bad = false;
+    for (let k = 0; k < m; k++) {
+      const a = k, b = (k + 1) % m, room = E[k].l - o.tan[0], need = setb(a) + setb(b);
+      if (need <= room) continue;
+      bad = true; const f = Math.max(.6, room / need); R[a] = Math.max(o.R[0], R[a] * f); R[b] = Math.max(o.R[0], R[b] * f);
+    }
+    if (!bad) break;
+  }
+  const segs = [], tan = k => E[k].l - setb(k) - setb((k + 1) % m);
+  for (let k = 0; k < m; k++) if (tan(k) < o.tan[0] * .8) return null;
+  const edge = L => {                                                          // a long edge gets an S-bend in its middle
+    if (L > P.sLong && rng() < P.sProb) {
+      const dd = (.12 + rng() * .22) * (rng() < .5 ? -1 : 1), Rs = 1400 + rng() * 1200, Lc = Math.min(160, .4 * Math.abs(dd) * Rs), short = 150 + rng() * 300;
+      const seg = Math.abs(dd) * Rs + Lc, a = (L - 2 * seg - short) * (.3 + rng() * .4), b = L - 2 * seg - short - a;
+      if (a > o.tan[0] && b > o.tan[0]) { segs.push({ L: a }, { R: Rs, d: dd, Ls: Lc }, { L: short, short: true }, { R: Rs, d: -dd, Ls: Lc }, { L: b }); return; }
+    }
+    segs.push({ L });
+  };
+  const t0 = tan(0); segs.push({ L: t0 / 2 });                                 // start halfway along edge 0: s = 0 is on a tangent
+  for (let k = 1; k <= m; k++) { const c = k % m; segs.push({ R: R[c], d: d[c], Ls: Ls(c) }); if (c === 0) segs.push({ L: t0 / 2 }); else edge(tan(c)); }
+  return segs;
+}
+/** Walks the bends and tangents, closes the course (tangent lengths, least squares) and returns its points. */
+function closeCourse(segs, o, sign, step) {
+  const walk = (out) => {
+    let x = 0, z = 0, ph = 0; const head = [];
+    if (out) { out.x.push(0); out.z.push(0); }
+    for (const sg of segs) {
+      if (sg.L !== undefined) {                                   // tangent
+        head.push(ph);
+        if (!out) { x += Math.cos(ph) * sg.L; z += Math.sin(ph) * sg.L; continue; }
+        const m = Math.max(1, Math.round(sg.L / step)), h = sg.L / m, c = Math.cos(ph), s = Math.sin(ph);
+        for (let j = 0; j < m; j++) { x += c * h; z += s * h; if (out) { out.x.push(x); out.z.push(z); } }
+        continue;
+      }
+      if (!out && sg.lx !== undefined) {                          // the closure solve: the bend's own chord, turned to its heading
+        const c = Math.cos(ph), s = Math.sin(ph); x += c * sg.lx - s * sg.lz; z += s * sg.lx + c * sg.lz; ph += sg.dph; continue;
+      }
+      const x0 = x, z0 = z, ph0 = ph;
+      const kap = sg.d < 0 ? -1 / sg.R : 1 / sg.R, La = Math.abs(sg.d) * sg.R - sg.Ls;
+      for (const [L, k0, k1] of [[sg.Ls, 0, kap], [La, kap, kap], [sg.Ls, kap, 0]]) {
+        if (L <= 0) continue;
+        const m = Math.max(1, Math.round(L / step)), h = L / m;
+        for (let j = 0; j < m; j++) {
+          const ka = k0 + (k1 - k0) * j / m, kb = k0 + (k1 - k0) * (j + 1) / m, dph = (ka + kb) / 2 * h;
+          const pm = ph + dph / 2;
+          x += Math.cos(pm) * h; z += Math.sin(pm) * h; ph += dph;
+          if (out) { out.x.push(x); out.z.push(z); }
+        }
+      }
+      if (!out) { const c = Math.cos(ph0), s = Math.sin(ph0), dx = x - x0, dz = z - z0; sg.lx = c * dx + s * dz; sg.lz = -s * dx + c * dz; sg.dph = ph - ph0; }
+    }
+    return { x, z, ph, head };
+  };
+  // close it: tangents (not the fixed one, not an S-bend's short one) change length by D = W Dt (D W Dt)^-1 (-e);
+  // one that would get shorter than its minimum is held there and the rest solved again (an active set)
+  for (let it = 0; it < 8; it++) {
+    const r = walk(null), ex = r.x, ez = r.z;
+    if (Math.hypot(ex, ez) < .01) break;
+    let a = 0, b = 0, c = 0; const tg = [];
+    let t = 0;
+    for (const sg of segs) if (sg.L !== undefined) { const ph = r.head[t++]; if (sg.fixed || sg.short || sg.held) continue; const w = sg.L, cx = Math.cos(ph), cz = Math.sin(ph); a += w * cx * cx; b += w * cx * cz; c += w * cz * cz; tg.push([sg, w, cx, cz]); }
+    const det = a * c - b * b; if (tg.length < 3 || Math.abs(det) < 1e-6 * (a + c) * (a + c)) return null;
+    const lx = (-ex * c + ez * b) / det, lz = (-ez * a + ex * b) / det;     // (D W Dt)^-1 (-e)
+    for (const [sg, w, cx, cz] of tg) { sg.L += w * (cx * lx + cz * lz); if (sg.L < 220) { sg.L = 220; sg.held = true; } }
+  }
+  { const r = walk(null); if (Math.hypot(r.x, r.z) > .5) return null; }
+  if (o.len) { let L = 0; for (const sg of segs) L += sg.L !== undefined ? sg.L : Math.abs(sg.d) * sg.R + sg.Ls; if (L < o.len[0] || L > o.len[1]) return null; }
+  const out = { x: [], z: [] }; const r = walk(out);
+  if (Math.hypot(r.x, r.z) > 1 || Math.abs(r.ph - sign * 2 * Math.PI) > 1e-6) return null;
+  out.x.pop(); out.z.pop();                                       // the last point is the first
+  const n = out.x.length, X = Float64Array.from(out.x), Z = Float64Array.from(out.z);
+  let L = 0; for (let i = 0; i < n; i++) { const j = (i + 1) % n; L += Math.hypot(X[j] - X[i], Z[j] - Z[i]); }
+  return { x: X, z: Z, n, L, segs };
+}
+/** Smallest distance between two parts of a closed course more than gap metres apart along it (and the pair). */
+function courseClearance(c, gap) {
+  const cell = 400, map = new Map(), key = (i, j) => i * 100003 + j, ds = c.L / c.n, stride = Math.max(1, Math.round(25 / ds));
+  for (let i = 0; i < c.n; i += stride) { const k = key(Math.floor(c.x[i] / cell), Math.floor(c.z[i] / cell)); let b = map.get(k); if (!b) map.set(k, (b = [])); b.push(i); }
+  let best = Infinity;
+  for (let i = 0; i < c.n; i += stride) {
+    const ci = Math.floor(c.x[i] / cell), cj = Math.floor(c.z[i] / cell);
+    for (let a = -4; a <= 4; a++) for (let b = -4; b <= 4; b++) {
+      const bk = map.get(key(ci + a, cj + b)); if (!bk) continue;
+      for (const j of bk) {
+        if (j <= i) continue;
+        const along = Math.min(j - i, c.n - (j - i)) * ds; if (along < gap) continue;
+        const d = Math.hypot(c.x[j] - c.x[i], c.z[j] - c.z[i]); if (d < best) best = d;
+      }
+    }
+  }
+  return best;
+}
+/** Vertical profile of a closed course: terrainBase smoothed along it, held to the grade, then rounded (vertical curves). */
+function courseProfile(c, o = ROUTE) {
+  const n = c.n, ds = c.L / n, y = new Float64Array(n);
+  for (let i = 0; i < n; i++) y[i] = terrainBase(c.x[i], c.z[i]);
+  const mean = (src, w) => {                                      // closed running mean over +-w metres
+    const h = Math.max(1, Math.round(w / ds)), out = new Float64Array(n); let acc = 0;
+    for (let k = -h; k <= h; k++) acc += src[mod(k, n)];
+    for (let i = 0; i < n; i++) { out[i] = acc / (2 * h + 1); acc += src[mod(i + h + 1, n)] - src[mod(i - h, n)]; }
+    return out;
+  };
+  let p = mean(mean(y, o.smooth), o.smooth);
+  const g = o.grade * .9 * ds;
+  for (let pass = 0; pass < 6; pass++) {
+    for (let i = 1; i <= 2 * n; i++) { const j = i % n, q = (j - 1 + n) % n; p[j] = clamp(p[j], p[q] - g, p[q] + g); }
+    for (let i = 2 * n; i >= 1; i--) { const j = i % n, q = (j + 1) % n; p[j] = clamp(p[j], p[q] - g, p[q] + g); }
+  }
+  return mean(mean(p, o.smooth2), o.smooth2);
+}
+/** Control points (every cpEvery m) for Track from a closed course and its profile. */
+function courseCp(c, y, every) {
+  const ds = c.L / c.n, k = Math.max(1, Math.round(every / ds)), cp = [];
+  for (let i = 0; i < c.n; i += k) cp.push(v3(c.x[i], y[i], c.z[i]));
+  return cp;
+}
+/** The main road: the first seed from ROUTE.seed that gives a long, open, non-crossing course; centred on the origin. */
+function freewayRoute() {
+  for (let t = ROUTE.pick; t < ROUTE.pick + ROUTE.tries; t++) {
+    const rng = mulberry32(ROUTE.seed * 7919 + t * 104729), c = courseTurtle(rng, ROUTE, 1);
+    if (!c || c.L < ROUTE.len[0] || c.L > ROUTE.len[1]) continue;
+    let cx = 0, cz = 0; for (let i = 0; i < c.n; i++) { cx += c.x[i]; cz += c.z[i]; } cx /= c.n; cz /= c.n;
+    let reach = 0; for (let i = 0; i < c.n; i++) { c.x[i] -= cx; c.z[i] -= cz; reach = Math.max(reach, Math.hypot(c.x[i], c.z[i])); }
+    if (reach > ROUTE.reach) continue;
+    if (courseClearance(c, ROUTE.sep) < ROUTE.clear) continue;
+    c.seed = t;
+    return c;
+  }
+  return null;
+}
+
+/** The main road for a run: the course, its profile, the Track, then the land shaped round it (§13.2c). */
+function routeTrack(lanes) {
+  TERRAIN_FX = [];
+  const c = freewayRoute(); if (!c) return null;
+  const y = courseProfile(c), A = new Track(7, lanes, { cp: courseCp(c, y, ROUTE.cpEvery) });
+  A.route = c; A.inSign = c.sign ?? 1;
+  routeFeatures(A);
+  return A;
+}
+/** Tunnels and viaducts on A: sites, terrain features, then the spans measured from the terrain they make. */
+function routeFeatures(A) {
+  const L = A.length, n = A.n, ds = A.ds, F = newFrame(), rng = mulberry32(A.route.seed * 31 + 7);
+  const K = A.K, absK = (s0, s1) => { let m = 0; for (let s = s0; s <= s1; s += 20) m = Math.max(m, Math.abs(K[Math.round(mod(s, L) / ds) % n])); return m; };
+  const away = (s, list, gap) => list.every(t => Math.abs(mod(s - t + L / 2, L) - L / 2) > gap);
+  const used = [0];                                             // the start (s0 = 60) stays plain road
+  const tun = [], via = [];
+  // candidates every 150 m, scored by the natural terrain (a tunnel where the land already rises above the road, a viaduct where it falls away)
+  const cand = [];
+  for (let s = 0; s < L; s += 150) {
+    A.frame(s, F); const t0 = terrainHeight(F.P.x, F.P.z) - F.P.y;
+    cand.push({ s, t0, rnd: rng() });
+  }
+  const footprintClear = (f, s) => {                           // the feature must not reach another part of this road
+    for (let i = 0; i < n; i += 10) {
+      const dS = Math.abs(mod(i * ds - s + L / 2, L) - L / 2); if (dS < f.Lh + 700) continue;
+      const dx = A.P[i * 3] - f.cx, dz = A.P[i * 3 + 2] - f.cz, a = Math.abs(dx * f.ax + dz * f.az), b = Math.abs(dz * f.ax - dx * f.az);
+      if (a < f.Lh + 350 && b < f.W + 350) return false;
+    }
+    return true;
+  };
+  const make = (kind, s, len) => {
+    const sa = s - len / 2, sb = s + len / 2; A.frame(sa, F); const ax0 = F.P.x, az0 = F.P.z; A.frame(sb, F);
+    let ax = F.P.x - ax0, az = F.P.z - az0; const l = Math.hypot(ax, az); ax /= l; az /= l;
+    A.frame(s, F);
+    const f = kind === 'ridge'
+      ? { k: kind, s, cx: F.P.x, cz: F.P.z, ax, az, Lh: len / 2 / .72, W: 430, H: 0 }
+      : { k: kind, s, cx: F.P.x, cz: F.P.z, ax: -az, az: ax, Lh: 950, W: len / 2 + 140, H: 0 };   // a valley runs across the road
+    f.r2 = (Math.max(f.Lh, f.W) + 5) ** 2;
+    return f;
+  };
+  const pick = (want, list, score, kind, lenR) => {
+    const order = cand.filter(c => away(c.s, used, ROUTE.gapFx) && Math.abs(mod(c.s - 60 + L / 2, L) - L / 2) > ROUTE.start).sort((a, b) => score(b) - score(a));
+    for (const c of order) {
+      if (list.length >= want) break;
+      if (!away(c.s, used, ROUTE.gapFx)) continue;
+      const len = lenR[0] + c.rnd * (lenR[1] - lenR[0]);
+      if (absK(c.s - len / 2 - 200, c.s + len / 2 + 200) > (kind === 'ridge' ? 1 / 1100 : 1 / 800)) continue;
+      if (A.urbanAt(c.s) > (kind === 'ridge' ? .3 : .8)) continue;
+      const f = make(kind, c.s, len); if (!footprintClear(f, c.s)) continue;
+      // height: the cover (or the drop) wanted in the middle half, whatever the land does there
+      let H = 0;
+      for (let s = c.s - len / 4; s <= c.s + len / 4; s += 10) {
+        A.frame(s, F); const dx = F.P.x - f.cx, dz = F.P.z - f.cz, a = (dx * f.ax + dz * f.az) / f.Lh, b = (dz * f.ax - dx * f.az) / f.W, r = a * a + b * b, w = r < 1 ? (1 - r) ** 2 : 0;
+        if (w < .05) continue;
+        const t0 = terrainHeight(F.P.x, F.P.z) - F.P.y;
+        H = Math.max(H, kind === 'ridge' ? (ROUTE.coverIn - t0) / w : (ROUTE.depth + t0) / w);
+      }
+      if (kind === 'ridge') for (const sg of [-1, 1]) {           // the portals: the cover there, where the hill is (1 - .72^2)^2 of its height
+        A.frame(c.s + sg * len / 2, F); const t0 = terrainHeight(F.P.x, F.P.z) - F.P.y;
+        H = Math.max(H, (ROUTE.cover + 2 - t0) / .231);
+      }
+      f.H = (kind === 'ridge' ? 1 : -1) * clamp(H, kind === 'ridge' ? 40 : 18, kind === 'ridge' ? 170 : 90);
+      list.push(f); used.push(c.s); TERRAIN_FX.push(f);
+    }
+  };
+  pick(ROUTE.tunnels, tun, c => c.t0 + c.rnd * 25, 'ridge', ROUTE.tunLen);
+  pick(ROUTE.viaducts, via, c => -c.t0 + c.rnd * 25, 'valley', ROUTE.viaLen);
+  // spans from the land as it now is: a tunnel where the hill covers the whole bore, a viaduct where the ground is well below the deck
+  const K1 = A.K1 = new Float32Array(n).fill(1), KD = A.KD = new Float32Array(n).fill(1), Pq = v3();
+  const run = (s, ok) => {
+    if (!ok(s)) return null;
+    let a = s, b = s; while (b - s < 3000 && ok(b + ds)) b += ds; while (s - a < 3000 && ok(a - ds)) a -= ds;
+    return [a, b];
+  };
+  const side = (s, u) => { A.frame(s, F); A.surfacePoint(F, u, Pq); return terrainHeight(Pq.x, Pq.z) - Pq.y; };
+  const tSpans = [], vSpans = [];
+  for (const f of tun) {
+    const ok = s => side(s, 0) >= ROUTE.cover && side(s, A.railU + 3) >= ROUTE.cover - 3 && side(s, -A.railU - 3) >= ROUTE.cover - 3;
+    const sp = run(f.s, ok); if (sp && sp[1] - sp[0] > 200) { tSpans.push(sp); f.span = sp; }
+  }
+  for (const f of via) {
+    const ok = s => -side(s, 0) >= ROUTE.under && -side(s, A.roadOuter) >= ROUTE.under - 1.5 && -side(s, -A.roadOuter) >= ROUTE.under - 1.5;
+    const sp = run(f.s, ok); if (sp && sp[1] - sp[0] > 100) { vSpans.push(sp); f.span = sp; }
+  }
+  const fade = (sp, arr) => {
+    for (let s = sp[0]; s <= sp[1]; s += ds) {
+      const i = Math.round(mod(s, L) / ds) % n, into = Math.min(s - sp[0], sp[1] - s);
+      arr[i] = Math.min(arr[i], 1 - sstep(0, 20, into));
+    }
+  };
+  for (const sp of tSpans) fade(sp, K1);
+  for (const sp of vSpans) { fade(sp, K1); fade(sp, KD); }
+  tSpans.sort((a, b) => mod(a[0], L) - mod(b[0], L)); vSpans.sort((a, b) => mod(a[0], L) - mod(b[0], L));
+  A.tunnelSpans = tSpans.length ? tSpans.flatMap(([a, b]) => [mod(a, L), mod(a, L) + (b - a)]) : null;
+  A.viaSpans = vSpans.map(([a, b]) => [mod(a, L), mod(a, L) + (b - a)]);
+  A.spans = A.viaSpans;                                         // the piers (RouteStatics) read the viaducts like a flyover's spans
+  A.fx = { tun, via };
+  // nothing tall stands in a tunnel or on a viaduct: overpasses, gantries and roadside signs keep 150 m clear
+  const clearOf = s => !A.viaSpans.some(([a, b]) => mod(s - a + 150, L) < b - a + 300) && !(A.tunnelSpans && A.tunnelAt(s, 150) >= 0);
+  A.overpasses = A.overpasses.filter(o => clearOf(o.s)); A.gantries = A.gantries.filter(o => clearOf(o.s)); A.roadSigns = A.roadSigns.filter(o => clearOf(o.s));
+  A.inFx = s => !clearOf(s);
+}
+
+/** Build 1.41: the network round the freeway route. Like buildNetwork, but every other road is a course of its own
+ *  (courseTurtle) that starts with a long tangent beside A where they meet, then goes its own way: clockwise, so
+ *  its +u carriageway faces A there. Sites: tangents of A, 4.5 km apart, clear of the start, the tunnels and the
+ *  viaducts; each road keeps ROUTE.side.clear from A (except where they meet), from the others and from the
+ *  terrain features. */
+const NET_FREEWAY = [
+  { name: 'B', inside: false, lanes: 2, fly: true, seed: 31 },
+  { name: 'D', inside: false, lanes: 2, fly: true, seed: 47 },
+  { name: 'C', inside: true, lanes: 1, seed: 59, o: { bends: [5, 8], len: [5000, 12000], R: [420, 1400], tan: [200, 900] } },
+  { name: 'E', inside: false, lanes: 2, seed: 71 },
+  { name: 'G', inside: true, lanes: 2, seed: 83, o: { bends: [5, 8], len: [5000, 12000], R: [420, 1400], tan: [200, 900] } },
+  { name: 'F', inside: false, lanes: 2, seed: 97 },
+];
+function buildFreewayNetwork(A) {
+  const L = A.length, F = newFrame(), O0 = ROUTE.side, out = { sites: [], ramps: [], signs: [], zones: [] }, loops = [];
+  const K = A.K, absK = (s0, s1) => { let m = 0; for (let s = s0; s <= s1; s += 20) m = Math.max(m, Math.abs(K[Math.round(mod(s, L) / A.ds) % A.n])); return m; };
+  const dA = (a, b) => Math.abs(mod(a - b + L / 2, L) - L / 2);
+  const away = (s, list, gap) => list.every(t => dA(s, t) > gap);
+  const fxS = [...(A.fx?.tun || []), ...(A.fx?.via || [])].map(f => f.s), crossS = [];
+  // distance fields on a 50 m raster for the clearance checks: to A (and A's station there), to the other side roads
+  // and the land features (0 inside their footprint + 350 m)
+  const cs = 50, half = O0.reach + 1200, nx = Math.ceil(2 * half / cs), dAf = new Float32Array(nx * nx).fill(1e9), sAf = new Float32Array(nx * nx), dOf = new Float32Array(nx * nx).fill(1e9);
+  const stamp = (x, z, R, fn) => { const i0 = Math.max(0, Math.floor((x - R + half) / cs)), i1 = Math.min(nx - 1, Math.floor((x + R + half) / cs)), j0 = Math.max(0, Math.floor((z - R + half) / cs)), j1 = Math.min(nx - 1, Math.floor((z + R + half) / cs));
+    for (let j = j0; j <= j1; j++) { const dz = (j + .5) * cs - half - z; for (let i = i0; i <= i1; i++) { const dx = (i + .5) * cs - half - x, d2 = dx * dx + dz * dz; if (d2 < R * R) fn(j * nx + i, Math.sqrt(d2)); } } };
+  const at = (x, z) => { const i = Math.floor((x + half) / cs), j = Math.floor((z + half) / cs); return i < 0 || j < 0 || i >= nx || j >= nx ? -1 : j * nx + i; };
+  for (let i = 0; i < A.n; i += 12) { const sI = i * A.ds; stamp(A.P[i * 3], A.P[i * 3 + 2], Math.max(O0.clearA, 300) + 80, (k, d) => { if (d < dAf[k]) { dAf[k] = d; sAf[k] = sI; } }); }
+  for (const f of TERRAIN_FX) for (let a = -f.Lh - 200; a <= f.Lh + 200; a += 40) for (let b = -f.W - 200; b <= f.W + 200; b += 40) { const k = at(f.cx + a * f.ax - b * f.az, f.cz + a * f.az + b * f.ax); if (k >= 0) dOf[k] = 0; }
+  const addPts = (X, Z, nn) => { for (let i = 0; i < nn; i += 6) stamp(X[i], Z[i], O0.clear + 60, (k, d) => { if (d < dOf[k]) dOf[k] = d; }); };
+  const sep = 2 * RAMP.R + 2 * RAMP.G - 8 + (A.laneEnd - A.laneW / 2), pr = {}, pq = v3();
+  for (const sp of NET_FREEWAY) {
+    const rng = mulberry32(sp.seed * 9973 + (A.route?.seed || 0)), sepB = sep + (2.2 + (sp.lanes - .5) * 3.7), sigma = (sp.inside ? 1 : -1) * (A.inSign || 1), O = sp.o ? { ...O0, ...sp.o } : O0;
+    let done = false;
+    const sites = [];
+    for (let s = 0; s < L; s += 250) sites.push({ s, r: rng() });
+    sites.sort((a, b) => a.r - b.r);
+    for (const st of sites) {
+      if (done) break;
+      const s = st.s;
+      if (!away(s, out.sites, 3000) || !away(s, [60], ROUTE.start) || !away(s, fxS, 1100) || !away(s, crossS, 1500)) continue;
+      if (absK(s - 700, s + 700) > 1 / 1500) continue;
+      A.frame(s, F);
+      const hx = sigma > 0 ? -F.T.x : F.T.x, hz = sigma > 0 ? -F.T.z : F.T.z, hl = Math.hypot(hx, hz), Hx = hx / hl, Hz = hz / hl;
+      const Jx = F.P.x + sigma * F.Rh.x * sepB, Jz = F.P.z + sigma * F.Rh.z * sepB, Rx = F.Rh.x, Rz = F.Rh.z;
+      for (let tr = 0; tr < 24 && !done; tr++) {
+        const c = courseTurtle(rng, O, -1); if (!c) continue;
+        const X = new Float64Array(c.n), Z = new Float64Array(c.n), cds = c.L / c.n;
+        for (let i = 0; i < c.n; i++) { const lx = c.x[i] - O.first / 2, lz = c.z[i]; X[i] = Jx + lx * Hx - lz * Hz; Z[i] = Jz + lx * Hz + lz * Hx; }
+        // clearances: the others and the land features always; A except where they meet, or where this road crosses it
+        let ok = true; const near = [];
+        for (let i = 0; i < c.n && ok; i += 6) {
+          const x = X[i], z = Z[i], k = at(x, z);
+          if (k < 0 || Math.hypot(x, z) > O.reach || dOf[k] < O.clear) { ok = false; break; }
+          const dMin = dAf[k];
+          if (dA(sAf[k], s) < 1500) { if (dMin < sepB - 60) ok = false; }
+          else if (dMin < O.clearA) near.push(i);
+        }
+        if (!ok) continue;
+        // crossings: where this road's lateral place on A changes sign; every near point must be the approach to one
+        const cross = [];
+        if (near.length) {
+          let prevU = null, prevI = -1;
+          const tB = i => Math.min(i, c.n - i) * cds;                            // distance along B from the junction's tangent start
+          for (let k = 0; k < near.length && ok; k++) {
+            const i0 = near[k], i1 = Math.min(c.n - 1, i0 + 5);
+            for (let i = i0; i <= i1; i++) {
+              A.project(X[i], Z[i], prevU !== null && i === prevI + 1 ? pr.s : null, pr); const u = pr.u;
+              if (prevU !== null && i === prevI + 1 && Math.sign(u) !== Math.sign(prevU) && Math.abs(u) < 40 && !cross.some(q => Math.abs(q.i - i) < 50)) {
+                A.frame(pr.s, F); const tx = X[Math.min(c.n - 1, i + 2)] - X[Math.max(0, i - 2)], tz = Z[Math.min(c.n - 1, i + 2)] - Z[Math.max(0, i - 2)];
+                const sin = Math.abs(F.T.x * tz - F.T.z * tx) / Math.hypot(tx, tz) / Math.hypot(F.T.x, F.T.z);
+                cross.push({ i, sA: pr.s, sin });
+              }
+              prevU = u; prevI = i;
+            }
+          }
+          for (const q of cross) {
+            if (q.sin < .64 || dA(q.sA, s) < 1500 || !away(q.sA, out.sites, 1300) || !away(q.sA, fxS, 1500) || dA(q.sA, 60) < 1500 || A.tunnelAt(q.sA, 300) >= 0 || tB(q.i) < 1200) ok = false;
+          }
+          if (cross.length > 2) ok = false;
+          for (const i of near) if (ok && !cross.some(q => Math.abs(i - q.i) * cds <= O.clearA / q.sin + 150)) ok = false;
+        }
+        if (!ok) continue;
+        // the profile, lifted over A where it crosses: 7.9 m over A's paving, a 4 % cone either side, smoothed
+        const cc = { x: X, z: Z, n: c.n, L: c.L }, y = courseProfile(cc);
+        if (cross.length) {
+          const n = c.n, lo = new Float64Array(n).fill(-1e9);
+          for (const q of cross) {
+            const w = (A.roadOuter + 4) / q.sin + 10;
+            for (let i = Math.round(q.i - w / cds); i <= q.i + w / cds; i++) {
+              const j = mod(i, n); A.project(X[j], Z[j], q.sA, pr); if (Math.abs(pr.u) > A.roadOuter + 6) continue;
+              A.frame(pr.s, F); lo[j] = Math.max(lo[j], A.surfacePoint(F, clamp(pr.u, -A.roadOuter, A.roadOuter), pq).y + RAMP.clear + .6);
+            }
+          }
+          const g = .04 * cds;
+          for (let pass = 0; pass < 2; pass++) { for (let i = 1; i <= n; i++) lo[i % n] = Math.max(lo[i % n], lo[i - 1] - g); for (let i = n - 1; i >= -n; i--) lo[mod(i, n)] = Math.max(lo[mod(i, n)], lo[mod(i + 1, n)] - g); }
+          const yy = Float64Array.from(y, (v, i) => Math.max(v, lo[i])), cs = new Float64Array(n + 1), h = 40;
+          for (let it = 0; it < 120; it++) {
+            let acc = 0; for (let i = 0; i < n; i++) { acc += yy[i]; cs[i + 1] = acc; }
+            const tmp = new Float64Array(n);
+            for (let i = 0; i < n; i++) { const a = i - h, b = i + h; let sum; if (a >= 0 && b < n) sum = cs[b + 1] - cs[a]; else { sum = 0; for (let k = a; k <= b; k++) sum += yy[mod(k, n)]; } tmp[i] = Math.max(sum / (2 * h + 1), lo[i]); }
+            yy.set(tmp);
+          }
+          y.set(yy);
+        }
+        let B = new Track(sp.seed, sp.lanes, { cp: courseCp(cc, y, ROUTE.cpEvery), name: sp.name, props: false });
+        // nearest approach to A at the site: shift sideways to make it exactly the planned separation (as buildNetwork)
+        A.frame(s, F);
+        for (let it = 0; it < 3; it++) {
+          let md = Infinity;
+          for (let i = 0; i < B.n; i += 3) { const x = B.P[i * 3], z = B.P[i * 3 + 2]; if (Math.hypot(x - F.P.x, z - F.P.z) > 1500) continue; A.project(x, z, s, pr); const d = Math.abs(pr.u); if (d < md) md = d; }
+          const err = md - sepB; if (Math.abs(err) < .3) break;
+          for (let i = 0; i < c.n; i++) { X[i] -= sigma * Rx * err; Z[i] -= sigma * Rz * err; }
+          B = new Track(sp.seed, sp.lanes, { cp: courseCp(cc, y, ROUTE.cpEvery), name: sp.name, props: false });
+        }
+        B.route = c; B.K1 = new Float32Array(B.n).fill(1); B.crossings = cross.length;   // Network.finish finds its bridges over A
+        const sA = netJunction(A, B, s, sp, out);
+        if (sA === null) continue;
+        loops.push({ track: B, name: sp.name, cross: cross.map(q => q.sA) });
+        for (const q of cross) crossS.push(q.sA);
+        addPts(X, Z, c.n);
+        done = true;
+      }
+    }
+    if (!done && typeof Log !== 'undefined') Log.info('network: no place for road ' + sp.name + ' on this route');   // expected for some: they are tried in turn
+  }
+  // A's own structures stay clear of the bridges over it too
+  A.overpasses = A.overpasses.filter(o => away(o.s, crossS, 400)); A.gantries = A.gantries.filter(o => away(o.s, crossS, 300));
+  A.crossS = crossS;
+  return netFinish(A, loops, out);
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -4397,8 +4901,20 @@ class RoadChunk {
       for (let b = 0; b < nl; b++) for (let k = 0; k < 36; k++) lg.index.array[b * 36 + k] = b * 24 + BOX_INDEX[k];
       this.lamps = add(lg, M.tunnelLamp); this.lamps.receiveShadow = false;
     }
+    // Build 1.41 (§13.2c): open-road tunnels: twin bores (one over each carriageway) and their lamps, shown only in a
+    // chunk that meets a tunnel span; the bores cast the sun's shadow onto the road inside
+    if (sys.portals) {
+      const TP = TUNNEL_PROFILE.length;
+      const tg = dynGeo(2 * ROAD_ROWS * TP, 2 * (ROAD_ROWS - 1) * (TP - 1) * 6, { position: 3, normal: 3, uv: 2, color: 3 });
+      gridIndex(ROAD_ROWS, TP, tg.index.array, gridIndex(ROAD_ROWS, TP, tg.index.array, 0, 0), ROAD_ROWS * TP);
+      this.tunnel = add(tg, M.tunnel, { cast: true });
+      const nl = TUNNEL_LAMPS_PER_CHUNK * 4, lg = dynGeo(nl * 24, nl * 36, { position: 3, normal: 3, uv: 2, color: 3 });
+      for (let b = 0; b < nl; b++) for (let k = 0; k < 36; k++) lg.index.array[b * 36 + k] = b * 24 + BOX_INDEX[k];
+      this.lamps = add(lg, M.tunnelLamp); this.lamps.receiveShadow = false;
+    }
     // Build 1.30: slip roads stand on a concrete deck (hidden in their embankments, the bridge where they fly)
-    if (tr.oneWay) {
+    // build 1.41: so do the viaducts of the main road and a side road's bridge over it (shown only near a span)
+    if (tr.oneWay || tr.spans?.length) {
       const dg = dynGeo(ROAD_ROWS * 6, (ROAD_ROWS - 1) * 5 * 6, { position: 3, normal: 3, uv: 2, color: 3 });
       gridIndex(ROAD_ROWS, 6, dg.index.array, 0, 0);
       this.deck = add(dg, M.concrete, { cast: true });
@@ -4413,17 +4929,26 @@ class RoadChunk {
     this.k = k; this.s0 = k * CHUNK_LEN; this.len = Math.min(CHUNK_LEN, tr.length - this.s0);
     this.stage = 0; this.ready = false; this.trees.count = 0;
     for (const m of this.meshes) m.visible = false;
+    /* build 1.41: which tunnel span (open road) this chunk meets, whether it is all inside one, and whether a two-way
+       road's viaduct is near (its deck) */
+    this.tunSpan = null; this.inTun = false; this.onDeck = false;
+    const T = this.sys.portals ? tr.tunnelSpans : null, e0 = this.s0, e1 = this.s0 + this.len;
+    if (T) for (let i = 0; i + 1 < T.length; i += 2) for (const w of [0, tr.length, -tr.length]) if (e0 + w < T[i + 1] && e1 + w > T[i]) this.tunSpan = [T[i] - w, T[i + 1] - w];
+    if (this.tunSpan) this.inTun = e0 >= this.tunSpan[0] + 25 && e1 <= this.tunSpan[1] - 25;
+    if (!tr.oneWay && tr.spans) for (const [a, b] of tr.spans) for (const w of [0, tr.length, -tr.length]) if (e0 + w < b + 30 && e1 + w > a - 30) this.onDeck = true;
   }
   step() {
     switch (this.stage++) {
       case 0: this.#road(); this.#paint(); return false;
-      case 1: if (!this.sys.track.oneWay) this.#barrier(); else this.#deck(); this.#steel(); this.#walls(); return false;
-      case 2: if (this.sys.tunnel) this.#tunnel(); else this.#verge(); return false;
+      case 1: if (!this.sys.track.oneWay) this.#barrier(); else this.#deck(); if (this.onDeck) this.#deck(); this.#steel(); this.#walls(); return false;
+      case 2: if (this.sys.tunnel) this.#tunnel(); else { if (!this.inTun) this.#verge(); if (this.tunSpan) this.#bores(); } return false;   // build 1.41: open-road bores
       default: {
         this.#trees();
         const tr = this.sys.track; tr.frame(this.s0 + this.len / 2, this.F); this.cx = this.F.P.x; this.cz = this.F.P.z;
         for (const m of this.meshes) { m.geometry.computeBoundingSphere(); m.visible = true; }
         this.walls.visible = this.urban > .45 && !this.sys.tunnel; this.verge.visible = !this.sys.tunnel; this.barrier.visible = !tr.oneWay; this.ready = true;
+        if (this.sys.portals) { this.tunnel.visible = this.lamps.visible = !!this.tunSpan; if (this.inTun) this.verge.visible = false; }   // build 1.41
+        if (this.deck && !tr.oneWay) this.deck.visible = this.onDeck;
         return true;
       }
     }
@@ -4552,7 +5077,7 @@ class RoadChunk {
   }
   #walls() {
     const tr = this.sys.track, g = this.walls.geometry, WP = 6, F = this.F, p = this.t1;
-    this.urban = tr.wallOff && tr.wallOff[this.k] ? 0 : tr.urbanAt(this.s0 + this.len / 2);
+    this.urban = (tr.wallOff && tr.wallOff[this.k]) || this.tunSpan ? 0 : tr.urbanAt(this.s0 + this.len / 2);   // build 1.41: no noise wall on a tunnel's hill
     const P = g.attributes.position.array, N = g.attributes.normal.array, UV = g.attributes.uv.array, CO = g.attributes.color.array;
     for (const [side, base] of [[1, 0], [-1, ROAD_ROWS * WP]]) {
       const ui = tr.railU + 2.2, uo = ui + .3;
@@ -4608,6 +5133,42 @@ class RoadChunk {
         const v0 = vtx; vtx = writeBox(LP, LN, LU, vtx, c, ax, ay, az);
         const zc = tunnelZone(s), LC = lg.attributes.color.array;                   // build 1.22: lamp colour by section
         for (let v = v0; v < vtx; v++) { LC[v * 3] = zc[0]; LC[v * 3 + 1] = zc[1]; LC[v * 3 + 2] = zc[2]; }
+      }
+    }
+    this.#done(lg, 'position', 'normal', 'uv', 'color');
+  }
+  /** Build 1.41 (§13.2c): the twin bores of an open-road tunnel. The tunnel profile on the +u side and its mirror on
+   *  the -u side; rows outside the span collapse onto the portal, so the bore ends exactly there. Lamps likewise. */
+  #bores() {
+    const tr = this.sys.track, g = this.tunnel.geometry, TP = TUNNEL_PROFILE.length, F = this.F, p = this.t1, sp = this.tunSpan;
+    const P = g.attributes.position.array, N = g.attributes.normal.array, UV = g.attributes.uv.array, CO = g.attributes.color.array;
+    for (const [side, base] of [[1, 0], [-1, ROAD_ROWS * TP]]) for (let r = 0; r < ROAD_ROWS; r++) {
+      const s = clamp(this.s0 + this.len * r / (ROAD_ROWS - 1), sp[0], sp[1]); tr.frame(s, F);
+      for (let i = 0; i < TP; i++) {
+        const v = base + r * TP + (side > 0 ? i : TP - 1 - i), [u0, y, nu0, ny, arc] = TUNNEL_PROFILE[i], u = side * u0, nu = side * nu0;
+        const gy = tr.surfacePoint(F, clamp(u, -tr.roadOuter, tr.roadOuter), p).y;
+        P[v * 3] = F.P.x + F.Rh.x * u; P[v * 3 + 1] = gy + y; P[v * 3 + 2] = F.P.z + F.Rh.z * u;
+        N[v * 3] = F.Rh.x * nu; N[v * 3 + 1] = ny; N[v * 3 + 2] = F.Rh.z * nu;
+        UV[v * 2] = s * .5; UV[v * 2 + 1] = arc * .5;
+        const band = (Math.floor(s / 12) % 2) ? .96 : 1, grime = .55 + .45 * sstep(-.3, 1.4, y), stripe = y > .9 && y < 1.15 ? .55 : 1;
+        const c = grime * band * stripe * (y > TUNNEL_H ? .62 : 1);
+        CO[v * 3] = c; CO[v * 3 + 1] = c * .985; CO[v * 3 + 2] = c * .95;
+      }
+    }
+    this.#done(g, 'position', 'normal', 'uv', 'color');
+    const lg = this.lamps.geometry, LP = lg.attributes.position.array, LN = lg.attributes.normal.array, LU = lg.attributes.uv.array, LC = lg.attributes.color.array;
+    const c = this.t2, ax = this.t3, ay = v3(), az = v3(); let vtx = 0;
+    for (let k = 0; k < TUNNEL_LAMPS_PER_CHUNK; k++) {
+      const s0 = this.s0 + this.len * (k + .5) / TUNNEL_LAMPS_PER_CHUNK, inside = s0 > sp[0] + 3 && s0 < sp[1] - 3, s = clamp(s0, sp[0], sp[1]); tr.frame(s, F);
+      for (const side of [1, -1]) for (const du of [-1.1, 1.1]) {
+        const uc = side * TUNNEL_UC, u = uc + du, gy = tr.surfacePoint(F, clamp(uc, -tr.roadOuter, tr.roadOuter), p).y, y = TUNNEL_H + TUNNEL_RISE * Math.sqrt(Math.max(0, 1 - (du / TUNNEL_A) ** 2)) - .07;
+        const kk = inside ? 1 : 0;                                       // outside the bore: a box of no size
+        c.x = F.P.x + F.Rh.x * u; c.y = gy + y; c.z = F.P.z + F.Rh.z * u;
+        ax.x = F.Rh.x * .16 * kk; ax.y = 0; ax.z = F.Rh.z * .16 * kk;
+        ay.x = 0; ay.y = .05 * kk; ay.z = 0;
+        az.x = F.T.x * 1.1 * kk; az.y = F.T.y * 1.1 * kk; az.z = F.T.z * 1.1 * kk;
+        const v0 = vtx; vtx = writeBox(LP, LN, LU, vtx, c, ax, ay, az);
+        for (let v = v0; v < vtx; v++) { LC[v * 3] = 1; LC[v * 3 + 1] = .93; LC[v * 3 + 2] = .84; }
       }
     }
     this.#done(lg, 'position', 'normal', 'uv', 'color');
@@ -4710,6 +5271,7 @@ class RoadStreamer {
   constructor(track, mats, settings, opt = {}) {
     this.track = track; this.mats = mats; this.s = settings; this.secondary = !!opt.secondary; this.asphalt = opt.asphalt || null;
     this.tunnel = !this.secondary && settings.data.world.scenery === 'tunnel'; if (this.tunnel) buildTunnelProfile(track);   // build 1.21
+    this.portals = !this.tunnel && !this.secondary && !!track.tunnelSpans?.length; if (this.portals) buildTunnelProfile(track);   // build 1.41: open-road tunnels (§13.2c)
     this.root = new THREE.Group(); this.root.matrixAutoUpdate = false;
     const t = track;
     let cols;
@@ -5152,17 +5714,20 @@ class NetStatics {
     }
     // piers: one column and a crosshead every ~28 m along each bridge, off the paving of the road below
     const cols = [], heads = [];
-    for (const r of net.ramps) for (const [a, b] of r.spans || []) {
-      const k = Math.max(1, Math.round((b - a) / 28));
+    for (const r of net.roads) for (const [a, b] of r.spans || []) {      // build 1.41: every road's spans (A's viaducts, side roads over A)
+      const k = Math.max(1, Math.round((b - a) / 28)), wide = !r.oneWay;   // a two-way deck stands on a pair of columns
       for (let i = 1; i < k; i++) {
         const s = a + (b - a) * i / k; r.frame(s, F);
-        const x = F.P.x, z = F.P.z;
-        if (net.onOtherPaving(r, x, z, 2.2)) continue;
-        const top = F.P.y - 1.1, gy = net.ground(x, z) - .4, h = top - gy;
-        if (h < 1.5) continue;
-        const yaw = Math.atan2(F.Rh.x, F.Rh.z);
-        cols.push({ x, y: gy + h / 2, z, sx: 1.7, sy: h, sz: 1.3, yaw });
-        heads.push({ x, y: top - .45, z, sx: 1.3, sy: .9, sz: 2 * r.roadOuter - 2, yaw });
+        const yaw = Math.atan2(F.Rh.x, F.Rh.z), top = F.P.y - 1.1;
+        const c0 = cols.length;
+        for (const cu of wide ? [-.42, .42] : [0]) {
+          const u = cu * r.roadOuter, x = F.P.x + F.Rh.x * u, z = F.P.z + F.Rh.z * u;
+          if (net.onOtherPaving(r, x, z, 2.2)) continue;
+          const gy = net.ground(x, z) - .4, h = top - gy;
+          if (h < 1.5) continue;
+          cols.push({ x, y: gy + h / 2, z, sx: wide ? 2.2 : 1.7, sy: h, sz: wide ? 1.6 : 1.3, yaw });
+        }
+        if (cols.length > c0) heads.push({ x: F.P.x, y: top - .45, z: F.P.z, sx: 1.3, sy: .9, sz: 2 * r.roadOuter - 2, yaw });
       }
     }
     const inst = (list) => {
@@ -5174,6 +5739,77 @@ class NetStatics {
     inst(cols); inst(heads);
   }
   dispose() { for (const o of this.objs) this.scene.remove(o); for (const g of this.geos) g.dispose(); for (const mt of this.mats) { mt.map.dispose(); mt.dispose(); } }
+}
+
+/* Build 1.41 (§13.2c): what the freeway route adds once: a concrete headwall at both ends of every open-road tunnel
+   (the bores' outline cut out of it, wide and tall enough to close off the approach cutting) and a warm fill light
+   that is always in the scene (intensity 0 outside a bore, so the light count and the programs never change). */
+function portalGeometry(A) {
+  if (!TUNNEL_PROFILE.length) buildTunnelProfile(A);
+  const W = A.railU + 26, H = ROUTE.cover + 2, shape = new THREE.Shape();
+  shape.moveTo(-W, -2.5); shape.lineTo(W, -2.5); shape.lineTo(W, H); shape.lineTo(-W, H); shape.closePath();
+  for (const side of [1, -1]) {
+    const pts = TUNNEL_PROFILE.map(([u, y]) => new THREE.Vector2(side * u, y + A.surfOffset(clamp(side * u, -A.roadOuter, A.roadOuter))));
+    shape.holes.push(new THREE.Path(side > 0 ? pts : pts.reverse()));
+  }
+  const g = new THREE.ExtrudeGeometry(shape, { depth: 1.6, bevelEnabled: false, curveSegments: 1 });
+  // 0..1.6 m out of the bore along local +z (out of the hill): the hole's sides carry the bore's lining on, never on top of it
+  return prepGeo(g, [.74, .73, .7], .35);
+}
+class RouteStatics {
+  constructor(A, mats, scene) {
+    this.scene = scene; this.objs = [];
+    const F = newFrame(), m = new THREE.Matrix4(), flip = new THREE.Matrix4().makeRotationY(Math.PI), T = A.tunnelSpans;
+    this.geo = portalGeometry(A);
+    for (let i = 0; i + 1 < T.length; i += 2) for (const [s, out] of [[T[i], true], [T[i + 1], false]]) {
+      A.frame(s, F); structureMatrix(m, F, 0, F.P);                    // local +z points back along the road: out of an entrance
+      if (!out) m.multiply(flip);
+      const mesh = new THREE.Mesh(this.geo, mats.concrete); mesh.matrixAutoUpdate = false; mesh.matrix.copy(m); mesh.matrixWorldNeedsUpdate = true;
+      mesh.castShadow = mesh.receiveShadow = true; scene.add(mesh); this.objs.push(mesh);
+    }
+    this.fill = new THREE.HemisphereLight(new THREE.Color().setRGB(1, .86, .68), new THREE.Color().setRGB(.16, .13, .1), 0);
+    scene.add(this.fill); this.objs.push(this.fill);
+  }
+  dispose() { for (const o of this.objs) this.scene.remove(o); this.geo.dispose(); }
+}
+/** Build 1.41 (§13.2c): inside an open-road tunnel. k = how deep the camera is in a bore (0 outside, 1 from ROUTE_TUN.ramp
+ *  m past the portal until that far from the exit, so the exit end brightens as it nears). The sky's light fades by k
+ *  (image-based light, sun, fog colour and in-scatter), so the bore is lit by its lamps, the car pool of street lights
+ *  moved to the bore's fittings and a warm fill; no rain or snow inside, the road there dry. world.tunS (s on A while
+ *  the camera is on A's paving, else -1e9) tells the eye (realism 3) where it is. Called at the end of the open-road
+ *  WorldEnvironment.update, after everything it scales was set for the frame. */
+const ROUTE_TUN = { ramp: 60, env: .07, sun: .02, fog: .14, fill: .45, light: 1 };
+function routeTunnelLight(env, w) {
+  const A = w.track, T = A?.tunnelSpans; if (!T || w.tunnel || !w.routeStatics) return;
+  const cam = w.camera.position, pr = w._tunPr || (w._tunPr = {}), F = w._tunF || (w._tunF = newFrame());
+  pr.over = 0; A.project(cam.x, cam.z, w.tunS > -1e8 ? w.tunS : (w.sA ?? null), pr);
+  let k = 0, side = 1; w.tunS = -1e9;
+  if (Number.isFinite(pr.u) && Math.abs(pr.u) < A.roadOuter + 2) {
+    A.frame(pr.s, F);
+    if (cam.y - F.P.y < TUNNEL_H + TUNNEL_RISE + 1) {
+      w.tunS = pr.s; side = pr.u < 0 ? -1 : 1;
+      const i = A.tunnelAt(pr.s);
+      if (i >= 0) { const a = T[2 * i], b = T[2 * i + 1], s = pr.s < a ? pr.s + A.length : pr.s; k = Math.min(sstep(0, ROUTE_TUN.ramp, s - a), sstep(0, ROUTE_TUN.ramp, b - s)); }
+    }
+  }
+  const fill = w.routeStatics.fill;
+  if (k <= 0) { w.scene.environmentIntensity = 1; fill.intensity = 0; return; }
+  const U = Atmos.uniforms;
+  w.scene.environmentIntensity = lerp(1, ROUTE_TUN.env, k);
+  w.sun.intensity *= lerp(1, ROUTE_TUN.sun, k);
+  U.uFogColor.value.multiplyScalar(lerp(1, ROUTE_TUN.fog, k)); U.uSunColorA.value.multiplyScalar(1 - k);
+  w.mats.asphaltU.uWet.value *= 1 - k;
+  if (k > .3) { env.rainMesh.visible = false; env.snowMesh?.geometry.setDrawRange(0, 0); }
+  fill.intensity = ROUTE_TUN.fill * k;
+  const L = env.streetLights, sp = 25, p = w._tunP || (w._tunP = v3());
+  if (L?.length) {
+    const base = Math.floor(pr.s / sp) * sp, uc = side * TUNNEL_UC;
+    L.forEach((li, i) => {
+      const s = mod(base + (i - 1) * sp + sp * .5, A.length); A.frame(s, F); A.surfacePoint(F, clamp(uc, -A.roadOuter, A.roadOuter), p);
+      li.position.set(F.P.x + F.Rh.x * uc, p.y + TUNNEL_H + TUNNEL_RISE - .6, F.P.z + F.Rh.z * uc);
+      li.color.setRGB(1, .9, .78); li.intensity = TUNNEL_LIGHT * ROUTE_TUN.light * k * (A.tunnelAt(s) >= 0 ? 1 : 0); li.distance = 42;
+    });
+  }
 }
 
 class PropSystem {
@@ -5230,7 +5866,7 @@ class PropSystem {
     // Median lighting through lit regions, every 64 m
     let c = 0, hd = 0; const q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1), pos = new THREE.Vector3(), colPos = this.columnPositions = [];
     for (let s = Math.ceil(s0 / 64) * 64; s < s0 + len && c < 70; s += 64) {
-      if (tr.litAt(s) < .5) continue;
+      if (tr.litAt(s) < .5 || tr.tunnelAt(s, 40) >= 0) continue;   // build 1.41: no lamp column through a tunnel's vault
       tr.frame(s, F); tr.surfacePoint(F, 0, p); structureMatrix(m, F, 0, p); this.columns.setMatrixAt(c++, m); colPos.push({ x: p.x, y: p.y, z: p.z });
       for (const x of [-2.55, 2.55]) { if (hd >= 140) break; pos.set(x, 10.82, 0).applyMatrix4(m); m.decompose(this._tv ||= new THREE.Vector3(), q, sc); const hm = (this._hm ||= new THREE.Matrix4()).compose(pos, q, sc); this.heads.setMatrixAt(hd++, hm); }
     }
@@ -7672,7 +8308,9 @@ class DriveWorld {
     const lanes = settings.data.traffic.lanes, day = this.day = daylight();
     this.exposure = day.exposure; this.wet = 0;
     onProgress('Surveying the route');
-    this.track = new Track(7, lanes);
+    TERRAIN_FX = [];                                                   // build 1.41: the freeway route (§13.2c), or the old ring
+    try { this.track = settings.data.world.scenery !== 'tunnel' && ROUTE.on ? routeTrack(lanes) : null; } catch (e) { Log.error('Freeway route failed; the ring instead', e); this.track = null; TERRAIN_FX = []; }
+    this.track ||= new Track(7, lanes);
     /* Build 1.30: on Open road the ring has company: three more motorways and the slip roads between them (§13.2b) */
     this.net = null; this.trackRev = null;
     if (settings.data.world.scenery !== 'tunnel') {
@@ -7716,6 +8354,7 @@ class DriveWorld {
     }
     this.far = new FarTerrain(this.track, this.streamer, this.mats.terrain, this.scene);
     if (this.net) { this.far.net = this.net; this.far.streamers = new Map(this.streamers.map(st => [st.track, st])); this.netStatics = new NetStatics(this.net, this.mats, this.scene, settings); }
+    this.routeStatics = this.track.tunnelSpans && !this.tunnel ? new RouteStatics(this.track, this.mats, this.scene) : null;   // build 1.41: tunnel portals, the fill light in a bore
     this.hills = this.#hills(); this.bgScene.add(this.hills);
     if (this.tunnel) {
       this.sky.visible = this.hills.visible = false; this.bgScene.background = new THREE.Color().setRGB(.012, .01, .008);
@@ -7769,9 +8408,9 @@ class DriveWorld {
   }
   /** Distant ridgelines 9–20 km out, seen through the haze. */
   #hills() {
-    const A = 320, Rn = 8, pos = [], idx = [];
+    const A = 320, Rn = 8, pos = [], idx = [], R0 = this.track.route ? 14000 : 9000;   // build 1.41: the freeway network reaches further out
     for (let r = 0; r <= Rn; r++) for (let a = 0; a <= A; a++) {
-      const t = r / Rn, rad = 9000 + t * 11000, ang = a / A * Math.PI * 2, x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+      const t = r / Rn, rad = R0 + t * 11000, ang = a / A * Math.PI * 2, x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
       const ridge = Math.pow(fbm2(Math.cos(ang) * 6 + 11, Math.sin(ang) * 6 + t * 3, 5), 1.6) * 1100;
       pos.push(x, -60 + sstep(0, .5, t) * ridge * (.4 + .6 * t), z);
     }
@@ -8534,7 +9173,7 @@ class DriveWorld {
   resize(w, h) { for (const c of [this.camera, this.bgCamera]) { c.aspect = w / h; c.updateProjectionMatrix(); } }
   dispose() {
     this.leave();
-    for (const st of this.streamers) if (st !== this.streamer) st.dispose(); this.netStatics?.dispose();
+    for (const st of this.streamers) if (st !== this.streamer) st.dispose(); this.netStatics?.dispose(); this.routeStatics?.dispose();
     this.streamer.dispose(); this.far.dispose(); this.trees.dispose(); this.props.dispose(); this.tunnelProps?.dispose(); this.traffic.dispose(); this.environment.dispose();
     this.particles.dispose(); this.skids.dispose(); this.tracks?.dispose(); this.replay.frames.length = 0;
     for (const m of Object.values(this.mats)) if (m?.isMaterial) m.dispose();
@@ -13499,6 +14138,7 @@ class WorldEnvironment {
     w.wet = this.wet; w.mats.asphaltU.uWet.value = this.wet;
     this.#rainUpdate(dt, S);
     this.#snowDraw(dt, S);                               // realism 6
+    routeTunnelLight(this, w);                           // build 1.41: inside an open-road tunnel (§13.2c)
   }
   /** Build 1.21: inside the tunnel there is no sky, sun, weather or clock. Lamps are always on, the road is dry, the
    *  air is a warm sodium haze, the eye is adapted to the lit bore, and a small pool of real lights follows the car
@@ -13540,7 +14180,7 @@ class WorldEnvironment {
     if (vr || this.s.data.graphics.tunnelAE === false) { this.eyeEV = base; w.eyeAE = 1; return; }
     let inside = !!w.tunnel, dExit = Infinity;
     const sp = !w.tunnel && w.track?.tunnelSpans;
-    if (sp) { const s = w.sCar || 0; for (let i = 0; i + 1 < sp.length; i += 2) if (s >= sp[i] && s < sp[i + 1]) { inside = true; dExit = sp[i + 1] - s; break; } }
+    if (sp) { const s = w.tunS ?? (w.sCar || 0); for (let i = 0; i + 1 < sp.length; i += 2) if (s >= sp[i] && s < sp[i + 1]) { inside = true; dExit = sp[i + 1] - s; break; } }
     if (!inside && !sp) { this.eyeEV = base; w.eyeAE = 1; return; }  // open road with no tunnels: exactly the old exposure
     const snowK = w.tunnel ? A.snow : lerp(1, A.snow, (1 - this.night) * (1 - .5 * this.cloud));
     const outEV = Math.log2((w.tunnel ? A.outside : this.expOut) * snowK);
