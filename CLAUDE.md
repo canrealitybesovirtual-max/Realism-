@@ -1288,3 +1288,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Van shut lines broke into dashes (sank into the faceted shell between sections): lines 16 mm wide, lifted 15 mm.
 - Follow-up (white speckle on the road): asphalt normal flattened by wetness (x0.85) and specular anti-aliasing (roughness widened by fwidth of the normal).
 - Bridge decks see-through from below: decks use a DoubleSide copy of the concrete material (M.deckConcrete). Garage has a "Back to studio" corner button (visible while walking too); main and pause menus already had one.
+
+## Studio: start card hides on mouse move
+- index.html: the "Studio Room" start card hides for good after the mouse moves (> 4 px), and stays hidden when the mouse is released later (MutationObserver). Clicking the room still captures the mouse.
