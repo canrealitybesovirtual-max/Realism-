@@ -1333,3 +1333,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - New store row awp.dot (optic, owned): the M4's CompM4-class dot (m4MakeAtt('dot')) on the any-gun riser over the AWM's receiver (seatPart; optSight gives the sight line, the reticle glass is the M4 dot's). awmDotSync from awmSyncGun (attach / detach; waits for the M4 kit via awmTick); AWM_FX 'awp.dot'; awmGunIds counts it. Default fitted optic is the dot; once per save (cqc.awmdot.v1) the 3-25x / 10x / shade / killflash / covers come off and the dot goes on (scopes stay owned, FIT brings them back).
 - vmSupportFix now also runs for the sniper rig (AWM's support hand onto its fore-end).
 - Syntax parse only.
+
+## CQC: flashing wall in long rooms
+- The two-tone lower paint band sat 0.6 mm in front of its wall: seen from 30-45 m down a long room (camera near 0.03) the depth buffer could not tell them apart and the wall flashed. Band now 1.5 mm out and RM.lower drawn with polygonOffset (-1, -4).
+- The failing-tube flicker is off by default (CONFIG.terminal flicker, MENU default, and once per save via cqc.flickoff.v1); L or the terminal turns it back on. Syntax parse only.
