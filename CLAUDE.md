@@ -1397,3 +1397,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Interstate: crashes no longer stall the engine
 - VehicleDynamics: a hit (contact or barrier, dv > 0.5 m/s) sets hitT = 2 s. The stall (engine under ~430 rpm with drive engaged) now happens only with the manual-clutch transmission and not within 2 s of a hit; otherwise the clutch / converter slips (locked false, engine held at >= ~570 rpm) and the idle control brings it back, so no key restart after a crash. Module parse only.
+
+## CQC outdoor: walk-through floor in building B's stair core, lighter yard
+- Cause: the buildings' panel joint bands (every 3.6 m up) were drawn as full-footprint 3 cm slabs, so inside the stair core (6 m tall) a grey layer hung across the room at 3.57 m (no collider: you walked through it on the stairs); another at 7.17 m. Now four strips on the outer faces only. Found headless by a vertical raycast through the core (layers at 3.57 / 6.00 / 7.17 / 9.15 m; 6.00 is the core's ceiling, 9.15 the roof).
+- The core's lower ceiling light hung in mid-air at 2.76 m (left from when the core was 3 m tall): now on the ceiling (5.86 m).
+- Lighter: lamps per pixel 4 (headset / lite 2; were 6 / 3), rain 1600 / 400 streaks, fog 0.048 / 0.062 with camera far 80 / 58 m, forest LOD [18, 36, 78] / [10, 22, 52]. Syntax parse only for the lag knobs.
