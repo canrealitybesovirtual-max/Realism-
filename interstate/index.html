@@ -16381,7 +16381,8 @@ class VRSystem {
     } else if (A.state === 'summary') { if (eA) A.summaryAction(true); else if (eY) this.exit(); }
     else if (A.state === 'menu') {
       const eT = edge('right', 0);                                        // build 1.28: B walks the garage, the trigger takes a car there
-      if (eA) A.startRun(); else if (eB) A.ui.show(A.ui.name === 'garage' ? 'main' : 'garage'); else if (eT && A.world === A._garage) A._garage.choose(); else if (eY) this.exit();
+      if (eA) A.startRun(); else if (eX) A.startRun('pursuit'); else if (eRS) A.startRun('wanted');   // police modes in the headset: X Pursuit, right stick click Wanted
+      else if (eB) A.ui.show(A.ui.name === 'garage' ? 'main' : 'garage'); else if (eT && A.world === A._garage) A._garage.choose(); else if (eY) this.exit();
     }
     else if (eY) this.exit();
   }
@@ -16448,13 +16449,14 @@ class VRSystem {
       const c = document.createElement('canvas'); c.width = c.height = 128; const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
       const root = new THREE.Group(); root.name = 'vr-watch';
       const caseM = new THREE.MeshStandardMaterial({ color: 0x1a1b1d, roughness: .35, metalness: .85 }), strap = new THREE.MeshStandardMaterial({ color: 0x101011, roughness: .8, metalness: 0 });
-      const body = new THREE.Mesh(new THREE.CylinderGeometry(.021, .021, .011, 32), caseM); body.rotation.z = Math.PI / 2; root.add(body);
-      const face = new THREE.Mesh(new THREE.CircleGeometry(.018, 32), new THREE.MeshBasicMaterial({ map: t, toneMapped: false })); face.position.x = -.0058; face.rotation.y = -Math.PI / 2; root.add(face);
-      const band = new THREE.Mesh(new THREE.TorusGeometry(.03, .006, 6, 24, Math.PI * 1.2), strap); band.rotation.set(0, Math.PI / 2, Math.PI * .4); band.position.x = .026; root.add(band);
-      root.position.set(-.028, .012, .085); g.add(root);                // over the back of the left wrist, face outward
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(.021, .021, .011, 32), caseM); root.add(body);   // case axis = up off the back of the wrist
+      const face = new THREE.Mesh(new THREE.CircleGeometry(.018, 32), new THREE.MeshBasicMaterial({ map: t, toneMapped: false })); face.position.y = .0058; face.rotation.x = -Math.PI / 2; root.add(face);   // 12 toward the fingers
+      const band = new THREE.Mesh(new THREE.TorusGeometry(.031, .006, 6, 28), strap); band.position.y = -.026; root.add(band);   // strap round the wrist (ring about the forearm axis)
+      g.add(root); this.#watchPlace(g, root);
       this.watch = { root, face, c, t, min: -1, hold: 0 };
     }
     const W = this.watch, now = new Date(), m = now.getHours() * 60 + now.getMinutes();
+    if (W.root.parent !== g) g.add(W.root); this.#watchPlace(g, W.root);
     if (m !== W.min) {                                                    // redrawn once a minute
       W.min = m; const x = W.c.getContext('2d'); x.fillStyle = '#0b0c0e'; x.fillRect(0, 0, 128, 128);
       x.fillStyle = '#e8e3da'; x.font = '600 34px system-ui'; x.textAlign = 'center'; x.fillText(String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0'), 64, 62);
@@ -16466,6 +16468,17 @@ class VRSystem {
     const tip = this.gloves.right?.userData?.tips?.[1]; if (tip) tip.getWorldPosition(d);   // the index fingertip, when the hand model is in
     if (d.distanceTo(f) < .035) { if ((W.hold += 1 / (this.rate || 72)) > .2) { W.hold = -1; this.#pulseOne('right', .5, 40); this.app.pause(true); } }
     else if (W.hold >= 0) W.hold = 0; else if (d.distanceTo(f) > .08) W.hold = 0;
+  }
+  /** The watch on the back of the left wrist: on the hand model's wrist joint when it is in (2.6 cm toward the elbow,
+   *  lifted off the back of the hand), else the simple glove's wrist (z .085, back of the hand +y). Glove space. */
+  #watchPlace(g, root) {
+    const U = g.userData;
+    if (U.wrist && U.knuckle) {
+      const w = (this._ww ??= new THREE.Vector3()), k = (this._wk ??= new THREE.Vector3());
+      g.updateWorldMatrix(true, true); U.wrist.getWorldPosition(w); U.knuckle.getWorldPosition(k); g.worldToLocal(w); g.worldToLocal(k);
+      const along = k.clone().sub(w).normalize();                         // wrist -> knuckles
+      root.position.copy(w).addScaledVector(along, -.026).add(this._wup ??= new THREE.Vector3(0, .028, 0));
+    } else root.position.set(0, .03, .095);
   }
   /** Each frame of a live run, from DriveWorld.update once the car has its pose. */
   drive(d) {
@@ -16669,7 +16682,7 @@ class VRSystem {
     scene.add(new THREE.HemisphereLight(0xb8c4d6, 0x141210, 1.6));
     const grid = new THREE.GridHelper(24, 48, 0x2a2626, 0x161516); grid.position.y = -1.2; scene.add(grid);
     const rim = new THREE.Mesh(new THREE.TorusGeometry(4, .006, 6, 128).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x6e0f15 })); rim.position.y = -1.19; scene.add(rim);
-    const panel = new VRPanel(1024, 560, 1.3, .71, { order: 10 }); panel.mesh.position.set(0, -.08, -1.55); scene.add(panel.mesh);
+    const panel = new VRPanel(1024, 700, 1.3, .89, { order: 10 }); panel.mesh.position.set(0, -.08, -1.55); scene.add(panel.mesh);   // taller: the police modes
     return { scene, panel };
   }
 
@@ -16694,8 +16707,8 @@ class VRSystem {
       if (busy) { g.fillText(st === 'menu' ? 'Building the interstate…' : 'One moment…', 64, 240); return; }
       if (st === 'menu') {
         g.fillText(`${tp} · ${time}`, 64, 224);
-        this.#rows(g, 64, 320, [['A', 'Drive'], ['B', 'Walk the garage and choose a car'], ['Y', 'Leave VR']]);
-        g.font = `400 22px ${UIF}`; g.fillStyle = 'rgba(232,227,218,.5)'; g.fillText('Traffic, time of day and weather are set on the page outside the headset.', 64, 480);
+        this.#rows(g, 64, 300, [['A', 'Drive'], ['X', 'Pursuit: chase a speeder (patrol car)'], ['R3', 'Wanted: outrun the highway patrol'], ['B', 'Walk the garage and choose a car'], ['Y', 'Leave VR']]);
+        g.font = `400 22px ${UIF}`; g.fillStyle = 'rgba(232,227,218,.5)'; g.fillText('Garage: left stick walks, right stick turns, trigger takes a car. Traffic and time are set on the page.', 64, 640);
       } else { g.fillText('Replay and photo mode open on the page outside the headset.', 64, 240); this.#rows(g, 64, 330, [['Y', 'Leave VR']]); }
     });
   }

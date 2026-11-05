@@ -1190,3 +1190,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Headset seat view on the bike (VRRig #placeRig): the eye came from the leaned body (eye ~1.2 m up, so a 45 deg lean swung it ~0.8 m sideways) and the view took bodyMotion (.35) of the lean (~19 deg horizon roll), plus the two-track model's yaw jitter. Now the eye is the seat point in the bike's road frame (lean ignored), the view takes vr.bikeLean x 0.25 of the lean (setting "Motorcycle lean in view", default 0 = level horizon), and the rig's rotation is low-passed (rate 9/s, snaps past 0.6 rad) to remove the jitter.
 - Computer: BIKE_CAM.helmet .5 -> .15 (helmet view rolls 15 % of the lean), chase roll .32 -> .08.
 - Checked: module parse only.
+
+## Interstate VR: wrist watch placement, police modes in the headset, garage walk check
+- Watch (VR #watch / #watchPlace): it sat 2.8 cm to the side of the glove, face sideways. Now on the back of the left wrist: on the hand model's wrist joint (2.6 cm toward the elbow, 2.8 cm off the back of the hand), else the simple glove's wrist (0, .03, .095); case axis up, face up (12 toward the fingers), strap ring round the forearm.
+- Lobby (in-headset menu): X = Pursuit, right stick click = Wanted (startRun(mode)); rows and a garage controls line added; panel taller (1024 x 700).
+- Garage walk in VR: code path checked (left stick walks along the head's heading, right stick snap-turns, walls / cars stop you); an IWER emulator test (tools: Studio's emulator chunk as an init script) was started to confirm.
