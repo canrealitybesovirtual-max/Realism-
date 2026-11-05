@@ -3891,6 +3891,10 @@ vec3 envSurroundings(vec3 d, vec3 col){
     vec3 snowG = mix(uZenith, uHorizon, 0.6) * 1.15;                                // snow takes the sky's light and colour
     vec3 g = mix(snowG * vec3(0.92, 0.95, 1.0), uGround * 2.0, smoothstep(0.62, 0.8, n) * 0.5) * (0.8 + 0.3 * n) * (0.85 + 0.3 * sunUp);
     col = mix(g, uHorizon * 0.62, exp(y * 12.0));                                  // aerial perspective toward the horizon line
+    /* wet look: under the car is the road, not snow: dark wet asphalt with a sheen of the sky (lower panels, sills and
+       wheels mirror it dark, as a real car on a wet road does) */
+    vec3 asph = uGround * 0.3 + mix(uZenith, uHorizon, 0.7) * 0.07;
+    col = mix(col, asph, smoothstep(-0.38, -0.62, y));
   } else if (y < 0.08) {
     float ridge = 0.006 + 0.022 * vnoise(vec2(az * 2.3, 3.1)) + 0.006 * vnoise(vec2(az * 11.0, 1.7));
     float gap = 1.0 - smoothstep(0.3, 0.38, vnoise(vec2(az * 3.0, 7.7)));                // open fields and sight lines between stands
@@ -3898,7 +3902,10 @@ vec3 envSurroundings(vec3 d, vec3 col){
     crown *= 1.0 - 0.85 * gap;
     vec3 ridgeCol = mix(mix(uZenith, uHorizon, 0.6) * 1.05, uHorizon, 0.6);        // build 1.19: a snow-covered ridge, no treeline
     col = mix(col, ridgeCol, (1.0 - smoothstep(ridge - 0.002, ridge + 0.002, y)) * 0.9);   // edges kept ordered (GLSL smoothstep needs edge0 < edge1)
-    crown *= lit * 0.0;                                                             // (trees removed; kept for when they return)
+    /* the trees are back (snow-trees.glb): a dark conifer line over the ridge, so the clear coat mirrors a horizon
+       with depth instead of a flat milky band */
+    vec3 treeCol = uGround * 0.34 * lit + mix(uZenith, uHorizon, 0.6) * 0.07;
+    col = mix(col, treeCol, (1.0 - smoothstep(crown - 0.0025, crown + 0.0025, y)) * smoothstep(-0.001, 0.002, y) * 0.92);
   }
   return col;
 }
@@ -9161,6 +9168,43 @@ function celHubCut(group) {
   });
   return n;
 }
+/* Cabin look: the saloon's materials as packed had the cabin atlas at colour 0 (black: only reflections showed, the plastic
+ * look) and several parts at roughness 0 (mirror-shiny needles, knobs, trim). Real values per material, plus a fine surface
+ * grain (leather / moulded plastic) as a tiling normal map, so the cabin reads as leather, grained plastic and lacquered wood. */
+const CEL_LOOK = {
+  Material_68: { color: .62, rough: .6, grain: 'leather' },          // the cabin atlas: seats, dash, door cards
+  int_texture__spec: { rough: .3, cc: true },                       // burl walnut, lacquered
+  matte_colors: { rough: .58, grain: 'plastic' }, plastic: { grain: 'plastic' }, Material_26: { rough: .55, grain: 'plastic' },
+  Material_27: { rough: .62, grain: 'plastic' }, metal: { rough: .3 }, gauge_needle: { rough: .42 },   // (Material_38 / _39 are the mirror glasses: MIRROR_GLASS finds them by roughness < .1)
+  chrome: { rough: .07 },
+};
+const CABIN_GRAIN = {};
+function cabinGrain(kind) {
+  if (CABIN_GRAIN[kind]) return CABIN_GRAIN[kind];
+  const N = 256, H = new Float32Array(N * N), rnd = mulberryLike(kind === 'leather' ? 71 : 29);
+  if (kind === 'leather') {                                         // pebble grain: overlapping soft cells
+    for (let k = 0; k < 2600; k++) { const cx = rnd() * N, cy = rnd() * N, r = 2.2 + rnd() * 3.4, a = .6 + rnd() * .4;
+      for (let y = -6; y <= 6; y++) for (let x = -6; x <= 6; x++) { const d = Math.hypot(x, y) / r; if (d >= 1) continue; const ix = ((Math.floor(cx) + x) % N + N) % N, iy = ((Math.floor(cy) + y) % N + N) % N; H[iy * N + ix] = Math.max(H[iy * N + ix], a * (1 - d * d)); } }
+  } else for (let i = 0; i < N * N; i++) H[i] = rnd();             // moulded stipple (smoothed below)
+  if (kind !== 'leather') for (let pass = 0; pass < 2; pass++) { const T = H.slice(); for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { let a = 0; for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) a += T[((y + j + N) % N) * N + (x + i + N) % N]; H[y * N + x] = a / 9; } }
+  const D = new Uint8Array(N * N * 4), k = kind === 'leather' ? 2.2 : 3.5;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const dx = (H[y * N + (x + 1) % N] - H[y * N + (x + N - 1) % N]) * k, dy = (H[((y + 1) % N) * N + x] - H[((y + N - 1) % N) * N + x]) * k, l = Math.hypot(dx, dy, 1), o = (y * N + x) * 4;
+    D[o] = (-dx / l * .5 + .5) * 255; D[o + 1] = (-dy / l * .5 + .5) * 255; D[o + 2] = (1 / l * .5 + .5) * 255; D[o + 3] = 255;
+  }
+  const t = new THREE.DataTexture(D, N, N, THREE.RGBAFormat); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter; t.anisotropy = 4; t.needsUpdate = true;
+  t.repeat.set(kind === 'leather' ? 70 : 110, kind === 'leather' ? 70 : 110);
+  return (CABIN_GRAIN[kind] = t);
+}
+function mulberryLike(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+/** Grain + a realistic roughness floor on a cabin material (shared by the saloon and the GLB cars' cabins). */
+function cabinGrainOn(mat, kind, rough) {
+  if (!mat || mat.userData.grain) return mat;
+  mat.userData.grain = kind; mat.normalMap = cabinGrain(kind); if (!mat.normalScale) mat.normalScale = new THREE.Vector2(1, 1);
+  mat.normalScale.set(kind === 'leather' ? .16 : .12, kind === 'leather' ? .16 : .12);
+  if (rough != null) mat.roughness = Math.max(mat.roughness, rough);
+  mat.needsUpdate = true; return mat;
+}
 function buildCelsior(car) {
   const D = SaloonData.player; if (!D) return null;
   const bin = b64bytes(D.bin), M = car.mats, group = new THREE.Group(); group.name = 'saloon97';
@@ -9179,9 +9223,10 @@ function buildCelsior(car) {
     let mat;
     if (m.paintKind === 'upper') mat = M.paint;                       // the garage paint finish, wet beads and dust apply
     else {
-      const c = m.color, o = { color: new THREE.Color(c[0], c[1], c[2]), roughness: Math.max(.05, m.rough), metalness: m.paintKind ? .35 : metalName.test(m.mat) ? 1 : 0,
+      const LK = CEL_LOOK[m.mat] || {}, c = LK.color ? [LK.color, LK.color, LK.color] : m.color, o = { color: new THREE.Color(c[0], c[1], c[2]), roughness: LK.rough ?? Math.max(.05, m.rough), metalness: m.paintKind ? .35 : metalName.test(m.mat) ? 1 : 0,
         side: THREE.DoubleSide, map: m.tex != null ? tex(m.tex) : null, transparent: m.blend, depthWrite: !m.blend };
-      mat = m.clearcoat ? new THREE.MeshPhysicalMaterial({ ...o, clearcoat: .85, clearcoatRoughness: .07 }) : new THREE.MeshStandardMaterial(o);
+      mat = m.clearcoat || LK.cc ? new THREE.MeshPhysicalMaterial({ ...o, clearcoat: .85, clearcoatRoughness: .07 }) : new THREE.MeshStandardMaterial(o);
+      if (LK.grain) cabinGrainOn(mat, LK.grain);
       if (/reflector/i.test(m.mat)) { mat.emissive = new THREE.Color(1, 1, 1); mat.emissiveMap = mat.map; mat.emissiveIntensity = .15; lampMat = mat; }
       if (m.mat === 'INT_Decals_Emissive') { mat.emissive = new THREE.Color(1, .93, .85); mat.emissiveMap = mat.map; mat.emissiveIntensity = 0; decals = mat; }   // build 1.28: the dash graphics light up (§14.11)
       Atmos.patch(mat, { key: 'sal' + (m.clearcoat ? 'c' : '') + (m.blend ? 'b' : '') + (lampMat === mat || decals === mat ? 'e' : '') });
@@ -9212,7 +9257,7 @@ const GLB_CARS = {
   police: { title: 'Highway patrol ’04', spec: 'A police interceptor in highway patrol livery, its own full cabin. The light bar, grille and rear flashers run on the console switch (J for the siren, G hazard key for the lights). Patrol cars also drive in the traffic and chase you in Wanted. Model: “Chevrolet Impala Highway Patrol”.', file: './cars/police.glb', meta: './cars/police.json', paint: false,
     cabin: { eye: [-.38, 1.13, .1], wheel: [-.3398, .9202, -.4162], tilt: -.194, wheelR: .16, lock: 7.85 },
     strip: [{ mat: 'Interieur', box: [[-.545, .785, -.705], [-.165, 1.14, -.385]] }],
-    cabinMats: /^(Interieur|Interieur_av|Interieur_porte|Interieur_sol|Siege|Speed|Plastique_orange)$/, unlitGlass: /^Projo_vitre$/,
+    cabinMats: /^(Interieur|Interieur_av|Interieur_porte|Interieur_sol|Siege|Speed|Plastique_orange)$/, bodyMats: /^Body_[LR]$/, unlitGlass: /^Projo_vitre$/,
     flash: { Flash_light: 'grille', Feux_blanc: 'rear' } },
 };
 const GlbCars = {
@@ -9307,8 +9352,15 @@ function buildGlbCar(car, id, opt = {}) {
     else if (nm === 'trim') mat = M.satin;
     else if (/^Giro_(bleu|red)_text$/.test(nm)) {                     // the light bar: its own glow per colour
       mat = bar[nm] = o.material.clone(); mat.emissive = /bleu/.test(nm) ? new THREE.Color(.1, .25, 1) : new THREE.Color(1, .05, .03); mat.emissiveMap = mat.map; mat.emissiveIntensity = 0;
-    } else if (!o.material.userData.patched) { o.material.userData.patched = true; Atmos.patch(o.material, { key: 'glbcar' + (o.material.transparent ? 't' : '') }); if (!o.material.transparent) grimeMat(o.material);
-      if (!o.material.transparent && C.cabinMats?.test(nm)) cabinOcclusion(o.material);                    // police update: its cabin is shaded like the saloon's
+    } else if (!o.material.userData.patched) {
+      if (C.bodyMats?.test(nm) && !o.material.isMeshPhysicalMaterial) {  // its painted body: a real clear coat over the base (was a plain matte GLB material)
+        const b = o.material, ph = new THREE.MeshPhysicalMaterial({ name: b.name, color: b.color, map: b.map, normalMap: b.normalMap, roughness: Math.min(.32, b.roughness), metalness: Math.min(.08, b.metalness),
+          clearcoat: 1, clearcoatRoughness: .03, envMapIntensity: 1.05, side: b.side });
+        if (b.normalScale) ph.normalScale.copy(b.normalScale);
+        o.material = mat = ph;
+      }
+      o.material.userData.patched = true; Atmos.patch(o.material, { key: 'glbcar' + (o.material.transparent ? 't' : '') }); if (!o.material.transparent) grimeMat(o.material);
+      if (!o.material.transparent && C.cabinMats?.test(nm)) { cabinOcclusion(o.material); cabinGrainOn(o.material, /^Siege$/.test(nm) ? 'leather' : 'plastic', .5); }   // police update: its cabin is shaded like the saloon's (+ grain)
       else if (!o.material.transparent && C.flash) cabinOcclusion(o.material, true); }                    // and its own beacon does not blow out its roof
     let geo = o.geometry;
     if (opt.own) { const st = C.strip?.filter(q => q.mat === nm); geo = st?.length ? glbStrip(geo, st.map(q => q.box)) : geo.clone(); if (geo === o.geometry) geo = geo.clone(); }
@@ -11839,7 +11891,7 @@ function trafficAssets() {
   const U = { uNight: { value: 0 }, uWet: { value: 0 } };
   const dirt = { vertPars: 'varying float vObjY;', vertMain: 'vObjY = position.y;', fragPars: 'varying float vObjY;' };
   const keepDiffuse = ['#include <color_fragment>', 'diffuseColor.rgb = diffuse;'];
-  const paint = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: 0xffffff, metalness: .28, roughness: .36, clearcoat: .85, clearcoatRoughness: .09, envMapIntensity: .95 }), { key: 'trafficpaint', ...dirt, uniforms: U, fragPars: 'varying float vObjY; uniform float uWet;' + ROAD_GRIME_GLSL,
+  const paint = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: 0xffffff, metalness: .28, roughness: .36, clearcoat: 1, clearcoatRoughness: .045, envMapIntensity: .95 }), { key: 'trafficpaint', ...dirt, uniforms: U, fragPars: 'varying float vObjY; uniform float uWet;' + ROAD_GRIME_GLSL,
     frag: [['#include <color_fragment>', 'float lowDirt = roadGrimeLow(vObjY); diffuseColor.rgb = mix(diffuseColor.rgb, ROAD_GRIME, lowDirt * .34 * (1.0 - .5 * uWet)); diffuseColor.rgb *= 1.0 - .12 * uWet;'],
            ['#include <roughnessmap_fragment>', 'roughnessFactor = mix(roughnessFactor, .78, lowDirt * .65 * (1.0 - .6 * uWet)) * (1.0 - .4 * uWet);   // section 12: wet paint']] });
   const glass = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: rgb(.012, .014, .016), metalness: 0, roughness: .06, envMapIntensity: 1.05, specularIntensity: 1 }), { key: 'trafficglass', frag: [keepDiffuse] });
