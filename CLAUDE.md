@@ -1322,3 +1322,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: PC support hand on the handguard (AK take guns)
 - vmSupportFix (vmGunFit, ak rig): the fits were solved for the firing hand only, so the take's support hand could hang beside a gun (M4A1-S: left of the handguard). The gun is turned about the firing wrist (B.sides.R.W) until its front-part line (mean x / y of the drawn points ahead of 45 % of its length, bore -z) passes 4 cm from the support palm (wrist 0.4, knuckles 0.6), at most 20 deg; no change when it is already within 5 cm. Syntax parse only, not seen.
+
+## CQC: fewer lights, lighter frame
+- troffCap: at most 3 ceiling fittings a room (was 4). TFILL fill lights: 2 computer / 1 lite and headset (were 8 / 3); with 3 fittings at most one is beyond the pool's two.
+- Shadow maps 1024 on the computer (were 1536). Auto quality: Medium has no GTAO (AO only High and up); desktop max pixel ratio 1.25 (was 1.5). Syntax parse only.
