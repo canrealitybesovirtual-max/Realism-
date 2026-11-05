@@ -7219,6 +7219,7 @@ class VehicleDynamics {
         const Jt = clamp(-vt / (1 / this.m + ct * ct / this.Iz), -.32 * J, .32 * J);
         Vx += Jt * tx / this.m; Vz += Jt * tz / this.m; wy += ct * Jt / this.Iz;
         const dv = J / this.m; this.impact = Math.max(this.impact, dv);
+        this.#jolt(J * wl.nx + Jt * tx, J * wl.nz + Jt * tz, fwx, fwz, rwx, rwz);
         this.damage = Math.min(1, this.damage + Math.max(0, dv - 1.2) * .03);
         if (!this.toeSide && dv > 1.2) this.toeSide = Math.sign(cr) || 1;
         if (dv > 2.5) this.events.push({ type: 'impact', strength: dv });
@@ -7268,10 +7269,19 @@ class VehicleDynamics {
     Vx += Jt * tx / this.m; Vz += Jt * tz / this.m; wy += ct * Jt / this.Iz;
     this.vx = Vx * fwx + Vz * fwz; this.vy = Vx * rwx + Vz * rwz; this.r = -wy;
     const dv = J / this.m; this.impact = Math.max(this.impact, dv);
+    this.#jolt(J * nx + Jt * tx, J * nz + Jt * tz, fwx, fwz, rwx, rwz);
     this.damage = Math.min(1, this.damage + Math.max(0, dv - .8) * .035);
     if (!this.toeSide && dv > .8) this.toeSide = Math.sign(cr) || 1;
     out.jx = J * nx + Jt * tx; out.jz = J * nz + Jt * tz;
     return out;
+  }
+  /** Crash physics: an impact (world impulse) pitches and rolls the body on its springs: a frontal hit dives the nose, a
+   *  rear hit squats it, a side hit rolls it away from the blow (the tyres hold the bottom). */
+  #jolt(jx, jz, fwx, fwz, rwx, rwz) {
+    if (!CRASH.jolt) return;
+    const Jl = jx * fwx + jz * fwz, Jr = jx * rwx + jz * rwz, k = 1600 / this.m, M = CRASH.joltMax;
+    this.pv = clamp(this.pv - Jl * CRASH.joltPitch * k, -M, M);
+    this.rhov = clamp(this.rhov + Jr * CRASH.joltRoll * k, -M, M);
   }
   takeEvents() { const e = this.events; this.events = []; return e; }
 
@@ -12162,6 +12172,18 @@ class TrafficRenderer {
 /** 2-D separating-axis test between two oriented boxes (x, z, forward fx/fz,
  *  half length hl, half width hw). Returns the minimum-penetration normal
  *  (pointing from B to A), depth and a contact point, or null. */
+/* Crash physics knobs (?crash=off: the old model: puck-like slide, crashed cars pass through traffic, no body jolt). */
+const CRASH = (() => { const on = !/[?&]crash=off\b/.test(location.search); return { pairs: on, slide: on, jolt: on, e: .15, mu: .4, muRoll: .55, muSlide: .85, spinScrub: 3.2,
+  joltPitch: 7e-5, joltRoll: 9e-5, joltMax: 1.4, va: [0, 0], vb: [0, 0] }; })();
+/** A traffic car as an oriented box in the road frame (x along s from the reference car, y = u). */
+function crashBox(O, a, x) { O.x = x; O.z = a.u; O.fx = a.dir * Math.cos(a.psi); O.fz = Math.sin(a.psi); O.hl = a.T.len / 2; O.hw = a.T.hw * HITBOX_W; return O; }
+/** Its velocity in that frame (crashed: its slide; driving: along its lane). */
+function crashVel(a, out) { if (a.crash) { out[0] = a.dir * a.crash.vs; out[1] = a.crash.vu; } else { out[0] = a.dir * a.v; out[1] = a.uDot || 0; } return out; }
+function crashApply(a, v, w, dv, dw) {
+  if (!a.crash && (dv > 1.5 || dw > .2)) { a.crash = { vs: a.v, vu: a.uDot || 0, w: 0, t: 0 }; a.lc = 0; a.court = null; }
+  if (a.crash) { a.crash.vs = v[0] * a.dir; a.crash.vu = v[1]; a.crash.w = w * a.dir; a.crash.still = 0; }
+  else { a.v = Math.max(0, v[0] * a.dir); a.shaken = 4; a.acc = Math.min(a.acc, -3); }
+}
 function obbSAT(A, B, out) {
   const dx = B.x - A.x, dz = B.z - A.z;
   let best = Infinity, bx = 0, bz = 0;
@@ -12353,7 +12375,44 @@ class TrafficSystem {
     for (let i = 0; i < gF.length; i++) if (!gF[i].isPlayer) this.#drive(gF[i], gF, i, dt, P);
     for (let i = 0; i < gO.length; i++) this.#drive(gO[i], gO, i, dt, null);
     this.#interact(dt, P, sim);
+    if (CRASH.pairs) this.#crashPairs();
     this.#recycle();
+  }
+  /* Crash physics: a crashed car (sliding, spinning) used to pass straight through the traffic around it. Every crashed
+   * car now meets its neighbours (same carriageway, sorted list, a few either side) as oriented boxes in the road's own
+   * frame (x along s, y across u): penetration split by mass, a two-body impulse with restitution and Coulomb friction
+   * at the contact, so a hit car is shoved and turned by where it was struck; a hard enough hit puts it into a crash too
+   * (chain reactions, a spun car taking out the next lane). */
+  #crashPairs() {
+    const L = this.track.length, A = this.cpA || (this.cpA = {}), B = this.cpB || (this.cpB = {}), hit = this.cpH || (this.cpH = {});
+    for (const g of [this.gF, this.gO]) for (let i = 0; i < g.length; i++) {
+      const a = g[i]; if (a.isPlayer || !a.crash) continue;
+      for (let j = Math.max(0, i - 4); j < Math.min(g.length, i + 5); j++) {
+        const b = g[j]; if (b === a || b.isPlayer || (b.crash && j < i)) continue;   // a crashed pair is done once
+        const dx = wrapRel(b.s - a.s, L); if (Math.abs(dx) > (a.T.len + b.T.len) / 2 + .8) continue;
+        crashBox(A, a, 0); crashBox(B, b, dx);
+        const h = obbSAT(A, B, hit); if (!h) continue;
+        this.#pairHit(a, b, h, dx);
+      }
+    }
+  }
+  #pairHit(a, b, h, dx) {
+    const C = CRASH, ma = a.T.mass, mb = b.T.mass, nx = h.nx, ny = h.nz;    // normal from b to a
+    const sh = h.pen / (ma + mb); a.s = mod(a.s + nx * sh * mb, this.track.length); a.u += ny * sh * mb; b.s = mod(b.s - nx * sh * ma, this.track.length); b.u -= ny * sh * ma;
+    const va = crashVel(a, C.va), vb = crashVel(b, C.vb), wa = a.crash ? a.dir * a.crash.w : 0, wb = b.crash ? b.dir * b.crash.w : 0;
+    const rax = h.cx, ray = h.cz - a.u, rbx = h.cx - dx, rby = h.cz - b.u;
+    const pax = va[0] - wa * ray, pay = va[1] + wa * rax, pbx = vb[0] - wb * rby, pby = vb[1] + wb * rbx;
+    const vn = (pax - pbx) * nx + (pay - pby) * ny; if (vn >= 0) return;
+    const Ia = ma * (a.T.len ** 2 + (2 * a.T.hw) ** 2) / 12, Ib = mb * (b.T.len ** 2 + (2 * b.T.hw) ** 2) / 12;
+    const ran = rax * ny - ray * nx, rbn = rbx * ny - rby * nx;
+    const J = -(1 + C.e) * vn / (1 / ma + 1 / mb + ran * ran / Ia + rbn * rbn / Ib);
+    const tx = -ny, ty = nx, vt = (pax - pbx) * tx + (pay - pby) * ty, rat = rax * ty - ray * tx, rbt = rbx * ty - rby * tx;
+    const Jt = clamp(-vt / (1 / ma + 1 / mb + rat * rat / Ia + rbt * rbt / Ib), -C.mu * J, C.mu * J);
+    const Px = J * nx + Jt * tx, Py = J * ny + Jt * ty;
+    va[0] += Px / ma; va[1] += Py / ma; vb[0] -= Px / mb; vb[1] -= Py / mb;
+    const dwa = (rax * Py - ray * Px) / Ia, dwb = -(rbx * Py - rby * Px) / Ib;
+    crashApply(a, va, wa + dwa, Math.hypot(Px, Py) / ma, Math.abs(dwa)); crashApply(b, vb, wb + dwb, Math.hypot(Px, Py) / mb, Math.abs(dwb));
+    if (J / Math.min(ma, mb) > 2 && b.hornCd <= 0 && !b.crash) { this.sounds.push({ type: 'horn', a: b, long: true }); b.hornCd = 4; }
   }
 
   #drive(a, g, i, dt, P) {
@@ -12523,9 +12582,16 @@ class TrafficSystem {
   /** A struck vehicle: slides, spins and stops on its tyres, hazards on. After a pause the
    *  driver straightens up and limps onto the nearest shoulder, so the lane reopens. */
   #crashMove(a, dt) {
-    const c = a.crash, tr = this.track, sp = Math.hypot(c.vs, c.vu);
-    if (sp > 1e-3) { const dec = Math.min(sp, 6.8 * (1 - .3 * this.wet) * dt); c.vs -= c.vs / sp * dec; c.vu -= c.vu / sp * dec; }
-    c.w *= Math.exp(-1.4 * dt); a.psi += c.w * dt; c.t += dt;
+    const c = a.crash, tr = this.track, grip = 1 - .3 * this.wet;
+    if (CRASH.slide) {                                                  // tyres in the car's own frame: rolling with the brakes on along its heading, sliding across it
+      const d = a.dir, fx = d * Math.cos(a.psi), fy = Math.sin(a.psi), vx = d * c.vs, vy = c.vu;
+      let vl = vx * fx + vy * fy, vt = -vx * fy + vy * fx;
+      vl -= Math.sign(vl) * Math.min(Math.abs(vl), CRASH.muRoll * 9.81 * grip * dt); vt -= Math.sign(vt) * Math.min(Math.abs(vt), CRASH.muSlide * 9.81 * grip * dt);
+      c.vs = (vl * fx - vt * fy) * d; c.vu = vl * fy + vt * fx;
+      c.w -= Math.sign(c.w) * Math.min(Math.abs(c.w), CRASH.spinScrub * grip * dt); c.w *= Math.exp(-.5 * dt);   // the tyres scrub the spin off: it stops turning as it stops
+    } else { const sp0 = Math.hypot(c.vs, c.vu); if (sp0 > 1e-3) { const dec = Math.min(sp0, 6.8 * grip * dt); c.vs -= c.vs / sp0 * dec; c.vu -= c.vu / sp0 * dec; } c.w *= Math.exp(-1.4 * dt); }
+    const sp = Math.hypot(c.vs, c.vu);
+    a.psi += c.w * dt; c.t += dt;
     if (sp < .4 && Math.abs(c.w) < .05) c.still = (c.still || 0) + dt;
     if (c.still > 3) {
       const inner = .31 + a.T.hw + .12, outer = tr.laneEnd + tr.outerShoulder * .5, au = Math.abs(a.u);
