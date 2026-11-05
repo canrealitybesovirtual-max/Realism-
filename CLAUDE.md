@@ -1280,3 +1280,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Raw in cqc/sounds/src/brass_drops_318964.wav. 20 drops cut by onset (silence gaps > 0.35 s), grouped by their ring frequency: brassL1-3 (4.5 kHz, big cases), brassR1-4 (6.4 kHz, rifle), brassM1-8 (9.9 kHz, mid), brassS1-5 (10.6-13 kHz, small); loudnorm -20 LUFS, 4 ms / 60 ms fades, mono mp3 (cqc/sounds/).
 - Studio range (addons/range.js): a case's first landing plays a recorded drop by calibre (CASE[].rec: 9 mm small + mid, .45 mid, 7.62 / 5.56 rifle, .338 big), never the same twice running, duller on the desk; its later bounces stay silent (the take holds them); the synth tink only until the files load. CQC wiring follows. node --check only.
 - CQC: loaded with HREC_FILES; brassTink plays BRASS_REC[e.cal] (same grouping, hulls keep the synth thud) on a case's first landing through the same near / positional paths (hrecPlay, gain 0.42 x GUN_MIX.brass x speed, off the floor duller), then e.recd silences its later bounces; ?hrec=off or a missing file = the baked tinks. node --check only.
+
+## Interstate: MacBook photo fixes (look; not run in a browser)
+- Wet road was a sky mirror (roughness 0.04 in puddles): wet roughness now 0.16 puddles / 0.34 film, wet darkening 0.68 (was 0.5).
+- Overpass / deck undersides rendered black: the IBL probe's straight-down "wet asphalt" was too dark; now brighter and blended only 55 % from steeper angles, so snow bounce lights soffits.
+- Trees blown white: tree ambient horizon x0.75 (was 1.1), sun term .028 (was .045).
+- Van shut lines broke into dashes (sank into the faceted shell between sections): lines 16 mm wide, lifted 15 mm.
