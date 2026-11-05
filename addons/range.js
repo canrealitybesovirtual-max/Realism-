@@ -111,7 +111,7 @@
       loading[name] = fetch("cqc/sounds/" + name + ".mp3").then(function (r) { return r.arrayBuffer(); })
         .then(function (a) { return ctx.decodeAudioData(a); }).then(function (b) { bufs[name] = b; }).catch(function () {});
     }
-    function preload(fam, shots) { shots.forEach(load); var H = HANDLING[fam]; for (var k in H) load(H[k][0]); ["dry1", "dry2", "dry3", "magDrop1", "pickup1"].forEach(load); }
+    function preload(fam, shots) { shots.forEach(load); var H = HANDLING[fam]; for (var k in H) load(H[k][0]); ["dry1", "dry2", "dry3", "magDrop1", "pickup1"].forEach(load); for (var ck in CASE) (CASE[ck].rec || []).forEach(load); }
     // play a buffer (or a file name) at a world point; opts: gain, rate, delay (s), lowpass (Hz)
     function play(b, pos, opts) {
       opts = opts || {};
@@ -276,8 +276,12 @@
     var flashMat = new THREE.SpriteMaterial({ map: flashTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
 
     // ---------- ejected casings: one InstancedMesh (pool of 96), ballistic arc, bounces off what a Rapier ray finds ----------
-    var CASE = { "9mm": { L: 0.0192, r: 0.0049, f: 1 }, "45": { L: 0.0228, r: 0.006, f: 0.82 }, "762": { L: 0.0386, r: 0.0056, f: 0.78 },
-      "556": { L: 0.0446, r: 0.0048, f: 0.86 }, "338": { L: 0.0693, r: 0.0074, f: 0.6 } };   // f: tink pitch
+    var CASE = { "9mm": { L: 0.0192, r: 0.0049, f: 1, rec: ["brassS1", "brassS2", "brassS3", "brassS4", "brassS5", "brassM6", "brassM7"] },
+      "45": { L: 0.0228, r: 0.006, f: 0.82, rec: ["brassM1", "brassM2", "brassM3", "brassM4", "brassM5", "brassM8"] },
+      "762": { L: 0.0386, r: 0.0056, f: 0.78, rec: ["brassR1", "brassR2", "brassR3", "brassR4"] },
+      "556": { L: 0.0446, r: 0.0048, f: 0.86, rec: ["brassR1", "brassR2", "brassR3", "brassR4", "brassM2", "brassM5"] },
+      "338": { L: 0.0693, r: 0.0074, f: 0.6, rec: ["brassL1", "brassL2", "brassL3"] } };   // rec: recorded drops (freesound 318964 gryffdavid)
+    var recLast = "";   // f: tink pitch
     var NC = 96, caseGeo = new THREE.CylinderGeometry(1, 0.94, 1, 10, 1).rotateX(Math.PI / 2);   // unit case along z, mouth toward -z
     var caseMat = new THREE.MeshStandardMaterial({ color: 0xc9953f, metalness: 1, roughness: 0.3 });
     var caseMesh = new THREE.InstancedMesh(caseGeo, caseMat, NC); caseMesh.name = "range-casings";
@@ -292,7 +296,7 @@
       var c = CASE[gun.d.cart], k = CASES[caseI]; caseI = (caseI + 1) % NC;
       gun.object.updateMatrixWorld();
       if (!k.on || k.rest) casesMoving++;
-      k.on = true; k.rest = false; k.c = c; k.age = 0; k.bounces = 0; k.live = !!live;
+      k.on = true; k.rest = false; k.c = c; k.age = 0; k.bounces = 0; k.recPlayed = false; k.live = !!live;
       k.p.copy(gun.T.eject).applyMatrix4(gun.object.matrixWorld);
       var rifle = gun.d.cart !== "9mm" && gun.d.cart !== "45", sp = live ? 1.2 : rifle ? 3.4 : 2.6;
       _cv.set(sp * (0.85 + Math.random() * 0.3), sp * (0.45 + Math.random() * 0.25), sp * (0.12 + Math.random() * 0.15));
@@ -367,6 +371,12 @@
     function tink(k, vn) {
       var now = performance.now(); if (now - tinkAt < 30) return; tinkAt = now;
       var soft = k.p.y > 0.5 && deskTop(k.p.x, k.p.z) > 0 ? 0.55 : 1;   // on the oak desk: duller
+      if (!k.bounces && k.c.rec) {                                    // first landing: a recorded drop (it carries its own bounces)
+        var rl = k.c.rec, nm = rl[(Math.random() * rl.length) | 0]; if (nm === recLast) nm = rl[(rl.indexOf(nm) + 1) % rl.length]; recLast = nm;
+        if (bufs[nm]) { k.recPlayed = true; play(nm, k.p, { gain: Math.min(0.75, 0.2 + vn * 0.12) * soft, rate: 0.94 + Math.random() * 0.12, verb: 0.12, ref: 1.2, lowpass: soft < 1 ? 3800 : 0 }); return; }
+        load(nm);
+      }
+      if (k.recPlayed) return;                                         // the recording already holds the bounces
       play(tinkBuf(), k.p, { gain: Math.min(0.5, 0.08 + vn * 0.09) * soft * (k.bounces ? 0.7 : 1), rate: k.c.f * (0.9 + Math.random() * 0.2) * (soft < 1 ? 0.8 : 1), verb: 0.12, ref: 1.2, lowpass: soft < 1 ? 3500 : 0 });
     }
 
