@@ -1345,3 +1345,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Dead code scan (CQC, Interstate)
 - acorn + eslint-scope scan for module bindings nothing reads: only natXR (CQC) and CEL_TAIL_ZONES (Interstate) were left; removed. vmTint no longer makes a Color every frame. Unused code never runs, so it was not costing frame rate; the frame-rate work is the lighting / quality changes above.
+
+## Interstate: no floating mirrors on the R6
+- MIRROR_GLASS.r6 removed: the mirror split (housing and glass cut out of the model and hung on adjustable pivots) left them floating beside the bike. The bike now shows its model as built, with no live mirror views. Syntax parse only.
