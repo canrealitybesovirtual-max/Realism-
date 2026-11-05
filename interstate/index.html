@@ -12343,7 +12343,7 @@ class CabinControls {
       const ring = new THREE.Mesh(new THREE.TorusGeometry(.0095, .0011, 8, 28).rotateY(Math.PI / 2).translate(0, 0, .046), M.metal); kh.add(ring);
       const spare = new THREE.Group(); spare.position.set(0, -.006, .052); spare.rotation.x = .5; kh.add(spare);            // a second key on the ring
       spare.add(new THREE.Mesh(rb(.0045, .022, .02, .004).translate(0, -.012, 0), M.metal), new THREE.Mesh(new THREE.BoxGeometry(.0018, .0065, .03).translate(0, -.03, .004).rotateX(-.25), M.metal));
-      R.parts.key = kh; R.ctl.push({ id: 'key', obj: g, r: .045, grab: true }); }
+      R.parts.key = kh; R.ctl.push({ id: 'key', obj: g, r: .065, grab: true, at: [0, 0, .029], pinch: true }); }   // reach by the palm or the pinch between thumb and index
     /* stalks: left (indicators), right (wipers); pivot at the column */
     for (const [id, p, sg] of [['stalkL', L.stalkL, -1], ['stalkR', L.stalkR, 1]]) {
       const pv = this.#mount(col, p); const arm = new THREE.Mesh(new THREE.CylinderGeometry(.006, .008, .13, 10).rotateZ(Math.PI / 2).translate(sg * .065, 0, 0), M.plastic); pv.add(arm);
@@ -12615,7 +12615,10 @@ class CabinControls {
       if (!G && this.car.mirrors.vrHand(side, h.sq, gp, q, onPulse)) { out[side] = 'mirror'; continue; }   // a mirror in this hand (§14.10)
       if (!G && h.sq > .6) {
         let best = null, bd = 1;
-        for (const c of R.ctl) { if (!c.grab) continue; const cp = c.obj.localToWorld(this._v2.set(...(c.at || [0, 0, 0]))).applyMatrix4(inv), dd = cp.distanceTo(gp); if (dd < c.r && dd < bd) { bd = dd; best = c; } }
+        const pin = this._pin ??= new THREE.Vector3(); let hasPin = false;   // the pinch: between thumb and index tips (hand model), else the fingertip point
+        if (h.tips?.[0] && h.tips?.[1]) { h.tips[0].getWorldPosition(pin); pin.add(h.tips[1].getWorldPosition(this._v3)).multiplyScalar(.5); hasPin = true; } else { pin.copy(tipW); hasPin = true; }
+        if (hasPin) pin.applyMatrix4(inv);
+        for (const c of R.ctl) { if (!c.grab) continue; const cp = c.obj.localToWorld(this._v2.set(...(c.at || [0, 0, 0]))).applyMatrix4(inv); let dd = cp.distanceTo(gp); if (c.pinch && hasPin) dd = Math.min(dd, cp.distanceTo(pin) * 1.3); if (dd < c.r && dd < bd) { bd = dd; best = c; } }
         if (best) { G = this.vrGrab[side] = { id: best.id, p0: gp.clone(), q0: q.clone(), v0: this.st.radio.vol, l0: this.st.lights, w0: this.st.wipers, ign0: this.st.ign }; onPulse?.(side, .3, 25); }
       }
       if (G) { out[side] = G.id; this.#drag(G, gp, q, R, sim, side, onPulse); continue; }
@@ -12645,7 +12648,11 @@ class CabinControls {
   #drag(G, gp, q, R, sim, side, onPulse) {
     const S = this.st, dq = this._q.copy(G.q0).invert().multiply(q), roll = 2 * Math.atan2(dq.z, dq.w), d = gp.clone().sub(G.p0);
     switch (G.id) {
-      case 'key': { const a = -roll + (G.ign0 >= 1 ? .9 : 0), want = a > 1.25 ? 2 : a > .45 ? 1 : 0, prev = S.ign;   // twist clockwise: ON, then START
+      case 'key': {   // twist about the barrel's own axis (the hand's world turn, not the controller's), clockwise = on: 13 deg a notch from ON, 31 deg OFF -> START
+        const K = R.ctl.find((c) => c.id === 'key')?.obj, ax = this._kax ??= new THREE.Vector3(), dW = this._kq ??= new THREE.Quaternion();
+        let turn = -roll;
+        if (K) { K.updateWorldMatrix(true, false); ax.setFromMatrixColumn(K.matrixWorld, 2).normalize(); dW.copy(G.q0).invert().premultiply(q); if (dW.w < 0) { dW.x = -dW.x; dW.y = -dW.y; dW.z = -dW.z; dW.w = -dW.w; } turn = -2 * Math.atan2(dW.x * ax.x + dW.y * ax.y + dW.z * ax.z, dW.w); }
+        const st = turn > .55 ? 2 : turn > .22 ? 1 : turn < -.55 ? -2 : turn < -.22 ? -1 : 0, want = clamp(G.ign0 + st, 0, 2), prev = S.ign;
         if (want !== prev) { if (want === 2) { S.crankT = .2; S.events.push('crank'); } if (want === 0 && prev) S.events.push('keyOff'); S.ign = want; onPulse?.(side, .25, 20); }
         if (S.ign === 2) S.crankT = Math.max(S.crankT, .05);
         break; }

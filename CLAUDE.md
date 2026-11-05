@@ -1370,3 +1370,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: safe room appearing inside a stairwell
 - Cause: after peeking into the next room (frontier n+1) and walking back two rooms (into room n-1, e.g. a stairwell), room n was still the planned safe slot, so it was swapped for the safe room while you stood behind it. The safe room (8 x 6 m) is bigger than many rooms and overlapped the room you were in: gun locker rifles standing in the stairwell, GUNSMITH screen and bench lamp floating beside the stairs.
 - updateStreaming: entering a non-safe room behind the safe slot pulls the frontier back to it (safe room = the room behind you), like walking back into a kept safe room already did. ?dev exposes normalParams, anchorY. Checked: module parse; slot geometry probe headless (safe room n overlaps room n-1 at slots 20, 44, 54, 67 of the default plan).
+
+## Interstate: VR ignition key easier to turn
+- Grab: the key's grab point is its head (at 0, 0, .029 on the barrel), reached by the palm or the pinch point between thumb and index tips (pinch counted x1.3), radius 6.5 cm (was the palm only, 4.5 cm from the barrel face: the palm sits ~7 cm behind the fingers, so it rarely caught).
+- Turn: measured as the hand's world rotation about the barrel's own axis (was the controller's local z, which is tilted ~40 deg off the forearm, so much of a wrist turn did not count). One notch per 13 deg (0.22 rad), two at 31 deg (OFF -> START was 72 deg); back the same way. Haptic tick per notch as before; START held while gripped.
+- Checked: module parse. Not tried in a headset.
