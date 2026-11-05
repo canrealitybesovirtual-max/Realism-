@@ -1201,3 +1201,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Stairwell under the yard: the panorama's ground plane (420 m square at y -0.6) and the forest floor ('nat ground') cut through the stairwell down to the block and the rooms under it: a floor at yard level you walked through, men half buried. Both hide while you are out of the yard and more than 0.4 m below its ground (yardTick).
 - Scope hitches (2x, ACOG, AWM scopes): a picture drawn into its own target needs its own shader variants, so the first look compiled every visible material on the spot (again in each new room). pipWarm(rt, cam) compiles them in the background per room and target (compileAsync); the picture waits until done.
 - Checked: module parse. Not run in a browser yet.
+
+## Interstate: Wanted starts when you pass a patrol car; faster, harder units (headset check needed)
+- Wanted (ChaseMode): starts in phase 'patrol': patrol cars cruise in the traffic ahead (CHASE.patrols 2 kept within 2.6 km, spawned 0.7-1.6 km ahead at 90-100 km/h, released as ordinary traffic). Passing one (it goes from ahead to behind you, within 10 m sideways, you over 90 km/h) starts the chase: that car is adopted (TrafficSystem.chaseAdopt: siren, cop role) plus backup behind (heat + 1 units in all). After busted / escaped it goes back to patrol (cooldown 14 s). HUD: "Patrol cars ahead: pass one fast and they come after you".
+- Units: acceleration 8.5 m/s^2 (was 4.8), top speed 64 + 4 x heat m/s (cap 80; was 52 + 3.5 x heat, cap 66), flat out from 60 m back (was 120), +6 m/s when ramming, a new "cut across your nose" zone just after passing you, lateral 5.5 m/s with a stiffer steer (was 3.4). CHASE holds the knobs.
+- Garage after a run (computer): checked headless: all three cars present and drawn after End run (Lexus 153 meshes, patrol and R6 copies in the scene). The VR path is being checked.
+- Checked: module parse.

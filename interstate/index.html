@@ -13881,11 +13881,16 @@ class TrafficSystem {
     this.#assign(a, k); a.T = T; a.len = a.lenE = T.len;
     this.#place(a, r, k); a.v = v;
     if (role === 'cop') a.color.setRGB(1, 1, 1); else a.color.setRGB(.012, .012, .014);   // the livery is the texture; the suspect's saloon black
-    a.role = role; a.siren = role === 'cop';
-    Object.assign(a, { amax: role === 'cop' ? 4.8 : 4.4, b: 4.5, s0: 2, T_: .45, bmax: 9.6, bsafe: 7, decT: 1e9, signals: false, weave: .03, polite: 0, agg: 1, misjudge: 0 });
-    a.chase = { lcT: .5, v0: v, vmax: 60, side: Math.random() < .5 ? -1 : 1 };
+    this.#chaseRole(a, role, v);
     return a;
   }
+  #chaseRole(a, role, v) {
+    a.role = role; a.siren = role === 'cop';
+    Object.assign(a, { amax: role === 'cop' ? CHASE.copAcc : 4.4, b: 4.5, s0: 2, T_: .45, bmax: 9.6, bsafe: 7, decT: 1e9, signals: false, weave: .03, polite: 0, agg: 1, misjudge: 0 });
+    a.chase = { lcT: .5, v0: v, vmax: 60, side: Math.random() < .5 ? -1 : 1 };
+  }
+  /** Wanted: a patrol car you just passed lights up and comes after you (the same car, not a new one). */
+  chaseAdopt(a) { if (!a || !a.on || a.crash) return null; this.#chaseRole(a, 'cop', a.v); return a; }
   /** Back to ordinary traffic (siren off, its own pace). */
   chaseRelease(a) { if (!a) return; a.role = null; a.siren = false; a.chase = null; a.decT = 1 + Math.random(); a.v0 = clamp(a.v0, 55 / 3.6, 130 / 3.6); }
   #chaseLead(a, g, i, lo, hi, skipPlayer) {
@@ -13909,8 +13914,9 @@ class TrafficSystem {
     let vT = C.v0, uT = null, skip = false;
     if (cop) {
       skip = true;                                                                                  // you are the target, never the car to keep a gap to
-      if (d > 30) vT = d > 120 ? C.vmax : Math.min(C.vmax, pv + clamp(d * .08, 4, 26));          // far back: flat out
-      else if (d > -5) { vT = pv + 3.5; uT = pl.u + C.side * .35 * (d < 4 ? 1 : 0); }               // ram, then lean on your rear quarter
+      if (d > 30) vT = d > 60 ? C.vmax : Math.min(C.vmax, pv + clamp(d * .25, 8, 30));           // behind: flat out until it is on you
+      else if (d > -5) { vT = pv + 6; uT = pl.u + C.side * .35 * (d < 4 ? 1 : 0); }                 // ram, then lean on your rear quarter
+      else if (d > -14) { vT = pv + 2; uT = pl.u; }                                                // got past you: cut straight across your nose
       else { vT = Math.max(0, pv - 5); uT = pl.u; }                                                // ahead: box you in
       if (pv < 3 && Math.abs(d) < 16) vT = Math.min(vT, pv + .5);                                 // you stopped: hold you there
     } else if (d < 0 && d > -70) vT = C.v0 + 5;                                                     // you right behind him: flat out
@@ -13928,7 +13934,8 @@ class TrafficSystem {
         const o = g[j]; if (o === a || o.isPlayer) continue;
         if (Math.abs(o.f - a.f) < (o.lenE + a.lenE) / 2 + 1 && (side > 0 ? o.uLo < a.uHi + 1.2 && o.uHi > a.u : o.uHi > a.uLo - 1.2 && o.uLo < a.u)) blocked = true;
       }
-      a.lc = 0; a.uDot = blocked ? 0 : clamp((goal - a.u) * 1.8, -3.4, 3.4); a.u += a.uDot * dt;
+      const ls = cop ? CHASE.copLat : 3.4;                              // units cut across hard
+      a.lc = 0; a.uDot = blocked ? 0 : clamp((goal - a.u) * (cop ? 2.6 : 1.8), -ls, ls); a.u += a.uDot * dt;
       a.lane = a.tLane = clamp(Math.round((a.u - tr.laneStart) / lw - .5), 0, this.lanes - 1);
     } else {
       if (a.lc === 0 && (C.lcT -= dt) <= 0) {
@@ -14104,14 +14111,16 @@ class ScoreSystem {
    Notices go through 'chase:note' (the page toast, and the headset's);
    the page shows the chase bar (ChaseHud).
    ════════════════════════════════════════════════════════════════════════ */
-const CHASE = { hold: 6, far: 420, lose: 8, gone: 950, grace: 20, limit: 240, evadeR: 300, evade: 8, bust: 3.5, between: { pursuit: 8, wanted: 14 } };
+const CHASE = { hold: 6, far: 420, lose: 8, gone: 950, grace: 20, limit: 240, evadeR: 300, evade: 8, bust: 3.5, between: { pursuit: 8, wanted: 14 },
+  copAcc: 8.5, copLat: 5.5, vmax0: 64, vmaxHeat: 4, vmaxCap: 80,       // units: interceptor pace (was amax 4.8, 52 + 3.5 x heat m/s)
+  patrols: 2, patrolAhead: [700, 1600], passSpeed: 25, passLat: 10 };   // Wanted: patrol cars in the traffic; passing one at speed starts the chase
 class ChaseMode {
   constructor(world, mode) {
     this.w = world; this.mode = mode;
     this.hud = { mode, title: '', line: '', bar: 0, barLabel: '', warn: '', timer: null, kind: '' };
   }
   reset() {
-    Object.assign(this, { t: 0, phase: 'wait', wait: this.mode === 'pursuit' ? 2.5 : 5, round: 0, heat: 1, units: [], suspect: null,
+    Object.assign(this, { t: 0, phase: this.mode === 'wanted' ? 'patrol' : 'wait', wait: this.mode === 'pursuit' ? 2.5 : 5, round: 0, heat: 1, units: [], suspect: null, patT: 0, cool: 3,
       hold: 0, far: 0, bust: 0, evade: 0, last: 0, chaseT: 0, near: 1e9, acc: 0, v0: 45, vmax: 55, first: true });
     const cc = this.w.carObj.controls;                                   // a chase starts with the engine turning over
     if (cc?.st && cc.st.ign === 0) cc.act('ignition');
@@ -14121,6 +14130,7 @@ class ChaseMode {
   #lane() { return Math.floor(Math.random() * this.w.traffic.lanes); }
   step(dt, P) {
     this.t += dt;
+    if (this.phase === 'patrol') { this.#patrol(dt, P); this.#hud(); return; }
     if (this.phase === 'wait') { if ((this.wait -= dt) <= 0) this.#begin(P); this.#hud(); return; }
     this.chaseT += dt;
     if (this.mode === 'pursuit') this.#pursuit(dt, P); else this.#wanted(dt, P);
@@ -14180,7 +14190,24 @@ class ChaseMode {
       this.heat++; this.#end();
     }
   }
-  #begin(P) {
+  /** Wanted, before the chase: patrol cars ride in the traffic ahead (kept topped up); pass one fast (or close at speed) and it
+   *  lights up and comes after you, with backup behind. */
+  #patrol(dt, P) {
+    const T = this.w.traffic; this.cool = Math.max(0, this.cool - dt);
+    let n = 0;
+    for (const a of T.agents) {
+      if (!a.on || a.dir <= 0 || !a.T.police || a.role) continue;
+      if (a.rel > 30 && a.rel < 2600) n++;
+      const was = a.patRel ?? a.rel; a.patRel = a.rel;
+      if (!this.cool && was > 0 && a.rel <= 0 && Math.abs(a.u - P.u) < CHASE.passLat && P.vs > CHASE.passSpeed && !a.crash) { this.#begin(P, a); return; }
+    }
+    if (n < CHASE.patrols && (this.patT -= dt) <= 0) {
+      this.patT = 4;
+      const R0 = CHASE.patrolAhead, a = T.chaseSpawn('cop', R0[0] + Math.random() * (R0[1] - R0[0]), this.#lane(), 24 + Math.random() * 4);
+      if (a) { T.chaseRelease(a); a.v0 = a.v = 25 + Math.random() * 3; a.siren = false; }   // a patrol car cruising in the slow lanes
+    }
+  }
+  #begin(P, passed = null) {
     const T = this.w.traffic; this.round++;
     Object.assign(this, { hold: 0, far: 0, bust: 0, evade: 0, chaseT: 0, acc: 0 });
     if (this.mode === 'pursuit') {
@@ -14189,18 +14216,20 @@ class ChaseMode {
       this.#say(this.first ? `Dispatch: a black saloon at ${Math.round(this.v0 * 3.6)} km/h is about to pass you. Lights and siren: J (or the console). Stay on him until he stops: box him in or nudge his rear quarter.`
         : `Dispatch: another speeder coming past, ${Math.round(this.v0 * 3.6)} km/h.`, 6000);
     } else {
-      const n = Math.min(4, this.heat + 1); this.vmax = Math.min(66, 52 + this.heat * 3.5); this.units = [];
-      for (let k = 0; k < n; k++) {
+      const n = Math.min(4, this.heat + 1); this.vmax = Math.min(CHASE.vmaxCap, CHASE.vmax0 + this.heat * CHASE.vmaxHeat); this.units = [];
+      const own = passed && T.chaseAdopt(passed);                        // the car you passed
+      if (own) { own.chase.vmax = this.vmax; this.units.push(own); }
+      for (let k = own ? 1 : 0; k < n; k++) {
         const ahead = k === n - 1 && this.heat > 1;                      // from the second wave one waits ahead of you
         const a = ahead ? T.chaseSpawn('cop', 420, this.#lane(), 22) : T.chaseSpawn('cop', -280 - 55 * k, this.#lane(), Math.max(28, P.vs + 8));
         if (a) { a.chase.vmax = this.vmax; this.units.push(a); }
       }
-      this.#say(this.first ? `Wanted: ${n} patrol units on your tail. Lose them: ${CHASE.evadeR} m clear for ${CHASE.evade} s. Stopped beside them, you are busted.`
+      this.#say(own ? `You blew past a patrol car at ${Math.round(P.vs * 3.6)} km/h. ${n} units after you. Lose them: ${CHASE.evadeR} m clear for ${CHASE.evade} s.` : this.first ? `Wanted: ${n} patrol units on your tail. Lose them: ${CHASE.evadeR} m clear for ${CHASE.evade} s. Stopped beside them, you are busted.`
         : `${n} units after you${this.heat > 1 ? ', one up ahead' : ''}.`, 6000);
     }
     this.first = false; this.phase = 'chase';
   }
-  #end() { this.phase = 'wait'; this.wait = CHASE.between[this.mode]; this.suspect = null; this.units = []; }
+  #end() { this.phase = this.mode === 'wanted' ? 'patrol' : 'wait'; this.wait = CHASE.between[this.mode]; this.cool = CHASE.between.wanted; this.suspect = null; this.units = []; }
   #hud() {
     const H = this.hud; H.warn = ''; H.timer = null; H.kind = '';
     if (this.mode === 'pursuit') {
@@ -14213,7 +14242,7 @@ class ChaseMode {
       H.timer = Math.max(0, CHASE.limit - this.chaseT);
     } else {
       H.title = 'WANTED ' + '★'.repeat(Math.min(5, this.heat));
-      if (this.phase === 'wait') { H.line = this.round ? 'Lying low' : 'Cruising'; H.bar = 0; H.barLabel = ''; return; }
+      if (this.phase === 'wait' || this.phase === 'patrol') { H.line = this.cool > 0 ? 'Lying low' : 'Patrol cars ahead: pass one fast and they come after you'; H.bar = 0; H.barLabel = ''; return; }
       H.line = `Nearest unit ${Math.round(Math.max(0, this.near))} m`;
       if (this.bust > .05) { H.bar = this.bust / CHASE.bust; H.barLabel = 'Pulling you over: drive!'; H.kind = 'bad'; }
       else { H.bar = this.evade / CHASE.evade; H.barLabel = this.near > CHASE.evadeR ? 'Out of sight: keep going' : `Get ${CHASE.evadeR} m clear`; }
@@ -15920,7 +15949,7 @@ class App {
     this.audio.ensure();
     this.vaudio?.dispose(); this.vaudio = new VehicleAudio(this.audio, this.settings); this.vaudio.cab = this.carObj.cab;   // section 9: engine, tyres, wind, traffic, radio (build 1.28)
     if (mode === 'pursuit') this.hud.setNote(h('b', {}, 'Pursuit. '), 'A speeder is about to pass you. J runs the siren (wail, yelp, off) and the lights; G the lights alone. Stay close until he stops: box him in or nudge his rear quarter. Do not lose him.');
-    else if (mode === 'wanted') this.hud.setNote(h('b', {}, 'Wanted. '), 'The highway patrol is coming. Lose them: 300 m clear for 8 s. They ram and box; stopped next to one, you are busted.');
+    else if (mode === 'wanted') this.hud.setNote(h('b', {}, 'Wanted. '), 'Patrol cars ride in the traffic ahead. Blow past one and the chase is on: they ram, cut you off and box you in. Lose them: 300 m clear for 8 s; stopped next to one, you are busted.');
     else this.hud.setNote(h('b', {}, 'On the hard shoulder, engine off. '), 'Turn the key with I (in VR: squeeze the key and twist). Wait for a gap, then join. Clean passes, near misses, cuts and splits build a chain; contact loses it. H sounds the horn, T shows telemetry, C changes camera, O lets the car drive.');
     this.hud.clearFeed();
     this.hud.setVisible(true); $('#vignette').classList.add('light');
