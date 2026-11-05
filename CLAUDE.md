@@ -1353,3 +1353,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Auto quality: a sample with one stall now leaves that frame out instead of being skipped (constant stalls had stopped auto quality from ever stepping down); desktop starts at 1x without GTAO and climbs. roomCompile only where the browser has KHR_parallel_shader_compile (otherwise it is a stall itself).
 - Measured headless (render stubbed): the game's JS is ~1-2 % of the time, 2 long tasks in 18 s; no new shader programs while playing in the safe room. Hitches are on the GPU side (compiles, shadow redraws, resolution changes).
 - Measured headless (SwiftShader, real render): 2 new shader programs in a whole run through 3 rooms; the worst frames were at door openings. A room change redrew every shadow map in one frame; flushShadows now queues them (userData.shRoom) and draws one a frame (maps never drawn yet go at once).
+
+## Interstate: menu road band
+- Headless check of the menu scene: a dark diagonal band across the road was the shared edge of the road's two 600 m triangles (bump map slopes break along triangle edges; not a shadow: it stayed with shadows off). Menu road subdivided 24 x 28 and drawn without the bump map.
