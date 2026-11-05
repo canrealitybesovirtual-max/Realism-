@@ -1348,3 +1348,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Interstate: no floating mirrors on the R6
 - MIRROR_GLASS.r6 removed: the mirror split (housing and glass cut out of the model and hung on adjustable pivots) left them floating beside the bike. The bike now shows its model as built, with no live mirror views. Syntax parse only.
+
+## CQC: hitch pass
+- Auto quality: a sample with one stall now leaves that frame out instead of being skipped (constant stalls had stopped auto quality from ever stepping down); desktop starts at 1x without GTAO and climbs. roomCompile only where the browser has KHR_parallel_shader_compile (otherwise it is a stall itself).
+- Measured headless (render stubbed): the game's JS is ~1-2 % of the time, 2 long tasks in 18 s; no new shader programs while playing in the safe room. Hitches are on the GPU side (compiles, shadow redraws, resolution changes).
