@@ -1326,3 +1326,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: fewer lights, lighter frame
 - troffCap: at most 3 ceiling fittings a room (was 4). TFILL fill lights: 2 computer / 1 lite and headset (were 8 / 3); with 3 fittings at most one is beyond the pool's two.
 - Shadow maps 1024 on the computer (were 1536). Auto quality: Medium has no GTAO (AO only High and up); desktop max pixel ratio 1.25 (was 1.5). Syntax parse only.
+- Follow-up: vmHipAim turned only your gun toward the crosshair point (it changes as you turn and look at near / far things), so the gun swung out of the take's support hand; the arms (V.base) now take the same turn. vmSupportFix aims the fore-end line 2.2 cm from a palm point nearer the knuckles (fingers were over the gun), and corrects from 3 cm off.
