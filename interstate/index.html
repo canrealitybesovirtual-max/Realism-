@@ -9288,9 +9288,39 @@ const POLICE_FLASH_GLSL = /* glsl */`
     return ((mod(floor((c - 1.2) / .15), 2.0) < .5) == (sg < 0.0)) ? 1.0 : 0.0;
   }`;
 /** Red lamp glass: translucent, smooth, lit from inside. One per car (its glow follows that car's lamps). */
+/* Tail lamp lens (all cars): the lenses were a flat translucent red sheet over nothing (the models have no lamp housing
+ * behind them), so they read as broken plastic. Now an opaque lens with depth: a faceted reflector 16 mm behind the glass
+ * (parallax along the view in the lens's own frame, metres), fine flutes on the outer lens, deep red between the facets;
+ * lit, each facet glows (the bulb in its reflector) and the gaps stay darker. Plane picked by the dominant object normal,
+ * so lenses that wrap round the corner keep square facets. */
+const TAIL_LENS_VERT = /* glsl */`
+  { mat3 tlM = mat3(modelMatrix);
+  #ifdef USE_INSTANCING
+    tlM = tlM * mat3(instanceMatrix);
+  #endif
+    float tlS = length(tlM[0]);
+    vTlP = transformed * tlS; vTlN = objectNormal; vTlV = transpose(tlM) * (cameraPosition - vAtmoWorld); }`;
+const TAIL_LENS_PARS = /* glsl */`
+varying vec3 vTlP, vTlN, vTlV;
+float tlCells(){
+  vec3 n = normalize(vTlN), v = normalize(vTlV), an = abs(n);
+  float cn = max(abs(dot(v, n)), 0.3);
+  vec3 q = vTlP - v * (0.016 / cn);                                   // the reflector behind the lens
+  vec2 uv = an.z > max(an.x, an.y) ? q.xy : an.x > an.y ? q.zy : q.xz;
+  vec2 uo = an.z > max(an.x, an.y) ? vTlP.xy : an.x > an.y ? vTlP.zy : vTlP.xz;
+  float row = floor(uv.y / 0.0085);
+  vec2 c = fract(vec2(uv.x / 0.011 + 0.5 * mod(row, 2.0), uv.y / 0.0085)) - 0.5;   // staggered reflector facets, 11 x 8.5 mm
+  float cell = 1.0 - smoothstep(0.05, 0.62, length(c * vec2(1.0, 1.15)));
+  float flute = 0.5 + 0.5 * cos(uo.x * 1570.8);                      // 4 mm flutes moulded in the outer lens
+  return clamp(cell * (0.86 + 0.14 * flute), 0.0, 1.0);
+}`;
+const TAIL_LENS_VERT_PARS = 'varying vec3 vTlP, vTlN, vTlV;';
 function tailGlassMaterial() {
   return Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .06, metalness: 0, clearcoat: 1, clearcoatRoughness: .03,
-    transparent: true, opacity: .86, emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2 }), { key: 'tailglass' });
+    emissive: new THREE.Color().setRGB(1, .035, .02), emissiveIntensity: .15, envMapIntensity: 1.2 }), { key: 'tailglass2',
+    vertPars: TAIL_LENS_VERT_PARS, vertMain: TAIL_LENS_VERT, fragPars: TAIL_LENS_PARS,
+    frag: [['#include <emissivemap_fragment>', `{ float tc = tlCells(); diffuseColor.rgb = mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc);
+      totalEmissiveRadiance *= .55 + .9 * tc; }`]] });
 }
 /** Police update: the triangles of whole connected pieces (by shared index) whose bounds lie inside one of the boxes
  *  (model space) are dropped from a copy of the geometry. */
@@ -11869,11 +11899,11 @@ function policeTrafficGeometry(U) {
     if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
     if (!g.attributes.normal) g.computeVertexNormals();
     const nm = o.material.name || '', tailM = TAIL_GLASS.test(nm), barM = /^Giro_(bleu|red)_text$/.test(nm), blue = /bleu/.test(nm);
-    const base = tailM ? new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .08, metalness: 0, transparent: true, opacity: .88 }) : o.material.clone();
+    const base = tailM ? new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(.32, .012, .01), roughness: .08, metalness: 0 }) : o.material.clone();   // tail lens: opaque, depth in the shader
     const mat = Atmos.patch(base, { key: 'trafpol' + (tailM ? 'T' : barM ? (blue ? 'B' : 'R') : base.transparent ? 't' : ''), uniforms: U,
-      vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;', vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif',
-      fragPars: 'uniform float uNight, uTrafT; varying vec4 vLampI;' + (barM ? POLICE_FLASH_GLSL : ''),
-      frag: tailM ? [['#include <emissivemap_fragment>', 'totalEmissiveRadiance = vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8);']]
+      vertPars: 'attribute vec4 iLamp; varying vec4 vLampI;' + (tailM ? TAIL_LENS_VERT_PARS : ''), vertMain: '#ifdef USE_INSTANCING\n vLampI = iLamp;\n#else\n vLampI = vec4(0.0);\n#endif' + (tailM ? TAIL_LENS_VERT : ''),
+      fragPars: 'uniform float uNight, uTrafT; varying vec4 vLampI;' + (barM ? POLICE_FLASH_GLSL : '') + (tailM ? TAIL_LENS_PARS : ''),
+      frag: tailM ? [['#include <emissivemap_fragment>', '{ float tc = tlCells(); diffuseColor.rgb = mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc); totalEmissiveRadiance = vec3(1.0, .035, .02) * (.18 + uNight * 1.1 + vLampI.x * 2.8) * (.55 + .9 * tc); }']]
         : barM ? [['#include <emissivemap_fragment>', `{ float on = step(.5, vLampI.w) * polFlash(uTrafT, ${blue ? '1.0' : '-1.0'});   // police update: the drivable car's pattern
             totalEmissiveRadiance = ${blue ? 'vec3(.1, .25, 1.0)' : 'vec3(1.0, .05, .03)'} * (on * 7.0 + step(.5, vLampI.w) * .2); }`]] : [] });
     mat.userData.shared = true; geos.push(g); mats.push(mat);
@@ -11900,7 +11930,7 @@ function trafficAssets() {
     frag: [['#include <color_fragment>', 'diffuseColor.rgb = diffuse * mix(.74, 1.0, smoothstep(1.0, 2.8, vObjY));']] });
   const lamp = Atmos.patch(new THREE.MeshBasicMaterial({ color: 0xffffff }), { key: 'trafficlamp', uniforms: U,
     vertBegin: 'vec3 objectNormal = vec3(normal);',                    // MeshBasicMaterial declares no normal without an env map
-    vertPars: 'attribute float lampKind; attribute vec4 iLamp; uniform float uNight; varying vec3 vLamp;',
+    vertPars: 'attribute float lampKind; attribute vec4 iLamp; uniform float uNight; varying vec3 vLamp; varying float vLk;' + TAIL_LENS_VERT_PARS,
     vertMain: /* glsl */`
       float lk = lampKind; vec3 lc;
       if (lk < .5) lc = vec3(1.0, .95, .86) * (mix(.22, 5.0, uNight) + iLamp.w * 7.0);
@@ -11908,8 +11938,13 @@ function trafficAssets() {
       else if (lk < 2.5) lc = vec3(1.0, .38, .04) * (.05 + iLamp.y * 3.2);
       else if (lk < 3.5) lc = vec3(1.0, .38, .04) * (.05 + iLamp.z * 3.2);
       else lc = vec3(1.0, .045, .025) * (.04 + iLamp.x * 3.6);
-      vLamp = lc;`,
-    fragPars: 'varying vec3 vLamp;', frag: [['#include <color_fragment>', 'diffuseColor.rgb = vLamp;']] });
+      vLamp = lc; vLk = lk;` + TAIL_LENS_VERT,
+    fragPars: 'varying vec3 vLamp; varying float vLk; uniform float uNight;' + TAIL_LENS_PARS, frag: [['#include <color_fragment>', `diffuseColor.rgb = vLamp;
+      if (vLk > .5) {                                                   // red / amber lenses: facets behind the glass, a lens colour by day, a sky glint
+        float tc = tlCells(); vec3 lensC = vLk < 2.5 || vLk > 3.5 ? vec3(.3, .014, .01) : vec3(.36, .13, .02);
+        vec3 V = normalize(vTlV), N = normalize(vTlN); float fr = pow(1.0 - abs(dot(V, N)), 4.0);
+        diffuseColor.rgb = lensC * (.2 + .18 * tc) * (1.0 - .8 * uNight) + vLamp * (.55 + .9 * tc) + vec3(.55, .6, .68) * fr * .35 * (1.0 - .7 * uNight);
+      }`]] });
   const rubber = Atmos.patch(new THREE.MeshStandardMaterial({ color: rgb(.02, .02, .02), roughness: .92, metalness: 0, side: THREE.DoubleSide }), { key: 'traffictyre' });
   const rim = Atmos.patch(new THREE.MeshStandardMaterial({ color: rgb(.34, .34, .35), roughness: .34, metalness: .85, side: THREE.DoubleSide }), { key: 'trafficrim' });
   const shadowMat = new THREE.MeshBasicMaterial({ map: contactShadowTexture(), color: 0x000000, transparent: true, opacity: .72, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
