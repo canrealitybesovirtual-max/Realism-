@@ -4300,7 +4300,12 @@ const SPLASH = { on: FLOOR_WEAR.on && !!(CONFIG.splash && CONFIG.splash.on) && !
   pool: 0, damp: 0, room: null, p: new THREE.Vector3(), d: new THREE.Vector3(), ax: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0),
   c: new THREE.Color(), feet: [0, 0], dry: [], next: 0, acc: 0,
   drop: { c: [0.5, 0.56, 0.6], a: 0.6, sp: [0.7, 1.9], life: [0.35, 0.7], size: [0.0022, 0.0045], grow: 0, drag: 0.5, grav: 9.8 },
-  crown: { c: [0.55, 0.6, 0.64], a: 0.65, sp: [1.6, 3.4], life: [0.4, 0.8], size: [0.0025, 0.005], grow: 0, drag: 0.6, grav: 9.8 } };
+  crown: { c: [0.55, 0.6, 0.64], a: 0.65, sp: [1.6, 3.4], life: [0.4, 0.8], size: [0.0025, 0.005], grow: 0, drag: 0.6, grav: 9.8 },
+  // outdoors (the yard's rain puddles; no floor wear needed): a taller, brighter column and a little spray mist, so it reads at night
+  yardOn: !!(CONFIG.splash && CONFIG.splash.on) && !/[?&]splash=off\b/.test(QS),
+  crownY: { c: [0.62, 0.67, 0.72], a: 0.8, sp: [2.2, 4.2], life: [0.5, 0.95], size: [0.004, 0.008], grow: 0, drag: 0.55, grav: 9.8 },
+  sheetY: { c: [0.58, 0.63, 0.68], a: 0.7, sp: [0.9, 1.8], life: [0.3, 0.55], size: [0.003, 0.006], grow: 0, drag: 0.8, grav: 9.8 },
+  mistY: { n: 3, c: [0.6, 0.64, 0.68], a: 0.14, sp: [0.3, 0.9], life: [0.6, 1.1], size: [0.05, 0.1], grow: 0.7, drag: 2.6, buoy: 0, force: true } };
 for (let i = 0; i < 64; i++) SPLASH.dry.push({ L: null, idx: 0, n0: 0, room: null, t: 0, T: 1, a: 0 });
 function wearTexel(D, N, c, x0, y0, x1, y1, fx, fy) {
   const a = D[(y0 * N + x0) * 4 + c], b = D[(y0 * N + x1) * 4 + c], e = D[(y1 * N + x0) * 4 + c], f = D[(y1 * N + x1) * 4 + c];
@@ -16843,7 +16848,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   }
   if (info) {
     if (FIX_ON && _hn.y < -0.7 && fixtureShot(info.room, _fp, dir)) return;   // step 87: a round into a troffer
-    if (SPLASH.on && CONFIG.splash.bullets && info.kind === 'concrete' && _hn.y > 0.7 && splashShot(info.room, _fp)) return;   // step 94: into standing water
+    if ((SPLASH.on || SPLASH.yardOn && info.room && info.room.yard) && CONFIG.splash.bullets && info.kind === 'concrete' && _hn.y > 0.7 && splashShot(info.room, _fp)) return;   // step 94: into standing water (the yard's puddles too)
     addRoomHole(info.room, info.kind, _fp, _hn, true, undefined, PEN.live ? PEN.holeS : 1);   // step 119: sized to the calibre
     impactFx(info.kind, _fp, _hn);
     if (TRICKLE.on) trickleAdd(info.room, info.kind, _fp, _hn);   // step 88: the hole keeps shedding
@@ -19405,7 +19410,6 @@ function wbSpawn(room) {
     WB.jaws = [-1, 1].map((sd) => { const j = K.jaw.clone(); j.userData.sd = sd; j.position.set(WB.vise.x, WB.vise.y - 0.04, WB.vise.z + sd * WB.jawOpen); room.group.add(j); return j; });
     WB.jawW = WB.jawOpen;
     const s = K.sign.clone(); s.position.set(WB.benchX + 0.2, 1.45, 2.985); s.rotation.y = Math.PI; room.group.add(s);
-    try { wbTrays(room); } catch (e) { console.warn('bench trays not built', e); }   // a low parts bin under every table spot, labelled
   }
   // step 88: the VISE button (a new one with each safe room)
   WB.btnAt = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
@@ -19424,16 +19428,12 @@ function wbSpawn(room) {
    that gun and gives its spot up; one whose gun is gone (its room unloaded) is dropped. Free spots get fresh parts.
    (Before: every part ever locked on a gun held its spot for good, so a gun left behind emptied the table.) */
 // Bench trays: a shallow black polymer parts bin (2 mm floor, 22 mm walls) under each table spot of every gun's
-// list, sized to the gap to its neighbours, with a small printed white-on-charcoal label strip in front naming the
-// part. Geometry per size, label textures per name (cached); the rims are static colliders on the room body so
+// list, sized to the part lying in it (its measured footprint + 12 mm), with a small printed white-on-charcoal label
+// strip in front naming the part. Geometry per size, label textures per name (cached); the rims are static colliders on the room body so
 // a dropped part stays in its bin. The part's rest height is unchanged (it sits 2 mm into the floor of the bin).
 const TRAY = { geo: new Map(), lbl: new Map(), mat: null, lmat: null, h: 0.022, t: 0.003, f: 0.002,
+  fp: new Map(), items: new Map(), room: null, m: 0.012, labD: 0.02, gap: 0.006,   // footprints per spot, built trays, margin round a part, label strip depth, gap between trays (m)
   names: { light: 'WEAPON LIGHT', laser: 'LASER', sup: 'SUPPRESSOR', ext: 'BARREL EXT.', dot: 'RED DOT', cover: 'OPTIC COVER', comp: 'COMPENSATOR', fh: 'FLASH HIDER', pl2: 'PL-2 LIGHT' } };
-function trayAll() {
-  const L = [];
-  for (const A of [WB_TABLE, WB_G17, typeof WB_AKM !== 'undefined' ? WB_AKM : [], typeof WB_M19 !== 'undefined' ? WB_M19 : [], typeof WB_M4 !== 'undefined' ? WB_M4 : [], typeof WB_AWM !== 'undefined' ? WB_AWM : []]) for (const t of A) L.push(t);
-  return L;
-}
 function trayName(t) {
   const it = t[6] && WORKSHOP.byId && WORKSHOP.byId.get(t[6]);
   let n = it ? it.name.replace(/\s*\(.*?\)\s*/g, ' ').trim() : TRAY.names[t[0]] || String(t[5] || t[0]);
@@ -19466,33 +19466,76 @@ function trayLabel(text) {
   TRAY.lbl.set(text, m);
   return m;
 }
+// Trays follow the parts: each spot's tray is the footprint of the part lying there (measured once at its home pose,
+// room-local, relative to the spot) plus TRAY.m all round, its label strip in front. Overlapping trays (and labels)
+// push their spots apart (TRAY.gap between rims); a part already at home moves with its spot. Built / refit after
+// every restock and store fill; a spot with no part yet has no tray until its part has been laid there once.
+const _trB = new THREE.Box3();
+function trayFoot(p, room) {
+  p.root.updateMatrixWorld(true);
+  _trB.makeEmpty();
+  p.root.traverse((o) => { if (o.isMesh && o.visible && o.geometry && !(o.material && o.material.blending === THREE.AdditiveBlending)) _trB.expandByObject(o, false); });
+  if (_trB.isEmpty()) return null;
+  const t = p.item.tableSpot, f = [Infinity, -Infinity, Infinity, -Infinity];
+  for (let i = 0; i < 4; i++) {
+    const lx = rLX(room, i & 1 ? _trB.max.x : _trB.min.x), lz = rLZ(room, i & 2 ? _trB.max.z : _trB.min.z);
+    f[0] = Math.min(f[0], lx - t[2]); f[1] = Math.max(f[1], lx - t[2]); f[2] = Math.min(f[2], lz - t[3]); f[3] = Math.max(f[3], lz - t[3]);
+  }
+  return f;
+}
+function trayAtHome(p, room) {
+  return p.kinematic && !p.holders.length && !p.item.stuck && !p.item.gun && wbHomePose(p, room, _wbP, _wbQ) && p.root.position.distanceTo(_wbP) < 0.01;
+}
+function trayDrop(e) {
+  for (const o of [e.m, e.lab]) if (o && o.parent) o.parent.remove(o);
+  for (const h of e.cols) { const c = world.getCollider(h); if (c) world.removeCollider(c, false); colliderInfo.delete(h); const i = e.room.colliderHandles.indexOf(h); if (i >= 0) e.room.colliderHandles.splice(i, 1); }
+}
 function wbTrays(room) {
+  if (!room || !room.active) return;
   if (!TRAY.mat) TRAY.mat = new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.62, metalness: 0 });   // black polymer bins
-  const spots = trayAll(), y0 = 0.905, seen = [];
-  for (const t of spots) {
-    const x = t[2], z = t[3];
-    if (seen.some((q) => Math.abs(q[0] - x) < 0.02 && Math.abs(q[1] - z) < 0.02)) continue;
-    seen.push([x, z]);
-    let nx = 0.32, nz = 0.2;
-    for (const u of spots) {
-      if (u === t) continue;
-      const dx = Math.abs(u[2] - x), dz = Math.abs(u[3] - z);
-      if (dx < 0.02 && dz < 0.02) continue;
-      if (dz < 0.07) nx = Math.min(nx, dx); else if (dx < 0.1) nz = Math.min(nz, dz);
+  if (TRAY.room !== room) { TRAY.items = new Map(); TRAY.room = room; }   // the last safe room's trays went with its group
+  for (const p of WB.atts) {                                          // measure what lies at home and has not been measured
+    const t = p.item.tableSpot;
+    if (!t || TRAY.fp.has(t) || p.removing || !trayAtHome(p, room)) continue;
+    const f = trayFoot(p, room); if (f) TRAY.fp.set(t, f);
+  }
+  const spots = wbTable().filter((t) => TRAY.fp.has(t)), m = TRAY.m, labD = TRAY.labD;
+  const rect = (t) => { const f = TRAY.fp.get(t); return [t[2] + f[0] - m, t[2] + f[1] + m, t[3] + f[2] - m - labD, t[3] + f[3] + m]; };   // label strip in front (-z)
+  let moved = false;
+  for (let it = 0; it < 40; it++) {                                   // push overlapping trays apart (the smaller overlap axis)
+    let any = false;
+    for (let i = 0; i < spots.length; i++) for (let j = i + 1; j < spots.length; j++) {
+      const a = spots[i], b = spots[j], A = rect(a), Bq = rect(b);
+      const ox = Math.min(A[1], Bq[1]) - Math.max(A[0], Bq[0]) + TRAY.gap, oz = Math.min(A[3], Bq[3]) - Math.max(A[2], Bq[2]) + TRAY.gap;
+      if (ox <= 0 || oz <= 0) continue;
+      any = moved = true;
+      if (ox <= oz) { const s = (A[0] + A[1]) <= (Bq[0] + Bq[1]) ? 1 : -1; a[2] -= s * ox / 2; b[2] += s * ox / 2; }
+      else { const s = (A[2] + A[3]) <= (Bq[2] + Bq[3]) ? 1 : -1; a[3] -= s * oz / 2; b[3] += s * oz / 2; }
     }
-    const big = t[0] === 'sup' || t[0] === 'm4part' || t[0] === 'awm';
-    const w = Math.max(0.06, Math.min(big ? 0.3 : 0.15, nx - 0.012)), d = Math.max(0.05, Math.min(0.12, nz - 0.03));
-    const m = mesh(trayGeo(w, d), TRAY.mat, false, true);
-    m.position.set(x, y0, z); room.group.add(m);
-    const lw = Math.min(w - 0.006, 0.12), lab = mesh(new THREE.PlaneGeometry(lw, lw / 8), trayLabel(trayName(t)), false, true);
-    lab.rotation.set(-Math.PI / 2, 0, Math.PI);                   // flat on the bench in front of the bin, read from your side (-z)
-    lab.position.set(x, y0 + 0.0012, z - d / 2 - lw / 16 - 0.004); room.group.add(lab);
+    if (!any) break;
+  }
+  if (moved) for (const p of WB.atts) if (p.item.tableSpot && p.kinematic && !p.holders.length && !p.item.stuck && !p.item.gun && !p.removing) wbHome(p, room);   // parts follow their spots
+  const want = new Set(spots);
+  for (const [t, e] of TRAY.items) if (!want.has(t)) { trayDrop(e); TRAY.items.delete(t); }
+  const y0 = 0.905;
+  for (const t of spots) {
+    const R = rect(t), w = R[1] - R[0], d = R[3] - R[2] - labD, x = (R[0] + R[1]) / 2, z = (R[2] + labD + R[3]) / 2;
+    const key = `${x.toFixed(4)},${z.toFixed(4)},${w.toFixed(4)},${d.toFixed(4)}`, old = TRAY.items.get(t);
+    if (old && old.key === key) continue;
+    if (old) trayDrop(old);
+    const e = { key, room, cols: [], m: mesh(trayGeo(w, d), TRAY.mat, false, true), lab: null };
+    e.m.position.set(x, y0, z); room.group.add(e.m);
+    const lw = Math.min(w - 0.006, 0.12);
+    e.lab = mesh(new THREE.PlaneGeometry(lw, lw / 8), trayLabel(trayName(t)), false, true);
+    e.lab.rotation.set(-Math.PI / 2, 0, Math.PI);                     // flat on the bench in front of the bin, read from your side (-z)
+    e.lab.position.set(x, y0 + 0.0012, z - d / 2 - lw / 16 - 0.003); room.group.add(e.lab);
     for (const [hx, hz, cx, cz] of [[w / 2, TRAY.t / 2, 0, d / 2 - TRAY.t / 2], [w / 2, TRAY.t / 2, 0, -d / 2 + TRAY.t / 2], [TRAY.t / 2, d / 2, w / 2 - TRAY.t / 2, 0], [TRAY.t / 2, d / 2, -w / 2 + TRAY.t / 2, 0]]) {
-      const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, TRAY.h / 2, hz).setTranslation(x + cx, y0 + TRAY.h / 2, z + cz)
+      const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, TRAY.h / 2, hz).setTranslation(x + cx, y0 + TRAY.h / 2, z + cz)   // room.body: room-local
         .setFriction(0.6).setRestitution(0.1).setCollisionGroups(COLL.static), room.body);
       colliderInfo.set(col.handle, { room, kind: 'wood' });
-      room.colliderHandles.push(col.handle);
+      room.colliderHandles.push(col.handle); e.cols.push(col.handle);
     }
+    TRAY.items.set(t, e);
   }
 }
 function wbCarried(g) { return !!g && !!g.prop && !g.prop.removing && (g.prop.holders.length > 0 || !!g.slot || (WB.open && WB.gun === g)); }
@@ -19524,6 +19567,7 @@ function wbRestock(room = WB.room) {
     if (!home) { wbHome(p, room); n++; }
   }
   for (const p of loose) removeProp(p);                             // a spare with no spot
+  try { wbTrays(room); } catch (e) { console.warn('bench trays not built', e); }   // a parts bin under every part, labelled
   return n;
 }
 // step 88: where each part lies on the bench (room space): [sub, big, x, z, yaw]; lights and lasers lens to the wall
@@ -19553,6 +19597,7 @@ function wbTableFill() {
     const p = wbMakeAtt(t[0], t[1], t[5] || null);
     if (p) { p.item.tableSpot = t; WB.atts.push(p); wbHome(p, WB.room); }
   }
+  try { wbTrays(WB.room); } catch (e) { console.warn('bench trays not built', e); }
 }
 WB.btnLocal = new THREE.Vector3(2.84, 0.905, 2.44);
 // Where a part lies on its spot (world): turned by the spot's yaw, then its own rest turn (restQ: long parts lie on their side),
@@ -20855,18 +20900,23 @@ function extKitSpawn(room, entered = false) {
  *  Range 1.7 m: the bench, the wall behind it and your hands, never the floor of
  *  the room behind the wall or a floor below. Switch: E / click with the dot on the
  *  lamp (computer), a fingertip or thumb tip on the rocker (headset, VRTIP). Per run,
- *  default on.
+ *  default on. The bracket is fixed to the wall; taking the head (VR grip, computer E)
+ *  swings the arm on its joints (shoulder yaw / pitch, elbow) within limits.
  * ========================================================================= */
 const BLAMP = {
   on: !/[?&]benchlamp=off\b/.test(QS), lit: true,
   cd: 6.5, angle: 0.9, penumbra: 0.55, range: 1.7, colour: 0xfff1e0,   // game cd (a troffer spot is 22 at 2.3 m), rad, m; 4000 K
   glow: 2.4,                                         // the diffuser's emissive while lit
-  wall: [2.93, 1.98], elbow: [2.84, 2.03, 0.34], head: [2.72, 1.53, 0.5], aim: [2.62, 0.905, 0.4],   // head over the vise (WB.vise x 2.6), clear of the store glass (x <= 2.56, 0.27 out)
-  gripR: 0.12,                                       // m: a VR grip squeezed this near the head or the rocker switches it   // room x, height, metres out from the front wall
+  wall: [2.93, 1.98], elbow: [2.84, 2.03, 0.34], head: [2.72, 1.53, 0.5], aim: [2.62, 0.905, 0.4],   // room x, height, metres out from the front wall (rest pose: head over the vise)
+  gripR: 0.12,                                       // m: a VR grip squeezed this near the head takes it (the arm follows on its joints)
   swR: 0.014,                                        // m: the rocker's touch radius (VR)
-  room: null, grp: null, diff: null, diffMat: null, rocker: null, emit: null, aimO: null, light: null, pick: [], ray: null,
-  swAt: new THREE.Vector3(), v: new THREE.Vector3(), d: new THREE.Vector3(),
-  held: undefined, moved: false, off: new THREE.Matrix4(), mW: new THREE.Matrix4(), mI: new THREE.Matrix4(), hp: new THREE.Vector3(), hq: new THREE.Quaternion(), one: new THREE.Vector3(1, 1, 1), shT: 0
+  // joint limits (rad): shoulder yaw about the wall bracket (0 = straight out), shoulder pitch, elbow bend (relative to link 1);
+  // the swivel stays rMin out from the bracket and yMin above the floor (the head's diffuser clears the bench top)
+  lim: { yaw: 1.25, a0: -1.0, a1: 1.35, b0: -2.7, b1: -0.15, rMin: 0.16, yMin: 1.0 },
+  room: null, grp: null, sh: null, el: null, hd: null, hdIn: null, L1: 0, L2: 0, P0: null, rest: null, pose: null,
+  diff: null, diffMat: null, rocker: null, emit: null, aimO: null, light: null, pick: [], ray: null,
+  swAt: new THREE.Vector3(), v: new THREE.Vector3(), d: new THREE.Vector3(), t: new THREE.Vector3(),
+  held: undefined, off: new THREE.Vector3(), dist: 0.6, mI: new THREE.Matrix4(), hq: new THREE.Quaternion(), shT: 0
 };
 // Load (boot, right after initLightPool): the one light, before anything compiles.
 function benchLampInit() {
@@ -20876,7 +20926,9 @@ function benchLampInit() {
   L.position.set(0, -50, 0); L.target.position.set(0, -51, 0);
   scene.add(L, L.target);
 }
-// The model (once; group frame = room-local with z measured from the front wall, so -out).
+// The model (once). Group frame = room-local with z measured from the front wall (so -out). The wall plate and the
+// clevis are fixed; the arm is a chain of joints: shoulder (yaw + pitch at the clevis) -> link 1 -> elbow (pitch) ->
+// link 2 -> the head's swivel, which keeps the head level. Each link is built along its joint's -z.
 function benchLampBuild() {
   const M = KIT.mat, B = BLAMP, V = (a) => new THREE.Vector3(a[0], a[1], -a[2]);
   const rod = (a, b, r, seg = 10) => {                 // a cylinder from a to b
@@ -20892,62 +20944,90 @@ function benchLampBuild() {
     }
     getPoint(t, out = new THREE.Vector3()) { const a = t * this.n * Math.PI * 2; return out.copy(this.a).addScaledVector(this.d, t).addScaledVector(this.u, Math.cos(a) * this.r).addScaledVector(this.w, Math.sin(a) * this.r); }
   }
-  const P0 = V([B.wall[0], B.wall[1], 0.045]), P1 = V(B.elbow), P2 = V(B.head).add(new THREE.Vector3(0, 0.05, 0)), H = V(B.head);
-  const side = new THREE.Vector3(0.011, 0, 0), up = new THREE.Vector3(0, 0.016, 0);
-  const steel = [], dark = [], grey = [];
-  // wall plate, its four screws, the clevis and the base knuckle
-  dark.push(placed(lbox(0.075, 0.12, 0.012, 0.003), B.wall[0], B.wall[1], -0.006));
-  for (const sx of [-1, 1]) for (const sy of [-1, 1]) steel.push(placed(new THREE.CylinderGeometry(0.0045, 0.0045, 0.004, 10), B.wall[0] + sx * 0.026, B.wall[1] + sy * 0.044, -0.013, Math.PI / 2));
-  for (const sx of [-1, 1]) dark.push(placed(lbox(0.006, 0.04, 0.04, 0.002), B.wall[0] + sx * 0.016, B.wall[1], -0.03));
-  steel.push(placed(new THREE.CylinderGeometry(0.009, 0.009, 0.044, 14), P0.x, P0.y, P0.z, 0, 0, Math.PI / 2));
-  // the two links: twin rods, a tension spring under each, the elbow knuckle with its tension knob
-  for (const [a, b] of [[P0, P1], [P1, P2]]) {
+  const P0 = B.P0 = V([B.wall[0], B.wall[1], 0.045]), P1 = V(B.elbow), P2 = V(B.head).add(new THREE.Vector3(0, 0.05, 0));
+  B.L1 = P0.distanceTo(P1); B.L2 = P1.distanceTo(P2);
+  const side = new THREE.Vector3(0.011, 0, 0), up = new THREE.Vector3(0, 0.016, 0), O = new THREE.Vector3();
+  const g = B.grp = new THREE.Group();
+  // fixed: wall plate, its four screws, the clevis, the cord out of the plate into the arm
+  const fDark = [], fSteel = [];
+  fDark.push(placed(lbox(0.075, 0.12, 0.012, 0.003), B.wall[0], B.wall[1], -0.006));
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) fSteel.push(placed(new THREE.CylinderGeometry(0.0045, 0.0045, 0.004, 10), B.wall[0] + sx * 0.026, B.wall[1] + sy * 0.044, -0.013, Math.PI / 2));
+  for (const sx of [-1, 1]) fDark.push(placed(lbox(0.006, 0.04, 0.04, 0.002), B.wall[0] + sx * 0.016, B.wall[1], -0.03));
+  fDark.push(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([new THREE.Vector3(B.wall[0] + 0.03, B.wall[1] - 0.055, -0.012),
+    new THREE.Vector3(B.wall[0] + 0.03, B.wall[1] - 0.075, -0.03), new THREE.Vector3(B.wall[0] + 0.012, B.wall[1] - 0.03, -0.045)]), 12, 0.0025, 6, false));
+  g.add(merged(fDark, M.blackPlastic, false), merged(fSteel, M.steel, false));
+  // one link along -z of its joint: twin rods, a tension spring under them
+  const link = (L, steel) => {
+    const a = O.clone(), b = new THREE.Vector3(0, 0, -L);
     for (const s of [-1, 1]) steel.push(rod(a.clone().addScaledVector(side, s), b.clone().addScaledVector(side, s), 0.0042));
     const a2 = a.clone().lerp(b, 0.14).sub(up), b2 = a.clone().lerp(b, 0.72).sub(up);
     steel.push(new THREE.TubeGeometry(new Coil(a2, b2, 0.0055, 26), 260, 0.0011, 5, false));
     steel.push(rod(a.clone().sub(up), a2, 0.0012, 5), rod(b2, b.clone().lerp(a, 0.2).sub(up), 0.0012, 5));   // the spring's hooks
-  }
-  dark.push(placed(new THREE.CylinderGeometry(0.016, 0.016, 0.034, 18), P1.x, P1.y, P1.z, 0, 0, Math.PI / 2));
-  grey.push(placed(new THREE.CylinderGeometry(0.013, 0.013, 0.012, 18), P1.x + 0.023, P1.y, P1.z, 0, 0, Math.PI / 2));   // tension knob
-  // the head's yoke: a swivel on top of the bar
-  dark.push(placed(new THREE.CylinderGeometry(0.013, 0.013, 0.03, 16), P2.x, P2.y - 0.008, P2.z));
-  steel.push(rod(P2, H.clone().add(new THREE.Vector3(0, 0.017, 0)), 0.006, 12));
-  // the head: a 30 x 11 cm powder-coated bar, fins on top, end caps, the diffuser underneath
-  const hx = H.x, hy = H.y, hz = H.z, HW = 0.3, HD = 0.11, HT = 0.034;
-  grey.push(placed(rbox(HW, HT, HD, 0.008), hx, hy, hz));
+  };
+  const sh = B.sh = new THREE.Object3D(); sh.rotation.order = 'YXZ'; sh.position.copy(P0); g.add(sh);
+  { const st = []; link(B.L1, st); st.push(placed(new THREE.CylinderGeometry(0.009, 0.009, 0.044, 14), 0, 0, 0, 0, 0, Math.PI / 2)); sh.add(merged(st, M.steel, false)); }
+  const el = B.el = new THREE.Object3D(); el.position.set(0, 0, -B.L1); sh.add(el);
+  { const st = [], dk = [], gr = []; link(B.L2, st);
+    dk.push(placed(new THREE.CylinderGeometry(0.016, 0.016, 0.034, 18), 0, 0, 0, 0, 0, Math.PI / 2));
+    gr.push(placed(new THREE.CylinderGeometry(0.013, 0.013, 0.012, 18), 0.023, 0, 0, 0, 0, Math.PI / 2));   // tension knob
+    el.add(merged(st, M.steel, false), merged(dk, M.blackPlastic, false), merged(gr, M.steelGrey, false)); }
+  // the head: a level node at the swivel (undoes the arm's pitch), then turned back so the bar lies along x at rest
+  const hl = B.hd = new THREE.Object3D(); hl.position.set(0, 0, -B.L2); el.add(hl);
+  const hi = B.hdIn = new THREE.Object3D(); hl.add(hi);
+  const hx = 0, hy = -0.05, hz = 0, HW = 0.3, HD = 0.11, HT = 0.034, grey = [], dark = [], steel = [];
+  dark.push(placed(new THREE.CylinderGeometry(0.013, 0.013, 0.03, 16), 0, -0.008, 0));   // the swivel
+  steel.push(rod(O.clone(), new THREE.Vector3(0, hy + 0.017, 0), 0.006, 12));
+  grey.push(placed(rbox(HW, HT, HD, 0.008), hx, hy, hz));                                  // 30 x 11 cm powder-coated bar
   for (let i = 0; i < 11; i++) dark.push(placed(lbox(0.0028, 0.012, HD - 0.024, 0.001), hx - 0.11 + i * 0.022, hy + HT / 2 + 0.006, hz));
   for (const sx of [-1, 1]) dark.push(placed(rbox(0.012, HT + 0.006, HD + 0.006, 0.004), hx + sx * (HW / 2 + 0.004), hy, hz));
+  const fz = hz - HD / 2 - 0.003, sx0 = hx + 0.09;
+  dark.push(placed(lbox(0.026, 0.017, 0.006, 0.002), sx0, hy, fz));                      // the rocker's bezel
   const diffMat = B.diffMat = new THREE.MeshStandardMaterial({ color: 0xece9e2, emissive: new THREE.Color(0xfff3e4), emissiveIntensity: 0, roughness: 0.32, metalness: 0 });
   const diff = B.diff = mesh(placed(lbox(HW - 0.024, 0.004, HD - 0.022, 0.0015), hx, hy - HT / 2 - 0.0015, hz), diffMat, false, false);
-  // the rocker on the head's front face (toward you) in its bezel; the paddle tips one way per state
-  const fz = hz - HD / 2 - 0.003, sx0 = hx + 0.09;
-  dark.push(placed(lbox(0.026, 0.017, 0.006, 0.002), sx0, hy, fz));
   const rocker = B.rocker = mesh(lbox(0.018, 0.011, 0.007, 0.002), M.blackPlastic, false, false);
   rocker.position.set(sx0, hy, fz - 0.004);
-  // the cord: out of the head's back end, a sagging loop to the wall plate
-  const cord = new THREE.CatmullRomCurve3([new THREE.Vector3(hx + HW / 2 - 0.02, hy + 0.012, hz + HD / 2 - 0.01), new THREE.Vector3(hx + 0.12, hy - 0.03, hz + 0.18),
-    new THREE.Vector3(B.wall[0] + 0.02, hy + 0.05, -0.08), new THREE.Vector3(B.wall[0] + 0.02, B.wall[1] - 0.075, -0.012)]);
-  dark.push(new THREE.TubeGeometry(cord, 48, 0.0025, 6, false));
-  const g = B.grp = new THREE.Group();
-  const mGrey = merged(grey, M.steelGrey), mDark = merged(dark, M.blackPlastic), mSteel = merged(steel, M.steel);
-  g.add(mGrey, mDark, mSteel, diff, rocker);
-  B.pick = [mGrey, diff, rocker];
-  B.emit = new THREE.Object3D(); B.emit.position.set(hx, hy - HT / 2 - 0.004, hz); g.add(B.emit);
-  B.aimO = new THREE.Object3D(); B.aimO.position.copy(V(B.aim)); g.add(B.aimO);
+  const mGrey = merged(grey, M.steelGrey, false), mDark = merged(dark, M.blackPlastic, false);
+  hi.add(mGrey, mDark, merged(steel, M.steel, false), diff, rocker);
+  B.pick = [mGrey, mDark, diff, rocker];
+  B.emit = new THREE.Object3D(); B.emit.position.set(hx, hy - HT / 2 - 0.004, hz); hi.add(B.emit);
+  B.aimO = new THREE.Object3D(); B.aimO.position.copy(V(B.aim)).sub(V(B.head)).add(new THREE.Vector3(0, hy, 0)); hi.add(B.aimO);
   B.ray = new THREE.Raycaster(); B.ray.far = 2.4;
+  // rest pose: the solver's answer for the authored head point; the head bar's turn is fixed against the yaw
+  B.rest = benchLampSolve(P2, { yaw: 0, a: 0, b: 0 });
+  hi.rotation.y = -B.rest.yaw;
+  if (!B.pose) B.pose = { ...B.rest };
+  benchLampPose(B.pose);
   benchLampLook();
+}
+// Two-link solve in the group frame: the swivel point T -> shoulder yaw, shoulder pitch, elbow bend (elbow up), clamped to
+// the joint limits, kept off the wall and above the bench. Writes out { yaw, a, b }.
+function benchLampSolve(T, out) {
+  const B = BLAMP, Lm = B.lim, P0 = B.P0, L1 = B.L1, L2 = B.L2;
+  const dx = T.x - P0.x, dy = Math.max(Lm.yMin, T.y) - P0.y, dz = Math.min(T.z - P0.z, -0.02);   // never behind the wall plate
+  const yaw0 = Math.atan2(-dx, -dz), yaw = clamp(yaw0, -Lm.yaw, Lm.yaw);
+  const r = Math.max(Lm.rMin, Math.hypot(dx, dz) * Math.max(0, Math.cos(yaw0 - yaw)));   // the reach along the clamped heading
+  const d = clamp(Math.hypot(r, dy), Math.abs(L1 - L2) + 0.03, L1 + L2 - 0.004);
+  const a = clamp(Math.atan2(dy, r) + Math.acos(clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1)), Lm.a0, Lm.a1);
+  const e2 = Math.atan2(dy - L1 * Math.sin(a), r - L1 * Math.cos(a));
+  out.yaw = yaw; out.a = a; out.b = clamp(e2 - a, Lm.b0, Lm.b1);
+  return out;
+}
+function benchLampPose(p) {
+  const B = BLAMP;
+  B.sh.rotation.set(p.a, p.yaw, 0); B.el.rotation.set(p.b, 0, 0); B.hd.rotation.set(-(p.a + p.b), 0, 0);
+  B.grp.updateMatrixWorld(true);
 }
 function benchLampLook() {
   const B = BLAMP;
   if (B.diffMat) B.diffMat.emissiveIntensity = B.lit ? B.glow : 0;
   if (B.rocker) B.rocker.rotation.x = B.lit ? -0.28 : 0.28;
 }
-// Activation hook (activateRoom, beside the workshop computer): the lamp moves to this safe room.
+// Activation hook (activateRoom, beside the workshop computer): the lamp moves to this safe room (bracket on the
+// front wall; the arm keeps the pose you gave it).
 function benchLampRoom(room) {
   if (!BLAMP.on || room.kind !== 'safe' || !BLAMP.light) return;
   if (!BLAMP.grp) benchLampBuild();
-  if (!BLAMP.moved) BLAMP.grp.position.set(0, 0, room.d / 2);   // moved by you: it keeps your spot (room-local) in every safe room
-  else if (BLAMP.room && BLAMP.room !== room) BLAMP.grp.position.z += room.d / 2 - BLAMP.room.d / 2;
+  BLAMP.grp.position.set(0, 0, room.d / 2);
   if (BLAMP.held !== undefined) BLAMP.held = undefined;
   room.group.add(BLAMP.grp);
   BLAMP.grp.updateMatrixWorld(true);
@@ -20962,7 +21042,7 @@ function benchLampToggle(hand) {
   if (!btnSfx('light', B.v, 1.3)) sfx('selector');
   if (hand) pulse(hand, 0.3, 20);
 }
-// Every frame (tick): the light rides the head; the rocker under a fingertip.
+// Every frame (tick): the arm follows a held head; the light rides the head; the rocker under a fingertip.
 function benchLampTick() {
   const B = BLAMP, L = B.light;
   if (!L) return;
@@ -20974,6 +21054,7 @@ function benchLampTick() {
   const C = CONFIG.vrInput, Bt = C.button;
   B.rocker.getWorldPosition(B.swAt);
   for (const vh of vrHands) {
+    if (vh === B.held) continue;
     const T = vrTips(vh), m = T ? tipMask(vh, T, null) : 0;
     const st = vh.blTip || (vh.blTip = tipStates());
     for (let k = 0; k < 2; k++) {
@@ -20984,50 +21065,39 @@ function benchLampTick() {
     }
   }
 }
-// Headset: an empty hand squeezing the grip at the lamp head (squeezeStart, after props and door levers).
+// Headset: an empty hand squeezing the grip at the lamp head (squeezeStart, after props and door levers) takes the head;
+// the arm swings on its joints to follow it (the bracket stays on the wall).
 function benchLampGrip(hand) {
   const B = BLAMP;
   if (!benchLampLive() || hand.prop) return false;
   hand.source.getWorldPosition(B.v);
   B.emit.getWorldPosition(B.d); B.rocker.getWorldPosition(B.swAt);
   if (Math.min(B.v.distanceTo(B.d), B.v.distanceTo(B.swAt)) > B.gripR) return false;
-  benchLampTake(hand);                                               // grip = carry it; the rocker switches it (fingertip)
+  benchLampTake(hand);
   return true;
 }
-// Movable lamp: the whole lamp (bracket, arm, head) follows the hand that took it (or a spot in front of your eyes on
-// the computer) with the turn it had, and stays where you let go; the light rides the head as before. Room-local, so
-// it keeps your spot in every safe room.
-function benchLampHandM(hand, out) {
+// Where the hand is (or, on the computer, the point at the grab distance along your view), world space.
+function benchLampHandP(hand, out) {
   const B = BLAMP;
-  if (hand) { handPose(hand, B.hp, B.hq); return out.compose(B.hp, B.hq, B.one); }
-  camera.updateMatrixWorld(); return out.copy(camera.matrixWorld);
+  if (hand) { handPose(hand, out, B.hq); return out; }
+  camera.getWorldPosition(out); camera.getWorldDirection(B.d); return out.addScaledVector(B.d, B.dist);
 }
-function benchLampTake(hand) {
+function benchLampTake(hand, hitDist) {
   const B = BLAMP;
   B.grp.updateMatrixWorld(true);
-  benchLampHandM(hand, B.mW);
-  if (!hand) {                                                      // computer: bring the head to 0.55 m in front of you
-    B.emit.getWorldPosition(B.v); B.mI.copy(B.mW).invert(); B.v.applyMatrix4(B.mI);
-    B.off.copy(B.mI).multiply(B.grp.matrixWorld);
-    B.off.premultiply(B.mI.makeTranslation(-B.v.x, -0.12 - B.v.y, -0.55 - B.v.z));
-  } else B.off.copy(B.mW.invert()).multiply(B.grp.matrixWorld);
-  B.held = hand; B.moved = true;
+  if (!hand) B.dist = hitDist || 0.6;
+  benchLampHandP(hand, B.v);
+  B.hd.getWorldPosition(B.off); B.off.sub(B.v);                     // the swivel point relative to the grab
+  B.held = hand;
   if (hand) pulse(hand, 0.25, 18);
   if (!btnSfx('vise', null, 0.6)) sfx('selector');
 }
 function benchLampFollow(live) {
   const B = BLAMP;
-  if (!live || (B.held && !renderer.xr.isPresenting)) { B.held = undefined; return; }
-  benchLampHandM(B.held, B.mW).multiply(B.off);
-  if (!B.held) {                                                    // computer: the head never goes through a wall (pulled back along the view to 12 cm short of it)
-    camera.getWorldPosition(B.v); B.hp.set(0, -0.12, -0.55).applyMatrix4(camera.matrixWorld); B.d.copy(B.hp).sub(B.v);
-    const L = B.d.length(); B.d.multiplyScalar(1 / L);
-    const h = p10Ray(B.v, B.d, L + 0.12, P10_STATIC_RAY);
-    if (h) { const k = Math.max(0.15, p10Toi(h) - 0.12) - L; if (k < 0) { B.mW.elements[12] += B.d.x * k; B.mW.elements[13] += B.d.y * k; B.mW.elements[14] += B.d.z * k; } }
-  }
-  B.mI.copy(B.grp.parent.matrixWorld).invert();
-  B.mW.premultiply(B.mI).decompose(B.grp.position, B.grp.quaternion, B.v);
-  B.grp.updateMatrixWorld(true);
+  if (!live || (B.held && !renderer.xr.isPresenting) || (B.held === null && renderer.xr.isPresenting)) { B.held = undefined; return; }
+  benchLampHandP(B.held, B.t).add(B.off);
+  B.mI.copy(B.grp.matrixWorld).invert(); B.t.applyMatrix4(B.mI);   // into the group frame
+  benchLampSolve(B.t, B.pose); benchLampPose(B.pose);
   const t = performance.now() / 1000;
   if (t - B.shT > 0.2) { B.shT = t; dirtyShadows(); }
 }
@@ -21037,20 +21107,21 @@ function benchLampRelease(hand) {
   B.held = undefined; dirtyShadows();
   if (hand) pulse(hand, 0.2, 14);
 }
-// Computer: E / click with the dot on the lamp (termDeskPress asks first).
+// Computer: E / click with the dot on the lamp (termDeskPress asks first). Rocker / diffuser = switch; the head = take it
+// (look around: the arm swings on its joints), E again lets go.
 function benchLampDesk() {
   const B = BLAMP;
   if (renderer.xr.isPresenting || !benchLampLive()) return false;
+  if (B.held === null) { B.held = undefined; dirtyShadows(); if (!btnSfx('vise', null, 0.5)) sfx('selector'); return true; }   // holding the head: E lets go
   camera.getWorldPosition(B.v); camera.getWorldDirection(B.d);
   B.ray.set(B.v, B.d);
-  if (B.held === null) { B.held = undefined; dirtyShadows(); if (!btnSfx('vise', null, 0.5)) sfx('selector'); return true; }   // carried: E puts it down here
   const hit = B.ray.intersectObjects(B.pick, false)[0];
   if (!hit) return false;
   if (hit.object === B.rocker || hit.object === B.diff) benchLampToggle(null);   // the rocker or the diffuser: switch it
-  else { benchLampTake(null); toast('Lamp in hand: look where you want it, E to put it down', 2600); }   // the body: carry it
+  else { benchLampTake(null, hit.distance); toast('Lamp head in hand: look to swing the arm, E to let go', 2600); }
   return true;
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcLamp = { BLAMP, EXT, EXT_STORE, benchLampToggle, benchLampDesk, benchLampTick, benchLampGrip, extSearSet, flashlight, FLASH_BEAM, flashPeak, setFlashlight, updateLightMount };
+if (/[?&]dev\b/.test(QS)) window.__cqcLamp = { BLAMP, benchLampSolve, benchLampPose, benchLampTake, benchLampRelease, TRAY, wbTrays, wbTable, wbTableFill, trayFoot, EXT, EXT_STORE, benchLampToggle, benchLampDesk, benchLampTick, benchLampGrip, extSearSet, flashlight, FLASH_BEAM, flashPeak, setFlashlight, updateLightMount };
 
 /* ===========================================================================
  *  STEP 79 — YOUR KIT IS ON YOUR BODY
@@ -35834,6 +35905,11 @@ function splashShot(room, P) {
   if (wearWetAt(room, rLX(room, P.x), rLZ(room, P.z)) < 0.45) return false;
   impactFx('water', P, SPLASH.up);
   fxEmit(P, SPLASH.up, 0.22, 8, SPLASH.crown);                    // the crown thrown straight up
+  if (room.yard) {                                                // outdoors: a column you can see in the dark, a ring thrown sideways, spray
+    fxEmit(P, SPLASH.up, 0.16, 16, SPLASH.crownY);
+    fxEmit(P, SPLASH.up, 0.9, 12, SPLASH.sheetY);
+    hazeEmit(P, SPLASH.up, SPLASH.mistY);
+  }
   return true;
 }
 function splashTick(dt) {
@@ -45817,7 +45893,7 @@ const AWM_SND = { optic: 'thread', bipod: 'latch', stock: 'rail', muzzle: 'threa
 // Bench: a row on the front of the bench left of the gunsmith's (the M4's rows behind it): [sub, big, x, z, yaw, variant, store id]
 const WB_AWM = [['awm', false, 0.72, 2.44, Math.PI / 2, 'awm:bipod', 'awp.bipod'], ['awm', false, 0.96, 2.44, Math.PI / 2, 'awm:cheek', 'awp.cheek'],
   ['awm', false, 1.14, 2.44, Math.PI / 2, 'awm:kf', 'awp.kf'], ['awm', false, 1.3, 2.44, Math.PI / 2, 'awm:shade', 'awp.shade'],
-  ['sup', true, 1.62, 2.44, Math.PI / 2, 'awm:can', 'awp.sup'], ['awm', false, 1.45, 2.34, 0, 'awm:scope', 'awp.scope'], ['awm', false, 0.9, 2.34, 0, 'awm:s10', 'awp.s10']];
+  ['sup', true, 1.62, 2.44, Math.PI / 2, 'awm:can', 'awp.sup'], ['awm', false, 1.45, 2.32, Math.PI / 2, 'awm:scope', 'awp.scope'], ['awm', false, 0.9, 2.32, Math.PI / 2, 'awm:s10', 'awp.s10']];   // the scopes lie along the bench edge (end on, the 3-25x hung 25 cm over it)
 /* AWM_FX: what each part does on the AWM (GLOCK_FX's terms). The bare rifle (rail and rings, brake, 5 rounds) is the
    base; its identity (precision, stability, identification) stays: optics buy accuracy with aim time and glint,
    the bipod and cheek riser buy stability (the bipod only rested: AWM_REST), the can trades length and weight. */
@@ -47876,7 +47952,7 @@ vec3 yFog(vec3 col, vec3 wp){
   return mix(col, uYFogC, f) + sc * uYScat * f;
 }`;
 // Wet-night additions (step "nature"): kinds 10 bark / wood, 11 rock, 12 foliage (alpha cards), 13 forest floor; instancing
-// and wind in the vertex stage; rivulets on every outdoor vertical face, beads under every outdoor overhang (uYWetX),
+// and wind in the vertex stage; soft static damp runs on every outdoor vertical face, beads under every outdoor overhang (uYWetX),
 // the end-wall doors dry on their far side, the moon as an unshadowed fill where the shadowed moon spot stops (uYMoon).
 function yardInject(shader) {
   Object.assign(shader.uniforms, YU);
@@ -47909,8 +47985,8 @@ vYW = (modelMatrix * vec4(transformed, 1.0)).xyz; vYN = normalize(mat3(modelMatr
   shader.fragmentShader = shader.fragmentShader
     .replace('#include <common>', `#include <common>\nvarying vec3 vYW; varying vec3 vYN; varying float vYO; uniform float uYKind;\n${YARD_GLSL_COMMON}
 uniform vec2 uYHalf; uniform float uYQ; uniform float uYWetX; uniform vec4 uYMoon; uniform vec3 uYMoonC; uniform vec3 uYMoonP; uniform vec4 uYMoonA;
-float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0, yRiv = 0.0, yRivS = 0.0, yBead = 0.0, yBump = 0.0, yMoonOcc = 1.0;
-vec2 yRip = vec2(0.0), yBeadN = vec2(0.0); int yRoomI = -1; vec3 yRivT = vec3(0.0);
+float yPud = 0.0, yDamp = 0.0, yRoughK = 1.0, yWetR = 0.0, yMetK = 1.0, yUp = 0.0, yRiv = 0.0, yBead = 0.0, yBump = 0.0, yMoonOcc = 1.0;
+vec2 yRip = vec2(0.0), yBeadN = vec2(0.0); int yRoomI = -1;
 vec2 yRipple(vec2 p, float t) {
   vec2 acc = vec2(0.0);
   for (int k = 0; k < 2; k++) {
@@ -48006,18 +48082,16 @@ vec4 yTri(vec3 p, vec3 n, float s) {
   } else if (dryK > 0.5 && yFlat && N.y > 0.0 && (K < 9.5 || K > 10.5 && K < 11.5)) yRip = yRipple(lp.xz, uYTime) * 0.15 * uYWet;
   vec2 rq = vec2(q.x * 6.0, q.y); float aaR = fwidth(rq.x) * 1.5;           // (derivatives outside the branches)
   vec2 bq = lp.xz * 9.0; float aaB = fwidth(bq.x) * 1.2;
-  if (uYWetX > 0.0 && dryK > 0.5 && !yFlat && (K < 4.5 || K > 9.5 && K < 11.5)) {   // rivulets: thin water runs down every outdoor vertical face
+  if (uYWetX > 0.0 && dryK > 0.5 && !yFlat && (K < 4.5 || K > 9.5 && K < 11.5)) {   // damp runs: soft, static streaks where water has been running down (no moving water)
     float col = floor(rq.x), fx = fract(rq.x), hc = yH(vec2(col, K * 7.0 + 3.0));
-    float c = 0.5 + (yVN(vec2(col * 3.7, q.y * 1.3)) - 0.5) * 0.7;
-    float w = 0.05 + 0.05 * hc, aa = aaR;
-    float ln = 1.0 - smoothstep(w - aa, w + aa, abs(fx - c));
-    float seg = smoothstep(0.42, 0.6, yVN(vec2(col * 1.7 + 9.0, q.y * 0.45 + uYTime * 0.05)));
-    float flow = 0.7 + 0.3 * sin((q.y + uYTime * (0.6 + 0.5 * hc)) * 11.0 + hc * 6.2831);
+    float c = 0.5 + (yVN(vec2(col * 3.7, q.y * 0.9)) - 0.5) * 0.45;          // meanders slowly down the face
+    float w = 0.05 + 0.09 * hc, aa = aaR;
+    float ln = 1.0 - smoothstep(w * 0.25, w + aa, abs(fx - c));              // soft-edged, no hard line
+    float seg = smoothstep(0.36, 0.64, yVN(vec2(col * 1.7 + 9.0, q.y * 0.35)));   // broken into runs of varying length
+    float tone = 0.55 + 0.45 * yVN(vec2(col * 5.1 + 2.0, q.y * 2.3));          // uneven along the run
     float far = 1.0 - smoothstep(0.25, 0.6, aa);
-    yRiv = ln * seg * step(0.35 - 0.15 * streak, hc) * flow * far * uYWet * uYWetX;
-    yRivS = clamp((fx - c) / max(w, 1e-3), -1.0, 1.0) * yRiv;
-    yRivT = normalize(cross(vec3(0.0, 1.0, 0.0), N) + vec3(1e-4, 0.0, 0.0));
-    diffuseColor.rgb *= 1.0 - 0.3 * yRiv;
+    yRiv = ln * seg * tone * step(0.45 - 0.15 * streak, hc) * far * uYWet * uYWetX * 0.65;
+    diffuseColor.rgb *= 1.0 - 0.24 * yRiv;                                   // damp: a little darker
   }
   if (uYWetX > 0.0 && dryK > 0.5 && N.y < -0.55 && (K < 4.5 || K > 8.5 && K < 9.5)) {   // beads hanging under every overhang, growing till they drop
     vec2 bc = floor(bq); vec2 bf = fract(bq) - 0.5;
@@ -48035,7 +48109,8 @@ vec4 yTri(vec3 p, vec3 n, float s) {
 roughnessFactor = clamp(roughnessFactor * yRoughK, 0.04, 1.0);
 roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.3), yWetR);
 roughnessFactor = mix(roughnessFactor, 0.045, max(yPud, yDamp * 0.35));
-roughnessFactor = mix(roughnessFactor, 0.05, max(yRiv, yBead));`)
+roughnessFactor = mix(roughnessFactor, 0.05, yBead);
+roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.34), yRiv);   // damp runs: a slight sheen, not a mirror`)
     .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = clamp(metalnessFactor * yMetK, 0.0, 1.0);')
     .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 {
@@ -48055,7 +48130,6 @@ roughnessFactor = mix(roughnessFactor, 0.05, max(yRiv, yBead));`)
     vec3 g = sign(det) * (dh.x * r1 + dh.y * r2);
     normal = normalize(abs(det) * normal - g);
   }
-  if (yRiv > 0.0) normal = normalize(normal + (viewMatrix * vec4(yRivT, 0.0)).xyz * yRivS * 0.35);
   if (yBead > 0.0) normal = normalize(normal + (viewMatrix * vec4(yBeadN.x, 0.0, yBeadN.y, 0.0)).xyz * yBead * 0.6);
 }`)
     .replace('#include <lights_fragment_maps>', `{
@@ -48254,35 +48328,7 @@ function yardQuadsGeo(n, seedFn, rain) {
   g.setIndex(new THREE.BufferAttribute(I, 1));
   return g;
 }
-// Volumetric-looking flood cones: additive, brightest where the eye looks through the most of the cone.
-function yardShaftMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: { ...YU, uK: { value: 0.05 } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
-    vertexShader: 'varying vec3 vW; varying vec3 vN; varying float vT; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; vN = normalize(mat3(modelMatrix) * normal); vT = uv.y; gl_Position = projectionMatrix * viewMatrix * w; }',
-    fragmentShader: `uniform float uK; uniform float uYTime; uniform vec3 uYLampC; uniform float uYWet; varying vec3 vW; varying vec3 vN; varying float vT;
-void main(){
-  vec3 v = normalize(cameraPosition - vW); float f = abs(dot(normalize(vN), v));
-  float along = pow(1.0 - clamp(vT, 0.0, 1.0), 1.4) * 0.85 + 0.15;
-  float d = length(cameraPosition - vW);
-  float a = uK * f * f * along * smoothstep(1.0, 5.0, d) * (0.85 + 0.15 * sin(vW.y * 3.0 + uYTime * 6.0 + vW.x * 2.0)) * (0.6 + 0.4 * uYWet);
-  gl_FragColor = vec4(uYLampC * a, 1.0);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-}`
-  });
-}
-function yardHaloMaterial() {                                     // camera-facing glow quads at the lamp heads (the headset has no bloom)
-  return new THREE.ShaderMaterial({
-    uniforms: { ...YU, uK: { value: 1 } }, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
-    vertexShader: `attribute vec2 aCorner; attribute float aSize; varying vec2 vC; void main(){ vec4 c = viewMatrix * modelMatrix * vec4(position, 1.0); c.xy += aCorner * aSize; c.z += aSize * 0.5; vC = aCorner; gl_Position = projectionMatrix * c; }`,
-    fragmentShader: `uniform float uK; uniform vec3 uYLampC; varying vec2 vC;
-void main(){ float r = length(vC); float a = exp(-r * r * 7.0) * 0.9 + exp(-r * 2.6) * 0.18; a *= smoothstep(1.0, 0.85, r) * uK;
-  gl_FragColor = vec4(uYLampC * a * 3.0, 1.0);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-}`
-  });
-}
+// (Light-shaft cones and halo quads at the lamp heads were removed: they read as orbs floating in the air.)
 
 /* ---------------------------------------------------------------------------
  *  Shared assets (once): sky texture + json, textures, materials. Loaded only when a yard is built.
@@ -48712,32 +48758,11 @@ function* yardBuilder(room) {
   batch.clear(); BOX.dispose();
   { const on = lens.filter((l) => l[1]).map((l) => l[0]); if (on.length) { const m = merged(on, M.lens, false); own(m.geometry); g.add(m); room.yardLens = m; } }
 
-  // --- Lights: the pool fittings (troffers carry the tower flood and the approach pole), lamps, shafts, halos ---
+  // --- Lights: the pool fittings (troffers carry the tower flood and the approach pole), lamps (lit lenses only) ---
   L.rooms.forEach((r, k) => { YU.uYRoomR.value[k].set(r.x0, r.z0, r.x1, r.z1); YU.uYRoomTop.value[k] = r.h; });
   L.roofs.forEach((r, k) => { YU.uYRoof.value[k].set(r[0], r[1], r[2], r[3]); YU.uYRoofH.value[k] = r[4]; });
   room.troffers = [0, 1].map((i) => { const dm = new THREE.MeshBasicMaterial(); room.ownMat.push(dm); return { x: L.lamps[i].p[0], z: L.lamps[i].p[2], y: L.lamps[i].p[1] + 0.2, diffMat: dm }; });   // the pool's fittings (night / flicker code writes their glow; the lenses are ours)
   Y.lampsL = L.lamps.map((l) => ({ ...l, I: l.I * L.lampI[l.k] * YC.lampK }));
-  { // shafts
-    const parts = [];
-    for (const l of L.lamps) {
-      if (!l.shaft) continue;
-      const len = Math.min(16, l.p[1] / Math.max(0.3, -l.d[1]) * 1.05), rr = len * Math.tan(Math.acos(l.cos)) * 0.9;
-      const cg = new THREE.CylinderGeometry(0.2, rr, len, 24, 1, true); cg.translate(0, -len / 2, 0);
-      const uv = cg.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setY(i, 1 - uv.getY(i));   // 0 at the lamp
-      _yQ.setFromUnitVectors(_yP.set(0, -1, 0), _yS.set(l.d[0], l.d[1], l.d[2]));
-      _yM.compose(_yP.set(l.p[0], l.p[1], l.p[2]), _yQ, _yS.set(1, 1, 1));
-      parts.push(yardClean(cg).applyMatrix4(_yM));
-    }
-    const sm = Y.shaftMat || (Y.shaftMat = yardShaftMaterial());
-    const m = new THREE.Mesh(own(mergeGeometries(parts)), sm); m.renderOrder = 5; m.frustumCulled = false; g.add(m); room.yardShafts = m;
-  }
-  { // halos
-    const n = L.lamps.length, geo = new THREE.BufferGeometry(), P = new Float32Array(n * 12), C = new Float32Array(n * 8), S = new Float32Array(n * 4), I = [];
-    L.lamps.forEach((l, i) => { const s = l.k === 'flood' ? 1.1 : 0.45; for (let k = 0; k < 4; k++) { P.set([l.p[0] + l.d[0] * 0.08, l.p[1] + l.d[1] * 0.08, l.p[2] + l.d[2] * 0.08], (i * 4 + k) * 3); C.set([[-1, -1], [1, -1], [1, 1], [-1, 1]][k], (i * 4 + k) * 2); S[i * 4 + k] = s; } I.push(i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3); });
-    geo.setAttribute('position', new THREE.BufferAttribute(P, 3)); geo.setAttribute('aCorner', new THREE.BufferAttribute(C, 2)); geo.setAttribute('aSize', new THREE.BufferAttribute(S, 1)); geo.setIndex(I);
-    const hm = Y.haloMat || (Y.haloMat = yardHaloMaterial());
-    const m = new THREE.Mesh(own(geo), hm); m.renderOrder = 6; m.frustumCulled = false; g.add(m); room.yardHalos = m;
-  }
   { // sky dome (follows the camera, drawn first), the panorama ground outside, rain, splashes
     const sky = Y.skyMat || (Y.skyMat = yardSkyMaterial());
     const dome = new THREE.Mesh(Y.skyGeo || (Y.skyGeo = new THREE.SphereGeometry(25, 48, 24)), sky);
@@ -49226,10 +49251,7 @@ function yardTick(dt, t) {
         hazeEmit(ST.v, ST.up, ST.o);
       });
     }
-    if (Y.shaftMat) Y.shaftMat.uniforms.uK.value = dark ? 0 : 0.05;
-    if (yard.yardShafts) yard.yardShafts.visible = !renderer.xr.isPresenting;   // headset: no light-shaft cones (big additive overdraw)
     if (yard.active) yardDoorsTick(yard, performance.now() / 1000);
-    if (Y.haloMat) Y.haloMat.uniforms.uK.value = dark ? 0 : 1;
     if (yard.yardLens) yard.yardLens.material = dark ? Y.mats.lensOff : Y.mats.lens;
     if (vis) {
       headWorld(_yt.v);

@@ -9767,15 +9767,10 @@ async function celsiorTrafficPrep() {
       const n = m.n, pos = dq(new Uint16Array(bin.buffer, m.pos[0], n * 3), n, m.pmin, m.pmax, 3);
       const nor = new Int8Array(bin.buffer, m.nor[0], n * 3), uv = dq(new Uint16Array(bin.buffer, m.uv[0], n * 2), n, m.umin, m.umax, 2);
       const ic = m.idx[1] / (m.i32 ? 4 : 2), I = new Uint32Array(m.i32 ? new Uint32Array(bin.buffer, m.idx[0], ic) : new Uint16Array(bin.buffer, m.idx[0], ic));
-      let W = I;                                                     // untextured parts: welded on position first (their split normals blocked the simplifier)
-      if (m.tex == null) { const map = new Map(), rep = new Uint32Array(n); for (let i = 0; i < n; i++) { const key = Math.round(pos[i * 3] * 2e3) + ',' + Math.round(pos[i * 3 + 1] * 2e3) + ',' + Math.round(pos[i * 3 + 2] * 2e3); let r = map.get(key); if (r === undefined) map.set(key, r = i); rep[i] = r; } W = I.map(i => rep[i]); }
-      const simp = (k, far) => { if (!k || k >= 1) return I; const tgt = Math.max(3, Math.floor(I.length * k / 3) * 3);
-        let o = MS.simplify(W, pos, 3, tgt, far ? .05 : .012, m.tex == null ? [] : ['LockBorder'])[0];
-        if (o.length > tgt * 1.6) { const s2 = MS.simplifySloppy(W, pos, 3, null, tgt, far ? .25 : .08)[0]; if (s2.length >= 3 && s2.length < o.length) o = s2; }
-        return o.length >= 3 ? o.slice() : I; };
+      const simp = k => { if (!k || k >= 1) return I; const tgt = Math.max(3, Math.floor(I.length * k / 3) * 3); const o = MS.simplify(I, pos, 3, tgt, .02, ['LockBorder'])[0]; return o.length >= 3 ? o.slice() : I; };
       const lens = /reflector/i.test(m.mat);
       const split = idx => { if (!lens) return [idx, null]; const f = [], r = []; for (let t = 0; t < idx.length; t += 3) ((pos[idx[t] * 3 + 2] + pos[idx[t + 1] * 3 + 2] + pos[idx[t + 2] * 3 + 2]) / 3 > 1.5 ? r : f).push(idx[t], idx[t + 1], idx[t + 2]); return [new Uint32Array(f), new Uint32Array(r)]; };
-      const nearI = split(simp(CEL_TRAF.near[m.mat])), farI = CEL_TRAF.farSkip.test(m.mat) ? [null, null] : split(simp(CEL_TRAF.far[m.mat] ?? .4, true));
+      const nearI = split(simp(CEL_TRAF.near[m.mat])), farI = CEL_TRAF.farSkip.test(m.mat) ? [null, null] : split(simp(CEL_TRAF.far[m.mat] ?? .5));
       parts.push({ m, pos, nor, uv, nearI, farI });
     }
     CEL_TRAF.parts = parts; CEL_TRAF.D = D;
@@ -10048,8 +10043,9 @@ function cabinGrainOn(mat, kind, rough) {
  * solid lens like the other cars' (tlCells facets, depth), keeping the photo's zones: red tail / brake, amber indicator,
  * clear reverse lamp. Dark photo areas count as red lens. ?celtail=off keeps the photo lens. */
 const CEL_TAIL = { on: !/[?&]celtail=off\b/.test(location.search) };
-const CEL_TAIL_ZONES = /* glsl */`{ float ax = abs(vTlP.x);                                  // zones by place, not from the photo (its grain read as white speckles)
-        float amb = smoothstep(.66, .7, ax), clr = (1.0 - amb) * (1.0 - smoothstep(.36, .4, ax)) * smoothstep(.2, .24, ax) * step(vTlP.y, .82), red = max(0.0, 1.0 - amb - clr);
+const CEL_TAIL_ZONES = /* glsl */`{ vec3 tm = texture2D(map, vMapUv, 3.5).rgb; float mx = max(tm.r, max(tm.g, tm.b)) + 1e-4; vec3 hc = tm / mx;   // zones from a blurred read (the photo's grain made speckles)
+        float red = max(smoothstep(0.55, 0.35, hc.g) * step(0.5, hc.r), smoothstep(0.16, 0.05, mx));
+        float amb = (1.0 - red) * smoothstep(0.35, 0.55, hc.g) * smoothstep(0.55, 0.3, hc.b), clr = max(0.0, 1.0 - red - amb);
         float tc = tlCells();
         diffuseColor.rgb = red * mix(vec3(.07, .004, .003), vec3(.3, .013, .009), .5 + .5 * tc) + amb * vec3(.4, .16, .02) * (.7 + .3 * tc) + clr * vec3(.32, .33, .34) * (.75 + .25 * tc);`;
 function celTailMaterial(map) {
