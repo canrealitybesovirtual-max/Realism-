@@ -1291,3 +1291,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Studio: start card hides on mouse move
 - index.html: the "Studio Room" start card hides for good after the mouse moves (> 4 px), and stays hidden when the mouse is released later (MutationObserver). Clicking the room still captures the mouse.
+
+## CQC: door-open hitch
+- roomWarm drew a new room with one override material, so its real shader programs compiled on the first frame it showed through the door (seconds on a Mac). roomCompile(r) (end of roomWarm and after activateRoom, once per room) runs renderer.compileAsync on room.group and room.doorGroup with the scene's lights (made visible for the call), in the background. Syntax parse only.
