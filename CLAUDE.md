@@ -1388,3 +1388,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Exit signs (NetStatics) were placed at fixed distances with no tunnel / deck check: one could stand inside a bore wall or a portal. Now slid back toward the traffic in 20 m steps until clear of tunnels (+70 m) and decks (bridgeK >= 0.9).
 - Mirrors on Low (and VR, which holds them to Low): one mirror every frame (inner every other frame, each door every 4th) instead of every other frame (door glass updated ~9 times a second); far plane 500 m (was 700) to pay for it.
 - Checked: module parse; headless tunnel screenshots.
+
+## Interstate: Lexus tail lamps are plain red glass (headset check needed)
+- Cause of the black marks: the saloon's rear lamp mesh is a grid of reflector facets with gaps between them (the photo texture's alpha used to hide the gaps); drawn as a solid red lens the gaps showed the black lamp housing as blotches. Not shadows, reflections or other meshes in front (tested headless: the marks stayed with shadows off, reflections off, unlit and depth test off).
+- celTailCover (buildCelsior): the rear-facing facets are rasterised into a 6 mm x / y grid (outermost z per cell), filled by scanlines per row and lamp and per column, and each filled cell becomes a quad 5 mm proud of the facets: one smooth plain red lens over each lamp (celTailMaterial: brighter red, emissive .3 base, + lamps / brakes in setLights). The facets stay behind it (and on the wrap-round sides); celTailOuter removed (it dropped triangles too); lens meshes receive no shadows; Material_106's photo glass stays skipped; blended layers inside the lamp boxes are cut (celCutTail).
+- Traffic Lexus (CEL_TRAF): rear lens keeps every facet shell (the outer-shell filter is gone) but has no cover yet, so far traffic lenses can still show gaps.
+- Checked headless: before / after close-ups of the player's car on the open road (plain red, no marks).
