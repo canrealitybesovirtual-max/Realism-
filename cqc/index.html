@@ -47824,6 +47824,12 @@ function yardMaterials(T) {
   M.grate = yardMat(9, T.metal, { color: new THREE.Color(0.17, 0.17, 0.17) });
   M.ksteel = yardMat(2, T.metal, { color: new THREE.Color(0.5, 0.51, 0.52), metalnessMap: null, metalness: 0.85 });   // the kit's door hardware, wet (yardBuilder swaps KIT.mat.steel)
   M.glass = yardMat(8, T.metal, { color: new THREE.Color(0.02, 0.025, 0.03), metalnessMap: null, metalness: 0.0, roughnessMap: null, roughness: 0.08 });
+  // Interiors (kind 7: no rain, moss or puddles; the room lamps light them): painted block walls, dado, ceiling, sealed floor, counter top.
+  M.inWall = yardMat(7, T.wall, { color: new THREE.Color(0.62, 0.6, 0.55), metalnessMap: null, metalness: 0 });
+  M.inDado = yardMat(7, T.wall, { color: new THREE.Color(0.26, 0.3, 0.3), metalnessMap: null, metalness: 0 });
+  M.inCeil = yardMat(7, T.wall, { color: new THREE.Color(0.72, 0.72, 0.7), metalnessMap: null, metalness: 0 });
+  M.inFloor = yardMat(7, T.ground, { color: new THREE.Color(0.42, 0.44, 0.42), metalnessMap: null, metalness: 0, roughness: 0.75 });
+  M.inTop = yardMat(7, null, { color: new THREE.Color(0.2, 0.21, 0.22), metalness: 0, roughness: 0.45 });
   M.decal = new THREE.MeshStandardMaterial({ map: T.decal, transparent: true, depthWrite: false, roughness: 0.5, metalness: 0, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6 });
   M.decal.onBeforeCompile = (s) => { yardInject(s); s.uniforms.uYKind = { value: 6 }; }; M.decal.customProgramCacheKey = () => 'yard17d';
   M.fence = new THREE.MeshStandardMaterial({ map: T.fence, alphaTest: 0.45, side: THREE.DoubleSide, color: 0x9aa0a4, roughness: 0.4, metalness: 0.9 });
@@ -48093,7 +48099,7 @@ function* yardBuilder(room) {
   if (!Y.tex) { yardSkyLoad(); Y.tex = yield* yardTextures(xr); YU.uYNoise.value = Y.tex.noise; }
   if (!Y.mats) { Y.mats = yardMaterials(Y.tex); if (Y.env) yardEnvAssign(); }
   const M = Y.mats, g = room.group, dg = room.doorGroup, own = (geo) => { room.ownGeo.push(geo); return geo; };
-  const batch = new Map(), tileOf = (m) => (m === M.wall ? YC.tex.wall : m === M.ground || m === M.paintY || m === M.paintW ? YC.tex.ground : YC.tex.metal);
+  const batch = new Map(), tileOf = (m) => (m === M.wall || m === M.inWall || m === M.inDado || m === M.inCeil ? YC.tex.wall : m === M.ground || m === M.paintY || m === M.paintW || m === M.inFloor ? YC.tex.ground : YC.tex.metal);
   const add = (geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, sx = 1, sy = 1, sz = 1, uvMode = 1, cast = true) => {
     _yM.compose(_yP.set(x, y, z), _yQ.setFromEuler(_yE.set(rx, ry, rz)), _yS.set(sx, sy, sz));
     const gg = yardClean(geo.clone()); gg.applyMatrix4(_yM);
@@ -48245,7 +48251,26 @@ function* yardBuilder(room) {
   }
   { // interiors: counters (cover), steel skirting, ceiling lights
     for (const r of L.rooms) {
-      if (r.counter) { const [x0, x1, z0, z1] = r.counter; rbx(M.wall, x0, x1, 0, 1.0, z0, z1, 0.02); box(M.metal, x0 - 0.03, x1 + 0.03, 1.0, 1.05, z0 - 0.03, z1 + 0.03); }
+      if (r.counter) { const [x0, x1, z0, z1] = r.counter; rbx(M.inDado, x0, x1, 0, 1.0, z0, z1, 0.02); box(M.inTop, x0 - 0.03, x1 + 0.03, 1.0, 1.05, z0 - 0.03, z1 + 0.03); }
+      { // painted lining on the inside faces (openings left for the doors), a sealed floor and a painted ceiling
+        const e = 0.004, dado = 1.2, DWh = D.width / 2 + 0.02, DH = D.height + 0.02;
+        const ops = L.sdoors.filter((sd) => sd.room === L.rooms.indexOf(r) && !sd.wall);
+        const seg = (along, at, a0, a1, inward) => {                 // one wall: along 'x' at z = at, or along 'z' at x = at
+          const cuts = ops.filter((sd) => (along === 'x' ? Math.abs(sd.z - at) < 0.5 : Math.abs(sd.x - at) < 0.5)).map((sd) => (along === 'x' ? sd.x : sd.z)).sort((a, b) => a - b);
+          const spans = []; let u = a0;
+          for (const c of cuts) { if (c - DWh > u) spans.push([u, c - DWh, 0]); spans.push([c - DWh, c + DWh, DH]); u = c + DWh; }
+          if (u < a1) spans.push([u, a1, 0]);
+          const w0 = at + inward * e, w1 = at + inward * 2 * e;
+          for (const [u0, u1, yb] of spans) for (const [m, y0, y1] of [[M.inDado, 0, dado], [M.inWall, dado, r.h]]) {
+            const lo = Math.max(y0, yb); if (lo >= y1) continue;
+            if (along === 'x') box(m, u0, u1, lo, y1, Math.min(w0, w1), Math.max(w0, w1), false);
+            else box(m, Math.min(w0, w1), Math.max(w0, w1), lo, y1, u0, u1, false);
+          }
+        };
+        seg('x', r.z0, r.x0, r.x1, 1); seg('x', r.z1, r.x0, r.x1, -1); seg('z', r.x0, r.z0, r.z1, 1); seg('z', r.x1, r.z0, r.z1, -1);
+        box(M.inFloor, r.x0, r.x1, 0.0, 0.003, r.z0, r.z1, false);
+        box(M.inCeil, r.x0, r.x1, r.h - 0.004, r.h - 0.001, r.z0, r.z1, false);
+      }
       for (const [x0, x1, z0, z1] of [[r.x0, r.x1, r.z0, r.z0 + 0.012], [r.x0, r.x1, r.z1 - 0.012, r.z1], [r.x0, r.x0 + 0.012, r.z0, r.z1], [r.x1 - 0.012, r.x1, r.z0, r.z1]]) box(M.metal, x0, x1, 0, 0.1, z0, z1, false);
     }
     for (const l of L.lamps) if (l.k === 'room') { const [x, y, z] = l.p; box(M.metal, x - 0.62, x + 0.62, y + 0.02, y + 0.12, z - 0.16, z + 0.16); lensBox(x - 0.58, x + 0.58, y, y + 0.02, z - 0.12, z + 0.12); }
