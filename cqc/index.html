@@ -9897,11 +9897,12 @@ function cycleQuality() {
   toast(perf.mode === 'auto' ? 'Quality: auto (holds 60 fps)' : `Quality: ${L.name} ${L.pr}x${L.gtao ? '' : ', no GTAO'}`);
 }
 function perfTick(dt) {
-  perf.frames++; perf.time += dt;
+  perf.frames++; perf.time += dt; perf.maxDt = Math.max(perf.maxDt || 0, dt);
   const W = CONFIG.perf.window;
   if (perf.time < W) return;
-  const fps = perf.frames / perf.time;
-  perf.frames = 0; perf.time = 0;
+  const fps = perf.frames / perf.time, spike = perf.maxDt > 0.2;
+  perf.frames = 0; perf.time = 0; perf.maxDt = 0;
+  if (spike && !renderer.xr.isPresenting) return;                // a one-off stall (a room switching on, a GC) is not a reason to resize every render target, which is itself a stall
   const now = performance.now() / 1000;
   if (renderer.xr.isPresenting) { perf.xr.time += W; if (perf.xr.fov >= CONFIG.perf.xr.foveationMax - 1e-3 && fps < CONFIG.xr.targetFps - CONFIG.perf.xr.dropBelow) perf.xr.struggle += W; }
   if (now < perf.holdUntil || document.hidden) return;
@@ -9926,8 +9927,8 @@ function deskPerf(fps, now) {
     }
   } else if (fps >= D.targetFps - D.raiseAbove) {
     perf.bad = 0;
-    if (++perf.good >= D.raiseAfter && perf.level < perf.levels.length - 1 && (perf.failed[perf.level + 1] || 0) < 2) {
-      applyLevel(perf.level + 1);
+    if (++perf.good >= D.raiseAfter && perf.level < perf.levels.length - 1 && !(perf.failed[perf.level + 1] > 0) && now - (perf.raisedAt || -99) > 25) {   // a level that failed once is not retried, raises 25 s apart: no up-down resizing
+      applyLevel(perf.level + 1); perf.raisedAt = now;
       perf.good = 0; perf.holdUntil = now + 2;
     }
   } else { perf.good = 0; perf.bad = 0; }
