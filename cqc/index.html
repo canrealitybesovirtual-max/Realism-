@@ -2199,7 +2199,7 @@ const CONFIG = {
     procScale: 1.0             // your own hand (20.2 cm wrist joint to middle fingertip: already the size of the scaled gun hands)
   },
   light: {
-    spot: 22,           // candela-ish, physically based (decay 2)
+    spot: 30,           // candela-ish, physically based (decay 2); 30 (was 22) carries the light the area lights gave
     rect: 38,           // RectAreaLight luminance
     panelEmissive: 9,   // diffuser glow, feeds bloom and the baked environment
     flashlight: 78,     // longer flashlight: x FLASH_BEAM.gain 1.6 = 125 at the hot spot = 20,000 cd (the dazzle's 160 cd a unit): X300 class, ~1 lux at 140 m (was 45, cut off at 15 m)
@@ -6478,11 +6478,17 @@ function fixtureAt(wall, u, w, d) {
 // Lights, sprinklers and the smoke detector. Two troffers along the long axis
 // (the light pool lights exactly two per room); sprinkler heads on a ~2.6 m grid,
 // clear of the troffers and of full-height walls.
-// At most 4 ceiling fittings: spread along the room's long axis, the middle ones first (they take the pool's shadowed lights).
-function troffCap(L) {
-  const T = L.troffers; if (!T || T.length <= 3 || L.yard) return;
-  const ax = T.reduce((m, t) => Math.max(m, Math.abs(t[0])), 0) > T.reduce((m, t) => Math.max(m, Math.abs(t[1])), 0) ? 0 : 1;
-  const s = T.slice().sort((a, b) => a[ax] - b[ax]), n = s.length, pick = [0, 1, 2].map((i) => s[Math.round((i + 0.5) * n / 3 - 0.5)]);   // 3 fittings
+// Ceiling fittings by room: stairwell 1, small (< 30 m2) 1, long (one side 2.2x the other or more) 3, everything else 2.
+// Spread along the long axis; the middle ones first (they take the pool's shadowed lights).
+function troffCap(L, room) {
+  const T = L.troffers; if (!T || !T.length || L.yard) return;
+  const w = room ? room.w : 0, d = room ? room.d : 0, long = Math.max(w, d) / Math.max(1e-3, Math.min(w, d)) >= 2.2;
+  const want = L.type === 'stair' || (room && room.kind === 'stair') ? 1 : w * d < 30 ? 1 : long ? 3 : 2;
+  if (T.length <= want) return;
+  if (want === 1) { L.troffers = [T.slice().sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]))[0]]; if (L.type === 'stair' || (room && room.kind === 'stair')) L.troffers = [T[0]]; return; }
+  const ax = w >= d ? 0 : 1;
+  const s0 = T.slice().sort((a, b) => a[ax] - b[ax]), n = s0.length;
+  const pick = Array.from({ length: want }, (_, i) => s0[Math.round((i + 0.5) * n / want - 0.5)]);
   pick.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
   L.troffers = pick;
 }
@@ -7334,7 +7340,7 @@ function* roomBuilder(room) {
   if (!room.layout) room.layout = yield* generateLayout(room);
   const { w, d, h } = room, M = KIT.mat, G = KIT.geo, P = KIT.proto, D = CONFIG.door, T = CONFIG.stream.wallT;
   const L = room.layout, g = room.group, dg = room.doorGroup, RM = room.mats = roomMaterials(room);
-  troffCap(L);                                                     // at most 3 fittings a room (the user: fewer lights)
+  troffCap(L, room);                                               // 1-3 fittings by room size and shape (the user's rule)
   const own = (geo) => { room.ownGeo.push(geo); return geo; };
   const put = (parent, obj, x, y, z, ry = 0) => { obj.position.set(x, y, z); obj.rotation.y = ry; parent.add(obj); return obj; };
   const opening = (x) => ({ x, width: D.width, height: D.height });
@@ -7799,6 +7805,7 @@ function* stairBuilderU(room, bGeo) {
 function* stairBuilder(room) {
   const { w, d, h } = room, M = KIT.mat, G = KIT.geo, P = KIT.proto, D = CONFIG.door, T = CONFIG.stream.wallT;
   const S = room.stair, SC = CONFIG.stairs, L = room.layout, g = room.group, dg = room.doorGroup, RM = room.mats = roomMaterials(room);
+  troffCap(L, room);                                               // a stairwell: one fitting
   const own = (geo) => { room.ownGeo.push(geo); return geo; };
   const put = (parent, obj, x, y, z, ry = 0) => { obj.position.set(x, y, z); obj.rotation.y = ry; parent.add(obj); return obj; };
   const batch = new Map();
@@ -8715,6 +8722,7 @@ function makePoolSpot() {
   shadowLights.push(s);
   return s;
 }
+const PERF_NO_RECT = !/[?&]rects=on\b/.test(QS);
 function initLightPool() {
   RectAreaLightUniformsLib.init();
   pool.main = [makePoolSpot(), makePoolSpot()];
@@ -8731,7 +8739,7 @@ function initLightPool() {
   pool.rects = [0, 1].map(() => {
     const r = new THREE.RectAreaLight(CONFIG.look.rect, 0, 0.56, 1.16);
     r.rotation.x = -Math.PI / 2; r.position.set(0, -10, 0);
-    scene.add(r);
+    if (!PERF_NO_RECT) scene.add(r);                 // PERF: kept as objects (code sets them) but not lit: two LTC area lights per pixel were a big share of the frame
     return r;
   });
 }
@@ -8749,7 +8757,9 @@ function assignLights(cur, portal) {
   pool.portalRoom = portal;                       // step 11: night mode reads which room the portal shows
   const dark = nightDark(cur);
   for (let i = 0; i < 2; i++) {
-    const tr = cur.troffers[i], x = rWX(cur, tr.x), z = rWZ(cur, tr.z);
+    const tr = cur.troffers[i];
+    if (!tr) { pool.rects[i].intensity = 0; if (!pool.main[i].userData.torch) pool.main[i].intensity = 0; continue; }   // a one-fitting room
+    const x = rWX(cur, tr.x), z = rWZ(cur, tr.z);
     if (dark || tr.out) { pool.rects[i].intensity = 0; if (!pool.main[i].userData.torch) pool.main[i].intensity = 0; continue; }   // step 11: the power is out; step 87: or the tube is shot out
     const ty = cur.origin.y + (tr.y !== undefined ? tr.y : cur.h);   // step 12: stairwell fittings have their own height
     placeSpot(pool.main[i], x, ty, z);
@@ -8772,7 +8782,7 @@ function assignLights(cur, portal) {
   // The failing tube lives in combat rooms. The safe room's lights are steady.
   if (flicker.fixture) flicker.fixture.diffMat.emissiveIntensity = nightDark(flicker.fixture.room) ? 0 : CONFIG.light.panelEmissive;
   const fxWas = flicker.fixture;
-  flicker.fixture = cur.kind === 'safe' || dark || cur.troffers[1].out ? null : { room: cur, diffMat: cur.troffers[1].diffMat, rect: pool.rects[1], spot: pool.main[1] };   // step 87: not a dead tube
+  flicker.fixture = cur.kind === 'safe' || dark || !cur.troffers[1] || cur.troffers[1].out ? null : { room: cur, diffMat: cur.troffers[1].diffMat, rect: pool.rects[1], spot: pool.main[1] };   // step 87: not a dead tube
   // Step 98: the flicker clock only ran while a combat room's tube was lit, so leaving the safe room (or a dark room) found it
   // long overdue and the new room's light stuttered dark the moment you stepped in. A new room's tube now waits grace s.
   if (flicker.fixture && (!fxWas || fxWas.room !== cur)) flicker.arm = true;

@@ -1337,3 +1337,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: flashing wall in long rooms
 - The two-tone lower paint band sat 0.6 mm in front of its wall: seen from 30-45 m down a long room (camera near 0.03) the depth buffer could not tell them apart and the wall flashed. Band now 1.5 mm out and RM.lower drawn with polygonOffset (-1, -4).
 - The failing-tube flicker is off by default (CONFIG.terminal flicker, MENU default, and once per save via cqc.flickoff.v1); L or the terminal turns it back on. Syntax parse only.
+
+## CQC: lights by room size, no area lights
+- troffCap(L, room) (roomBuilder and the stairwell builder): stairwell 1 fitting, small room (< 30 m2) 1, long room (one side >= 2.2x the other) 3, every other room (medium, large square) 2. assignLights and the flicker handle a room with one fitting (the second pool spot / area light off).
+- PERF_NO_RECT (default; ?rects=on brings them back): the two pool RectAreaLights stay as objects the code sets but are not in the scene, so no LTC area-light shading per pixel; CONFIG.light.spot 22 -> 30 carries their light. Syntax parse only.
