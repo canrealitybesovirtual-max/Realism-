@@ -714,6 +714,12 @@ button{font:inherit;color:inherit}
 #flash{position:absolute;inset:0;background:var(--bone);opacity:0;pointer-events:none;z-index:45;transition:opacity .55s var(--ease)}
 #flash.on{opacity:.14;transition:none}
 @media (max-width:820px){.rp-hints{display:none}.ph-panel{top:auto;height:min(62vh,520px)}}
+  /* walking or driving in the warehouse: the shop panel steps aside, a one-line hint stays */
+  [data-screen="garage"] .panel { transition: opacity .25s; }
+  [data-screen="garage"].roam .panel { opacity: 0; pointer-events: none; }
+  [data-screen="garage"].panel-screen.roam { background: none; }
+  .roam-hint { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 8px 14px; background: rgba(8,8,10,.62); border: 1px solid rgba(232,227,218,.14); color: #e8e3da; font: 400 13px Inter, system-ui, sans-serif; letter-spacing: .02em; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  [data-screen="garage"].roam .roam-hint { opacity: .9; }
 </style>
 </head>
 <body>
@@ -825,6 +831,7 @@ button{font:inherit;color:inherit}
         </div>
         <div class="panel-foot"><div class="hints" data-hints="panel"></div><div class="actions"><button class="btn" data-nav data-back>Back</button></div></div>
       </div>
+      <div class="roam-hint" id="roam-hint"></div>
     </section>
 
     <!-- TRAFFIC SETUP -->
@@ -10422,7 +10429,7 @@ class CarMirrors {
     this.hint = K.drag ? 'drag' : K.hover ? (rig.adj[K.hover].door ? 'door' : 'aim') : inp.locked ? 'dot' : '';
   }
   /** The input's key hook: E (hold to adjust) and F (fold a door mirror) while the dot is on a mirror. True = used. */
-  key(code) {
+  keyDown(code) {
     const K = this.desk, rig = this.rigs[this.car.bodyKey]; if (!this.adjOn || !rig?.adj || !K?.hover) return false;
     if (code === 'KeyE') { K.e = true; return true; }
     if (code === 'KeyF' && rig.adj[K.hover].door) { const A = rig.adj[K.hover]; A.ft = A.ft > .5 ? 0 : 1; return true; }
@@ -11184,7 +11191,8 @@ class GarageWorld {
     this.rings = {}; for (const id of Object.keys(this.slots)) { const m = new THREE.Mesh(ringG, new THREE.MeshBasicMaterial({ color: 0x6e0f15, transparent: true, opacity: .5, depthWrite: false })); m.position.set(this.slots[id].x, .004, this.slots[id].z); m.scale.set(.48, 1, 1); this.rings[id] = m; scene.add(m); }
     const lc = document.createElement('canvas'); lc.width = 768; lc.height = 256; this.labelC = lc; this.labelT = new THREE.CanvasTexture(lc); this.labelT.colorSpace = THREE.SRGBColorSpace;
     this.label = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.labelT, transparent: true, depthTest: false, toneMapped: false })); this.label.scale.set(1.65, .55, 1); this.label.visible = false; this.label.renderOrder = 10; scene.add(this.label);
-    this.offModel = bus.on('car:model', () => { this.labelDirty = true; if (this.car.group.parent === this.scene) this.#place(); });
+    this.offModel = bus.on('car:model', () => { this.labelDirty = true; if (this.car.group.parent === this.scene) { this.#place();
+      if (this.pendDrive && this.pendDrive === this.car.bodyKey) { this.pendDrive = null; this.#startDrive(); } } });   // test drive: the car you took, once its body is on
     this.applyGraphics();
     this.drive = null; this.kind = null; this.wh = null;
     this.#applyKind();
@@ -11207,7 +11215,7 @@ class GarageWorld {
           const m = gl.scene; m.position.set(-8, 0, WH_DOOR_Z);                 // the shed spans x 0…16, z -46…0 in its file; the door end at z 0
           m.traverse(o => { if (!o.isMesh) return; o.receiveShadow = true; o.castShadow = o.material.name !== 'Emissive';
             if (o.material.name === 'WetConcrete') o.material.envMapIntensity = .8; Atmos.patch(o.material, { key: 'wh' + o.material.name }); });
-          g.add(m);
+          g.add(m); this.key.shadow.needsUpdate = true;
         }).catch(e => { Log.warn('The warehouse garage did not load; the studio stays', e); this.s.set('world.garage', 'studio'); });
     }
     if (this.wh) this.wh.visible = wh;
@@ -11224,19 +11232,26 @@ class GarageWorld {
     this.drive = { x: S.x, z: S.z, yaw: S.ry + Math.PI, v: 0, steer: 0, spin: 0, cam: null, menu: false };
     for (const r of Object.values(this.rings)) r.visible = false;
     this.walk.on = false; this.idle = 0;
-    bus.emit('toast', 'Drive to the roller door to choose where to go');
+    this.inp?.releaseLock();
+    bus.emit('toast', `${CAR_MODELS[this.car.bodyKey]?.split(' (')[0] || 'Car'}: W/S, A/D. Drive round the shed, or to the roller door to choose where to go. Esc gets out`, 4200);
     return true;
   }
   #stopDrive() {
     if (!this.drive) return;
-    this.drive = null; this.#doorMenu(false);
+    const D = this.drive; this.drive = null; this.#doorMenu(false);
     for (const r of Object.values(this.rings)) r.visible = true;
     if (this.car.group.parent === this.scene) this.#place();
+    if (D && this.kind === 'warehouse') {                                 // step out by the driver's door, walking, looking at the car
+      const W = this.walk, S = this.slots[this.car.bodyKey] || this.slots.celsior;
+      W.on = true; W.p.set(S.x + (S.x < 0 ? 1.9 : -1.9), 1.65, S.z + 2.2); this.#collide(W.p);
+      W.yaw = Math.atan2(-(S.x - W.p.x), -(S.z - W.p.z)); W.pitch = -.18;
+    }
   }
   /** The map choices at the door (an overlay; keys 1-4, the mouse, or the pad's D-pad and A). */
   #doorMenu(on) {
     if (!on) { this.menuEl?.remove(); this.menuEl = null; if (this.drive) this.drive.menu = false; return; }
     if (this.menuEl) return;
+    this.inp?.releaseLock();
     const el = this.menuEl = document.createElement('div');
     el.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:50;background:rgba(8,8,10,.88);border:1px solid rgba(232,227,218,.18);padding:26px 30px;min-width:340px;font-family:Inter,system-ui,sans-serif;color:#e8e3da;pointer-events:auto';
     el.innerHTML = '<div style="font:300 34px \'Cormorant Garamond\',Georgia,serif;margin-bottom:6px">Where to?</div><div style="opacity:.6;font-size:13px;margin-bottom:16px">1-4, click, W/S and E, or the D-pad and A</div>';
@@ -11263,13 +11278,12 @@ class GarageWorld {
     const D = this.drive, gp = navigator.getGamepads?.()[0];
     const ax = gp ? gp.axes[0] || 0 : 0, rt = gp?.buttons[7]?.value || 0, lt = gp?.buttons[6]?.value || 0;
     if (D.menu) {
-      const n = DOOR_MAPS.length, k = (c) => K?.has(c);
-      for (let i = 0; i < n; i++) if (k('Digit' + (i + 1))) return this.#go(i);
-      const up = k('KeyW') || gp?.buttons[12]?.pressed, dn = k('KeyS') || gp?.buttons[13]?.pressed, ok = k('Enter') || k('KeyE') || gp?.buttons[0]?.pressed;
+      const n = DOOR_MAPS.length;                                       // keys come as events (key()); the pad is polled here
+      const up = gp?.buttons[12]?.pressed || (gp?.axes[1] || 0) < -.6, dn = gp?.buttons[13]?.pressed || (gp?.axes[1] || 0) > .6, ok = gp?.buttons[0]?.pressed;
       if ((up || dn) && !this.navHeld) { this.menuSel = (this.menuSel + (dn ? 1 : n - 1)) % n; this.#menuHi(); }
       if (ok && !this.navHeld) return this.#go(this.menuSel);
-      if ((k('Escape') || gp?.buttons[1]?.pressed) && !this.navHeld) return this.#go(n - 1);
-      this.navHeld = !!(up || dn || ok);
+      if (gp?.buttons[1]?.pressed && !this.navHeld) return this.#go(n - 1);
+      this.navHeld = !!(up || dn || ok || gp?.buttons[1]?.pressed);
       return;
     }
     const thr = Math.max(K?.has('KeyW') ? 1 : 0, rt), brk = Math.max(K?.has('KeyS') ? 1 : 0, lt);
@@ -11297,6 +11311,7 @@ class GarageWorld {
     if (D.z > WH_DOOR_Z - 3.2 && Math.abs(D.x) < 4.2 && !D.menu) { D.v = 0; this.#doorMenu(true); }
     const C = this.car.group; C.position.set(D.x, 0, D.z); C.rotation.set(0, D.yaw, 0); C.updateMatrixWorld(true);
     this.car.animate(D.spin, D.steer, null);
+    if (Math.abs(D.v) > .01 || Math.abs(D.steer - (D.st0 ?? 0)) > 1e-3) this.#shadowNow(); D.st0 = D.steer;
     /* chase camera */
     const c = this.camera, tx = D.x - fx * 6.4, tz = D.z - fz * 6.4;
     if (!D.cam) D.cam = new THREE.Vector3(tx, 2.3, tz); else { D.cam.x = damp(D.cam.x, tx, 4, dt); D.cam.z = damp(D.cam.z, tz, 4, dt); }
@@ -11314,6 +11329,7 @@ class GarageWorld {
       if (D) { D.visible = other; const P = this.slots[id]; D.position.set(P.x, 0, P.z); D.rotation.set(0, P.ry + turn, 0); }
       this.rings[id].material.color.setHex(id === sel ? 0x2a6e3a : 0x6e0f15);
     }
+    this.#shadowNow();
   }
   /** A static copy of a body for the showroom, sharing the live car's materials and wheel meshes. */
   #displayCar(id) {
@@ -11325,7 +11341,7 @@ class GarageWorld {
         else if (GLB_CARS[id]) { const o = GlbCars.get(id) && buildGlbCar(car, id); if (o) { body = o.group; L = o.wheels; } }   // build 1.31
       } catch (e) { Log.warn('Showroom copy failed', e); }
       if (!body) return false;
-      body.position.y = car.rideHeight || 0; g.add(body);
+      body.position.y = car.rideHeight || 0; g.add(body); this.#shadowNow();
       const k = L.r / CAR.tyreR;
       for (const w of car.wheels) { const c = w.clone(true), { sg, front } = w.userData; c.position.set(sg * L.x, L.r, front ? L.zf : L.zr); c.scale.setScalar(k); c.rotation.set(0, 0, sg * (front ? .012 : .02)); g.add(c); }
       return true;
@@ -11344,31 +11360,57 @@ class GarageWorld {
     panel(30, .25, 0, .25, -14, [.12, .12, .13]);                // faint floor-level strip: a horizon in the lower body
     return sc;
   }
+  /** The key light's shadow map is drawn only when something moved (a car placed, built or driven), not every frame:
+   *  the cars are ~230k triangles each, the shadow pass drew them all again each frame. */
+  #shadowNow() { this.key.shadow.needsUpdate = true; }
   enter() {
     Atmos.uniforms.uFogDensity.value = 0;
+    this.key.shadow.autoUpdate = false; this.#shadowNow();
     this.scene.add(this.car.group); this.car.group.position.set(0, 0, 0); this.car.group.quaternion.identity();
     this.#place();                                                       // build 1.28: and visible, whatever a run left behind
     this.car.animate(0, 0, null); this.car.setNight(0, false, 0); this.car.setWet(0); this.idle = 9;
     this.car.setCabinView(false); this.car.setHoodView(false);        // build 1.18: the studio always shows the whole body
   }
-  leave() { this.#stopDrive(); if (this.car.group.parent === this.scene) this.scene.remove(this.car.group); }
+  leave() { this.#stopDrive(); this.pendDrive = null; this.walk.on = false; this.roam = ''; document.querySelector('[data-screen="garage"]')?.classList.remove('roam'); this.inp?.releaseLock(); if (this.car.group.parent === this.scene) this.scene.remove(this.car.group); }
+  /** The headset walk (VR) uses the same walls and car boxes. */
+  collide(p) { this.#collide(p); return p; }
+  /** Walking or driving in the shed: the UI leaves the keys and the pad to it. */
+  get active() { return this.walk.on || !!this.drive; }
+  startWalk() { const W = this.walk, c = this.camera; if (W.on || this.drive) return; W.on = true; W.p.copy(c.position).setY(1.65); this.#collide(W.p); const f = c.getWorldDirection(new THREE.Vector3()); W.yaw = Math.atan2(-f.x, -f.z); W.pitch = -.12; }
+  /** A key press while walking or driving (from the UI's keydown, so a quick tap is never missed). True = used. */
+  keyDown(code) {
+    const D = this.drive, n = DOOR_MAPS.length;
+    if (D?.menu) {
+      const d = /^Digit(\d)$/.exec(code); if (d && +d[1] >= 1 && +d[1] <= n) { this.#go(+d[1] - 1); return true; }
+      if (code === 'KeyW' || code === 'ArrowUp' || code === 'KeyS' || code === 'ArrowDown') { this.menuSel = (this.menuSel + (code === 'KeyS' || code === 'ArrowDown' ? 1 : n - 1)) % n; this.#menuHi(); return true; }
+      if (code === 'Enter' || code === 'KeyE' || code === 'Space') { this.#go(this.menuSel); return true; }
+      if (code === 'Escape') { this.#go(n - 1); return true; }
+      return true;
+    }
+    if (D) { if (code === 'Escape') { this.#stopDrive(); return true; } return false; }
+    if (this.walk.on && (code === 'KeyE' || code === 'Enter')) { this.choose(); return true; }
+    return false;
+  }
+  /** Esc / B: frees the mouse first, then stops walking (back to the orbit view); the car's own Esc is in keyDown(). */
+  escape() { if (this.drive) return; if (this.inp?.locked) { this.inp.releaseLock(); return; } this.walk.on = false; }
   pointer(type, e) {
     const W = this.walk;
-    if (type === 'down') this.drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY };
-    else if (type === 'move' && this.drag) {
+    if (type === 'down') { this.drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY }; if (W.on && !this.drive && e.button === 0) this.inp?.requestLock(); }
+    else if (type === 'move' && this.drag && !this.inp?.locked) {
       const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y;
       if (W.on) { W.yaw -= dx * .004; W.pitch = clamp(W.pitch - dy * .003, -1.1, .8); }
       else { this.yaw -= dx * .006; this.pitch = clamp(this.pitch + dy * .004, -.02, .85); }
       this.drag.x = e.clientX; this.drag.y = e.clientY; this.idle = 0;
     }
     else if (type === 'up') { const D = this.drag; this.drag = null; if (W.on && D && Math.hypot(e.clientX - D.x0, e.clientY - D.y0) < 6) this.choose(); }
-    else if (type === 'wheel') { W.on = false; this.targetDist = clamp(this.targetDist + e.deltaY * .004, 4.6, 12); this.idle = 0; }
+    else if (type === 'wheel') { if (this.inp?.locked) return; W.on = false; this.targetDist = clamp(this.targetDist + e.deltaY * .004, 4.6, 12); this.idle = 0; }
   }
   /** Takes the car you are looking (or pointing) at. */
   choose(id = this.target) {
     if (!id) return false;
-    if (id === this.car.bodyKey) return this.#startDrive();             // build 1.31: get in and drive (warehouse)
-    this.s.set('car.model', id); bus.emit('toast', `${CAR_MODELS[id].split(' (')[0]} chosen`); return true;
+    if (id === this.car.bodyKey) { if (this.vrWalk) { bus.emit('toast', 'Your car. A starts a run'); return true; } return this.#startDrive(); }   // build 1.31: get in and drive (warehouse)
+    this.pendDrive = this.kind === 'warehouse' && !this.vrWalk ? id : null;   // test drive: take it and get straight in
+    this.s.set('car.model', id); if (!this.drive) bus.emit('toast', `${CAR_MODELS[id].split(' (')[0]} chosen`); return true;
   }
   /** Which car a ray (world) points at, within 7 m: the boxes of the two slots. */
   pick(o, d) {
@@ -11397,22 +11439,36 @@ class GarageWorld {
   applyGraphics() { const size = this.rs.shadowSize; this.key.castShadow = size > 0; if (size && this.key.shadow.mapSize.x !== size) { this.key.shadow.mapSize.set(size, size); this.key.shadow.map?.dispose(); this.key.shadow.map = null; }
     /* §8.1: a large studio softbox (~3.5°) so the car sits on a shadow that is sharp at the tyres and soft at the roofline */
     this.key.shadow.radius = this.rs.contactShadows ? contactShadowRadius(this.key, .06) : 6;
+    this.key.shadow.needsUpdate = true;
   }
   fixedUpdate() {}
   update(dt, alpha, ctx) {
     this.car.controls.update(dt, null, false);                          // build 1.28: the switchgear shows its state in the studio too
     this.#applyKind();
     const W = this.walk, K = ctx?.keys, c = this.camera;
+    if (ctx?.inp) this.inp = ctx.inp;
+    const roam = this.active && !this.vrWalk ? (this.drive ? (this.drive.menu ? 'm' : 'd') : this.inp?.locked ? 'l' : 'w') : '';
+    if (roam !== this.roam) {                                            // the shop panel steps aside while you walk or drive
+      this.roam = roam; const sc = document.querySelector('[data-screen="garage"]'), hEl = document.getElementById('roam-hint');
+      sc?.classList.toggle('roam', !!roam);
+      if (hEl) hEl.textContent = roam === 'd' ? 'W/S drive · A/D steer · roller door: choose a map · Esc: get out' : roam === 'm' ? 'Choose where to go' : roam === 'l' ? 'WASD walk · Shift run · E / click: take a car and test drive · Esc: free the mouse' : 'Click to look with the mouse · WASD walk · E: take a car · Esc: back to the shop';
+    }
     if (this.drive && !this.vrWalk) {                                    // build 1.31: driving in the warehouse
-      if (K?.has('Escape') && !this.drive.menu) { this.#stopDrive(); return; }
+      if (this.inp?.gpEdges?.has(1) && !this.drive.menu && this.drive.t > .4) { this.#stopDrive(); return; }
+      this.drive.t = (this.drive.t || 0) + dt;
       this.#driveStep(dt, K); this.label.visible = false; return;
     }
-    const kx = K ? (K.has('KeyD') ? 1 : 0) - (K.has('KeyA') ? 1 : 0) : 0, kz = K ? (K.has('KeyS') ? 1 : 0) - (K.has('KeyW') ? 1 : 0) : 0;
+    const gp = W.on ? this.inp?.gp : null, gx = gp && Math.abs(gp.axes[0] || 0) > .18 ? gp.axes[0] : 0, gy = gp && Math.abs(gp.axes[1] || 0) > .18 ? gp.axes[1] : 0;   // pad: L3 starts walking (see the UI's pollGamepad)
+    const kx = clamp((K ? (K.has('KeyD') ? 1 : 0) - (K.has('KeyA') ? 1 : 0) : 0) + gx, -1, 1);
+    const kz = clamp((K ? (K.has('KeyS') ? 1 : 0) - (K.has('KeyW') ? 1 : 0) : 0) + gy, -1, 1);
     if (kx || kz) { if (!W.on) { W.on = true; W.p.copy(c.position).setY(1.65); const f = new THREE.Vector3(); c.getWorldDirection(f); W.yaw = Math.atan2(-f.x, -f.z); W.pitch = -.12; } }
     if (W.on && !this.vrWalk) {
-      if (K && (K.has('KeyE') || K.has('Enter')) && !this.eHeld) this.choose(); this.eHeld = !!K && (K.has('KeyE') || K.has('Enter'));
-      const sp = 1.7 * dt, cy = Math.cos(W.yaw), sy = Math.sin(W.yaw);
-      W.p.x += (kx * cy + kz * sy) * sp; W.p.z += (-kx * sy + kz * cy) * sp;
+      const m = ctx?.mouse; if (m && this.inp?.locked) { W.yaw -= m.dx * .0022; W.pitch = clamp(W.pitch - m.dy * .0022, -1.2, 1); }
+      if (ctx?.stick) { W.yaw -= ctx.stick.x * 2.2 * dt; W.pitch = clamp(W.pitch - ctx.stick.y * 1.6 * dt, -1.2, 1); }
+      if (!this.lockTip && this.inp && !this.inp.locked && this.inp.device === 'keyboard') { this.lockTip = true; bus.emit('toast', 'Click to look with the mouse (Esc frees it). Shift runs. E or click: take a car and test drive it', 4200); }
+      const run = K?.has('ShiftLeft') || K?.has('ShiftRight') || gp?.buttons[7]?.value > .5 ? 2.1 : 1, sp = 1.7 * run * dt, cy = Math.cos(W.yaw), sy = Math.sin(W.yaw);
+      const kl = Math.hypot(kx, kz), kn = kl > 1 ? 1 / kl : 1;
+      W.p.x += (kx * cy + kz * sy) * sp * kn; W.p.z += (-kx * sy + kz * cy) * sp * kn;
       this.#collide(W.p);
       c.position.copy(W.p); c.rotation.set(W.pitch, W.yaw, 0, 'YXZ');
     } else if (!this.vrWalk) {
@@ -13624,6 +13680,12 @@ class UIManager {
     if (e.code === 'F3') { e.preventDefault(); this.S.set('interface.showFps', !this.S.data.interface.showFps); return; }
     if (!this.name || this.name === 'loading') return;
     if (this.name === 'pause' && !this.dialogOpen && this.S.data.controls.bindings.pause.includes(e.code) && e.code !== 'Escape') { e.preventDefault(); this.app.resume(); return; }
+    const G = this.app._garage;                                          // walking or driving in the warehouse: the keys are for that
+    if (this.name === 'garage' && G && this.app.world === G && G.active && !this.dialogOpen) {
+      if (!e.repeat && G.keyDown(e.code)) { e.preventDefault(); document.activeElement?.blur?.(); return; }
+      if (e.code === 'Escape') { e.preventDefault(); G.escape(); return; }
+      if (/^(Key[WASDEQRF]|Arrow\w+|Shift\w+|Digit\d|Enter|Space)$/.test(e.code)) { e.preventDefault(); document.activeElement?.blur?.(); return; }
+    }
     const k = e.key;
     if (k.startsWith('Arrow')) { e.preventDefault(); this.navigate(k.slice(5).toLowerCase()); }
     else if (k === 'Enter' || k === ' ') {
@@ -13639,6 +13701,11 @@ class UIManager {
     if (!gp || !this.name || this.name === 'loading') return;
     const e = input.gpEdges, b = gp.buttons, ax = gp.axes;
     if (input.rebind) { if (e.has(GP.B)) input.rebind('Escape'); return; }
+    const G = this.app._garage;                                          // the pad in the warehouse: L3 walks, A takes / drives a car, B stops
+    if (this.name === 'garage' && G && this.app.world === G && !this.app.vr?.presenting) {
+      if (G.active) { if (!G.drive) { if (e.has(GP.A)) G.choose(); if (e.has(GP.B)) G.escape(); } return; }
+      if (e.has(10)) { G.startWalk(); return; }
+    }
     if (e.has(GP.A)) this.activate();
     if (e.has(GP.B)) this.back();
     if (e.has(GP.START) && this.name === 'pause') this.app.resume();
@@ -14265,7 +14332,7 @@ class App {
     bus.on('input:gamepadLost', () => { if (this.state === 'run' && this.input.device === 'gamepad') this.pause(); this.ui.toast('Controller disconnected'); });
     bus.on('toast', m => this.ui.toast(m));
     bus.on('chase:note', ({ m, ms }) => { if (this.state === 'run') this.ui.toast(m, ms); });   // police update
-    bus.on('garage:go', () => { if (this.state === 'menu') this.startRun(); });   // build 1.31: driven out of the warehouse door
+    bus.on('garage:go', () => { if (this.state === 'menu') { this.runFromGarage = true; this.startRun(); } });   // build 1.31: driven out of the warehouse door
     const unlock = () => this.audio.ensure();
     addEventListener('pointerdown', unlock); addEventListener('keydown', unlock);
     addEventListener('pointerup', unlock); addEventListener('touchend', unlock);       // build 1.19: some browsers only count the release as a gesture
@@ -14540,9 +14607,10 @@ class App {
     this.setWorld(this.menuWorld);
     this.audio.setDucked(false);
     this.vaudio?.dispose(); this.vaudio = null;
-    this.driveWorld.dispose(); this.driveWorld = null;
+    this.driveWorld?.dispose(); this.driveWorld = null;
     $('#vignette').classList.remove('light');
     this.state = 'menu'; this.ui.show('main', { push: false });
+    if (this.runFromGarage) { this.runFromGarage = false; this.ui.show('garage'); }   // a run driven out of the warehouse comes back to it (Back = the main menu)
     await this.#fade(false); this.busy = false;
   }
   /** From the summary: another run with the same world, or back to the menu. */
@@ -15038,7 +15106,7 @@ class VRSystem {
     this._e.setFromQuaternion(this.cam.getWorldQuaternion(this._q1), 'YXZ'); const hy = this._e.y;
     const sp = 1.6 * dt; B.x += (lx * Math.cos(hy) + ly * Math.sin(hy)) * sp; B.z += (-lx * Math.sin(hy) + ly * Math.cos(hy)) * sp;
     if (Math.abs(rx) > .7 && !this.gSnap) { this.gSnap = true; B.yaw -= Math.sign(rx) * Math.PI / 6; } else if (Math.abs(rx) < .3) this.gSnap = false;
-    const p = this._v.set(B.x, 1.65, B.z); G.walk.p.copy(p);
+    const p = G.collide(this._v.set(B.x, 1.65, B.z)); B.x = p.x; B.z = p.z; G.walk.p.copy(p);   // the shed's walls and the cars stop you
     this.rig.position.set(B.x, 1.65, B.z).sub(this._v2.copy(this.cam.position).setY(0).applyAxisAngle(this._up, B.yaw));
     this.rig.quaternion.setFromAxisAngle(this._up, B.yaw); this.rig.updateMatrixWorld(true);
     const g = this.grips.right;
