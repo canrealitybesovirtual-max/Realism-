@@ -1415,3 +1415,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: fewer props (yard, rooms, safe room)
 - Yard: 7 jersey barriers (were 9: the two at the far ends, by the entry and the block, gone), 6 bollards (were 9), the stair core's crate stack gone (one crate left), undergrowth outside the wall on a 4.2 m grid (was 3.2: ~40 % fewer rocks, stumps, bushes, ferns).
 - Combat rooms: loose props x0.85 (nProps rounded), a box stacked on a box 30 % (was 35 %). Safe room: the pipe removed (6 of 7). Syntax parse only.
+
+## Screenshot bug hunt (headless)
+- CQC safe room and room 1, Interstate menu / run / cockpit: no page errors, no frame errors.
+- Fixed: the Lexus tail lenses (celTailMaterial) glowed salmon-orange with the lamps on (emissive 1.4 tone-mapped toward orange) and at 0.3 with them off. Now unlit 0.02 on a darker red, lamps 0.38, brake +1.1: deep red in the tunnel (checked by screenshot).
