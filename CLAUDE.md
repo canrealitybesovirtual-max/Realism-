@@ -1407,3 +1407,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Cause: seatPart measured the gun's top from gunMeshes, a cached list (g._vcloud) made while the AWM's factory 3-25x was still drawn, and awmDotSync ran before awmRefresh0 hid it. So the riser and dot sat on top of the invisible scope (mount base 15 cm over the bore, sight line 0.20 m): aiming looked through nothing.
 - Fix: seatPart clears g._vcloud first; awmDotSync hides the factory scope meshes before seating. Now mount on the receiver, sight line 0.069 m, scope picture off (scope false).
 - Checked headless (?dev): AWM from the locker, Space held: ADS 1, no full-screen scope, the dot's reticle glass at the screen centre (NDC 0.001, -0.002). Not checked by eye or in VR.
+
+## CQC outdoor: half the rain, forest trimmed from the far edge
+- Rain 800 / 200 streaks (were 1600 / 400), splashes 110 / 25 (were 220 / 50).
+- Forest planted out to 56 x 52 m (headset 40 x 38; were 78 x 72 / 54 x 50): the outermost trees go, the edge by the wall stays. Tree impostors end at 62 m (headset 42; were 78 / 52). Syntax parse only.
