@@ -1411,3 +1411,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC outdoor: half the rain, forest trimmed from the far edge
 - Rain 800 / 200 streaks (were 1600 / 400), splashes 110 / 25 (were 220 / 50).
 - Forest planted out to 56 x 52 m (headset 40 x 38; were 78 x 72 / 54 x 50): the outermost trees go, the edge by the wall stays. Tree impostors end at 62 m (headset 42; were 78 / 52). Syntax parse only.
+
+## CQC: fewer props (yard, rooms, safe room)
+- Yard: 7 jersey barriers (were 9: the two at the far ends, by the entry and the block, gone), 6 bollards (were 9), the stair core's crate stack gone (one crate left), undergrowth outside the wall on a 4.2 m grid (was 3.2: ~40 % fewer rocks, stumps, bushes, ferns).
+- Combat rooms: loose props x0.85 (nProps rounded), a box stacked on a box 30 % (was 35 %). Safe room: the pipe removed (6 of 7). Syntax parse only.
