@@ -1402,3 +1402,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Cause: the buildings' panel joint bands (every 3.6 m up) were drawn as full-footprint 3 cm slabs, so inside the stair core (6 m tall) a grey layer hung across the room at 3.57 m (no collider: you walked through it on the stairs); another at 7.17 m. Now four strips on the outer faces only. Found headless by a vertical raycast through the core (layers at 3.57 / 6.00 / 7.17 / 9.15 m; 6.00 is the core's ceiling, 9.15 the roof).
 - The core's lower ceiling light hung in mid-air at 2.76 m (left from when the core was 3 m tall): now on the ceiling (5.86 m).
 - Lighter: lamps per pixel 4 (headset / lite 2; were 6 / 3), rain 1600 / 400 streaks, fog 0.048 / 0.062 with camera far 80 / 58 m, forest LOD [18, 36, 78] / [10, 22, 52]. Syntax parse only for the lag knobs.
+
+## CQC: AWM red dot usable
+- Cause: seatPart measured the gun's top from gunMeshes, a cached list (g._vcloud) made while the AWM's factory 3-25x was still drawn, and awmDotSync ran before awmRefresh0 hid it. So the riser and dot sat on top of the invisible scope (mount base 15 cm over the bore, sight line 0.20 m): aiming looked through nothing.
+- Fix: seatPart clears g._vcloud first; awmDotSync hides the factory scope meshes before seating. Now mount on the receiver, sight line 0.069 m, scope picture off (scope false).
+- Checked headless (?dev): AWM from the locker, Space held: ADS 1, no full-screen scope, the dot's reticle glass at the screen centre (NDC 0.001, -0.002). Not checked by eye or in VR.
