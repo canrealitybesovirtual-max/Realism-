@@ -21645,7 +21645,7 @@ const VM = {
     // step 89: gunNode = the pack gun's own node (your gun rides on it), magNode / boltNode = its parts your magazine / bolt follow
     ak: { file: 'vm-ak.glb', eye: [11, 23, -46], cm: true, arms: ['Object_7'], gunNode: 'ak', magNode: 'mag', cut: { fire: [0, 0.2], reloadFull: [0.2, 3.3], reloadFast: [3.3, 5.1], idle: [6.6, 7.4], draw: [7.45, 8.1] } },
     pistol2: { file: 'vm-pistol2.glb', eye: [7, 22, -22], cm: true, arms: ['Object_7'], gunNode: 'BPpistol', magNode: 'clip', cut: { fire: [0, 0.3], reloadFast: [0.3, 2.2], reloadFull: [2.2, 4.4], idle: [5.9, 6.8], draw: [6.85, 7.5] } },
-    sniper: { file: 'vm-sniper.glb', head: 'Camera', headPosOnly: true, arms: ['Object_9'], bolt: 0.5, gunNode: 'Body_057', magNode: 'Mag_060', boltNode: 'Bolt_059', clips: { idle: 'Rig|SRifle_Idle', walk: 'Rig|SRifle_Walk', fire: 'Rig|SRifle_Shot_nosight', reloadFast: 'Rig|SRifle_Reload', reloadFull: 'Rig|SRifle_Reload_Full' } },
+    sniper: { file: 'vm-sniper.glb', desat: 1.5, head: 'Camera', headPosOnly: true, arms: ['Object_9'], bolt: 0.5, gunNode: 'Body_057', magNode: 'Mag_060', boltNode: 'Bolt_059', clips: { idle: 'Rig|SRifle_Idle', walk: 'Rig|SRifle_Walk', fire: 'Rig|SRifle_Shot_nosight', reloadFast: 'Rig|SRifle_Reload', reloadFull: 'Rig|SRifle_Reload_Full' } },
   },
   // step 89: every gun has a rig (the g17 moved to the M1911 take: life-size hands and a solved fit, VMH_FIT)
   byType: { akmn: 'ak', akm: 'ak', m4a1s: 'ak', smg: 'ak', rifle: 'ak', shotgun: 'ak', awp: 'sniper',  // back on the bolt-rifle take: its solved fit (VM_FIT.awp) holds the AWM; the AK take's fit left the hands off the gun
@@ -21689,7 +21689,10 @@ function vmLoad(key) {
     root.traverse(o => {
       if (!o.isMesh) return;
       o.frustumCulled = false; o.castShadow = o.receiveShadow = false;
-      if (R.arms.includes(o.name)) for (const m of [].concat(o.material)) if (!armMats.includes(m)) { m.userData.vmBase = m.color.clone(); armMats.push(m); }
+      if (R.arms.includes(o.name)) for (const m of [].concat(o.material)) if (!armMats.includes(m)) { m.userData.vmBase = m.color.clone(); armMats.push(m);
+        if (R.desat) {   // screenshot pass: the sniper pack's sleeves are brown leather; grey them so the uniform tint reads as on the other rigs
+          const pb = m.onBeforeCompile; m.onBeforeCompile = (sh, r) => { pb?.call(m, sh, r); sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n#ifdef USE_MAP\n diffuseColor.rgb = diffuse * dot(sampledDiffuseColor.rgb, vec3(.2126, .7152, .0722)) * ' + R.desat.toFixed(2) + ';\n#endif'); };
+          const ck = m.customProgramCacheKey?.bind(m); m.customProgramCacheKey = () => (ck ? ck() : '') + '|vmdesat'; m.needsUpdate = true; } }
     });
     const head = R.head ? root.getObjectByName(R.head) : null;
     const V = { key, R, root, base, mixer, acts, head, armMats, cur: '', muzzle: new THREE.Vector3(0.12, -0.1, -0.6) };
@@ -21872,7 +21875,9 @@ function vmRender() {
   if (!VM.vis || renderer.xr.isPresenting || SCOPE.desk) return;   // step 89: through the AWP scope nothing of it is seen
   const sz = renderer.getSize(_vmS2);
   VM.cam.fov = VM.fovNow;                                          // step 89: aimed, the world camera's (the sights stay true)
-  VM.cam.aspect = sz.x / Math.max(1, sz.y); VM.cam.updateProjectionMatrix();
+  VM.cam.aspect = sz.x / Math.max(1, sz.y);
+  { const vg = vmGun(), nk = vg && VM.byType[vg.type] === 'sniper' ? 0.15 : 0.06; VM.cam.near = 0.01 + nk * Math.min(1, Math.max(0, vg?.ads || 0)); }   // screenshot pass: aimed, the take's sleeve (AWM) crossed the eye; clip what is within 7 cm
+  VM.cam.updateProjectionMatrix();
   const ac = renderer.autoClear; renderer.autoClear = false;
   renderer.setRenderTarget(null); renderer.clearDepth(); renderer.render(VM.scene, VM.cam);
   renderer.autoClear = ac;
@@ -22030,7 +22035,7 @@ function vmHipAim(H, g) {
   H.premultiply(_vhaM);
   return true;
 }
-const VM_HIP = { awp: [0.025, -0.03, -0.06] };              // camera space metres at the hip (x right, y up, -z ahead)
+const VM_HIP = { awp: [0.025, -0.03, -0.06], g17: [0.01, 0.05, -0.02], m1911: [0.01, 0.05, -0.02] };   // screenshot pass: the pistols sat below the frame (hands off screen)
 function vmGunPlace(V, F, g) {
   const W = _v9, mm = vmMirOf(VM.mir, g.model);
   // hip: where the pack's gun is this frame (vmPlace has posed the rig)

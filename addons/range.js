@@ -976,6 +976,23 @@
       C.handle("return_guns", function () { return { act: function () { return { count: api.returnGuns() }; } }; });
       api.commands = true;
     })();
+    // screenshot pass: your hands wear your CQC gloves here too (cqc.wear.v1, same site), as in the CQC game (pack glove: sage knit, dark palm)
+    (function gloves() {
+      var on = true; try { var w = JSON.parse(localStorage.getItem("cqc.wear.v1") || "null"); if (w && w.gloves104 === false) on = false; } catch (e) { }
+      if (!on) return;
+      var knit = new THREE.Color().setRGB(0.0229 * 1.6, 0.0241 * 1.6, 0.0171 * 1.6), done = new Set();
+      function tint() {
+        scene.traverse(function (o) {
+          if (!o.isMesh || !o.parent || !/^hand-/.test(o.parent.name)) return;
+          [].concat(o.material).forEach(function (m) {
+            if (done.has(m) || (m.name !== "skin" && m.name !== "nail")) return; done.add(m);
+            var ob = o.onBeforeRender; o.onBeforeRender = function () { m.color.copy(knit); if (ob) ob.apply(this, arguments); };   // the hand sets its skin tone every frame
+            m.color.copy(knit); m.roughness = m.name === "nail" ? 0.83 : 0.6; if ("sheen" in m) { m.sheen = 0.12; m.sheenColor && m.sheenColor.setRGB(0.04, 0.045, 0.035); } if ("clearcoat" in m) m.clearcoat = 0;
+          });
+        });
+      }
+      tint(); setInterval(tint, 2000);
+    })();
     api.ready = true;
     info("Range ready: " + api.types.map(function (t) { return t.label; }).join(", ") + ". Props app > Range, or say: spawn the AKM, set up the range.");
   });

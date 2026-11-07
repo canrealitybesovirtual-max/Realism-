@@ -1431,3 +1431,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Pose (RIDER_FIT, stance frame): hips on the seat, hands on the grips (turn with the bars), feet on the pegs, knees on the tank; sits up slow, tucks from ~30 to ~110 km/h; left foot to the ground when stopped; hangs off a little into a lean (hips and neck to the inside, inside knee opens).
 - Hidden in the garage showroom (no drive world); from the seat only legs and (computer) arms; VR draws its own arms.
 - Checked headless (SwiftShader): run on the R6, stopped (foot down), autopilot at 55 / 99 / 105 km/h, side / front / rear views, a 0.26 rad lean, cockpit view clear; no page errors. Not checked in a headset.
+
+## Screenshot consistency pass 2 (headless; headset check needed)
+- Interstate: patrol car interior is now really black (its cabin parts drop their tan textures, colour 0.028; gauges kept); the old x0.14 multiply still read tan under tunnel light. Lexus tail lens: wide 28 mm horizontal optic ribs and darker ends (celTailRibs) so it no longer reads as a flat red block. The "engine off" opening note goes once you drive (free runs, over 4 m/s).
+- CQC computer viewmodel: the sniper rig's brown leather sleeves are greyed (R.desat 1.5, so the uniform tint matches the AK / pistol rigs); aiming clips what is within 7 cm (16 cm on the sniper rig) of the eye: the AWM's ADS view was a sleeve, now the red dot with the hands. Pistols sit 5 cm higher at the hip (VM_HIP g17 / m1911: the hand was below the frame).
+- Studio range: your hands wear the CQC glove colours (cqc.wear.v1; off when gloves are off in CQC): dark sage, matte, low sheen.
+- Looked at, not changed: CQC rifles at the hip look steep (perspective; bore measured level), the pistol ADS arm comes in from the right (one-handed take), the M4 ADS support hand is open beside the handguard (AK take), the AKM ADS in Studio is a close cheek-weld view.

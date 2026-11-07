@@ -10337,6 +10337,20 @@ function celTailMaterial() {                                           // plain 
   return Atmos.patch(new THREE.MeshPhysicalMaterial({ color: new THREE.Color().setRGB(.16, .006, .005), roughness: .08, metalness: 0, clearcoat: 1, clearcoatRoughness: .03, side: THREE.DoubleSide,
     emissive: new THREE.Color().setRGB(1, .02, .012), emissiveIntensity: .02, envMapIntensity: 1.2, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -6 }), { key: 'celtail' });
 }
+/* screenshot pass: the plain lens read as a flat red block when lit. Wide horizontal optic ribs (28 mm, faded out below a pixel)
+   and a darker rim toward the lamp's ends give it depth; still no fine facets (they read as speckle). */
+function celTailRibs(m) {
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, r) => { prev?.call(m, sh, r);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vTlP;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvTlP = position;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vTlP;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      { float y = vTlP.y / .028, w = fwidth(y), rb = .5 + .5 * cos(6.2832 * y);
+        rb = mix(rb, .5, clamp(w * 2. - .5, 0., 1.));
+        float ax = abs(vTlP.x), e = smoothstep(.78, .5, ax) * .35 + .65;
+        totalEmissiveRadiance *= (.7 + .45 * rb) * e; diffuseColor.rgb *= .85 + .3 * rb; }`); };
+  const ck = m.customProgramCacheKey?.bind(m); m.customProgramCacheKey = () => (ck ? ck() : '') + '|tlrib'; return m;
+}
 function buildCelsior(car) {
   const D = SaloonData.player; if (!D) return null;
   const bin = b64bytes(D.bin), M = car.mats, group = new THREE.Group(); group.name = 'saloon97';
@@ -10374,7 +10388,7 @@ function buildCelsior(car) {
       for (let t = 0; t < I.length; t += 3) ((P.getZ(I[t]) + P.getZ(I[t + 1]) + P.getZ(I[t + 2])) / 3 > 1.5 ? rear : front).push(I[t], I[t + 1], I[t + 2]);
       if (rear.length) {
         const rg = celTailPush(g.clone().setIndex(rear)); g.setIndex(front);   // every shell (celTailOuter dropped triangles and left holes)
-        celTail ??= celTailMaterial();
+        celTail ??= celTailRibs(celTailMaterial());
         const cg = celTailCover(P, rear);                                // the smooth lens over the facets (the facets alone left gaps)
         const rm = new THREE.Mesh(rg, celTail); rm.castShadow = false; rm.receiveShadow = false; group.add(rm);   // kept for the wrap-round sides
         if (cg) { const cm = new THREE.Mesh(cg, celTail); cm.castShadow = cm.receiveShadow = false; group.add(cm); }
@@ -10545,7 +10559,7 @@ function buildGlbCar(car, id, opt = {}) {
       }
       o.material.userData.patched = true; Atmos.patch(o.material, { key: 'glbcar' + (o.material.transparent ? 't' : '') }); if (!o.material.transparent) grimeMat(o.material);
       if (!o.material.transparent && C.cabinMats?.test(nm)) { cabinOcclusion(o.material); cabinGrainOn(o.material, /^Siege$/.test(nm) ? 'leather' : 'plastic', .5);
-        if (C.blackCabin) { o.material.color.multiplyScalar(C.blackCabin); o.material.roughness = Math.max(o.material.roughness, .62); } }   // blacked-out interior   // police update: its cabin is shaded like the saloon's (+ grain)
+        if (C.blackCabin) { if (nm !== 'Speed') { o.material.map = null; o.material.color.setRGB(.028, .028, .03); o.material.needsUpdate = true; } else o.material.color.multiplyScalar(C.blackCabin); o.material.roughness = Math.max(o.material.roughness, .62); } }   // blacked-out interior   // police update: its cabin is shaded like the saloon's (+ grain)
       else if (!o.material.transparent && C.flash) cabinOcclusion(o.material, true); }                    // and its own beacon does not blow out its roof
     let geo = o.geometry;
     if (opt.own) { const st = C.strip?.filter(q => q.mat === nm); geo = st?.length ? glbStrip(geo, st.map(q => q.box)) : geo.clone(); if (geo === o.geometry) geo = geo.clone(); }
@@ -16828,7 +16842,7 @@ class App {
 
     if (this.state === 'run' && !this.vr?.presenting) {                // build 1.17: the page HUD is not seen in the headset
       const d = this.driveWorld, g = d.gearInfo;
-      this.hud.update(dt, { speed: d.v, gear: g.gear, rpm: g.rpm, aids: d.sim.aids, score: d.score, auto: d.autopilot.on, noteOn: this.noteClock < 9, mir: d.carObj.mirrors.hint, lockHint: this.input.device === 'keyboard' && !this.input.locked && (Math.abs(d.v) < 1 || this.runClock < 4) });
+      this.hud.update(dt, { speed: d.v, gear: g.gear, rpm: g.rpm, aids: d.sim.aids, score: d.score, auto: d.autopilot.on, noteOn: this.noteClock < 9 && !(this.noteFree && d.v > 4), mir: d.carObj.mirrors.hint, lockHint: this.input.device === 'keyboard' && !this.input.locked && (Math.abs(d.v) < 1 || this.runClock < 4) });
       this.hud.chase(d.chase?.hud || null);                            // police update
     }
     this.telemetry.update(dt, this.state === 'run' && this.settings.data.assists.telemetry && this.driveWorld?.sim?.telemetry ? this.driveWorld.sim : null);
@@ -16882,6 +16896,7 @@ class App {
     this.setWorld(this.driveWorld);
     this.audio.ensure();
     this.vaudio?.dispose(); this.vaudio = new VehicleAudio(this.audio, this.settings); this.vaudio.cab = this.carObj.cab;   // section 9: engine, tyres, wind, traffic, radio (build 1.28)
+    this.noteFree = !mode;   // screenshot pass
     if (mode === 'pursuit') this.hud.setNote(h('b', {}, 'Pursuit. '), 'A speeder is about to pass you. J runs the siren (wail, yelp, off) and the lights; G the lights alone. Stay close until he stops: box him in or nudge his rear quarter. Do not lose him.');
     else if (mode === 'wanted') this.hud.setNote(h('b', {}, 'Wanted. '), 'Patrol cars ride in the traffic ahead. Blow past one and the chase is on: they ram, cut you off and box you in. Lose them: 300 m clear for 8 s; stopped next to one, you are busted.');
     else this.hud.setNote(h('b', {}, 'On the hard shoulder, engine off. '), 'Turn the key with I (in VR: squeeze the key and twist). Wait for a gap, then join. Clean passes, near misses, cuts and splits build a chain; contact loses it. H sounds the horn, T shows telemetry, C changes camera, O lets the car drive.');
