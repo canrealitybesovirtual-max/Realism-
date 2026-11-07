@@ -871,18 +871,24 @@ function shardTexture() {
 }
 // grey abstract linework rug (apartment-10)
 function bedroomRugTexture() {
+  // tone-on-tone distressed weave: a cream ground, soft tonal clouds, many fine broken grey
+  // strokes along the warp and weft (apartment-10's rug, an original pattern)
   const W = 1024, H = 1024, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const c = cv.getContext('2d');
   let s = 23; const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
-  c.fillStyle = '#e4dfd6'; c.fillRect(0, 0, W, H);
-  c.strokeStyle = 'rgba(120,116,110,0.55)'; c.lineCap = 'round';
-  for (let k = 0; k < 220; k++) { c.lineWidth = 2 + rnd() * 6; c.beginPath(); const x = rnd() * W, y = rnd() * H, a = (rnd() < 0.5 ? 0 : Math.PI / 2) + (rnd() - 0.5) * 0.25, L = 30 + rnd() * 160; c.moveTo(x, y); c.lineTo(x + Math.cos(a) * L, y + Math.sin(a) * L); c.stroke(); }
+  c.fillStyle = '#e7e1d6'; c.fillRect(0, 0, W, H);
+  for (let k = 0; k < 40; k++) { const g = c.createRadialGradient(rnd() * W, rnd() * H, 0, rnd() * W, rnd() * H, 120 + rnd() * 220); g.addColorStop(0, `rgba(${170 + rnd() * 30},${165 + rnd() * 30},${158 + rnd() * 30},0.18)`); g.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = g; c.fillRect(0, 0, W, H); }
+  c.lineCap = 'butt';
+  for (let k = 0; k < 2600; k++) {
+    const hz = rnd() < 0.55, x = rnd() * W, y = rnd() * H, L = 8 + rnd() * 70;
+    c.strokeStyle = `rgba(${95 + rnd() * 40},${92 + rnd() * 40},${88 + rnd() * 40},${0.08 + rnd() * 0.22})`; c.lineWidth = 1 + rnd() * 2.2;
+    c.beginPath(); c.moveTo(x, y); if (hz) c.lineTo(x + L, y + (rnd() - 0.5) * 2); else c.lineTo(x + (rnd() - 0.5) * 2, y + L); c.stroke();
+  }
   const img = c.getImageData(0, 0, W, H), d = img.data;
-  for (let i = 0; i < d.length; i += 4) { const n = (rnd() - 0.5) * 22; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4, n = (rnd() - 0.5) * 16 + ((x + y * 3) % 5 < 2 ? -4 : 3); d[i] += n; d[i + 1] += n; d[i + 2] += n; }
   c.putImageData(img, 0, 0);
-  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / 4, 1 / 4); return t;
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / 2.5, 1 / 2.5); return t;
 }
-
 // ---- materials the furniture adds ----------------------------------------------------------------
 function furnitureMaterials(M, Q) {
   const pc = !Q.quest;
@@ -921,7 +927,7 @@ function furnitureMaterials(M, Q) {
   M.lineArt1 = new THREE.MeshStandardMaterial({ map: lineArtTexture(3), roughness: 0.9 });
   M.lineArt2 = new THREE.MeshStandardMaterial({ map: lineArtTexture(17), roughness: 0.9 });
   M.shardArt = new THREE.MeshStandardMaterial({ map: shardTexture(), roughness: 0.8 });
-  M.bedRug = new THREE.MeshStandardMaterial({ map: bedroomRugTexture(), roughness: 1 });
+  M.bedRug = new THREE.MeshStandardMaterial({ map: bedroomRugTexture(), normalMap: M.rug.normalMap, normalScale: new THREE.Vector2(1.6, 1.6), roughness: 1 });
   M.lacquerWhite = phys({ color: '#ece7de', roughness: 0.3 }, { clearcoat: 0.8, clearcoatRoughness: 0.08 });
   M.steel = new THREE.MeshStandardMaterial({ color: '#b9b7b2', metalness: 1, roughness: 0.28 });
   M.sinkDark = new THREE.MeshStandardMaterial({ color: '#2a2a29', metalness: 0.6, roughness: 0.35 });
@@ -931,6 +937,10 @@ function furnitureMaterials(M, Q) {
   M.ledStrip.userData = { shadow: 'none' };
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
   M.settingBed = new THREE.MeshStandardMaterial({ color: '#4a4540', roughness: 0.9 });
+  M.marbleHoned = M.marbleGrey.isMeshPhysicalMaterial ? new THREE.MeshStandardMaterial({ map: M.marbleGrey.map, normalMap: M.marbleGrey.normalMap, roughnessMap: M.marbleGrey.roughnessMap, roughness: 2.2 }) : M.marbleGrey.clone();
+  if (!M.marbleGrey.isMeshPhysicalMaterial) M.marbleHoned.roughness = 2.2;
+  // textured bronze wallcovering (grasscloth-like): the linen scan's weave, dark bronze, metallic sheen
+  M.wallcovering = new THREE.MeshStandardMaterial({ map: M.linen.map, normalMap: M.linen.normalMap, roughnessMap: M.linen.roughnessMap, color: '#6b5440', metalness: 0.35, roughness: 0.9 });
   M.sheer = M.linen.clone(); M.sheer.transparent = true; M.sheer.opacity = 0.5; M.sheer.depthWrite = false; M.sheer.userData = { shadow: 'none', order: 4 };
 }
 
@@ -1086,17 +1096,24 @@ export function furnish(M, Q) {
   toilet(B, M, 3.476, F2, 12.0, Math.PI / 2);
   builtInTub(B, M, 3.48, 12.55, 4.3, 14.31, F2, M.travertine);
   // third bath (floor two, grey marble to chair height, as apartment-05)
-  clad(B, M.marbleGrey, [
+  clad(B, M.marbleHoned, [
     ['x', 6.92, 14.75, 16.7, F2, F2 + 1.2, 1], ['x', 9.6, 14.75, 16.7, F2, F2 + 1.2, -1],
     ['z', 14.75, 6.92, 7.5, F2, F2 + 1.2, 1], ['z', 14.75, 8.35, 9.6, F2, F2 + 1.2, 1],
     ['z', 16.7, 6.92, 7.9, F2, F2 + 1.2, -1], ['z', 16.7, 8.5, 9.6, F2, F2 + 1.2, -1],
   ], 0.016, [0.6, 0.6]);
+  clad(B, M.wallcovering, [
+    ['x', 6.92, 14.75, 16.7, F2 + 1.2, C2c, 1], ['x', 9.6, 14.75, 16.7, F2 + 1.2, C2c, -1],
+    ['z', 14.75, 6.92, 7.5, F2 + 1.2, C2c, 1], ['z', 14.75, 8.35, 9.6, F2 + 1.2, C2c, 1],
+    ['z', 16.7, 6.92, 7.9, F2 + 1.2, C2c, -1], ['z', 16.7, 8.5, 9.6, F2 + 1.2, C2c, -1], ['z', 14.75, 7.5, 8.35, F2 + 2.44, C2c, 1],
+  ], 0.004, [0.9, 3.6]);
   vanity(B, M, 16.42, F2, 8.9, -Math.PI / 2, 0.9, M.marbleGrey, M.woodMid);
-  // powder room (floor one, grey marble)
-  clad(B, M.marbleGrey, [
-    ['z', 6.18, 12.95, 14.18, L1v, 3.0, 1], ['x', 12.95, 6.18, 7.81, L1v, 3.0, 1], ['x', 14.18, 6.18, 7.81, L1v, 3.0, -1],
-    ['z', 7.81, 12.95, 13.25, L1v, 3.0, -1], ['z', 7.81, 14.05, 14.18, L1v, 3.0, -1], ['z', 7.81, 13.25, 14.05, DH1v - 0.2, 3.0, -1],
-  ], 0.016, [0.6, 0.6]);
+  // powder room (floor one, apartment-05): honed grey marble to 1.2 m, a textured bronze
+  // wallcovering above
+  const pw = [['z', 6.18, 12.95, 14.18, 1], ['x', 12.95, 6.18, 7.81, 1], ['x', 14.18, 6.18, 7.81, -1], ['z', 7.81, 12.95, 13.25, -1], ['z', 7.81, 14.05, 14.18, -1]];
+  clad(B, M.marbleHoned, pw.map(([a, f, s0, s1, d]) => [a, f, s0, s1, L1v, 1.2, d]), 0.016, [0.6, 0.6]);
+  clad(B, M.wallcovering, pw.map(([a, f, s0, s1, d]) => [a, f, s0, s1, 1.2, 3.0, d]), 0.004, [0.9, 3.0]);
+  clad(B, M.wallcovering, [['z', 7.81, 13.25, 14.05, DH1v - 0.2, 3.0, -1]], 0.004, [0.9, 3.0]);
+  B.box(6.18, 1.2, 12.95, 7.81, 1.215, 12.975, M.bronzeLight, false); B.box(6.18, 1.2, 14.155, 7.81, 1.215, 14.18, M.bronzeLight, false);
   vanity(B, M, 6.47, 0, 13.55, Math.PI / 2, 0.75, M.marbleGrey, M.woodDark);
 
   const meshes = B.finish(group);

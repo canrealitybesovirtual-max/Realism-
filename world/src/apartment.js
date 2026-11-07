@@ -430,6 +430,22 @@ export function buildApartment(M, Q) {
     [10.3, 14.7, 16.4, ZS - 0.8], [8.1, 7.1, 10.1, 9.0], [3.7, 10.0, 5.9, 14.0], [15.0, 7.0, 16.4, 9.4], [13.5, 7.0, 14.4, 14.0]])
     downlights(x0, z0, x1, z1, C2, 1.8);
 
+  // tray ceilings with LED coves (apartment-08, -10, -04): a 45 cm band dropped 22 cm round the
+  // room, its inner face carrying a lit strip that washes the raised centre
+  const tray = (x0, z0, x1, z1, top, w = 0.45, drop = 0.22) => {
+    const y0 = top - drop;
+    B.box(x0, y0, z0, x1, top, z0 + w, M.ceiling, false); B.box(x0, y0, z1 - w, x1, top, z1, M.ceiling, false);
+    B.box(x0, y0, z0 + w, x0 + w, top, z1 - w, M.ceiling, false); B.box(x1 - w, y0, z0 + w, x1, top, z1 - w, M.ceiling, false);
+    const e = 0.012, h0 = top - 0.05, h1 = top - 0.02;
+    B.box(x0 + w, h0, z0 + w - 0.004, x1 - w, h1, z0 + w + e - 0.004, M.light, false); B.box(x0 + w, h0, z1 - w - e + 0.004, x1 - w, h1, z1 - w + 0.004, M.light, false);
+    B.box(x0 + w - 0.004, h0, z0 + w, x0 + w + e - 0.004, h1, z1 - w, M.light, false); B.box(x1 - w - e + 0.004, h0, z0 + w, x1 - w + 0.004, h1, z1 - w, M.light, false);
+  };
+  tray(0.9, 0.6, 4.84, 6.72, C2);          // primary bath
+  tray(5.04, 0.6, 12.62, 6.72, C2);        // primary bedroom
+  tray(12.78, 0.6, 16.7, 6.72, C2);        // library
+  tray(XW, 14.48, 7.81, ZS - 0.6, C2);     // bedroom two
+  tray(9.98, 14.48, XE, ZS - 0.6, C2);     // bedroom three
+
   const meshes = B.finish(group);
   return { group, meshes, colliders: B.colliders, lamps, grilles };
 }

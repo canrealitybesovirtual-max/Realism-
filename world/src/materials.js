@@ -115,8 +115,8 @@ const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; }
 // colour-matched to the reference photos). metres = what one texture repeat covers.
 const SCANS = {
   floor_herringbone: [1.97990, 2.37588], floor_versailles: [1.5, 1.5], floor_planks: [2.4, 2.4],
-  stone_travertine: [2.4, 2.4], stone_onyx: [2.4, 2.4], stone_marble: [2.4, 2.4], stone_greymarble: [2.4, 2.4],
-  stone_cream: [2.4, 2.4], fabric_boucle: [0.3, 0.3], fabric_rug: [1.7, 1.7], fabric_linen: [1.0, 1.0],
+  stone_travertine: [4.8, 4.8], stone_onyx: [4.8, 4.8], stone_marble: [4.8, 4.8], stone_greymarble: [4.8, 4.8],
+  stone_cream: [4.8, 4.8], fabric_boucle: [0.3, 0.3], fabric_rug: [1.7, 1.7], fabric_linen: [1.0, 1.0],
   wood_bleached: [1.0, 1.0], wood_dark: [1.0, 1.0], wood_mid: [1.0, 1.0],
 };
 // one loader for all of them; M.ready resolves when every scan has arrived (the reflection

@@ -282,7 +282,7 @@ def planks(name='floor_planks', T=2.4, W=0.2, ppm=853):
 
 
 # ---- stones --------------------------------------------------------------------------------
-def stone(name, scan, metres_scan, slab, tile, target_lum, chroma, contrast, rough_rng, rot=0, ppm=853, seed=1, cut='seq'):
+def stone(name, scan, metres_scan, slab, tile, target_lum, chroma, contrast, rough_rng, rot=0, ppm=640, seed=1, cut='seq'):
     """Cut a scan into slabs, colour-matched: luminance median and chroma from the photo, scan
     detail kept (scaled by contrast). cut 'book': one window mirrored slab to slab (bookmatched,
     as onyx and marble are laid); 'seq': consecutive windows along the block (vein-cut stone)."""
@@ -309,7 +309,11 @@ def stone(name, scan, metres_scan, slab, tile, target_lum, chroma, contrast, rou
     uid, inv = np.unique(sid, return_inverse=True); inv = inv.reshape(sid.shape)
     lu = u - su * slab[0]; lv = v - sv * slab[1]
     if cut == 'book':
-        ox, oy = R.random() * src_px, R.random() * src_px
+        # each 2 x 2 group of slabs is one bookmatched set from its own window of the block
+        gid = (np.floor(su / 2) * 31 + np.floor(sv / 2) * 7).astype(np.int64)
+        ug, gi = np.unique(gid, return_inverse=True); gi = gi.reshape(gid.shape)
+        oxs, oys = R.random(len(ug)) * src_px, R.random(len(ug)) * src_px
+        ox, oy = oxs[gi], oys[gi]
         mx = np.where(su % 2 == 1, -1.0, 1.0); my = np.where(sv % 2 == 1, -1.0, 1.0)
         sx = ox + np.where(mx < 0, slab[0] - lu, lu) * ppm; sy = oy + np.where(my < 0, slab[1] - lv, lv) * ppm
     else:
@@ -396,15 +400,15 @@ JOBS = {
     'floor_versailles': versailles,
     'floor_planks': planks,
     # vein-cut silver travertine (apartment-03): slabs 0.6 x 1.2 m with the bands vertical
-    'stone_travertine': lambda: stone('stone_travertine', 'travertine_vein', 0.8, (0.6, 1.2), (2.4, 2.4), 0.56, (0.343, 0.335, 0.322), 0.75, (0.28, 0.42), rot=1, seed=3),
+    'stone_travertine': lambda: stone('stone_travertine', 'travertine_vein', 0.8, (0.6, 1.2), (4.8, 4.8), 0.56, (0.343, 0.335, 0.322), 0.75, (0.28, 0.42), rot=1, seed=3),
     # white onyx (apartment-08): big slabs, warm cream with amber veins
-    'stone_onyx': lambda: stone('stone_onyx', 'onyx_white', 1.2, (1.2, 1.2), (2.4, 2.4), 0.66, (0.357, 0.334, 0.309), 0.5, (0.05, 0.12), seed=5, cut='book'),
+    'stone_onyx': lambda: stone('stone_onyx', 'onyx_white', 1.2, (1.2, 1.2), (4.8, 4.8), 0.66, (0.357, 0.334, 0.309), 0.5, (0.05, 0.12), seed=5, cut='book'),
     # white marble (stair treads, landing)
-    'stone_marble': lambda: stone('stone_marble', 'marble_white', 1.2, (1.2, 0.6), (2.4, 2.4), 0.70, (0.338, 0.334, 0.328), 1.0, (0.06, 0.14), seed=7, cut='book'),
+    'stone_marble': lambda: stone('stone_marble', 'marble_white', 1.2, (1.2, 0.6), (4.8, 4.8), 0.70, (0.338, 0.334, 0.328), 1.0, (0.06, 0.14), seed=7, cut='book'),
     # grey marble (apartment-05)
-    'stone_greymarble': lambda: stone('stone_greymarble', 'marble_grey', 1.2, (0.6, 0.6), (2.4, 2.4), 0.24, (0.343, 0.333, 0.324), 1.2, (0.07, 0.15), seed=9, cut='book'),
+    'stone_greymarble': lambda: stone('stone_greymarble', 'marble_grey', 1.2, (0.6, 0.6), (4.8, 4.8), 0.24, (0.343, 0.333, 0.324), 1.2, (0.07, 0.15), seed=9, cut='book'),
     # cream travertine (plinths, table tops; apartment-17)
-    'stone_cream': lambda: stone('stone_cream', 'travertine_cream', 1.2, (1.2, 1.2), (2.4, 2.4), 0.55, (0.357, 0.334, 0.309), 1.0, (0.35, 0.5), seed=11, cut='book'),
+    'stone_cream': lambda: stone('stone_cream', 'travertine_cream', 1.2, (1.2, 1.2), (4.8, 4.8), 0.55, (0.357, 0.334, 0.309), 1.0, (0.35, 0.5), seed=11, cut='book'),
     # bleached oak (coffee tables, plinths; apartment-19, -17), dark wire-brushed oak (vanity,
     # shelving; apartment-03, -13), mid oak (bed, consoles)
     'wood_bleached': lambda: veneer('wood_bleached', 'oak_washed', 0, 0.42, (0.382, 0.333, 0.285), 1.4, (0.45, 0.6)),
