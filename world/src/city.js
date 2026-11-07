@@ -18,7 +18,7 @@ import * as THREE from 'three';
 export const STREET = -360;                              // street level relative to floor one
 
 export const SUN = new THREE.Vector3(-0.42, 0.62, 0.66).normalize();   // afternoon sun from the south-west
-const ZENITH = new THREE.Color('#3f6eb5'), HORIZON = new THREE.Color('#cbd7e2'), HAZE = new THREE.Color('#b8c4cd');
+const ZENITH = new THREE.Color('#2a5fb8'), HORIZON = new THREE.Color('#bcd2ea'), HAZE = new THREE.Color('#c3d3e3');
 
 function skyMaterial() {
   return new THREE.ShaderMaterial({
@@ -29,7 +29,7 @@ function skyMaterial() {
       void main(){
         vec3 d = normalize(vDir);
         float h = d.y;
-        vec3 c = mix(uHor, uZen, pow(clamp(h, 0.0, 1.0), 0.55));
+        vec3 c = mix(uHor, uZen, pow(clamp(h, 0.0, 1.0), 0.38));
         c = mix(c, uHaze, smoothstep(0.02, -0.12, h));
         float s = max(dot(d, uSun), 0.0);
         c += vec3(1.0, 0.93, 0.8) * (pow(s, 600.0) * 30.0 + pow(s, 12.0) * 0.18);
@@ -192,7 +192,7 @@ function buildingMaterial(CU) {
           vec3 gT = vec3(0.045, 0.05, 0.055);
           if (bSt == 1) { lo = vec2(0.025, 0.15); hi = vec2(0.975, 0.985); rev = 0.04; gT = mix(vec3(0.2, 0.25, 0.29), vec3(0.3, 0.3, 0.27), vInfo2.z); }
           else if (bSt == 2) { lo = vec2(0.0, 0.27); hi = vec2(1.0, 0.94); rev = 0.9; }
-          else if (bSt == 3) { lo = vec2(0.17, 0.2); hi = vec2(0.83, 0.84); rev = 0.35; gT = vec3(0.06, 0.07, 0.075); }
+          else if (bSt == 3) { lo = vec2(0.12, 0.16); hi = vec2(0.88, 0.86); rev = 0.45; gT = vec3(0.05, 0.055, 0.06); }
           else if (bSt == 4) { lo = vec2(0.09, 0.08); hi = vec2(0.91, 0.92); rev = 0.6; gT = vec3(0.06, 0.07, 0.08); }
           else if (bSt == 5) { lo = vec2(0.34, 0.05); hi = vec2(0.95, 0.97); rev = 0.35; gT = vec3(0.07, 0.07, 0.065); }
           if (bSt == 0) {                                  // masonry bays grouped in threes: wider piers between groups
@@ -482,14 +482,14 @@ function parkMaterial(U) {
         float leafN = cN21(pp * 1.3) * 0.6 + cN21(pp * 3.7) * 0.4;
         vec3 pc;
         if (best > 0.0) {
-          vec3 g1 = vec3(0.055, 0.1, 0.035), g2 = vec3(0.11, 0.15, 0.04), g3 = vec3(0.07, 0.1, 0.06);
+          vec3 g1 = vec3(0.06, 0.11, 0.035), g2 = vec3(0.15, 0.2, 0.05), g3 = vec3(0.09, 0.13, 0.06);
           vec3 leaf = pid < 0.45 ? g1 : pid < 0.8 ? g2 : g3;
           float aut = smoothstep(0.62, 0.8, cN21(pp / 120.0 + 3.0));
           if (pid > 0.86) leaf = mix(leaf, mix(vec3(0.3, 0.24, 0.06), vec3(0.3, 0.12, 0.04), cH21(vec2(pid, 1.0))), 0.5 + 0.5 * aut);
           pc = leaf * (0.7 + 0.6 * leafN) * mix(0.55, 1.0, sqrt(pq));
           pN = normalize(pN + vec3(leafN - 0.5, 0.0, cN21(pp * 1.3 + 4.0) - 0.5) * 0.9);
         } else {
-          vec3 grass = mix(vec3(0.13, 0.2, 0.06), vec3(0.16, 0.24, 0.07), step(0.5, fract(pp.x / 6.0))) * (0.9 + 0.2 * cN21(pp * 0.3));
+          vec3 grass = mix(vec3(0.19, 0.25, 0.07), vec3(0.22, 0.28, 0.08), step(0.5, fract(pp.x / 6.0))) * (0.85 + 0.3 * cN21(pp * 0.25));
           vec3 under = vec3(0.05, 0.06, 0.03) * (0.8 + 0.4 * leafN);
           pc = mix(under, grass, max(lawn, meadow));
           // paths where the ground is open: the 0.5 contour of a noise field, constant width
@@ -542,7 +542,7 @@ export function buildCity(scene, renderer, Q) {
     uTime: { value: 0 }, uSunDir: { value: SUN },
     uShN: { value: null }, uShF: { value: null }, uShMN: { value: new THREE.Matrix4() }, uShMF: { value: new THREE.Matrix4() },
     uShK: { value: new THREE.Vector4() }, uShOn: { value: 0 },
-    uHazeC: { value: HORIZON.clone().lerp(HAZE, 0.5) }, uHazeSun: { value: new THREE.Color(1.0, 0.92, 0.8) }, uHazeK: { value: 2.4e-4 },
+    uHazeC: { value: HORIZON.clone().lerp(HAZE, 0.3).multiplyScalar(0.95) }, uHazeSun: { value: new THREE.Color(1.0, 0.92, 0.8) }, uHazeK: { value: 0.85e-4 },
     uStreetH: { value: STREET }, uSunDirC: { value: SUN },
   };
 
@@ -589,7 +589,7 @@ export function buildCity(scene, renderer, Q) {
   const masonry = ['#cdbfa9', '#bcae98', '#a89a86', '#988b7a', '#b5ab9d', '#a59e94', '#c6bcae', '#8f8476', '#b8a894', '#9d9284'].map((c) => new THREE.Color(c));
   const brick = ['#7e6252', '#8b6e5c', '#735a4c', '#90786a', '#6e5649'].map((c) => new THREE.Color(c));
   const glassC = ['#7c8287', '#6b7177', '#8a8f92', '#5f656a'].map((c) => new THREE.Color(c));
-  const pale = ['#b9b4aa', '#c3beb3', '#a9a59c', '#cbc6bb'].map((c) => new THREE.Color(c));
+  const pale = ['#a9a49a', '#b3aea3', '#9c988f', '#bab5aa'].map((c) => new THREE.Color(c));
   const pick = (a) => a[Math.floor(R() * a.length)];
   const heightAt = (x, z) => {
     const nearPark = (z < PARK.z1 + 40 && z > PARK.z0 - 40) && (Math.abs(x - PARK.x0) < 320 || Math.abs(x - PARK.x1) < 320);
@@ -597,7 +597,7 @@ export function buildCity(scene, renderer, Q) {
     if (z >= 2600 && z < 5200) return 22 + Math.pow(R(), 2) * 80;
     if (z >= 5200) { let h = 50 + Math.pow(R(), 1.5) * 170; if (R() < 0.05) h = 240 + R() * 160; return h; }
     if (z < -4300) return 15 + R() * 35;
-    return nearPark ? 45 + R() * 90 : 22 + Math.pow(R(), 1.5) * 55;
+    return nearPark ? (R() < 0.08 ? 90 + R() * 70 : 48 + R() * 26) : 22 + Math.pow(R(), 1.5) * 55;
   };
   const styleFor = (h) => {
     const r = R();
@@ -621,7 +621,7 @@ export function buildCity(scene, renderer, Q) {
       const near = Math.hypot((bx0 + bx1) / 2, z) < 2600;
       let px = bx0;
       while (px < bx1 - 8) {
-        const w = Math.min(bx1 - px, (near ? 9 : 18) + R() * (far ? 80 : near ? 30 : 45));
+        const w = Math.min(bx1 - px, (near ? 9 : far ? 70 : 18) + R() * (far ? 90 : near ? 30 : 45));
         const cx = px + w / 2, cz = z + ST / 2, D = ST - stW - 2;
         if (near && R() < 0.55) {                         // two buildings back to back
           addLot(cx, cz - D / 4 - 0.5, w - 2, D / 2 - 1, heightAt(px, z));
@@ -644,7 +644,7 @@ export function buildCity(scene, renderer, Q) {
   // ---- parts ----------------------------------------------------------------------------------
   const FH = [3.4, 4.0, 3.05, 3.8, 4.7, 4.6], BAY = [1.9, 1.5, 2.6, 1.7, 4.7, 2.3];
   // detail radii: full silhouettes near, tiers further out, one box at the horizon (Quest nearer)
-  const NEAR_R = Q.quest ? 1600 : 2600, MID_R = Q.quest ? 3600 : 6000, TANK_R = Q.quest ? 1000 : 1700;
+  const NEAR_R = Q.quest ? 1600 : 2600, MID_R = Q.quest ? 3200 : 4500, TANK_R = Q.quest ? 1000 : 1700;
   const parts = [], tanks = [];
   const part = (x, y0, z, w, h, d, col, st, seed, kind, extra = {}) => {
     if (w < 0.5 || d < 0.5 || h < 0.3) return;
@@ -699,7 +699,7 @@ export function buildCity(scene, renderer, Q) {
       if (crown) part(b.x, y0 + top, b.z, b.w - 2 * (i + 2), b.h - top, b.d - 2 * (i + 2), b.col, b.st, b.seed, 0, { shop: 1 });
       const cw = crown ? b.w - 2 * (i + 2) : b.w - 2 * i, cd = crown ? b.d - 2 * (i + 2) : b.d - 2 * i;
       if (near) part(b.x, y0 + b.h, b.z, cw * 0.7, 4.5 + R() * 2, cd * 0.7, b.col, b.st, b.seed, 2);
-      if (b.h > 260 && R() < 0.3) part(b.x, y0 + b.h + 6, b.z, 1.0, 25 + R() * 45, 1.0, b.col, b.st, b.seed, 2);
+      if (b.h > 280 && R() < 0.12) part(b.x, y0 + b.h + 6, b.z, 0.8, 12 + R() * 20, 0.8, b.col, b.st, b.seed, 2);
       return;
     }
     if (b.st === 2 && b.h > 45 && R() < 0.4 && insetOk(3)) {
