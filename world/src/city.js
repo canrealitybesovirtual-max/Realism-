@@ -194,7 +194,8 @@ function buildingMaterial(CU) {
           vec2 lo = vec2(0.22, 0.24), hi = vec2(0.78, 0.82);
           float rev = 0.25;
           vec3 gT = vec3(0.045, 0.05, 0.055);
-          if (bSt == 1) { lo = vec2(0.025, 0.15); hi = vec2(0.975, 0.985); rev = 0.04; gT = mix(vec3(0.2, 0.25, 0.29), vec3(0.3, 0.3, 0.27), vInfo2.z); }
+          if (bSt == 1) { lo = vec2(0.025, 0.15); hi = vec2(0.975, 0.985); rev = 0.04;
+            gT = vInfo2.z < 0.4 ? mix(vec3(0.2, 0.25, 0.29), vec3(0.3, 0.3, 0.29), vInfo2.z * 2.5) : vInfo2.z < 0.75 ? vec3(0.16, 0.26, 0.25) : vec3(0.3, 0.25, 0.18); }
           else if (bSt == 2) { lo = vec2(0.0, 0.27); hi = vec2(1.0, 0.94); rev = 0.9; }
           else if (bSt == 3) { lo = vec2(0.12, 0.16); hi = vec2(0.88, 0.86); rev = 0.45; gT = vec3(0.05, 0.055, 0.06); }
           else if (bSt == 4) { lo = vec2(0.09, 0.08); hi = vec2(0.91, 0.92); rev = 0.6; gT = vec3(0.06, 0.07, 0.08); }
@@ -489,11 +490,11 @@ function parkMaterial(U) {
           vec3 g1 = vec3(0.06, 0.11, 0.035), g2 = vec3(0.15, 0.2, 0.05), g3 = vec3(0.09, 0.13, 0.06);
           vec3 leaf = pid < 0.45 ? g1 : pid < 0.8 ? g2 : g3;
           float aut = smoothstep(0.62, 0.8, cN21(pp / 120.0 + 3.0));
-          if (pid > 0.86) leaf = mix(leaf, mix(vec3(0.3, 0.24, 0.06), vec3(0.3, 0.12, 0.04), cH21(vec2(pid, 1.0))), 0.5 + 0.5 * aut);
+          if (pid > 0.93) leaf = mix(leaf, mix(vec3(0.24, 0.22, 0.06), vec3(0.22, 0.12, 0.04), cH21(vec2(pid, 1.0))), 0.35 + 0.4 * aut);
           pc = leaf * (0.7 + 0.6 * leafN) * mix(0.55, 1.0, sqrt(pq));
           pN = normalize(pN + vec3(leafN - 0.5, 0.0, cN21(pp * 1.3 + 4.0) - 0.5) * 0.9);
         } else {
-          vec3 grass = mix(vec3(0.19, 0.25, 0.07), vec3(0.22, 0.28, 0.08), step(0.5, fract(pp.x / 6.0))) * (0.85 + 0.3 * cN21(pp * 0.25));
+          vec3 grass = mix(vec3(0.15, 0.21, 0.06), vec3(0.17, 0.23, 0.065), step(0.5, fract(pp.x / 6.0))) * (0.85 + 0.3 * cN21(pp * 0.25));
           vec3 under = vec3(0.05, 0.06, 0.03) * (0.8 + 0.4 * leafN);
           pc = mix(under, grass, max(lawn, meadow));
           // paths where the ground is open: the 0.5 contour of a noise field, constant width
@@ -582,7 +583,9 @@ export function buildCity(scene, renderer, Q) {
   strip(PARK.x0, PARK.x1, PARK.z0, PARK.z1, parkMaterial(U), G);
   const lakeMat = waterMaterial(U, true); lakeMat.envMap = scene.environment;
   for (const [lx, lz, rx, rz] of [[0, -2700, 330, 420], [-60, -1050, 230, 120], [300, -330, 60, 40]]) {
-    const lake = new THREE.Mesh(new THREE.CircleGeometry(1, 48), lakeMat);
+    const lg = new THREE.CircleGeometry(1, 64), lp = lg.attributes.position;
+    for (let i = 1; i < lp.count; i++) { const a = Math.atan2(lp.getY(i), lp.getX(i)); const k = 1 + 0.12 * Math.sin(a * 3 + lx) + 0.07 * Math.sin(a * 7 + lz * 0.01) + 0.04 * Math.sin(a * 13); lp.setXY(i, lp.getX(i) * k, lp.getY(i) * k); }
+    const lake = new THREE.Mesh(lg, lakeMat);
     lake.scale.set(rx, rz, 1); lake.rotation.x = -Math.PI / 2; lake.position.set(lx, G + 0.3, lz); world.add(lake);
   }
 
@@ -592,7 +595,7 @@ export function buildCity(scene, renderer, Q) {
   // taupe, limestone and cool greys, muted brick; nothing saturated
   const masonry = ['#cdbfa9', '#bcae98', '#a89a86', '#988b7a', '#b5ab9d', '#a59e94', '#c6bcae', '#8f8476', '#b8a894', '#9d9284'].map((c) => new THREE.Color(c));
   const brick = ['#7e6252', '#8b6e5c', '#735a4c', '#90786a', '#6e5649'].map((c) => new THREE.Color(c));
-  const glassC = ['#7c8287', '#6b7177', '#8a8f92', '#5f656a'].map((c) => new THREE.Color(c));
+  const glassC = ['#7c8287', '#6b7177', '#8a8f92', '#5f656a', '#6f8584', '#7f7466'].map((c) => new THREE.Color(c));
   const pale = ['#a9a49a', '#b3aea3', '#9c988f', '#bab5aa'].map((c) => new THREE.Color(c));
   const pick = (a) => a[Math.floor(R() * a.length)];
   const heightAt = (x, z) => {
@@ -616,7 +619,11 @@ export function buildCity(scene, renderer, Q) {
   for (let z = -11000; z < 9400; z += ST) {
     const xw = westShore(z) + 40, xe = eastShore(z) - 40;
     for (let x = Math.floor(xw / AV) * AV; x < xe; x += AV) {
-      const bx0 = Math.max(x + avW / 2, xw), bx1 = Math.min(x + AV - avW / 2, xe);
+      let bx0 = Math.max(x + avW / 2, xw), bx1 = Math.min(x + AV - avW / 2, xe);
+      if (z + ST > PARK.z0 && z < PARK.z1) {                // Central Park West / Fifth Avenue: the streetwall stops at the park avenue
+        if (bx1 > PARK.x0 - 15 && bx0 < PARK.x0) bx1 = PARK.x0 - 15;
+        if (bx0 < PARK.x1 + 15 && bx1 > PARK.x1) bx0 = PARK.x1 + 15;
+      }
       if (bx1 - bx0 < 30) continue;
       if (inPark((bx0 + bx1) / 2, z + ST / 2, 10)) continue;
       if (Math.abs(z) < 60 && bx0 < 30 && bx1 > -10) continue;   // our own block: the tower stands here
@@ -697,7 +704,7 @@ export function buildCity(scene, renderer, Q) {
       const ph = 14 + R() * 12, i = 3 + R() * 3;
       part(b.x, y0, b.z, b.w, ph, b.d, b.col, b.st, b.seed, 0, { tint: b.seed });
       if (dist < CLOSE_R) trim(b, b.x, b.z, b.w, b.d, y0 + ph - 0.6, 0.6, 0.2);
-      const crown = R() < 0.3 && b.h > 160 && insetOk(i + 2);
+      const crown = R() < 0.55 && b.h > 140 && insetOk(i + 2);
       const top = crown ? b.h * (0.9 + 0.05 * R()) : b.h;
       part(b.x, y0 + ph, b.z, b.w - 2 * i, top - ph, b.d - 2 * i, b.col, b.st, b.seed, 0, { shop: 1 });
       if (crown) part(b.x, y0 + top, b.z, b.w - 2 * (i + 2), b.h - top, b.d - 2 * (i + 2), b.col, b.st, b.seed, 0, { shop: 1 });
