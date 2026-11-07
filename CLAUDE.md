@@ -1419,3 +1419,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## Screenshot bug hunt (headless)
 - CQC safe room and room 1, Interstate menu / run / cockpit: no page errors, no frame errors.
 - Fixed: the Lexus tail lenses (celTailMaterial) glowed salmon-orange with the lamps on (emissive 1.4 tone-mapped toward orange) and at 0.3 with them off. Now unlit 0.02 on a darker red, lamps 0.38, brake +1.1: deep red in the tunnel (checked by screenshot).
+
+## Smooth turning everywhere (headset check needed)
+- Studio (and Rally walking): new UI Settings > VR "Turning (right stick)" (vrTurn, default Smooth; Snap 30° = the old turn). Bundle locomotion: smooth = snapTurn by (|x| - 0.15) / 0.85 x 1.92 rad/s x dt each frame (turns about the head).
+- Interstate garage walk: vr.turn (Settings > VR, default smooth), same speed; snap keeps 30°.
+- CQC: already had COMFORT > Turning Smooth (110 deg/s); new saves now start on Smooth (saved choices kept).
+- Checked: syntax parse only.
