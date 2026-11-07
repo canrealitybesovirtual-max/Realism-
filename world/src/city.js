@@ -593,10 +593,10 @@ export function buildCity(scene, renderer, Q) {
   const R = rng(1957), lots = [];
   // palette from the view photos (k-means of the lit facades in apartment-16 / -21): cream, tan,
   // taupe, limestone and cool greys, muted brick; nothing saturated
-  const masonry = ['#cdbfa9', '#bcae98', '#a89a86', '#988b7a', '#b5ab9d', '#a59e94', '#c6bcae', '#8f8476', '#b8a894', '#9d9284'].map((c) => new THREE.Color(c));
+  const masonry = ['#dccdb4', '#cbbb9f', '#b8a68c', '#a6957e', '#c4b8a4', '#b3a998', '#d6cab6', '#9c8f7c', '#c9b79c', '#ae9f88', '#e2d6c2'].map((c) => new THREE.Color(c));
   const brick = ['#7e6252', '#8b6e5c', '#735a4c', '#90786a', '#6e5649'].map((c) => new THREE.Color(c));
   const glassC = ['#7c8287', '#6b7177', '#8a8f92', '#5f656a', '#6f8584', '#7f7466'].map((c) => new THREE.Color(c));
-  const pale = ['#a9a49a', '#b3aea3', '#9c988f', '#bab5aa'].map((c) => new THREE.Color(c));
+  const pale = ['#b9b2a4', '#c4bcad', '#aba497', '#cbc3b3'].map((c) => new THREE.Color(c));
   const pick = (a) => a[Math.floor(R() * a.length)];
   const heightAt = (x, z) => {
     const nearPark = (z < PARK.z1 + 40 && z > PARK.z0 - 40) && (Math.abs(x - PARK.x0) < 320 || Math.abs(x - PARK.x1) < 320);
