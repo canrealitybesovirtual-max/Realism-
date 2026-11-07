@@ -10,6 +10,7 @@ import { buildView } from './view.js';
 import { createTiles, keyStore } from './tiles.js';
 import { createPlayer } from './player.js';
 import { setupSurfaces } from './surface.js';
+import { clusterize } from './clusters.js';
 
 const ua = navigator.userAgent;
 const QUEST = /OculusBrowser|Quest/i.test(ua) || /[?&]q=quest\b/.test(location.search);   // ?q=quest: the headset settings on a computer (tests)
@@ -108,6 +109,12 @@ async function boot() {
   status('Reflections…');
   await new Promise((r) => setTimeout(r, 20));
   const surf = setupSurfaces({ scene, renderer, apt, M, Q, hemi, viewGain: view ? (k) => view.setGain(k) : null });
+  // meshlet-style clusters for the static apartment and furniture (?clusters=off: whole meshes)
+  let clusters = null;
+  if (!/[?&]clusters=off\b/.test(location.search)) {
+    status('Clusters…');
+    try { clusters = await clusterize(apt.meshes); } catch (e) { console.warn('clusters off', e); }
+  }
   status('Loading surfaces…');
   await Promise.race([M.ready, new Promise((r) => setTimeout(r, 20000))]);   // the probes must see the scanned floors
   renderer.compile(scene, camera);
@@ -124,7 +131,7 @@ async function boot() {
   status('Physics…');
   const spawn = { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
-  window.__world = { scene, camera, rig, renderer, player, apt, city, view, gt, M, THREE, surf };
+  window.__world = { scene, camera, rig, renderer, player, apt, city, view, gt, M, THREE, surf, clusters };
   const gk = document.getElementById('gkey'), gs = document.getElementById('gkeySave');
   if (gk) {
     gk.value = keyStore.get();

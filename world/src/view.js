@@ -59,6 +59,59 @@ function skyMaterial(look, sun) {
   });
 }
 
+// ---- clusters (meshlet-style) for the baked view -----------------------------------------------
+// A face's distance grid is cut into tiles of TILE x TILE quads. Tiles that are all sky are
+// dropped (the sky dome is behind them); tiles where sky meets a building or the depth jumps keep
+// every corner; the rest are drawn at a coarser step the further away they are (the parallax a
+// few metres of walking gives a city 1 km away is under a pixel). The face is returned as four
+// quadrants, each with its index list and the cone of directions it covers (for culling).
+const TILE = 16;
+function clusterFace(e, N, minStep, D, X, Y) {
+  const S = N - 1, nt = S / TILE;
+  const dec = (v) => (v > 0 ? 5 * Math.exp(v * LOGMAX) : 0);
+  const out = [];
+  for (let qy = 0; qy < 2; qy++) for (let qx = 0; qx < 2; qx++) {
+    const idx = [];
+    const dirs = [];
+    for (let ty = qy * nt / 2; ty < (qy + 1) * nt / 2; ty++) for (let tx = qx * nt / 2; tx < (qx + 1) * nt / 2; tx++) {
+      const i0 = tx * TILE, j0 = ty * TILE;
+      let sky = 0, land = 0, dmin = 1e9, dmax = 0;
+      for (let j = j0; j <= j0 + TILE; j++) for (let i = i0; i <= i0 + TILE; i++) {
+        const v = e[j * N + i];
+        if (v <= 0) sky++; else { land++; const d = dec(v); if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
+      }
+      if (!land) continue;
+      let step;
+      if (sky || dmax / dmin > 1.6) step = 1;
+      else step = dmin < 200 ? 1 : dmin < 500 ? 2 : dmin < 1500 ? 4 : dmin < 4000 ? 8 : 16;
+      step = Math.max(step, minStep);
+      for (let j = j0; j < j0 + TILE; j += step) for (let i = i0; i < i0 + TILE; i += step) {
+        const a = j * N + i, b = a + step, c = a + step * N, d = c + step;
+        // skip quads that are entirely sky
+        if (e[a] <= 0 && e[b] <= 0 && e[c] <= 0 && e[d] <= 0) continue;
+        idx.push(a, b, d, a, d, c);
+      }
+      for (const [u, v] of [[i0, j0], [i0 + TILE, j0], [i0, j0 + TILE], [i0 + TILE, j0 + TILE]]) {
+        dirs.push(new THREE.Vector3().copy(D).addScaledVector(X, u / S * 2 - 1).addScaledVector(Y, v / S * 2 - 1).normalize());
+      }
+    }
+    if (!idx.length) continue;
+    const dir = new THREE.Vector3(); for (const q of dirs) dir.add(q); dir.normalize();
+    let half = 0; for (const q of dirs) half = Math.max(half, Math.acos(Math.min(1, dir.dot(q))));
+    out.push({ index: new Uint32Array(idx), cone: { dir, half: half + 0.02 } });
+  }
+  return out;
+}
+// half of the camera's diagonal field of view (an XR camera: the widest of its eyes, plus room
+// for the second eye)
+function viewHalfAngle(cam) {
+  const c = cam.isArrayCamera && cam.cameras.length ? cam.cameras[0] : cam;
+  const e = c.projectionMatrix.elements;
+  const tx = 1 / e[0], ty = 1 / e[5];
+  const extra = cam.isArrayCamera ? 0.35 : 0.05;
+  return Math.atan(Math.hypot(tx + Math.abs(e[8]) / e[0], ty + Math.abs(e[9]) / e[5])) + extra;
+}
+
 // texture loading: colour faces (WebP with coverage alpha), distance grids (uint16)
 const texLoader = new THREE.TextureLoader();
 function loadColor(url, Q) {
@@ -93,9 +146,14 @@ export async function buildView(scene, renderer, Q) {
   sky.renderOrder = -10; sky.frustumCulled = false;
   scene.add(sky);
   const res = Q.quest ? man.questRes : man.res;
-  // the mesh follows the baked distance grid; the headset takes every other corner (a quarter of the triangles)
-  const seg = Q.quest ? man.dsize / 2 : man.dsize;
-  const grid = new THREE.PlaneGeometry(1, 1, seg, seg);   // uv 0..1 over the face
+  // the mesh follows the baked distance grid as clusters (see clusterFace): one shared vertex
+  // grid, an index list per face quadrant holding only the tiles that are not sky, each at the
+  // step its distance needs; the headset never goes finer than every other corner
+  const N = man.dsize + 1;
+  const gridUV = new Float32Array(N * N * 2), gridPos = new Float32Array(N * N * 3);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const k = j * N + i; gridUV[k * 2] = i / (N - 1); gridUV[k * 2 + 1] = j / (N - 1); gridPos[k * 3] = i / (N - 1) - 0.5; gridPos[k * 3 + 1] = j / (N - 1) - 0.5; }
+  const gridAttrs = { position: new THREE.BufferAttribute(gridPos, 3), uv: new THREE.BufferAttribute(gridUV, 2) };
+  const minStep = Q.quest ? 2 : 1;
   const probes = man.probes.map((p) => ({ ...p, world: new THREE.Vector3(...p.apt), group: null, state: 'idle', op: 0 }));
 
   const mapUrl = (p, fi, i) => `${BASE}${res}/p${p.id}_${fi}_${suns[i].name}.webp`;
@@ -128,12 +186,19 @@ export async function buildView(scene, renderer, Q) {
       const z = d.clone().negate(), x = new THREE.Vector3().crossVectors(up, z).normalize(), y = new THREE.Vector3().crossVectors(z, x);
       const mat = new THREE.ShaderMaterial({
         uniforms: { uGain: GAIN, uMap: { value: map }, uMapB: { value: map }, uMix: { value: 0 }, uDist: { value: dist }, uO: { value: p.world }, uD: { value: d }, uX: { value: x }, uY: { value: y }, uOp: { value: 0 } },
-        vertexShader: CITY_VS, fragmentShader: CITY_FS, transparent: true, depthWrite: false, toneMapped: false,
+        vertexShader: CITY_VS, fragmentShader: CITY_FS, transparent: true, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
       });
-      const m = new THREE.Mesh(grid, mat);
-      m.userData = { fi, maps };
-      m.frustumCulled = false; m.renderOrder = -5;
-      g.add(m);
+      // one mesh per face quadrant: its cluster indices and the cone of directions it covers
+      const quads = clusterFace(dist.image.data, N, minStep, d, x, y);
+      for (const qd of quads) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', gridAttrs.position); geo.setAttribute('uv', gridAttrs.uv);
+        geo.setIndex(new THREE.BufferAttribute(qd.index, 1));
+        const m = new THREE.Mesh(geo, mat);
+        m.userData = { fi, maps, cone: qd.cone, tris: qd.index.length / 3 };
+        m.frustumCulled = false; m.renderOrder = -5;
+        g.add(m);
+      }
     }));
     p.group = g; p.state = 'ready';
     if (sj >= 0) { await ensureSun(p, sj); }
@@ -143,7 +208,11 @@ export async function buildView(scene, renderer, Q) {
   function unload(p) {
     if (!p.group) return;
     world.remove(p.group);
+    const seen = new Set();
     for (const m of p.group.children) {
+      m.geometry.dispose();
+      if (seen.has(m.material)) continue;
+      seen.add(m.material);
       for (const k in m.userData.maps) m.userData.maps[k].then((t) => t.dispose());
       m.material.uniforms.uDist.value.dispose(); m.material.dispose();
     }
@@ -165,6 +234,7 @@ export async function buildView(scene, renderer, Q) {
   first.op = 1; setOp(first); cur = first;
 
   let fading = false;
+  const fwd = new THREE.Vector3();
   const api = {
     sky, sun, manifest: man, suns, world,
     setGain(k) { if (typeof k === 'number') GAIN.value.setScalar(k); else GAIN.value.set(...k); },
@@ -180,6 +250,15 @@ export async function buildView(scene, renderer, Q) {
     },
     fadeT: -1,
     update(cam, dt) {
+      // clusters off screen are skipped: a quadrant's cone of directions against the view cone
+      cam.getWorldDirection(fwd);
+      const half = viewHalfAngle(cam);
+      api.drawn = 0;
+      for (const p of probes) if (p.group) for (const m of p.group.children) {
+        const c = m.userData.cone;
+        m.visible = Math.acos(Math.max(-1, Math.min(1, fwd.dot(c.dir)))) < half + c.half;
+        if (m.visible) api.drawn += m.userData.tris;
+      }
       const want = pick(cam);
       if (want !== cur) { load(want); if (want.state === 'ready') cur = want; }
       for (const p of probes) {
