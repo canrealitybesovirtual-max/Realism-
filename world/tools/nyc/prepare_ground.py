@@ -161,7 +161,7 @@ def terrain():
 
 # mosaics the baker samples (raw RGBA8, rows = z, columns = x): RGB = photo,
 # A = 0 water, 1 ground, 2 + 8 * canopy height (m)
-def delight(lin, wat, res):
+def delight(lin, wat, res, veg=None):
     """Lift the aerial's own cast shadows (they point the wrong way for the game's sun):
     a pixel much darker than its surroundings, and bluer (lit by the sky only), is brought up
     toward a sunlit level; the bake then casts the game's own shadows."""
@@ -171,6 +171,8 @@ def delight(lin, wat, res):
     blue = lin[..., 2] / (lin.sum(-1) + 1e-4)
     r = Y / M
     sh = np.clip((0.62 - r) / 0.32, 0, 1) * np.clip((blue - 0.30) / 0.08, 0, 1) * (1 - wat)
+    if veg is not None:
+        sh *= 1 - np.clip(veg * 1.5, 0, 1)          # keep the shade inside tree crowns: it is their texture
     sh = ndi.gaussian_filter(sh, max(0.6, 0.7 / res))
     k = 1 + sh * 2.2                                 # sun / sky ~ 3.2 under a clear sky
     out = lin * k[..., None]
@@ -209,7 +211,7 @@ def mosaic():
             m = np.asarray(m.resize((n, n), Image.BILINEAR)).astype(np.float32)
             wat, vg, can = m[..., 0] / 255, m[..., 1] / 255, m[..., 2] / 8
             lin = (rgb.astype(np.float32) / 255) ** 2.2
-            lin = delight(lin, wat, res)
+            lin = delight(lin, wat, res, vg)
             gain = np.array(GRADE, np.float32)
             g = 1 + (gain - 1) * vg[..., None] * GRADE_K
             rgb = np.clip(((lin * g) ** (1 / 2.2)) * 255, 0, 255).astype(np.uint8)

@@ -22,8 +22,8 @@ const getJ = async (u) => { const r = await fetch(u); if (!r.ok) throw new Error
 
 // ---- the look: tuned against docs/references (apartment-21, -10, -06, -16) ----------------
 export const LOOK = {
-  sunAz: 248, sunEl: 28,                 // true azimuth / elevation (deg): the photos' afternoon sun from the south-west
-  sunE: 1.0, skyE: 0.15, bounce: 0.035,   // sun irradiance, sky irradiance (open roof), bounce from the city
+ sunAz: 245, sunEl: 27,                 // true azimuth / elevation (deg): the photos' afternoon sun from the south-west
+  sunE: 1.0, skyE: 0.11, bounce: 0.02,    // sun irradiance, sky irradiance (open roof), bounce from the city
   aerialK: 1.0, aerialGamma: 1.0,        // aerial photo -> radiance
   exposure: 1.32,
   hazeB: 1 / 22000, hazeH: 1000,          // haze extinction at sea level (1/m), scale height (m)
@@ -252,14 +252,17 @@ void main(){
   int st = 2;
   if (year > 0.0 && year < 1925.0 && H < 30.0) st = 0;           // rowhouses, brownstones, tenements
   else if (year > 0.0 && year < 1946.0) st = 1;                  // prewar masonry
-  else if (year >= 1998.0 && H > 45.0) st = 4;                   // new glass
-  else if (year >= 1955.0 && H > 70.0 && r < 0.55) st = 3;       // office curtain wall / precast
+  // offices and glass mostly south of the park (midtown); uptown, tall postwar = brick apartments
+  bool midtown = vI.y > -260.0;
+  if (st == 2 && year >= 1998.0 && H > 45.0 && (midtown || r < 0.45)) st = 4;           // new glass
+  else if (st == 2 && year >= 1955.0 && H > 70.0 && midtown && r < 0.55) st = 3;      // office curtain wall / precast
   if (vA.z < -1.5) st = 1; else if (vA.z < -0.5) st = 5;         // landmark overrides (pack_attrs.py)
   // wall albedo (linear), from the reference photos' palette
-  vec3 brick = pick(r2, vec3(0.30,0.19,0.14), vec3(0.36,0.25,0.18), vec3(0.27,0.18,0.14), vec3(0.42,0.31,0.23));
-  vec3 brown = pick(r2, vec3(0.24,0.16,0.11), vec3(0.32,0.23,0.17), vec3(0.42,0.33,0.25), vec3(0.20,0.14,0.10));
-  vec3 lime  = pick(r2, vec3(0.62,0.55,0.44), vec3(0.55,0.48,0.38), vec3(0.70,0.64,0.52), vec3(0.48,0.42,0.33));
-  vec3 pale  = pick(r2, vec3(0.62,0.60,0.55), vec3(0.70,0.67,0.60), vec3(0.55,0.53,0.49), vec3(0.75,0.72,0.66));
+  // warm, as in apartment-21 / -10: cream and tan stone and brick first, red-brown brick second
+  vec3 brick = pick(r2, vec3(0.34,0.18,0.12), vec3(0.42,0.25,0.17), vec3(0.30,0.17,0.12), vec3(0.47,0.31,0.21));
+  vec3 brown = pick(r2, vec3(0.26,0.15,0.10), vec3(0.36,0.24,0.16), vec3(0.46,0.34,0.24), vec3(0.22,0.13,0.09));
+  vec3 lime  = pick(r2, vec3(0.70,0.59,0.43), vec3(0.58,0.47,0.33), vec3(0.76,0.66,0.50), vec3(0.52,0.42,0.30));
+  vec3 pale  = pick(r2, vec3(0.70,0.63,0.50), vec3(0.76,0.71,0.60), vec3(0.62,0.55,0.44), vec3(0.73,0.70,0.63));
   vec3 wall = st == 0 ? (r3 < 0.5 ? brick : brown) : st == 1 ? (vA.z < -1.5 ? vec3(0.64,0.58,0.48) : r3 < 0.55 ? lime : brick * 1.15) : st == 2 ? (r3 < 0.5 ? pale : (r3 < 0.8 ? brick * 1.2 : lime)) : st == 3 ? (r3 < 0.5 ? vec3(0.55,0.53,0.50) : vec3(0.20,0.20,0.21)) : st == 5 ? vec3(0.72,0.71,0.68) : vec3(0.35,0.38,0.40);
   float fh = st == 0 ? 3.3 : st == 1 ? 3.25 : st == 2 ? 2.85 : st == 3 ? 3.9 : st == 5 ? 4.7 : 3.8;
   float bay = st == 0 ? 2.1 : st == 1 ? 2.3 : st == 2 ? 2.6 : st == 3 ? 1.52 : st == 5 ? 4.7 : 1.5;
@@ -292,7 +295,7 @@ void main(){
   float inV = smoothstep(0.30 - av, 0.30 + av, fv) * (1.0 - smoothstep(0.30 + wv - av, 0.30 + wv + av, fv));
   // each axis falls back to its own average once it is below ~2 px, so rows of windows stay
   // visible after the columns have merged (as in the photos at 1-3 km)
-  inU = mix(inU, wu, clamp(aa * 2.2 - 0.2, 0.0, 1.0));
+  inU = mix(inU, wu, clamp(aa * 1.5 - 0.45, 0.0, 1.0));
   inV = mix(inV, wv, clamp(av * 1.5 - 0.45, 0.0, 1.0));
   float win = inU * inV;
   if (v < 4.2 && st != 0) win = mix(win, 0.7, 0.8);            // storefronts

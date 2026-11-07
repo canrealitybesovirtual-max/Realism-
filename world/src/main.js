@@ -5,6 +5,7 @@ import { makeMaterials } from './materials.js';
 import { buildApartment } from './apartment.js';
 import { buildCity, SUN as GEN_SUN } from './city.js';
 import { buildView } from './view.js';
+import { createTiles, keyStore } from './tiles.js';
 import { createPlayer } from './player.js';
 import { setupSurfaces } from './surface.js';
 
@@ -50,6 +51,12 @@ async function boot() {
     try { view = await buildView(scene, renderer, Q); SUN = view.sun; camera.far = 100000; camera.updateProjectionMatrix(); } catch (e) { console.warn('city view not available, using the generated city', e); }
   }
   if (!view) city = buildCity(scene, renderer, Q);
+  // optional live Google 3D tiles (needs the player's key); G switches
+  let gt = null;
+  if (view) {
+    const F = view.manifest.frame;
+    try { gt = F ? createTiles(scene, camera, renderer, { ...F, anchor: view.manifest.anchor, aptCenter: view.manifest.aptCenter, street: view.manifest.street, quest: Q.quest }) : null; } catch (e) { console.warn('Google tiles unavailable', e); }
+  }
 
   // light: sun through the glass (static shadows), soft sky fill, the sky's image light
   const sun = new THREE.DirectionalLight('#fff3e2', 3.2);
@@ -71,7 +78,9 @@ async function boot() {
   renderer.compile(scene, camera);
   surf.bake();
   addEventListener('keydown', (e) => {
+    if (e.target && e.target.tagName === 'INPUT') return;
     if (e.code === 'KeyT' && !e.repeat && view) { view.nextSun(); return; }   // T: next baked time of day
+    if (e.code === 'KeyG' && !e.repeat && gt) { gt.on = !gt.on; view.world.visible = !gt.on; return; }   // G: Google tiles / baked view
     if (e.code !== 'KeyR' || e.repeat) return;      // R: dry / damp / wet terrace
     const steps = [0, 0.45, 0.8, 1]; const i = steps.findIndex((v) => Math.abs(v - surf.wet) < 0.01);
     surf.setWet(steps[(i + 1) % steps.length]);
@@ -80,7 +89,13 @@ async function boot() {
   status('Physics…');
   const spawn = { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
-  window.__world = { scene, camera, rig, renderer, player, apt, city, view, M, THREE, surf };
+  window.__world = { scene, camera, rig, renderer, player, apt, city, view, gt, M, THREE, surf };
+  const gk = document.getElementById('gkey'), gs = document.getElementById('gkeySave');
+  if (gk) {
+    gk.value = keyStore.get();
+    for (const el of [gk, gs]) el.addEventListener('click', (e) => e.stopPropagation());
+    gs.addEventListener('click', () => { keyStore.set(gk.value.trim()); location.reload(); });
+  }
   status('');
   document.getElementById('start').classList.add('ready');
 
@@ -92,6 +107,7 @@ async function boot() {
     const dt = clock.getDelta();
     player.update(dt);
     if (city) city.update(clock.elapsedTime);
+    if (gt) gt.update(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, dt);
     if (view) {
       view.update(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, dt);
       if (view.fadeT >= 0 || view.sunMoved) {          // time of day changing: the sun through the glass follows

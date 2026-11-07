@@ -28,3 +28,10 @@
 - Every visual change is compared side by side with the matching reference photo at the same framing before it is reported; palettes are sampled from the photos.
 - Headset budget is designed and measured (`?q=quest`) in the same pass as the feature.
 - Outdoor surfaces always get the sun's shadow and aerial perspective.
+
+## The view is real Manhattan (user: "exactly like the photo references")
+- The window photos are real Manhattan from 111 W 57th St, so a generated city can never match them. The view is now built from public data: NYC 3D Building Model (OTI, LOD2, 2014 survey: real setbacks, roofs, spires), NYC Building Footprints (heights, years; newer towers such as Central Park Tower, 432 Park, 53 W 53rd as prisms), USGS NAIP aerial photos (Aug 2019, 0.6 m, with near-infrared) for the ground and the park, USGS hydrography for the water. All free to use (NYC Open Data terms, US public domain).
+- Baked, not rendered live: tools/nyc + bake/ render cube panoramas (colour + distance) offline with lighting a headset could never afford (sun shadows and sky occlusion ray-marched through a height map of the whole city, tree crowns as a height field from the photo, haze, earth curvature). The game draws each face as a mesh pushed out to the baked distance (true parallax near the bake point) and fades between bake points and times of day (T). Cost in the game: ~10 draws, a few MB of textures per bake point.
+- Times of day are separate bakes (the north photo is afternoon, the south photo morning): afternoon (sun 245 deg / 27 deg, matches apartment-21) and morning.
+- Google Photorealistic 3D Tiles are the optional live alternative (G), only with the player's own API key: Google's terms forbid storing or baking them.
+- The generated city (src/city.js) stays as the fallback (?city=gen, or no bake files).

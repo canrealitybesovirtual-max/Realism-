@@ -56,6 +56,7 @@ def main():
         'anchor': CFG['anchor'], 'aptCenter': CFG['aptCenter'], 'street': CFG['street'],
         'suns': [{'name': sn, 'hour': metas[sn].get('hour', 12), 'sun': metas[sn]['sun']} for sn in sorted(suns, key=lambda k: metas[k].get('hour', 12))],
         'look': m0['look'], 'probes': probes,
+        'frame': {'lat0': CFG['lat0'], 'lon0': CFG['lon0'], 'gridDeg': CFG['gridDeg'], 'streetH': CFG['streetH']},
     }
     json.dump(man, open(os.path.join(DST, 'manifest.json'), 'w'), indent=1)
     print('manifest', len(probes), 'probes', suns)

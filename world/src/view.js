@@ -85,7 +85,9 @@ export async function buildView(scene, renderer, Q) {
   sky.renderOrder = -10; sky.frustumCulled = false;
   scene.add(sky);
   const res = Q.quest ? man.questRes : man.res;
-  const grid = new THREE.PlaneGeometry(1, 1, man.dsize, man.dsize);   // uv 0..1 over the face
+  // the mesh follows the baked distance grid; the headset takes every other corner (a quarter of the triangles)
+  const seg = Q.quest ? man.dsize / 2 : man.dsize;
+  const grid = new THREE.PlaneGeometry(1, 1, seg, seg);   // uv 0..1 over the face
   const probes = man.probes.map((p) => ({ ...p, world: new THREE.Vector3(...p.apt), group: null, state: 'idle', op: 0 }));
 
   const mapUrl = (p, fi, i) => `${BASE}${res}/p${p.id}_${fi}_${suns[i].name}.webp`;
@@ -156,7 +158,7 @@ export async function buildView(scene, renderer, Q) {
 
   let fading = false;
   const api = {
-    sky, sun, manifest: man, suns,
+    sky, sun, manifest: man, suns, world,
     get sunName() { return suns[si].name; },
     // fade to the next baked time of day (2.5 s); the sun light and sky follow
     async nextSun() {
