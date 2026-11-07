@@ -84,6 +84,7 @@ async function boot() {
   renderer.setAnimationLoop(() => {
     const dt = clock.getDelta();
     player.update(dt);
+    city.update(clock.elapsedTime);
     renderer.render(scene, camera);
     acc += dt; frames++;
     if (acc > 0.5) {

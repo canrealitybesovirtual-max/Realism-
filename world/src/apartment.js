@@ -52,9 +52,11 @@ export function buildApartment(M, Q) {
       for (const [lo, hi] of gaps) { if (lo > y) piece(a, b, y, lo); y = Math.max(y, hi); }
       if (y < y1) piece(a, b, y, y1);
     }
+    for (const o of ops) if (!o.win && o.lo <= floorY + 0.01 && o.hi - o.lo > 1.8) jamb(axis, t0, t1, o.a, o.b, o.lo, o.hi);
     for (const o of ops) if (o.win) {
       // glass near the outer face (o.win = outer side coordinate), bronze frame inside the reveal
       const g0 = o.win - 0.03, g1 = o.win + 0.03;
+      ribbon(axis, o.win, (o.win - t0) < (t1 - o.win) ? -1 : 1, o.a, o.b, o.lo, o.hi);
       if (axis === 'x') {
         B.box(o.a, o.lo, Math.min(g0, g1), o.b, o.hi, Math.max(g0, g1), M.glass);
         frame('x', (g0 + g1) / 2, o.a, o.b, o.lo, o.hi);
@@ -63,6 +65,26 @@ export function buildApartment(M, Q) {
         frame('z', (g0 + g1) / 2, o.a, o.b, o.lo, o.hi);
       }
     }
+  };
+  // door opening finish: lacquered liners on the jambs and head, slim casings on both faces
+  // (proud of the skirting), a switch plate beside the latch side
+  const jamb = (axis, t0, t1, a, b, lo, hi) => {
+    const j = 0.022, c = 0.055, p = 0.018, L = M.doorWhite;
+    const bx = (s0, s1, y0, y1, u0, u1) => { if (axis === 'x') B.box(s0, y0, u0, s1, y1, u1, L, false); else B.box(u0, y0, s0, u1, y1, s1, L, false); };
+    bx(a, a + j, lo, hi, t0, t1); bx(b - j, b, lo, hi, t0, t1); bx(a, b, hi - j, hi, t0, t1);
+    for (const [u0, u1] of [[t0 - p, t0], [t1, t1 + p]]) { bx(a - c, a, lo, hi + c, u0, u1); bx(b, b + c, lo, hi + c, u0, u1); bx(a - c, b + c, hi, hi + c, u0, u1); }
+    bx(b + c + 0.09, b + c + 0.17, lo + 1.04, lo + 1.16, t1, t1 + 0.011);
+  };
+  // the tower's bronze filigree: a curved ribbon outside every slot window
+  const ribbon = (axis, wplane, out, a, b, lo, hi) => {
+    const pts = [];
+    for (let i = 0; i <= 16; i++) {
+      const t = i / 16, e = t * t * (3 - 2 * t);
+      const along = a + 0.07 + (b - a - 0.14) * e, off = wplane + out * (0.09 + 0.05 * Math.sin(Math.PI * t));
+      const y = lo + 0.05 + (hi - lo - 0.1) * t;
+      pts.push(axis === 'z' ? [off, y, along] : [along, y, off]);
+    }
+    B.add(tube(pts, 0.022, 6), M.bronze);
   };
   const frame = (axis, t, a, b, lo, hi, w = 0.05, d = 0.1) => {
     if (axis === 'x') {
@@ -108,6 +130,11 @@ export function buildApartment(M, Q) {
         const a = Math.max(s0, s - w / 2), b = Math.min(s1, s + w / 2);
         if (axis === 'x') B.box(a, y0, Math.min(t, t + md), b, y1, Math.max(t, t + md), M.bronze, false);
         else B.box(Math.min(t, t + md), y0, a, Math.max(t, t + md), y1, b, M.bronze, false);
+        // profiled cap on the room side (wider than the fin) and glazing beads at the glass
+        const cw = 0.048, ce = t + md, cd = 0.02 * inward;
+        const c0 = Math.max(s0, s - cw), c1 = Math.min(s1, s + cw);
+        if (axis === 'x') B.box(c0, y0, Math.min(ce, ce + cd), c1, y1, Math.max(ce, ce + cd), M.bronzeLight, false);
+        else B.box(Math.min(ce, ce + cd), y0, c0, Math.max(ce, ce + cd), y1, c1, M.bronzeLight, false);
       }
       // sill and head frames
       if (axis === 'x') { B.box(s0, y0, Math.min(t, t + md), s1, y0 + 0.05, Math.max(t, t + md), M.bronze, false); B.box(s0, y1 - 0.08, Math.min(t, t + md), s1, y1, Math.max(t, t + md), M.bronze, false); }
@@ -116,16 +143,20 @@ export function buildApartment(M, Q) {
   };
   const ceil = (x0, z0, x1, z1, y, lights = 1.7) => {
     B.box(x0, y, z0, x1, y + 0.04, z1, M.ceiling, false);
+    // shadow gap where the ceiling meets the walls
+    const g = 0.012, gh = 0.016;
+    B.box(x0, y - gh, z0, x1, y, z0 + g, M.slot, false); B.box(x0, y - gh, z1 - g, x1, y, z1, M.slot, false);
+    B.box(x0, y - gh, z0 + g, x0 + g, y, z1 - g, M.slot, false); B.box(x1 - g, y - gh, z0 + g, x1, y, z1 - g, M.slot, false);
     if (lights) downlights(x0, z0, x1, z1, y, lights);
   };
-  const lightGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.01, 12);
-  const trimGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.006, 16);
+  const lightGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.01, 12);
+  const trimGeo = new THREE.CylinderGeometry(0.052, 0.052, 0.006, 16);
   const downlights = (x0, z0, x1, z1, y, step) => {
     const nx = Math.max(1, Math.round((x1 - x0) / step)), nz = Math.max(1, Math.round((z1 - z0) / step));
     for (let i = 0; i < nx; i++) for (let k = 0; k < nz; k++) {
       const x = x0 + (i + 0.5) * (x1 - x0) / nx, z = z0 + (k + 0.5) * (z1 - z0) / nz;
       const g = lightGeo.clone(); g.translate(x, y - 0.004, z); B.add(g, M.light);
-      const t = trimGeo.clone(); t.translate(x, y - 0.002, z); B.add(t, M.bronzeLight);
+      const t = trimGeo.clone(); t.translate(x, y - 0.002, z); B.add(t, M.slot);
     }
   };
   const floor = (x0, z0, x1, z1, y, mat) => B.box(x0, y - 0.03, z0, x1, y, z1, mat, false);
@@ -135,16 +166,24 @@ export function buildApartment(M, Q) {
     B.obox(hx + dx * w / 2, y0 + h / 2, hz + dz * w / 2, w / 2, h / 2, 0.025, yaw, mat);
     // bronze lever at the free end
     B.obox(hx + dx * (w - 0.07), y0 + 1.0, hz + dz * (w - 0.07), 0.07, 0.012, 0.06, yaw, M.bronzeLight, false);
+    for (const hy of [0.22, h * 0.5, h - 0.22]) B.obox(hx + dx * 0.008, y0 + hy, hz + dz * 0.008, 0.01, 0.05, 0.03, yaw, M.bronzeLight, false);
   };
   // closed door panel flush in a wall face: axis of the wall face, t = face coordinate, normal sign
   const panel = (axis, t, a, b, y0, y1, mat, n = 1) => {
     const d = 0.03 * n;
+    if (mat !== M.bronzeLight) {
+      if (axis === 'x') B.box(b - 0.19, y0 + 0.99, t + d, b - 0.05, y0 + 1.015, t + d + 0.055 * n, M.bronzeLight, false);
+      else B.box(t + d, y0 + 0.99, b - 0.19, t + d + 0.055 * n, y0 + 1.015, b - 0.05, M.bronzeLight, false);
+    }
     if (axis === 'x') { B.box(a, y0, t, b, y1, t + d, mat); B.box(a - 0.03, y0, t, b + 0.03, y1 + 0.03, t + d * 0.5, M.bronze, false); }
     else { B.box(t, y0, a, t + d, y1, b, mat); B.box(t, y0, a - 0.03, t + d * 0.5, y1 + 0.03, b + 0.03, M.bronze, false); }
   };
   const grilleRun = (axis, t0, t1, s0, s1, y) => {
-    if (axis === 'x') B.box(s0, y - 0.005, t0, s1, y + 0.002, t1, M.grille, false);
-    else B.box(t0, y - 0.005, s0, t1, y + 0.002, s1, M.grille, false);
+    for (let a = s0; a < s1 - 0.3; a += 1.24) {
+      const b = Math.min(a + 1.18, s1);
+      if (axis === 'x') B.box(a, y - 0.005, t0, b, y + 0.002, t1, M.grille, false);
+      else B.box(t0, y - 0.005, a, t1, y + 0.002, b, M.grille, false);
+    }
   };
 
   // ---- structure: slabs (colliders), roof, tower shaft stub ---------------------------------
@@ -226,6 +265,7 @@ export function buildApartment(M, Q) {
   for (const [x0, z0, x1, z1] of [[0, 0, XM, 0.85], [XW, 5.92, XE, 6.72], [XW, 0.85, XW + 0.8, 5.92], [XE - 0.8, 0.85, XE, 5.92]])
     B.box(x0, 3.82, z0, x1, 4.2, z1, M.ceiling, false);
   B.box(0, 3.81, 0.1, XM, 3.82, 0.2, M.slot, false);              // curtain pocket at the glass
+  B.box(XW + 0.4, 3.812, 0.5, XE - 0.4, 3.82, 0.53, M.slot, false); B.box(XW + 0.4, 3.812, 0.58, XE - 0.4, 3.82, 0.61, M.slot, false);   // linear diffusers
   downlights(XW + 1.2, 1.2, XE - 1.2, 5.6, 4.2, 2.2);
   downlights(1.2, 0.3, XM - 1.2, 0.75, 3.82, 1.467);
   // great hall south wall: hallway door, gallery opening, kitchen passage
@@ -357,8 +397,10 @@ export function buildApartment(M, Q) {
   B.box(0, C2, 0, XM, C2 + 0.04, ZS, M.ceiling, false);
   B.box(0, 7.9, 0, XM, C2, 0.6, M.ceiling, false);
   B.box(0, 7.89, 0.1, XM, 7.9, 0.2, M.slot, false);
+  B.box(XW + 0.4, 7.892, 0.38, XE - 0.4, 7.9, 0.41, M.slot, false); B.box(XW + 0.4, 7.892, 0.46, XE - 0.4, 7.9, 0.49, M.slot, false);
   B.box(XW, 7.9, ZS - 0.6, XE, C2, ZS, M.ceiling, false);
   B.box(XW, 7.89, ZS - 0.2, XE, 7.9, ZS - 0.12, M.slot, false);
+  B.box(XW + 0.4, 7.892, ZS - 0.44, XE - 0.4, 7.9, ZS - 0.41, M.slot, false);
   for (const [x0, z0, x1, z1] of [[1.2, 0.9, 4.6, 6.4], [5.3, 0.9, 12.3, 6.4], [13.1, 0.9, 16.3, 6.4], [XW + 0.3, 14.7, 7.5, ZS - 0.8],
     [10.3, 14.7, 16.4, ZS - 0.8], [8.1, 7.1, 10.1, 9.0], [3.7, 10.0, 5.9, 14.0], [15.0, 7.0, 16.4, 9.4], [13.5, 7.0, 14.4, 14.0]])
     downlights(x0, z0, x1, z1, C2, 1.8);
