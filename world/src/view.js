@@ -31,17 +31,23 @@ void main(){
   #include <colorspace_fragment>
 }`;
 
+// live sky: colour by height above the horizon, fitted to apartment-21's sky (measured at nine
+// heights through the game's glass and tone map); linear, before exposure
+const SKY_H = [0.000, 0.017, 0.043, 0.079, 0.129, 0.198, 0.277, 0.351, 0.419, 0.471, 0.700, 1.000];
+const SKY_C = [[0.440, 0.560, 0.670], [0.410, 0.530, 0.664], [0.400, 0.526, 0.650], [0.392, 0.522, 0.648], [0.3312, 0.5038, 0.6823], [0.2423, 0.4501, 0.6804], [0.1763, 0.3840, 0.6734], [0.1194, 0.3277, 0.6408], [0.0773, 0.2643, 0.6137], [0.0508, 0.2176, 0.5610], [0.0305, 0.1850, 0.5330], [0.0203, 0.1567, 0.4937]];
 function skyMaterial(look, sun) {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false,
-    uniforms: { uSun: { value: sun }, uZen: { value: new THREE.Color(look.zen) }, uHor: { value: new THREE.Color(look.hor) }, uHaze: { value: new THREE.Color(look.haze) }, uTint: { value: new THREE.Color(look.sunTint) } },
+    uniforms: { uSun: { value: sun }, uHaze: { value: new THREE.Color(look.haze) }, uTint: { value: new THREE.Color(look.sunTint) },
+      uSH: { value: SKY_H }, uSC: { value: SKY_C.map((c) => new THREE.Vector3(...c)) } },
     vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); vec4 p = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position = p.xyww; }`,
-    fragmentShader: `uniform vec3 uSun, uZen, uHor, uHaze, uTint; varying vec3 vDir;
+    fragmentShader: `uniform vec3 uSun, uHaze, uTint; uniform float uSH[12]; uniform vec3 uSC[12]; varying vec3 vDir;
       void main(){
         vec3 d = normalize(vDir);
-        float h = d.y;
-        vec3 c = mix(uHor, uZen, pow(clamp(h, 0.0, 1.0), 0.38));
-        c = mix(c, uHaze, smoothstep(0.02, -0.12, h));
+        float h = clamp(d.y, 0.0, 1.0);
+        vec3 c = uSC[0];
+        for (int i = 1; i < 12; i++) { if (h >= uSH[i - 1]) c = mix(uSC[i - 1], uSC[i], clamp((h - uSH[i - 1]) / (uSH[i] - uSH[i - 1]), 0.0, 1.0)); }
+        c = mix(c, uHaze, smoothstep(0.02, -0.12, d.y));
         float s = max(dot(d, uSun), 0.0);
         c += uTint * (pow(s, 12.0) * 0.18 + pow(s, 900.0) * 40.0);
         gl_FragColor = vec4(c, 1.0);

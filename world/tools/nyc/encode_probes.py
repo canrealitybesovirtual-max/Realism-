@@ -7,8 +7,18 @@ A corner takes the nearest of its four texels, so a tower's edge keeps the tower
 """
 import json, math, os, sys
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter, ImageEnhance
 from geo import CFG, CACHE, WORLD
+
+
+def grade(im):
+    """The photos' finish: a little local contrast and colour (as a camera and its processing give)."""
+    rgb, a = im.convert('RGB'), im.getchannel('A')
+    rgb = rgb.filter(ImageFilter.UnsharpMask(radius=2.2, percent=65, threshold=1))
+    rgb = ImageEnhance.Contrast(rgb).enhance(1.06)
+    rgb = ImageEnhance.Color(rgb).enhance(1.10)
+    out = rgb.convert('RGBA'); out.putalpha(a)
+    return out
 
 SRC = os.path.join(CACHE, 'probes')
 DST = os.path.join(WORLD, 'city')
@@ -35,7 +45,7 @@ def main():
                 base = os.path.join(SRC, sn, f"p{p['id']}_{fi}")
                 px = np.fromfile(base + '.rgba', np.uint8).reshape(size, size, 4)[::-1]       # top-down
                 empty = empty and px[..., 3].max() == 0
-                im = Image.fromarray(px, 'RGBA')
+                im = grade(Image.fromarray(px, 'RGBA'))
                 for r, n in RES.items():
                     (im if n == size else im.resize((n, n), Image.LANCZOS)).save(os.path.join(DST, r, f"p{p['id']}_{fi}_{sn}.webp"), quality=90, method=6)
             if empty:
