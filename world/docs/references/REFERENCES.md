@@ -1,6 +1,6 @@
 # Reference photos (master prompt section 6A)
 
-Reference only: these calibrate the generator (sizes, density, palette, materials). They are never shipped in the game or used as textures. Street View / aerial imagery is Google's. The other photos belong to the people credited on them (Brian Hightower, Joel Keralis, John Hultgren, Antonio C, SPCA663 Little B, Jim Lee Wing, Ann Yip, Sunny, Tony Liu, Ariel Shalev, 袁拓宇, Yu Mr, Kin Hung Chan, Victor Au).
+Reference only: these calibrate the generator (sizes, density, palette, materials). They are never shipped in the game or used as textures. Street View / aerial imagery is Google's. The other photos belong to the people credited on them (Brian Hightower, Joel Keralis, John Hultgren, Antonio C, SPCA663 Little B, Jim Lee Wing, Ann Yip, Sunny, Tony Liu, Ariel Shalev, 袁拓宇, Yu Mr, Kin Hung Chan, Victor Au, Indoorfish, Hugo But, Savoir Aimer); the Japan, Korea, Russia and vehicle photos came without credits, and the R9 image is MotoTech India's.
 
 ## Shenzhen (preset: Asian superblock CBD)
 
@@ -63,6 +63,41 @@ Reference only: these calibrate the generator (sizes, density, palette, material
 | coast-01-beach-headland-dry-scrub.jpg | Wild beach with a headland | Fine pale sand, turquoise water turning blue, foam line, a steep headland of dry brown scrub and rock, a palm grove at its foot; strong clear sun. |
 | coast-02-promenade-palms-flowerbed-towers.jpg | Waterfront promenade | Wide stone-paved promenade with a cycle lane, a stone balustrade on the sea side, coconut palms, a red salvia flowerbed, glass and stone towers on the land side, brown silty estuary water, a distant skyline. |
 | coast-03-bay-breakwater-resort-mountain.jpg | Bay with a breakwater | Concrete tetrapod breakwater and pier, a sandy bay with a resort town, villas up the hillside, a green mountain behind, blue water. |
+
+## Japan / Korea / Russia (new presets: Japanese residential lanes, hillside stair village, Soviet microdistrict; the night-market preset's Shinjuku side)
+
+| File | What it shows | What it sets |
+|---|---|---|
+| japan-01-night-intersection-signal-poles.jpg | Night intersection in a Tokyo residential area | Night street kit: horizontal traffic signal with a green lamp (teal glow in the air), cobra-head street lamps on concrete utility poles with wire bundles and transformers, zebra crossing with worn paint, green / white guard rails, a lit vending machine, a closed roller shutter, 3-4 storey tiled and stucco buildings; very dark sky, pools of light. |
+| korea-01-hillside-stair-alley-brick-villas.jpg | Seoul hillside stair alley | Hillside village: long worn concrete stairs with faded painted murals, steel handrails, brown brick 3-4 storey villas with balconies and bay windows, utility pole at the top, potted plants, rubbish bags and boxes; flat hazy daylight. |
+| japan-02-overgrown-stair-alley-abandoned.jpg | Abandoned onsen-town stair alley | Decay: moss and weeds on the stair treads, corrugated iron and rotting timber fronts, a fallen sign board, overgrown trees closing over the lane, stained render. |
+| japan-03-hillside-lane-tile-roofs-wires.jpg | Narrow hillside lane | 2.5 m lane, kawara tile roofs, pale siding houses, block walls with tile caps, rock retaining wall with plants, utility poles with many wires, manhole and drain grates, a parked scooter, a black cat; overcast. |
+| japan-04-corner-shop-vending-machines.jpg | Corner shop with vending machines | Street props: a row of 6 drink vending machines, a weathered two-storey shop with corrugated cladding and a faded cola sign, red no-entry sign with a white plate, bollards, block wall, dense wires and a bent pole arm; film-look soft light. |
+| japan-05-residential-street-poles-wet.jpg | Long residential street after rain | Street scale: a straight 2-lane street with no kerbs (white edge lines), a long row of concrete and timber utility poles with yellow / black guards, transformers and a mesh of wires, puddles reflecting the sky, kei cars and minivans, pine hedges, mountains in low cloud at the end. |
+| japan-06-kyoto-side-street-signs-wires.jpg | Kyoto side street at dusk | Shop street: lit vertical sign boxes stacked up a building, a green stand sign on the pavement, a leaning yellow pole guard, transformers and dense wires, a dark ribbed facade, machiya fronts, pedestrians and a kei van, white road markings in kanji. |
+| russia-01-rooftop-fire-stair-soviet-blocks-rain.jpg | Rooftop steel stair over Moscow, rain | Microdistrict: worn black steel stair with a chequer-plate landing, an LED flood light on a column, low railings; below, 5-storey white panel blocks among dense trees, wet paths, high-rise towers on the horizon; dim grey rain. |
+
+## Vehicles
+
+| File | What it shows | What it sets |
+|---|---|---|
+| vehicle-01-yamaha-yzf-r9-black.jpg | Yamaha YZF-R9, side and three-quarter | Sport bike reference (master prompt section 10, motorbike): proportions, fairing shape, gloss black paint with blue "R9" pinstripe, exposed parallel-twin engine and frame, underslung exhaust, gold-anodised forks / calipers, spoked wheels. |
+
+## Shenzhen (more)
+
+| File | What it shows | What it sets |
+|---|---|---|
+| shenzhen-13-ping-an-skyline-mountains.jpg | Futian CBD from above | The supertall landmark rule: one 600 m tower with a pointed crown and stone fins far above the rest, glass towers at 150-350 m around it, a red residential slab in front, a park below, mountains and low cloud behind. |
+| shenzhen-14-civic-center-golden-hour.jpg | Civic centre at golden hour | Golden-hour grading: sun striking gold glass on west faces while others stay dark blue, the huge wave roof of the civic centre on red legs, folded-metal museum buildings, park canopy in the foreground. |
+| shenzhen-15-amusement-park-flying-ride.jpg | Amusement park "flying" ride | Theme park prop kit: a rotating ride with blue swept arms, plane-shaped gondolas and prone rider seats on a faux-rock plinth, red fences, umbrellas, a carousel crown behind, tropical trees. |
+
+## Other
+
+| File | What it is |
+|---|---|
+| video-01-night-wingtip-unknown.mov | 4.7 s night clip, almost black: brightened, it shows one pale triangular shape with a small white light at its tip (an aircraft wingtip and nav light from a window?). Not used until the purpose is known. |
+
+Code screenshot (not a photo): ../code-notes/opponent2-api-screenshot.jpg, the end of an "opponent 2" module (punch landing test with onPunchLand, and a returned API: object, rig, bones, update, punch, hit, getHitZone, stunned, hitsTaken, setTarget, setAI, setPlayerHands, dispose). Kept as a pattern for melee / fight NPCs, not copied.
 
 ## Still missing
 

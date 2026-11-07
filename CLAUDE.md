@@ -1445,5 +1445,5 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - ?dev: LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked. Checked headless: 1000 XP -> level 3, locked APPLY refused with the level message, page screenshot. Not checked: real-play XP pacing, headset.
 
 ## New project: world/ (Infinite Open-World master prompt v6; separate from the office, CQC and Interstate)
-- world/docs/MASTER_PROMPT_v6.pdf (the user's spec) + MASTER_PROMPT.md (text extracted from it). world/docs/references/: the user's 32 reference photos (Shenzhen, Guangzhou, Detroit, West Virginia, coast, snow) as JPEG, indexed in REFERENCES.md with what each calibrates. Reference only, never shipped.
+- world/docs/MASTER_PROMPT_v6.pdf (the user's spec) + MASTER_PROMPT.md (text extracted from it). world/docs/references/: the user's reference photos (Shenzhen, Guangzhou, Detroit, West Virginia, coast, snow, Japan, Korea, Russia, the R9) + one unexplained night video and a code screenshot (world/docs/code-notes) as JPEG, indexed in REFERENCES.md with what each calibrates. Reference only, never shipped.
 - Rules from the user: never touch the existing games' files; never use the old game screenshots for this project; reuse only code logic where it helps.
