@@ -1425,3 +1425,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Interstate garage walk: vr.turn (Settings > VR, default smooth), same speed; snap keeps 30°.
 - CQC: already had COMFORT > Turning Smooth (110 deg/s); new saves now start on Smooth (saved choices kept).
 - Checked: syntax parse only.
+
+## Interstate: R6 rider = your CQC character (§14.15 BikeRider; tested headless)
+- BikeRider (built in buildBike on the bike's stance, so it leans with it; updated from CabinControls.update's bike branch): procedural body like DriverBody, dressed from the CQC save (localStorage cqc.wear.v1, same origin): uniform black / ranger / fsb (olive: the FSB camo texture went with enemy-fsb.glb), gloves on = the pack glove's sage back and dark grey palm, off = skin; CQC kit: belt with two frag pouches, drop-leg holster on the right thigh, medical pouch on the left upper arm; full-face matte helmet with a smoked visor.
+- Pose (RIDER_FIT, stance frame): hips on the seat, hands on the grips (turn with the bars), feet on the pegs, knees on the tank; sits up slow, tucks from ~30 to ~110 km/h; left foot to the ground when stopped; hangs off a little into a lean (hips and neck to the inside, inside knee opens).
+- Hidden in the garage showroom (no drive world); from the seat only legs and (computer) arms; VR draws its own arms.
+- Checked headless (SwiftShader): run on the R6, stopped (foot down), autopilot at 55 / 99 / 105 km/h, side / front / rear views, a 0.26 rad lean, cockpit view clear; no page errors. Not checked in a headset.

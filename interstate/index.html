@@ -10598,7 +10598,7 @@ function buildGlbCar(car, id, opt = {}) {
      · VR: seated on the bike (its own eye point, the body motion setting applies to the lean); squeeze a grip to hold the
        bar (the glove settles on it); the bars turn with your hands (both held; the hands' turn asks for a lean, ~20 deg for a full one at speed), twisting the right grip back opens the
        throttle, the triggers still work; taking both grips with the engine off starts it.
-   Not built: a rider (the chase camera shows the bike alone), a key on the bike (I starts it), a dash display.
+   Not built (the rider is §14.15): a key on the bike (I starts it), a dash display.
    ════════════════════════════════════════════════════════════════════════ */
 const BIKE_IDS = new Set(['r6']);
 const isBikeModel = id => BIKE_IDS.has(id);
@@ -10834,6 +10834,7 @@ function buildBike(car, id) {
   const bike = { id, meta, S: BIKE_SPEC[id], group, stance, head, steer, offset, slide, hubF, wheelF, swingP, hubR, wheelR, grips, P0, D0, SP, ind, tyres, gauge,
     L: W.zr - W.zf, len: meta.len, rho: (.3 * W.wf + .7 * W.wr) / 2,   // rho: the lean's pivot height (the tread's curve, weighted to the wider rear)
     moving: [head, swingP], set: null };
+  bike.rider = new BikeRider(stance);                                 // §14.15
   const lamps = [...lampHead];
   bikeStance(bike, car.s.data.bike);
   const U = { uNight: { value: 0 }, uBrake: { value: 0 }, uCabin: { value: 0 } };
@@ -10956,6 +10957,129 @@ function bikeVrBars(V, d, pulse) {
 }
 /** VR glove on a held grip: the world point of that bar end. */
 function bikeGripWorld(car, side, out) { const B = car.packCar?.bike; return B ? B.grips[side].getWorldPosition(out) : out; }
+/* ════════════════════════════════════════════════════════════════════════
+   §14.15 The rider: your CQC character on the R6. The same clothes as in the CQC Loop (its saved uniform and gloves,
+   localStorage cqc.wear.v1: black combat uniform, ranger green, or the olive the FSB set falls back to), its kit
+   (belt with two frag pouches, drop-leg holster on the right thigh, medical pouch on the left upper arm) and a
+   full-face helmet with a smoked visor. Built in the bike's stance frame, so it leans with the bike; hands on the
+   grips (they turn with the bars), feet on the pegs, knees on the tank, tucked at speed, sitting up when slow, the
+   left foot down when stopped, hanging off a little into a lean. Two-bone IK as the car's driver (DriverBody).
+   Seen from outside; from the seat only the legs and (on the computer) the arms; never in the garage showroom.
+   ════════════════════════════════════════════════════════════════════════ */
+const RIDER_KIT = {
+  black: { shirt: 0x101113, pants: 0x2c2d31, sleeve: 0x0f1012 },
+  fsb: { shirt: 0x3a4630, pants: 0x3a4630, sleeve: 0x3a4630 },
+  ranger: { shirt: 0x3b3f2c, pants: 0x393c2b, sleeve: 0x363a29 },
+};
+const RIDER_FIT = { hip: [0, .9, .37], peg: [.165, .37, .28], tuckNeck: [0, 1.22, -.03], upNeck: [0, 1.35, .15], groundFoot: [-.42, .085, .24] };
+class BikeRider {
+  constructor(stance) {
+    let wear = {}; try { wear = JSON.parse(localStorage.getItem('cqc.wear.v1') || '{}') || {}; } catch {}
+    const K = RIDER_KIT[wear.uniform] || RIDER_KIT.black, gloved = wear.gloves104 !== false;
+    this.g = new THREE.Group(); this.g.name = 'bike-rider'; this.g.visible = false; stance.add(this.g); this.stance = stance;
+    const std = (c, r = .9, key = 'rider') => Atmos.patch(new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: 0, envMapIntensity: .45 }), { key });
+    const lin = (r, g, b, rough) => Atmos.patch(new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(r, g, b), roughness: rough, metalness: 0, envMapIntensity: .5 }), { key: 'rider' });
+    this.mShirt = std(K.shirt); this.mSleeve = std(K.sleeve); this.mPants = std(K.pants); this.mBoot = std(0x0c0c0d, .55);
+    this.mNylon = std(0x1d1e21, .85);
+    this.mGlove = gloved ? lin(.0229, .0241, .0171, .56) : std(0xb07a5e, .6);         // the pack glove: sage knit back
+    this.mPalm = gloved ? lin(.0092, .0098, .0082, .83) : this.mGlove;                // dark grey leather palm and tips
+    this.mHelm = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: 0x0b0b0c, roughness: .42, metalness: 0, clearcoat: .6, clearcoatRoughness: .25 }), { key: 'riderhelm' });
+    this.mVisor = Atmos.patch(new THREE.MeshPhysicalMaterial({ color: 0x030405, roughness: .04, metalness: .4, clearcoat: 1, clearcoatRoughness: .02, envMapIntensity: 1.2 }), { key: 'ridervisor' });
+    const lathe = (pts, seg = 18) => new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), seg);
+    const rbx = (w, h, d, r) => new RoundedBoxGeometry(w, h, d, 3, r);
+    const add = (geo, mat, parent = this.g) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; parent.add(m); return m; };
+    /* limbs: unit length along +y, scaled to the bone */
+    const thighG = lathe([[.072, 0], [.088, .1], [.082, .5], [.064, .92], [.056, 1]]), shinG = lathe([[.056, 0], [.062, .15], [.052, .7], [.044, 1]]);
+    const upG = lathe([[.058, 0], [.06, .2], [.052, .8], [.046, 1]]), foreG = lathe([[.047, 0], [.046, .3], [.036, .85], [.032, 1]]);
+    this.thigh = [add(thighG, this.mPants), add(thighG, this.mPants)]; this.shin = [add(shinG, this.mPants), add(shinG, this.mPants)];
+    this.up = [add(upG, this.mSleeve), add(upG, this.mSleeve)]; this.fore = [add(foreG, this.mSleeve), add(foreG, this.mSleeve)];
+    this.knee = [0, 1].map(() => add(new THREE.SphereGeometry(.06, 14, 10), this.mPants));
+    this.elbow = [0, 1].map(() => add(new THREE.SphereGeometry(.05, 12, 8), this.mSleeve));
+    this.shoulder = [0, 1].map(() => add(new THREE.SphereGeometry(.072, 12, 8), this.mShirt));
+    this.boot = [0, 1].map(() => add(rbx(.1, .1, .28, .03).translate(0, -.02, -.08), this.mBoot));
+    /* torso (hips to the neck, flattened front to back) with the belt and its pouches */
+    const torso = lathe([[.001, -.06], [.15, -.02], [.165, .08], [.15, .25], [.158, .4], [.172, .52], [.13, .6], [.06, .66], [.001, .68]], 22);
+    torso.scale(1.28, 1, .98); this.torso = add(torso, this.mShirt);
+    const belt = add(lathe([[.178, 0], [.178, .055]], 24).scale(1.29, 1, 1), this.mNylon, this.torso); belt.position.y = .02;
+    for (const sx of [-1, 1]) { const p = add(rbx(.075, .1, .055, .012), this.mNylon, this.torso); p.position.set(sx * .19, .02, .13); }   // frag pouches on the belt, behind the hips
+    this.pelvis = add(rbx(.37, .15, .3, .06), this.mPants);
+    this.holster = add(rbx(.05, .2, .13, .015), this.mNylon);                         // drop-leg holster, right thigh
+    this.medPouch = add(rbx(.05, .1, .07, .012), this.mNylon);                        // medical pouch, left upper arm
+    /* full-face helmet: shell, chin bar, visor, neck */
+    this.head = new THREE.Group(); this.g.add(this.head);
+    add(new THREE.SphereGeometry(.142, 24, 16).scale(1, 1.05, 1.15), this.mHelm, this.head);
+    const chin = add(rbx(.2, .09, .1, .04), this.mHelm, this.head); chin.position.set(0, -.09, -.11);
+    const visor = add(new THREE.SphereGeometry(.146, 24, 10, Math.PI * 1.17, Math.PI * .66, Math.PI * .36, Math.PI * .24).scale(1, 1.05, 1.15), this.mVisor, this.head);
+    visor.rotation.y = 0;
+    this.neck = add(new THREE.CylinderGeometry(.055, .065, 1, 12).translate(0, .5, 0), this.mShirt);
+    this.glove = [0, 1].map(sg => this.#glove(sg ? 1 : -1));
+    this.firstPerson = [this.torso, this.pelvis, this.head, this.neck, ...this.shoulder, this.medPouch];
+    this.armParts = [...this.up, ...this.fore, ...this.elbow, ...this.glove];
+    this._v = [...Array(12)].map(() => new THREE.Vector3()); this._m = new THREE.Matrix4(); this.y = new THREE.Vector3(0, 1, 0);
+    this.down = 0; this.tuck = 0; this.hang = 0;
+  }
+  #glove(sg) {
+    const g = new THREE.Group(), rbx = (w, h, d, r) => new RoundedBoxGeometry(w, h, d, 3, r);
+    const mk = (geo, mat, x, y, z, rx = 0, ry = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, 0); m.castShadow = true; m.frustumCulled = false; g.add(m); return m; };
+    mk(rbx(.085, .038, .09, .014), this.mGlove, 0, 0, 0);
+    mk(rbx(.086, .046, .042, .016), this.mPalm, 0, -.022, -.05, .5);                  // fingers closed round the grip
+    mk(rbx(.024, .022, .055, .009), this.mPalm, -sg * .04, -.006, -.025, 0, sg * .6);
+    mk(rbx(.072, .052, .05, .02), this.mSleeve, 0, 0, .066);                           // cuff under the sleeve
+    this.g.add(g); return g;
+  }
+  #seg(m, a, b, r = 1) { const d = this._v[11].copy(b).sub(a), l = d.length(); m.position.copy(a); m.quaternion.setFromUnitVectors(this.y, d.multiplyScalar(1 / Math.max(l, 1e-5))); m.scale.set(r, l, r); }
+  #ik(out, a, c, l1, l2, pole) {
+    const d = this._v[10].copy(c).sub(a); let L = d.length(); L = clamp(L, Math.abs(l1 - l2) + .01, l1 + l2 - .002); d.normalize();
+    const n = this._v[9].copy(pole); n.addScaledVector(d, -n.dot(d)).normalize();
+    const x = (l1 * l1 - l2 * l2 + L * L) / (2 * L), h = Math.sqrt(Math.max(l1 * l1 - x * x, 0));
+    return out.copy(a).addScaledVector(d, x).addScaledVector(n, h);
+  }
+  /** Per frame. B: the bike; car: CarObject; d: the drive world (null = showroom: hidden); view: the seat camera. */
+  update(dt, B, car, d, view) {
+    const vr = !!d?.vr?.driving;
+    this.g.visible = !!d; if (!d) return;
+    for (const m of this.firstPerson) m.visible = !view;
+    for (const m of this.armParts) m.visible = !vr;
+    const F = RIDER_FIT, V = this._v, sim = d.sim, v = Math.abs(d.v || 0);
+    const k = 1 - Math.exp(-4 * dt);
+    this.tuck += (clamp((v - 8) / 22, 0, 1) - this.tuck) * k;                         // sits up slow, tucks from ~30 to ~110 km/h
+    const stopped = v < 1 && (sim?.throttle ?? 0) < .15;
+    this.down += ((stopped ? 1 : 0) - this.down) * (1 - Math.exp(-5 * dt));
+    const r = car.body.rotation.z || 0;
+    this.hang += (clamp(r / .8, -1, 1) - this.hang) * (1 - Math.exp(-6 * dt));        // + roll: the top goes to -x, so the inside is -x
+    /* torso: hips on the seat, neck from upright to tucked, both shifted a little into the lean */
+    const hip = V[0].set(...F.hip); hip.x -= .06 * this.hang;
+    const n0 = F.upNeck, n1 = F.tuckNeck, t = this.tuck;
+    const neck = V[1].set(lerp(n0[0], n1[0], t) - .17 * this.hang, lerp(n0[1], n1[1], t), lerp(n0[2], n1[2], t));
+    this.pelvis.position.set(hip.x, hip.y - .02, hip.z + .02);
+    this.#seg(this.torso, V[2].set(hip.x, hip.y + .02, hip.z), neck); this.torso.scale.set(1, V[2].distanceTo(neck) / .68, 1);
+    /* helmet: on the neck, chin toward the road ahead whatever the lean of the back */
+    const hc = V[3].set(neck.x - .02 * this.hang, neck.y + .13 - .03 * t, neck.z - .05 - .03 * t);
+    this.#seg(this.neck, neck, hc, 1); this.neck.scale.y = neck.distanceTo(hc) * .7;
+    this.head.position.copy(hc); this.head.rotation.set(-.1 * t, 0, .12 * this.hang);
+    /* arms: shoulders to the grips (they turn with the bars) */
+    this.stance.updateWorldMatrix(true, false); this._m.copy(this.stance.matrixWorld).invert();
+    for (const [i, sg, side] of [[0, -1, 'left'], [1, 1, 'right']]) {
+      const s = V[4].set(neck.x + sg * .19, neck.y - .05, neck.z + .03); this.shoulder[i].position.copy(s);
+      const wr = B.grips[side].getWorldPosition(V[5]).applyMatrix4(this._m); wr.z += .045; wr.y += .01;
+      const el = this.#ik(V[6], s, wr, .3, .28, V[7].set(sg * .7, -.6, .25));
+      this.#seg(this.up[i], s, el, 1.12); this.#seg(this.fore[i], el, wr, 1.08); this.elbow[i].position.copy(el); this.elbow[i].scale.setScalar(1.1);
+      const gl = this.glove[i]; gl.position.copy(wr); gl.quaternion.setFromUnitVectors(V[8].set(0, 0, 1), V[9].copy(el).sub(wr).normalize());
+      if (i === 0) { this.medPouch.position.lerpVectors(s, el, .45); this.medPouch.position.x -= .055; this.medPouch.quaternion.copy(this.up[i].quaternion); }
+    }
+    /* legs: feet on the pegs, knees on the tank; stopped, the left foot goes to the ground */
+    for (const [i, sg] of [[0, -1], [1, 1]]) {
+      const hp = V[4].set(hip.x + sg * .1, hip.y, hip.z - .03);
+      const ank = V[5].set(sg * F.peg[0], F.peg[1] + .05, F.peg[2] + .02);
+      if (sg < 0 && this.down > .01) ank.lerp(V[6].set(...F.groundFoot), this.down);
+      const inside = sg * this.hang < 0 ? 0 : .25 * Math.abs(this.hang);              // the inside knee opens toward the road
+      const kn = this.#ik(V[7], hp, ank, .46, .45, V[8].set(sg * (.18 + inside), .25, -1));
+      this.#seg(this.thigh[i], hp, kn, 1.12); this.#seg(this.shin[i], kn, ank, 1.1); this.knee[i].position.copy(kn); this.knee[i].scale.setScalar(1.1);
+      this.boot[i].position.copy(ank); this.boot[i].rotation.set(sg < 0 ? -.1 * this.down : 0, 0, 0);
+      if (sg > 0) { this.holster.position.lerpVectors(hp, kn, .5); this.holster.position.x += .085; this.holster.quaternion.copy(this.thigh[i].quaternion); }
+    }
+  }
+}
 /** Garage numbers for the Performance tab. */
 function bikeStats(b = {}, c = {}) {
   const S = BIKE_SPEC.r6, pw = BIKE_POWER[b.power] || BIKE_POWER.stock, red = clamp(+b.revLimit || S.red, 14000, 17000), rear = clamp(+b.sprocket || S.rear, 42, 50);
@@ -12523,7 +12647,7 @@ class CabinControls {
     this.t += dt; this.sim = d?.sim;
     CABIN_OCC_U.uCabInv.value?.copy(car.body.matrixWorld).invert();        // cabin occlusion frame (§14.7)
     for (const k in this.rigs) if (this.rigs[k]) { this.rigs[k].root.visible = k === car.bodyKey && !car.cabHide; this.rigs[k].col.visible = k === car.bodyKey && !car.cabHide; }   // cabHide: Low preset, seen from outside
-    if (!R) { if (car.packCar?.bike) bikeCabTick(this, dt, d); return; }   // §14.14: key, relay, self-cancel
+    if (!R) { const Bk = car.packCar?.bike; if (Bk) { bikeCabTick(this, dt, d); Bk.rider?.update(dt, Bk, car, d, view); } return; }   // §14.14; §14.15 the rider   // §14.14: key, relay, self-cancel
     const sim = d?.sim, rpm = sim?.rpm || 0, v = Math.abs(d?.v || 0), running = !!sim?.running;
     /* key: START springs back to ON once the engine has caught (or after the crank time on the desktop) */
     if (S.ign === 2) { S.crankT -= dt; if (!this.vrHolding('key') && (running || S.crankT <= 0)) S.ign = 1; }
