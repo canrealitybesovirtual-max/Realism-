@@ -7,7 +7,7 @@
 // floor one level. North glass at z = 0, south glass at z = 17.55, terrace to z = 19.25.
 import * as THREE from 'three';
 import { Builder, boxGeo, flatGeo, shapeFlat, shellGeo, shellColliders, polar, tube } from './build.js';
-import { lever as leverGeo, hinge as hingeGeo, mirrorZ } from './hw.js';
+import { lever as leverGeo, hinge as hingeGeo, mirrorZ, switchPlate } from './hw.js';
 
 export const LV = { L1: 0, C1: 4.25, L2: 4.6, C2: 8.2, RF: 8.6 };
 const { L1, C1, L2, C2, RF } = LV;
@@ -74,7 +74,13 @@ export function buildApartment(M, Q) {
     const bx = (s0, s1, y0, y1, u0, u1) => { if (axis === 'x') B.box(s0, y0, u0, s1, y1, u1, L, false); else B.box(u0, y0, s0, u1, y1, s1, L, false); };
     bx(a, a + j, lo, hi, t0, t1); bx(b - j, b, lo, hi, t0, t1); bx(a, b, hi - j, hi, t0, t1);
     for (const [u0, u1] of [[t0 - p, t0], [t1, t1 + p]]) { bx(a - c, a, lo, hi + c, u0, u1); bx(b, b + c, lo, hi + c, u0, u1); bx(a - c, b + c, hi, hi + c, u0, u1); }
-    bx(b + c + 0.09, b + c + 0.17, lo + 1.04, lo + 1.16, t1, t1 + 0.011);
+    // decorator switch on the t1 face, 1.1 m up, beside the casing
+    const sw = switchPlate(), sx = b + c + 0.13, sy = lo + 1.1;
+    for (const [k, m] of [['plate', L], ['rocker', L], ['body', M.blackMetal]]) {
+      const g = sw[k];
+      if (axis === 'x') g.translate(sx, sy, t1); else g.rotateY(Math.PI / 2).translate(t1, sy, sx);
+      B.add(g, m);
+    }
   };
   // the tower's bronze filigree: a curved ribbon outside every slot window
   const ribbon = (axis, wplane, out, a, b, lo, hi) => {

@@ -161,3 +161,34 @@ export function towelRing() {
   const ring = new THREE.TorusGeometry(0.09, 0.006, 10, 40).translate(0, -0.09, 0.055);
   return merge([rose, post, ring]);
 }
+// screwless decorator wall plate 70 x 115 mm, 6 mm deep, bevelled edge (frame: wall face z 0,
+// +z out, centred); opening for one decorator device 33.5 x 67 mm
+const plateGeo = (w = 0.0656, h = 0.1106, open = true) => {
+  const s = new THREE.Shape(); const r = 0.004;
+  s.moveTo(-w / 2 + r, -h / 2); s.lineTo(w / 2 - r, -h / 2); s.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + r); s.lineTo(w / 2, h / 2 - r); s.quadraticCurveTo(w / 2, h / 2, w / 2 - r, h / 2); s.lineTo(-w / 2 + r, h / 2); s.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - r); s.lineTo(-w / 2, -h / 2 + r); s.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + r, -h / 2);
+  if (open) { const p = new THREE.Path(); p.moveTo(-0.01675, -0.0335); p.lineTo(0.01675, -0.0335); p.lineTo(0.01675, 0.0335); p.lineTo(-0.01675, 0.0335); p.lineTo(-0.01675, -0.0335); s.holes.push(p); }
+  return new THREE.ExtrudeGeometry(s, { depth: 0.003, bevelEnabled: true, bevelThickness: 0.0025, bevelSize: 0.0022, bevelSegments: 3, curveSegments: 4 }).translate(0, 0, 0.0025);
+};
+// light switch: plate + a rocker paddle (33 x 66 mm) that is rocked 2.5 degrees (top in) and
+// stands 2-4 mm proud of the plate, set in a dark device body
+export function switchPlate() {
+  const body = new THREE.BoxGeometry(0.0335, 0.067, 0.006).translate(0, 0, 0.003);
+  const pad = new THREE.Shape(); const w = 0.0158, h = 0.0325, r = 0.002;
+  pad.moveTo(-w + r, -h); pad.lineTo(w - r, -h); pad.quadraticCurveTo(w, -h, w, -h + r); pad.lineTo(w, h - r); pad.quadraticCurveTo(w, h, w - r, h); pad.lineTo(-w + r, h); pad.quadraticCurveTo(-w, h, -w, h - r); pad.lineTo(-w, -h + r); pad.quadraticCurveTo(-w, -h, -w + r, -h);
+  const rocker = new THREE.ExtrudeGeometry(pad, { depth: 0.002, bevelEnabled: true, bevelThickness: 0.001, bevelSize: 0.0008, bevelSegments: 2, curveSegments: 3 }).rotateX(-0.044).translate(0, 0, 0.0065);
+  return { plate: merge([plateGeo()]), rocker: merge([rocker]), body: merge([body]) };
+}
+// duplex decorator receptacle: plate + device face 2 mm proud with two outlets, each with two
+// vertical slots (one wider: neutral) and a ground hole cut through, a dark cavity behind
+export function outletPlate() {
+  const f = new THREE.Shape(); const w = 0.0164, h = 0.0328;
+  f.moveTo(-w, -h); f.lineTo(w, -h); f.lineTo(w, h); f.lineTo(-w, h); f.lineTo(-w, -h);
+  const slot = (cx, cy, sw, sh) => { const p = new THREE.Path(); p.moveTo(cx - sw / 2, cy - sh / 2); p.lineTo(cx + sw / 2, cy - sh / 2); p.lineTo(cx + sw / 2, cy + sh / 2); p.lineTo(cx - sw / 2, cy + sh / 2); p.lineTo(cx - sw / 2, cy - sh / 2); f.holes.push(p); };
+  for (const cy of [0.0135, -0.0175]) {
+    slot(-0.0063, cy + 0.003, 0.0017, 0.0075); slot(0.0063, cy + 0.003, 0.0022, 0.0085);
+    const gr = new THREE.Path(); gr.absarc(0, cy - 0.0075, 0.0024, 0, Math.PI, false); gr.lineTo(-0.0024, cy - 0.0095); gr.lineTo(0.0024, cy - 0.0095); gr.lineTo(0.0024, cy - 0.0075); f.holes.push(gr);
+  }
+  const face = new THREE.ExtrudeGeometry(f, { depth: 0.003, bevelEnabled: true, bevelThickness: 0.0006, bevelSize: 0.0005, bevelSegments: 1, curveSegments: 6 }).translate(0, 0, 0.0055);
+  const cavity = new THREE.BoxGeometry(0.03, 0.064, 0.002).translate(0, 0, 0.0045);
+  return { plate: merge([plateGeo()]), face: merge([face]), cavity: merge([cavity]) };
+}

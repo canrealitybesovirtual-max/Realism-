@@ -5,7 +5,7 @@
 // z 0..6.72, north glass at z = 0.
 import * as THREE from 'three';
 import { Builder } from './build.js';
-import { barPull, counter, basin, drain, kitchenFaucet, bathFaucet, toiletSeat, flushPlate, showerSet, towelRing } from './hw.js';
+import { barPull, counter, basin, drain, kitchenFaucet, bathFaucet, toiletSeat, flushPlate, showerSet, towelRing, outletPlate } from './hw.js';
 
 // ---- geometry kit ----------------------------------------------------------------------------
 // Rounded box centred at the origin: w x h x d, edge radius r, seg steps per rounded edge.
@@ -463,10 +463,19 @@ function bed(B, M, x, z, ry, W = 2.05, Lb = 2.2, hbMat = null, HWx = 1.4) {
   B.colliders.push({ t: 'obox', c: [x, 0.35, z], h: [W / 2, 0.35, Lb / 2], yaw: ry, mat: M.linen });
 }
 function nightstand(B, M, x, z, ry) {
+  // walnut case on a recessed plinth, two drawers with 3 mm reveals, bronze bar pulls
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  add(at(rbox(0.55, 0.5, 0.42, 0.01), 0, 0.27, 0), M.woodMid);
-  add(at(rbox(0.5, 0.004, 0.005, 0.001, 1), 0, 0.3, 0.212), M.blackMatte);
-  for (const [u, v] of [[-0.24, -0.17], [0.24, -0.17], [-0.24, 0.17], [0.24, 0.17]]) add(at(rbox(0.025, 0.03, 0.025, 0.004, 1), u, 0.015, v), M.blackMatte);
+  const W = 0.55, D = 0.42, H = 0.56, pl = 0.06;
+  add(at(rbox(W - 0.06, pl, D - 0.06, 0.004, 1), 0, pl / 2, -0.01), M.blackMatte);
+  add(at(rbox(W, H - pl, D - 0.02, 0.006, 2), 0, pl + (H - pl) / 2, -0.01), M.woodMid);
+  const fh = (H - pl - 0.05 - 0.003) / 2;
+  for (const k of [0, 1]) {
+    const y = pl + 0.025 + fh / 2 + k * (fh + 0.003);
+    add(at(rbox(W - 0.03, fh, 0.004, 0.0015, 1), 0, y, D / 2 - 0.022), M.blackMatte);          // reveal shadow
+    add(at(rbox(W - 0.036, fh - 0.006, 0.019, 0.003, 2), 0, y, D / 2 - 0.0095), M.woodMid);     // drawer front
+    add(at(barPull(0.12, 0.0055, 0.022, 0.018).rotateZ(Math.PI / 2), 0, y + fh * 0.18, D / 2), M.bronzeLight);
+  }
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.woodMid });
 }
 
 // open shelving wall (apartment-09 bleached oak, apartment-13 dark oak): a frame of shelves and
@@ -619,6 +628,11 @@ function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null } = {}) {
   const holes = sink != null ? [[sink, 0.03, 0.58, 0.4, 0.035]] : [];
   add(at(counter(L, D + 0.02, 0.03, holes), 0, H + 0.03, 0.01), M.stone);
   add(at(rbox(L, 0.58, 0.015, 0.002, 1), 0, H + 0.03 + 0.29, -D / 2 + 0.008), M.stone);
+  // two duplex outlets in the stone backsplash
+  for (const u of [-L / 2 + 0.35, L / 2 - 0.35]) {
+    const o = outletPlate(), y = H + 0.03 + 0.24, v = -D / 2 + 0.0155;
+    add(at(o.plate, u, y, v), M.lacquerWhite); add(at(o.face, u, y, v), M.lacquerWhite); add(at(o.cavity, u, y, v), M.blackMatte);
+  }
   if (uppers) for (let i = 0; i < n; i++) add(at(rbox(w - 0.004, 0.86, 0.35, 0.003, 1), -L / 2 + w * (i + 0.5), 1.5 + 0.43, -D / 2 + 0.175), M.lacquerWhite);
   if (sink != null) {
     add(at(basin(0.6, 0.42, 0.22, 0.04), sink, H, 0.04), M.sinkSteel);
@@ -1005,7 +1019,7 @@ function furnitureMaterials(M, Q) {
   M.bookBlack = new THREE.MeshStandardMaterial({ color: '#1d1c1b', roughness: 0.6 });
   M.duvet = M.linen.clone(); M.duvet.color = new THREE.Color('#ece5da');
   M.throwSand = M.linen.clone(); M.throwSand.color = new THREE.Color('#c9b39a');
-  M.nickel = new THREE.MeshStandardMaterial({ color: '#a8a49d', metalness: 1, roughness: 0.03 });
+  M.nickel = new THREE.MeshStandardMaterial({ color: '#8e8a83', metalness: 1, roughness: 0.06 });
   M.crystal = new THREE.MeshStandardMaterial({ color: '#e9eef2', metalness: 0.6, roughness: 0.04, transparent: true, opacity: 0.75, depthWrite: false });
   M.crystal.userData = { shadow: 'cast', order: 6 };
   M.goldLeaf = new THREE.MeshStandardMaterial({ color: '#c8a35a', metalness: 1, roughness: 0.28, side: THREE.DoubleSide });
@@ -1023,7 +1037,7 @@ function furnitureMaterials(M, Q) {
   M.ledStrip = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffe6c4', emissiveIntensity: 1.6, roughness: 0.5 });
   M.ledStrip.userData = { shadow: 'none' };
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
-  M.amberGlass = new THREE.MeshStandardMaterial({ color: '#d9a85f', emissive: '#ffb45a', emissiveIntensity: 0.9, roughness: 0.25, metalness: 0.2 });
+  M.amberGlass = new THREE.MeshStandardMaterial({ color: '#8a7656', emissive: '#d9b27c', emissiveIntensity: 0.3, roughness: 0.16, metalness: 0.4 });
   M.towel = M.boucle.clone(); M.towel.color = new THREE.Color('#fbf8f2');
   M.towelSand = M.boucle.clone(); M.towelSand.color = new THREE.Color('#c9b298');
   M.settingBed = new THREE.MeshStandardMaterial({ color: '#4a4540', roughness: 0.9 });
