@@ -133,8 +133,8 @@ export function buildApartment(M, Q) {
         // profiled cap on the room side (wider than the fin) and glazing beads at the glass
         const cw = 0.048, ce = t + md, cd = 0.02 * inward;
         const c0 = Math.max(s0, s - cw), c1 = Math.min(s1, s + cw);
-        if (axis === 'x') B.box(c0, y0, Math.min(ce, ce + cd), c1, y1, Math.max(ce, ce + cd), M.bronzeLight, false);
-        else B.box(Math.min(ce, ce + cd), y0, c0, Math.max(ce, ce + cd), y1, c1, M.bronzeLight, false);
+        if (axis === 'x') B.box(c0, y0, Math.min(ce, ce + cd), c1, y1, Math.max(ce, ce + cd), M.blackMetal, false);
+        else B.box(Math.min(ce, ce + cd), y0, c0, Math.max(ce, ce + cd), y1, c1, M.blackMetal, false);
       }
       // sill and head frames
       if (axis === 'x') { B.box(s0, y0, Math.min(t, t + md), s1, y0 + 0.05, Math.max(t, t + md), M.bronze, false); B.box(s0, y1 - 0.08, Math.min(t, t + md), s1, y1, Math.max(t, t + md), M.bronze, false); }

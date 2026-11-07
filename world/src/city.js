@@ -128,7 +128,7 @@ function buildingMaterial() {
           vec2 lo = vec2(0.22, 0.24), hi = vec2(0.78, 0.82);
           float rev = 0.25;
           vec3 gT = vec3(0.045, 0.05, 0.055);
-          if (bSt == 1) { lo = vec2(0.025, 0.15); hi = vec2(0.975, 0.985); rev = 0.04; gT = mix(vec3(0.08, 0.11, 0.13), vec3(0.15, 0.15, 0.13), vInfo2.z); }
+          if (bSt == 1) { lo = vec2(0.025, 0.15); hi = vec2(0.975, 0.985); rev = 0.04; gT = mix(vec3(0.2, 0.25, 0.29), vec3(0.3, 0.3, 0.27), vInfo2.z); }
           else if (bSt == 2) { lo = vec2(0.0, 0.27); hi = vec2(1.0, 0.94); rev = 0.9; }
           else if (bSt == 3) { lo = vec2(0.17, 0.2); hi = vec2(0.83, 0.84); rev = 0.35; gT = vec3(0.06, 0.07, 0.075); }
           else if (bSt == 4) { lo = vec2(0.09, 0.08); hi = vec2(0.91, 0.92); rev = 0.6; gT = vec3(0.06, 0.07, 0.08); }
@@ -140,7 +140,7 @@ function buildingMaterial() {
           float mechF = (vInfo2.w > 0.5 && mod(ic.y, vInfo2.w) < 0.5) ? 1.0 : 0.0;
           float win = cRect(f, lo, hi, fw2 * 1.5) * step(1.1, bTop) * (1.0 - mechF);
           float avg = (hi.x - lo.x) * (hi.y - lo.y);
-          float lod = clamp(fw * 1.4 - 0.3, 0.0, 1.0);
+          float lod = clamp(fw * 2.2 - 0.45, 0.0, 1.0);
           win = mix(win, avg * step(1.1, bTop) * (1.0 - mechF), lod);
           // wall detail per style
           vec3 wall = bCol;
@@ -210,22 +210,23 @@ function buildingMaterial() {
               } else if (t == tu) c = wc * 0.78;
               else if (ry > 0.0) c = vec3(0.82, 0.82, 0.8);
               else c = mix(vec3(0.3, 0.22, 0.15), vec3(0.42, 0.42, 0.44), step(0.5, cH21(ic + 7.0)));
-              float lit = step(0.74, rh);
-              float lamp = lit * ((ry > 0.0 && t == ty) ? 2.6 : 1.0);
+              float lit = step(0.9, rh);
+              float lamp = lit * ((ry > 0.0 && t == ty) ? 1.7 : 0.8);
               c *= mix(1.0, 0.3, hw) * 0.6 + lamp * 0.45;
             } else {
-              c = vec3(0.3) * (0.6 + step(0.74, rh) * 0.8);
+              c = vec3(0.3) * (0.6 + step(0.9, rh) * 0.6);
             }
             // blinds / curtains drawn part way down
-            float bl = cH21(ic + 11.3) < 0.38 ? cH21(ic + 5.7) * 0.85 : 0.0;
+            float bl = (cH21(ic + 11.3) < (bSt == 1 ? 0.15 : 0.38) ? cH21(ic + 5.7) * 0.85 : 0.0) * (1.0 - lod);
             float wy = (f.y - lo.y) / max(hi.y - lo.y, 0.01);
             c = mix(c, vec3(0.8, 0.78, 0.73) * (0.6 + 0.4 * clamp(sn, 0.0, 1.0)), step(1.0 - bl, wy));
-            bInt = c * uIntK * mix(1.0, 0.55, shd * step(0.03, sn)) * win;
+            c = mix(c, vec3(0.22), lod);                                   // far: no per-room speckle
+            bInt = c * uIntK * mix(1.0, 0.55, shd * step(0.03, sn)) * win * (bSt == 1 ? 0.4 : 1.0);
           }
           bCol = mix(wall, gT * mix(1.0, 0.75, shd * step(0.03, sn)), win);
           bWin = win;
           bMet = mix(bMet, 1.0, win);
-          bRough = mix(bRough, 0.04 + 0.07 * cH21(ic + 2.0), win);
+          bRough = mix(bRough, 0.04 + 0.07 * cH21(ic + 2.0) * (1.0 - lod), win);
         }
         diffuseColor.rgb = bCol;`)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = bRough;')
@@ -248,11 +249,9 @@ function partGeometry() {
 function tankGeometry() {
   const parts = [];
   const col = (g, c) => { const n = g.attributes.position.count, a = new Float32Array(n * 3); const cc = new THREE.Color(c); for (let i = 0; i < n; i++) { a[i * 3] = cc.r; a[i * 3 + 1] = cc.g; a[i * 3 + 2] = cc.b; } g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g.index ? g.toNonIndexed() : g; };
-  const body = new THREE.CylinderGeometry(1, 1, 1, 12, 1, true); body.translate(0, 0.9, 0); parts.push(col(body, '#6b5745'));
-  for (const y of [0.55, 0.85, 1.15]) { const h = new THREE.CylinderGeometry(1.03, 1.03, 0.05, 12, 1, true); h.translate(0, y, 0); parts.push(col(h, '#2b2826')); }
-  const roof = new THREE.ConeGeometry(1.06, 0.5, 12, 1, true); roof.translate(0, 1.65, 0); parts.push(col(roof, '#33302d'));
-  const deck = new THREE.CylinderGeometry(1.15, 1.15, 0.06, 12); deck.translate(0, 0.38, 0); parts.push(col(deck, '#2a2a2a'));
-  for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + Math.PI / 4; const l = new THREE.BoxGeometry(0.08, 0.38, 0.08); l.translate(Math.cos(a) * 0.8, 0.19, Math.sin(a) * 0.8); parts.push(col(l, '#222222')); }
+  const body = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true); body.translate(0, 0.9, 0); parts.push(col(body, '#6b5745'));
+  const roof = new THREE.ConeGeometry(1.06, 0.5, 8, 1, true); roof.translate(0, 1.65, 0); parts.push(col(roof, '#33302d'));
+  const base = new THREE.CylinderGeometry(1.0, 0.75, 0.4, 8, 1, true); base.translate(0, 0.2, 0); parts.push(col(base, '#252423'));
   const g = mergeAll(parts); g.computeVertexNormals(); return g;
 }
 function mergeAll(list) {
@@ -313,7 +312,7 @@ const GROUND_FS = /* glsl */`
     float shadowT = 1.0 - smoothstep(r - 0.4, r + 0.4, length(sh));
     float crown = 1.0 - smoothstep(r - 0.3 - gf, r + gf, length(tc));
     gc *= 1.0 - 0.5 * shadowT * hasT;
-    vec3 tg = mix(vec3(0.12, 0.2, 0.07), vec3(0.24, 0.3, 0.1), cH21(vec2(slot, 7.0))) * (0.75 + 0.5 * cN21(gp * 1.3));
+    vec3 tg = mix(vec3(0.06, 0.11, 0.04), vec3(0.13, 0.18, 0.06), cH21(vec2(slot, 7.0))) * (0.75 + 0.5 * cN21(gp * 1.3));
     tg *= 0.8 + 0.4 * smoothstep(r, 0.0, length(tc + vec2(0.6, 0.6)));
     gc = mix(gc, tg, crown * hasT);
   }
@@ -327,13 +326,13 @@ const GROUND_FS = /* glsl */`
       float sp = 9.0 + 4.0 * cH21(vec2(li, 2.0));
       float s = gp.y - dirA * uTime * sp;
       float slot = floor(s / 14.0);
-      float occ = step(0.42, cH21(vec2(slot, li * 7.0 + floor(gp.x / gAV))));
+      float occ = step(0.74, cH21(vec2(slot, li * 7.0 + floor(gp.x / gAV))));
       float cl = cH21(vec2(slot, li + 31.0));
       vec2 q = vec2(ax - lc, fract(s / 14.0) * 14.0 - 7.0);
-      float L = cl < 0.06 ? 6.5 : 2.3, W = cl < 0.06 ? 1.3 : 0.92;
+      float L = cl < 0.04 ? 6.2 : 2.3, W = cl < 0.04 ? 1.28 : 0.92;
       carM = occ * (1.0 - smoothstep(W - gf, W + gf, abs(q.x))) * (1.0 - smoothstep(L - gf, L + gf, abs(q.y)));
       carSh = occ * (1.0 - smoothstep(W + 0.3, W + 0.6, abs(q.x - 0.5))) * (1.0 - smoothstep(L + 0.2, L + 0.5, abs(q.y + 0.5)));
-      carC = cl < 0.3 ? vec3(0.78, 0.6, 0.08) : cl < 0.55 ? vec3(0.04) : cl < 0.7 ? vec3(0.75) : cl < 0.85 ? vec3(0.32, 0.33, 0.35) : vec3(0.35, 0.06, 0.05);
+      carC = cl < 0.04 ? vec3(0.72, 0.74, 0.78) : cl < 0.18 ? vec3(0.78, 0.6, 0.08) : cl < 0.45 ? vec3(0.04) : cl < 0.65 ? vec3(0.75) : cl < 0.85 ? vec3(0.32, 0.33, 0.35) : cl < 0.93 ? vec3(0.1, 0.13, 0.25) : vec3(0.35, 0.06, 0.05);
       float roofP = (1.0 - smoothstep(0.55, 0.6, abs(q.x))) * (1.0 - smoothstep(0.9, 1.0, abs(q.y + dirA * 0.2)));
       carC = mix(carC, carC * 0.6 + 0.04, roofP * 0.4);
     } else if (onS > 0.5 && onA < 0.5) {
@@ -341,12 +340,12 @@ const GROUND_FS = /* glsl */`
       float dirS = mod(floor((gp.y - gOz + gST * 0.5) / gST), 2.0) < 0.5 ? 1.0 : -1.0;
       float s = gp.x - dirS * uTime * 7.0;
       float slot = floor(s / 16.0);
-      float occ = step(0.55, cH21(vec2(slot, li * 5.0 + floor((gp.y - gOz) / gST))));
+      float occ = step(0.78, cH21(vec2(slot, li * 5.0 + floor((gp.y - gOz) / gST))));
       float cl = cH21(vec2(slot, li + 17.0));
       vec2 q = vec2(fract(s / 16.0) * 16.0 - 8.0, abs(sz) - 3.2);
       carM = occ * (1.0 - smoothstep(2.3 - gf, 2.3 + gf, abs(q.x))) * (1.0 - smoothstep(0.92 - gf, 0.92 + gf, abs(q.y)));
       carSh = occ * (1.0 - smoothstep(2.5, 2.9, abs(q.x + 0.5))) * (1.0 - smoothstep(1.2, 1.5, abs(q.y - 0.5)));
-      carC = cl < 0.3 ? vec3(0.78, 0.6, 0.08) : cl < 0.6 ? vec3(0.05) : cl < 0.8 ? vec3(0.72) : vec3(0.18, 0.22, 0.32);
+      carC = cl < 0.15 ? vec3(0.78, 0.6, 0.08) : cl < 0.5 ? vec3(0.05) : cl < 0.75 ? vec3(0.72) : vec3(0.18, 0.22, 0.32);
     }
     gc *= 1.0 - 0.45 * carSh;
     gc = mix(gc, carC, carM);
@@ -383,21 +382,23 @@ function parkMaterial(U) {
         float h = pCrown(pp);
         float hs = pCrown(pp + normalize(uSunDir.xz) * 1.6);
         float lit = clamp(0.75 + (hs - h) * 2.4 + (h - 0.65) * 0.8, 0.35, 1.3);
-        float aut = smoothstep(0.62, 0.8, cN21(pp / 90.0 + 3.0));
-        vec3 green = mix(vec3(0.1, 0.19, 0.06), vec3(0.2, 0.28, 0.08), cN21(pp / 30.0));
-        vec3 leaf = mix(green, mix(vec3(0.45, 0.33, 0.07), vec3(0.42, 0.16, 0.05), cN21(pp / 25.0)), aut * step(0.45, cN21(pp / 9.0)));
+        float aut = smoothstep(0.66, 0.85, cN21(pp / 90.0 + 3.0)) * 0.6;
+        vec3 green = mix(vec3(0.06, 0.12, 0.04), vec3(0.12, 0.18, 0.05), cN21(pp / 30.0));
+        vec3 leaf = mix(green, mix(vec3(0.27, 0.23, 0.07), vec3(0.28, 0.13, 0.05), cN21(pp / 25.0)), aut * step(0.5, cN21(pp / 9.0)));
         vec3 pc = leaf * lit * (0.6 + 0.6 * smoothstep(0.35, 0.75, h));
         // lawns
         vec2 l1 = (pp - vec2(10.0, -1650.0)) / vec2(150.0, 115.0), l2 = (pp - vec2(-80.0, -560.0)) / vec2(170.0, 95.0), l3 = (pp - vec2(220.0, -3600.0)) / vec2(120.0, 160.0);
         float lawn = max(max(1.0 - smoothstep(0.95, 1.0, length(l1)), 1.0 - smoothstep(0.95, 1.0, length(l2))), 1.0 - smoothstep(0.95, 1.0, length(l3)));
-        vec3 grass = mix(vec3(0.24, 0.34, 0.1), vec3(0.3, 0.4, 0.13), step(0.5, fract(pp.x / 6.0))) * (0.9 + 0.2 * cN21(pp * 0.3));
+        vec3 grass = mix(vec3(0.15, 0.24, 0.07), vec3(0.18, 0.28, 0.08), step(0.5, fract(pp.x / 6.0))) * (0.9 + 0.2 * cN21(pp * 0.3));
         pc = mix(pc, grass, lawn);
         // winding paths and the loop drive near the edge
-        float pth = abs(cN21(pp / 70.0) - 0.5);
-        float path = 1.0 - smoothstep(0.012, 0.012 + gf * 0.02 + 0.004, pth);
+        // paths: the 0.5 contour of a noise field, constant width in metres (distance = value / slope)
+        float n0 = cN21(pp / 70.0), nx = cN21((pp + vec2(1.0, 0.0)) / 70.0), nz = cN21((pp + vec2(0.0, 1.0)) / 70.0);
+        float pd = abs(n0 - 0.5) / max(length(vec2(nx - n0, nz - n0)), 1e-4);
+        float path = 1.0 - smoothstep(1.4, 1.4 + gf, pd);
         float ex = min(min(pp.x - ${PARK.x0.toFixed(1)}, ${PARK.x1.toFixed(1)} - pp.x), min(pp.y - (${PARK.z0.toFixed(1)}), (${PARK.z1.toFixed(1)}) - pp.y));
         float drive = (1.0 - smoothstep(4.0, 4.0 + gf, abs(ex - 28.0)));
-        pc = mix(pc, vec3(0.55, 0.53, 0.5), path * (1.0 - lawn) * 0.85);
+        pc = mix(pc, vec3(0.45, 0.44, 0.41), path * (1.0 - lawn) * 0.85);
         pc = mix(pc, vec3(0.13), drive);
         pc = mix(pc, vec3(0.42, 0.41, 0.39), 1.0 - smoothstep(5.0, 5.0 + gf, ex));    // perimeter wall walk
         diffuseColor.rgb = pc;`);
@@ -479,7 +480,7 @@ export function buildCity(scene, renderer, Q) {
   const pick = (a) => a[Math.floor(R() * a.length)];
   const heightAt = (x, z) => {
     const nearPark = (z < PARK.z1 + 40 && z > PARK.z0 - 40) && (Math.abs(x - PARK.x0) < 320 || Math.abs(x - PARK.x1) < 320);
-    if (z > -170 && z < 2600) { let h = 50 + Math.pow(R(), 1.6) * 190; if (z < 700 && R() < 0.06) h = 250 + R() * 170; return h; }
+    if (z > -170 && z < 2600) { let h = 50 + Math.pow(R(), 1.6) * 190; if (z < 700 && z > 60 && R() < 0.06) h = 250 + R() * 170; return h; }
     if (z >= 2600 && z < 5200) return 22 + Math.pow(R(), 2) * 80;
     if (z >= 5200) { let h = 50 + Math.pow(R(), 1.5) * 170; if (R() < 0.05) h = 240 + R() * 160; return h; }
     if (z < -4300) return 15 + R() * 35;
@@ -529,6 +530,8 @@ export function buildCity(scene, renderer, Q) {
 
   // ---- parts ----------------------------------------------------------------------------------
   const FH = [3.4, 4.0, 3.05, 3.8, 4.7, 4.6], BAY = [1.9, 1.5, 2.6, 1.7, 4.7, 2.3];
+  // detail radii: full silhouettes near, tiers further out, one box at the horizon (Quest nearer)
+  const NEAR_R = Q.quest ? 1600 : 2600, MID_R = Q.quest ? 3600 : 6000, TANK_R = Q.quest ? 1000 : 1700;
   const parts = [], tanks = [];
   const part = (x, y0, z, w, h, d, col, st, seed, kind, extra = {}) => {
     if (w < 0.5 || d < 0.5 || h < 0.3) return;
@@ -545,14 +548,14 @@ export function buildCity(scene, renderer, Q) {
       if (R() < 0.6) { const aw = 1.4 + R() * 2.2; part(x + (R() - 0.5) * (w - aw) * 0.8, top, z + (R() - 0.5) * (d - aw) * 0.8, aw, 1.2 + R() * 0.8, aw * (0.6 + R() * 0.8), b.col, b.st, b.seed, 2); }
     }
     // water tank on the older, lower roofs
-    if ((b.st === 0 || b.st === 2) && b.h > 14 && b.h < 140 && R() < 0.62 && w > 8 && d > 8) {
+    if ((b.st === 0 || b.st === 2) && b.h > 14 && b.h < 140 && Math.hypot(x, z) < TANK_R && R() < 0.62 && w > 8 && d > 8) {
       const tr = 1.9 + R() * 1.3, th = 3.4 + R() * 1.6;
       tanks.push([x + (R() - 0.5) * (w - 2 * tr - 2) * 0.8, top, z + (R() - 0.5) * (d - 2 * tr - 2) * 0.8, tr, th]);
     }
   };
   const emit = (b) => {
     const dist = Math.hypot(b.x, b.z);
-    const near = dist < 2600, mid = dist < 6000;
+    const near = dist < NEAR_R, mid = dist < MID_R;
     const y0 = STREET;
     if (!mid) { part(b.x, y0, b.z, b.w, b.h, b.d, b.col, b.st, b.seed, 0); return; }
     const insetOk = (i) => b.w - 2 * i > 9 && b.d - 2 * i > 9;
@@ -583,7 +586,7 @@ export function buildCity(scene, renderer, Q) {
       if (crown) part(b.x, y0 + top, b.z, b.w - 2 * (i + 2), b.h - top, b.d - 2 * (i + 2), b.col, b.st, b.seed, 0, { shop: 1 });
       const cw = crown ? b.w - 2 * (i + 2) : b.w - 2 * i, cd = crown ? b.d - 2 * (i + 2) : b.d - 2 * i;
       if (near) part(b.x, y0 + b.h, b.z, cw * 0.7, 4.5 + R() * 2, cd * 0.7, b.col, b.st, b.seed, 2);
-      if (b.h > 260) part(b.x, y0 + b.h + 6, b.z, 1.0, 25 + R() * 45, 1.0, b.col, b.st, b.seed, 2);
+      if (b.h > 260 && R() < 0.3) part(b.x, y0 + b.h + 6, b.z, 1.0, 25 + R() * 45, 1.0, b.col, b.st, b.seed, 2);
       return;
     }
     if (b.st === 2 && b.h > 45 && R() < 0.4 && insetOk(3)) {
