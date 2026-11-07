@@ -1,0 +1,463 @@
+// The apartment: a two-floor penthouse laid out from the reference floor plan (floor one) and
+// the interior photos (floor two). See docs/references/REFERENCES.md and docs/DECISIONS.md.
+// Architecture only: shell, walls, glass, columns, ceilings, floors, doors, the curved stair,
+// the terrace. Furniture comes in a later pass.
+//
+// Plan frame: x east, z south, metres. Origin = the north-west corner of the floor plate at
+// floor one level. North glass at z = 0, south glass at z = 17.55, terrace to z = 19.25.
+import * as THREE from 'three';
+import { Builder, boxGeo, flatGeo, shapeFlat, shellGeo, shellColliders, polar, tube } from './build.js';
+
+export const LV = { L1: 0, C1: 4.25, L2: 4.6, C2: 8.2, RF: 8.6 };
+const { L1, C1, L2, C2, RF } = LV;
+const XW = 0.9, XE = 16.7, XM = 17.6, ZS = 17.55, ZT = 19.25;
+const DH1 = 2.74, DH2 = 2.44;                       // door heights: 9 ft on floor one, 8 ft on floor two
+export const STAIR = { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, rw: 1.7, risers: 26, sweep: 330 * Math.PI / 180 };
+
+export function buildApartment(M, Q) {
+  const B = new Builder();
+  const group = new THREE.Group();
+  group.name = 'apartment';
+
+  // ---- helpers ----------------------------------------------------------------------------
+  const skirt = (x0, z0, x1, z1, y, faces) => {
+    // dark oak skirting, 10 cm tall, 1.2 cm proud, on the given faces of a box footprint
+    const h = 0.1, t = 0.012;
+    if (faces.includes('n')) B.box(x0, y, z0 - t, x1, y + h, z0, M.darkOak, false);
+    if (faces.includes('s')) B.box(x0, y, z1, x1, y + h, z1 + t, M.darkOak, false);
+    if (faces.includes('w')) B.box(x0 - t, y, z0, x0, y + h, z1, M.darkOak, false);
+    if (faces.includes('e')) B.box(x1, y, z0, x1 + t, y + h, z1, M.darkOak, false);
+  };
+  const solid = (x0, z0, x1, z1, y0, y1, mat = M.plaster, sk = 'nsew') => {
+    B.box(x0, y0, z0, x1, y1, z1, mat);
+    if (sk) { skirt(x0, z0, x1, z1, y0, sk); if (y0 < L2 - 0.01 && y1 > L2 + 0.11) skirt(x0, z0, x1, z1, L2, sk); }
+  };
+  // A wall along x (axis 'x', thickness z0..z1) or along z (axis 'z', thickness x0..x1), from
+  // s0 to s1, heights y0..y1, with openings {a, b, lo, hi, win}: the part of the wall between a
+  // and b and heights lo..hi is left open; win puts a framed glass pane in it.
+  const wall = (axis, t0, t1, s0, s1, y0, y1, ops = [], mat = M.plaster, floorY = y0) => {
+    const cuts = new Set([s0, s1]);
+    for (const o of ops) { cuts.add(o.a); cuts.add(o.b); }
+    const xs = [...cuts].filter((v) => v >= s0 && v <= s1).sort((p, q) => p - q);
+    const piece = (a, b, lo, hi) => {
+      if (axis === 'x') B.box(a, lo, t0, b, hi, t1, mat); else B.box(t0, lo, a, t1, hi, b, mat);
+      const sk = (y) => { if (axis === 'x') skirt(a, t0, b, t1, y, 'ns'); else skirt(t0, a, t1, b, y, 'we'); };
+      if (lo <= floorY + 1e-3) sk(floorY);
+      if (floorY < L2 - 0.01 && lo < L2 - 0.01 && hi > L2 + 0.11) sk(L2);
+    };
+    for (let k = 0; k < xs.length - 1; k++) {
+      const a = xs[k], b = xs[k + 1], m = (a + b) / 2;
+      const gaps = ops.filter((o) => o.a <= m && o.b >= m).map((o) => [o.lo, o.hi]).sort((p, q) => p[0] - q[0]);
+      let y = y0;
+      for (const [lo, hi] of gaps) { if (lo > y) piece(a, b, y, lo); y = Math.max(y, hi); }
+      if (y < y1) piece(a, b, y, y1);
+    }
+    for (const o of ops) if (o.win) {
+      // glass near the outer face (o.win = outer side coordinate), bronze frame inside the reveal
+      const g0 = o.win - 0.03, g1 = o.win + 0.03;
+      if (axis === 'x') {
+        B.box(o.a, o.lo, Math.min(g0, g1), o.b, o.hi, Math.max(g0, g1), M.glass);
+        frame('x', (g0 + g1) / 2, o.a, o.b, o.lo, o.hi);
+      } else {
+        B.box(Math.min(g0, g1), o.lo, o.a, Math.max(g0, g1), o.hi, o.b, M.glass);
+        frame('z', (g0 + g1) / 2, o.a, o.b, o.lo, o.hi);
+      }
+    }
+  };
+  const frame = (axis, t, a, b, lo, hi, w = 0.05, d = 0.1) => {
+    if (axis === 'x') {
+      B.box(a, lo, t - d / 2, a + w, hi, t + d / 2, M.bronze, false);
+      B.box(b - w, lo, t - d / 2, b, hi, t + d / 2, M.bronze, false);
+      B.box(a, hi - w, t - d / 2, b, hi, t + d / 2, M.bronze, false);
+      B.box(a, lo, t - d / 2, b, lo + w, t + d / 2, M.bronze, false);
+    } else {
+      B.box(t - d / 2, lo, a, t + d / 2, hi, a + w, M.bronze, false);
+      B.box(t - d / 2, lo, b - w, t + d / 2, hi, b, M.bronze, false);
+      B.box(t - d / 2, hi - w, a, t + d / 2, hi, b, M.bronze, false);
+      B.box(t - d / 2, lo, a, t + d / 2, lo + w, b, M.bronze, false);
+    }
+  };
+  // floor-to-ceiling glass wall along x (at z = t) or z (at x = t), mullions every ~step metres,
+  // per-floor bands [y0, y1]; spandrels (bronze) between bands. Doors: [{a, b, lo, hi}] gaps.
+  const glassRun = (axis, t, s0, s1, bands, step, doors = [], inward = 1) => {
+    const n = Math.max(1, Math.round((s1 - s0) / step)), st = (s1 - s0) / n;
+    const md = 0.16 * inward;                       // mullion depth into the room
+    for (const [y0, y1] of bands) {
+      // glass panes (skip door gaps)
+      const cuts = new Set([s0, s1]); for (const d of doors) if (d.lo < y1 && d.hi > y0) { cuts.add(d.a); cuts.add(d.b); }
+      const xs = [...cuts].sort((p, q) => p - q);
+      for (let k = 0; k < xs.length - 1; k++) {
+        const a = xs[k], b = xs[k + 1], m = (a + b) / 2;
+        const d = doors.find((o) => o.a <= m && o.b >= m && o.lo < y1 && o.hi > y0);
+        const segs = d ? [[d.hi, y1]] : [[y0, y1]];
+        for (const [lo, hi] of segs) if (hi - lo > 0.01) {
+          if (axis === 'x') B.box(a, lo, t - 0.012, b, hi, t + 0.012, M.glass);
+          else B.box(t - 0.012, lo, a, t + 0.012, hi, b, M.glass);
+        }
+        if (d) {                                     // door frame head + jambs
+          if (axis === 'x') { B.box(a, d.hi - 0.06, t, b, d.hi, t + md, M.bronze, false); }
+          else B.box(t, d.hi - 0.06, a, t + md, d.hi, b, M.bronze, false);
+        }
+      }
+      const inDoor = (v) => doors.some((d) => d.lo < y1 && d.hi > y0 && v > d.a - 0.05 && v < d.b + 0.05);
+      const posts = [];
+      for (let i = 0; i <= n; i++) if (!inDoor(s0 + i * st)) posts.push(s0 + i * st);
+      for (const d of doors) if (d.lo < y1 && d.hi > y0) posts.push(d.a, d.b);
+      for (const s of posts) {
+        const w = 0.065;
+        const a = Math.max(s0, s - w / 2), b = Math.min(s1, s + w / 2);
+        if (axis === 'x') B.box(a, y0, Math.min(t, t + md), b, y1, Math.max(t, t + md), M.bronze, false);
+        else B.box(Math.min(t, t + md), y0, a, Math.max(t, t + md), y1, b, M.bronze, false);
+      }
+      // sill and head frames
+      if (axis === 'x') { B.box(s0, y0, Math.min(t, t + md), s1, y0 + 0.05, Math.max(t, t + md), M.bronze, false); B.box(s0, y1 - 0.08, Math.min(t, t + md), s1, y1, Math.max(t, t + md), M.bronze, false); }
+      else { B.box(Math.min(t, t + md), y0, s0, Math.max(t, t + md), y0 + 0.05, s1, M.bronze, false); B.box(Math.min(t, t + md), y1 - 0.08, s0, Math.max(t, t + md), y1, s1, M.bronze, false); }
+    }
+  };
+  const ceil = (x0, z0, x1, z1, y, lights = 1.7) => {
+    B.box(x0, y, z0, x1, y + 0.04, z1, M.ceiling, false);
+    if (lights) downlights(x0, z0, x1, z1, y, lights);
+  };
+  const lightGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.01, 12);
+  const trimGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.006, 16);
+  const downlights = (x0, z0, x1, z1, y, step) => {
+    const nx = Math.max(1, Math.round((x1 - x0) / step)), nz = Math.max(1, Math.round((z1 - z0) / step));
+    for (let i = 0; i < nx; i++) for (let k = 0; k < nz; k++) {
+      const x = x0 + (i + 0.5) * (x1 - x0) / nx, z = z0 + (k + 0.5) * (z1 - z0) / nz;
+      const g = lightGeo.clone(); g.translate(x, y - 0.004, z); B.add(g, M.light);
+      const t = trimGeo.clone(); t.translate(x, y - 0.002, z); B.add(t, M.bronzeLight);
+    }
+  };
+  const floor = (x0, z0, x1, z1, y, mat) => B.box(x0, y - 0.03, z0, x1, y, z1, mat, false);
+  // door leaf standing open: hinge at (hx, hz), the leaf runs from the hinge in direction yaw
+  const leaf = (hx, hz, y0, w, h, yaw, mat = M.doorWhite) => {
+    const dx = Math.cos(yaw), dz = -Math.sin(yaw);
+    B.obox(hx + dx * w / 2, y0 + h / 2, hz + dz * w / 2, w / 2, h / 2, 0.025, yaw, mat);
+    // bronze lever at the free end
+    B.obox(hx + dx * (w - 0.07), y0 + 1.0, hz + dz * (w - 0.07), 0.07, 0.012, 0.06, yaw, M.bronzeLight, false);
+  };
+  // closed door panel flush in a wall face: axis of the wall face, t = face coordinate, normal sign
+  const panel = (axis, t, a, b, y0, y1, mat, n = 1) => {
+    const d = 0.03 * n;
+    if (axis === 'x') { B.box(a, y0, t, b, y1, t + d, mat); B.box(a - 0.03, y0, t, b + 0.03, y1 + 0.03, t + d * 0.5, M.bronze, false); }
+    else { B.box(t, y0, a, t + d, y1, b, mat); B.box(t, y0, a - 0.03, t + d * 0.5, y1 + 0.03, b + 0.03, M.bronze, false); }
+  };
+  const grilleRun = (axis, t0, t1, s0, s1, y) => {
+    if (axis === 'x') B.box(s0, y - 0.005, t0, s1, y + 0.002, t1, M.grille, false);
+    else B.box(t0, y - 0.005, s0, t1, y + 0.002, s1, M.grille, false);
+  };
+
+  // ---- structure: slabs (colliders), roof, tower shaft stub ---------------------------------
+  B.colliders.push({ t: 'box', min: [-2, -0.5, -2], max: [XM + 2, 0, ZT + 0.3] });   // floor one slab
+  B.box(-0.05, C2 + 0.04, -0.05, XM + 0.05, RF, ZS + 0.05, M.ceiling, false);       // roof slab
+  B.box(-0.05, -0.6, -0.05, XM + 0.05, -0.03, ZT, M.ceiling, false);               // floor one slab body
+
+  // floor two slab: outline minus the stair void (a 330 degree sector; the last 30 degrees are
+  // the arrival landing)
+  const S = STAIR;
+  const voidPts = [[S.cx, S.cz]];
+  for (let i = 0; i <= 44; i++) { voidPts.push(polar(S.cx, S.cz, S.r1, S.sweep * i / 44)); }
+  {
+    const shape = new THREE.Shape([[0, 0], [XM, 0], [XM, ZS], [0, ZS]].map(([x, z]) => new THREE.Vector2(x, z)));
+    shape.holes.push(new THREE.Path(voidPts.map(([x, z]) => new THREE.Vector2(x, z))));
+    const ex = new THREE.ExtrudeGeometry(shape, { depth: L2 - C1, bevelEnabled: false, curveSegments: 32 });
+    const p = ex.attributes.position;
+    for (let i = 0; i < p.count; i++) { const x = p.getX(i), z = p.getY(i), y = p.getZ(i); p.setXYZ(i, x, C1 + y, z); }
+    const idx = ex.index ? ex.index.array : null;
+    let g = ex;
+    if (!idx) {                                       // ExtrudeGeometry is non-indexed: swap winding (the y/z swap mirrored it)
+      const a = p.array;
+      for (let i = 0; i < a.length; i += 9) for (let k = 0; k < 3; k++) { const t = a[i + 3 + k]; a[i + 3 + k] = a[i + 6 + k]; a[i + 6 + k] = t; }
+    }
+    g.computeVertexNormals();
+    B.trimesh(g);
+    const vis = g.clone(); vis.translate(0, -0.035, 0);
+    B.add(vis, M.stairWhite);                         // slab edge round the void (top and bottom are covered)
+  }
+
+  // ---- facades ----------------------------------------------------------------------------
+  // north: floor-to-ceiling glass both floors, bronze spandrel at the slab, corner glass wraps
+  glassRun('x', 0, 0, XM, [[L1, C1], [L2, C2]], 1.467);
+  B.box(0, C1, -0.05, XM, L2, 0.02, M.bronze, false);
+  B.box(0, C2, -0.05, XM, RF, 0.02, M.bronze, false);
+  glassRun('z', 0, 0, 1.6, [[L1, C1], [L2, C2]], 1.6, [], 1);
+  glassRun('z', XM, 0, 1.6, [[L1, C1], [L2, C2]], 1.6, [], -1);
+  for (const x of [0, XM]) { B.box(x - 0.05, C1, 0, x + 0.05, L2, 1.6, M.bronze, false); B.box(x - 0.05, C2, 0, x + 0.05, RF, 1.6, M.bronze, false); }
+  B.box(-0.04, L1, -0.04, 0.08, RF, 0.08, M.bronze, false); B.box(XM - 0.08, L1, -0.04, XM + 0.04, RF, 0.08, M.bronze, false);
+  grilleRun('x', 0.18, 0.46, 0.2, XM - 0.2, L1); grilleRun('x', 0.18, 0.46, 0.2, XM - 0.2, L2);
+
+  // west / east: the tower's thick walls with full-height slot windows (glass near the outside)
+  const slot = (a, lo, hi) => ({ a, b: a + 0.6, lo, hi });
+  wall('z', 0, XW, 1.6, ZS, L1, RF, [
+    { ...slot(2.55, 0.0, 3.6), win: 0.06 }, { ...slot(4.85, 0.0, 3.6), win: 0.06 }, { ...slot(15.6, 0.0, 3.6), win: 0.06 },
+    { ...slot(2.55, L2 + 0.1, L2 + 3.3), win: 0.06 }, { ...slot(4.85, L2 + 0.1, L2 + 3.3), win: 0.06 }, { ...slot(15.6, L2 + 0.1, L2 + 3.3), win: 0.06 },
+  ]);
+  wall('z', XE, XM, 1.6, ZS, L1, RF, [
+    { ...slot(2.55, 0.0, 3.6), win: XM - 0.06 }, { ...slot(4.85, 0.0, 3.6), win: XM - 0.06 },
+    { ...slot(11.2, 0.95, 3.6), win: XM - 0.06 }, { ...slot(13.4, 0.95, 3.6), win: XM - 0.06 },
+    { ...slot(2.55, L2 + 0.1, L2 + 3.3), win: XM - 0.06 }, { ...slot(4.85, L2 + 0.1, L2 + 3.3), win: XM - 0.06 },
+    { ...slot(7.9, L2 + 0.1, L2 + 3.3), win: XM - 0.06 }, { ...slot(15.6, L2 + 0.1, L2 + 3.3), win: XM - 0.06 },
+  ]);
+  // south: glass both floors, doors to the terrace from the media room and the breakfast room
+  const tDoors = [{ a: 2.0, b: 2.95, lo: L1, hi: DH1 }, { a: 14.75, b: 15.7, lo: L1, hi: DH1 }];
+  glassRun('x', ZS, XW, XE, [[L1, C1], [L2, C2]], 1.45, tDoors, -1);
+  B.box(XW, C1, ZS - 0.02, XE, L2, ZS + 0.05, M.bronze, false);
+  B.box(XW, C2, ZS - 0.02, XE, RF, ZS + 0.05, M.bronze, false);
+  grilleRun('x', ZS - 0.46, ZS - 0.18, XW + 0.2, XE - 0.2, L1); grilleRun('x', ZS - 0.46, ZS - 0.18, XW + 0.2, XE - 0.2, L2);
+  // open glass door leaves on the terrace side
+  leaf(2.95, ZS + 0.04, L1, 0.95, DH1 - 0.05, -Math.PI * 0.5 - 0.15, M.bronze);
+  leaf(14.75, ZS + 0.04, L1, 0.95, DH1 - 0.05, -Math.PI * 0.5 + 0.15, M.bronze);
+
+  // terrace: pavers, glass balustrade, wing walls
+  floor(XW, ZS, XE, ZT, L1, M.pavers);
+  B.box(XW, L1, ZT - 0.06, XE, 1.1, ZT - 0.04, M.balGlass);
+  B.box(XW, 1.08, ZT - 0.08, XE, 1.13, ZT - 0.02, M.bronze);
+  for (let x = XW + 1.4; x < XE; x += 1.45) B.box(x - 0.025, L1, ZT - 0.09, x + 0.025, 1.08, ZT - 0.03, M.bronze, false);
+  solid(0, ZS, XW, ZT, L1, C1, M.plasterWarm, 'e'); solid(XE, ZS, XM, ZT, L1, C1, M.plasterWarm, 'w');
+  B.box(0, -0.6, ZS, XM, -0.03, ZT, M.plasterWarm, false);
+
+  // columns at the north glass (both floors)
+  for (const [a, b] of [[4.25, 5.63], [12.0, 13.4]]) solid(a, 0.15, b, 1.35, L1, C2);
+
+  // ---- floor one ----------------------------------------------------------------------------
+  // great hall: Versailles parquet, perimeter soffit, raised centre field
+  floor(0, 0, XM, 6.72, L1, M.parquet);
+  B.box(0, 4.2, 0, XM, 4.24, 6.72, M.ceiling, false);
+  for (const [x0, z0, x1, z1] of [[0, 0, XM, 0.85], [XW, 5.92, XE, 6.72], [XW, 0.85, XW + 0.8, 5.92], [XE - 0.8, 0.85, XE, 5.92]])
+    B.box(x0, 3.82, z0, x1, 4.2, z1, M.ceiling, false);
+  B.box(0, 3.81, 0.1, XM, 3.82, 0.2, M.slot, false);              // curtain pocket at the glass
+  downlights(XW + 1.2, 1.2, XE - 1.2, 5.6, 4.2, 2.2);
+  downlights(1.2, 0.3, XM - 1.2, 0.75, 3.82, 1.467);
+  // great hall south wall: hallway door, gallery opening, kitchen passage
+  wall('x', 6.72, 6.92, XW, XE, L1, C1, [
+    { a: 3.46, b: 4.74, lo: L1, hi: DH1 }, { a: 7.91, b: 9.88, lo: L1, hi: DH1 + 0.3 }, { a: 14.03, b: 15.12, lo: L1, hi: DH1 },
+  ]);
+  leaf(3.46, 6.92, L1, 1.0, DH1, -Math.PI / 2 + 0.05);           // hallway door, open toward the hallway
+  leaf(15.12, 6.92, L1, 1.0, DH1, -Math.PI / 2 - 0.05);          // kitchen passage door
+
+  // fire stair (closed core, both floors)
+  solid(XW, 6.92, 3.46, 14.33, L1, C2, M.plaster, 'e');
+  panel('z', 3.46, 12.6, 13.5, L1, DH1 - 0.3, M.fireDoor, 1);
+  panel('z', 3.46, 12.6, 13.5, L2, L2 + DH2, M.fireDoor, 1);
+  // hallway (floor one) between the fire stair and the west core
+  floor(3.46, 6.72, 4.74, 14.48, L1, M.stone);
+  ceil(3.46, 6.92, 4.74, 14.33, 3.4, 1.8);
+  solid(4.74, 6.92, 6.03, 14.33, L1, C1, M.plaster, 'w');          // west core: shafts, services
+
+  // duplex elevator (both floors) and the stair hall
+  solid(6.03, 6.92, 7.91, 8.95, L1, C2, M.plaster, 'es');
+  for (const y of [L1, L2]) panel('z', 7.91, 7.4, 8.4, y, y + 2.4, M.bronzeLight, 1);
+  solid(6.03, 8.95, 7.6, 9.42, L1, C2, M.plaster, '');
+  B.add(shellGeo(S.cx, S.cz, S.r1, S.rw, 0, 190 * Math.PI / 180, L1, C2, 48), M.plaster);
+  shellColliders(B, S.cx, S.cz, S.r1, S.rw, 0, 190 * Math.PI / 180, L1, C2, 24);
+  solid(6.03, 12.75, 7.91, 12.95, L1, C2, M.plaster, '');
+  floor(6.03, 8.95, 7.91, 12.95, L1, M.stone);
+
+  // powder room
+  solid(6.03, 12.95, 6.18, 14.33, L1, C1, M.plaster, 'e');
+  wall('z', 7.81, 7.91, 12.95, 14.33, L1, C1, [{ a: 13.25, b: 14.05, lo: L1, hi: DH1 - 0.2 }]);
+  leaf(7.81, 13.25, L1, 0.8, DH1 - 0.2, Math.PI + 0.15);
+  floor(6.18, 12.95, 7.81, 14.33, L1, M.marbleGrey);
+  ceil(6.18, 12.95, 7.81, 14.18, 3.0, 1.0);
+  solid(6.03, 14.18, 7.91, 14.33, L1, C1, M.plaster, 'n');
+
+  // AV and coat closets (closed doors into the media room)
+  solid(5.7, 14.33, 7.91, 15.2, L1, C1, M.plaster, 's');
+  panel('x', 15.2, 5.8, 6.75, L1, DH1 - 0.3, M.doorWhite, 1);
+  panel('x', 15.2, 6.86, 7.81, L1, DH1 - 0.3, M.doorWhite, 1);
+
+  // the north / south view gallery (double height round the stair)
+  floor(7.91, 6.72, 9.88, ZS, L1, M.stone);
+  {
+    const R = 1.75, x = 7.91, dz = Math.sqrt(R * R - (x - S.cx) ** 2);
+    const pts = [[7.91, 6.92], [9.88, 6.92], [9.88, ZS], [7.91, ZS], [7.91, S.cz + dz]];
+    for (let i = 1; i < 24; i++) { const z = S.cz + dz - (2 * dz) * i / 24; pts.push([S.cx + Math.sqrt(Math.max(0, R * R - (z - S.cz) ** 2)), z]); }
+    pts.push([7.91, S.cz - dz]);
+    B.add(flatGeo(pts, 3.4, true), M.ceiling);
+    downlights(8.2, 13.2, 9.6, 17.0, 3.4, 1.4);
+    downlights(8.2, 7.1, 9.6, 8.8, 3.4, 1.4);
+  }
+  // media room
+  wall('x', 14.33, 14.48, XW, 5.7, L1, C1, [{ a: 3.46, b: 4.74, lo: L1, hi: DH1 }]);
+  wall('z', 7.81, 7.91, 15.2, ZS, L1, C1, [{ a: 15.6, b: 16.8, lo: L1, hi: DH1 }]);
+  floor(XW, 14.33, 7.91, ZS, L1, M.oak);
+  ceil(XW, 14.48, 7.81, ZS - 0.6, 3.4, 1.7);
+  B.box(XW, 3.15, ZS - 0.6, XE, 3.4, ZS, M.ceiling, false);
+  B.box(XW, 3.14, ZS - 0.2, XE, 3.15, ZS - 0.12, M.slot, false);
+
+  // private elevators, pantry, kitchen, breakfast room
+  solid(9.88, 6.92, 14.03, 9.98, L1, C1, M.plaster, 'ws');
+  solid(9.88, 9.98, 13.34, 14.03, L1, C1, M.plaster, 'wes');
+  panel('z', 9.88, 8.2, 9.2, L1, 2.6, M.bronzeLight, -1);
+  panel('z', 9.88, 11.4, 12.4, L1, 2.6, M.bronzeLight, -1);
+  solid(15.12, 6.92, XE, 9.98, L1, C1, M.plaster, 'ws');
+  wall('z', 9.88, 9.98, 14.03, ZS, L1, C1, [{ a: 14.45, b: 15.85, lo: L1, hi: DH1 }]);
+  floor(14.03, 6.72, 15.12, 9.98, L1, M.oak);
+  floor(13.34, 9.98, XE, ZS, L1, M.oak);
+  floor(9.88, 14.03, 13.34, ZS, L1, M.oak);
+  ceil(14.03, 6.92, 15.12, 9.98, 3.4, 1.4);
+  ceil(13.34, 9.98, XE, ZS - 0.6, 3.4, 1.6);
+  ceil(9.98, 14.03, 13.34, ZS - 0.6, 3.4, 1.6);
+
+  // ---- the curved stair -----------------------------------------------------------------------
+  buildStair(B, M);
+
+  // ---- floor two ------------------------------------------------------------------------------
+  // north band: primary bath | primary bedroom | library
+  floor(0, 0, 4.94, 6.72, L2, M.onyx);
+  floor(4.94, 0, 12.7, 6.72, L2, M.oak);
+  floor(12.7, 0, XM, 6.72, L2, M.oak);
+  wall('z', 4.84, 5.04, 1.35, 6.72, L2, C2, [{ a: 5.0, b: 5.85, lo: L2, hi: L2 + DH2 }]);
+  leaf(5.04, 5.0, L2, 0.85, DH2, -0.1);
+  wall('z', 12.62, 12.78, 1.35, 6.72, L2, C2);
+  wall('x', 6.72, 6.92, XW, XE, L2, C2, [
+    { a: 3.75, b: 4.6, lo: L2, hi: L2 + DH2 }, { a: 8.4, b: 9.4, lo: L2, hi: L2 + DH2 }, { a: 13.55, b: 14.45, lo: L2, hi: L2 + DH2 },
+  ]);
+  leaf(8.4, 6.72, L2, 1.0, DH2, Math.PI / 2 + 0.1);               // into the primary bedroom
+  leaf(13.55, 6.72, L2, 0.9, DH2, Math.PI / 2 + 0.1);             // into the library
+  leaf(3.75, 6.92, L2, 0.85, DH2, -Math.PI / 2 + 0.1);            // into the closet
+  // primary closet and second bath (west core)
+  floor(3.46, 6.72, 6.13, 9.75, L2, M.oak);
+  wall('x', 9.6, 9.75, 3.46, 6.13, L2, C2);
+  floor(3.46, 9.75, 6.13, 14.33, L2, M.travertine);
+  solid(6.03, 9.42, 6.13, 12.75, L2, C2, M.plaster, 'w');
+  // linen closet over the powder room
+  solid(6.03, 12.95, 7.91, 14.33, L2, C2, M.plaster, 'e');
+  // upper gallery and landing (stone, with the stair void)
+  {
+    const shape = new THREE.Shape([[6.03, 6.72], [10.3, 6.72], [10.3, 14.33], [6.03, 14.33]].map(([x, z]) => new THREE.Vector2(x, z)));
+    shape.holes.push(new THREE.Path(voidPts.map(([x, z]) => new THREE.Vector2(x, z))));
+    B.add(shapeFlat(shape, L2 + 0.001), M.stone);
+  }
+  floor(7.91, 14.33, 9.88, ZS, L2, M.oak);
+  // floor two elevator core, corridor, east hall
+  solid(10.3, 6.92, 13.34, 12.9, L2, C2, M.plaster, 'wes');
+  floor(10.3, 12.9, 13.34, 14.33, L2, M.oak);
+  floor(13.34, 6.72, 14.6, 14.33, L2, M.oak);
+  // third bath (grey marble) and the closet of bedroom three
+  wall('z', 14.6, 14.75, 6.92, 9.6, L2, C2, [{ a: 7.5, b: 8.35, lo: L2, hi: L2 + DH2 }]);
+  leaf(14.75, 7.5, L2, 0.85, DH2, -0.15);
+  wall('x', 9.6, 9.75, 14.6, XE, L2, C2);
+  floor(14.75, 6.72, XE, 9.6, L2, M.marbleGrey);
+  wall('z', 14.6, 14.75, 9.75, 14.33, L2, C2);
+  floor(14.75, 9.75, XE, 14.33, L2, M.oak);
+  // south band: bedroom two | sitting nook | bedroom three
+  wall('x', 14.33, 14.48, XW, 7.91, L2, C2, [{ a: 4.0, b: 4.8, lo: L2, hi: L2 + DH2 }]);
+  leaf(4.8, 14.48, L2, 0.8, DH2, -Math.PI / 2 - 0.1);
+  wall('x', 14.33, 14.48, 9.88, XE, L2, C2, [{ a: 13.55, b: 14.45, lo: L2, hi: L2 + DH2 }, { a: 15.1, b: 16.2, lo: L2, hi: L2 + DH2 }]);
+  leaf(14.45, 14.48, L2, 0.9, DH2, -Math.PI / 2 - 0.1);
+  wall('z', 7.81, 7.91, 14.33, ZS, L2, C2, [{ a: 15.0, b: 15.9, lo: L2, hi: L2 + DH2 }]);
+  leaf(7.81, 15.0, L2, 0.9, DH2, Math.PI + 0.1);
+  wall('z', 9.88, 9.98, 14.33, ZS, L2, C2, [{ a: 15.0, b: 15.9, lo: L2, hi: L2 + DH2 }]);
+  leaf(9.98, 15.9, L2, 0.9, DH2, 0.1);
+  floor(XW, 14.33, 7.91, ZS, L2, M.oak);
+  floor(9.88, 14.33, XE, ZS, L2, M.oak);
+
+  // floor two ceilings: one plane, soffits with curtain pockets at the north and south glass
+  B.box(0, C2, 0, XM, C2 + 0.04, ZS, M.ceiling, false);
+  B.box(0, 7.9, 0, XM, C2, 0.6, M.ceiling, false);
+  B.box(0, 7.89, 0.1, XM, 7.9, 0.2, M.slot, false);
+  B.box(XW, 7.9, ZS - 0.6, XE, C2, ZS, M.ceiling, false);
+  B.box(XW, 7.89, ZS - 0.2, XE, 7.9, ZS - 0.12, M.slot, false);
+  for (const [x0, z0, x1, z1] of [[1.2, 0.9, 4.6, 6.4], [5.3, 0.9, 12.3, 6.4], [13.1, 0.9, 16.3, 6.4], [XW + 0.3, 14.7, 7.5, ZS - 0.8],
+    [10.3, 14.7, 16.4, ZS - 0.8], [8.1, 7.1, 10.1, 9.0], [3.7, 10.0, 5.9, 14.0], [15.0, 7.0, 16.4, 9.4], [13.5, 7.0, 14.4, 14.0]])
+    downlights(x0, z0, x1, z1, C2, 1.8);
+
+  const meshes = B.finish(group);
+  return { group, meshes, colliders: B.colliders };
+}
+
+// The helical stair: 26 risers over 330 degrees, from floor one (north of the centre, heading
+// west) to the floor two landing. White plaster body with a smooth helical soffit, marble treads,
+// black balusters and an oak handrail; an outer guard where it flies over the gallery; a guard
+// round the void on floor two. Walking uses a smooth ramp collider through the tread middles.
+function buildStair(B, M) {
+  const S = STAIR, n = S.risers - 1, dA = S.sweep / n, rise = LV.L2 / S.risers;
+  const at = (r, a, y) => { const [x, z] = polar(S.cx, S.cz, r, a); return [x, y, z]; };
+  const top = (i) => (i + 1) * rise;                       // tread i top
+  const soffit = (a) => (a / dA) * rise + rise - 0.3;     // underside, smooth
+  const ramp = (a) => (a / dA + 0.5) * rise;              // walking surface for physics
+  const rail = (a) => (a / dA) * rise + rise + 0.9;
+
+  const P = [], N = [];
+  const quad = (a, b, c, d) => {
+    const v1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let nx = v1[1] * v2[2] - v1[2] * v2[1], ny = v1[2] * v2[0] - v1[0] * v2[2], nz = v1[0] * v2[1] - v1[1] * v2[0];
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    P.push(...a, ...b, ...c, ...a, ...c, ...d);
+    for (let k = 0; k < 6; k++) N.push(nx, ny, nz);
+  };
+  const body = { P: [], N: [] }, cap = { P: [], N: [] };
+  const use = (o) => { P.length = 0; N.length = 0; return () => { o.P.push(...P); o.N.push(...N); }; };
+
+  for (let i = 0; i < n; i++) {
+    const a0 = i * dA, a1 = (i + 1) * dA, sub = 4, t = top(i);
+    // plaster body: top just under the marble, smooth soffit below
+    let done = use(body);
+    for (let k = 0; k < sub; k++) {
+      const pa = a0 + (a1 - a0) * k / sub, pb = a0 + (a1 - a0) * (k + 1) / sub;
+      quad(at(S.r0, pa, soffit(pa)), at(S.r1, pa, soffit(pa)), at(S.r1, pb, soffit(pb)), at(S.r0, pb, soffit(pb)));   // soffit (faces down)
+      quad(at(S.r1, pa, soffit(pa)), at(S.r1, pa, t - 0.04), at(S.r1, pb, t - 0.04), at(S.r1, pb, soffit(pb)));       // outer face
+      quad(at(S.r0, pb, soffit(pb)), at(S.r0, pb, t - 0.04), at(S.r0, pa, t - 0.04), at(S.r0, pa, soffit(pa)));       // inner face
+    }
+    quad(at(S.r0, a0, soffit(a0)), at(S.r0, a0, t), at(S.r1, a0, t), at(S.r1, a0, soffit(a0)));                      // riser face
+    done();
+    // marble tread, 4 cm, with a 2 cm nosing
+    done = use(cap);
+    const n0 = a0 - 0.02 / 1.0;
+    for (let k = 0; k < sub; k++) {
+      const pa = n0 + (a1 - n0) * k / sub, pb = n0 + (a1 - n0) * (k + 1) / sub;
+      quad(at(S.r0, pb, t), at(S.r1, pb, t), at(S.r1, pa, t), at(S.r0, pa, t));
+      quad(at(S.r1, pa, t - 0.04), at(S.r1, pa, t), at(S.r1, pb, t), at(S.r1, pb, t - 0.04));
+      quad(at(S.r0, pb, t - 0.04), at(S.r0, pb, t), at(S.r0, pa, t), at(S.r0, pa, t - 0.04));
+    }
+    quad(at(S.r0, n0, t - 0.04), at(S.r0, n0, t), at(S.r1, n0, t), at(S.r1, n0, t - 0.04));
+    done();
+    // physics: smooth ramp body (top = ramp line, bottom = soffit)
+    const hp = [];
+    for (const r of [S.r0, S.r1]) for (const a of [a0, a1]) { hp.push(...at(r, a, ramp(a))); hp.push(...at(r, a, soffit(a) - 0.02)); }
+    B.convex(hp);
+    // inner guard collider (the balustrade) and, over the gallery, the outer guard
+    const gp = [];
+    for (const r of [S.r0 - 0.02, S.r0 + 0.05]) for (const a of [a0, a1]) { gp.push(...at(r, a, top(i))); gp.push(...at(r, a, rail(a))); }
+    B.convex(gp);
+    if (a0 >= 190 * Math.PI / 180) {
+      const op = [];
+      for (const r of [S.r1 - 0.05, S.r1 + 0.02]) for (const a of [a0, a1]) { op.push(...at(r, a, top(i))); op.push(...at(r, a, rail(a))); }
+      B.convex(op);
+    }
+  }
+  const mk = (o) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(o.P, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(o.N, 3)); return g; };
+  B.add(mk(body), M.stairWhite);
+  B.add(mk(cap), M.treadStone);
+
+  // balusters and handrails
+  const bal = (x, y0, z, y1) => B.box(x - 0.008, y0, z - 0.008, x + 0.008, y1, z + 0.008, M.blackMetal, false);
+  const innerR = S.r0 + 0.04, outerR = S.r1 - 0.04;
+  const rIn = [], rOut = [];
+  for (let i = 0; i < n; i++) {
+    for (const f of [0.25, 0.75]) {
+      const a = (i + f) * dA;
+      const [x, z] = polar(S.cx, S.cz, innerR, a); bal(x, top(i), z, rail(a));
+      if (a > 190 * Math.PI / 180) { const [xo, zo] = polar(S.cx, S.cz, outerR, a); bal(xo, top(i), zo, rail(a)); }
+    }
+  }
+  for (let k = 0; k <= 60; k++) { const a = -0.05 + (S.sweep + 0.05) * k / 60; rIn.push([...polar(S.cx, S.cz, innerR, a)].flatMap((v, j) => (j === 0 ? [v, rail(Math.max(0, a))] : [v]))); }
+  for (let k = 0; k <= 24; k++) { const a = 190 * Math.PI / 180 + (S.sweep - 190 * Math.PI / 180) * k / 24; rOut.push([...polar(S.cx, S.cz, outerR, a)].flatMap((v, j) => (j === 0 ? [v, rail(a)] : [v]))); }
+  B.add(tube(rIn, 0.028), M.darkOak);
+  B.add(tube(rOut, 0.028), M.darkOak);
+
+  // floor two guard round the void: along the arc from 190 degrees to the arrival, and along
+  // the radial edge at 0 degrees (the landing's side)
+  const gR = S.r1 + 0.04, gy0 = LV.L2, gy1 = LV.L2 + 1.05;
+  const arc = [];
+  const a0g = 190 * Math.PI / 180, a1g = S.sweep;
+  const len = gR * (a1g - a0g), nb = Math.round(len / 0.11);
+  for (let k = 0; k <= nb; k++) { const a = a0g + (a1g - a0g) * k / nb; const [x, z] = polar(S.cx, S.cz, gR, a); bal(x, gy0, z, gy1); arc.push([x, gy1, z]); }
+  B.add(tube(arc, 0.03), M.darkOak);
+  shellColliders(B, S.cx, S.cz, gR - 0.03, gR + 0.03, a0g, a1g, gy0, gy1 + 0.05, 12);
+  const rad = [];
+  for (let k = 0; k <= 14; k++) { const r = 0.05 + (S.r1 - 0.05) * k / 14; const [x, z] = polar(S.cx, S.cz, r, 0.012); bal(x, gy0, z, gy1); rad.push([x, gy1, z]); }
+  B.add(tube(rad, 0.03), M.darkOak);
+  B.box(S.cx - 0.04, gy0, S.cz - S.r1, S.cx + 0.03, gy1, S.cz - 0.02, null, true);
+}
