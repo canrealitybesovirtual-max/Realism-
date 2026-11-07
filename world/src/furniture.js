@@ -562,14 +562,26 @@ function beadChandelier(B, M, x, z, yBottom, ceil) {
 }
 // gold leaf chandelier (apartment-09): brass discs on a sphere
 function goldChandelier(B, M, x, z, yc, ceil) {
+  // apartment-09: a cluster of cupped brass leaves round a small core, overlapping like petals
   let sd = 5; const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
-  for (let i = 0; i < 70; i++) {
-    const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, rr = Math.sqrt(1 - u * u), R = 0.3;
-    const d = new THREE.Vector3(rr * Math.cos(a), u * 0.75, rr * Math.sin(a));
-    const g = new THREE.CircleGeometry(0.07 + rnd() * 0.03, 12).toNonIndexed();
-    g.lookAt(d); g.translate(d.x * R, yc + d.y * R, d.z * R);
+  for (let i = 0; i < 130; i++) {
+    const u = rnd() * 1.9 - 0.95, a = rnd() * Math.PI * 2, rr = Math.sqrt(1 - u * u), R = 0.24 + rnd() * 0.06;
+    const d = new THREE.Vector3(rr * Math.cos(a), u * 0.8, rr * Math.sin(a)).normalize();
+    const L = 0.12 + rnd() * 0.05, W = L * 0.55;
+    const g = new THREE.PlaneGeometry(W, L, 4, 6).toNonIndexed();
+    const p = g.attributes.position;
+    for (let k = 0; k < p.count; k++) {
+      const px = p.getX(k) / (W / 2), py = p.getY(k) / L + 0.5;
+      const edge = Math.sin(py * Math.PI);                        // leaf outline: narrow at both ends
+      p.setX(k, p.getX(k) * edge);
+      p.setZ(k, 0.025 * px * px * edge + 0.03 * py * py);         // cupped across, curling out at the tip
+    }
+    g.computeVertexNormals(); metricUV(g);
+    g.translate(0, L / 2, 0); g.rotateX(-0.6 - rnd() * 0.5); g.rotateZ((rnd() - 0.5) * 0.8);
+    g.lookAt(d); g.translate(d.x * R * 0.6, yc + d.y * R * 0.6, d.z * R * 0.6);
     B.add(at(g, x, 0, z), M.goldLeaf);
   }
+  B.add(at(lathe([[0, -0.06], [0.06, -0.04], [0.07, 0], [0.06, 0.04], [0, 0.06]], 20), x, yc, z), M.brass);
   B.add(at(lathe([[0.006, yc], [0.006, ceil]], 8), x, 0, z), M.brass);
 }
 
@@ -990,7 +1002,7 @@ function furnitureMaterials(M, Q) {
   M.bookBlack = new THREE.MeshStandardMaterial({ color: '#1d1c1b', roughness: 0.6 });
   M.duvet = M.linen.clone(); M.duvet.color = new THREE.Color('#ece5da');
   M.throwSand = M.linen.clone(); M.throwSand.color = new THREE.Color('#c9b39a');
-  M.nickel = new THREE.MeshStandardMaterial({ color: '#c4c0b9', metalness: 1, roughness: 0.04 });
+  M.nickel = new THREE.MeshStandardMaterial({ color: '#a8a49d', metalness: 1, roughness: 0.03 });
   M.crystal = new THREE.MeshStandardMaterial({ color: '#e9eef2', metalness: 0.6, roughness: 0.04, transparent: true, opacity: 0.75, depthWrite: false });
   M.crystal.userData = { shadow: 'cast', order: 6 };
   M.goldLeaf = new THREE.MeshStandardMaterial({ color: '#c8a35a', metalness: 1, roughness: 0.28, side: THREE.DoubleSide });
