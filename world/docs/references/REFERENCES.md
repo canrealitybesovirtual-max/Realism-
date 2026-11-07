@@ -99,6 +99,35 @@ Reference only: these calibrate the generator (sizes, density, palette, material
 
 Code screenshot (not a photo): ../code-notes/opponent2-api-screenshot.jpg, the end of an "opponent 2" module (punch landing test with onPunchLand, and a returned API: object, rig, bones, update, punch, hit, getHitZone, stunned, hitsTaken, setTarget, setAI, setPlayerHands, dispose). Kept as a pattern for melee / fight NPCs, not copied.
 
+## Apartment (the safehouse; master prompt section 5A interiors)
+
+Source: 111 West 57th Street, PH76 floor one (Sotheby's International Realty listing, SHoP Architects / Studio Sofield). Reference only: the game's apartment is generated, not a copy of this unit.
+
+| File | What it shows | What it sets |
+|---|---|---|
+| apartment-01-floor-plan-ph76-floor1.jpg | Floor plan, floor one | Layout and sizes (below). |
+| apartment-02-great-hall-curved-sofas-dusk.jpg | Great hall at dusk | Two curved bouclé sofas round a glossy black pebble table, three disc pendants, square columns at the window wall, coffered ceiling edge, herringbone smoke-grey oak with a pale rug, floor-to-ceiling glass in dark bronze frames, city and park below. |
+| apartment-03-bath-travertine-tub.jpg | Guest bath | Large vein-cut travertine slabs on every wall, wall-hung toilet with a flush plate, oak vanity with white stone top, tall mirror between two chrome tube lights, built-in tub with bronze fittings, shower niche. |
+| apartment-04-bedroom-window-wall-grilles.jpg | Bedroom along the glass | Linear floor grilles (fan-coil HVAC) all along the window wall, sheer curtains, oak floor, upholstered headboard wall in pale oak, slot diffusers in the ceiling. |
+| apartment-05-shower-room-grey-marble.jpg | Shower room | Grey marble to chair height and in the shower, textured bronze wallcovering above, faceted vanity, glass door. |
+| apartment-06-bedroom-view-south.jpg | Bedroom facing south | Window wall view down to midtown, a mirror with a free-form shape, dark wood console, framed prints. |
+| apartment-07-dressing-hall-vanity.jpg | Dressing hall | Linen-textured wallcovering, a big framed mirror over a white vanity table with fluted legs, onyx plinth, recessed downlights, wood skirting. |
+| apartment-08-primary-bath-onyx-silver-tub.jpg | Primary bath | White onyx slabs (floor, walls), a polished nickel freestanding tub in front of the glass, double vanity with backlit mirror strips, LED coves in the ceiling. |
+| apartment-09-library-corner.jpg | Library | Oak shelving wall with cabinets, curved sofa, travertine round table, corner glazing with no mullion at the corner, amber glass chandelier. |
+| apartment-10-primary-bedroom-central-park.jpg | Primary bedroom | Central Park framed by the window wall, coffered ceiling with recessed lights, beaded chandelier, fluted bed base, bouclé lounge chairs, large rug. |
+| apartment-11-upper-landing-stair-rail.jpg | Stair landing, floor two | Curved dark oak handrail on black balusters round the stair void, limestone floor, plinth with a bust, tall door, a slot window with a long view. |
+| apartment-12-spiral-stair-marble.jpg | Spiral stair | White marble treads on a helical white plaster stringer that curls overhead, black balusters, oak rail, bronze drum table. |
+| apartment-13-media-room-terrace.jpg | Media room by the terrace | TV in a dark oak shelving wall, low bouclé sofa, the terrace and its glass balustrade outside. |
+| apartment-14-breakfast-room-kitchen.jpg | Breakfast room into the kitchen | Oval dark oak table, banquette, faceted glass pendants, slot diffusers, the kitchen island beyond, terrace door. |
+| apartment-15-kitchen-galley.jpg | Kitchen | Two-tone galley: pale lacquer uppers, dark oak lowers with recessed pulls, stone counters and splash, built-in ovens and a steam oven stack, integrated fridges, a view door to the terrace. |
+| apartment-16-view-south-midtown.jpg | View south | Skyline backdrop for the windows (window views are generated from the city, not this photo). |
+
+Plan sizes (floor one; interior 604.9 m2, terrace 28.7 m2; ceilings up to 4.27 m):
+- Great hall 15.11 x 6.52 m along the north glass (living, piano corner, dining for 8), two square columns on the window wall.
+- Core: duplex elevator, curved stair up, north / south view gallery, two private elevators, powder room, AV and closet.
+- Kitchen 6.27 x 3.07 m (east), breakfast room 4.01 x 3.20 m (south-east), media room 6.57 x 3.30 m (south-west), hallway to the west stair, terrace 309 sq ft along the south.
+- Finishes: white macauba stone at entry, smoke-grey solid oak floors with a pattern in the great hall, 9 ft (2.74 m) doors and transoms, bronze hardware, zoned fan-coil HVAC (the floor grilles), floor-to-ceiling windows.
+
 ## Still missing
 
-Interior photos for the apartment (optional).
+Nothing required. Floor two of the apartment (bedrooms) has no plan yet: it is laid out from the photos.
