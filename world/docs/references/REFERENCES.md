@@ -121,6 +121,11 @@ Source: 111 West 57th Street, PH76 floor one (Sotheby's International Realty lis
 | apartment-14-breakfast-room-kitchen.jpg | Breakfast room into the kitchen | Oval dark oak table, banquette, faceted glass pendants, slot diffusers, the kitchen island beyond, terrace door. |
 | apartment-15-kitchen-galley.jpg | Kitchen | Two-tone galley: pale lacquer uppers, dark oak lowers with recessed pulls, stone counters and splash, built-in ovens and a steam oven stack, integrated fridges, a view door to the terrace. |
 | apartment-16-view-south-midtown.jpg | View south | Skyline backdrop for the windows (window views are generated from the city, not this photo). |
+| apartment-17-dining-room-parquet-chandeliers.jpg | Dining room (great hall, east end) | Versailles-style parquet in smoke-grey oak (square panels with diagonal infill), travertine table for 8 with bouclé chairs, two tiered glass-leaf chandeliers, corner glazing, travertine and oak plinths with busts. |
+| apartment-18-piano-corner.jpg | Piano corner (great hall, west end) | Black grand piano on a pale rug, a hanging faded carpet on the wall, fiddle-leaf fig in a big stone pot, two armchairs at the corner glass, the slot window in the pier. |
+| apartment-19-great-hall-living-piano.jpg | Great hall living area | Two straight bouclé sofas facing over two oak and glass coffee tables, smoked glass pendants, the stepped ceiling soffit, herringbone floor round a cream rug. |
+| apartment-20-great-hall-symmetric-sofas.jpg | Great hall, centred on the park | Symmetric layout: sofas either side of the axis, the two square columns framing the centre window bay, lamps on black figure bases, white curtains folded at the columns. |
+| apartment-21-view-north-central-park.jpg | View north | Window backdrop reference: the park as a long green rectangle with lakes, dense blocks either side, rivers left and right (generated, not this photo). |
 
 Plan sizes (floor one; interior 604.9 m2, terrace 28.7 m2; ceilings up to 4.27 m):
 - Great hall 15.11 x 6.52 m along the north glass (living, piano corner, dining for 8), two square columns on the window wall.
