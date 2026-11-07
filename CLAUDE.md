@@ -1444,6 +1444,11 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - FINISH page: swatches in unlock order, locked ones dimmed "LOCKED · LV n"; touching one still previews it on your guns; the price line shows LEVEL n and APPLY reads LOCKED. Finishes already applied stay. Store header shows LV n + a bar to the next level; terminal GEAR shows level and XP. Level-up: toast (headset: vrNote) naming what unlocked, two-note cue.
 - ?dev: LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked. Checked headless: 1000 XP -> level 3, locked APPLY refused with the level message, page screenshot. Not checked: real-play XP pacing, headset.
 
+## world/: working rules (from the user's feedback: do it right the first time)
+- Before calling any visual change done: render the same framing as the matching photo in world/docs/references (same direction, height, field of view), put them side by side, list every difference (light and shadow, haze with distance, colour palette, density, detail at each distance), fix them, and only then report. Sample palettes from the photos (k-means of the relevant crop), never guess colours.
+- Budget in the first pass, not after: headset triangles / draws / texture memory designed with the feature and measured with `?q=quest` (headset settings on a computer) before reporting. Tile big instanced sets so the frustum culls them.
+- Shadows and aerial perspective are part of "realistic", not extras: no outdoor surface ships without the sun's shadow and distance haze.
+
 ## New project: world/ (Infinite Open-World master prompt v6; separate from the office, CQC and Interstate)
 - world/docs/MASTER_PROMPT_v6.pdf (the user's spec) + MASTER_PROMPT.md (text extracted from it). world/docs/references/: the user's reference photos (Shenzhen, Guangzhou, Detroit, West Virginia, coast, snow, Japan, Korea, Russia, the R9) + one unexplained night video and a code screenshot (world/docs/code-notes) as JPEG, indexed in REFERENCES.md with what each calibrates. Reference only, never shipped.
 - Rules from the user: never touch the existing games' files; never use the old game screenshots for this project; reuse only code logic where it helps.

@@ -23,3 +23,8 @@
 - Darkness: a 5 cm top-down field from the colliders (walls at chest height per floor, blurred 0.4 m) and the lowest surface overhead (from the triangles) gives floor / ceiling edge, inside corner, door head and under-stair occlusion; a 20 cm daylight field (24 rays a spot to glass or outside) gives less sky light deep in the core (down to 52 %). Indirect light only.
 - Wet: terrace pavers darken, gloss and puddle by uWet (default 0.8; R cycles 0 / 0.45 / 0.8 / 1 on a computer). Inside wet zones wait for fixtures.
 - Glass: premultiplied blend, Fresnel reflection, 22 % grey absorption.
+
+## Working rules (user feedback)
+- Every visual change is compared side by side with the matching reference photo at the same framing before it is reported; palettes are sampled from the photos.
+- Headset budget is designed and measured (`?q=quest`) in the same pass as the feature.
+- Outdoor surfaces always get the sun's shadow and aerial perspective.

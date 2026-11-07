@@ -50,6 +50,58 @@ float cN21(vec2 p) {
 float cRect(vec2 f, vec2 lo, vec2 hi, vec2 w) { vec2 a = smoothstep(lo, lo + w, f) * smoothstep(hi, hi - w, f); return a.x * a.y; }
 `;
 
+// City light shared by every city material: the sun's shadow from a static two-cascade depth
+// map of all buildings (rendered once at load: buildings on buildings, streets, the park and
+// the rivers), and aerial perspective (height haze integrated along the view ray, warmer toward
+// the sun) applied before tone mapping. Calibrated on the view photos: deep shadow covers about
+// a third of a sunny Manhattan view, and contrast halves by ~3 km.
+const CITY_PARS = /* glsl */`
+uniform sampler2D uShN; uniform sampler2D uShF; uniform mat4 uShMN; uniform mat4 uShMF; uniform vec4 uShK; uniform float uShOn;
+uniform vec3 uHazeC; uniform vec3 uHazeSun; uniform float uHazeK; uniform float uStreetH; uniform vec3 uSunDirC;
+varying vec3 vCw; varying vec3 vCn;
+float cShT(sampler2D t, vec2 uv, float z) { return step(z, texture2D(t, uv).r); }
+float cShadow(vec3 wp, vec3 n) {
+  if (uShOn < 0.5) return 1.0;
+  vec4 a = uShMN * vec4(wp + n * uShK.z * 1.5, 1.0);
+  if (a.x > 0.002 && a.x < 0.998 && a.y > 0.002 && a.y < 0.998 && a.z < 1.0) {
+    float z = a.z - 0.00004; float o = uShK.x * 0.5;
+    return 0.25 * (cShT(uShN, a.xy + vec2(-o, -o), z) + cShT(uShN, a.xy + vec2(o, -o), z) + cShT(uShN, a.xy + vec2(-o, o), z) + cShT(uShN, a.xy + vec2(o, o), z));
+  }
+  a = uShMF * vec4(wp + n * uShK.w * 1.5, 1.0);
+  if (a.x > 0.0 && a.x < 1.0 && a.y > 0.0 && a.y < 1.0 && a.z < 1.0) {
+    float z = a.z - 0.00008; float o = uShK.y * 0.5;
+    return 0.25 * (cShT(uShF, a.xy + vec2(-o, -o), z) + cShT(uShF, a.xy + vec2(o, -o), z) + cShT(uShF, a.xy + vec2(-o, o), z) + cShT(uShF, a.xy + vec2(o, o), z));
+  }
+  return 1.0;
+}
+vec3 cHaze(vec3 col, vec3 wp) {
+  vec3 v = wp - cameraPosition; float d = length(v);
+  float H = 700.0;
+  float y0 = max(cameraPosition.y - uStreetH, 0.0), y1 = max(wp.y - uStreetH, 0.0);
+  float dy = y1 - y0;
+  float od = abs(dy) < 1.0 ? exp(-y0 / H) * d : H * (exp(-y0 / H) - exp(-y1 / H)) / dy * d;
+  float f = 1.0 - exp(-uHazeK * od);
+  float s = pow(max(dot(v / max(d, 1.0), uSunDirC), 0.0), 6.0);
+  return mix(col, mix(uHazeC, uHazeSun, s * 0.6), f);
+}
+`;
+function cityInject(sh, CU) {
+  Object.assign(sh.uniforms, CU);
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vCw; varying vec3 vCn;')
+    .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>
+      vec4 cw4 = vec4(transformed, 1.0); vec3 cn3 = objectNormal;
+      #ifdef USE_INSTANCING
+        cw4 = instanceMatrix * cw4; cn3 = mat3(instanceMatrix) * cn3;
+      #endif
+      vCw = (modelMatrix * cw4).xyz; vCn = normalize(mat3(modelMatrix) * cn3);`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\n' + CITY_PARS)
+    .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
+      { float cs = cShadow(vCw, normalize(vCn)); reflectedLight.directDiffuse *= cs; reflectedLight.directSpecular *= cs; }`)
+    .replace('#include <opaque_fragment>', 'outgoingLight = cHaze(outgoingLight, vCw);\n#include <opaque_fragment>');
+}
+
 // reflections of the sky only would make glass glow where it should mirror the city below the
 // horizon: darken the environment there
 const ENV_CITY = THREE.ShaderChunk.envmap_physical_pars_fragment
@@ -63,8 +115,8 @@ const ENV_CITY = THREE.ShaderChunk.envmap_physical_pars_fragment
 // floor, glass tint, mechanical floor every n). Styles: 0 masonry, 1 glass curtain wall,
 // 2 ribbon-window residential, 3 precast office grid, 4 supertall grid, 5 our terracotta and
 // bronze. Parts: 0 facade, 1 stone trim (cornice / belt course), 2 rooftop plant / louvres.
-function buildingMaterial() {
-  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0.0 });
+function buildingMaterial(CU) {
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0.0, fog: false });
   m.userData.u = { uStreet: { value: STREET }, uSunDir: { value: SUN }, uIntK: { value: 0.34 } };
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, m.userData.u);
@@ -104,8 +156,18 @@ function buildingMaterial() {
           // roof: tar and gravel, membrane patches, drains, coping round the edge
           float e = min((0.5 - abs(vLoc.x)) * vSize.x, (0.5 - abs(vLoc.z)) * vSize.z);
           float g = cN21(vWp.xz * 0.8) * 0.5 + cN21(vWp.xz * 0.19) * 0.5;
-          vec3 rc = mix(vec3(0.15, 0.15, 0.145), vec3(0.31, 0.3, 0.28), g);
-          rc *= 0.82 + 0.18 * step(0.45, cH21(floor(vWp.xz / 4.0)));
+          float rt = cH21(vec2(bSeed * 91.0, floor(vWp.y * 0.5)));
+          vec3 rc = rt < 0.38 ? vec3(0.07, 0.07, 0.072) : rt < 0.72 ? vec3(0.22, 0.21, 0.195) : rt < 0.93 ? vec3(0.5, 0.5, 0.48) : vec3(0.1, 0.15, 0.07);
+          rc *= (0.8 + 0.4 * g) * (0.85 + 0.15 * step(0.45, cH21(floor(vWp.xz / 4.0))));
+          float rfw = max(fwidth(vWp.x), fwidth(vWp.z));
+          if (rfw < 0.8) {                                // rooftop units and vents (and their shadows)
+            vec2 rcl = floor(vWp.xz / 3.2), rf = fract(vWp.xz / 3.2);
+            float has = step(cH21(rcl + bSeed * 13.0), 0.16) * step(1.6, e);
+            float unit = cRect(rf, vec2(0.18, 0.22), vec2(0.72, 0.68), vec2(0.04));
+            float ush = cRect(rf, vec2(0.28, 0.28), vec2(0.86, 0.8), vec2(0.06)) * (1.0 - unit);
+            rc = mix(rc, rc * 0.45, ush * has);
+            rc = mix(rc, vec3(0.42, 0.43, 0.43) * (0.85 + 0.3 * cH21(rcl)), unit * has);
+          }
           if (bPart > 1.5) rc = vec3(0.33, 0.34, 0.34) * (0.9 + 0.1 * g);
           bCol = mix(rc, bCol * 1.08, smoothstep(0.6, 0.4, e));
         } else if (bPart > 0.5 && bPart < 1.5) {
@@ -133,6 +195,10 @@ function buildingMaterial() {
           else if (bSt == 3) { lo = vec2(0.17, 0.2); hi = vec2(0.83, 0.84); rev = 0.35; gT = vec3(0.06, 0.07, 0.075); }
           else if (bSt == 4) { lo = vec2(0.09, 0.08); hi = vec2(0.91, 0.92); rev = 0.6; gT = vec3(0.06, 0.07, 0.08); }
           else if (bSt == 5) { lo = vec2(0.34, 0.05); hi = vec2(0.95, 0.97); rev = 0.35; gT = vec3(0.07, 0.07, 0.065); }
+          if (bSt == 0) {                                  // masonry bays grouped in threes: wider piers between groups
+            float gr = mod(ic.x + floor(bSeed * 3.0), 3.0);
+            if (gr < 0.5) lo.x += 0.08; else if (gr > 1.5) hi.x -= 0.08;
+          }
           // ground floor shops: tall glass, sign band over it
           bool shop = ic.y < 0.5 && vInfo2.y < 0.5 && bSt != 1 && bSt != 4 && bSt != 5;
           if (shop) { lo = vec2(0.05, 0.05); hi = vec2(0.95, 0.68); rev = 0.3; }
@@ -178,6 +244,18 @@ function buildingMaterial() {
             wall *= 1.0 - 0.14 * strk * step(lo.x, f.x) * step(f.x, hi.x);
           }
           wall *= mix(0.72, 1.0, smoothstep(0.0, 16.0, bY));
+          if (bSt == 0 || bSt == 5) {                      // stone belt course every few floors
+            float every = 4.0 + floor(bSeed * 3.0);
+            float belt = step(mod(ic.y, every), 0.5) * (1.0 - smoothstep(0.08, 0.08 + fw2.y * 1.5, f.y));
+            wall = mix(wall, wall * 1.22, belt * (1.0 - lod));
+          }
+          // soot and rain: broad vertical stains from the top, patchy stone
+          float stain = cN21(vec2(bAlong * 0.18 + bSeed * 40.0, bY * 0.012)) * cN21(vec2(bAlong * 0.6, bSeed * 7.0));
+          wall *= 1.0 - 0.22 * smoothstep(0.25, 0.7, stain);
+          wall *= 0.9 + 0.2 * cN21(vec2(bAlong, bY) * 0.09 + bSeed * 5.0);
+          // the roof of a lower tier shades the foot of the tier above it
+          float bBot = vLoc.y * vSize.y;
+          if (vWp.y - bBot > uStreet + 2.0) wall *= mix(0.7, 1.0, smoothstep(0.0, 2.5, bBot));
           // reveal shadow: the head and one jamb shade the recessed glass on the sunny side
           vec3 Nw = bX ? vec3(sign(bN.x), 0.0, 0.0) : vec3(0.0, 0.0, sign(bN.z));
           vec3 Tw = bX ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
@@ -232,8 +310,9 @@ function buildingMaterial() {
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n roughnessFactor = bRough;')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n metalnessFactor = bMet;')
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += bInt;');
+    cityInject(sh, CU);
   };
-  m.customProgramCacheKey = () => 'cityBuildings2';
+  m.customProgramCacheKey = () => 'cityBuildings3';
   return m;
 }
 
@@ -354,65 +433,89 @@ const GROUND_FS = /* glsl */`
 `;
 
 function groundMaterial(U) {
-  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92 });
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, fog: false });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
+    cityInject(sh, U);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vGp;')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvGp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\nvarying vec3 vGp; uniform float uTime;\n${NOISE}`)
       .replace('#include <color_fragment>', '#include <color_fragment>\n' + GROUND_FS);
   };
-  m.customProgramCacheKey = () => 'cityGround2';
+  m.customProgramCacheKey = () => 'cityGround3';
   return m;
 }
 
 // park: tree crowns (lumpy, sunlit on the south-west side, autumn patches), lawns with mowing
 // stripes, winding paths, the loop drive
 function parkMaterial(U) {
-  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 });
+  const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, fog: false });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
+    cityInject(sh, U);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vGp;')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvGp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\nvarying vec3 vGp; uniform vec3 uSunDir;\n${NOISE}
-      float pCrown(vec2 p) { return cN21(p / 5.5) * 0.6 + cN21(p / 2.2 + 7.0) * 0.3 + cN21(p / 13.0) * 0.4; }`)
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\nvarying vec3 vGp; uniform vec3 uSunDir;\n${NOISE}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         vec2 pp = vGp.xz;
         float gf = max(fwidth(pp.x), fwidth(pp.y));
-        float h = pCrown(pp);
-        float hs = pCrown(pp + normalize(uSunDir.xz) * 1.6);
-        float lit = clamp(0.75 + (hs - h) * 2.4 + (h - 0.65) * 0.8, 0.35, 1.3);
-        float aut = smoothstep(0.66, 0.85, cN21(pp / 90.0 + 3.0)) * 0.6;
-        vec3 green = mix(vec3(0.06, 0.12, 0.04), vec3(0.12, 0.18, 0.05), cN21(pp / 30.0));
-        vec3 leaf = mix(green, mix(vec3(0.27, 0.23, 0.07), vec3(0.28, 0.13, 0.05), cN21(pp / 25.0)), aut * step(0.5, cN21(pp / 9.0)));
-        vec3 pc = leaf * lit * (0.6 + 0.6 * smoothstep(0.35, 0.75, h));
-        // lawns
-        vec2 l1 = (pp - vec2(10.0, -1650.0)) / vec2(150.0, 115.0), l2 = (pp - vec2(-80.0, -560.0)) / vec2(170.0, 95.0), l3 = (pp - vec2(220.0, -3600.0)) / vec2(120.0, 160.0);
-        float lawn = max(max(1.0 - smoothstep(0.95, 1.0, length(l1)), 1.0 - smoothstep(0.95, 1.0, length(l2))), 1.0 - smoothstep(0.95, 1.0, length(l3)));
-        vec3 grass = mix(vec3(0.15, 0.24, 0.07), vec3(0.18, 0.28, 0.08), step(0.5, fract(pp.x / 6.0))) * (0.9 + 0.2 * cN21(pp * 0.3));
-        pc = mix(pc, grass, lawn);
-        // winding paths and the loop drive near the edge
-        // paths: the 0.5 contour of a noise field, constant width in metres (distance = value / slope)
-        float n0 = cN21(pp / 70.0), nx = cN21((pp + vec2(1.0, 0.0)) / 70.0), nz = cN21((pp + vec2(0.0, 1.0)) / 70.0);
-        float pd = abs(n0 - 0.5) / max(length(vec2(nx - n0, nz - n0)), 1e-4);
-        float path = 1.0 - smoothstep(1.4, 1.4 + gf, pd);
+        // open ground: lawns (distorted ovals) and meadows
+        vec2 dn = vec2(cN21(pp / 40.0), cN21(pp / 40.0 + 9.0)) * 50.0 - 25.0;
+        vec2 l1 = (pp + dn - vec2(10.0, -1650.0)) / vec2(150.0, 115.0), l2 = (pp + dn - vec2(-80.0, -560.0)) / vec2(170.0, 95.0), l3 = (pp + dn - vec2(220.0, -3600.0)) / vec2(120.0, 160.0);
+        float lawn = max(max(1.0 - smoothstep(0.92, 1.0, length(l1)), 1.0 - smoothstep(0.92, 1.0, length(l2))), 1.0 - smoothstep(0.92, 1.0, length(l3)));
+        float meadow = smoothstep(0.66, 0.74, cN21(pp / 85.0 + 4.0));
+        float dens = mix(0.93, 0.08, max(lawn, meadow * 0.7));
+        // crowns on a jittered 9 m grid: the tallest crown over this point wins
+        float best = -1.0; vec3 pN = vec3(0.0, 1.0, 0.0); float pid = 0.0, pq = 0.0;
+        vec2 c0 = floor(pp / 9.0);
+        for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+          vec2 c = c0 + vec2(float(i), float(j));
+          if (cH21(c * 1.7 + 0.3) > dens) continue;
+          vec2 cp = (c + 0.15 + 0.7 * vec2(cH21(c), cH21(c + 5.3))) * 9.0;
+          float r = 4.2 + 3.6 * cH21(c + 9.1);
+          vec2 d = pp - cp;
+          float q = 1.0 - dot(d, d) / (r * r);
+          if (q <= 0.0) continue;
+          float h = sqrt(q) * r * (0.75 + 0.5 * cH21(c + 2.2));
+          if (h > best) { best = h; pN = normalize(vec3(d.x, sqrt(q) * r * 1.1, d.y)); pid = cH21(c + 7.7); pq = q; }
+        }
+        float leafN = cN21(pp * 1.3) * 0.6 + cN21(pp * 3.7) * 0.4;
+        vec3 pc;
+        if (best > 0.0) {
+          vec3 g1 = vec3(0.055, 0.1, 0.035), g2 = vec3(0.11, 0.15, 0.04), g3 = vec3(0.07, 0.1, 0.06);
+          vec3 leaf = pid < 0.45 ? g1 : pid < 0.8 ? g2 : g3;
+          float aut = smoothstep(0.62, 0.8, cN21(pp / 120.0 + 3.0));
+          if (pid > 0.86) leaf = mix(leaf, mix(vec3(0.3, 0.24, 0.06), vec3(0.3, 0.12, 0.04), cH21(vec2(pid, 1.0))), 0.5 + 0.5 * aut);
+          pc = leaf * (0.7 + 0.6 * leafN) * mix(0.55, 1.0, sqrt(pq));
+          pN = normalize(pN + vec3(leafN - 0.5, 0.0, cN21(pp * 1.3 + 4.0) - 0.5) * 0.9);
+        } else {
+          vec3 grass = mix(vec3(0.13, 0.2, 0.06), vec3(0.16, 0.24, 0.07), step(0.5, fract(pp.x / 6.0))) * (0.9 + 0.2 * cN21(pp * 0.3));
+          vec3 under = vec3(0.05, 0.06, 0.03) * (0.8 + 0.4 * leafN);
+          pc = mix(under, grass, max(lawn, meadow));
+          // paths where the ground is open: the 0.5 contour of a noise field, constant width
+          float n0 = cN21(pp / 70.0), nx = cN21((pp + vec2(1.0, 0.0)) / 70.0), nz = cN21((pp + vec2(0.0, 1.0)) / 70.0);
+          float pd = abs(n0 - 0.5) / max(length(vec2(nx - n0, nz - n0)), 1e-4);
+          pc = mix(pc, vec3(0.42, 0.41, 0.38), (1.0 - smoothstep(1.3, 1.3 + gf, pd)) * 0.9);
+        }
         float ex = min(min(pp.x - ${PARK.x0.toFixed(1)}, ${PARK.x1.toFixed(1)} - pp.x), min(pp.y - (${PARK.z0.toFixed(1)}), (${PARK.z1.toFixed(1)}) - pp.y));
-        float drive = (1.0 - smoothstep(4.0, 4.0 + gf, abs(ex - 28.0)));
-        pc = mix(pc, vec3(0.45, 0.44, 0.41), path * (1.0 - lawn) * 0.85);
-        pc = mix(pc, vec3(0.13), drive);
-        pc = mix(pc, vec3(0.42, 0.41, 0.39), 1.0 - smoothstep(5.0, 5.0 + gf, ex));    // perimeter wall walk
-        diffuseColor.rgb = pc;`);
+        float drive = 1.0 - smoothstep(4.0, 4.0 + gf, abs(ex - 28.0));
+        pc = mix(pc, vec3(0.12), drive * step(best, 3.0));
+        pc = mix(pc, vec3(0.4, 0.39, 0.37), 1.0 - smoothstep(5.0, 5.0 + gf, ex));
+        if (best <= 0.0 && drive < 0.5) pN = vec3(0.0, 1.0, 0.0);
+        diffuseColor.rgb = pc;`)
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n normal = normalize((viewMatrix * vec4(pN, 0.0)).xyz);');
   };
-  m.customProgramCacheKey = () => 'cityPark2';
+  m.customProgramCacheKey = () => 'cityPark3';
   return m;
 }
 
 // rivers and lakes: rippled, the sun glinting off them
 function waterMaterial(U, lake) {
-  const m = new THREE.MeshStandardMaterial({ color: '#2f4654', roughness: 0.06, metalness: 0.0, envMapIntensity: 1.1 });
+  const m = new THREE.MeshStandardMaterial({ color: '#2f4654', roughness: 0.06, metalness: 0.0, envMapIntensity: 1.1, fog: false });
   if (lake) { m.polygonOffset = true; m.polygonOffsetFactor = -4; m.polygonOffsetUnits = -8; }
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
+    cityInject(sh, U);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vGp;')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvGp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\nvarying vec3 vGp; uniform float uTime;\n${NOISE}`)
@@ -428,14 +531,20 @@ function waterMaterial(U, lake) {
           normal = normalize((viewMatrix * vec4(wn, 0.0)).xyz);
         }`);
   };
-  m.customProgramCacheKey = () => (lake ? 'cityLake2' : 'cityWater2');
+  m.customProgramCacheKey = () => (lake ? 'cityLake3' : 'cityWater3');
   return m;
 }
 
 export function buildCity(scene, renderer, Q) {
   const world = new THREE.Group(); world.name = 'city';
   scene.add(world);
-  const U = { uTime: { value: 0 }, uSunDir: { value: SUN } };
+  const U = {
+    uTime: { value: 0 }, uSunDir: { value: SUN },
+    uShN: { value: null }, uShF: { value: null }, uShMN: { value: new THREE.Matrix4() }, uShMF: { value: new THREE.Matrix4() },
+    uShK: { value: new THREE.Vector4() }, uShOn: { value: 0 },
+    uHazeC: { value: HORIZON.clone().lerp(HAZE, 0.5) }, uHazeSun: { value: new THREE.Color(1.0, 0.92, 0.8) }, uHazeK: { value: 2.4e-4 },
+    uStreetH: { value: STREET }, uSunDirC: { value: SUN },
+  };
 
   // sky dome + image-based light from it
   const sky = new THREE.Mesh(new THREE.SphereGeometry(9000, 48, 24), skyMaterial());
@@ -454,7 +563,8 @@ export function buildCity(scene, renderer, Q) {
 
   // ground, rivers, harbour: laid edge to edge (never stacked) so nothing z-fights far away
   const groundMat = groundMaterial(U);
-  const farGround = new THREE.MeshStandardMaterial({ color: '#4a4b4c', roughness: 0.95 });
+  const farGround = new THREE.MeshStandardMaterial({ color: '#4a4b4c', roughness: 0.95, fog: false });
+  farGround.onBeforeCompile = (sh) => cityInject(sh, U); farGround.customProgramCacheKey = () => 'cityFar3';
   const water = waterMaterial(U, false);
   water.envMap = scene.environment;
   const strip = (x0, x1, z0, z1, mat, y) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), mat); m.rotation.x = -Math.PI / 2; m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2); m.matrixAutoUpdate = false; m.updateMatrix(); world.add(m); return m; };
@@ -474,10 +584,12 @@ export function buildCity(scene, renderer, Q) {
 
   // ---- lots -----------------------------------------------------------------------------------
   const R = rng(1957), lots = [];
-  const masonry = ['#a59a8c', '#8f8476', '#b5ab9c', '#7d7369', '#9a8f84', '#c2b9ab', '#6f6862', '#a08877', '#8a5f4a', '#9b6b52', '#b8ad9b'].map((c) => new THREE.Color(c));
-  const brick = ['#7a4a3a', '#8a5644', '#6e4336', '#94634e'].map((c) => new THREE.Color(c));
+  // palette from the view photos (k-means of the lit facades in apartment-16 / -21): cream, tan,
+  // taupe, limestone and cool greys, muted brick; nothing saturated
+  const masonry = ['#cdbfa9', '#bcae98', '#a89a86', '#988b7a', '#b5ab9d', '#a59e94', '#c6bcae', '#8f8476', '#b8a894', '#9d9284'].map((c) => new THREE.Color(c));
+  const brick = ['#7e6252', '#8b6e5c', '#735a4c', '#90786a', '#6e5649'].map((c) => new THREE.Color(c));
   const glassC = ['#7c8287', '#6b7177', '#8a8f92', '#5f656a'].map((c) => new THREE.Color(c));
-  const pale = ['#cfcac0', '#d8d4cb', '#bfbbb2', '#e0ddd5'].map((c) => new THREE.Color(c));
+  const pale = ['#b9b4aa', '#c3beb3', '#a9a59c', '#cbc6bb'].map((c) => new THREE.Color(c));
   const pick = (a) => a[Math.floor(R() * a.length)];
   const heightAt = (x, z) => {
     const nearPark = (z < PARK.z1 + 40 && z > PARK.z0 - 40) && (Math.abs(x - PARK.x0) < 320 || Math.abs(x - PARK.x1) < 320);
@@ -509,7 +621,7 @@ export function buildCity(scene, renderer, Q) {
       const near = Math.hypot((bx0 + bx1) / 2, z) < 2600;
       let px = bx0;
       while (px < bx1 - 8) {
-        const w = Math.min(bx1 - px, (near ? 14 : 18) + R() * (far ? 80 : 45));
+        const w = Math.min(bx1 - px, (near ? 9 : 18) + R() * (far ? 80 : near ? 30 : 45));
         const cx = px + w / 2, cz = z + ST / 2, D = ST - stW - 2;
         if (near && R() < 0.55) {                         // two buildings back to back
           addLot(cx, cz - D / 4 - 0.5, w - 2, D / 2 - 1, heightAt(px, z));
@@ -641,33 +753,78 @@ export function buildCity(scene, renderer, Q) {
     }
   }
 
-  const geo = partGeometry();
-  const n = parts.length;
-  const info = new Float32Array(n * 4), info2 = new Float32Array(n * 4);
-  const bm = buildingMaterial();
+  // tiles of 2 km, each its own instanced mesh with a bounding sphere, so whatever is behind you
+  // or out of the window is not drawn; all of them cast into the city shadow map (layer 2)
+  const TILE = 2000;
+  const tileOf = (x, z) => Math.floor(x / TILE) + ',' + Math.floor(z / TILE);
+  const bm = buildingMaterial(U);
   bm.envMap = scene.environment; bm.envMapIntensity = 1.35;   // own strength: glass mirrors the full sky (the room's 0.55 is for interiors)
-  const im = new THREE.InstancedMesh(geo, bm, n);
+  const base = partGeometry();
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
-  parts.forEach((t, i) => {
-    m4.compose(p.set(t.x, t.y0, t.z), q, s.set(t.w, t.h, t.d)); im.setMatrixAt(i, m4); im.setColorAt(i, t.col);
-    info.set([t.st, t.seed, t.kind, t.fh], i * 4);
-    info2.set([t.bay, t.shop, t.tint, t.mech], i * 4);
-  });
-  geo.setAttribute('aInfo', new THREE.InstancedBufferAttribute(info, 4));
-  geo.setAttribute('aInfo2', new THREE.InstancedBufferAttribute(info2, 4));
-  im.frustumCulled = false;
-  world.add(im);
+  const groups = new Map();
+  for (const t of parts) { const k2 = tileOf(t.x, t.z); if (!groups.has(k2)) groups.set(k2, []); groups.get(k2).push(t); }
+  const meshes = [];
+  for (const list of groups.values()) {
+    const g = base.clone(), n = list.length;
+    const info = new Float32Array(n * 4), info2 = new Float32Array(n * 4);
+    const im = new THREE.InstancedMesh(g, bm, n);
+    list.forEach((t, i) => {
+      m4.compose(p.set(t.x, t.y0, t.z), q, s.set(t.w, t.h, t.d)); im.setMatrixAt(i, m4); im.setColorAt(i, t.col);
+      info.set([t.st, t.seed, t.kind, t.fh], i * 4);
+      info2.set([t.bay, t.shop, t.tint, t.mech], i * 4);
+    });
+    g.setAttribute('aInfo', new THREE.InstancedBufferAttribute(info, 4));
+    g.setAttribute('aInfo2', new THREE.InstancedBufferAttribute(info2, 4));
+    im.computeBoundingSphere();
+    im.layers.enable(2); im.matrixAutoUpdate = false;
+    world.add(im); meshes.push(im);
+  }
+  const n = parts.length;
 
-  // water tanks
+  // water tanks (same tiles)
   const tg = tankGeometry();
-  const tim = new THREE.InstancedMesh(tg, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }), Math.max(1, tanks.length));
-  tanks.forEach(([x, y, z, r, h], i) => { m4.compose(p.set(x, y, z), q, s.set(r, h, r)); tim.setMatrixAt(i, m4); });
-  tim.count = tanks.length; tim.frustumCulled = false;
-  world.add(tim);
+  const tankMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, fog: false });
+  tankMat.onBeforeCompile = (sh) => cityInject(sh, U);
+  tankMat.customProgramCacheKey = () => 'cityTank3';
+  const tgroups = new Map();
+  for (const t of tanks) { const k2 = tileOf(t[0], t[2]); if (!tgroups.has(k2)) tgroups.set(k2, []); tgroups.get(k2).push(t); }
+  for (const list of tgroups.values()) {
+    const tim = new THREE.InstancedMesh(tg, tankMat, list.length);
+    list.forEach(([x, y, z, r, h], i) => { m4.compose(p.set(x, y, z), q, s.set(r, h, r)); tim.setMatrixAt(i, m4); });
+    tim.computeBoundingSphere(); tim.layers.enable(2); tim.matrixAutoUpdate = false;
+    world.add(tim); meshes.push(tim);
+  }
+
+  // the sun's shadow over the city: two static orthographic depth maps, drawn once now
+  {
+    const cas = Q.quest ? [[1500, 2048], [7000, 1024]] : [[1800, 3072], [9000, 2048]];
+    const depthMat = new THREE.MeshDepthMaterial();
+    const prevRT = renderer.getRenderTarget(), xr = renderer.xr.enabled, ov = scene.overrideMaterial;
+    renderer.xr.enabled = false;
+    const centre = new THREE.Vector3(0, STREET + 60, -300);
+    const bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+    world.updateMatrixWorld(true);
+    cas.forEach(([half, size], i) => {
+      const dt = new THREE.DepthTexture(size, size);
+      const rt = new THREE.WebGLRenderTarget(size, size, { format: THREE.RedFormat, type: THREE.UnsignedByteType, depthTexture: dt, depthBuffer: true, generateMipmaps: false });
+      const cam = new THREE.OrthographicCamera(-half, half, half, -half, 100, 16000);
+      cam.position.copy(centre).addScaledVector(SUN, 8000); cam.lookAt(centre);
+      cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+      cam.layers.set(2);
+      scene.overrideMaterial = depthMat;
+      renderer.setRenderTarget(rt); renderer.clear(true, true, true);
+      renderer.render(scene, cam);
+      const M = bias.clone().multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+      U[i ? 'uShF' : 'uShN'].value = dt; U[i ? 'uShMF' : 'uShMN'].value.copy(M);
+      U.uShK.value.setComponent(i, 1 / size); U.uShK.value.setComponent(2 + i, (2 * half) / size);
+    });
+    scene.overrideMaterial = ov; renderer.setRenderTarget(prevRT); renderer.xr.enabled = xr;
+    U.uShOn.value = 1;
+  }
 
   let tri = 0; tri += n * 10 + tanks.length * (tg.attributes.position.count / 3);
   return {
-    world, sky, count: n, lots: lots.length, tanks: tanks.length, triangles: tri,
+    world, sky, count: n, lots: lots.length, tanks: tanks.length, triangles: tri, tiles: meshes.length,
     update(t) { U.uTime.value = t; },
   };
 }

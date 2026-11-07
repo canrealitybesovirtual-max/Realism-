@@ -8,7 +8,7 @@ import { createPlayer } from './player.js';
 import { setupSurfaces } from './surface.js';
 
 const ua = navigator.userAgent;
-const QUEST = /OculusBrowser|Quest/i.test(ua);
+const QUEST = /OculusBrowser|Quest/i.test(ua) || /[?&]q=quest\b/.test(location.search);   // ?q=quest: the headset settings on a computer (tests)
 const Q = {
   quest: QUEST, tex: QUEST ? 512 : 1024, stoneTex: 512, shadow: QUEST ? 1024 : 2048,
   pr: QUEST ? 1 : Math.min(devicePixelRatio, 1.5), cityK: QUEST ? 0.5 : 1,
