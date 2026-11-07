@@ -404,7 +404,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q }) {
     const t = performance.now();
     U.uProbeOn.value = 0;
     const rt = new THREE.WebGLCubeRenderTarget(PSIZE, { type: THREE.HalfFloatType, generateMipmaps: false });
-    const cam = new THREE.CubeCamera(0.05, 4000, rt);
+    const cam = new THREE.CubeCamera(0.05, 100000, rt);   // far enough for the baked city (to the horizon)
     scene.add(cam);
     const pm = new THREE.PMREMGenerator(renderer);
     const copy = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({

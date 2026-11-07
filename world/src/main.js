@@ -3,7 +3,8 @@
 import * as THREE from 'three';
 import { makeMaterials } from './materials.js';
 import { buildApartment } from './apartment.js';
-import { buildCity, SUN } from './city.js';
+import { buildCity, SUN as GEN_SUN } from './city.js';
+import { buildView } from './view.js';
 import { createPlayer } from './player.js';
 import { setupSurfaces } from './surface.js';
 
@@ -41,9 +42,14 @@ async function boot() {
   await new Promise((r) => setTimeout(r, 20));
   const apt = buildApartment(M, Q);
   scene.add(apt.group);
-  status('Building the city…');
+  status('Loading the view…');
   await new Promise((r) => setTimeout(r, 20));
-  const city = buildCity(scene, renderer, Q);
+  // the real city (baked panoramas); ?city=gen or no bake -> the generated stand-in city
+  let city = null, view = null, SUN = GEN_SUN;
+  if (!/[?&]city=gen\b/.test(location.search)) {
+    try { view = await buildView(scene, renderer, Q); SUN = view.sun; camera.far = 100000; camera.updateProjectionMatrix(); } catch (e) { console.warn('city view not available, using the generated city', e); }
+  }
+  if (!view) city = buildCity(scene, renderer, Q);
 
   // light: sun through the glass (static shadows), soft sky fill, the sky's image light
   const sun = new THREE.DirectionalLight('#fff3e2', 3.2);
@@ -65,6 +71,7 @@ async function boot() {
   renderer.compile(scene, camera);
   surf.bake();
   addEventListener('keydown', (e) => {
+    if (e.code === 'KeyT' && !e.repeat && view) { view.nextSun(); return; }   // T: next baked time of day
     if (e.code !== 'KeyR' || e.repeat) return;      // R: dry / damp / wet terrace
     const steps = [0, 0.45, 0.8, 1]; const i = steps.findIndex((v) => Math.abs(v - surf.wet) < 0.01);
     surf.setWet(steps[(i + 1) % steps.length]);
@@ -73,7 +80,7 @@ async function boot() {
   status('Physics…');
   const spawn = { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
-  window.__world = { scene, camera, rig, renderer, player, apt, city, M, THREE, surf };
+  window.__world = { scene, camera, rig, renderer, player, apt, city, view, M, THREE, surf };
   status('');
   document.getElementById('start').classList.add('ready');
 
@@ -84,12 +91,20 @@ async function boot() {
   renderer.setAnimationLoop(() => {
     const dt = clock.getDelta();
     player.update(dt);
-    city.update(clock.elapsedTime);
+    if (city) city.update(clock.elapsedTime);
+    if (view) {
+      view.update(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, dt);
+      if (view.fadeT >= 0 || view.sunMoved) {          // time of day changing: the sun through the glass follows
+        sun.position.copy(view.sun).multiplyScalar(60).add(new THREE.Vector3(8.8, 4, 9.5));
+        renderer.shadowMap.needsUpdate = true;
+        view.sunMoved = view.fadeT >= 0;
+      }
+    }
     renderer.render(scene, camera);
     acc += dt; frames++;
     if (acc > 0.5) {
       const p = player.pos;
-      fpsEl.textContent = `${Math.round(frames / acc)} fps · ${renderer.info.render.calls} draws · ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris · floor ${p.y > 2.3 ? 2 : 1} · wet ${surf.wet.toFixed(2)}`;
+      fpsEl.textContent = `${Math.round(frames / acc)} fps · ${renderer.info.render.calls} draws · ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris · floor ${p.y > 2.3 ? 2 : 1} · wet ${surf.wet.toFixed(2)}${view ? ' · ' + view.sunName : ''}`;
       acc = 0; frames = 0;
     }
   });
