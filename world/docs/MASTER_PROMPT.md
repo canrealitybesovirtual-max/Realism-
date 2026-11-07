@@ -2401,6 +2401,11 @@ Infinite Open-World Master Prompt v6 (Final) — Quest 3S + PC
      2. Far views are baked panoramas with depth (parallax), never live geometry: windows,
         skylines, terrain past the play area. Frame time goes to what the player can reach.
      3. Keep the whole project moving: bring one piece to the bar, then the next.
+     4. No props or assets ship before the developer has seen them: show renders next to the
+        reference photo first. Model only what the reference photos show.
+     5. Meshlet-style geometry: big meshes split into ~128-triangle clusters, culled (frustum,
+        back-facing cone, distance LOD) and drawn with multi-draw, so triangle counts can rise
+        without costing frame rate (no mesh shaders on the web or the Quest).
 
   13B. Surface realism rule (added by the developer, Nov 7, 2026)
   Every surface must read as its real material up close, in VR and on PC. Nothing ships
