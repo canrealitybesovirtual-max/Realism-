@@ -245,6 +245,28 @@ uniform float uSrOn;
 uniform float uSrDLMin;
 uniform float uWet;
 uniform float uGlassAbs;
+uniform sampler2D uLamp0, uLamp1;
+uniform vec3 uLampG;
+uniform vec2 uLampSz;
+uniform vec4 uHoleR[ 4 ];
+uniform float uHoleY[ 4 ];
+// real openings: down-facing surfaces round a downlight (its can shows through) and floor
+// surfaces over the window grilles (the trough and bars show through)
+void srHoles( vec3 p, vec3 n ) {
+  if ( n.y < - 0.7 ) {
+    vec2 c = ( p.xz - uLampG.xy ) / uLampG.z;
+    vec2 cell = floor( c );
+    vec2 tuv = ( cell + 0.5 ) / uLampSz;
+    vec4 L = p.y > 4.45 ? texture2D( uLamp1, tuv ) : texture2D( uLamp0, tuv );
+    vec2 lc = uLampG.xy + ( cell + 0.5 ) * uLampG.z + L.xy;
+    if ( L.w > 0.5 && abs( p.y - L.z ) < 0.03 && distance( p.xz, lc ) < 0.05 ) discard;
+  } else if ( n.y > 0.7 ) {
+    for ( int i = 0; i < 4; i ++ ) {
+      vec4 r = uHoleR[ i ];
+      if ( p.x > r.x && p.x < r.z && p.z > r.y && p.z < r.w && abs( p.y - uHoleY[ i ] ) < 0.004 ) discard;
+    }
+  }
+}
 float srHash( vec2 p ) { return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 ); }
 float srNoise( vec2 p ) {
   vec2 i = floor( p ), f = fract( p ); vec2 u = f * f * ( 3.0 - 2.0 * f );
@@ -409,6 +431,7 @@ function patch(mat, kind, U) {
       .replace('#include <fog_vertex>', '#include <fog_vertex>' + VERT_MAIN);
     let f = sh.fragmentShader
       .replace('#include <common>', '#include <common>' + FRAG_PARS)
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n  if ( uSrOn > 0.5 ) srHoles( vSrPos, normalize( vSrNrm ) * ( gl_FrontFacing ? 1.0 : - 1.0 ) );')
       .replace('#include <envmap_physical_pars_fragment>', ENV_PARS);
     if (kind !== 'glass') f = f.replace('#include <aomap_fragment>', '#include <aomap_fragment>' + AO_APPLY);
     if (kind === 'wet') {
@@ -418,7 +441,7 @@ function patch(mat, kind, U) {
     if (kind === 'glass') f = f.replace('#include <opaque_fragment>', GLASS_OUT).replace('#include <premultiplied_alpha_fragment>', '');
     sh.fragmentShader = f;
   };
-  mat.customProgramCacheKey = () => 'sr3-' + kind;
+  mat.customProgramCacheKey = () => 'sr4-' + kind;
   mat.needsUpdate = true;
 }
 
@@ -438,6 +461,31 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     uProbeOn: { value: 0 }, uIrrOn: { value: 0 }, uIrrK: { value: 1 },
     uSH: { value: Array.from({ length: PROBES.length * 9 }, () => new THREE.Vector3()) },
   };
+  // openings: lamp cans (per floor: nearest lamp offset, its height, a flag) and grille strips
+  const LC = 0.05, LW = Math.ceil((GRID.x1 - GRID.x0) / LC), LD = Math.ceil((GRID.z1 - GRID.z0) / LC);
+  const lampTex = [0, 1].map((fl) => {
+    const d = new Float32Array(LW * LD * 4);
+    for (const [x, y, z] of apt.lamps || []) {
+      if ((y > 4.45 ? 1 : 0) !== fl) continue;
+      const ci = Math.floor((x - GRID.x0) / LC), ck = Math.floor((z - GRID.z0) / LC);
+      for (let k = ck - 2; k <= ck + 2; k++) for (let i = ci - 2; i <= ci + 2; i++) {
+        if (i < 0 || k < 0 || i >= LW || k >= LD) continue;
+        const j = (k * LW + i) * 4, cx = GRID.x0 + (i + 0.5) * LC, cz = GRID.z0 + (k + 0.5) * LC;
+        const dd = Math.hypot(x - cx, z - cz);
+        if (d[j + 3] > 0.5 && Math.hypot(d[j], d[j + 1]) <= dd) continue;
+        d[j] = x - cx; d[j + 1] = z - cz; d[j + 2] = y + 0.02; d[j + 3] = 1;
+      }
+    }
+    const t = new THREE.DataTexture(d, LW, LD, THREE.RGBAFormat, THREE.FloatType);
+    t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true;
+    return t;
+  });
+  const gr = (apt.grilles || []).slice(0, 4);
+  U.uLamp0 = { value: lampTex[0] }; U.uLamp1 = { value: lampTex[1] };
+  U.uLampG = { value: new THREE.Vector3(GRID.x0, GRID.z0, LC) }; U.uLampSz = { value: new THREE.Vector2(LW, LD) };
+  U.uHoleR = { value: [0, 1, 2, 3].map((i) => (gr[i] ? new THREE.Vector4(gr[i][0], gr[i][1], gr[i][2], gr[i][3]) : new THREE.Vector4(1e5, 1e5, -1e5, -1e5))) };
+  U.uHoleY = { value: [0, 1, 2, 3].map((i) => (gr[i] ? gr[i][4] : -99)) };
+
   const mats = new Set(apt.meshes.map((m) => m.material));
   for (const mat of mats) {
     if (mat === M.light) continue;

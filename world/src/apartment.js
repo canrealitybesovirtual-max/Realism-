@@ -149,15 +149,27 @@ export function buildApartment(M, Q) {
     B.box(x0, y - gh, z0 + g, x0 + g, y, z1 - g, M.slot, false); B.box(x1 - g, y - gh, z0 + g, x1, y, z1 - g, M.slot, false);
     if (lights) downlights(x0, z0, x1, z1, y, lights);
   };
-  const lightGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.01, 12);
-  const trimGeo = new THREE.CylinderGeometry(0.052, 0.052, 0.006, 16);
+  // recessed downlight: the ceiling is cut open round it (surface.js holes); a black can 8 cm
+  // deep (inside faces), a dark reflector ring and the lamp's lens at its top
+  const canGeo = (() => {
+    const g = new THREE.CylinderGeometry(0.05, 0.05, 0.08, 24, 1, true).toNonIndexed();
+    const a = g.attributes.position.array, nn = g.attributes.normal.array;
+    for (let i = 0; i < a.length; i += 9) for (let k = 0; k < 3; k++) { const t = a[i + 3 + k]; a[i + 3 + k] = a[i + 6 + k]; a[i + 6 + k] = t; const u = nn[i + 3 + k]; nn[i + 3 + k] = nn[i + 6 + k]; nn[i + 6 + k] = u; }
+    for (let i = 0; i < nn.length; i++) nn[i] = -nn[i];
+    g.translate(0, 0.04, 0);
+    return g;
+  })();
+  const ringGeo = new THREE.RingGeometry(0.026, 0.05, 24).rotateX(Math.PI / 2).translate(0, 0.068, 0);
+  const lensGeo = new THREE.CircleGeometry(0.027, 20).rotateX(Math.PI / 2).translate(0, 0.066, 0);
   const lamps = [];                                   // every downlight: [x, y, z] (lit in the probe bake)
   const downlights = (x0, z0, x1, z1, y, step) => {
     const nx = Math.max(1, Math.round((x1 - x0) / step)), nz = Math.max(1, Math.round((z1 - z0) / step));
     for (let i = 0; i < nx; i++) for (let k = 0; k < nz; k++) {
       const x = x0 + (i + 0.5) * (x1 - x0) / nx, z = z0 + (k + 0.5) * (z1 - z0) / nz;
-      const g = lightGeo.clone(); g.translate(x, y - 0.004, z); B.add(g, M.light); lamps.push([x, y - 0.02, z]);
-      const t = trimGeo.clone(); t.translate(x, y - 0.002, z); B.add(t, M.slot);
+      B.add(canGeo.clone().translate(x, y, z), M.slot);
+      B.add(ringGeo.clone().translate(x, y, z), M.slot);
+      B.add(lensGeo.clone().translate(x, y, z), M.light);
+      lamps.push([x, y - 0.02, z]);
     }
   };
   const floor = (x0, z0, x1, z1, y, mat) => B.box(x0, y - 0.03, z0, x1, y, z1, mat, false);
@@ -179,12 +191,19 @@ export function buildApartment(M, Q) {
     if (axis === 'x') { B.box(a, y0, t, b, y1, t + d, mat); B.box(a - 0.03, y0, t, b + 0.03, y1 + 0.03, t + d * 0.5, M.bronze, false); }
     else { B.box(t, y0, a, t + d, y1, b, mat); B.box(t, y0, a - 0.03, t + d * 0.5, y1 + 0.03, b + 0.03, M.bronze, false); }
   };
+  // linear floor grilles at the glass, with real depth: the floor is cut open over the strip
+  // (surface.js holes), a black trough 6 cm down, aluminium bars along the run, end frames
+  const grilles = [];
   const grilleRun = (axis, t0, t1, s0, s1, y) => {
-    for (let a = s0; a < s1 - 0.3; a += 1.24) {
-      const b = Math.min(a + 1.18, s1);
-      if (axis === 'x') B.box(a, y - 0.005, t0, b, y + 0.002, t1, M.grille, false);
-      else B.box(t0, y - 0.005, a, t1, y + 0.002, b, M.grille, false);
+    grilles.push([s0, t0, s1, t1, y]);
+    B.box(s0, y - 0.07, t0, s1, y - 0.06, t1, M.slot, false);
+    const n = Math.round((t1 - t0) / 0.018);
+    for (let k = 0; k < n; k++) { const t = t0 + (t1 - t0) * (k + 0.5) / n; B.box(s0, y - 0.028, t - 0.0022, s1, y - 0.0005, t + 0.0022, M.bronze, false); }
+    for (let a = s0; a <= s1 + 1e-6; a += Math.min(1.2, s1 - a) || 1.2) {
+      B.box(a - 0.004, y - 0.03, t0, a + 0.004, y - 0.0005, t1, M.bronze, false);
+      if (a >= s1) break;
     }
+    B.box(s0, y - 0.03, t0 - 0.004, s1, y - 0.0005, t0, M.bronze, false); B.box(s0, y - 0.03, t1, s1, y - 0.0005, t1 + 0.004, M.bronze, false);
   };
 
   // ---- structure: slabs (colliders), roof, tower shaft stub ---------------------------------
@@ -412,7 +431,7 @@ export function buildApartment(M, Q) {
     downlights(x0, z0, x1, z1, C2, 1.8);
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders, lamps };
+  return { group, meshes, colliders: B.colliders, lamps, grilles };
 }
 
 // The helical stair: 26 risers over 330 degrees, from floor one (north of the centre, heading

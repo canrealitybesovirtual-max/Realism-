@@ -661,15 +661,29 @@ function facetPendant(B, M, x, z, yBottom, ceil) {
 }
 
 // ---- baths --------------------------------------------------------------------------------------
-// stone cladding on a room's walls: [axis, face coordinate, s0, s1, y0, y1, into-room sign]
-function clad(B, mat, segs, t = 0.016) {
+// stone cladding on a room's walls: [axis, face coordinate, s0, s1, y0, y1, into-room sign].
+// Each slab is its own piece (slab = [width, height]) with a 1.5 mm reveal over a dark setting
+// bed, cut on world multiples of the slab size so the real joints fall on the scan's joints
+function clad(B, mat, segs, t = 0.016, slab = [1.2, 1.2]) {
+  const gap = 0.0015;
+  const cuts = (a, b, step) => { const c = [a]; for (let v = Math.floor(a / step + 1e-6) * step + step; v < b - 0.02; v += step) c.push(v); c.push(b); return c; };
   for (const [axis, f, s0, s1, y0, y1, dir] of segs) {
     if (s1 - s0 < 0.01 || y1 - y0 < 0.01) continue;
-    const a = f, b = f + dir * t;
-    if (axis === 'x') B.box(s0, y0, Math.min(a, b), s1, y1, Math.max(a, b), mat, false);
-    else B.box(Math.min(a, b), y0, s0, Math.max(a, b), y1, s1, mat, false);
+    const bed0 = f, bed1 = f + dir * 0.006, sl0 = bed1, sl1 = f + dir * t;
+    const box = (a0, a1, b0, b1, c0, c1, m) => {
+      if (axis === 'x') B.box(a0, b0, Math.min(c0, c1), a1, b1, Math.max(c0, c1), m, false);
+      else B.box(Math.min(c0, c1), b0, a0, Math.max(c0, c1), b1, a1, m, false);
+    };
+    box(s0, s1, y0, y1, bed0, bed1, M_BED);
+    const cs = cuts(s0, s1, slab[0]), cy = cuts(y0, y1, slab[1]);
+    for (let i = 0; i < cs.length - 1; i++) for (let j = 0; j < cy.length - 1; j++) {
+      const a0 = cs[i] + (i ? gap / 2 : 0), a1 = cs[i + 1] - (i < cs.length - 2 ? gap / 2 : 0);
+      const b0 = cy[j] + (j ? gap / 2 : 0), b1 = cy[j + 1] - (j < cy.length - 2 ? gap / 2 : 0);
+      box(a0, a1, b0, b1, sl0, sl1, mat);
+    }
   }
 }
+let M_BED = null;
 // freestanding bateau tub (apartment-08): polished nickel outside, white enamel inside
 function tub(B, M, x, y, z, ry, L = 1.7, W = 0.78) {
   const prof = [[0, 0], [0.23, 0], [0.26, 0.03], [0.3, 0.2], [0.36, 0.5], [0.385, 0.6], [0.4, 0.62]];
@@ -688,8 +702,15 @@ function tub(B, M, x, y, z, ry, L = 1.7, W = 0.78) {
 function vanity(B, M, x, y, z, ry, L, top, body, basins = [0]) {
   const add = (g, m) => B.add(at(g, x, y, z, ry), m);
   const D = 0.56, H = 0.86;
-  add(at(rbox(L, H - 0.12, D, 0.004, 1), 0, 0.12 + (H - 0.12) / 2, 0), body);
-  for (const yy of [0.32, 0.6]) add(at(rbox(L, 0.006, 0.01, 0.001, 1), 0, yy, D / 2 + 0.002), M.blackMatte);
+  add(at(rbox(L, H - 0.12, D - 0.02, 0.004, 1), 0, 0.12 + (H - 0.12) / 2, -0.01), body);
+  add(at(rbox(L - 0.04, 0.12, D - 0.06, 0.002, 1), 0, 0.06, -0.03), M.blackMatte);          // recessed toe kick
+  // drawer fronts: columns per basin, two drawers each, 3 mm gaps, slim bronze pulls
+  const cols = Math.max(1, basins.length), cw = L / cols;
+  for (let c = 0; c < cols; c++) for (const [y0, y1] of [[0.12, 0.5], [0.503, H - 0.003]]) {
+    const u = -L / 2 + cw * (c + 0.5);
+    add(at(rbox(cw - 0.003, y1 - y0 - 0.003, 0.02, 0.002, 1), u, (y0 + y1) / 2, D / 2 - 0.01), body);
+    add(at(rbox(0.16, 0.012, 0.012, 0.005, 1), u, y1 - 0.045, D / 2 + 0.008), M.bronzeLight);
+  }
   add(at(rbox(L + 0.02, 0.04, D + 0.02, 0.004, 1), 0, H + 0.02, 0.01), top);
   for (const u of basins) {
     add(at(rbox(0.46, 0.004, 0.32, 0.004, 1), u, H + 0.041, 0.04), M.enamel);
@@ -909,12 +930,14 @@ function furnitureMaterials(M, Q) {
   M.ledStrip = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffe6c4', emissiveIntensity: 1.6, roughness: 0.5 });
   M.ledStrip.userData = { shadow: 'none' };
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
+  M.settingBed = new THREE.MeshStandardMaterial({ color: '#4a4540', roughness: 0.9 });
   M.sheer = M.linen.clone(); M.sheer.transparent = true; M.sheer.opacity = 0.5; M.sheer.depthWrite = false; M.sheer.userData = { shadow: 'none', order: 4 };
 }
 
 // ---- the rooms ---------------------------------------------------------------------------------
 export function furnish(M, Q) {
   furnitureMaterials(M, Q);
+  M_BED = M.settingBed;
   const B = new Builder();
   const group = new THREE.Group(); group.name = 'furniture';
   const ceil = 4.2;
@@ -1050,7 +1073,7 @@ export function furnish(M, Q) {
     ['z', 0.9, 1.6, 2.55, F2, C2c, 1], ['z', 0.9, 3.15, 4.85, F2, C2c, 1], ['z', 0.9, 5.45, 6.72, F2, C2c, 1],
     ['z', 0.9, 2.55, 3.15, F2, F2 + 0.1, 1], ['z', 0.9, 4.85, 5.45, F2, F2 + 0.1, 1], ['z', 0.9, 2.55, 3.15, F2 + 3.3, C2c, 1], ['z', 0.9, 4.85, 5.45, F2 + 3.3, C2c, 1],
     ['z', 4.25, 0.15, 1.35, F2, C2c, -1], ['x', 1.35, 4.25, 4.84, F2, C2c, 1],
-  ]);
+  ], 0.016, [1.2, 1.2]);
   tub(B, M, 2.4, F2, 1.45, 0);
   vanity(B, M, 4.52, F2, 3.4, -Math.PI / 2, 2.4, M.onyx, M.lacquerWhite, [-0.6, 0.6]);
   // second bath (floor two, vein-cut travertine): tub, vanity in dark oak, wall-hung toilet
@@ -1058,7 +1081,7 @@ export function furnish(M, Q) {
     ['z', 3.46, 9.75, 14.33, F2, C2c, 1], ['z', 6.03, 9.75, 14.33, F2, C2c, -1],
     ['x', 9.75, 3.46, 6.03, F2, C2c, 1],
     ['x', 14.33, 3.46, 4.0, F2, C2c, -1], ['x', 14.33, 4.8, 6.03, F2, C2c, -1], ['x', 14.33, 4.0, 4.8, F2 + 2.44, C2c, -1],
-  ]);
+  ], 0.016, [0.6, 1.2]);
   vanity(B, M, 5.74, F2, 10.9, -Math.PI / 2, 1.0, M.creamStone, M.woodDark);
   toilet(B, M, 3.476, F2, 12.0, Math.PI / 2);
   builtInTub(B, M, 3.48, 12.55, 4.3, 14.31, F2, M.travertine);
@@ -1067,13 +1090,13 @@ export function furnish(M, Q) {
     ['x', 6.92, 14.75, 16.7, F2, F2 + 1.2, 1], ['x', 9.6, 14.75, 16.7, F2, F2 + 1.2, -1],
     ['z', 14.75, 6.92, 7.5, F2, F2 + 1.2, 1], ['z', 14.75, 8.35, 9.6, F2, F2 + 1.2, 1],
     ['z', 16.7, 6.92, 7.9, F2, F2 + 1.2, -1], ['z', 16.7, 8.5, 9.6, F2, F2 + 1.2, -1],
-  ]);
+  ], 0.016, [0.6, 0.6]);
   vanity(B, M, 16.42, F2, 8.9, -Math.PI / 2, 0.9, M.marbleGrey, M.woodMid);
   // powder room (floor one, grey marble)
   clad(B, M.marbleGrey, [
     ['z', 6.18, 12.95, 14.18, L1v, 3.0, 1], ['x', 12.95, 6.18, 7.81, L1v, 3.0, 1], ['x', 14.18, 6.18, 7.81, L1v, 3.0, -1],
     ['z', 7.81, 12.95, 13.25, L1v, 3.0, -1], ['z', 7.81, 14.05, 14.18, L1v, 3.0, -1], ['z', 7.81, 13.25, 14.05, DH1v - 0.2, 3.0, -1],
-  ]);
+  ], 0.016, [0.6, 0.6]);
   vanity(B, M, 6.47, 0, 13.55, Math.PI / 2, 0.75, M.marbleGrey, M.woodDark);
 
   const meshes = B.finish(group);
