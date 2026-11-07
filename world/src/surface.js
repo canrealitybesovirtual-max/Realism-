@@ -422,7 +422,7 @@ function patch(mat, kind, U) {
   mat.needsUpdate = true;
 }
 
-export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.4, 0.97, 0.7] }) {
+export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.4, 0.97, 0.7], lamps = [], lampPower = 10 }) {
   const t0 = performance.now();
   const F = bakeFields(apt.meshes, apt.colliders, M);
   const env = scene.environment;
@@ -479,7 +479,22 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     const shRT = new THREE.WebGLCubeRenderTarget(SHN, { type: THREE.HalfFloatType, generateMipmaps: false });
     const shCam = new THREE.CubeCamera(0.05, 100000, shRT); scene.add(shCam);
     const shNew = [];
+    // the ceiling downlights light the rooms through the probes: a pool of 8 spots moves to the
+    // lamps nearest each probe (inside its room) for that probe's captures
+    const pool = [];
+    for (let k = 0; k < 8; k++) {
+      const L = new THREE.SpotLight('#ffe7c8', 0, 0, 0.75, 0.6, 2);
+      L.castShadow = false; scene.add(L, L.target); pool.push(L);
+    }
+    const lampsFor = (p) => lamps.filter(([x, y, z]) => x >= p.min[0] && x <= p.max[0] && z >= p.min[2] && z <= p.max[2] && y >= p.min[1] && y <= p.max[1] + 0.3)
+      .sort((a, b) => Math.hypot(a[0] - p.pos[0], a[2] - p.pos[2]) - Math.hypot(b[0] - p.pos[0], b[2] - p.pos[2])).slice(0, 8);
     PROBES.forEach((p, i) => {
+      const near = lampsFor(p);
+      pool.forEach((L, k) => {
+        const q = near[k];
+        if (q) { L.position.set(...q); L.target.position.set(q[0], q[1] - 3, q[2]); L.intensity = lampPower; } else L.intensity = 0;
+        L.updateMatrixWorld(); L.target.updateMatrixWorld();
+      });
       // irradiance: the outside at daylight level, projected on 9 spherical harmonics
       shCam.position.set(...p.pos); shCam.updateMatrixWorld(true);
       if (viewGain) viewGain(whiteBalance.map((c) => c * daylight));   // daylight level, white-balanced as the photos are
@@ -498,6 +513,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     renderer.setRenderTarget(prev);
     renderer.xr.enabled = xr;
     shNew.forEach((c, i) => c.forEach((v, j) => U.uSH.value[i * 9 + j].copy(v)));
+    for (const L of pool) { scene.remove(L, L.target); L.dispose(); }
     scene.remove(cam, shCam); rt.dispose(); shRT.dispose(); if (out) out.dispose(); pm.dispose(); copy.geometry.dispose(); copy.material.dispose();
     U.uProbeOn.value = 1; U.uIrrOn.value = 1;
     return performance.now() - t;

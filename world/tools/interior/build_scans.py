@@ -396,9 +396,9 @@ JOBS = {
     'floor_versailles': versailles,
     'floor_planks': planks,
     # vein-cut silver travertine (apartment-03): slabs 0.6 x 1.2 m with the bands vertical
-    'stone_travertine': lambda: stone('stone_travertine', 'travertine_vein', 1.2, (0.6, 1.2), (2.4, 2.4), 0.46, (0.352, 0.334, 0.314), 1.0, (0.28, 0.42), rot=1, seed=3),
+    'stone_travertine': lambda: stone('stone_travertine', 'travertine_vein', 0.8, (0.6, 1.2), (2.4, 2.4), 0.56, (0.343, 0.335, 0.322), 0.75, (0.28, 0.42), rot=1, seed=3),
     # white onyx (apartment-08): big slabs, warm cream with amber veins
-    'stone_onyx': lambda: stone('stone_onyx', 'onyx_white', 1.2, (1.2, 1.2), (2.4, 2.4), 0.62, (0.36, 0.333, 0.307), 1.0, (0.05, 0.12), seed=5, cut='book'),
+    'stone_onyx': lambda: stone('stone_onyx', 'onyx_white', 1.2, (1.2, 1.2), (2.4, 2.4), 0.66, (0.357, 0.334, 0.309), 0.5, (0.05, 0.12), seed=5, cut='book'),
     # white marble (stair treads, landing)
     'stone_marble': lambda: stone('stone_marble', 'marble_white', 1.2, (1.2, 0.6), (2.4, 2.4), 0.70, (0.338, 0.334, 0.328), 1.0, (0.06, 0.14), seed=7, cut='book'),
     # grey marble (apartment-05)
@@ -407,7 +407,7 @@ JOBS = {
     'stone_cream': lambda: stone('stone_cream', 'travertine_cream', 1.2, (1.2, 1.2), (2.4, 2.4), 0.55, (0.357, 0.334, 0.309), 1.0, (0.35, 0.5), seed=11, cut='book'),
     # bleached oak (coffee tables, plinths; apartment-19, -17), dark wire-brushed oak (vanity,
     # shelving; apartment-03, -13), mid oak (bed, consoles)
-    'wood_bleached': lambda: veneer('wood_bleached', 'oak_washed', 0, 0.34, (0.372, 0.334, 0.294), 1.3, (0.45, 0.6)),
+    'wood_bleached': lambda: veneer('wood_bleached', 'oak_washed', 0, 0.42, (0.382, 0.333, 0.285), 1.4, (0.45, 0.6)),
     'wood_dark': lambda: veneer('wood_dark', 'oak_white', 1, 0.075, (0.385, 0.33, 0.285), 1.6, (0.5, 0.65)),
     'wood_mid': lambda: veneer('wood_mid', 'oak_grey2', 0, 0.16, (0.39, 0.326, 0.284), 1.4, (0.45, 0.6)),
     'leaf_ficus': leaves,

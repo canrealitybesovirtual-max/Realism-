@@ -163,7 +163,7 @@ export function makeMaterials(Q) {
   M.marbleGrey = scan('stone_greymarble', { coat: { clearcoat: 0.85, clearcoatRoughness: 0.06, quest: 0.5 } });
   M.creamStone = scan('stone_cream', { coat: { clearcoat: 0.2, clearcoatRoughness: 0.35, quest: 0.85 } });
   M.boucle = scan('fabric_boucle', { fabric: '#f2ece2', nScale: 0.7 });
-  M.rug = scan('fabric_rug', { fabric: '#efe8dc' });
+  M.rug = scan('fabric_rug', { fabric: '#efe8dc', nScale: 2.2 });
   M.linen = scan('fabric_linen', { fabric: '#f5f1ea', more: { side: THREE.DoubleSide } });
   M.boucleTaupe = scan('fabric_boucle', { fabric: '#cdbfae', nScale: 0.7, more: { color: '#b7a896' } });
   M.velvet = scan('fabric_linen', { fabric: '#e2a46e', nScale: 0.4, more: { color: '#a4673d' } });

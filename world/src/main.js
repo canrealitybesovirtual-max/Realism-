@@ -108,7 +108,7 @@ async function boot() {
   // surface realism: room reflection probes, corner / daylight darkening, wet terrace, real glass
   status('Reflections…');
   await new Promise((r) => setTimeout(r, 20));
-  const surf = setupSurfaces({ scene, renderer, apt, M, Q, hemi, viewGain: view ? (k) => view.setGain(k) : null });
+  const surf = setupSurfaces({ scene, renderer, apt, M, Q, hemi, viewGain: view ? (k) => view.setGain(k) : null, lamps: apt.lamps });
   // meshlet-style clusters for the static apartment and furniture (?clusters=off: whole meshes)
   let clusters = null;
   if (!/[?&]clusters=off\b/.test(location.search)) {

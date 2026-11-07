@@ -151,11 +151,12 @@ export function buildApartment(M, Q) {
   };
   const lightGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.01, 12);
   const trimGeo = new THREE.CylinderGeometry(0.052, 0.052, 0.006, 16);
+  const lamps = [];                                   // every downlight: [x, y, z] (lit in the probe bake)
   const downlights = (x0, z0, x1, z1, y, step) => {
     const nx = Math.max(1, Math.round((x1 - x0) / step)), nz = Math.max(1, Math.round((z1 - z0) / step));
     for (let i = 0; i < nx; i++) for (let k = 0; k < nz; k++) {
       const x = x0 + (i + 0.5) * (x1 - x0) / nx, z = z0 + (k + 0.5) * (z1 - z0) / nz;
-      const g = lightGeo.clone(); g.translate(x, y - 0.004, z); B.add(g, M.light);
+      const g = lightGeo.clone(); g.translate(x, y - 0.004, z); B.add(g, M.light); lamps.push([x, y - 0.02, z]);
       const t = trimGeo.clone(); t.translate(x, y - 0.002, z); B.add(t, M.slot);
     }
   };
@@ -411,7 +412,7 @@ export function buildApartment(M, Q) {
     downlights(x0, z0, x1, z1, C2, 1.8);
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders };
+  return { group, meshes, colliders: B.colliders, lamps };
 }
 
 // The helical stair: 26 risers over 330 degrees, from floor one (north of the centre, heading

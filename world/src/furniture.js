@@ -129,12 +129,12 @@ function sofa(B, M, x, z, ry, L = 2.6, D = 1.0) {
 // square coffee table, bleached oak frame with a smoked glass top (apartment-19)
 function coffeeTable(B, M, x, z, ry, S = 1.0, H = 0.4) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  const lw = 0.085;
-  for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(at(rbox(lw, H - 0.02, lw, 0.006), u * (S / 2 - lw / 2), (H - 0.02) / 2, v * (S / 2 - lw / 2)), M.woodLight);
-  for (const v of [-1, 1]) add(at(rbox(S, 0.06, lw, 0.006), 0, H - 0.05, v * (S / 2 - lw / 2)), M.woodLight);
-  for (const u of [-1, 1]) add(at(rbox(lw, 0.06, S - 2 * lw, 0.006), u * (S / 2 - lw / 2), H - 0.05, 0), M.woodLight);
-  for (const v of [-1, 1]) add(at(rbox(S - 2 * lw, 0.04, 0.05, 0.004), 0, 0.09, v * (S / 2 - lw / 2)), M.woodLight);   // low stretchers
-  add(at(rbox(S - 0.03, 0.015, S - 0.03, 0.004), 0, H - 0.0075, 0), M.smoke);
+  const lw = 0.11, fh = 0.09;
+  for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(at(rbox(lw, H - fh, lw, 0.008), u * (S / 2 - lw / 2), (H - fh) / 2, v * (S / 2 - lw / 2)), M.woodLight);
+  for (const v of [-1, 1]) add(at(rbox(S, fh, lw, 0.008), 0, H - fh / 2, v * (S / 2 - lw / 2)), M.woodLight);
+  for (const u of [-1, 1]) add(at(rbox(lw, fh, S - 2 * lw + 0.004, 0.008), u * (S / 2 - lw / 2), H - fh / 2, 0), M.woodLight);
+  add(at(rbox(S - 2 * lw + 0.01, 0.02, S - 2 * lw + 0.01, 0.003), 0, 0.075, 0), M.woodLight);   // low shelf
+  add(at(rbox(S - 2 * lw + 0.02, 0.012, S - 2 * lw + 0.02, 0.003), 0, H - 0.02, 0), M.smoke);
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [S / 2, H / 2, S / 2], yaw: ry, mat: M.woodLight });
 }
 
@@ -214,8 +214,9 @@ function pendant(B, M, x, z, yBottom, ceil, seed) {
   for (let i = 0; i < p.count; i++) {
     v.fromBufferAttribute(p, i);
     const n = v.clone().normalize();
-    const f = 1 + 0.16 * Math.sin(n.x * 3.1 + r(1) * 6) * Math.cos(n.z * 2.7 + r(2) * 6) + 0.1 * Math.sin(n.y * 4 + r(3) * 6);
-    v.multiplyScalar(f); v.y *= 1.25; p.setXYZ(i, v.x, v.y, v.z);
+    const phi = Math.atan2(n.z, n.x), lobes = 1 + 0.2 * Math.pow(Math.abs(Math.sin(phi * 2.5 + r(1) * 3)), 0.6) * (1 - n.y * n.y);
+    const f = lobes * (1 + 0.07 * Math.sin(n.y * 5 + r(3) * 6)) * (n.y > 0 ? 1 - 0.25 * n.y * n.y : 1);
+    v.multiplyScalar(f); v.y *= 1.2; p.setXYZ(i, v.x, v.y, v.z);
   }
   smooth(g); metricUV(g);
   B.add(at(g, x, yBottom + 0.25, z), M.smoke);
@@ -235,28 +236,37 @@ function diningTable(B, M, x, z, ry, L = 2.7, Wd = 1.05, H = 0.75) {
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [Wd / 2, H / 2, L / 2], yaw: ry, mat: M.creamStone });
 }
 
-// bouclé dining chair: rounded shell back wrapping into the arms, plump seat, black tapered legs
+// bouclé dining chair (apartment-17): a wide plump seat in a low upholstered shell whose back
+// wraps round into arms that slope down to the front; slim black tapered legs, splayed
 function diningChair(B, M, x, z, ry) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  add(at(cushion(0.5, 0.11, 0.48, 0.05, 0.015), 0, 0.47, 0.02), M.boucle);
-  // shell: a band of a squashed cylinder behind and round the seat
-  const a0 = Math.PI * 0.3, aL = Math.PI * 1.4;      // open at the front (+z)
-  const shell = new THREE.CylinderGeometry(0.27, 0.25, 0.36, 40, 6, true, a0, aL).toNonIndexed();
-  shell.scale(1, 1, 0.9);
-  const thick = new THREE.CylinderGeometry(0.235, 0.215, 0.36, 40, 6, true, a0, aL).toNonIndexed();
-  thick.scale(1, 1, 0.9);
-  // inside face: flip winding
-  const ip = thick.attributes.position.array;
-  for (let i = 0; i < ip.length; i += 9) for (let k = 0; k < 3; k++) { const t = ip[i + 3 + k]; ip[i + 3 + k] = ip[i + 6 + k]; ip[i + 6 + k] = t; }
-  smooth(thick);
-  for (const gg of [shell, thick]) { metricUV(gg); add(at(gg, 0, 0.7, -0.02), M.boucle); }
-  add(at(lathe([[0.235, 0.88], [0.255, 0.888], [0.27, 0.88]], 40, a0, aL).scale(1, 1, 0.9), 0, 0, -0.02), M.boucle);
-  for (const [u, v] of [[-0.2, 0.2], [0.2, 0.2], [-0.2, -0.18], [0.2, -0.18]]) {
-    const leg = lathe([[0.008, 0], [0.012, 0.2], [0.016, 0.42]], 10);
-    leg.rotateX(v > 0 ? 0.08 : -0.08); leg.rotateZ(u > 0 ? -0.06 : 0.06);
+  add(at(cushion(0.5, 0.12, 0.48, 0.05, 0.018), 0, 0.47, 0.03), M.boucle);
+  add(at(rbox(0.54, 0.07, 0.5, 0.03), 0, 0.41, 0.02), M.boucle);
+  // shell: a band round a superellipse, open at the front; top height falls from back to arms
+  const seg = 44, a0 = 0.62, a1 = Math.PI * 2 - 0.62, rx = 0.29, rz = 0.27, th = 0.055, yb = 0.44;
+  const top = (a) => { const back = 0.5 + 0.5 * Math.cos(a - Math.PI); return 0.6 + 0.2 * Math.pow(back, 1.3); };
+  const ring = (a, r) => { const c = Math.sin(a), d = Math.cos(a); const k = Math.pow(Math.pow(Math.abs(c), 3) + Math.pow(Math.abs(d), 3), -1 / 3); return [c * k * (rx + r), d * k * (rz + r)]; };
+  const P = [];
+  for (let i = 0; i < seg; i++) {
+    const A = a0 + (a1 - a0) * i / seg, Bn = a0 + (a1 - a0) * (i + 1) / seg;
+    for (const [r, flip] of [[0, false], [-th, true]]) {
+      const [x0, z0] = ring(A, r), [x1, z1] = ring(Bn, r);
+      const q = [[x0, yb, z0], [x1, yb, z1], [x1, top(Bn), z1], [x0, top(A), z0]];
+      if (!flip) P.push(...q[0], ...q[1], ...q[2], ...q[0], ...q[2], ...q[3]); else P.push(...q[0], ...q[2], ...q[1], ...q[0], ...q[3], ...q[2]);
+    }
+  }
+  const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); smooth(sg); metricUV(sg);
+  add(at(sg, 0, 0, -0.02), M.boucle);
+  // rolled top edge and the arm ends
+  const rim = []; for (let i = 0; i <= seg; i++) { const A = a0 + (a1 - a0) * i / seg, [xx, zz] = ring(A, -th / 2); rim.push([xx, top(A), zz - 0.02]); }
+  add(tubeGeo(rim, th / 2 + 0.006), M.boucle);
+  for (const A of [a0, a1]) { const [xx, zz] = ring(A, -th / 2); add(at(lathe([[0, 0], [th / 2 + 0.006, 0.0], [th / 2 + 0.006, top(A) - yb], [0, top(A) - yb]], 12), xx, yb, zz - 0.02), M.boucle); }
+  for (const [u, v] of [[-0.2, 0.2], [0.2, 0.2], [-0.19, -0.17], [0.19, -0.17]]) {
+    const leg = lathe([[0.007, 0], [0.011, 0.2], [0.016, 0.41]], 10);
+    leg.rotateX(v > 0 ? -0.1 : 0.14); leg.rotateZ(u > 0 ? -0.07 : 0.07);
     add(at(leg, u, 0, v), M.blackMatte);
   }
-  B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [0.27, 0.42, 0.26], yaw: ry, mat: M.boucle });
+  B.colliders.push({ t: 'obox', c: [x, 0.4, z], h: [0.29, 0.4, 0.28], yaw: ry, mat: M.boucle });
 }
 
 // tiered chandelier of hanging glass leaves (apartment-17): rings of leaves on a brass frame
@@ -636,11 +646,12 @@ function ovalTable(B, M, x, z, ry, L = 1.9, W = 1.05) {
 }
 function banquette(B, M, x, z, ry, L) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
-  add(at(rbox(L, 0.36, 0.55, 0.02), 0, 0.2, 0), M.woodDark);
-  add(at(cushion(L - 0.02, 0.1, 0.52, 0.04, 0.012), 0, 0.43, 0.01), M.boucleTaupe);
-  const n = Math.round(L / 0.5);
-  for (let i = 0; i < n; i++) add(at(cushion(L / n - 0.015, 0.5, 0.12, 0.05, 0.03), -L / 2 + L / n * (i + 0.5), 0.76, -0.22, 0, -0.12), M.boucleTaupe);
-  B.colliders.push({ t: 'obox', c: [x, 0.3, z], h: [L / 2, 0.3, 0.28], yaw: ry, mat: M.woodDark });
+  add(at(rbox(L - 0.06, 0.1, 0.5, 0.004), 0, 0.05, 0.0), M.blackMatte);
+  add(at(rbox(L, 0.3, 0.56, 0.03), 0, 0.25, 0), M.boucleTaupe);
+  add(at(cushion(L - 0.02, 0.1, 0.52, 0.04, 0.012), 0, 0.44, 0.01), M.boucleTaupe);
+  const n = Math.round(L / 0.16);                       // vertical channels on the back
+  for (let i = 0; i < n; i++) add(at(cushion(L / n - 0.008, 0.52, 0.11, 0.045, 0.02), -L / 2 + L / n * (i + 0.5), 0.78, -0.24, 0, -0.1), M.boucleTaupe);
+  B.colliders.push({ t: 'obox', c: [x, 0.3, z], h: [L / 2, 0.3, 0.28], yaw: ry, mat: M.boucleTaupe });
 }
 // faceted glass pendant (apartment-14)
 function facetPendant(B, M, x, z, yBottom, ceil) {
@@ -861,7 +872,7 @@ function furnitureMaterials(M, Q) {
   M.bookBlack = new THREE.MeshStandardMaterial({ color: '#1d1c1b', roughness: 0.6 });
   M.duvet = M.linen.clone(); M.duvet.color = new THREE.Color('#ece5da');
   M.throwSand = M.linen.clone(); M.throwSand.color = new THREE.Color('#c9b39a');
-  M.nickel = new THREE.MeshStandardMaterial({ color: '#c9c6c0', metalness: 1, roughness: 0.18 });
+  M.nickel = new THREE.MeshStandardMaterial({ color: '#c4c0b9', metalness: 1, roughness: 0.04 });
   M.crystal = new THREE.MeshStandardMaterial({ color: '#e9eef2', metalness: 0.6, roughness: 0.04, transparent: true, opacity: 0.75, depthWrite: false });
   M.crystal.userData = { shadow: 'cast', order: 6 };
   M.goldLeaf = new THREE.MeshStandardMaterial({ color: '#c8a35a', metalness: 1, roughness: 0.28, side: THREE.DoubleSide });
