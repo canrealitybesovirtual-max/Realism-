@@ -47,7 +47,7 @@ def tile(L, name):
     if res <= 1.0:   # pull the shore to the photo: water is dark in the infrared and not green
         near = ndi.binary_dilation(wat, iterations=max(1, int(8 / res)))
         dark = (nir < 70) & (ndvi < 0.05)
-        wat = (wat & ~(ndvi > 0.25)) | (near & dark)
+        wat = (wat & ~(ndvi > 0.45)) | (near & dark)        # green (algae) water keeps NDVI ~0.27: still water
     wat_f = ndi.gaussian_filter(wat.astype(np.float32), 0.7)
     Y = 0.2126 * r + 0.7152 * g + 0.0722 * b
     veg = (ndvi > 0.12) & ~wat
@@ -72,21 +72,30 @@ def tile(L, name):
         # dilation with a non-flat structuring element); stand height from how big the stand is
         Yn = ndi.gaussian_filter(Y, max(0.6, 1.2 / res))
         win = max(3, int(round(4.0 / res)) | 1)
-        peak = (Yn == ndi.maximum_filter(Yn, size=win)) & tree
+        peak = (Yn == ndi.maximum_filter(Yn, size=win)) & tree & (ndvi > 0.2)     # treetops are leaves, not paths
         big = ndi.gaussian_filter(tree.astype(np.float32), 12 / res)
         Htop = 11 + 9 * np.clip(big * 1.4, 0, 1) + 2.5 * (np.clip((Yn - ndi.gaussian_filter(Yn, 10 / res)) / 25, -1, 1))
-        R = 5.5; k = 5.0 / (R * R)
+        R = 7.0                                                          # rounded crowns (~14 m across): a spherical cap
         rpx = int(np.ceil(R / res))
         yy, xx = np.mgrid[-rpx:rpx + 1, -rpx:rpx + 1] * res
-        st = -k * (xx * xx + yy * yy)
+        st = -(R - np.sqrt(np.maximum(R * R - (xx * xx + yy * yy), 0))) * 0.85
         st[(xx * xx + yy * yy) > R * R] = -1e3
         P = np.where(peak, Htop, -1e3).astype(np.float32)
         crowns = ndi.grey_dilation(P, structure=st.astype(np.float32))
         d_in = ndi.distance_transform_edt(tree) * res
-        edge = np.sqrt(np.clip(d_in / 2.5, 0, 1))                     # crowns round off at the stand's edge
-        floor = Htop - 7.0                                               # gaps inside a stand stay leafy
-        canopy = np.where(tree, np.maximum(crowns, floor) * edge, 0)
-        canopy = ndi.gaussian_filter(np.clip(canopy, 0, 30), max(0.5, 0.5 / res))
+        t_e = np.clip(d_in / 5.0, 0, 1); edge = t_e * t_e * (3 - 2 * t_e) * 0.7 + 0.3 * np.sqrt(np.clip(d_in / 1.5, 0, 1))
+        floor = Htop - 6.5                                               # shaded gaps between crowns
+        leafy = ndi.gaussian_filter(np.clip((ndvi - 0.06) / 0.16, 0, 1), max(0.6, 1.0 / res))   # paths under the edge stay low
+        canopy = np.where(tree, np.maximum(crowns, floor) * edge * leafy, 0)
+        canopy = ndi.gaussian_filter(np.clip(canopy, 0, 30), max(0.5, 0.8 / res))
+        if L['name'] == 'L0':
+            jj, ii = np.nonzero(peak)
+            T = L['tile'] * res
+            ti, tj = int(name.split('_')[1]), int(name.split('_')[2])
+            px = L['x0'] + ti * T + (ii + 0.5) * res; pz = L['z0'] + tj * T + (jj + 0.5) * res
+            soft = np.stack([ndi.uniform_filter(rgb[..., c], size=max(3, int(3 / res))) for c in range(3)], -1)
+            np.savez(os.path.join(DST, name + '_trees.npz'), x=px.astype(np.float32), z=pz.astype(np.float32),
+                     top=Htop[jj, ii].astype(np.float32), rgb=soft[jj, ii].astype(np.float32))
     vegw = np.clip((ndvi - 0.08) / 0.25, 0, 1) * (1 - wat_f)          # how much this pixel is plant
     m = np.stack([wat_f * 255, vegw * 255, np.clip(canopy * 8, 0, 255)], -1)
     Image.fromarray(m.astype(np.uint8)).save(os.path.join(DST, name + '_m.png'))
@@ -232,18 +241,44 @@ def mosaic():
     json.dump(meta, open(os.path.join(OUT, 'mosaics.json'), 'w'), indent=1)
 
 
+def trees():
+    from scipy.spatial import cKDTree
+    parts = [np.load(p) for p in sorted(glob.glob(os.path.join(DST, 'L0_*_trees.npz')))]
+    if not parts:
+        return
+    x = np.concatenate([p['x'] for p in parts]); z = np.concatenate([p['z'] for p in parts])
+    top = np.concatenate([p['top'] for p in parts]); rgb = np.concatenate([p['rgb'] for p in parts])
+    kd = cKDTree(np.stack([x, z], 1))
+    d, _ = kd.query(np.stack([x, z], 1), k=4)
+    nn = np.mean(d[:, 1:], 1)
+    R = np.clip(nn * 0.78, 2.5, 9.5)                       # crowns overlap like a real canopy
+    lin = (rgb / 255) ** 2.2
+    gain = np.array(GRADE, np.float32)                      # same plant grade as the mosaic
+    lin = np.clip(lin * gain, 0, 1)
+    seed = (np.abs(np.sin(x * 12.9898 + z * 78.233)) * 43758.5453) % 1
+    A = np.stack([x, z, top, R, lin[:, 0], lin[:, 1], lin[:, 2], seed], 1).astype(np.float32)
+    A.tofile(os.path.join(OUT, 'trees.bin'))
+    print('trees', len(A), 'radius median', float(np.median(R)))
+
+
+def _one(name):
+    tile(LV[name.split('_')[0]], name)
+    return name
+
+
 def main():
     import sys
     if '--terrain' in sys.argv:
         terrain(); return
-    for p in sorted(glob.glob(os.path.join(SRC, 'L[01]_*_nir.png'))) + sorted(glob.glob(os.path.join(SRC, 'L2_*_nir.png'))):
-        name = os.path.basename(p)[:-8]
-        if os.path.exists(os.path.join(DST, name + '_m.png')):
-            continue
-        tile(LV[name.split('_')[0]], name)
-        print(name, flush=True)
+    names = [os.path.basename(p)[:-8] for p in sorted(glob.glob(os.path.join(SRC, 'L*_nir.png')))]
+    todo = [n for n in names if not os.path.exists(os.path.join(DST, n + '_m.png'))]
+    from multiprocessing import Pool
+    with Pool(4) as pool:
+        for n in pool.imap_unordered(_one, todo):
+            print(n, flush=True)
     terrain()
     mosaic()
+    trees()
 
 
 if __name__ == '__main__':

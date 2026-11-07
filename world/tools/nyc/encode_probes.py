@@ -12,7 +12,7 @@ from geo import CFG, CACHE, WORLD
 
 SRC = os.path.join(CACHE, 'probes')
 DST = os.path.join(WORLD, 'city')
-RES = {'pc': 2048, 'quest': 1024}
+RES = {'pc': 2048, 'quest': 1536}
 LOGMAX = math.log(200000 / 5)
 
 

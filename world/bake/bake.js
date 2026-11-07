@@ -89,6 +89,19 @@ async function load() {
   S.geos = [a.g, b.g];
   log('terrain…');
   S.ter = dataTex(new Float32Array(await get(D + 'terrain.bin')), TER.nx, TER.nz, THREE.RedFormat, THREE.FloatType);
+  try {
+    const tb = new Float32Array(await get(D + 'trees.bin'));
+    const n = tb.length / 8, aT = new Float32Array(n * 4), aC = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { aT.set(tb.subarray(i * 8, i * 8 + 4), i * 4); aC.set(tb.subarray(i * 8 + 4, i * 8 + 8), i * 4); }
+    const ico = new THREE.IcosahedronGeometry(1, 2);
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute('position', ico.attributes.position);
+    g.setAttribute('aT', new THREE.InstancedBufferAttribute(aT, 4));
+    g.setAttribute('aC', new THREE.InstancedBufferAttribute(aC, 4));
+    g.instanceCount = n;
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+    S.trees = g; S.nTrees = n;
+  } catch (e) { S.trees = null; console.warn('no trees.bin', e); }
   S.mos = [];
   for (const m of MOS) {
     log('aerial ' + m.name + '…');
@@ -119,7 +132,14 @@ vec4 aer(vec2 p, out float lev){
   t = (p - uGB3.xy) * uGB3.zw; if (inB(t)) { lev = 3.0; return texture(uG3, t); }
   lev = 4.0; return vec4(0.32, 0.33, 0.30, 1.0 / 255.0);
 }
+// a coarser look-up (no fine texture): for crown sides
+vec3 aerSoft(vec2 p){
+  vec2 t = (p - uGB1.xy) * uGB1.zw; if (inB(t)) return texture(uG1, t).rgb;
+  t = (p - uGB2.xy) * uGB2.zw; if (inB(t)) return texture(uG2, t).rgb;
+  return texture(uG3, (p - uGB3.xy) * uGB3.zw).rgb;
+}
 float canopyH(vec4 a){ float A = a.a * 255.0; return A > 1.5 ? (A - 2.0) / 8.0 : 0.0; }
+uniform float uUnder;   // < 1 where 3D crowns stand (G0): the height field is the understory
 float waterW(vec4 a){ return clamp(1.0 - a.a * 255.0, 0.0, 1.0); }
 float dsmAt(vec2 p){
   vec2 t = (p - uDB0.xy) * uDB0.zw; if (inB(t)) return texture(uD0, t).r;
@@ -261,8 +281,8 @@ void main(){
   // warm, as in apartment-21 / -10: cream and tan stone and brick first, red-brown brick second
   vec3 brick = pick(r2, vec3(0.34,0.18,0.12), vec3(0.42,0.25,0.17), vec3(0.30,0.17,0.12), vec3(0.47,0.31,0.21));
   vec3 brown = pick(r2, vec3(0.26,0.15,0.10), vec3(0.36,0.24,0.16), vec3(0.46,0.34,0.24), vec3(0.22,0.13,0.09));
-  vec3 lime  = pick(r2, vec3(0.70,0.59,0.43), vec3(0.58,0.47,0.33), vec3(0.76,0.66,0.50), vec3(0.52,0.42,0.30));
-  vec3 pale  = pick(r2, vec3(0.70,0.63,0.50), vec3(0.76,0.71,0.60), vec3(0.62,0.55,0.44), vec3(0.73,0.70,0.63));
+  vec3 lime  = pick(r2, vec3(0.66,0.59,0.48), vec3(0.55,0.48,0.39), vec3(0.72,0.67,0.57), vec3(0.48,0.42,0.34));
+  vec3 pale  = pick(r2, vec3(0.68,0.65,0.58), vec3(0.76,0.74,0.68), vec3(0.58,0.55,0.50), vec3(0.72,0.70,0.65));
   vec3 wall = st == 0 ? (r3 < 0.5 ? brick : brown) : st == 1 ? (vA.z < -1.5 ? vec3(0.64,0.58,0.48) : r3 < 0.55 ? lime : brick * 1.15) : st == 2 ? (r3 < 0.5 ? pale : (r3 < 0.8 ? brick * 1.2 : lime)) : st == 3 ? (r3 < 0.5 ? vec3(0.55,0.53,0.50) : vec3(0.20,0.20,0.21)) : st == 5 ? vec3(0.72,0.71,0.68) : vec3(0.35,0.38,0.40);
   float fh = st == 0 ? 3.3 : st == 1 ? 3.25 : st == 2 ? 2.85 : st == 3 ? 3.9 : st == 5 ? 4.7 : 3.8;
   float bay = st == 0 ? 2.1 : st == 1 ? 2.3 : st == 2 ? 2.6 : st == 3 ? 1.52 : st == 5 ? 4.7 : 1.5;
@@ -314,7 +334,7 @@ void main(){
   vec3 glass = mix(room, refl, fr * (0.7 + 0.6 * fr0)) + (st >= 3 ? vec3(0.02, 0.03, 0.035) : vec3(0.0));
   // wall shading: grime at the base, bands at floors, weathering
   float band = smoothstep(0.02, 0.0, abs(fv - 0.12)) * (st == 1 ? 0.18 : 0.06);
-  alb = wall * (0.80 + 0.40 * n21(vec2(u * 0.2, v * 0.05) + r * 31.0)) * (1.0 - band) * (0.9 + 0.2 * br0);
+  alb = wall * 0.86 * (0.80 + 0.40 * n21(vec2(u * 0.2, v * 0.05) + r * 31.0)) * (1.0 - band) * (0.9 + 0.2 * br0);
   alb *= 0.78 + 0.22 * smoothstep(0.0, 12.0, v);
   vec3 litWall = alb * (uSunE * ndl * vis + uSkyE * sky * 1.25 + uBounce * (0.5 + 0.5 * (1.0 - sky)));
   col = mix(litWall, glass + room * uSunE * ndl * vis * 0.4, win);
@@ -380,7 +400,7 @@ const CAN_FS = /* glsl */`
 ${COMMON}
 uniform mat4 uVP; uniform sampler2D uPre; uniform vec2 uRes;
 varying vec3 vWP; flat varying vec3 vMin; flat varying vec3 vMax;
-float hf(vec2 xz){ float l; vec4 a = aer(xz, l); return terH(xz) + canopyH(a); }
+float hf(vec2 xz){ float l; vec4 a = aer(xz, l); return terH(xz) + canopyH(a) * (l < 0.5 ? uUnder : 1.0); }
 void main(){
   float dPre = texture(uPre, gl_FragCoord.xy / uRes).r;
   if (dPre > 0.0 && length(vWP - uCam) > dPre + 0.5) discard;   // a building or the ground is in front
@@ -407,16 +427,70 @@ void main(){
   if (ch < 0.8) discard;                       // ground: the terrain mesh draws it
   float e = max(0.5, l < 0.5 ? 0.75 : 2.0);
   vec3 n = normalize(vec3(hf(p.xz - vec2(e, 0.0)) - hf(p.xz + vec2(e, 0.0)), 2.0 * e, hf(p.xz - vec2(0.0, e)) - hf(p.xz + vec2(0.0, e))));
-  vec3 c = srgb2lin(a.rgb) * uAerK;
-  // the photo already holds the light from above; add the relief: sun on the crown's own slope, sky occlusion
-  float ndl = max(dot(n, uSun), 0.0), flat0 = max(uSun.y, 0.1);
+  // colour from the photo (its hue and leaf texture), light from the game's sun: each crown gets a
+  // sunlit side and a shaded side, gaps between crowns get less sky
+  vec3 soft = srgb2lin(aerSoft(p.xz)) * uAerK;
+  vec3 fine = srgb2lin(a.rgb) * uAerK;
+  float lf = dot(fine, vec3(0.2126, 0.7152, 0.0722)), ls = dot(soft, vec3(0.2126, 0.7152, 0.0722)) + 1e-4;
+  vec3 alb = soft * clamp(pow(lf / ls, 0.6), 0.45, 1.8);
+  float h0 = hf(p.xz), occ = 0.0;
+  for (int k = 0; k < 6; k++) { float an = float(k) * 1.0472; occ += max(0.0, hf(p.xz + vec2(cos(an), sin(an)) * 3.5) - h0); }
+  occ = clamp(1.0 - occ / 6.0 / 5.0, 0.25, 1.0);
+  float ndl = max(dot(n, uSun), 0.0);
   float vis = sunVis(p, n);
-  float rel = (ndl * vis * uSunE + uSkyE * 0.6) / (flat0 * uSunE + uSkyE * 0.6);
-  c *= clamp(0.62 + 0.38 * rel, 0.45, 1.3);
+  float sh = uSunE * ndl * vis + uSkyE * 1.6 * occ * (0.6 + 0.4 * n.y) + uBounce;
+  float shFlat = uSunE * max(uSun.y, 0.1) + uSkyE * 1.6;
+  vec3 c = alb * sh / shFlat;
   vec4 cp = uVP * vec4(p, 1.0);
   gl_FragDepth = 0.5 * (cp.z / cp.w) + 0.5;
   gl_FragColor = finish(c, p);
 }`;
+
+// ---- tree crowns near the tower: one rounded, lumpy crown per treetop found in the aerial --------
+const TREE_VS = /* glsl */`
+precision highp float;
+uniform sampler2D uTer; uniform vec4 uTerB;
+attribute vec4 aT; attribute vec4 aC;
+varying vec3 vWP; varying vec3 vN; flat varying vec4 vC; flat varying vec3 vCen; flat varying vec2 vR;
+float terH(vec2 p){ vec2 t = (p - uTerB.xy) * uTerB.zw; return texture(uTer, t).r; }
+void main(){
+  float R = aT.w, Rv = R * (0.78 + 0.25 * aC.w);
+  float g = terH(aT.xy);
+  vec3 cen = vec3(aT.x, g + max(aT.z, Rv * 1.2) - Rv, aT.y);
+  vec3 d = normalize(position);
+  // lumpy: a few big clumps per crown
+  float l = 1.0 + 0.16 * sin(d.x * 5.1 + aC.w * 30.0) * sin(d.z * 4.3 + aC.w * 17.0) + 0.1 * sin(d.y * 6.0 + aC.w * 9.0);
+  vec3 p = cen + d * vec3(R, Rv, R) * l;
+  p.y = max(p.y, g + 1.5);
+  vWP = p; vN = normalize(d / vec3(R, Rv, R)); vC = aC; vCen = cen; vR = vec2(R, Rv);
+  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+}`;
+const TREE_FS = /* glsl */`
+${COMMON}
+varying vec3 vWP; varying vec3 vN; flat varying vec4 vC; flat varying vec3 vCen; flat varying vec2 vR;
+float n3(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  float a = mix(mix(h21(i.xy + i.z * 17.0), h21(i.xy + vec2(1,0) + i.z * 17.0), f.x), mix(h21(i.xy + vec2(0,1) + i.z * 17.0), h21(i.xy + vec2(1,1) + i.z * 17.0), f.x), f.y);
+  float b = mix(mix(h21(i.xy + (i.z + 1.0) * 17.0), h21(i.xy + vec2(1,0) + (i.z + 1.0) * 17.0), f.x), mix(h21(i.xy + vec2(0,1) + (i.z + 1.0) * 17.0), h21(i.xy + vec2(1,1) + (i.z + 1.0) * 17.0), f.x), f.y);
+  return mix(a, b, f.z); }
+void main(){
+  vec3 p = vWP;
+  // leaf clumps: bumps on the crown (~1.2 m), finer leaf grain
+  float e = 0.35;
+  vec3 q = p / 1.25 + vC.w * 40.0;
+  vec3 gN = vec3(n3(q + vec3(e,0,0)) - n3(q - vec3(e,0,0)), n3(q + vec3(0,e,0)) - n3(q - vec3(0,e,0)), n3(q + vec3(0,0,e)) - n3(q - vec3(0,0,e)));
+  vec3 n = normalize(normalize(vN) - gN * 1.6);
+  float clump = n3(q), grain = n3(p * 2.7 + vC.w * 9.0);
+  vec3 alb = vC.rgb * (0.68 + 0.45 * clump) * (0.85 + 0.3 * grain);
+  // light: sun through the height map, sky by how open this side of the crown is
+  float ndl = max(dot(n, uSun), 0.0);
+  float vis = ndl > 0.0 ? sunVis(p, n) : 0.0;
+  float hgt = clamp((p.y - vCen.y) / vR.y * 0.5 + 0.5, 0.0, 1.0);          // lower crown: darker
+  float occ = mix(0.25, 1.0, hgt) * (0.55 + 0.45 * clump);
+  vec3 c = alb * (uSunE * ndl * vis * (0.8 + 0.4 * clump) + uSkyE * 1.5 * occ + uBounce * 0.5) / (uSunE * max(uSun.y, 0.1) + uSkyE * 1.7) * 0.95;
+  gl_FragColor = finish(c, p);
+}`;
+const TREE_PRE_FS = /* glsl */`precision highp float; uniform vec3 uCam; varying vec3 vWP; varying vec3 vN; flat varying vec4 vC; flat varying vec3 vCen; flat varying vec2 vR; void main(){ gl_FragColor = vec4(length(vWP - uCam), 0.0, 0.0, 1.0); }`;
+const TREE_DSM_FS = /* glsl */`precision highp float; varying vec3 vWP; varying vec3 vN; flat varying vec4 vC; flat varying vec3 vCen; flat varying vec2 vR; void main(){ gl_FragColor = vec4(vWP.y, 0.0, 0.0, 1.0); }`;
 
 // ---- pre-pass: distance only (cheap), so the lighting runs once per visible pixel ----------
 const PRE_FS = /* glsl */`precision highp float; uniform vec3 uCam; varying vec3 vWP; void main(){ gl_FragColor = vec4(length(vWP - uCam), 0.0, 0.0, 1.0); }`;
@@ -426,7 +500,7 @@ const DSM_BLD_FS = /* glsl */`precision highp float; varying vec3 vWP; flat vary
 const DSM_GND_FS = /* glsl */`
 ${COMMON}
 varying vec3 vWP;
-void main(){ float l; vec4 a = aer(vWP.xz, l); gl_FragColor = vec4(vWP.y + canopyH(a), 0.0, 0.0, 1.0); }`;
+void main(){ float l; vec4 a = aer(vWP.xz, l); gl_FragColor = vec4(vWP.y + canopyH(a) * (l < 0.5 ? uUnder : 1.0), 0.0, 0.0, 1.0); }`;
 
 let mats = {}, U = {}, scenes = {};
 
@@ -445,7 +519,7 @@ function uniforms() {
     uHazeB: { value: LOOK.hazeB }, uHazeH: { value: LOOK.hazeH }, uExpo: { value: LOOK.exposure }, uPen: { value: LOOK.pen },
     uPass: { value: 0 }, uDsmMax: { value: 520 }, uDebug: { value: 0 },
     uAttr: { value: S.attr }, uInfo: { value: S.info }, uVP: { value: new THREE.Matrix4() },
-    uPre: { value: null }, uRes: { value: new THREE.Vector2(1, 1) },
+    uPre: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uUnder: { value: S.trees ? 0.45 : 1.0 },
   };
 }
 
@@ -456,6 +530,9 @@ function build() {
   mats.bld = sm(BLD_VS, BLD_FS, { side: THREE.DoubleSide, ...late });
   mats.gnd = sm(GND_VS, GND_FS, late);
   mats.preB = sm(BLD_VS, PRE_FS, { side: THREE.DoubleSide });
+  mats.tree = sm(TREE_VS, TREE_FS, late);
+  mats.preT = sm(TREE_VS, TREE_PRE_FS);
+  mats.dsmT = sm(TREE_VS, TREE_DSM_FS);
   mats.preG = sm(GND_VS, PRE_FS);
   mats.can = sm(CAN_VS, CAN_FS, { side: THREE.FrontSide });
   mats.dsmBld = sm(BLD_VS, DSM_BLD_FS, { side: THREE.DoubleSide });
@@ -477,14 +554,17 @@ function build() {
   scenes.pre = new THREE.Scene();
   for (const g of S.geos) scenes.pre.add(mk(g, mats.preB));
   scenes.pre.add(mk(gg, mats.preG));
+  if (S.trees) { scenes.pre.add(mk(S.trees, mats.preT)); }
   scenes.can = new THREE.Scene();
   if (S.canGeo) scenes.can.add(mk(S.canGeo, mats.can));
   scenes.col = new THREE.Scene();
   for (const g of S.geos) scenes.col.add(mk(g, mats.bld));
   scenes.col.add(mk(gg, mats.gnd));
+  if (S.trees) scenes.col.add(mk(S.trees, mats.tree));
   scenes.dsm = new THREE.Scene();
   for (const g of S.geos) scenes.dsm.add(mk(g, mats.dsmBld));
   scenes.dsm.add(mk(gg, mats.dsmGnd));
+  if (S.trees) scenes.dsm.add(mk(S.trees, mats.dsmT));
 }
 
 // boxes over every tile with tree crowns (from the mosaics' alpha), terrain-tight
@@ -639,7 +719,7 @@ window.__bake = {
     log('height map…');
     renderDSM();
     log('ready');
-    return { canopy: S.canGeo ? S.canGeo.instanceCount : 0, dsm: DSM_LV.length };
+    return { canopy: S.canGeo ? S.canGeo.instanceCount : 0, trees: S.nTrees || 0, dsm: DSM_LV.length };
   },
   // change the look in place (sun, sky, haze...): the height map does not depend on it
   set(o) {
