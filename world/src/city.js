@@ -456,6 +456,7 @@ export function buildCity(scene, renderer, Q) {
   const groundMat = groundMaterial(U);
   const farGround = new THREE.MeshStandardMaterial({ color: '#4a4b4c', roughness: 0.95 });
   const water = waterMaterial(U, false);
+  water.envMap = scene.environment;
   const strip = (x0, x1, z0, z1, mat, y) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), mat); m.rotation.x = -Math.PI / 2; m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2); m.matrixAutoUpdate = false; m.updateMatrix(); world.add(m); return m; };
   const G = STREET - 0.05, Z0 = -16000, Z1 = 9400, FAR = 16000;
   strip(-1450, PARK.x0, Z0, Z1, groundMat, G); strip(PARK.x1, 1750, Z0, Z1, groundMat, G);
@@ -465,7 +466,7 @@ export function buildCity(scene, renderer, Q) {
   strip(-2700, -1450, Z0, Z1, water, G); strip(1750, 2350, Z0, Z1, water, G);
   strip(-FAR, FAR, Z1, FAR, water, G);
   strip(PARK.x0, PARK.x1, PARK.z0, PARK.z1, parkMaterial(U), G);
-  const lakeMat = waterMaterial(U, true);
+  const lakeMat = waterMaterial(U, true); lakeMat.envMap = scene.environment;
   for (const [lx, lz, rx, rz] of [[0, -2700, 330, 420], [-60, -1050, 230, 120], [300, -330, 60, 40]]) {
     const lake = new THREE.Mesh(new THREE.CircleGeometry(1, 48), lakeMat);
     lake.scale.set(rx, rz, 1); lake.rotation.x = -Math.PI / 2; lake.position.set(lx, G + 0.3, lz); world.add(lake);
@@ -643,7 +644,9 @@ export function buildCity(scene, renderer, Q) {
   const geo = partGeometry();
   const n = parts.length;
   const info = new Float32Array(n * 4), info2 = new Float32Array(n * 4);
-  const im = new THREE.InstancedMesh(geo, buildingMaterial(), n);
+  const bm = buildingMaterial();
+  bm.envMap = scene.environment; bm.envMapIntensity = 1.35;   // own strength: glass mirrors the full sky (the room's 0.55 is for interiors)
+  const im = new THREE.InstancedMesh(geo, bm, n);
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
   parts.forEach((t, i) => {
     m4.compose(p.set(t.x, t.y0, t.z), q, s.set(t.w, t.h, t.d)); im.setMatrixAt(i, m4); im.setColorAt(i, t.col);
