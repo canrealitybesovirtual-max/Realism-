@@ -119,6 +119,16 @@ async function boot() {
   await Promise.race([M.ready, new Promise((r) => setTimeout(r, 20000))]);   // the probes must see the scanned floors
   renderer.compile(scene, camera);
   surf.bake();
+  // baked irradiance volume (tools/interior/bake_volume.js): 12 half floats per probe
+  if (!/[?&]volume=off\b/.test(location.search)) {
+    try {
+      const meta = await (await fetch('./textures/light/volume.json')).json();
+      const h = new Uint16Array(await (await fetch('./textures/light/volume.bin')).arrayBuffer());
+      const n = h.length / 12, data = new Float32Array(n * 16);
+      for (let j = 0; j < n; j++) for (let m = 0; m < 4; m++) for (let c = 0; c < 3; c++) data[j * 16 + m * 4 + c] = THREE.DataUtils.fromHalfFloat(h[j * 12 + m * 3 + c]);
+      surf.useVolume(meta, data);
+    } catch (e) { console.info('no baked light volume yet', e.message); }
+  }
   addEventListener('keydown', (e) => {
     if (e.target && e.target.tagName === 'INPUT') return;
     if (e.code === 'KeyT' && !e.repeat && view) { view.nextSun(); return; }   // T: next baked time of day

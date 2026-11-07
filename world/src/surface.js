@@ -49,10 +49,12 @@ const TW = 3 * Math.max(PSIZE, 112), TH = 4 * PSIZE;  // one PMREM tile (three's
 
 // ---- spherical harmonics ---------------------------------------------------------------------
 const SHN = 32;                                    // irradiance capture size (per cube face)
-const SH_BUF = new Uint16Array(SHN * SHN * 4);
+let SH_BUF = new Uint16Array(SHN * SHN * 4);
 // read a cube capture back and project it on 9 SH coefficients, returned with the irradiance
 // convolution and the basis constants folded in, ready for srSH(): E(n) = sum c_i * poly_i(n)
-function projectSH(renderer, rt, cubeCam) {
+function projectSH(renderer, rt, cubeCam, SHN_ = SHN) {
+  const SHN = SHN_;
+  if (SH_BUF.length < SHN * SHN * 4) SH_BUF = new Uint16Array(SHN * SHN * 4);
   const L = Array.from({ length: 9 }, () => new THREE.Vector3());
   const d = new THREE.Vector3(), o = new THREE.Vector3();
   cubeCam.getWorldPosition(o);
@@ -224,7 +226,7 @@ function bakeFields(meshes, colliders, M) {
   for (let j = 0; j < Wc * Dc; j++) dl[j * 4 + 3] = 255;
   const dlTex = new THREE.DataTexture(dl, Wc, Dc, THREE.RGBAFormat);
   dlTex.magFilter = dlTex.minFilter = THREE.LinearFilter; dlTex.needsUpdate = true;
-  return { aoTex, dlTex, W, D };
+  return { aoTex, dlTex, W, D, solid };
 }
 
 // ---- shader patch ----------------------------------------------------------------------------
@@ -309,6 +311,29 @@ uniform float uProbeOn;
 uniform float uIrrOn;
 uniform float uIrrK;
 uniform vec3 uSH[ ${PROBES.length * 9} ];
+// irradiance volume: probes every uIVS metres in x / z on 8 layers (4 per floor), L1 spherical
+// harmonics in four textures (layers side by side); trilinear inside a floor
+uniform float uIVOn;
+uniform sampler2D uIV0, uIV1, uIV2, uIV3;
+uniform vec4 uIVG;              // x0, z0, spacing, nx
+uniform vec2 uIVT;              // texture width, height
+uniform float uIVY[ 8 ];
+vec3 srIVLayer( int l, vec2 g, vec3 n ) {
+  vec2 uv = vec2( ( float( l ) * uIVG.w + g.x + 0.5 ) / uIVT.x, ( g.y + 0.5 ) / uIVT.y );
+  vec3 c0 = texture2D( uIV0, uv ).rgb, c1 = texture2D( uIV1, uv ).rgb, c2 = texture2D( uIV2, uv ).rgb, c3 = texture2D( uIV3, uv ).rgb;
+  return c0 + c1 * n.y + c2 * n.z + c3 * n.x;
+}
+vec3 srIV( vec3 p, vec3 n ) {
+  vec3 q = p + n * 0.18;
+  vec2 g = clamp( ( q.xz - uIVG.xy ) / uIVG.z, vec2( 0.0 ), vec2( uIVG.w - 1.0, uIVT.y - 1.0 ) );
+  int lo = p.y > 4.45 ? 4 : 0;
+  float y = clamp( q.y, uIVY[ lo ], uIVY[ lo + 3 ] );
+  int l = lo;
+  if ( y > uIVY[ lo + 1 ] ) l = lo + 1;
+  if ( y > uIVY[ lo + 2 ] ) l = lo + 2;
+  float t = clamp( ( y - uIVY[ l ] ) / ( uIVY[ l + 1 ] - uIVY[ l ] ), 0.0, 1.0 );
+  return max( vec3( 0.0 ), mix( srIVLayer( l, g, n ), srIVLayer( l + 1, g, n ), t ) );
+}
 // irradiance from probe t's spherical harmonics (band constants folded in on the CPU)
 vec3 srSH( int t, vec3 n ) {
   int b = t * 9;
@@ -356,6 +381,7 @@ vec3 getIBLIrradiance( const in vec3 normal ) {
   #ifdef ENVMAP_TYPE_CUBE_UV
     vec3 worldNormal = inverseTransformDirection( normal, viewMatrix );
     if ( uIrrOn > 0.5 ) {
+      if ( uIVOn > 0.5 && vSrPos.z < 19.3 ) return srIV( vSrPos, worldNormal ) * uIrrK;
       int k = srBox( vSrPos + worldNormal * 0.1 );
       if ( k >= 0 ) return srSH( int( uBTex[ k ] + 0.5 ), worldNormal ) * uIrrK;
     }
@@ -441,7 +467,7 @@ function patch(mat, kind, U) {
     if (kind === 'glass') f = f.replace('#include <opaque_fragment>', GLASS_OUT).replace('#include <premultiplied_alpha_fragment>', '');
     sh.fragmentShader = f;
   };
-  mat.customProgramCacheKey = () => 'sr4-' + kind;
+  mat.customProgramCacheKey = () => 'sr5-' + kind;
   mat.needsUpdate = true;
 }
 
@@ -460,6 +486,8 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     uBPos: { value: boxes.map((b) => vec(b.pos)) }, uBTex: { value: boxes.map((b) => b.tex) },
     uProbeOn: { value: 0 }, uIrrOn: { value: 0 }, uIrrK: { value: 1 },
     uSH: { value: Array.from({ length: PROBES.length * 9 }, () => new THREE.Vector3()) },
+    uIVOn: { value: 0 }, uIV0: { value: null }, uIV1: { value: null }, uIV2: { value: null }, uIV3: { value: null },
+    uIVG: { value: new THREE.Vector4() }, uIVT: { value: new THREE.Vector2(1, 1) }, uIVY: { value: new Array(8).fill(0) },
   };
   // openings: lamp cans (per floor: nearest lamp offset, its height, a flag) and grille strips
   const LC = 0.05, LW = Math.ceil((GRID.x1 - GRID.x0) / LC), LD = Math.ceil((GRID.z1 - GRID.z0) / LC);
@@ -566,8 +594,88 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     U.uProbeOn.value = 1; U.uIrrOn.value = 1;
     return performance.now() - t;
   }
+  // ---- irradiance volume (baked offline: tools/interior/bake_volume.js) ------------------------
+  const IV = { x0: -0.25, z0: -0.25, step: 0.5, nx: 37, nz: 41, layers: [0.35, 1.2, 2.2, 3.3, 4.95, 5.8, 6.8, 7.8] };
+  const inside = (q) => {
+    if (q[0] < 0.02 || q[0] > 17.58 || q[2] < 0.02 || q[2] > 19.2) return false;
+    for (const c of apt.colliders) {
+      if (c.t === 'box') { if (q[0] > c.min[0] && q[0] < c.max[0] && q[1] > c.min[1] && q[1] < c.max[1] && q[2] > c.min[2] && q[2] < c.max[2]) return false; }
+      else if (c.t === 'obox') {
+        const dx = q[0] - c.c[0], dz = q[2] - c.c[2], co = Math.cos(c.yaw), si = Math.sin(c.yaw);
+        const lx = dx * co - dz * si, lz = dx * si + dz * co;
+        if (Math.abs(lx) < c.h[0] && Math.abs(q[1] - c.c[1]) < c.h[1] && Math.abs(lz) < c.h[2]) return false;
+      }
+    }
+    return true;
+  };
+  async function bakeVolume({ size = 16, onProgress = null } = {}) {
+    const { nx, nz, layers } = IV, n = nx * nz * layers.length;
+    const out = new Float32Array(n * 16), ok = new Uint8Array(n);
+    const rt = new THREE.WebGLCubeRenderTarget(size, { type: THREE.HalfFloatType, generateMipmaps: false });
+    const cam = new THREE.CubeCamera(0.05, 100000, rt); scene.add(cam);
+    const pool = [];
+    for (let k = 0; k < 8; k++) { const L = new THREE.SpotLight('#ffe7c8', 0, 0, 1.05, 0.7, 2); L.castShadow = false; scene.add(L, L.target); pool.push(L); }
+    const xr = renderer.xr.enabled; renderer.xr.enabled = false;
+    if (viewGain) viewGain(whiteBalance.map((c) => c * daylight));
+    const t0 = performance.now();
+    for (let l = 0; l < layers.length; l++) for (let k = 0; k < nz; k++) {
+      for (let i = 0; i < nx; i++) {
+        const j = (l * nz + k) * nx + i, q = [IV.x0 + i * IV.step, layers[l], IV.z0 + k * IV.step];
+        if (!inside(q)) continue;
+        const box = PROBES.find((p) => q[0] >= p.min[0] && q[0] <= p.max[0] && q[2] >= p.min[2] && q[2] <= p.max[2] && q[1] >= p.min[1] && q[1] <= p.max[1]);
+        const near = box ? lamps.filter(([x, y, z]) => x >= box.min[0] && x <= box.max[0] && z >= box.min[2] && z <= box.max[2] && y >= box.min[1] && y <= box.max[1] + 0.3)
+          .sort((a, b) => Math.hypot(a[0] - q[0], a[2] - q[2]) - Math.hypot(b[0] - q[0], b[2] - q[2])).slice(0, 8) : [];
+        pool.forEach((L, m) => { const w = near[m]; if (w) { L.position.set(...w); L.target.position.set(w[0], w[1] - 3, w[2]); L.intensity = lampPower; } else L.intensity = 0; L.updateMatrixWorld(); L.target.updateMatrixWorld(); });
+        cam.position.set(...q); cam.updateMatrixWorld(true);
+        cam.update(renderer, scene);
+        const c = projectSH(renderer, rt, cam, size);
+        for (let m = 0; m < 4; m++) { out[j * 16 + m * 4] = c[m].x; out[j * 16 + m * 4 + 1] = c[m].y; out[j * 16 + m * 4 + 2] = c[m].z; }
+        ok[j] = 1;
+      }
+      if (onProgress) await onProgress((l * nz + k + 1) / (layers.length * nz), performance.now() - t0);
+    }
+    if (viewGain) viewGain(1);
+    renderer.xr.enabled = xr;
+    for (const L of pool) { scene.remove(L, L.target); L.dispose(); }
+    scene.remove(cam); rt.dispose();
+    // probes in walls, furniture or outside: filled from their valid neighbours (same layer)
+    for (let pass = 0; pass < 6; pass++) {
+      const nok = Uint8Array.from(ok);
+      for (let l = 0; l < layers.length; l++) for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) {
+        const j = (l * nz + k) * nx + i; if (ok[j]) continue;
+        const acc = new Float32Array(16); let w = 0;
+        for (let dk = -1; dk <= 1; dk++) for (let di = -1; di <= 1; di++) {
+          const a = i + di, b = k + dk; if (a < 0 || b < 0 || a >= nx || b >= nz) continue;
+          const jj = (l * nz + b) * nx + a; if (!ok[jj]) continue;
+          for (let m = 0; m < 16; m++) acc[m] += out[jj * 16 + m]; w++;
+        }
+        if (w) { for (let m = 0; m < 16; m++) out[j * 16 + m] = acc[m] / w; nok[j] = 1; }
+      }
+      ok.set(nok);
+    }
+    return { meta: { ...IV, size }, data: out, ms: performance.now() - t0 };
+  }
+  // runtime: four RGBA half-float textures, layers side by side
+  function useVolume(meta, data) {
+    const { nx, nz, layers } = meta, W = nx * layers.length, H = nz;
+    const tex = [0, 1, 2, 3].map((m) => {
+      const a = new Uint16Array(W * H * 4), h = THREE.DataUtils.toHalfFloat;
+      for (let l = 0; l < layers.length; l++) for (let k = 0; k < nz; k++) for (let i = 0; i < nx; i++) {
+        const j = (l * nz + k) * nx + i, o = (k * W + l * nx + i) * 4;
+        a[o] = h(data[j * 16 + m * 4]); a[o + 1] = h(data[j * 16 + m * 4 + 1]); a[o + 2] = h(data[j * 16 + m * 4 + 2]); a[o + 3] = h(1);
+      }
+      const t = new THREE.DataTexture(a, W, H, THREE.RGBAFormat, THREE.HalfFloatType);
+      t.minFilter = t.magFilter = THREE.LinearFilter; t.needsUpdate = true;
+      return t;
+    });
+    U.uIV0.value = tex[0]; U.uIV1.value = tex[1]; U.uIV2.value = tex[2]; U.uIV3.value = tex[3];
+    U.uIVG.value.set(meta.x0, meta.z0, meta.step, nx); U.uIVT.value.set(W, H); U.uIVY.value = layers.slice();
+    U.uIVOn.value = 1;
+  }
+
   const api = {
     U, fields: F, bakeMs: 0, fieldMs: performance.now() - t0, atlas,
+    bakeVolume, useVolume, IV,
     bake(passes = 3) { api.bakeMs = 0; for (let i = 0; i < passes; i++) api.bakeMs += bakeProbes(i); return api.bakeMs; },
     setWet(v) { U.uWet.value = Math.max(0, Math.min(1, v)); },
     get wet() { return U.uWet.value; },
