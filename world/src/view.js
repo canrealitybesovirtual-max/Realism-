@@ -22,12 +22,12 @@ void main(){
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
 }`;
 const CITY_FS = /* glsl */`
-uniform sampler2D uMap, uMapB; uniform float uOp, uMix;
+uniform sampler2D uMap, uMapB; uniform float uOp, uMix; uniform vec3 uGain;
 varying vec2 vUv;
 void main(){
   vec4 c = texture2D(uMap, vUv);
   if (uMix > 0.0) c = mix(c, texture2D(uMapB, vUv), uMix);   // time of day: the next sun's bake
-  gl_FragColor = vec4(c.rgb, c.a * uOp);       // baked already tone-mapped: only the output encoding
+  gl_FragColor = vec4(c.rgb * uGain, c.a * uOp);       // baked already tone-mapped: only the output encoding (uGain: daylight level for the room probes)
   #include <colorspace_fragment>
 }`;
 
@@ -35,13 +35,15 @@ void main(){
 // heights through the game's glass and tone map); linear, before exposure
 const SKY_H = [0.000, 0.017, 0.043, 0.079, 0.129, 0.198, 0.277, 0.351, 0.419, 0.471, 0.700, 1.000];
 const SKY_C = [[0.440, 0.560, 0.670], [0.410, 0.530, 0.664], [0.400, 0.526, 0.650], [0.392, 0.522, 0.648], [0.3312, 0.5038, 0.6823], [0.2423, 0.4501, 0.6804], [0.1763, 0.3840, 0.6734], [0.1194, 0.3277, 0.6408], [0.0773, 0.2643, 0.6137], [0.0508, 0.2176, 0.5610], [0.0305, 0.1850, 0.5330], [0.0203, 0.1567, 0.4937]];
+// uGain: one shared uniform, 1 on screen; the room probes capture the outside at daylight level
+const GAIN = { value: new THREE.Vector3(1, 1, 1) };
 function skyMaterial(look, sun) {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false,
-    uniforms: { uSun: { value: sun }, uHaze: { value: new THREE.Color(look.haze) }, uTint: { value: new THREE.Color(look.sunTint) },
+    uniforms: { uGain: GAIN, uSun: { value: sun }, uHaze: { value: new THREE.Color(look.haze) }, uTint: { value: new THREE.Color(look.sunTint) },
       uSH: { value: SKY_H }, uSC: { value: SKY_C.map((c) => new THREE.Vector3(...c)) } },
     vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); vec4 p = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position = p.xyww; }`,
-    fragmentShader: `uniform vec3 uSun, uHaze, uTint; uniform float uSH[12]; uniform vec3 uSC[12]; varying vec3 vDir;
+    fragmentShader: `uniform vec3 uSun, uHaze, uTint, uGain; uniform float uSH[12]; uniform vec3 uSC[12]; varying vec3 vDir;
       void main(){
         vec3 d = normalize(vDir);
         float h = clamp(d.y, 0.0, 1.0);
@@ -50,7 +52,7 @@ function skyMaterial(look, sun) {
         c = mix(c, uHaze, smoothstep(0.02, -0.12, d.y));
         float s = max(dot(d, uSun), 0.0);
         c += uTint * (pow(s, 12.0) * 0.18 + pow(s, 900.0) * 40.0);
-        gl_FragColor = vec4(c, 1.0);
+        gl_FragColor = vec4(c * uGain, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
@@ -125,7 +127,7 @@ export async function buildView(scene, renderer, Q) {
       const d = new THREE.Vector3(...f.d), up = new THREE.Vector3(...f.up);
       const z = d.clone().negate(), x = new THREE.Vector3().crossVectors(up, z).normalize(), y = new THREE.Vector3().crossVectors(z, x);
       const mat = new THREE.ShaderMaterial({
-        uniforms: { uMap: { value: map }, uMapB: { value: map }, uMix: { value: 0 }, uDist: { value: dist }, uO: { value: p.world }, uD: { value: d }, uX: { value: x }, uY: { value: y }, uOp: { value: 0 } },
+        uniforms: { uGain: GAIN, uMap: { value: map }, uMapB: { value: map }, uMix: { value: 0 }, uDist: { value: dist }, uO: { value: p.world }, uD: { value: d }, uX: { value: x }, uY: { value: y }, uOp: { value: 0 } },
         vertexShader: CITY_VS, fragmentShader: CITY_FS, transparent: true, depthWrite: false, toneMapped: false,
       });
       const m = new THREE.Mesh(grid, mat);
@@ -165,6 +167,7 @@ export async function buildView(scene, renderer, Q) {
   let fading = false;
   const api = {
     sky, sun, manifest: man, suns, world,
+    setGain(k) { if (typeof k === 'number') GAIN.value.setScalar(k); else GAIN.value.set(...k); },
     get sunName() { return suns[si].name; },
     // fade to the next baked time of day (2.5 s); the sun light and sky follow
     async nextSun() {

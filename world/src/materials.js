@@ -1,6 +1,5 @@
-// Materials for the apartment. Surface textures are generated once at load on a canvas
-// (no downloads): smoke-grey oak planks, Versailles parquet, stones, terrace pavers, floor
-// grilles. Plaster uses the scanned normal map in ../textures. UVs are metric, so each
+// Materials for the apartment. Floors, stones and textiles are photo scans (textures/scans,
+// built by tools/interior); terrace pavers and floor grilles are still generated on a canvas. Plaster uses the scanned normal map in ../textures. UVs are metric, so each
 // texture's repeat is 1 / (metres the texture covers).
 import * as THREE from 'three';
 
@@ -55,75 +54,6 @@ function grey(S, G) {
 }
 
 // ---- generators -------------------------------------------------------------------------------
-// Smoke-grey solid oak planks, 2.4 m x 2.4 m tile, boards 0.2 m wide running along u.
-function genOak(S, seed, tone) {
-  const C = new Float32Array(S * S * 3), H = new Float32Array(S * S), R = new Float32Array(S * S);
-  const rows = 12, rowH = S / rows, r = rnd(seed);
-  const rowOff = [], rowSeed = [];
-  for (let i = 0; i < rows; i++) { rowOff.push(Math.floor(r() * S)); rowSeed.push(Math.floor(r() * 1e6)); }
-  for (let y = 0; y < S; y++) {
-    const row = Math.floor(y / rowH), yl = (y - row * rowH) / rowH;
-    for (let x = 0; x < S; x++) {
-      const xs = (x + rowOff[row]) % S, board = xs < S / 2 ? 0 : 1, bseed = rowSeed[row] + board * 31;
-      const b = hash(bseed, 7, 3);
-      // grain: long streaks along u, wavy
-      const warp = fbm(x / S * 3, yl * 2 + row, bseed, 3, 3) * 6;
-      const g = fbm(x / S * 4, yl * 18 + warp, bseed + 5, 4, 4);
-      const ring = 0.5 + 0.5 * Math.sin((yl * 9 + warp * 1.4 + g * 3) * Math.PI * 2);
-      let v = 0.78 + 0.22 * g + 0.1 * (ring - 0.5) + (b - 0.5) * 0.22;
-      // joints: long edges and board ends
-      const ex = Math.min(xs % (S / 2), S / 2 - (xs % (S / 2)));
-      const ey = Math.min(y - row * rowH, (row + 1) * rowH - 1 - y);
-      const joint = ey < 1.2 || ex < 1.2;
-      if (joint) v *= 0.45;
-      const i = y * S + x;
-      C[i * 3] = tone[0] * v; C[i * 3 + 1] = tone[1] * v; C[i * 3 + 2] = tone[2] * v;
-      H[i] = joint ? 0 : 0.85 + 0.15 * ring * g;
-      R[i] = 0.55 + 0.2 * (1 - g) + (joint ? 0.2 : 0);
-    }
-  }
-  return { C, H, R };
-}
-
-// Versailles parquet panel, 1.2 m tile: frame boards round the edge, a 45 degree lattice and
-// infill squares; each board its own tone and grain direction.
-function genParquet(S, seed, tone) {
-  const C = new Float32Array(S * S * 3), H = new Float32Array(S * S), R = new Float32Array(S * S);
-  const T = 1.2, fw = 0.075, L = 0.3, lw = 0.055;
-  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-    const u = x / S * T, v = y / S * T;
-    let id, gu, gv, edge;
-    const de = Math.min(u, v, T - u, T - v);
-    if (de < fw) {
-      const horiz = Math.min(v, T - v) < Math.min(u, T - u);
-      id = horiz ? (v < T / 2 ? 1 : 2) : (u < T / 2 ? 3 : 4);
-      gu = horiz ? u : v; gv = horiz ? v : u;
-      edge = Math.min(fw - de, de, Math.abs(Math.min(u, T - u) - Math.min(v, T - v)) / 1.414);
-    } else {
-      const cu = u - T / 2, cv = v - T / 2;
-      const a = (cu + cv) / Math.SQRT2, b = (cu - cv) / Math.SQRT2;
-      const am = ((a % L) + L) % L, bm = ((b % L) + L) % L;
-      const ia = Math.floor(a / L), ib = Math.floor(b / L);
-      if (am < lw) { id = 10 + ia * 3; gu = b; gv = a; edge = Math.min(am, lw - am); }
-      else if (bm < lw) { id = 200 + ib * 3; gu = a; gv = b; edge = Math.min(bm, lw - bm); }
-      else { id = 500 + ia * 37 + ib; const alt = (ia + ib) & 1; gu = alt ? a : b; gv = alt ? b : a; edge = Math.min(am - lw, L - am, bm - lw, L - bm); }
-      edge = Math.min(edge, de - fw);
-    }
-    const s = seed + id * 13;
-    const b0 = hash(s, 1, 9);
-    const warp = fbm(gu * 3, gv * 3, s, 2, 1e6) * 2;
-    const g = fbm(gu * 2.5, gv * 40 + warp, s + 3, 4, 1e6);
-    let val = 0.76 + 0.26 * g + (b0 - 0.5) * 0.26;
-    const joint = edge < T / S * 1.1;
-    if (joint) val *= 0.5;
-    const i = y * S + x;
-    C[i * 3] = tone[0] * val; C[i * 3 + 1] = tone[1] * val; C[i * 3 + 2] = tone[2] * val;
-    H[i] = joint ? 0 : 0.9 + 0.1 * g;
-    R[i] = 0.5 + 0.2 * (1 - g);
-  }
-  return { C, H, R };
-}
-
 // Stone slabs: base colour, veins (warped fbm iso-lines), optional banding (vein-cut
 // travertine), slab joints. tile metres, slab w x h metres.
 function genStone(S, seed, o) {
@@ -181,17 +111,67 @@ const coated = (P, hex, rough, cc, ccr, questRough, more = {}) => (COAT_OK
 
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };   // linear rgb
 
+// ---- photo-scanned surfaces (tools/interior: CC0 scans from Poly Haven and ambientCG, laid and
+// colour-matched to the reference photos). metres = what one texture repeat covers.
+const SCANS = {
+  floor_herringbone: [1.97990, 2.37588], floor_versailles: [1.5, 1.5], floor_planks: [2.4, 2.4],
+  stone_travertine: [2.4, 2.4], stone_onyx: [2.4, 2.4], stone_marble: [2.4, 2.4], stone_greymarble: [2.4, 2.4],
+  stone_cream: [2.4, 2.4], fabric_boucle: [0.3, 0.3], fabric_rug: [1.7, 1.7], fabric_linen: [1.0, 1.0],
+  wood_bleached: [1.0, 1.0], wood_dark: [1.0, 1.0], wood_mid: [1.0, 1.0],
+};
+// one loader for all of them; M.ready resolves when every scan has arrived (the reflection
+// probes are baked after it)
+function scanKit(Q) {
+  const mgr = new THREE.LoadingManager();
+  const tl = new THREE.TextureLoader(mgr);
+  const dir = './textures/scans/' + (Q.quest ? 'quest/' : '');
+  const ready = new Promise((res) => { mgr.onLoad = res; mgr.onError = (u) => console.warn('scan failed', u); });
+  const tex = (name, k, srgb) => {
+    const t = tl.load(`${dir}${name}_${k}.webp`);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    t.anisotropy = Q.quest ? 4 : 8;
+    const m = SCANS[name]; t.repeat.set(1 / m[0], 1 / m[1]);
+    return t;
+  };
+  // coat: { clearcoat, clearcoatRoughness, quest } as finish() below; fabric: sheen instead
+  const scan = (name, { coat = null, fabric = null, nScale = 1, more = {} } = {}) => {
+    const arm = tex(name, 'arm', false);
+    const base = { map: tex(name, 'diff', true), normalMap: tex(name, 'nor', false), roughnessMap: arm, aoMap: arm, aoMapIntensity: 0.6, roughness: 1, metalness: 0, normalScale: new THREE.Vector2(nScale, nScale), ...more };
+    if (fabric && COAT_OK) return new THREE.MeshPhysicalMaterial({ ...base, sheen: 1, sheenColor: new THREE.Color(fabric), sheenRoughness: 0.55 });
+    if (coat && COAT_OK) return new THREE.MeshPhysicalMaterial({ ...base, clearcoat: coat.clearcoat, clearcoatRoughness: coat.clearcoatRoughness });
+    if (coat) base.roughness = coat.quest / 0.6;      // the scan's roughness is ~0.6: scale it to the headset value
+    return new THREE.MeshStandardMaterial(base);
+  };
+  return { scan, ready };
+}
+
 export function makeMaterials(Q) {
-  const S = Q.tex, SS = Q.stoneTex, M = {};
+  const M = {};
   COAT_OK = !Q.quest;
-  // floors: oiled oak and parquet (satin sheen), polished stones (sharp reflections), honed
-  // travertine (soft); the headset gets plain materials a little glossier instead of a coat
-  M.oak = finish(S, genOak(S, 11, lin('#8b7d6d')), 3.0, [2.4, 2.4], {}, { clearcoat: 0.5, clearcoatRoughness: 0.16, quest: 0.8 });
-  M.parquet = finish(S, genParquet(S, 21, lin('#8f8170')), 3.0, [1.2, 1.2], {}, { clearcoat: 0.6, clearcoatRoughness: 0.13, quest: 0.75 });
-  M.stone = finish(SS, genStone(SS, 3, { base: lin('#ece9e2'), vein: lin('#9aa29a'), veinW: 0.012, veinK: 0.55, mottle: 0.35, tile: 2.4, slab: [1.2, 0.6], rough: 0.32 }), 1.5, [2.4, 2.4], {}, { clearcoat: 0.85, clearcoatRoughness: 0.07, quest: 0.5 });
-  M.onyx = finish(SS, genStone(SS, 5, { base: lin('#efe6d8'), vein: lin('#c9a77b'), veinW: 0.03, veinK: 0.45, mottle: 0.6, tile: 2.4, slab: [1.2, 1.2], rough: 0.2 }), 1.2, [2.4, 2.4], {}, { clearcoat: 1, clearcoatRoughness: 0.04, quest: 0.45 });
-  M.travertine = finish(SS, genStone(SS, 9, { base: lin('#d8d2c8'), vein: lin('#a59d92'), band: 22, veinK: 0.5, mottle: 0.5, tile: 2.4, slab: [0.6, 1.2], rough: 0.45 }), 1.5, [2.4, 2.4], {}, { clearcoat: 0.25, clearcoatRoughness: 0.3, quest: 0.85 });
-  M.marbleGrey = finish(SS, genStone(SS, 13, { base: lin('#8f9093'), vein: lin('#d8d8d6'), veinW: 0.01, veinK: 0.6, mottle: 0.5, tile: 2.4, slab: [0.6, 0.6], rough: 0.3 }), 1.5, [2.4, 2.4], {}, { clearcoat: 0.85, clearcoatRoughness: 0.06, quest: 0.5 });
+  const { scan, ready } = scanKit(Q);
+  M.ready = ready;
+  // floors: oiled smoke-grey oak laid as herringbone (great hall), Versailles panels (dining),
+  // long planks (bedrooms); polished stones (sharp reflections), honed travertine (soft); the
+  // headset gets plain materials a little glossier instead of a coat
+  M.herring = scan('floor_herringbone', { coat: { clearcoat: 0.5, clearcoatRoughness: 0.16, quest: 0.8 } });
+  M.parquet = scan('floor_versailles', { coat: { clearcoat: 0.6, clearcoatRoughness: 0.13, quest: 0.75 } });
+  M.oak = scan('floor_planks', { coat: { clearcoat: 0.5, clearcoatRoughness: 0.16, quest: 0.8 } });
+  M.stone = scan('stone_marble', { coat: { clearcoat: 0.85, clearcoatRoughness: 0.07, quest: 0.5 } });
+  M.onyx = scan('stone_onyx', { coat: { clearcoat: 1, clearcoatRoughness: 0.04, quest: 0.45 } });
+  M.travertine = scan('stone_travertine', { coat: { clearcoat: 0.25, clearcoatRoughness: 0.3, quest: 0.85 } });
+  M.marbleGrey = scan('stone_greymarble', { coat: { clearcoat: 0.85, clearcoatRoughness: 0.06, quest: 0.5 } });
+  M.creamStone = scan('stone_cream', { coat: { clearcoat: 0.2, clearcoatRoughness: 0.35, quest: 0.85 } });
+  M.boucle = scan('fabric_boucle', { fabric: '#f2ece2', nScale: 0.7 });
+  M.rug = scan('fabric_rug', { fabric: '#efe8dc' });
+  M.linen = scan('fabric_linen', { fabric: '#f5f1ea', more: { side: THREE.DoubleSide } });
+  M.boucleTaupe = scan('fabric_boucle', { fabric: '#cdbfae', nScale: 0.7, more: { color: '#b7a896' } });
+  M.velvet = scan('fabric_linen', { fabric: '#e2a46e', nScale: 0.4, more: { color: '#a4673d' } });
+  // furniture woods: oiled (satin), the headset plain
+  M.woodLight = scan('wood_bleached', { coat: { clearcoat: 0.25, clearcoatRoughness: 0.3, quest: 0.85 } });
+  M.woodDark = scan('wood_dark', { coat: { clearcoat: 0.3, clearcoatRoughness: 0.25, quest: 0.8 } });
+  M.woodMid = scan('wood_mid', { coat: { clearcoat: 0.3, clearcoatRoughness: 0.25, quest: 0.8 } });
+  const SS = Q.stoneTex;
   M.pavers = finish(SS, genStone(SS, 17, { base: lin('#b9b6ae'), vein: lin('#9d9a93'), veinW: 0.01, veinK: 0.2, mottle: 0.7, tile: 2.4, slab: [0.6, 0.6], rough: 0.8 }), 2.5, [2.4, 2.4]);
   M.treadStone = M.stone.clone(); M.treadStone.side = THREE.DoubleSide;
 

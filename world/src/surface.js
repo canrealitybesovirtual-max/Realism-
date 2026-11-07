@@ -47,6 +47,37 @@ const NB = PROBES.length + FALLBACK.length;
 const PSIZE = 128, COLS = 4;                       // probe cube size; atlas columns
 const TW = 3 * Math.max(PSIZE, 112), TH = 4 * PSIZE;  // one PMREM tile (three's cube-UV layout)
 
+// ---- spherical harmonics ---------------------------------------------------------------------
+const SHN = 32;                                    // irradiance capture size (per cube face)
+const SH_BUF = new Uint16Array(SHN * SHN * 4);
+// read a cube capture back and project it on 9 SH coefficients, returned with the irradiance
+// convolution and the basis constants folded in, ready for srSH(): E(n) = sum c_i * poly_i(n)
+function projectSH(renderer, rt, cubeCam) {
+  const L = Array.from({ length: 9 }, () => new THREE.Vector3());
+  const d = new THREE.Vector3(), o = new THREE.Vector3();
+  cubeCam.getWorldPosition(o);
+  const f16 = THREE.DataUtils.fromHalfFloat;
+  let wsum = 0;
+  for (let face = 0; face < 6; face++) {
+    const fc = cubeCam.children[face];
+    fc.updateMatrixWorld(true);
+    renderer.readRenderTargetPixels(rt, 0, 0, SHN, SHN, SH_BUF, face);
+    for (let y = 0; y < SHN; y++) for (let x = 0; x < SHN; x++) {
+      const u = (x + 0.5) / SHN * 2 - 1, v = (y + 0.5) / SHN * 2 - 1;
+      d.set(u, v, 0.5).unproject(fc).sub(o).normalize();
+      const w = 4 / (SHN * SHN) / Math.pow(1 + u * u + v * v, 1.5);
+      const i = (y * SHN + x) * 4, r = f16(SH_BUF[i]) * w, g = f16(SH_BUF[i + 1]) * w, b = f16(SH_BUF[i + 2]) * w;
+      const Y = [0.282095, 0.488603 * d.y, 0.488603 * d.z, 0.488603 * d.x, 1.092548 * d.x * d.y, 1.092548 * d.y * d.z, 0.315392 * (3 * d.z * d.z - 1), 1.092548 * d.x * d.z, 0.546274 * (d.x * d.x - d.y * d.y)];
+      for (let k = 0; k < 9; k++) { L[k].x += r * Y[k]; L[k].y += g * Y[k]; L[k].z += b * Y[k]; }
+      wsum += w;
+    }
+  }
+  const norm = 4 * Math.PI / wsum;
+  const A = [Math.PI, 2 * Math.PI / 3, 2 * Math.PI / 3, 2 * Math.PI / 3, Math.PI / 4, Math.PI / 4, Math.PI / 4, Math.PI / 4, Math.PI / 4];
+  const C = [0.282095, 0.488603, 0.488603, 0.488603, 1.092548, 1.092548, 0.315392, 1.092548, 0.546274];
+  return L.map((l, k) => l.multiplyScalar(norm * A[k] * C[k]));
+}
+
 // ---- fields --------------------------------------------------------------------------------
 function bakeFields(meshes, colliders, M) {
   const { x0, z0, x1, z1, cs } = GRID;
@@ -89,7 +120,7 @@ function bakeFields(meshes, colliders, M) {
   // heads, the stair's underside)
   const P = new THREE.Vector3(), Q = new THREE.Vector3(), R = new THREE.Vector3();
   for (const m of meshes) {
-    if (m.material === M.glass || m.material === M.light) continue;
+    if (m.material === M.glass || m.material === M.light || m.material.transparent || m.geometry.index || m.userData.noField) continue;
     const a = m.geometry.attributes.position.array;
     for (let t = 0; t < a.length; t += 9) {
       P.set(a[t], a[t + 1], a[t + 2]); Q.set(a[t + 3], a[t + 4], a[t + 5]); R.set(a[t + 6], a[t + 7], a[t + 8]);
@@ -253,14 +284,23 @@ uniform vec3 uBMax[ ${NB} ];
 uniform vec3 uBPos[ ${NB} ];
 uniform float uBTex[ ${NB} ];
 uniform float uProbeOn;
-vec3 getIBLIrradiance( const in vec3 normal ) {
-  #ifdef ENVMAP_TYPE_CUBE_UV
-    vec3 worldNormal = inverseTransformDirection( normal, viewMatrix );
-    vec4 envMapColor = textureCubeUV( envMap, envMapRotation * worldNormal, 1.0 );
-    return PI * envMapColor.rgb * envMapIntensity;
-  #else
-    return vec3( 0.0 );
-  #endif
+uniform float uIrrOn;
+uniform float uIrrK;
+uniform vec3 uSH[ ${PROBES.length * 9} ];
+// irradiance from probe t's spherical harmonics (band constants folded in on the CPU)
+vec3 srSH( int t, vec3 n ) {
+  int b = t * 9;
+  return max( vec3( 0.0 ), uSH[ b ] + uSH[ b + 1 ] * n.y + uSH[ b + 2 ] * n.z + uSH[ b + 3 ] * n.x
+    + uSH[ b + 4 ] * ( n.x * n.y ) + uSH[ b + 5 ] * ( n.y * n.z ) + uSH[ b + 6 ] * ( 3.0 * n.z * n.z - 1.0 )
+    + uSH[ b + 7 ] * ( n.x * n.z ) + uSH[ b + 8 ] * ( n.x * n.x - n.y * n.y ) );
+}
+// the first box (room) containing q, or -1
+int srBox( vec3 q ) {
+  int k = - 1;
+  for ( int i = 0; i < ${NB}; i ++ ) {
+    if ( k < 0 && all( greaterThanEqual( q, uBMin[ i ] - 0.03 ) ) && all( lessThanEqual( q, uBMax[ i ] + 0.03 ) ) ) k = i;
+  }
+  return k;
 }
 #ifdef ENVMAP_TYPE_CUBE_UV
 // three's cube-UV lookup, reading one tile of the probe atlas
@@ -286,6 +326,23 @@ vec3 srProbe( float t, vec3 d, float r ) {
   return mix( c0, srBil( org, d, mipInt + 1.0 ), mipF );
 }
 #endif
+// diffuse light: once the probes are baked, the room's own probe (what this room sees: the
+// windows at daylight level, the city, the sunlit floor, walls and ceiling) as 9 spherical
+// harmonics, so light bounces as it does in the photos; before that (first bake pass) the
+// sky's image light
+vec3 getIBLIrradiance( const in vec3 normal ) {
+  #ifdef ENVMAP_TYPE_CUBE_UV
+    vec3 worldNormal = inverseTransformDirection( normal, viewMatrix );
+    if ( uIrrOn > 0.5 ) {
+      int k = srBox( vSrPos + worldNormal * 0.1 );
+      if ( k >= 0 ) return srSH( int( uBTex[ k ] + 0.5 ), worldNormal ) * uIrrK;
+    }
+    vec4 envMapColor = textureCubeUV( envMap, envMapRotation * worldNormal, 1.0 );
+    return PI * envMapColor.rgb * envMapIntensity;
+  #else
+    return vec3( 0.0 );
+  #endif
+}
 vec3 getIBLRadiance( const in vec3 viewDir, const in vec3 normal, const in float roughness ) {
   #ifdef ENVMAP_TYPE_CUBE_UV
     vec3 reflectVec = reflect( - viewDir, normal );
@@ -294,11 +351,7 @@ vec3 getIBLRadiance( const in vec3 viewDir, const in vec3 normal, const in float
     if ( uProbeOn > 0.5 ) {
       // the room the reflected ray goes into: a point just along it (so a wall or a pane
       // between two rooms, or between a room and outside, reflects the side the eye is on)
-      vec3 q = vSrPos + reflectVec * 0.12;
-      int k = - 1;
-      for ( int i = 0; i < ${NB}; i ++ ) {
-        if ( k < 0 && all( greaterThanEqual( q, uBMin[ i ] - 0.03 ) ) && all( lessThanEqual( q, uBMax[ i ] + 0.03 ) ) ) k = i;
-      }
+      int k = srBox( vSrPos + reflectVec * 0.12 );
       if ( k >= 0 ) {
         vec3 bmin = uBMin[ k ] - 0.03, bmax = uBMax[ k ] + 0.03;
         vec3 rv = reflectVec + vec3( equal( reflectVec, vec3( 0.0 ) ) ) * 1e-4;
@@ -365,11 +418,11 @@ function patch(mat, kind, U) {
     if (kind === 'glass') f = f.replace('#include <opaque_fragment>', GLASS_OUT).replace('#include <premultiplied_alpha_fragment>', '');
     sh.fragmentShader = f;
   };
-  mat.customProgramCacheKey = () => 'sr1-' + kind;
+  mat.customProgramCacheKey = () => 'sr3-' + kind;
   mat.needsUpdate = true;
 }
 
-export function setupSurfaces({ scene, renderer, apt, M, Q }) {
+export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.4, 0.97, 0.7] }) {
   const t0 = performance.now();
   const F = bakeFields(apt.meshes, apt.colliders, M);
   const env = scene.environment;
@@ -382,7 +435,8 @@ export function setupSurfaces({ scene, renderer, apt, M, Q }) {
     uPAtlas: { value: null }, uPAtlasSize: { value: new THREE.Vector2(1, 1) },
     uBMin: { value: boxes.map((b) => vec(b.min)) }, uBMax: { value: boxes.map((b) => vec(b.max)) },
     uBPos: { value: boxes.map((b) => vec(b.pos)) }, uBTex: { value: boxes.map((b) => b.tex) },
-    uProbeOn: { value: 0 },
+    uProbeOn: { value: 0 }, uIrrOn: { value: 0 }, uIrrK: { value: 1 },
+    uSH: { value: Array.from({ length: PROBES.length * 9 }, () => new THREE.Vector3()) },
   };
   const mats = new Set(apt.meshes.map((m) => m.material));
   for (const mat of mats) {
@@ -400,9 +454,13 @@ export function setupSurfaces({ scene, renderer, apt, M, Q }) {
   const rows = Math.ceil(PROBES.length / COLS);
   const atlas = new THREE.WebGLRenderTarget(COLS * TW, rows * TH, { type: THREE.HalfFloatType, depthBuffer: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
   U.uPAtlas.value = atlas.texture; U.uPAtlasSize.value.set(COLS * TW, rows * TH);
-  function bakeProbes() {
+  // pass 0: diffuse light from the sky image and the hemisphere fill; later passes: from the
+  // probes the pass before made (light bounces once more each pass); the fill drops to a trace
+  function bakeProbes(pass) {
     const t = performance.now();
     U.uProbeOn.value = 0;
+    U.uIrrOn.value = pass > 0 ? 1 : 0;
+    if (hemi) hemi.intensity = pass > 0 ? hemiGI : hemi.userData.full ?? (hemi.userData.full = hemi.intensity);
     const rt = new THREE.WebGLCubeRenderTarget(PSIZE, { type: THREE.HalfFloatType, generateMipmaps: false });
     const cam = new THREE.CubeCamera(0.05, 100000, rt);   // far enough for the baked city (to the horizon)
     scene.add(cam);
@@ -418,7 +476,16 @@ export function setupSurfaces({ scene, renderer, apt, M, Q }) {
     const xr = renderer.xr.enabled, ac = renderer.autoClear, prev = renderer.getRenderTarget();
     renderer.xr.enabled = false;
     let out = null;
+    const shRT = new THREE.WebGLCubeRenderTarget(SHN, { type: THREE.HalfFloatType, generateMipmaps: false });
+    const shCam = new THREE.CubeCamera(0.05, 100000, shRT); scene.add(shCam);
+    const shNew = [];
     PROBES.forEach((p, i) => {
+      // irradiance: the outside at daylight level, projected on 9 spherical harmonics
+      shCam.position.set(...p.pos); shCam.updateMatrixWorld(true);
+      if (viewGain) viewGain(whiteBalance.map((c) => c * daylight));   // daylight level, white-balanced as the photos are
+      shCam.update(renderer, scene);
+      if (viewGain) viewGain(1);
+      shNew.push(projectSH(renderer, shRT, shCam));
       cam.position.set(...p.pos); cam.updateMatrixWorld(true);
       cam.update(renderer, scene);
       out = pm.fromCubemap(rt.texture, out);
@@ -430,13 +497,14 @@ export function setupSurfaces({ scene, renderer, apt, M, Q }) {
     });
     renderer.setRenderTarget(prev);
     renderer.xr.enabled = xr;
-    scene.remove(cam); rt.dispose(); if (out) out.dispose(); pm.dispose(); copy.geometry.dispose(); copy.material.dispose();
-    U.uProbeOn.value = 1;
+    shNew.forEach((c, i) => c.forEach((v, j) => U.uSH.value[i * 9 + j].copy(v)));
+    scene.remove(cam, shCam); rt.dispose(); shRT.dispose(); if (out) out.dispose(); pm.dispose(); copy.geometry.dispose(); copy.material.dispose();
+    U.uProbeOn.value = 1; U.uIrrOn.value = 1;
     return performance.now() - t;
   }
   const api = {
-    U, fields: F, bakeMs: 0, fieldMs: performance.now() - t0,
-    bake() { api.bakeMs = bakeProbes(); return api.bakeMs; },
+    U, fields: F, bakeMs: 0, fieldMs: performance.now() - t0, atlas,
+    bake(passes = 3) { api.bakeMs = 0; for (let i = 0; i < passes; i++) api.bakeMs += bakeProbes(i); return api.bakeMs; },
     setWet(v) { U.uWet.value = Math.max(0, Math.min(1, v)); },
     get wet() { return U.uWet.value; },
   };

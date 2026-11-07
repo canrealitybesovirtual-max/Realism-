@@ -259,8 +259,13 @@ export function buildApartment(M, Q) {
   for (const [a, b] of [[4.25, 5.63], [12.0, 13.4]]) solid(a, 0.15, b, 1.35, L1, C2);
 
   // ---- floor one ----------------------------------------------------------------------------
-  // great hall: Versailles parquet, perimeter soffit, raised centre field
-  floor(0, 0, XM, 6.72, L1, M.parquet);
+  // great hall: herringbone oak in the living area (apartment-19), Versailles parquet in the
+  // dining end past the east columns (apartment-17), a bronze threshold between; perimeter
+  // soffit, raised centre field
+  const XD = 12.7;
+  floor(0, 0, XD, 6.72, L1, M.herring);
+  floor(XD, 0, XM, 6.72, L1, M.parquet);
+  B.box(XD - 0.015, L1, 1.35, XD + 0.015, L1 + 0.002, 6.72, M.bronzeLight, false);
   B.box(0, 4.2, 0, XM, 4.24, 6.72, M.ceiling, false);
   for (const [x0, z0, x1, z1] of [[0, 0, XM, 0.85], [XW, 5.92, XE, 6.72], [XW, 0.85, XW + 0.8, 5.92], [XE - 0.8, 0.85, XE, 5.92]])
     B.box(x0, 3.82, z0, x1, 4.2, z1, M.ceiling, false);

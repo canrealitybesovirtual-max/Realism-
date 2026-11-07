@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { makeMaterials } from './materials.js';
 import { buildApartment } from './apartment.js';
+import { furnish } from './furniture.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { buildCity, SUN as GEN_SUN } from './city.js';
 import { buildView } from './view.js';
 import { createTiles, keyStore } from './tiles.js';
@@ -43,6 +45,23 @@ async function boot() {
   await new Promise((r) => setTimeout(r, 20));
   const apt = buildApartment(M, Q);
   scene.add(apt.group);
+  // furniture joins the apartment (surfaces, probes and physics treat it the same)
+  const furn = furnish(M, Q);
+  apt.group.add(furn.group); apt.meshes.push(...furn.meshes); apt.colliders.push(...furn.colliders);
+  // scanned pieces (Poly Haven, CC0): marble busts on the dining room plinths (apartment-17)
+  try {
+    const gl = await new GLTFLoader().loadAsync('./models/ph/marble_bust_01/marble_bust_01_1k.gltf');
+    const src = gl.scene; src.updateMatrixWorld(true);
+    const bb = new THREE.Box3().setFromObject(src), k = 0.44 / (bb.max.y - bb.min.y);
+    for (const [bx, top, bz, yaw] of furn.busts) {
+      const b = src.clone(true);
+      b.scale.setScalar(k); b.rotation.y = yaw;
+      b.position.set(bx - (bb.min.x + bb.max.x) / 2 * k, top - bb.min.y * k, bz - (bb.min.z + bb.max.z) / 2 * k);
+      b.updateMatrixWorld(true);
+      b.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; o.userData.noField = true; apt.meshes.push(o); } });
+      furn.group.add(b);
+    }
+  } catch (e) { console.warn('bust not loaded', e); }
   status('Loading the view…');
   await new Promise((r) => setTimeout(r, 20));
   // the real city (baked panoramas); ?city=gen or no bake -> the generated stand-in city
@@ -51,6 +70,19 @@ async function boot() {
     try { view = await buildView(scene, renderer, Q); SUN = view.sun; camera.far = 100000; camera.updateProjectionMatrix(); } catch (e) { console.warn('city view not available, using the generated city', e); }
   }
   if (!view) city = buildCity(scene, renderer, Q);
+  // the baked view has no image light of its own: capture the sky and the city from the
+  // apartment (apartment hidden) and prefilter it, so glass, stone and lacquer reflect the real
+  // view and the first probe pass has daylight to start from
+  if (view && !scene.environment) {
+    apt.group.visible = false;
+    const rt = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType });
+    const cc = new THREE.CubeCamera(1, 100000, rt); cc.position.set(8.8, 1.6, 4); scene.add(cc);
+    cc.update(renderer, scene);
+    const pm = new THREE.PMREMGenerator(renderer);
+    scene.environment = pm.fromCubemap(rt.texture).texture;
+    scene.remove(cc); rt.dispose(); pm.dispose();
+    apt.group.visible = true;
+  }
   // optional live Google 3D tiles (needs the player's key); G switches
   let gt = null;
   if (view) {
@@ -67,14 +99,17 @@ async function boot() {
   const sc = sun.shadow.camera; sc.left = -16; sc.right = 16; sc.top = 16; sc.bottom = -16; sc.near = 20; sc.far = 110;
   sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
   scene.add(sun, sun.target);
-  scene.add(new THREE.HemisphereLight('#fbf3e8', '#ddd6cc', 1.05));   // sky + warm bounce off the floors
+  const hemi = new THREE.HemisphereLight('#fbf3e8', '#ddd6cc', 1.05);   // sky + warm bounce: seeds the first probe pass, a trace after
+  scene.add(hemi);
   scene.environmentIntensity = 0.55;
   renderer.shadowMap.needsUpdate = true;
 
   // surface realism: room reflection probes, corner / daylight darkening, wet terrace, real glass
   status('Reflections…');
   await new Promise((r) => setTimeout(r, 20));
-  const surf = setupSurfaces({ scene, renderer, apt, M, Q });
+  const surf = setupSurfaces({ scene, renderer, apt, M, Q, hemi, viewGain: view ? (k) => view.setGain(k) : null });
+  status('Loading surfaces…');
+  await Promise.race([M.ready, new Promise((r) => setTimeout(r, 20000))]);   // the probes must see the scanned floors
   renderer.compile(scene, camera);
   surf.bake();
   addEventListener('keydown', (e) => {
