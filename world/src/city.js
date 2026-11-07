@@ -57,7 +57,7 @@ float cRect(vec2 f, vec2 lo, vec2 hi, vec2 w) { vec2 a = smoothstep(lo, lo + w, 
 // a third of a sunny Manhattan view, and contrast halves by ~3 km.
 const CITY_PARS = /* glsl */`
 uniform sampler2D uShN; uniform sampler2D uShF; uniform mat4 uShMN; uniform mat4 uShMF; uniform vec4 uShK; uniform float uShOn;
-uniform vec3 uHazeC; uniform vec3 uHazeSun; uniform float uHazeK; uniform float uStreetH; uniform vec3 uSunDirC;
+uniform vec3 uHazeC; uniform vec3 uHazeSun; uniform float uHazeK; uniform float uStreetH; uniform vec3 uSunDirC; uniform float uSkyK;
 varying vec3 vCw; varying vec3 vCn;
 float cShT(sampler2D t, vec2 uv, float z) { return step(z, texture2D(t, uv).r); }
 float cShadow(vec3 wp, vec3 n) {
@@ -99,6 +99,10 @@ function cityInject(sh, CU) {
     .replace('#include <common>', '#include <common>\n' + CITY_PARS)
     .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>
       { float cs = cShadow(vCw, normalize(vCn)); reflectedLight.directDiffuse *= cs; reflectedLight.directSpecular *= cs; }`)
+    .replace('#include <aomap_fragment>', `#include <aomap_fragment>
+      { vec3 cn = normalize(vCn); float up = clamp(cn.y, 0.0, 1.0);
+        float vis = mix(0.35 + 0.65 * smoothstep(0.0, 90.0, vCw.y - uStreetH), 1.0, up);
+        reflectedLight.indirectDiffuse *= uSkyK * vis; reflectedLight.indirectSpecular *= mix(1.0, vis, 0.6); }`)
     .replace('#include <opaque_fragment>', 'outgoingLight = cHaze(outgoingLight, vCw);\n#include <opaque_fragment>');
 }
 
@@ -157,7 +161,7 @@ function buildingMaterial(CU) {
           float e = min((0.5 - abs(vLoc.x)) * vSize.x, (0.5 - abs(vLoc.z)) * vSize.z);
           float g = cN21(vWp.xz * 0.8) * 0.5 + cN21(vWp.xz * 0.19) * 0.5;
           float rt = cH21(vec2(bSeed * 91.0, floor(vWp.y * 0.5)));
-          vec3 rc = rt < 0.38 ? vec3(0.07, 0.07, 0.072) : rt < 0.72 ? vec3(0.22, 0.21, 0.195) : rt < 0.93 ? vec3(0.5, 0.5, 0.48) : vec3(0.1, 0.15, 0.07);
+          vec3 rc = rt < 0.2 ? vec3(0.16, 0.16, 0.16) : rt < 0.62 ? vec3(0.34, 0.33, 0.31) : rt < 0.95 ? vec3(0.58, 0.58, 0.56) : vec3(0.12, 0.17, 0.08);
           rc *= (0.8 + 0.4 * g) * (0.85 + 0.15 * step(0.45, cH21(floor(vWp.xz / 4.0))));
           float rfw = max(fwidth(vWp.x), fwidth(vWp.z));
           if (rfw < 0.8) {                                // rooftop units and vents (and their shadows)
@@ -543,7 +547,7 @@ export function buildCity(scene, renderer, Q) {
     uShN: { value: null }, uShF: { value: null }, uShMN: { value: new THREE.Matrix4() }, uShMF: { value: new THREE.Matrix4() },
     uShK: { value: new THREE.Vector4() }, uShOn: { value: 0 },
     uHazeC: { value: HORIZON.clone().lerp(HAZE, 0.3).multiplyScalar(0.95) }, uHazeSun: { value: new THREE.Color(1.0, 0.92, 0.8) }, uHazeK: { value: 0.85e-4 },
-    uStreetH: { value: STREET }, uSunDirC: { value: SUN },
+    uStreetH: { value: STREET }, uSunDirC: { value: SUN }, uSkyK: { value: 0.55 },
   };
 
   // sky dome + image-based light from it
@@ -618,7 +622,7 @@ export function buildCity(scene, renderer, Q) {
       if (Math.abs(z) < 60 && bx0 < 30 && bx1 > -10) continue;   // our own block: the tower stands here
       const far = Math.hypot((bx0 + bx1) / 2, z) > 5500;
       if (far && R() > k) continue;
-      const near = Math.hypot((bx0 + bx1) / 2, z) < 2600;
+      const dl = Math.hypot((bx0 + bx1) / 2, z), near = dl < (Q.quest ? 900 : 1400);
       let px = bx0;
       while (px < bx1 - 8) {
         const w = Math.min(bx1 - px, (near ? 9 : far ? 70 : 18) + R() * (far ? 90 : near ? 30 : 45));
@@ -644,7 +648,7 @@ export function buildCity(scene, renderer, Q) {
   // ---- parts ----------------------------------------------------------------------------------
   const FH = [3.4, 4.0, 3.05, 3.8, 4.7, 4.6], BAY = [1.9, 1.5, 2.6, 1.7, 4.7, 2.3];
   // detail radii: full silhouettes near, tiers further out, one box at the horizon (Quest nearer)
-  const NEAR_R = Q.quest ? 1600 : 2600, MID_R = Q.quest ? 3200 : 4500, TANK_R = Q.quest ? 1000 : 1700;
+  const NEAR_R = Q.quest ? 1300 : 2000, MID_R = Q.quest ? 2600 : 4500, TANK_R = Q.quest ? 800 : 1500, CLOSE_R = Q.quest ? 700 : 1200;
   const parts = [], tanks = [];
   const part = (x, y0, z, w, h, d, col, st, seed, kind, extra = {}) => {
     if (w < 0.5 || d < 0.5 || h < 0.3) return;
@@ -658,7 +662,7 @@ export function buildCity(scene, renderer, Q) {
     if (w > 10 && d > 10) {
       const bw = Math.min(w * (0.25 + 0.2 * r), 14), bd = Math.min(d * (0.25 + 0.2 * R()), 12);
       part(x + (R() - 0.5) * (w - bw) * 0.6, top, z + (R() - 0.5) * (d - bd) * 0.6, bw, 3.2 + R() * 3, bd, b.col, b.st, b.seed, 2);
-      if (R() < 0.6) { const aw = 1.4 + R() * 2.2; part(x + (R() - 0.5) * (w - aw) * 0.8, top, z + (R() - 0.5) * (d - aw) * 0.8, aw, 1.2 + R() * 0.8, aw * (0.6 + R() * 0.8), b.col, b.st, b.seed, 2); }
+      if (Math.hypot(x, z) < CLOSE_R && R() < 0.6) { const aw = 1.4 + R() * 2.2; part(x + (R() - 0.5) * (w - aw) * 0.8, top, z + (R() - 0.5) * (d - aw) * 0.8, aw, 1.2 + R() * 0.8, aw * (0.6 + R() * 0.8), b.col, b.st, b.seed, 2); }
     }
     // water tank on the older, lower roofs
     if ((b.st === 0 || b.st === 2) && b.h > 14 && b.h < 140 && Math.hypot(x, z) < TANK_R && R() < 0.62 && w > 8 && d > 8) {
@@ -679,10 +683,10 @@ export function buildCity(scene, renderer, Q) {
       part(b.x, y0, b.z, b.w, t1, b.d, b.col, 0, b.seed, 0, { shop: 0 });
       part(b.x, y0 + t1, b.z, b.w - 2 * i1, t2 - t1, b.d - 2 * i1, b.col, 0, b.seed, 0, { shop: 1 });
       part(b.x, y0 + t2, b.z, b.w - 2 * i2, b.h - t2, b.d - 2 * i2, b.col, 0, b.seed, 0, { shop: 1 });
-      if (near) {
+      if (near) trim(b, b.x, b.z, b.w - 2 * i2, b.d - 2 * i2, y0 + b.h - 0.9, 0.9, 0.3);
+      if (dist < CLOSE_R) {
         trim(b, b.x, b.z, b.w, b.d, y0 + t1 - 0.9, 0.9, 0.35);
         trim(b, b.x, b.z, b.w - 2 * i1, b.d - 2 * i1, y0 + t2 - 0.9, 0.9, 0.3);
-        trim(b, b.x, b.z, b.w - 2 * i2, b.d - 2 * i2, y0 + b.h - 0.9, 0.9, 0.3);
         trim(b, b.x, b.z, b.w, b.d, y0 + 4.4, 0.45, 0.15);
       }
       roofKit(b, b.x, b.z, b.w - 2 * i2, b.d - 2 * i2, y0 + b.h, near);
@@ -692,7 +696,7 @@ export function buildCity(scene, renderer, Q) {
     if ((b.st === 1 || b.st === 3) && b.h > 90 && insetOk(4)) {   // podium + tower (+ crown)
       const ph = 14 + R() * 12, i = 3 + R() * 3;
       part(b.x, y0, b.z, b.w, ph, b.d, b.col, b.st, b.seed, 0, { tint: b.seed });
-      if (near) trim(b, b.x, b.z, b.w, b.d, y0 + ph - 0.6, 0.6, 0.2);
+      if (dist < CLOSE_R) trim(b, b.x, b.z, b.w, b.d, y0 + ph - 0.6, 0.6, 0.2);
       const crown = R() < 0.3 && b.h > 160 && insetOk(i + 2);
       const top = crown ? b.h * (0.9 + 0.05 * R()) : b.h;
       part(b.x, y0 + ph, b.z, b.w - 2 * i, top - ph, b.d - 2 * i, b.col, b.st, b.seed, 0, { shop: 1 });
@@ -710,7 +714,7 @@ export function buildCity(scene, renderer, Q) {
       return;
     }
     part(b.x, y0, b.z, b.w, b.h, b.d, b.col, b.st, b.seed, 0);
-    if (near && b.st === 0) { trim(b, b.x, b.z, b.w, b.d, y0 + b.h - 0.8, 0.8, 0.3); if (b.h > 14) trim(b, b.x, b.z, b.w, b.d, y0 + 4.4, 0.4, 0.12); }
+    if (near && b.st === 0) { trim(b, b.x, b.z, b.w, b.d, y0 + b.h - 0.8, 0.8, 0.3); if (b.h > 14 && dist < CLOSE_R) trim(b, b.x, b.z, b.w, b.d, y0 + 4.4, 0.4, 0.12); }
     roofKit(b, b.x, b.z, b.w, b.d, y0 + b.h, near);
   };
   for (const b of lots) emit(b);
