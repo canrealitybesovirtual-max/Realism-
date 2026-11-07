@@ -28,6 +28,7 @@ SCANS = {
     'rug_cream': ('acg', 'Carpet016', '2K'),
     'linen': ('acg', 'Fabric034', '2K'),
     'plaster': ('ph', 'white_plaster_02', '2k'),
+    'leaf': ('acg', 'Leaf001', '2K'),                      # photographed leaves (the fig in the great hall)
 }
 
 
@@ -51,7 +52,7 @@ def fetch(name):
     else:
         z = zipfile.ZipFile(io.BytesIO(get(f'https://ambientcg.com/get?file={aid}_{res}-JPG.zip')))
         for n in z.namelist():
-            for key, tag in (('diff', '_Color'), ('nor', '_NormalGL'), ('rough', '_Roughness'), ('ao', '_AmbientOcclusion')):
+            for key, tag in (('diff', '_Color'), ('nor', '_NormalGL'), ('rough', '_Roughness'), ('ao', '_AmbientOcclusion'), ('alpha', '_Opacity')):
                 if tag in n and n.endswith('.jpg'):
                     open(os.path.join(out, key + '.jpg'), 'wb').write(z.read(n))
     print(name, sorted(os.listdir(out)))

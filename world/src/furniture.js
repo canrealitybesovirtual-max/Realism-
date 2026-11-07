@@ -347,28 +347,35 @@ function figTree(B, M, x, z, seed = 3) {
   };
   B.add(at(tube(trunk, 0.034, 0.014), x, 0, z), M.bark);
   const leaves = [];
-  for (let b = 0; b < 17; b++) {
+  for (let b = 0; b < 24; b++) {
     const y0 = 1.15 + rnd() * 1.15, a = rnd() * Math.PI * 2, L = 0.3 + rnd() * 0.4;
     const base = [0.02 * Math.sin(y0 * 3), y0, 0.02 * Math.cos(y0 * 3)];
     const tip = [base[0] + Math.cos(a) * L, y0 + 0.15 + rnd() * 0.25, base[2] + Math.sin(a) * L];
     const mid = [(base[0] + tip[0]) / 2, (base[1] + tip[1]) / 2 + 0.06, (base[2] + tip[2]) / 2];
     B.add(at(tube([base, mid, tip], 0.009, 0.004), x, 0, z), M.bark);
-    const nl = 9 + Math.floor(rnd() * 7);
+    const nl = 12 + Math.floor(rnd() * 8);
     for (let k = 0; k < nl; k++) {
       const t = 0.45 + 0.55 * k / nl, px = base[0] + (tip[0] - base[0]) * t, py = base[1] + (tip[1] - base[1]) * t + 0.05 * Math.sin(t * 3), pz = base[2] + (tip[2] - base[2]) * t;
-      leaves.push([px, py, pz, a + (rnd() - 0.5) * 2.4, 0.2 + rnd() * 0.14]);
+      leaves.push([px + (rnd() - 0.5) * 0.06, py + (rnd() - 0.5) * 0.05, pz + (rnd() - 0.5) * 0.06, a + (rnd() - 0.5) * 2.6, 0.17 + rnd() * 0.11]);
     }
   }
   for (const [px, py, pz, yaw, sz] of leaves) {
-    // a leaf: two triangles folded along the midrib, drooping from its stalk
+    // a leaf blade: a 4 x 6 grid on the photographed leaf (atlas half), cupped along the midrib
+    // and drooping toward the tip, hung from its stalk
+    const half = rnd() < 0.5 ? 0 : 0.5, w = sz * 0.55, l = sz, cup = 0.18 + rnd() * 0.12, droop = 0.25 + rnd() * 0.35;
+    const P = [], U = [];
+    const pt = (i, j) => { const u = i / 4 - 0.5, v = j / 6; return [u * w, v * l - droop * l * v * v, Math.abs(u) * w * cup * 2 - 0.0]; };
+    const uv = (i, j) => [half + 0.5 * (i / 4), j / 6];
+    for (let j = 0; j < 6; j++) for (let i = 0; i < 4; i++) {
+      const a = pt(i, j), b = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
+      P.push(...a, ...b, ...c, ...a, ...c, ...d);
+      U.push(...uv(i, j), ...uv(i + 1, j), ...uv(i + 1, j + 1), ...uv(i, j), ...uv(i + 1, j + 1), ...uv(i, j + 1));
+    }
     const g = new THREE.BufferGeometry();
-    const w = sz * 0.75, l = sz, fold = 0.25;
-    const P = [0, 0, 0, w / 2, l * 0.55, -w * fold, 0, l, 0, 0, 0, 0, 0, l, 0, -w / 2, l * 0.55, -w * fold];
-    const Uv = [0.5, 0, 1, 0.55, 0.5, 1, 0.5, 0, 0.5, 1, 0, 0.55];
     g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(Uv, 2));
-    g.computeVertexNormals();
-    g.rotateX(-0.9 - rnd() * 0.6); g.rotateY(yaw);
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+    smooth(g);
+    g.rotateX(-0.75 - rnd() * 0.7); g.rotateZ((rnd() - 0.5) * 0.6); g.rotateY(yaw);
     B.add(at(g, x + px, py, z + pz), M.leaf);
   }
   B.colliders.push({ t: 'obox', c: [x, 0.3, z], h: [0.36, 0.3, 0.36], yaw: 0, mat: M.potStone });
@@ -758,24 +765,6 @@ function glassLeafTexture() {
   return t;
 }
 
-// fiddle-leaf fig leaf: broad violin shape, glossy mid green, pale veins; alpha outside
-function leafTexture() {
-  const W = 256, H = 256, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-  const c = cv.getContext('2d');
-  c.clearRect(0, 0, W, H);
-  c.beginPath();
-  c.moveTo(128, 250);
-  c.bezierCurveTo(30, 230, 10, 120, 50, 70); c.bezierCurveTo(70, 40, 100, 10, 128, 6);
-  c.bezierCurveTo(156, 10, 186, 40, 206, 70); c.bezierCurveTo(246, 120, 226, 230, 128, 250);
-  const gr = c.createLinearGradient(0, 0, 256, 256); gr.addColorStop(0, '#3d6a2b'); gr.addColorStop(1, '#2c5320');
-  c.fillStyle = gr; c.fill();
-  c.strokeStyle = 'rgba(190,210,150,0.55)'; c.lineWidth = 3; c.beginPath(); c.moveTo(128, 250); c.lineTo(128, 12); c.stroke();
-  c.lineWidth = 1.4;
-  for (let i = 0; i < 9; i++) { const y = 220 - i * 23; for (const sgn of [-1, 1]) { c.beginPath(); c.moveTo(128, y); c.quadraticCurveTo(128 + sgn * 40, y - 18, 128 + sgn * 90, y - 40); c.stroke(); } }
-  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
-  return t;
-}
-
 // a faded antique rug (an original pattern): ivory field, soft rose and sage medallion and borders
 function rugTexture() {
   const W = 640, H = 1024, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
@@ -858,7 +847,10 @@ function furnitureMaterials(M, Q) {
   M.leafGlass.userData = { shadow: 'cast', order: 6 };
   M.shade = M.linen.clone(); M.shade.color = new THREE.Color('#efe6d6');
   M.canvas = new THREE.MeshStandardMaterial({ map: paintingTexture(), roughness: 0.85 });
-  M.leaf = new THREE.MeshStandardMaterial({ map: leafTexture(), alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.45 });
+  const tl = new THREE.TextureLoader(), dir = './textures/scans/' + (Q.quest ? 'quest/' : '');
+  const lmap = tl.load(dir + 'leaf_ficus_diff.webp'); lmap.colorSpace = THREE.SRGBColorSpace; lmap.anisotropy = 4;
+  const lnor = tl.load(dir + 'leaf_ficus_nor.webp'); lnor.anisotropy = 4;
+  M.leaf = new THREE.MeshStandardMaterial({ map: lmap, normalMap: lnor, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.42 });
   M.bark = new THREE.MeshStandardMaterial({ color: '#7a6c5c', roughness: 0.8 });
   M.potStone = M.creamStone.clone(); M.potStone.color = new THREE.Color('#77706a');
   M.moss = new THREE.MeshStandardMaterial({ color: '#3f4a2a', roughness: 1 });

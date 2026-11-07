@@ -366,6 +366,31 @@ def veneer(name, scan, rot, lum, chroma, contrast, rough_rng, metres=1.0, ppm=10
     save(name, col.astype(np.float32), n / np.linalg.norm(n, axis=-1, keepdims=True), rough, np.ones_like(rough), [metres, metres])
 
 
+def leaves(name='leaf_ficus', scan='leaf'):
+    """leaf atlas: the two photographed leaves side by side (256 x 512 each), alpha cut out,
+    darkened toward the glossy green of the fig in apartment-18 / -19"""
+    c = Image.open(os.path.join(SRC, scan, 'diff.jpg')).convert('RGB')
+    a = Image.open(os.path.join(SRC, scan, 'alpha.jpg')).convert('L')
+    n = Image.open(os.path.join(SRC, scan, 'nor.jpg')).convert('RGB')
+    outc = Image.new('RGBA', (512, 512)); outn = Image.new('RGB', (512, 512), (128, 128, 255))
+    for k, box in enumerate([(90, 200, 950, 1785), (1106, 200, 1966, 1785)]):
+        cc = c.crop(box).resize((256, 512), Image.LANCZOS); aa = a.crop(box).resize((256, 512), Image.LANCZOS)
+        nn = n.crop(box).resize((256, 512), Image.LANCZOS)
+        lin = to_lin(np.asarray(cc, np.float32))
+        lum = lin @ LUMW
+        green = np.array([0.05, 0.11, 0.035]) / 0.09
+        col = green[None, None, :] * (0.09 * (lum / max(np.median(lum[np.asarray(aa) > 128]), 1e-4)) ** 1.1)[..., None]
+        col = 0.75 * col + 0.25 * lin * 0.55
+        rgba = np.dstack([to_srgb(col), np.asarray(aa, np.float32)]).astype(np.uint8)
+        outc.paste(Image.fromarray(rgba, 'RGBA'), (k * 256, 0)); outn.paste(nn, (k * 256, 0))
+    os.makedirs(os.path.join(DST, 'quest'), exist_ok=True)
+    outc.save(os.path.join(DST, name + '_diff.webp'), quality=92, method=6)
+    outn.save(os.path.join(DST, name + '_nor.webp'), quality=92, method=6)
+    outc.resize((256, 256), Image.LANCZOS).save(os.path.join(DST, 'quest', name + '_diff.webp'), quality=92, method=6)
+    outn.resize((256, 256), Image.LANCZOS).save(os.path.join(DST, 'quest', name + '_nor.webp'), quality=92, method=6)
+    print(name, 'atlas 512')
+
+
 JOBS = {
     'floor_herringbone': herringbone,
     'floor_versailles': versailles,
@@ -385,6 +410,7 @@ JOBS = {
     'wood_bleached': lambda: veneer('wood_bleached', 'oak_washed', 0, 0.34, (0.372, 0.334, 0.294), 1.3, (0.45, 0.6)),
     'wood_dark': lambda: veneer('wood_dark', 'oak_white', 1, 0.075, (0.385, 0.33, 0.285), 1.6, (0.5, 0.65)),
     'wood_mid': lambda: veneer('wood_mid', 'oak_grey2', 0, 0.16, (0.39, 0.326, 0.284), 1.4, (0.45, 0.6)),
+    'leaf_ficus': leaves,
     'fabric_boucle': lambda: fabric('fabric_boucle', 'boucle', 0.15, 0.3, 0.62, (0.353, 0.334, 0.313), 0.8, (0.85, 1.0)),
     'fabric_rug': lambda: fabric('fabric_rug', 'rug_cream', 1.7, 1.7, 0.58, (0.348, 0.335, 0.317), 0.9, (0.9, 1.0), ppm=600),
     'fabric_linen': lambda: fabric('fabric_linen', 'linen', 0.5, 1.0, 0.62, (0.344, 0.334, 0.322), 0.8, (0.8, 0.95), ppm=512),
