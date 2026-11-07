@@ -1451,6 +1451,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Realism max, from photo references, for everything: every surface textured and lit to fool the eye from any angle (walk round it, look up close, in VR), checked against the references. Listing / third-party photos are calibration only (copyright); real textures come from photo-scanned CC0 libraries (Poly Haven, ambientCG) or our own bakes.
 - Far views are baked, never live geometry: what is seen through a window or past the play area is a baked panorama (depth for parallax), so the frame rate goes to what the player can touch. Use this tactic everywhere in game design (distant city, skyline, terrain beyond the playable area).
 - Keep the whole project in view: don't sink all the time into one piece. Finish a piece to the bar, then move on (order now: window view done -> apartment interior, which matters a lot).
+- No props or assets in the game that the user has not seen first: show them (renders next to the reference photo) and get a yes before they ship. Model only what the photos show.
+- Geometry budget by clusters, not by cutting detail: big meshes are split into small clusters (meshlets, ~128 triangles) that are culled (frustum, back-facing cone, distance LOD) and drawn with multi-draw, so triangle counts can rise without losing frame rate. WebGL / WebGPU / the Quest browser have no mesh shaders, so this is the CPU / multi-draw form of a meshlet pipeline.
 - These rules belong to the repo (this file), so every session and environment of this project gets them.
 
 ## New project: world/ (Infinite Open-World master prompt v6; separate from the office, CQC and Interstate)
