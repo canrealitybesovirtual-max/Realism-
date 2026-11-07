@@ -193,7 +193,7 @@ def herringbone(name='floor_herringbone', W=0.14, n=6, K1=10, K2=2, ppm=1034):
     # grain directions in image coords (y down; v grows downward in the image)
     ang = np.where(isH, math.pi / 4, 3 * math.pi / 4)
     B = Boards(ppm)
-    c, nn, r, ao = lay(B, ids, along, across, ang, edge, palette(0.20, 0.17, (0.394, 0.326, 0.28), 0.03), Hp, Wp, ppm, 7, contrast=1.1, mir=~isH)
+    c, nn, r, ao = lay(B, ids, along, across, ang, edge, palette(0.27, 0.17, (0.398, 0.327, 0.275), 0.03), Hp, Wp, ppm, 7, contrast=1.1, mir=~isH)
     save(name, c, nn, r, ao, [tu, tv])
 
 
@@ -245,7 +245,7 @@ def versailles(name='floor_versailles', T=1.5, fw=0.11, lw=0.085, cells=4, ppm=1
     edge = np.maximum(edge, 0)
     B = Boards(ppm)
     mir = (frame & ~horiz) | (~frame & onB) | (~frame & ~onA & ~onB & alt)
-    c, nn, r, ao = lay(B, ids, along, across, ang, edge, palette(0.20, 0.2, (0.405, 0.322, 0.273), 0.03), S, S, ppm, 11, contrast=1.15, mir=mir)
+    c, nn, r, ao = lay(B, ids, along, across, ang, edge, palette(0.27, 0.19, (0.405, 0.324, 0.271), 0.03), S, S, ppm, 11, contrast=1.15, mir=mir)
     save(name, c, nn, r, ao, [T, T])
 
 
@@ -277,7 +277,7 @@ def planks(name='floor_planks', T=2.4, W=0.2, ppm=853):
     edge = np.minimum(edge, np.minimum(across, W - across))
     ang = np.zeros((S, S))
     Bd = Boards(ppm)
-    c, nn, r, ao = lay(Bd, ids, along, across, ang, edge, palette(0.21, 0.13, (0.40, 0.322, 0.278), 0.025), S, S, ppm, 13, contrast=1.3)
+    c, nn, r, ao = lay(Bd, ids, along, across, ang, edge, palette(0.25, 0.13, (0.40, 0.324, 0.276), 0.025), S, S, ppm, 13, contrast=1.3)
     save(name, c, nn, r, ao, [T, T])
 
 

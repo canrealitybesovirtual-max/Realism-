@@ -431,7 +431,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
   const U = {
     uSrAO: { value: F.aoTex }, uSrDL: { value: F.dlTex },
     uSrG: { value: new THREE.Vector4(GRID.x0, GRID.z0, 1 / (F.W * GRID.cs), 1 / (F.D * GRID.cs)) },
-    uSrOn: { value: 1 }, uSrDLMin: { value: 0.52 }, uWet: { value: 0.8 }, uGlassAbs: { value: 0.08 },
+    uSrOn: { value: 1 }, uSrDLMin: { value: 0.7 }, uWet: { value: 0.8 }, uGlassAbs: { value: 0.08 },
     uPAtlas: { value: null }, uPAtlasSize: { value: new THREE.Vector2(1, 1) },
     uBMin: { value: boxes.map((b) => vec(b.min)) }, uBMax: { value: boxes.map((b) => vec(b.max)) },
     uBPos: { value: boxes.map((b) => vec(b.pos)) }, uBTex: { value: boxes.map((b) => b.tex) },
