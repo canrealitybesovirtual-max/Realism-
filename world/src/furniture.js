@@ -699,7 +699,7 @@ function tub(B, M, x, y, z, ry, L = 1.7, W = 0.78) {
   B.colliders.push({ t: 'obox', c: [x, y + 0.31, z], h: [L / 2, 0.31, W / 2], yaw: ry, mat: M.nickel });
 }
 // bath vanity on a wall: drawers, stone top with undermount basins, a backlit mirror above
-function vanity(B, M, x, y, z, ry, L, top, body, basins = [0]) {
+function vanity(B, M, x, y, z, ry, L, top, body, basins = [0], wall = 0) {
   const add = (g, m) => B.add(at(g, x, y, z, ry), m);
   const D = 0.56, H = 0.86;
   add(at(rbox(L, H - 0.12, D - 0.02, 0.004, 1), 0, 0.12 + (H - 0.12) / 2, -0.01), body);
@@ -716,9 +716,20 @@ function vanity(B, M, x, y, z, ry, L, top, body, basins = [0]) {
     add(at(rbox(0.46, 0.004, 0.32, 0.004, 1), u, H + 0.041, 0.04), M.enamel);
     add(at(lathe([[0.016, 0], [0.012, 0.22]], 12), u, H + 0.04, -D / 2 + 0.06), M.bronzeLight);
     add(tubeGeo([[u, H + 0.26, -D / 2 + 0.06], [u, H + 0.28, -D / 2 + 0.12], [u, H + 0.24, -D / 2 + 0.18]], 0.009), M.bronzeLight);
-    add(at(rbox(0.6, 0.9, 0.012, 0.004, 1), u, H + 0.62, -D / 2 - 0.01), M.mirror);
-    add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u - 0.31, H + 0.62, -D / 2), M.ledStrip);
-    add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u + 0.31, H + 0.62, -D / 2), M.ledStrip);
+    if (!wall) {
+      add(at(rbox(0.6, 0.9, 0.012, 0.004, 1), u, H + 0.62, -D / 2 - 0.01), M.mirror);
+      add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u - 0.31, H + 0.62, -D / 2), M.ledStrip);
+      add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u + 0.31, H + 0.62, -D / 2), M.ledStrip);
+    }
+  }
+  if (wall) {
+    // a mirror wall from the backsplash up (apartment-08), amber backlit glass panels at the ends
+    // and between the basins
+    const mh = wall - H - 0.12, my = H + 0.12 + mh / 2;
+    add(at(rbox(L, 0.1, 0.02, 0.002, 1), 0, H + 0.09, -D / 2 + 0.01), top);
+    add(at(rbox(L, mh, 0.012, 0.002, 1), 0, my, -D / 2 - 0.004), M.mirror);
+    const posts = [-L / 2 + 0.06, L / 2 - 0.06, ...basins.slice(1).map((b, i) => (basins[i] + b) / 2)];
+    for (const u of posts) add(at(rbox(0.11, mh, 0.03, 0.006, 1), u, my, -D / 2 + 0.012), M.amberGlass);
   }
   B.colliders.push({ t: 'obox', c: [x, y + H / 2, z], h: [L / 2, H / 2, D / 2], yaw: ry, mat: body });
 }
@@ -770,37 +781,67 @@ function console_(B, M, x, z, ry, L = 1.6) {
 
 // ---- the painting's texture ----------------------------------------------------------------
 function paintingTexture() {
-  const W = 1024, H = 800, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-  const c = cv.getContext('2d');
+  // an original abstract in apartment-17's palette, painted as layers of translucent brush
+  // strokes (bristle streaks, ragged edges) over a primed canvas; returns colour + relief
+  const W = 1024, H = 800;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const hv = document.createElement('canvas'); hv.width = W; hv.height = H;
+  const c = cv.getContext('2d'), h = hv.getContext('2d');
   let s = 7; const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
-  c.fillStyle = '#ebe6da'; c.fillRect(0, 0, W, H);
-  // soft grounds
-  const blob = (x, y, rx, ry, col, a) => { c.save(); c.globalAlpha = a; c.fillStyle = col; c.beginPath();
-    for (let i = 0; i <= 40; i++) { const t = i / 40 * Math.PI * 2, k = 1 + 0.12 * Math.sin(t * 3 + rnd() * 2) + 0.06 * Math.sin(t * 7); c.lineTo(x + Math.cos(t) * rx * k, y + Math.sin(t) * ry * k); }
-    c.fill(); c.restore(); };
-  blob(330, 520, 300, 170, '#e7cf8c', 0.95);
-  blob(690, 420, 220, 260, '#3f7a63', 0.9);
-  blob(560, 290, 150, 120, '#1c1c1a', 0.92);
-  blob(820, 240, 130, 110, '#9fc6c1', 0.85);
-  blob(240, 250, 140, 90, '#c9d7cf', 0.8);
-  blob(470, 640, 120, 70, '#d9b45e', 0.85);
-  // gestural lines
-  c.lineCap = 'round';
-  for (let k = 0; k < 9; k++) {
-    c.strokeStyle = ['#1c1c1a', '#f4f1e8', '#b8892e', '#2e5f4c'][k % 4]; c.globalAlpha = 0.85; c.lineWidth = 3 + rnd() * 9;
-    c.beginPath(); let x = rnd() * W, y = rnd() * H; c.moveTo(x, y);
-    for (let i = 0; i < 6; i++) { const nx = x + (rnd() - 0.5) * 360, ny = y + (rnd() - 0.5) * 260; c.quadraticCurveTo(x + (rnd() - 0.5) * 200, y + (rnd() - 0.5) * 200, nx, ny); x = nx; y = ny; }
-    c.stroke();
+  c.fillStyle = '#ece7dc'; c.fillRect(0, 0, W, H); h.fillStyle = '#404040'; h.fillRect(0, 0, W, H);
+  // one stroke: a band of bristle lines along a gently curved path
+  const stroke = (x, y, ang, len, wid, col, alpha, load = 1) => {
+    const n = Math.max(6, Math.round(wid / 2.2));
+    for (let k = 0; k < n; k++) {
+      const off = (k / (n - 1) - 0.5) * wid, a2 = alpha * (0.5 + 0.5 * rnd()) * load;
+      c.strokeStyle = col; c.globalAlpha = a2; c.lineWidth = 1.2 + rnd() * 2.2;
+      h.strokeStyle = `rgb(${120 + rnd() * 100 | 0},0,0)`; h.globalAlpha = 0.25 * load; h.lineWidth = c.lineWidth;
+      const L = len * (0.75 + 0.25 * rnd()), bend = (rnd() - 0.5) * 0.25;
+      for (const g of [c, h]) {
+        g.beginPath();
+        const sx = x - Math.sin(ang) * off, sy = y + Math.cos(ang) * off;
+        g.moveTo(sx, sy);
+        g.quadraticCurveTo(sx + Math.cos(ang + bend) * L * 0.5, sy + Math.sin(ang + bend) * L * 0.5, sx + Math.cos(ang) * L, sy + Math.sin(ang) * L);
+        g.stroke();
+      }
+    }
+    c.globalAlpha = 1; h.globalAlpha = 1;
+  };
+  // a colour field built from many overlapping strokes inside a ragged blob
+  const field = (cx, cy, rx, ry, col, dir, count) => {
+    for (let i = 0; i < count; i++) {
+      const t = rnd() * Math.PI * 2, r = Math.sqrt(rnd());
+      const x = cx + Math.cos(t) * rx * r - rx * 0.35, y = cy + Math.sin(t) * ry * r;
+      stroke(x, y, dir + (rnd() - 0.5) * 0.5, rx * (0.5 + rnd() * 0.6), 14 + rnd() * 22, col, 0.32, 0.9);
+    }
+  };
+  for (let i = 0; i < 160; i++) stroke(rnd() * W - 100, rnd() * H, (rnd() - 0.5) * 0.3, 260, 30, '#f4f0e7', 0.18, 0.5);
+  field(330, 520, 280, 150, '#e3c97e', 0.1, 140);
+  field(690, 430, 210, 240, '#3d7660', 1.4, 160);
+  field(560, 290, 140, 110, '#1b1b19', 0.6, 120);
+  field(820, 240, 120, 100, '#9ec4be', -0.3, 90);
+  field(250, 250, 130, 80, '#c8d6cd', 0.2, 80);
+  field(470, 640, 110, 60, '#d6ae58', 0.0, 70);
+  for (let k = 0; k < 7; k++) {
+    let x = rnd() * W, y = rnd() * H, ang = rnd() * 6.28;
+    const col = ['#1c1c1a', '#f6f2ea', '#b48a2e', '#2d5d4b'][k % 4];
+    for (let i = 0; i < 14; i++) { stroke(x, y, ang, 40, 4 + rnd() * 3, col, 0.85, 1.2); x += Math.cos(ang) * 36; y += Math.sin(ang) * 36; ang += (rnd() - 0.5) * 0.9; }
   }
-  // canvas weave and brush texture
+  // canvas weave
   const img = c.getImageData(0, 0, W, H), d = img.data;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const i = (y * W + x) * 4, n = ((x % 3) === 0 ? -6 : 0) + ((y % 3) === 0 ? -6 : 0) + (rnd() - 0.5) * 10;
-    d[i] += n; d[i + 1] += n; d[i + 2] += n;
-  }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = (y * W + x) * 4, n = ((x % 3) === 0 ? -5 : 0) + ((y % 3) === 0 ? -5 : 0) + (rnd() - 0.5) * 6; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
   c.putImageData(img, 0, 0);
+  // relief: height -> normal map
+  const hd = h.getImageData(0, 0, W, H).data, nm = new ImageData(W, H);
+  const H0 = (x, y) => hd[(((y + H) % H) * W + ((x + W) % W)) * 4] / 255 + (((x % 3) === 0) || ((y % 3) === 0) ? -0.03 : 0);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let nx = (H0(x - 1, y) - H0(x + 1, y)) * 2.2, ny = (H0(x, y + 1) - H0(x, y - 1)) * 2.2; const l = Math.hypot(nx, ny, 1);
+    const i = (y * W + x) * 4; nm.data[i] = (nx / l * 0.5 + 0.5) * 255; nm.data[i + 1] = (ny / l * 0.5 + 0.5) * 255; nm.data[i + 2] = (1 / l * 0.5 + 0.5) * 255; nm.data[i + 3] = 255;
+  }
+  const nc = document.createElement('canvas'); nc.width = W; nc.height = H; nc.getContext('2d').putImageData(nm, 0, 0);
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
-  return t;
+  const tn = new THREE.CanvasTexture(nc); tn.anisotropy = 8;
+  return { map: t, normalMap: tn };
 }
 
 // a pressed glass scale for the chandeliers: rounded tip, ribbed, clear-grey with brighter edges
@@ -904,7 +945,7 @@ function furnitureMaterials(M, Q) {
   M.leafGlass = new THREE.MeshStandardMaterial({ map: glassLeafTexture(), color: '#a3a9ae', roughness: 0.08, metalness: 0.55, transparent: true, side: THREE.DoubleSide, depthWrite: false, alphaTest: 0.05 });
   M.leafGlass.userData = { shadow: 'cast', order: 6 };
   M.shade = M.linen.clone(); M.shade.color = new THREE.Color('#efe6d6');
-  M.canvas = new THREE.MeshStandardMaterial({ map: paintingTexture(), roughness: 0.85 });
+  { const pt = paintingTexture(); M.canvas = new THREE.MeshStandardMaterial({ map: pt.map, normalMap: pt.normalMap, roughness: 0.7 }); }
   const tl = new THREE.TextureLoader(), dir = './textures/scans/' + (Q.quest ? 'quest/' : '');
   const lmap = tl.load(dir + 'leaf_ficus_diff.webp'); lmap.colorSpace = THREE.SRGBColorSpace; lmap.anisotropy = 4;
   const lnor = tl.load(dir + 'leaf_ficus_nor.webp'); lnor.anisotropy = 4;
@@ -936,6 +977,8 @@ function furnitureMaterials(M, Q) {
   M.ledStrip = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffe6c4', emissiveIntensity: 1.6, roughness: 0.5 });
   M.ledStrip.userData = { shadow: 'none' };
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
+  M.amberGlass = new THREE.MeshStandardMaterial({ color: '#d9a85f', emissive: '#ffb45a', emissiveIntensity: 0.9, roughness: 0.25, metalness: 0.2 });
+  M.towel = M.boucle.clone(); M.towel.color = new THREE.Color('#fbf8f2');
   M.settingBed = new THREE.MeshStandardMaterial({ color: '#4a4540', roughness: 0.9 });
   M.marbleHoned = M.marbleGrey.isMeshPhysicalMaterial ? new THREE.MeshStandardMaterial({ map: M.marbleGrey.map, normalMap: M.marbleGrey.normalMap, roughnessMap: M.marbleGrey.roughnessMap, roughness: 2.2 }) : M.marbleGrey.clone();
   if (!M.marbleGrey.isMeshPhysicalMaterial) M.marbleHoned.roughness = 2.2;
@@ -1000,6 +1043,7 @@ export function furnish(M, Q) {
     tableLamp(b, M, 12.3, 0.53, 2.45); tableLamp(b, M, 12.3, 0.53, 5.15);
     armchair(b, M, 6.3, 2.2, 2.3); armchair(b, M, 7.6, 5.4, -2.6);
     sideTable(b, M, 6.0, 3.3, 0.22, 0.5);
+    for (const [a, c] of [[5.66, 6.1], [11.55, 11.98]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);   // sheers bunched at the corners (apartment-10)
     print(b, M, 12.61, 2.35, 3.2, 0.5, 0.62, '-x', M.lineArt1); print(b, M, 12.61, 2.3, 4.4, 0.42, 0.52, '-x', M.lineArt2);
   });
   beadChandelier(B, M, 9.7, 3.8, F2 + 2.15, C2c);
@@ -1016,6 +1060,7 @@ export function furnish(M, Q) {
     armchair(b, M, 13.55, 1.75, 0.7);
     sideTable(b, M, 13.15, 0.95, 0.22, 0.55); tableLamp(b, M, 13.15, 0.55, 0.95);
     print(b, M, 12.79, 1.8, 3.6, 1.05, 1.4, '+x', M.shardArt);
+    for (const [a, c] of [[13.42, 13.86], [16.2, 16.65]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);
   });
   goldChandelier(B, M, 14.8, 3.5, F2 + 2.75, C2c);
 
@@ -1085,7 +1130,12 @@ export function furnish(M, Q) {
     ['z', 4.25, 0.15, 1.35, F2, C2c, -1], ['x', 1.35, 4.25, 4.84, F2, C2c, 1],
   ], 0.016, [1.2, 1.2]);
   tub(B, M, 2.4, F2, 1.45, 0);
-  vanity(B, M, 4.52, F2, 3.4, -Math.PI / 2, 2.4, M.onyx, M.lacquerWhite, [-0.6, 0.6]);
+  vanity(B, M, 4.52, F2, 3.4, -Math.PI / 2, 2.6, M.onyx, M.lacquerWhite, [-0.62, 0.62], 2.55);
+  // wood block stool by the tub, folded towels on a bar, a travertine drum stool (apartment-08)
+  B.add(at(rbox(0.32, 0.42, 0.3, 0.02, 2), 3.75, F2 + 0.21, 1.25, 0.3), M.woodDark);
+  B.add(at(lathe([[0, 0], [0.17, 0], [0.18, 0.02], [0.17, 0.42], [0, 0.42]], 32), 1.45, F2, 5.9), M.creamStone);
+  B.add(at(lathe([[0.008, -0.3], [0.008, 0.3]], 8).rotateZ(Math.PI / 2), 1.0, F2 + 1.15, 4.2, Math.PI / 2), M.bronzeLight);
+  B.add(at(cushion(0.34, 0.5, 0.05, 0.02, 0.01), 1.0, F2 + 0.92, 4.2, Math.PI / 2), M.towel);
   // second bath (floor two, vein-cut travertine): tub, vanity in dark oak, wall-hung toilet
   clad(B, M.travertine, [
     ['z', 3.46, 9.75, 14.33, F2, C2c, 1], ['z', 6.03, 9.75, 14.33, F2, C2c, -1],
