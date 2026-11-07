@@ -27948,6 +27948,7 @@ function surrDetain(e, hand) {
   const pts = Math.round(Q.pts * r.mult * MENU_FX.scoreK);
   r.pending += pts;
   walletEarn(Q.pay);
+  xpAdd(LEVEL.gain.detain);   // levels
   surrZip(e); surrCall(e, 'det');
   if (hand) pulse(hand, 0.35, 40);
   toast(`Detained  +${pts}${WORKSHOP.on && Q.pay > 0 ? `  ·  wallet +${fmtMoney(Q.pay)}` : ''}`, 2200);
@@ -28352,7 +28353,8 @@ function loopEnemyDied(e) {
   const S = CONFIG.loop.score, r = loop.run, head = e.killPart === 'head';
   r.pending += Math.round((S.kill + (head ? S.head : 0)) * r.mult * MENU_FX.scoreK);   // step 11: mode / difficulty
   r.kills++; if (head) r.heads++;
-  walletEarn(CONFIG.workshop.killPay);                // $ per kill, straight to the gunsmith wallet
+  walletEarn(CONFIG.workshop.killPay);
+  xpAdd(LEVEL.gain.kill + (head ? LEVEL.gain.head : 0));   // levels                // $ per kill, straight to the gunsmith wallet
   // The others heard him go down. They push harder now.
   for (const m of e.room.enemies || []) if (m !== e && !m.dead && !m.surr) {
     m.aggrBonus = (m.aggrBonus || 0) + 0.1;                     // step 11: kept when the terminal retunes him
@@ -28369,6 +28371,7 @@ function loopEnemyDied(e) {
 function loopRoomCleared(room, plan) {
   const L = CONFIG.loop, S = L.score, r = loop.run, now = performance.now() / 1000;
   plan.cleared = true;
+  xpAdd(LEVEL.gain.clear);   // levels
   { let n = 0; for (const e of ENEMY.list) if (e.room === room && e.dead) n++; stillsAsk(`${stillsWhere(room)} · cleared · ${n} down`, 'clear', 0.35); }   // step 42
   const t = plan.enteredT ? now - plan.enteredT : 0;
   const speed = Math.round(S.speed * clamp(1 - (t - S.speedT[0]) / (S.speedT[1] - S.speedT[0])));
@@ -28394,6 +28397,7 @@ function loopEnterRoom(room) {
     if (!r.pending && r.mult === 1) return;
     const got = r.pending, m = r.mult;
     r.banked += r.pending; r.pending = 0; r.mult = 1;
+    xpAdd(got * LEVEL.gain.bank);                 // levels: getting out alive pays
     walletEarn(got);                              // gunsmith wallet: 1 banked point = $1 (records and scores unchanged)
     loopSaveBest();
     loopCue([520, 520]);
@@ -29374,6 +29378,7 @@ function termLoadout(W, H, now) {
     tBox(16, 304, 992, 76, TC.faint, TC.line);
     tText('Restock at the GUNSMITH computer', 36, 342, 27, TC.hi, 'left', 700, TC.sans, 620);
     tText('Wallet', 760, 342, 20, TC.dim, 'right', 600);
+    if (LEVEL.on) { const L = levelOf(); tText(`Level ${L.n}${L.next ? `  ·  ${L.into} / ${L.next} XP` : '  ·  max'}`, 36, 368, 16, TC.dim, 'left', 600, TC.mono, 600); }   // levels
     tText(fmtMoney(WALLET.money), 988, 342, 28, TC.ok, 'right', 700, TC.mono, 216);
   } else tBtn('restock', 16, 304, 992, 76, 'RESTOCK', { size: 28, fn: termRestock });
   tHead('Guns', 28, 410);
@@ -30247,6 +30252,7 @@ function wsDraw(now) {
       tText('GUNSMITH', 24, 33, 34, TC.hi, 'left', 700, TC.mono);
       if (!BV.on || W.sel === 'supplies') tText('Workshop  ·  banked points pay $1 each', 236, 33, 22, TC.dim, 'left', 600, TC.sans, 560);   // step 114: a gun's page has its tabs there
       tText('WALLET', LW - 250, 33, 18, TC.dim, 'right', 600);
+      levelDraw(LW - 340, 33);                                      // levels
       tText(fmtMoney(WALLET.money), LW - 24, 33, 34, TC.ok, 'right', 700, TC.mono, 220);
       wsDrawList(now);
       if (W.sel === 'supplies') wsDrawSupplies(now); else if (BV.on) bvGunPage(W.sel, now); else paintGunPage(W.sel, now);   // step 114: BUILD / PARTS / FINISH (step 106 alone with ?buildview=off)
@@ -31176,8 +31182,55 @@ const PAINT = {
 for (const t in GUN_PAINT_GROUPS) PAINT.groups[t] = GUN_PAINT_GROUPS[t].concat(PAINT_ATT);
 const paintGroups = (t) => (PAINT.on && PAINT.groups[t]) || null;
 const paintGroup = (t, gid) => (paintGroups(t) || []).find((G) => G.id === gid) || null;
-const paintFinishes = (G, sect) => GUN_FINISHES.filter((f) => (sect === 'camo' ? !!f.camo : !f.camo) && (!f.wood || G.wood));
+const paintFinishes = (G, sect) => GUN_FINISHES.filter((f) => (sect === 'camo' ? !!f.camo : !f.camo) && (!f.wood || G.wood))
+  .map((f, i) => [f, i]).sort((a, b) => (LEVEL.on ? (LEVEL_UNLOCK[a[0].id] || 1) - (LEVEL_UNLOCK[b[0].id] || 1) : 0) || a[1] - b[1]).map((q) => q[0]);   // levels: in unlock order
 const paintPrice = (G, f) => (f.orig ? 0 : f.price || G.price);
+/* ============================================================================
+ *  LEVELS (?levels=off): experience from play, levels that unlock the finishes
+ *  XP: a kill 50 (+25 a head shot), a room cleared 100, a man detained 150, and a quarter of every point you bank in a
+ *  safe room (getting out alive pays). None while mods are on (the score is off then too). Level n needs
+ *  LEVEL.need(n) more XP (400, 520, 640 ... +120 each), up to level 30. Saved in cqc.level.v1; a save from before this
+ *  starts with a quarter of the money it ever earned as XP, so a long-time player is not sent back to level 1.
+ *  Unlocks (LEVEL_UNLOCK, finish id -> level): service colours from the start, wood stains 2, metals 3, bright colours 5,
+ *  bare stainless 6, then the camos from plain to exotic (blackout 4 ... holographic 30). A locked finish still shows on
+ *  your gun when touched; APPLY says the level it needs. Finishes already on your guns stay.
+ * ========================================================================== */
+const LEVEL_UNLOCK = { natural: 2, walnut: 2, darkwood: 2, tungsten: 3, bronze: 3, mbronze: 3, blackout: 4, robin: 5, crimson: 5, white: 5,
+  stainless: 6, woodland: 6, tiger: 8, digital: 10, splinter: 12, arctic: 14, rusty: 16, brushed: 18, carbon: 20,
+  candypink: 22, pinktiger: 23, candyblue: 24, damascus: 26, chrome: 27, gold: 29, holo: 30 };
+const LEVEL = { on: !/[?&]levels=off\b/.test(QS), key: 'cqc.level.v1', xp: 0, max: 30, need: (n) => 400 + 120 * (n - 1),
+  gain: { kill: 50, head: 25, clear: 100, detain: 150, bank: 0.25 } };
+function levelOf(xp = LEVEL.xp) { let n = 1; while (n < LEVEL.max && xp >= LEVEL.need(n)) { xp -= LEVEL.need(n); n++; } return { n, into: xp, next: n < LEVEL.max ? LEVEL.need(n) : 0 }; }
+function levelLoad() {
+  try { const d = JSON.parse(localStorage.getItem(LEVEL.key) || 'null'); if (d && d.xp >= 0) { LEVEL.xp = d.xp; return; } } catch (e) { /* fresh */ }
+  LEVEL.xp = Math.floor((WALLET.earned || 0) * 0.25); levelSave();
+}
+function levelSave() { try { localStorage.setItem(LEVEL.key, JSON.stringify({ v: 1, xp: LEVEL.xp })); } catch (e) { /* this visit */ } }
+levelLoad();
+function levelUnlocksAt(n) { return GUN_FINISHES.filter((f) => LEVEL_UNLOCK[f.id] === n).map((f) => f.name); }
+function xpAdd(n, why) {
+  if (!LEVEL.on || modAny() || !(n > 0)) return;
+  n = Math.round(n); const a = levelOf().n;
+  LEVEL.xp += n; levelSave();
+  const b = levelOf().n;
+  if (b > a) {
+    const un = []; for (let i = a + 1; i <= b; i++) un.push(...levelUnlocksAt(i));
+    const msg = `Level ${b}${un.length ? `  ·  unlocked: ${un.join(', ')}` : ''}`;
+    if (renderer.xr.isPresenting) vrNote(msg, 3.5); else toast(msg, 3600);
+    loopCue([660, 880]);
+  }
+  TERM.dirty = true; WORKSHOP.dirty = true; WATCH.dirty = true;
+}
+const finishLevel = (f) => (LEVEL.on && !f.orig ? LEVEL_UNLOCK[f.id] || 1 : 1);
+const finishLocked = (f) => finishLevel(f) > levelOf().n;
+// the store header's level: LV n and a bar to the next
+function levelDraw(x, y) {
+  if (!LEVEL.on) return;
+  const L = levelOf(), W = WORKSHOP, ctx = W.ctx;
+  tText(`LV ${L.n}`, x, y - 4, 24, TC.hi, 'right', 700, TC.mono, 90);
+  ctx.fillStyle = TC.faint; ctx.fillRect(x - 90, y + 14, 90, 5);
+  ctx.fillStyle = TC.ok; ctx.fillRect(x - 90, y + 14, 90 * (L.next ? L.into / L.next : 1), 5);
+}
 const paintAllowed = (G, fid) => { const f = PAINT.byId.get(fid); return !!f && (!f.wood || !!G.wood); };
 try {
   const o = JSON.parse(localStorage.getItem(PAINT.key) || 'null');
@@ -31610,11 +31663,12 @@ function paintPick(k, fid) {
   const G = paintGroupOf(k), f = PAINT.byId.get(fid);
   PAINT.pick = fid === paintSaved(k, G.id) ? null : { t: k, gid: G.id, fid };
   const price = paintPrice(G, f);
-  wsMsg(PAINT.pick ? `${f.name} on the ${G.name.toLowerCase()}: ${price ? fmtMoney(price) : 'free'}. Shown on your ${wsGunName(k)} now; APPLY keeps it` : `${f.name}: the finish it has`);
+  wsMsg(PAINT.pick ? (finishLocked(f) ? `${f.name}: unlocks at level ${finishLevel(f)}. A preview on your ${wsGunName(k)}` : `${f.name} on the ${G.name.toLowerCase()}: ${price ? fmtMoney(price) : 'free'}. Shown on your ${wsGunName(k)} now; APPLY keeps it`) : `${f.name}: the finish it has`);
 }
 function paintApply(k) {
   const G = paintGroupOf(k), fid = PAINT.pick && PAINT.pick.gid === G.id ? PAINT.pick.fid : null, f = PAINT.byId.get(fid);
   if (!f) { wsMsg('Touch a finish first'); return false; }
+  if (finishLocked(f)) { wsMsg(`${f.name} unlocks at level ${finishLevel(f)} (you are level ${levelOf().n}). Earn XP: kills, cleared rooms, banked points`); wsDeny(); return false; }
   const price = paintPrice(G, f);
   if (WALLET.money < price) { wsMsg(`Not enough money: ${f.name} costs ${fmtMoney(price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
   if (price) { walletSpend(price); playBuy(); }
@@ -31680,6 +31734,10 @@ function paintDrawPage(k) {
     paintChip(ctx, x + 8, y + 8, cw - 16, 52, f);
     if (f.id === saved) { ctx.fillStyle = TC.ok; ctx.beginPath(); ctx.arc(x + cw - 14, y + 14, 4.5, 0, Math.PI * 2); ctx.fill(); }
     tText(f.name, x + cw / 2, y + 76, 14, sel ? TC.hi : TC.text, 'center', 600, TC.sans, cw - 10);
+    if (finishLocked(f) && f.id !== saved) {   // levels: dimmed, the level it needs
+      ctx.fillStyle = 'rgba(4, 8, 7, 0.62)'; ctx.fillRect(x + 8, y + 8, cw - 16, 52);
+      tText(`LOCKED · LV ${finishLevel(f)}`, x + cw / 2, y + 35, 16, TC.warn, 'center', 700, TC.mono, cw - 16);
+    }
   });
   // preview: the touched finish big, its numbers, the price, APPLY / RESET
   const f = PAINT.byId.get(pick), px = U.prevX, pw = U.x + U.w - px, py = U.sectY, ph = 662 - py, changed = pick !== saved, price = paintPrice(G, f);
@@ -31688,11 +31746,12 @@ function paintDrawPage(k) {
   tText(f.name, px + 16, py + 206, 30, TC.text, 'left', 700, TC.sans, pw - 32);
   tText(f.orig ? 'The factory materials, as built' : f.camo ? f.desc : `${f.wood ? 'Stain' : 'Cerakote-style'}  ·  roughness ${f.r.toFixed(2)}  ·  metal ${f.m.toFixed(2)}`, px + 16, py + 238, 16, TC.dim, 'left', 600, f.camo ? TC.sans : TC.mono, pw - 32);
   tText(`${G.name}: now ${PAINT.byId.get(saved).name}`, px + 16, py + 268, 17, TC.text, 'left', 600, TC.sans, pw - 32);
-  tText(!changed ? 'ON THE GUN' : price ? fmtMoney(price) : 'FREE', px + pw - 16, py + 306, 26, !changed ? TC.ok : WALLET.money >= price ? TC.hi : TC.warn, 'right', 700, TC.mono, pw - 32);
+  const lk = changed && finishLocked(f);
+  tText(!changed ? 'ON THE GUN' : lk ? `LEVEL ${finishLevel(f)}` : price ? fmtMoney(price) : 'FREE', px + pw - 16, py + 306, 26, !changed ? TC.ok : !lk && WALLET.money >= price ? TC.hi : TC.warn, 'right', 700, TC.mono, pw - 32);
   const bw = (pw - 40) / 2, by = py + 334;
-  tBtn('pnt:apply', px + 16, by, bw, 60, 'APPLY', { size: 22, sel: changed, disabled: !changed, fn: () => paintApply(k) });
+  tBtn('pnt:apply', px + 16, by, bw, 60, lk ? 'LOCKED' : 'APPLY', { size: 22, sel: changed && !lk, disabled: !changed || lk, fn: () => paintApply(k) });
   tBtn('pnt:reset', px + 24 + bw, by, bw, 60, 'RESET', { size: 22, disabled: saved === 'orig' && !changed, fn: () => paintReset(k) });
-  tText(changed ? 'Shown on your gun now (the vise too). APPLY keeps it' : 'Touch a finish to see it on the gun', px + 16, by + 86, 15, TC.dim, 'left', 600, TC.sans, pw - 32);
+  tText(lk ? `Preview only: reach level ${finishLevel(f)} to apply it (you are ${levelOf().n})` : changed ? 'Shown on your gun now (the vise too). APPLY keeps it' : 'Touch a finish to see it on the gun', px + 16, by + 86, 15, TC.dim, 'left', 600, TC.sans, pw - 32);
 }
 
 /* ============================================================================
@@ -43811,7 +43870,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
