@@ -2393,6 +2393,37 @@ Infinite Open-World Master Prompt v6 (Final) — Quest 3S + PC
   images.
 
 
+
+  13B. Surface realism rule (added by the developer, Nov 7, 2026)
+  Every surface must read as its real material up close, in VR and on PC. Nothing ships
+  flat-lit or plastic. Applies to the apartment now and to every kit, interior, vehicle,
+  and chunk the world generator makes later.
+
+     1. Reflections where the material reflects: polished stone, onyx, lacquer, glossy
+        paint, chrome, bronze, glass, water and wet ground. Interiors use box-projected
+        reflection probes baked per room (or per block outdoors), never the open sky
+        reflected inside a room. Satin wood and honed stone get soft, blurred
+        reflections; plaster, fabric and raw concrete stay matte.
+     2. Polished and lacquered finishes get a clear layer (clearcoat on PC; a glossier
+        base on Quest) over the textured base, so the grain shows under a sharp
+        reflection.
+     3. Glass is real glass: Fresnel reflection (about 4% head on, strong at grazing
+        angles), slight grey absorption, no milky haze.
+     4. Wet looks wherever water is: rain-wet ground and terraces darken, turn glossy
+        and hold puddles in the low spots and joints, driven by one global wetness
+        value (weather sets it; it dries over time). Later, with fixtures: shower floors
+        and walls, sink and bath surrounds, kitchen splash zones, wet tyres and car
+        bodies, and raindrops on outside glass.
+     5. Darkness where light cannot reach: contact and corner occlusion (floor and
+        ceiling edges, inside corners, door heads, under stairs and furniture, inside
+        reveals and joints), and less sky light deep inside buildings, away from the
+        windows. Occlusion darkens only the bounce and sky light, never the sun.
+     6. Joints, grout, reveals and recesses are darker than the faces around them.
+     7. Each of these has a Quest form (baked fields, probes, one texture lookup) and a
+        PC form that may add more (screen-space effects, more probes).
+     8. Check every new surface with screenshots against the photo references before
+        calling it done.
+
   14. Audio
   Audio stays under 1 ms of main-thread time on Quest by pooling voices and spending
   HRTF only on the 8 nearest or loudest sources. Sound carries a large share of realism, so it

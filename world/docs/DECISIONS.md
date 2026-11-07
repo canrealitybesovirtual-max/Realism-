@@ -15,3 +15,11 @@
 - Outside: generated stand-in city 360 m below (grid of instanced towers, a long park with lakes to the north, rivers east and west), sky dome and its image light, fog. To be replaced by the world generator.
 - Light: sun from the south-west with a static shadow map, warm hemisphere fill, sky image light, emissive downlights.
 - Walking: Rapier kinematic character controller (capsule 1.72 m), autostep, snap to ground. Computer: mouse look + WASD, Shift runs. Headset: left stick walks, right stick smooth turn (the user's rule: smooth turning everywhere), real walking collided.
+
+## Surface realism (master list 13B)
+- `src/surface.js`, one shader patch (onBeforeCompile) on every apartment material, one program per kind (in / glass / wet).
+- Reflections: 15 probes baked at load (one per room with a reflective floor or walls, one on the terrace), 128 px, prefiltered and kept in one atlas texture, box-projected to its room; two whole-floor boxes catch closets and corners. A surface reflects the room its reflected ray goes into; beyond every box, the sky's image light.
+- Finishes: oak and parquet oiled (clearcoat 0.35-0.45, soft), stones and onyx polished (clearcoat 0.85-1, roughness 0.04-0.07), travertine honed (0.25, 0.3), doors and trim lacquered. Quest: plain materials, a little glossier (no clearcoat).
+- Darkness: a 5 cm top-down field from the colliders (walls at chest height per floor, blurred 0.4 m) and the lowest surface overhead (from the triangles) gives floor / ceiling edge, inside corner, door head and under-stair occlusion; a 20 cm daylight field (24 rays a spot to glass or outside) gives less sky light deep in the core (down to 52 %). Indirect light only.
+- Wet: terrace pavers darken, gloss and puddle by uWet (default 0.8; R cycles 0 / 0.45 / 0.8 / 1 on a computer). Inside wet zones wait for fixtures.
+- Glass: premultiplied blend, Fresnel reflection, 22 % grey absorption.

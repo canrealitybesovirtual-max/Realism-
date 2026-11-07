@@ -5,11 +5,12 @@ import { makeMaterials } from './materials.js';
 import { buildApartment } from './apartment.js';
 import { buildCity, SUN } from './city.js';
 import { createPlayer } from './player.js';
+import { setupSurfaces } from './surface.js';
 
 const ua = navigator.userAgent;
 const QUEST = /OculusBrowser|Quest/i.test(ua);
 const Q = {
-  tex: QUEST ? 512 : 1024, stoneTex: 512, shadow: QUEST ? 1024 : 2048,
+  quest: QUEST, tex: QUEST ? 512 : 1024, stoneTex: 512, shadow: QUEST ? 1024 : 2048,
   pr: QUEST ? 1 : Math.min(devicePixelRatio, 1.5), cityK: QUEST ? 0.5 : 1,
 };
 const status = (t) => { const el = document.getElementById('status'); if (el) el.textContent = t; };
@@ -57,10 +58,22 @@ async function boot() {
   scene.environmentIntensity = 0.55;
   renderer.shadowMap.needsUpdate = true;
 
+  // surface realism: room reflection probes, corner / daylight darkening, wet terrace, real glass
+  status('Reflections…');
+  await new Promise((r) => setTimeout(r, 20));
+  const surf = setupSurfaces({ scene, renderer, apt, M, Q });
+  renderer.compile(scene, camera);
+  surf.bake();
+  addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyR' || e.repeat) return;      // R: dry / damp / wet terrace
+    const steps = [0, 0.45, 0.8, 1]; const i = steps.findIndex((v) => Math.abs(v - surf.wet) < 0.01);
+    surf.setWet(steps[(i + 1) % steps.length]);
+  });
+
   status('Physics…');
   const spawn = { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
-  window.__world = { scene, camera, rig, renderer, player, apt, city, M, THREE };
+  window.__world = { scene, camera, rig, renderer, player, apt, city, M, THREE, surf };
   status('');
   document.getElementById('start').classList.add('ready');
 
@@ -75,7 +88,7 @@ async function boot() {
     acc += dt; frames++;
     if (acc > 0.5) {
       const p = player.pos;
-      fpsEl.textContent = `${Math.round(frames / acc)} fps · ${renderer.info.render.calls} draws · ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris · floor ${p.y > 2.3 ? 2 : 1}`;
+      fpsEl.textContent = `${Math.round(frames / acc)} fps · ${renderer.info.render.calls} draws · ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris · floor ${p.y > 2.3 ? 2 : 1} · wet ${surf.wet.toFixed(2)}`;
       acc = 0; frames = 0;
     }
   });

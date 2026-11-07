@@ -78,7 +78,7 @@ export class Builder {
     if (z1 < z0) [z0, z1] = [z1, z0];
     if (x1 - x0 < 1e-4 || y1 - y0 < 1e-4 || z1 - z0 < 1e-4) return;
     if (mat) this.add(boxGeo(x0, y0, z0, x1, y1, z1), mat);
-    if (col) this.colliders.push({ t: 'box', min: [x0, y0, z0], max: [x1, y1, z1] });
+    if (col) this.colliders.push({ t: 'box', min: [x0, y0, z0], max: [x1, y1, z1], mat });
   }
   // box rotated about y; (cx, cy, cz) centre, (hx, hy, hz) half sizes
   obox(cx, cy, cz, hx, hy, hz, yaw, mat, col = true) {
@@ -87,7 +87,7 @@ export class Builder {
       g.rotateY(yaw); g.translate(cx, cy, cz);
       this.add(g, mat);
     }
-    if (col) this.colliders.push({ t: 'obox', c: [cx, cy, cz], h: [hx, hy, hz], yaw });
+    if (col) this.colliders.push({ t: 'obox', c: [cx, cy, cz], h: [hx, hy, hz], yaw, mat });
   }
   convex(points) { this.colliders.push({ t: 'hull', p: points }); }
   trimesh(geo) {
@@ -166,7 +166,7 @@ export function shellColliders(B, cx, cz, r0, r1, a0, a1, y0, y1, seg) {
     const half = rm * Math.sin((tb - ta) / 2) + 0.03;
     // tangent direction at tm: d/dθ of (-sinθ, -cosθ) = (-cosθ, sinθ); yaw so local +x lies on it
     const yaw = Math.atan2(-Math.sin(tm), -Math.cos(tm));
-    B.colliders.push({ t: 'obox', c: [x, (y0 + y1) / 2, z], h: [half, (y1 - y0) / 2, (r1 - r0) / 2], yaw });
+    B.colliders.push({ t: 'obox', c: [x, (y0 + y1) / 2, z], h: [half, (y1 - y0) / 2, (r1 - r0) / 2], yaw, mat: 'shell' });
   }
 }
 

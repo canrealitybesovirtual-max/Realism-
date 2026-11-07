@@ -157,7 +157,10 @@ function genStone(S, seed, o) {
   return { C, H, R };
 }
 
-function finish(S, { C, H, R }, nk, tile, extra = {}) {
+// coat: { clearcoat, clearcoatRoughness, quest } polished / lacquered finish: a sharp clear layer
+// over the textured base (computer); the headset gets a plain material a little glossier instead.
+let COAT_OK = true;
+function finish(S, { C, H, R }, nk, tile, extra = {}, coat = null) {
   const map = canvasTex(S, (d) => {
     for (let i = 0; i < S * S; i++) {
       for (let k = 0; k < 3; k++) d[i * 4 + k] = Math.max(0, Math.min(255, Math.pow(C[i * 3 + k], 1 / 2.2) * 255));
@@ -167,20 +170,28 @@ function finish(S, { C, H, R }, nk, tile, extra = {}) {
   const normalMap = normalFromHeight(S, H, nk);
   const roughnessMap = grey(S, R);
   for (const t of [map, normalMap, roughnessMap]) t.repeat.set(1 / tile[0], 1 / tile[1]);
-  return new THREE.MeshStandardMaterial({ map, normalMap, roughnessMap, roughness: 1, metalness: 0, ...extra });
+  const base = { map, normalMap, roughnessMap, roughness: 1, metalness: 0, ...extra };
+  if (coat && COAT_OK) return new THREE.MeshPhysicalMaterial({ ...base, clearcoat: coat.clearcoat, clearcoatRoughness: coat.clearcoatRoughness });
+  if (coat) base.roughness = coat.quest;
+  return new THREE.MeshStandardMaterial(base);
 }
+const coated = (P, hex, rough, cc, ccr, questRough, more = {}) => (COAT_OK
+  ? new THREE.MeshPhysicalMaterial({ color: hex, roughness: rough, clearcoat: cc, clearcoatRoughness: ccr, ...more })
+  : new THREE.MeshStandardMaterial({ color: hex, roughness: questRough, ...more }));
 
 const lin = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };   // linear rgb
 
 export function makeMaterials(Q) {
   const S = Q.tex, SS = Q.stoneTex, M = {};
-  // floors
-  M.oak = finish(S, genOak(S, 11, lin('#8b7d6d')), 3.0, [2.4, 2.4]);
-  M.parquet = finish(S, genParquet(S, 21, lin('#8f8170')), 3.0, [1.2, 1.2]);
-  M.stone = finish(SS, genStone(SS, 3, { base: lin('#ece9e2'), vein: lin('#9aa29a'), veinW: 0.012, veinK: 0.55, mottle: 0.35, tile: 2.4, slab: [1.2, 0.6], rough: 0.32 }), 1.5, [2.4, 2.4]);
-  M.onyx = finish(SS, genStone(SS, 5, { base: lin('#efe6d8'), vein: lin('#c9a77b'), veinW: 0.03, veinK: 0.45, mottle: 0.6, tile: 2.4, slab: [1.2, 1.2], rough: 0.2 }), 1.2, [2.4, 2.4]);
-  M.travertine = finish(SS, genStone(SS, 9, { base: lin('#d8d2c8'), vein: lin('#a59d92'), band: 22, veinK: 0.5, mottle: 0.5, tile: 2.4, slab: [0.6, 1.2], rough: 0.45 }), 1.5, [2.4, 2.4]);
-  M.marbleGrey = finish(SS, genStone(SS, 13, { base: lin('#8f9093'), vein: lin('#d8d8d6'), veinW: 0.01, veinK: 0.6, mottle: 0.5, tile: 2.4, slab: [0.6, 0.6], rough: 0.3 }), 1.5, [2.4, 2.4]);
+  COAT_OK = !Q.quest;
+  // floors: oiled oak and parquet (satin sheen), polished stones (sharp reflections), honed
+  // travertine (soft); the headset gets plain materials a little glossier instead of a coat
+  M.oak = finish(S, genOak(S, 11, lin('#8b7d6d')), 3.0, [2.4, 2.4], {}, { clearcoat: 0.5, clearcoatRoughness: 0.16, quest: 0.8 });
+  M.parquet = finish(S, genParquet(S, 21, lin('#8f8170')), 3.0, [1.2, 1.2], {}, { clearcoat: 0.6, clearcoatRoughness: 0.13, quest: 0.75 });
+  M.stone = finish(SS, genStone(SS, 3, { base: lin('#ece9e2'), vein: lin('#9aa29a'), veinW: 0.012, veinK: 0.55, mottle: 0.35, tile: 2.4, slab: [1.2, 0.6], rough: 0.32 }), 1.5, [2.4, 2.4], {}, { clearcoat: 0.85, clearcoatRoughness: 0.07, quest: 0.5 });
+  M.onyx = finish(SS, genStone(SS, 5, { base: lin('#efe6d8'), vein: lin('#c9a77b'), veinW: 0.03, veinK: 0.45, mottle: 0.6, tile: 2.4, slab: [1.2, 1.2], rough: 0.2 }), 1.2, [2.4, 2.4], {}, { clearcoat: 1, clearcoatRoughness: 0.04, quest: 0.45 });
+  M.travertine = finish(SS, genStone(SS, 9, { base: lin('#d8d2c8'), vein: lin('#a59d92'), band: 22, veinK: 0.5, mottle: 0.5, tile: 2.4, slab: [0.6, 1.2], rough: 0.45 }), 1.5, [2.4, 2.4], {}, { clearcoat: 0.25, clearcoatRoughness: 0.3, quest: 0.85 });
+  M.marbleGrey = finish(SS, genStone(SS, 13, { base: lin('#8f9093'), vein: lin('#d8d8d6'), veinW: 0.01, veinK: 0.6, mottle: 0.5, tile: 2.4, slab: [0.6, 0.6], rough: 0.3 }), 1.5, [2.4, 2.4], {}, { clearcoat: 0.85, clearcoatRoughness: 0.06, quest: 0.5 });
   M.pavers = finish(SS, genStone(SS, 17, { base: lin('#b9b6ae'), vein: lin('#9d9a93'), veinW: 0.01, veinK: 0.2, mottle: 0.7, tile: 2.4, slab: [0.6, 0.6], rough: 0.8 }), 2.5, [2.4, 2.4]);
   M.treadStone = M.stone.clone(); M.treadStone.side = THREE.DoubleSide;
 
@@ -197,11 +208,11 @@ export function makeMaterials(Q) {
   M.bronze = new THREE.MeshStandardMaterial({ color: '#3b3029', metalness: 0.75, roughness: 0.38 });
   M.bronzeLight = new THREE.MeshStandardMaterial({ color: '#7a6248', metalness: 0.85, roughness: 0.3 });
   M.blackMetal = new THREE.MeshStandardMaterial({ color: '#141414', metalness: 0.5, roughness: 0.45 });
-  M.darkOak = new THREE.MeshStandardMaterial({ color: '#3a2b21', roughness: 0.5 });
-  M.doorWhite = new THREE.MeshStandardMaterial({ color: '#efece6', roughness: 0.35 });
+  M.darkOak = coated(0, '#3a2b21', 0.5, 0.5, 0.2, 0.42);                          // lacquered trim
+  M.doorWhite = coated(0, '#efece6', 0.4, 0.6, 0.12, 0.3);                         // lacquered doors
   M.fireDoor = new THREE.MeshStandardMaterial({ color: '#b9b5ad', roughness: 0.55, metalness: 0.2 });
   M.slot = new THREE.MeshStandardMaterial({ color: '#141414', roughness: 0.9 });
-  M.glass = new THREE.MeshStandardMaterial({ color: '#cfdde3', roughness: 0.04, metalness: 0.0, transparent: true, opacity: 0.16, depthWrite: false, envMapIntensity: 1.6 });
+  M.glass = new THREE.MeshStandardMaterial({ color: '#000000', roughness: 0.02, metalness: 0.0, transparent: true, opacity: 1, depthWrite: false });
   M.glass.userData = { shadow: 'none', order: 10 };
   M.balGlass = M.glass;
   M.light = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#fff4e2', emissiveIntensity: 2.2, roughness: 1 });
