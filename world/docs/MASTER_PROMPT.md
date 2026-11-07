@@ -2394,6 +2394,14 @@ Infinite Open-World Master Prompt v6 (Final) — Quest 3S + PC
 
 
 
+  13C. Developer rules (added Nov 7, 2026)
+     1. Realism max for everything, from photo references: every surface textured and lit so
+        it passes for real from any perspective (close, walking round it, in a headset).
+        Reference photos calibrate; textures come from photo-scanned CC0 sources or bakes.
+     2. Far views are baked panoramas with depth (parallax), never live geometry: windows,
+        skylines, terrain past the play area. Frame time goes to what the player can reach.
+     3. Keep the whole project moving: bring one piece to the bar, then the next.
+
   13B. Surface realism rule (added by the developer, Nov 7, 2026)
   Every surface must read as its real material up close, in VR and on PC. Nothing ships
   flat-lit or plastic. Applies to the apartment now and to every kit, interior, vehicle,
