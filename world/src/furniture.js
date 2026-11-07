@@ -5,6 +5,7 @@
 // z 0..6.72, north glass at z = 0.
 import * as THREE from 'three';
 import { Builder } from './build.js';
+import { barPull, counter, basin, drain, kitchenFaucet, bathFaucet, toiletSeat, flushPlate, showerSet, towelRing } from './hw.js';
 
 // ---- geometry kit ----------------------------------------------------------------------------
 // Rounded box centred at the origin: w x h x d, edge radius r, seg steps per rounded edge.
@@ -614,15 +615,15 @@ function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null } = {}) {
     add(at(rbox(w - 0.004, 0.24, 0.02, 0.002, 1), -L / 2 + w * (i + 0.5), 0.7, D / 2 - 0.01), M.woodDark);
   }
   for (const yy of [0.565, H - 0.035]) add(at(rbox(L, 0.03, 0.012, 0.001, 1), 0, yy, D / 2 - 0.022), M.blackMatte);   // recessed pull channels
-  add(at(rbox(L, 0.03, D + 0.02, 0.003, 1), 0, H + 0.015, 0.01), M.stone);
+  // stone counter, cut out over an undermount stainless bowl (220 mm deep) when there is a sink
+  const holes = sink != null ? [[sink, 0.03, 0.58, 0.4, 0.035]] : [];
+  add(at(counter(L, D + 0.02, 0.03, holes), 0, H + 0.03, 0.01), M.stone);
   add(at(rbox(L, 0.58, 0.015, 0.002, 1), 0, H + 0.03 + 0.29, -D / 2 + 0.008), M.stone);
   if (uppers) for (let i = 0; i < n; i++) add(at(rbox(w - 0.004, 0.86, 0.35, 0.003, 1), -L / 2 + w * (i + 0.5), 1.5 + 0.43, -D / 2 + 0.175), M.lacquerWhite);
   if (sink != null) {
-    add(at(rbox(0.62, 0.004, 0.4, 0.004, 1), sink, H + 0.031, 0.02), M.sinkDark);
-    add(at(lathe([[0.022, 0], [0.018, 0.04], [0.013, 0.3]], 16), sink, H + 0.03, -0.22), M.nickel);
-    const arc = [];
-    for (let k = 0; k <= 10; k++) { const t = k / 10 * Math.PI; arc.push([sink, H + 0.33 + Math.sin(t) * 0.1, -0.22 + (1 - Math.cos(t)) * 0.11]); }
-    add(tubeGeo(arc, 0.011), M.nickel);
+    add(at(basin(0.6, 0.42, 0.22, 0.04), sink, H, 0.04), M.sinkSteel);
+    add(at(drain(0.045), sink + 0.1, H - 0.22, 0.04), M.steel);
+    add(at(kitchenFaucet(), sink, H + 0.03, -0.24), M.nickel);
   }
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [L / 2, H / 2 + 0.02, D / 2], yaw: ry, mat: M.woodDark });
 }
@@ -640,12 +641,13 @@ function tallUnit(B, M, x, z, ry, W, H, ovens = false) {
     for (const yy of [0.95, 1.55]) {
       add(at(rbox(W - 0.04, 0.56, 0.02, 0.004, 1), 0, yy + 0.28, D / 2), M.steel);
       add(at(rbox(W - 0.12, 0.36, 0.006, 0.004, 1), 0, yy + 0.25, D / 2 + 0.012), M.tvGlass);
-      add(at(rbox(W - 0.16, 0.016, 0.02, 0.008, 1), 0, yy + 0.49, D / 2 + 0.03), M.steel);
+      add(at(barPull(W - 0.2, 0.009, 0.04, 0.03).rotateZ(Math.PI / 2), 0, yy + 0.49, D / 2 + 0.01), M.steel);
     }
   } else {
     const n = Math.max(1, Math.round(W / 0.6));
     for (let i = 0; i < n; i++) add(at(rbox(W / n - 0.004, H - 0.12, 0.02, 0.002, 1), -W / 2 + W / n * (i + 0.5), (H - 0.12) / 2 + 0.1, D / 2), M.woodDark);
-    for (let i = 0; i < n; i++) add(at(rbox(0.012, H * 0.6, 0.02, 0.006, 1), -W / 2 + W / n * (i + 0.5) + (i % 2 ? -1 : 1) * (W / n / 2 - 0.05), H * 0.5, D / 2 + 0.02), M.steel);
+    // appliance pulls: 19 mm round bar on standoffs, the pair meeting at the centre of each door pair
+    for (let i = 0; i < n; i++) add(at(barPull(H * 0.55, 0.0095, 0.04, 0.03), -W / 2 + W / n * (i + 0.5) + (i % 2 ? -1 : 1) * (W / n / 2 - 0.06), H * 0.52, D / 2 + 0.01), M.steel);
   }
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.woodDark });
 }
@@ -721,13 +723,14 @@ function vanity(B, M, x, y, z, ry, L, top, body, basins = [0], wall = 0) {
   for (let c = 0; c < cols; c++) for (const [y0, y1] of [[0.12, 0.5], [0.503, H - 0.003]]) {
     const u = -L / 2 + cw * (c + 0.5);
     add(at(rbox(cw - 0.003, y1 - y0 - 0.003, 0.02, 0.002, 1), u, (y0 + y1) / 2, D / 2 - 0.01), body);
-    add(at(rbox(0.16, 0.012, 0.012, 0.005, 1), u, y1 - 0.045, D / 2 + 0.008), M.bronzeLight);
+    add(at(barPull(0.13, 0.006, 0.026, 0.02).rotateZ(Math.PI / 2), u, y1 - 0.05, D / 2), M.bronzeLight);
   }
-  add(at(rbox(L + 0.02, 0.04, D + 0.02, 0.004, 1), 0, H + 0.02, 0.01), top);
+  // stone top cut over undermount basins (150 mm deep), deck faucets behind them
+  add(at(counter(L + 0.02, D + 0.02, 0.04, basins.map((u) => [u, 0.04, 0.44, 0.32, 0.06])), 0, H + 0.04, 0.01), top);
   for (const u of basins) {
-    add(at(rbox(0.46, 0.004, 0.32, 0.004, 1), u, H + 0.041, 0.04), M.enamel);
-    add(at(lathe([[0.016, 0], [0.012, 0.22]], 12), u, H + 0.04, -D / 2 + 0.06), M.bronzeLight);
-    add(tubeGeo([[u, H + 0.26, -D / 2 + 0.06], [u, H + 0.28, -D / 2 + 0.12], [u, H + 0.24, -D / 2 + 0.18]], 0.009), M.bronzeLight);
+    add(at(basin(0.46, 0.34, 0.15, 0.07), u, H, 0.05), M.enamel);
+    add(at(drain(0.019), u, H - 0.15, 0.05), M.bronzeLight);
+    add(at(bathFaucet(), u, H + 0.04, -D / 2 + 0.07), M.bronzeLight);
     if (!wall) {
       add(at(rbox(0.6, 0.9, 0.012, 0.004, 1), u, H + 0.62, -D / 2 - 0.01), M.mirror);
       add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u - 0.31, H + 0.62, -D / 2), M.ledStrip);
@@ -770,8 +773,8 @@ function toilet(B, M, x, y, z, ry) {
   const bowlG = lathe([[0, 0.22], [0.1, 0.22], [0.15, 0.25], [0.18, 0.31], [0.19, 0.37], [0.185, 0.41], [0, 0.41]], 32); bowlG.scale(1, 1, 1.45); bowlG.translate(0, 0, 0.29);
   add(at(rbox(0.32, 0.3, 0.12, 0.05), 0, 0.33, 0.06), M.enamel);
   add(bowlG, M.enamel);
-  add(at(cushion(0.37, 0.035, 0.55, 0.05, 0.006), 0, 0.43, 0.29), M.enamel);
-  add(at(rbox(0.22, 0.14, 0.012, 0.01), 0, 1.02, 0.006), M.flushPlate);
+  add(at(toiletSeat(0.5, 0.37), 0, 0.41, 0.03), M.enamel);
+  add(at(flushPlate(), 0, 1.02, 0.0), M.flushPlate);
 }
 
 // a free-form mirror on a wall (apartment-06): an organic outline, thin bronze edge
@@ -1014,6 +1017,7 @@ function furnitureMaterials(M, Q) {
   M.lacquerWhite = phys({ color: '#ece7de', roughness: 0.3 }, { clearcoat: 0.8, clearcoatRoughness: 0.08 });
   M.steel = new THREE.MeshStandardMaterial({ color: '#b9b7b2', metalness: 1, roughness: 0.28 });
   M.sinkDark = new THREE.MeshStandardMaterial({ color: '#2a2a29', metalness: 0.6, roughness: 0.35 });
+  M.sinkSteel = new THREE.MeshStandardMaterial({ color: '#c7c5c0', metalness: 1, roughness: 0.32, side: THREE.DoubleSide });
   M.enamel = phys({ color: '#f6f4ef', roughness: 0.12 }, { clearcoat: 1, clearcoatRoughness: 0.04 });
   M.mirror = new THREE.MeshStandardMaterial({ color: '#f2f2f2', metalness: 1, roughness: 0.015 });
   M.ledStrip = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffe6c4', emissiveIntensity: 1.6, roughness: 0.5 });
@@ -1021,6 +1025,7 @@ function furnitureMaterials(M, Q) {
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
   M.amberGlass = new THREE.MeshStandardMaterial({ color: '#d9a85f', emissive: '#ffb45a', emissiveIntensity: 0.9, roughness: 0.25, metalness: 0.2 });
   M.towel = M.boucle.clone(); M.towel.color = new THREE.Color('#fbf8f2');
+  M.towelSand = M.boucle.clone(); M.towelSand.color = new THREE.Color('#c9b298');
   M.settingBed = new THREE.MeshStandardMaterial({ color: '#4a4540', roughness: 0.9 });
   M.marbleHoned = M.marbleGrey.isMeshPhysicalMaterial ? new THREE.MeshStandardMaterial({ map: M.marbleGrey.map, normalMap: M.marbleGrey.normalMap, roughnessMap: M.marbleGrey.roughnessMap, roughness: 2.2 }) : M.marbleGrey.clone();
   if (!M.marbleGrey.isMeshPhysicalMaterial) M.marbleHoned.roughness = 2.2;
@@ -1195,6 +1200,9 @@ export function furnish(M, Q) {
   vanity(B, M, 5.74, F2, 10.9, -Math.PI / 2, 1.0, M.creamStone, M.woodDark);
   toilet(B, M, 3.476, F2, 12.0, Math.PI / 2);
   builtInTub(B, M, 3.48, 12.55, 4.3, 14.31, F2, M.travertine);
+  B.add(at(showerSet(), 3.477, F2 + 1.1, 13.5, Math.PI / 2), M.bronzeLight);          // over the tub, on the west wall
+  B.add(at(towelRing(), 3.477, F2 + 1.35, 11.3, Math.PI / 2), M.bronzeLight);
+  B.add(at(cushion(0.24, 0.4, 0.035, 0.015, 0.008), 3.55, F2 + 1.04, 11.3, Math.PI / 2), M.towelSand);
   // third bath (floor two, grey marble to chair height, as apartment-05)
   clad(B, M.marbleHoned, [
     ['x', 6.92, 14.75, 16.7, F2, F2 + 1.2, 1], ['x', 9.6, 14.75, 16.7, F2, F2 + 1.2, -1],

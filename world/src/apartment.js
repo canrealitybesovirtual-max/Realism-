@@ -7,6 +7,7 @@
 // floor one level. North glass at z = 0, south glass at z = 17.55, terrace to z = 19.25.
 import * as THREE from 'three';
 import { Builder, boxGeo, flatGeo, shapeFlat, shellGeo, shellColliders, polar, tube } from './build.js';
+import { lever as leverGeo, hinge as hingeGeo, mirrorZ } from './hw.js';
 
 export const LV = { L1: 0, C1: 4.25, L2: 4.6, C2: 8.2, RF: 8.6 };
 const { L1, C1, L2, C2, RF } = LV;
@@ -177,16 +178,21 @@ export function buildApartment(M, Q) {
   const leaf = (hx, hz, y0, w, h, yaw, mat = M.doorWhite) => {
     const dx = Math.cos(yaw), dz = -Math.sin(yaw);
     B.obox(hx + dx * w / 2, y0 + h / 2, hz + dz * w / 2, w / 2, h / 2, 0.025, yaw, mat);
-    // bronze lever at the free end
-    B.obox(hx + dx * (w - 0.07), y0 + 1.0, hz + dz * (w - 0.07), 0.07, 0.012, 0.06, yaw, M.bronzeLight, false);
-    for (const hy of [0.22, h * 0.5, h - 0.22]) B.obox(hx + dx * 0.008, y0 + hy, hz + dz * 0.008, 0.01, 0.05, 0.03, yaw, M.bronzeLight, false);
+    // bronze levers on both faces at the free end (arm toward the hinge), hinge knuckles
+    const place = (g, lx, ly, lz) => { g.translate(lx, ly, lz); g.rotateY(yaw); g.translate(hx + dx * w / 2, y0 + h / 2, hz + dz * w / 2); B.add(g, M.bronzeLight); };
+    place(leverGeo(-1), w / 2 - 0.065, 1.0 - h / 2, 0.025);
+    place(mirrorZ(leverGeo(-1)), w / 2 - 0.065, 1.0 - h / 2, -0.025);
+    for (const hy of [0.22, h * 0.5, h - 0.22]) place(hingeGeo().rotateY(Math.PI / 2).scale(1, 1, 0.6), -w / 2 - 0.004, hy - h / 2, 0);
   };
   // closed door panel flush in a wall face: axis of the wall face, t = face coordinate, normal sign
   const panel = (axis, t, a, b, y0, y1, mat, n = 1) => {
     const d = 0.03 * n;
     if (mat !== M.bronzeLight) {
-      if (axis === 'x') B.box(b - 0.19, y0 + 0.99, t + d, b - 0.05, y0 + 1.015, t + d + 0.055 * n, M.bronzeLight, false);
-      else B.box(t + d, y0 + 0.99, b - 0.19, t + d + 0.055 * n, y0 + 1.015, b - 0.05, M.bronzeLight, false);
+      // lever on the room face, the arm toward the hinge side (a)
+      let g = leverGeo(-1);                  // arm -x, face +z
+      if (axis === 'x') { if (n < 0) g = mirrorZ(g); g.translate(b - 0.075, y0 + 1.0, t + d); }
+      else { if (n > 0) g = mirrorZ(g); g.rotateY(-Math.PI / 2); g.translate(t + d, y0 + 1.0, b - 0.075); }
+      B.add(g, M.bronzeLight);
     }
     if (axis === 'x') { B.box(a, y0, t, b, y1, t + d, mat); B.box(a - 0.03, y0, t, b + 0.03, y1 + 0.03, t + d * 0.5, M.bronze, false); }
     else { B.box(t, y0, a, t + d, y1, b, mat); B.box(t, y0, a - 0.03, t + d * 0.5, y1 + 0.03, b + 0.03, M.bronze, false); }
