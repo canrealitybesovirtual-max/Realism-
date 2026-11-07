@@ -779,6 +779,35 @@ function console_(B, M, x, z, ry, L = 1.6) {
   B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [L / 2, 0.42, 0.2], yaw: ry, mat: M.woodDark });
 }
 
+// crumpled relief artwork (apartment-11): a black panel pushed into folds and creases, real
+// geometry (a 96 x 112 grid displaced by ridged noise), in a thin white float frame
+function reliefArt(B, M, x, y, z, w, h, face) {
+  const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  const g = new THREE.PlaneGeometry(w * 0.8, h * 0.8, 96, 112).toNonIndexed();
+  const p = g.attributes.position;
+  const nz = (a, b) => Math.sin(a * 7.1 + Math.sin(b * 3.3) * 2) * Math.cos(b * 6.3 + Math.sin(a * 2.7) * 2);
+  for (let i = 0; i < p.count; i++) {
+    const a = p.getX(i) / w, b = p.getY(i) / h, r = Math.hypot(a, b * 0.9);
+    const ridge = 1 - Math.abs(nz(a * 2.2, b * 2.2)), fold = Math.abs(nz(a * 5 + 3, b * 5 + 1));
+    p.setZ(i, (0.05 * ridge * ridge + 0.018 * fold) * Math.max(0, 1 - r * 1.6) + 0.004);
+  }
+  g.computeVertexNormals(); metricUV(g);
+  B.add(at(g, x, y, z, ry), M.reliefBlack);
+  const f = 0.025, d = 0.05;
+  B.add(at(new THREE.PlaneGeometry(w, h).toNonIndexed(), x, y, z, ry), M.ceramic);
+  for (const [u, v, ww, hh] of [[0, h / 2 + f / 2, w + 2 * f, f], [0, -h / 2 - f / 2, w + 2 * f, f], [-w / 2 - f / 2, 0, f, h], [w / 2 + f / 2, 0, f, h]]) {
+    const gg = rbox(ww, hh, d, 0.003, 1); gg.translate(u, v, d / 2 - 0.005); B.add(at(gg, x, y, z, ry), M.lacquerWhite);
+  }
+}
+// cooktop: black glass with burner rings
+function cooktop(B, M, x, y, z, ry) {
+  B.add(at(rbox(0.78, 0.006, 0.52, 0.004, 1), x, y + 0.003, z, ry), M.tvGlass);
+  for (const [u, v, r] of [[-0.2, -0.12, 0.09], [0.2, -0.12, 0.07], [-0.2, 0.12, 0.07], [0.2, 0.12, 0.11]]) {
+    const ring = new THREE.RingGeometry(r - 0.004, r, 32).rotateX(-Math.PI / 2).toNonIndexed();
+    B.add(at(ring, x + Math.cos(ry) * u + Math.sin(ry) * v, y + 0.0065, z - Math.sin(ry) * u + Math.cos(ry) * v), M.steel);
+  }
+}
+
 // ---- the painting's texture ----------------------------------------------------------------
 function paintingTexture() {
   // an original abstract in apartment-17's palette, painted as layers of translucent brush
@@ -954,6 +983,7 @@ function furnitureMaterials(M, Q) {
   M.potStone = M.creamStone.clone(); M.potStone.color = new THREE.Color('#77706a');
   M.moss = new THREE.MeshStandardMaterial({ color: '#3f4a2a', roughness: 1 });
   M.wallRug = new THREE.MeshStandardMaterial({ map: rugTexture(), roughness: 0.95, side: THREE.DoubleSide });
+  M.reliefBlack = new THREE.MeshStandardMaterial({ color: '#141414', roughness: 0.55, metalness: 0.1 });
   M.ceramic = phys({ color: '#f1eee8', roughness: 0.35 }, { clearcoat: 0.6, clearcoatRoughness: 0.15 });
   M.bookCream = new THREE.MeshStandardMaterial({ color: '#d9cfbf', roughness: 0.7 });
   M.bookGrey = new THREE.MeshStandardMaterial({ color: '#8a8580', roughness: 0.7 });
@@ -1101,7 +1131,14 @@ export function furnish(M, Q) {
 
   // upper landing (apartment-11): a bust on a travertine plinth by the tall door; foot of the
   // stair (apartment-12): a bronze drum table
-  up((b) => { plinth(b, M, 9.95, 7.35, 0.36, 1.1, M.creamStone); });
+  up((b) => {
+    plinth(b, M, 9.95, 7.35, 0.36, 1.1, M.creamStone);
+    reliefArt(b, M, 10.29, 1.75, 9.6, 1.1, 1.3, '-x');
+    console_(b, M, 10.08, 9.6, -Math.PI / 2, 1.4);
+    bowl(b, M, 10.05, 0.825, 9.95, 0.12);
+  });
+  // hallway, floor one: two line prints
+  print(B, M, 4.73, 1.6, 9.8, 0.5, 0.65, '-x', M.lineArt1); print(B, M, 4.73, 1.6, 11.6, 0.5, 0.65, '-x', M.lineArt2);
   B.add(at(lathe([[0, 0], [0.24, 0], [0.25, 0.02], [0.25, 0.46], [0.24, 0.48], [0, 0.48]], 40), 9.45, 0, 13.4), M.bronzeLight);
   for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; B.add(at(rbox(0.012, 0.42, 0.008, 0.003, 1), 9.45 + Math.sin(a) * 0.252, 0.24, 13.4 + Math.cos(a) * 0.252, a), M.bronzeLight); }
   B.colliders.push({ t: 'obox', c: [9.45, 0.24, 13.4], h: [0.25, 0.24, 0.25], yaw: 0, mat: M.bronzeLight });
@@ -1110,6 +1147,7 @@ export function furnish(M, Q) {
   // with sink on the east wall, white uppers, an oven stack; tall integrated fridge / pantry
   // units on the west wall
   kitchenRun(B, M, 16.39, 13.0, -Math.PI / 2, 4.6, { sink: -0.4 });
+  cooktop(B, M, 16.39, 0.92, 14.4, -Math.PI / 2);
   tallUnit(B, M, 16.39, 10.35, -Math.PI / 2, 0.66, 2.35, true);
   tallUnit(B, M, 13.65, 11.4, Math.PI / 2, 2.4, 2.35);
   kitchenRun(B, M, 13.65, 13.35, Math.PI / 2, 1.5, { uppers: false });
