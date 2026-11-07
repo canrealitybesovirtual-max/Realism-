@@ -422,7 +422,7 @@ function patch(mat, kind, U) {
   mat.needsUpdate = true;
 }
 
-export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.4, 0.97, 0.7], lamps = [], lampPower = 10 }) {
+export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.4, 0.97, 0.7], lamps = [], lampPower = 16 }) {
   const t0 = performance.now();
   const F = bakeFields(apt.meshes, apt.colliders, M);
   const env = scene.environment;
@@ -483,7 +483,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     // lamps nearest each probe (inside its room) for that probe's captures
     const pool = [];
     for (let k = 0; k < 8; k++) {
-      const L = new THREE.SpotLight('#ffe7c8', 0, 0, 0.75, 0.6, 2);
+      const L = new THREE.SpotLight('#ffe7c8', 0, 0, 1.05, 0.7, 2);
       L.castShadow = false; scene.add(L, L.target); pool.push(L);
     }
     const lampsFor = (p) => lamps.filter(([x, y, z]) => x >= p.min[0] && x <= p.max[0] && z >= p.min[2] && z <= p.max[2] && y >= p.min[1] && y <= p.max[1] + 0.3)

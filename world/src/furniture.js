@@ -701,12 +701,32 @@ function vanity(B, M, x, y, z, ry, L, top, body, basins = [0]) {
   }
   B.colliders.push({ t: 'obox', c: [x, y + H / 2, z], h: [L / 2, H / 2, D / 2], yaw: ry, mat: body });
 }
+// built-in tub (apartment-03): stone apron and deck with a rounded cut-out, enamel basin, a spout
+function builtInTub(B, M, x0, z0, x1, z1, y, stone) {
+  const H = 0.56, t = 0.04, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, W = x1 - x0, L = z1 - z0;
+  for (const [a, b, c, d] of [[x0, z0, x1, z0 + t], [x0, z1 - t, x1, z1], [x0, z0, x0 + t, z1], [x1 - t, z0, x1, z1]]) B.box(a, y, b, c, y + H - t, d, stone);
+  const sh = new THREE.Shape([[-W / 2, -L / 2], [W / 2, -L / 2], [W / 2, L / 2], [-W / 2, L / 2]].map(([u, v]) => new THREE.Vector2(u, v)));
+  const hw = W / 2 - 0.08, hl = L / 2 - 0.09, r = 0.16, hole = new THREE.Path();
+  hole.moveTo(-hw + r, -hl); hole.lineTo(hw - r, -hl); hole.quadraticCurveTo(hw, -hl, hw, -hl + r); hole.lineTo(hw, hl - r); hole.quadraticCurveTo(hw, hl, hw - r, hl);
+  hole.lineTo(-hw + r, hl); hole.quadraticCurveTo(-hw, hl, -hw, hl - r); hole.lineTo(-hw, -hl + r); hole.quadraticCurveTo(-hw, -hl, -hw + r, -hl);
+  sh.holes.push(hole);
+  const deck = new THREE.ExtrudeGeometry(sh, { depth: t, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.004, bevelSegments: 1, curveSegments: 12 }).toNonIndexed();
+  deck.rotateX(-Math.PI / 2); metricUV(deck);
+  B.add(at(deck, cx, y + H - t, cz), stone);
+  const basin = lathe([[0.4, 0.5], [0.385, 0.42], [0.33, 0.2], [0.24, 0.07], [0, 0.06]], 40);
+  basin.scale(hw * 2 / 0.8, 1, hl * 2 / 0.8); basin.computeVertexNormals();
+  B.add(at(basin, cx, y + H - 0.5 - t, cz), M.enamel);
+  B.add(tubeGeo([[x0 + 0.03, y + H + 0.18, cz], [x0 + 0.1, y + H + 0.2, cz], [x0 + 0.16, y + H + 0.15, cz]], 0.012), M.bronzeLight);
+  B.colliders.push({ t: 'box', min: [x0, y, z0], max: [x1, y + H, z1], mat: stone });
+}
+
 // wall-hung toilet with a flush plate (apartment-03)
 function toilet(B, M, x, y, z, ry) {
   const add = (g, m) => B.add(at(g, x, y, z, ry), m);
-  const bowlG = lathe([[0, 0.3], [0.17, 0.3], [0.19, 0.36], [0.19, 0.42], [0, 0.42]], 32); bowlG.scale(1, 1, 1.45); bowlG.translate(0, 0, 0.27);
+  const bowlG = lathe([[0, 0.22], [0.1, 0.22], [0.15, 0.25], [0.18, 0.31], [0.19, 0.37], [0.185, 0.41], [0, 0.41]], 32); bowlG.scale(1, 1, 1.45); bowlG.translate(0, 0, 0.29);
+  add(at(rbox(0.32, 0.3, 0.12, 0.05), 0, 0.33, 0.06), M.enamel);
   add(bowlG, M.enamel);
-  add(at(rbox(0.36, 0.03, 0.54, 0.05), 0, 0.435, 0.27), M.enamel);
+  add(at(cushion(0.37, 0.035, 0.55, 0.05, 0.006), 0, 0.43, 0.29), M.enamel);
   add(at(rbox(0.22, 0.14, 0.012, 0.01), 0, 1.02, 0.006), M.flushPlate);
 }
 
@@ -1001,6 +1021,13 @@ export function furnish(M, Q) {
   });
   blobMirror(B, M, 10.45, F2 + 1.55, 14.495, 0.7, 1.0, '+z');
 
+  // upper landing (apartment-11): a bust on a travertine plinth by the tall door; foot of the
+  // stair (apartment-12): a bronze drum table
+  up((b) => { plinth(b, M, 9.95, 7.35, 0.36, 1.1, M.creamStone); });
+  B.add(at(lathe([[0, 0], [0.24, 0], [0.25, 0.02], [0.25, 0.46], [0.24, 0.48], [0, 0.48]], 40), 9.45, 0, 13.4), M.bronzeLight);
+  for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; B.add(at(rbox(0.012, 0.42, 0.008, 0.003, 1), 9.45 + Math.sin(a) * 0.252, 0.24, 13.4 + Math.cos(a) * 0.252, a), M.bronzeLight); }
+  B.colliders.push({ t: 'obox', c: [9.45, 0.24, 13.4], h: [0.25, 0.24, 0.25], yaw: 0, mat: M.bronzeLight });
+
   // ---- kitchen, floor one (apartment-15): galley from the passage south to the glass; base run
   // with sink on the east wall, white uppers, an oven stack; tall integrated fridge / pantry
   // units on the west wall
@@ -1034,8 +1061,7 @@ export function furnish(M, Q) {
   ]);
   vanity(B, M, 5.74, F2, 10.9, -Math.PI / 2, 1.0, M.creamStone, M.woodDark);
   toilet(B, M, 3.476, F2, 12.0, Math.PI / 2);
-  B.box(3.5, F2, 12.9, 4.3, F2 + 0.58, 14.3, M.travertine);
-  B.box(3.52, F2 + 0.45, 12.95, 4.28, F2 + 0.58, 14.28, M.enamel, false);
+  builtInTub(B, M, 3.48, 12.55, 4.3, 14.31, F2, M.travertine);
   // third bath (floor two, grey marble to chair height, as apartment-05)
   clad(B, M.marbleGrey, [
     ['x', 6.92, 14.75, 16.7, F2, F2 + 1.2, 1], ['x', 9.6, 14.75, 16.7, F2, F2 + 1.2, -1],
@@ -1051,5 +1077,5 @@ export function furnish(M, Q) {
   vanity(B, M, 6.47, 0, 13.55, Math.PI / 2, 0.75, M.marbleGrey, M.woodDark);
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2]] };
+  return { group, meshes, colliders: B.colliders, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }
