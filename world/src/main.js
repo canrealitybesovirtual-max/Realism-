@@ -45,6 +45,7 @@ addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; cam
 async function boot() {
   status('Making materials…');
   await new Promise((r) => setTimeout(r, 20));
+  Q.renderer = renderer; Q.ktx2 = /[?&]ktx2=off\b/.test(location.search) ? false : /[?&]ktx2=force\b/.test(location.search) ? 'force' : true;                            // headset: KTX2 scans (materials.js)
   const M = makeMaterials(Q);
   status('Building the apartment…');
   await new Promise((r) => setTimeout(r, 20));

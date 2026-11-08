@@ -3,6 +3,7 @@
 // texture's repeat is 1 / (metres the texture covers).
 import * as THREE from 'three';
 import { finishMat } from './finish.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
 // ---- small noise kit --------------------------------------------------------------------------
 function hash(x, y, s) {
@@ -123,15 +124,41 @@ const SCANS = {
 };
 // one loader for all of them; M.ready resolves when every scan has arrived (the reflection
 // probes are baked after it)
+const SCANS_KTX2 = false;                           // on once every headset scan has its .ktx2 beside it
 function scanKit(Q) {
   const mgr = new THREE.LoadingManager();
   const tl = new THREE.TextureLoader(mgr);
   const dir = (Q.base || './') + 'textures/scans/' + (Q.quest ? 'quest/' : '');
   const ready = new Promise((res) => { mgr.onLoad = res; mgr.onError = (u) => console.warn('scan failed', u); });
   const cache = new Map();                          // one texture per file (paint and trim share their scans)
+  // Headset: UASTC KTX2 beside each WebP (transcoded to ASTC / ETC2: a quarter of the memory at the same detail). The
+  // texture handed out is a CompressedTexture filled when its file arrives; a failed KTX2 falls back to the WebP's pixels.
+  let kt = null;
+  const R = Q.renderer, ex = R && R.extensions;
+  if (SCANS_KTX2 && Q.quest && R && Q.ktx2 !== false && ex && (Q.ktx2 === 'force' || ex.has('WEBGL_compressed_texture_astc') || ex.has('WEBGL_compressed_texture_etc'))) {   // force: tests (no ASTC / ETC2: transcoded to RGBA)
+    try { kt = new KTX2Loader(mgr).setTranscoderPath('vendor/three/examples/jsm/libs/basis/').setWorkerLimit(2).detectSupport(R); } catch (e) { console.warn('KTX2 off', e); kt = null; }
+  }
+  const ktxTex = (url) => {
+    const t = new THREE.CompressedTexture([], 4, 4);
+    kt.load(url.replace(/\.webp$/, '.ktx2'), (c) => {
+      t.mipmaps = c.mipmaps; t.image = c.image; t.format = c.format; t.type = c.type;
+      t.generateMipmaps = false; t.minFilter = c.mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter; t.magFilter = THREE.LinearFilter;
+      t.needsUpdate = true;
+    }, undefined, () => {
+      new THREE.ImageLoader(mgr).load(url, (img) => {             // fallback: the WebP, one level, uncompressed
+        const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height;
+        const g = cv.getContext('2d'); g.translate(0, img.height); g.scale(1, -1); g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, img.width, img.height).data;
+        t.mipmaps = [{ data: new Uint8Array(d.buffer), width: img.width, height: img.height }]; t.image = { width: img.width, height: img.height };
+        t.format = THREE.RGBAFormat; t.type = THREE.UnsignedByteType; t.minFilter = t.magFilter = THREE.LinearFilter; t.needsUpdate = true;
+      });
+    });
+    return t;
+  };
   const tex = (name, k, srgb) => {
     const ck = name + '_' + k; if (cache.has(ck)) return cache.get(ck);
-    const t = tl.load(`${dir}${name}_${k}.webp`); cache.set(ck, t);
+    const url = `${dir}${name}_${k}.webp`;
+    const t = kt ? ktxTex(url) : tl.load(url); cache.set(ck, t);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
     t.anisotropy = Q.quest ? 4 : 8;

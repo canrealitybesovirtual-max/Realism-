@@ -4,6 +4,7 @@
 // parallax, not a flat picture); walking between rooms fades to the nearest bake point.
 // The sky is drawn live with the same colours the bake used, so the skyline edges blend.
 import * as THREE from 'three';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
 let BASE = './city/';
 const FAR = 60000;                      // sky texels and the horizon
@@ -143,6 +144,22 @@ function loadColor(url, Q, k = 0) {
     res(t);
   }, undefined, (e) => (k < 3 ? setTimeout(() => loadColor(url, Q, k + 1).then(res, rej), 400 * (k + 1)) : rej(e))));
 }
+// Headset: the faces as KTX2 (UASTC, transcoded to ASTC / ETC2 on the GPU: a quarter of the memory of RGBA8 at the
+// same detail), encoded y-flipped like the ImageBitmap path; the WebP stays the fallback (no compressed format, a load error)
+let ktx = null;
+function loadKTX(url, Q) {
+  return ktx.loadAsync(url).then((t) => {
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.minFilter = t.mipmaps && t.mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter; t.magFilter = THREE.LinearFilter;
+    t.anisotropy = Q.quest ? 2 : 8;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    return t;
+  });
+}
+function loadFace(url, Q) {
+  if (!ktx) return loadColor(url, Q);
+  return loadKTX(url.replace(/\.webp$/, '.ktx2'), Q).catch((e) => { console.warn('city face KTX2 failed, WebP instead', e); return loadColor(url, Q); });
+}
 // a busy browser can refuse a burst of requests (ERR_INSUFFICIENT_RESOURCES): try again a few times
 async function fetchRetry(url, tries = 4) {
   for (let k = 0; ; k++) {
@@ -174,6 +191,10 @@ export async function buildView(scene, renderer, Q) {
   sky.renderOrder = -10; sky.frustumCulled = false;
   scene.add(sky);
   const res = Q.quest ? man.questRes : man.res;
+  const ext = renderer.extensions;
+  if (Q.quest && man.questKtx2 && Q.ktx2 !== false && ext && (Q.ktx2 === 'force' || ext.has('WEBGL_compressed_texture_astc') || ext.has('WEBGL_compressed_texture_etc'))) {
+    try { ktx = new KTX2Loader().setTranscoderPath('vendor/three/examples/jsm/libs/basis/').setWorkerLimit(2).detectSupport(renderer); } catch (e) { console.warn('KTX2 off', e); ktx = null; }
+  }
   // the mesh follows the baked distance grid as clusters (see clusterFace): one shared vertex
   // grid, an index list per face quadrant holding only the tiles that are not sky, each at the
   // step its distance needs; the headset never goes finer than every other corner
@@ -190,7 +211,7 @@ export async function buildView(scene, renderer, Q) {
     if (!p.group) return;
     await Promise.all(p.group.children.map(async (m) => {
       const mm = m.userData.maps;
-      if (!mm[i]) mm[i] = loadColor(mapUrl(p, m.userData.fi, i), Q);
+      if (!mm[i]) mm[i] = loadFace(mapUrl(p, m.userData.fi, i), Q);
       await mm[i];
     }));
   }
@@ -212,7 +233,7 @@ export async function buildView(scene, renderer, Q) {
     const g = new THREE.Group();
     await Promise.all(p.faces.map(async (fi) => {
       const f = man.faces[fi];
-      const maps = {}; maps[si] = loadColor(mapUrl(p, fi, si), Q);
+      const maps = {}; maps[si] = loadFace(mapUrl(p, fi, si), Q);
       const [map, dist] = await Promise.all([maps[si], loadDist(`${BASE}p${p.id}_${fi}.d16`, man.dsize + 1)]);
       const d = new THREE.Vector3(...f.d), up = new THREE.Vector3(...f.up);
       const z = d.clone().negate(), x = new THREE.Vector3().crossVectors(up, z).normalize(), y = new THREE.Vector3().crossVectors(z, x);
