@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshoptClusterizer } from '../vendor/meshopt/meshopt_clusterizer.js';
 
-const _cam = new THREE.Vector3();
+const _cam = new THREE.Vector3(), _inv = new THREE.Matrix4();
 
 export async function clusterize(meshes) {
   await MeshoptClusterizer.ready;
@@ -46,6 +46,7 @@ export async function clusterize(meshes) {
     // cone data per cluster (meshoptimizer: culled when dot(normalize(apex - eye), axis) >= cutoff)
     const cone = new Float32Array(n * 7);
     bounds.forEach((b, i) => cone.set([b.coneApexX, b.coneApexY, b.coneApexZ, b.coneAxisX, b.coneAxisY, b.coneAxisZ, b.coneCutoff], i * 7));
+    bm.matrixAutoUpdate = m.matrixAutoUpdate; bm.matrix.copy(m.matrix); bm.matrix.decompose(bm.position, bm.quaternion, bm.scale);
     bm.castShadow = m.castShadow; bm.receiveShadow = m.receiveShadow; bm.renderOrder = m.renderOrder;
     bm.perObjectFrustumCulled = true;
     bm.userData = { ...m.userData, clusters: n };
@@ -56,7 +57,7 @@ export async function clusterize(meshes) {
       if (shadowPass || material.side === THREE.DoubleSide || mat.side === THREE.DoubleSide) {
         for (let i = 0; i < n; i++) info[i].visible = true;
       } else {
-        _cam.setFromMatrixPosition(camera.matrixWorld);
+        _cam.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(_inv.copy(bm.matrixWorld).invert());   // cone data is in the mesh's own space
         for (let i = 0; i < n; i++) {
           const o = i * 7, cut = cone[o + 6];
           if (cut >= 1) { info[i].visible = true; continue; }
@@ -73,7 +74,7 @@ export async function clusterize(meshes) {
     m.parent.remove(m);
     replaced.push([m, bm]);
     stats.meshes++; stats.clusters += n; stats.tris += idx.length / 3;
-    g.dispose(); g0.dispose();
+    g.dispose(); g0.dispose(); m.geometry.dispose();
   }
   return { replaced, stats };
 }

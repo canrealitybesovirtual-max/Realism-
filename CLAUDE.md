@@ -1575,3 +1575,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC apartment: blood and holes on the drawn surface (?aptsnap=off)
 - The apartment's colliders are boxes round what is drawn (sofa boxes over the cushions, the curved stair wall as chords, rugs on the floor box), so blood and bullet holes placed at collider hits floated. aptTriBuild (once, 0 ms after activation, ~0.3 s headless) puts every static apartment triangle (architecture + fixed furniture, apartment space, 683k) in a 0.5 m grid; aptSnap (from addBloodDecal and addRoomHole) casts 30 cm either side of the hit along -n and moves the decal onto the drawn triangle nearest the hit, with its face normal. No drawn surface within reach = no decal. Headless: build 332 ms, queries 0-7.5 ms, floor points land at 0.000 with normal up.
+
+## CQC apartment: performance (clusters, shader warm-up)
+- Profiled a raid headless: game JS under 2 % of a frame; the cost is drawing (the apartment's merged meshes were drawn whole: ~772k triangles a frame) and shaders linked mid-fight.
+- world/src/clusters.js now runs in CQC too (aptBuilder, needs WEBGL_multi_draw; ?aptclusters=off; skipped with ?aptsurf=on): 87 meshes -> 12,179 meshlets in BatchedMeshes, per-cluster frustum + normal-cone culling. Fixed for a moved / turned parent (the cone test now takes the camera in the mesh's own space; the mesh's matrix is copied). Old geometry disposed; aptTriBuild re-runs on the cluster meshes. Headless: 772k -> 214k triangles a frame (216k mid-raid).
+- On first entering the apartment: enemyPrecompile + renderer.compileAsync(scene, camera) (A.warmed), so the men, their guns and grenades compile under the apartment's lights before a raid. Mid-raid new programs 5 -> 2.
