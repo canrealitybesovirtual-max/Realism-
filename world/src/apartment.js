@@ -441,6 +441,8 @@ export function buildApartment(M, Q) {
   for (const [x0, z0, x1, z1] of [[1.2, 0.9, 4.6, 6.4], [5.3, 0.9, 12.3, 6.4], [13.1, 0.9, 16.3, 6.4], [XW + 0.3, 14.7, 7.5, ZS - 0.8],
     [10.3, 14.7, 16.4, ZS - 0.8], [8.1, 7.1, 10.1, 9.0], [3.7, 10.0, 5.9, 14.0], [15.0, 7.0, 16.4, 9.4], [13.5, 7.0, 14.4, 14.0]])
     downlights(x0, z0, x1, z1, C2, 1.8);
+  downlights(3.8, 7.3, 5.8, 9.3, C2, 1.0);                         // dressing hall (apartment-07): two by two
+  B.box(3.85, C2 - 0.008, 9.32, 4.85, C2, 9.35, M.slot, false);   // linear slot diffuser over the vanity
 
   // tray ceilings with LED coves (apartment-08, -10, -04): a 45 cm band dropped 22 cm round the
   // room, its inner face carrying a lit strip that washes the raised centre

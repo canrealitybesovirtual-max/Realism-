@@ -987,6 +987,80 @@ function cooktop(B, M, x, y, z, ry) {
   }
 }
 
+
+// ---- dressing hall (apartment-07) -----------------------------------------------------------
+// vanity table: white lacquer top on two fluted pill-section pedestals (two grooves a face);
+// local x along the wall, the front faces +z
+function flutedLeg(w, d, h) {
+  const sh = new THREE.Shape(), N = 96, r = d / 2, half = w / 2 - r;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N * Math.PI * 2;
+    // stadium outline (two half circles joined by flats), grooves cut into the flats
+    let px, py;
+    const per = 4 * half + 2 * Math.PI * r, s = t / (Math.PI * 2) * per;
+    if (s < 2 * half) { px = -half + s; py = -r; }
+    else if (s < 2 * half + Math.PI * r) { const a = -Math.PI / 2 + (s - 2 * half) / r; px = half + Math.cos(a) * r; py = Math.sin(a) * r; }
+    else if (s < 4 * half + Math.PI * r) { px = half - (s - 2 * half - Math.PI * r); py = r; }
+    else { const a = Math.PI / 2 + (s - 4 * half - Math.PI * r) / r; px = -half + Math.cos(a) * r; py = Math.sin(a) * r; }
+    if (Math.abs(py) > r * 0.99) { const g = Math.exp(-Math.pow((Math.abs(px) - half * 0.0) / (w * 0.07), 2)); py -= Math.sign(py) * 0.007 * g; }
+    if (i) sh.lineTo(px, py); else sh.moveTo(px, py);
+  }
+  const g = new THREE.ExtrudeGeometry(sh, { depth: h, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.006, bevelSegments: 3, curveSegments: 8 }).toNonIndexed();
+  g.rotateX(-Math.PI / 2); g.translate(0, 0.006, 0); g.computeVertexNormals(); metricUV(g);
+  return g;
+}
+function dressVanity(B, M, x, z, ry, L = 1.15, D = 0.45) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  add(at(rbox(L, 0.045, D, 0.012, 3), 0, 0.735, 0), M.lacquerWhite);
+  for (const u of [-1, 1]) add(at(flutedLeg(0.17, 0.12, 0.7), u * (L / 2 - 0.16), 0, 0), M.lacquerWhite);
+  // on top: two books, a small tray with a bottle
+  add(at(rbox(0.3, 0.025, 0.21, 0.003, 1), -L / 2 + 0.22, 0.77, 0.04, 0.06), M.bookCream);
+  add(at(rbox(0.27, 0.02, 0.19, 0.003, 1), -L / 2 + 0.22, 0.793, 0.04, -0.03), M.bookBlack);
+  add(at(rbox(0.22, 0.012, 0.13, 0.004, 1), L / 2 - 0.25, 0.764, -0.05), M.brass);
+  add(at(lathe([[0, 0], [0.024, 0], [0.026, 0.06], [0.01, 0.075], [0.008, 0.09], [0, 0.09]], 24), L / 2 - 0.28, 0.77, -0.05), M.lacquer);
+  B.colliders.push({ t: 'obox', c: [x, 0.38, z], h: [L / 2, 0.38, D / 2], yaw: ry, mat: M.lacquerWhite });
+}
+// barrel stool: white bouclé tub, the back higher than the sides (apartment-07)
+function barrelStool(B, M, x, z, ry) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  add(lathe([[0, 0.02], [0.2, 0.02], [0.225, 0.06], [0.23, 0.3], [0.215, 0.44], [0.17, 0.465], [0, 0.47]], 40), M.boucle);
+  // the back: a thick curved band round the rear 200 degrees, rounded top
+  add(rboxArc(0.15, 0.235, 0.42, 0.78, Math.PI - 1.75, Math.PI + 1.75, 0.035, 40), M.boucle);
+  add(lathe([[0, 0], [0.19, 0], [0.19, 0.02], [0, 0.02]], 32), M.blackMetal);
+  B.colliders.push({ t: 'obox', c: [x, 0.39, z], h: [0.23, 0.39, 0.23], yaw: ry, mat: M.boucle });
+}
+// big floor-standing-height mirror hung on the wall over the vanity, pale grey lacquered frame
+function framedMirror(B, M, x, y, z, w, h, face) {
+  const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  B.add(at(new THREE.PlaneGeometry(w, h).toNonIndexed().translate(0, 0, 0.012), x, y, z, ry), M.mirror);
+  const f = 0.055, d = 0.045;
+  for (const [u, v, ww, hh] of [[0, h / 2 + f / 2, w + 2 * f, f], [0, -h / 2 - f / 2, w + 2 * f, f], [-w / 2 - f / 2, 0, f, h], [w / 2 + f / 2, 0, f, h]]) {
+    B.add(at(rbox(ww, hh, d, 0.008, 2).translate(u, v, d / 2), x, y, z, ry), M.frameGrey);
+  }
+}
+// onyx plinth with a white carved sculpture on a black puck (apartment-07)
+function sculpturePlinth(B, M, x, z, w = 0.3, h = 1.02, seed = 3) {
+  B.add(at(rbox(w, h, w, 0.004, 1), x, h / 2, z), M.onyx);
+  B.colliders.push({ t: 'box', min: [x - w / 2, 0, z - w / 2], max: [x + w / 2, h, z + w / 2], mat: M.onyx });
+  B.add(at(lathe([[0, 0], [0.05, 0], [0.05, 0.08], [0, 0.08]], 32), x, h, z), M.blackMetal);
+  // two leaning petals (pinched ovoids), sheared and turned against each other
+  for (const [k, lean, tw, sc] of [[0, 0.16, 0.4, 1], [1, -0.22, -0.9, 0.82]]) {
+    const pr = []; for (let i = 0; i <= 18; i++) { const t = i / 18; pr.push([0.055 * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.05)), 0.8) * (1 - 0.35 * t) + 0.002, t * 0.42 * sc]); }
+    pr[pr.length - 1][0] = 0;
+    const g = lathe(pr, 32); g.scale(1.35, 1, 0.55);
+    const pos = g.attributes.position; for (let i = 0; i < pos.count; i++) { const yy = pos.getY(i); pos.setX(i, pos.getX(i) + lean * yy * yy / 0.42); }
+    g.computeVertexNormals();
+    B.add(at(g, x + (k ? 0.025 : -0.02), h + 0.075, z, tw), M.sculpt);
+  }
+}
+// upholstered bench: soft cushioned top on a dark recessed plinth
+function dressBench(B, M, x, z, ry, L = 1.45, D = 0.42) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  add(at(cushion(L, 0.2, D, 0.09, 0.025), 0, 0.27, 0), M.benchFabric);
+  add(at(rbox(L - 0.18, 0.17, D - 0.14, 0.03, 2), 0, 0.085, 0), M.woodDark);
+  B.colliders.push({ t: 'obox', c: [x, 0.22, z], h: [L / 2, 0.22, D / 2], yaw: ry, mat: M.benchFabric });
+}
+
 // ---- the painting's texture ----------------------------------------------------------------
 function paintingTexture() {
   // an original abstract in apartment-17's palette, painted as layers of translucent brush
@@ -1193,6 +1267,9 @@ function furnitureMaterials(M, Q) {
   M.bookCream = new THREE.MeshStandardMaterial({ color: '#d9cfbf', roughness: 0.7 });
   M.bookGrey = new THREE.MeshStandardMaterial({ color: '#8a8580', roughness: 0.7 });
   M.bookBlack = new THREE.MeshStandardMaterial({ color: '#1d1c1b', roughness: 0.6 });
+  M.frameGrey = phys({ color: '#c9c6c0', roughness: 0.35 }, { clearcoat: 0.5, clearcoatRoughness: 0.15 });
+  M.sculpt = new THREE.MeshStandardMaterial({ color: '#eeebe5', roughness: 0.42 });
+  M.benchFabric = M.boucle;
   M.duvet = M.linen.clone(); M.duvet.color = new THREE.Color('#ece5da');
   M.throwSand = M.linen.clone(); M.throwSand.color = new THREE.Color('#c9b39a');
   M.nickel = new THREE.MeshStandardMaterial({ color: '#8e8a83', metalness: 1, roughness: 0.06 });
@@ -1336,6 +1413,16 @@ export function furnish(M, Q) {
   });
   blobMirror(B, M, 10.45, F2 + 1.55, 14.495, 0.7, 1.0, '+z');
 
+  // dressing hall (apartment-07), the primary closet: vanity and a tall mirror on the south wall,
+  // barrel stool, onyx plinth with a sculpture at the opening, bench and prints on the west wall
+  up((b) => {
+    dressVanity(b, M, 4.35, 9.36, Math.PI);
+    barrelStool(b, M, 4.35, 8.95, 0);
+    framedMirror(b, M, 4.35, 1.66, 9.6, 1.05, 1.62, '-z');
+    sculpturePlinth(b, M, 5.85, 9.3);
+    dressBench(b, M, 3.7, 8.45, Math.PI / 2, 1.2, 0.4);
+    print(b, M, 3.47, 2.15, 8.45, 0.46, 0.52, '+x', M.lineArt1); print(b, M, 3.47, 1.42, 8.45, 0.56, 0.5, '+x', M.lineArt2);
+  });
   // upper landing (apartment-11): a bust on a travertine plinth by the tall door; foot of the
   // stair (apartment-12): a bronze drum table
   up((b) => {
