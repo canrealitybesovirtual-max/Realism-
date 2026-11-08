@@ -50873,6 +50873,7 @@ function aptViewTick() {
   if (A.hemi) A.hemi.intensity = inA ? (A.surfDone ? 0.12 : A.vol ? APT.hemiVol : APT.hemiI) : 0;   // after the probe bake the probes carry the bounce
   if (A.vol && A.mod && A.mod[5]) A.mod[5].FIN.u.uFinV.value.set(1, APT.volK, A.hemi && A.hemi.intensity > 0 ? 0.12 / A.hemi.intensity : 1, 0);   // apartment surfaces: the volume, hemisphere down to 0.12; men and guns keep hemiVol
   if (!A.surf) aptLookTick(A, inA);                              // APARTMENT LOOK: sun shadow, downlights, apartment frame
+  aptPvsExtrasTick(A.room);                                       // APT PVS: loose things behind walls are not drawn
   if (A.mirTick) A.mirTick(inA && A.room.visible !== false ? (renderer.xr.isPresenting ? renderer.xr.getCamera() : camera) : null);   // the nearest mirror you face reflects for real
   if (A.surf) {
     A.surf.syncFrame();                                           // floating origin / room placement: shaders read apartment coordinates
@@ -50901,13 +50902,59 @@ function aptViewTick() {
 const APT_PVS = { off: /[?&]aptpvs=off\b/.test(QS), frame: -1, cam: null, x: 0, y: 0, z: 0, set: null, m: new THREE.Matrix4(), v: new THREE.Vector3(), stats: { culled: 0 } };
 function aptPvsStart(room, G, bms) {
   if (APT_PVS.off || !bms.length) return;
-  import('../world/src/pvs.js').then((PV) => {
+  import('../world/src/pvs.js').then(async (PV) => {
+    for (let k = 0; k < 120 && !(room.active && room.aptProps && room.aptx); k++) await new Promise((r) => setTimeout(r, 250));   // the loose things exist once the room is active
     if (!room.active && !room.built) return;
+    const ex = aptPvsExtras(room, G);
     const qn = (k) => { const m = QS.match(new RegExp('[?&]' + k + '=([0-9.]+)')); return m ? +m[1] : undefined; };
-    const P = room.aptPVS = PV.bakePVS(renderer, G, bms, { cell: qn('aptpvscell'), px: qn('aptpvspx'), busy: () => performance.now() - TICK_AT < 800, delay: 300, onReady: (p) => console.info('apartment PVS ready', p.cells, 'cells', p.N, 'chunks') });
+    const P = room.aptPVS = PV.bakePVS(renderer, G, bms, { cell: qn('aptpvscell'), px: qn('aptpvspx'), extras: ex.map((e) => e.meshes), busy: () => performance.now() - TICK_AT < 800, delay: 300, onReady: (p) => console.info('apartment PVS ready', p.cells, 'cells', p.N, 'chunks') });
+    room.aptPvsX = ex;
     if (P.cached) console.info('apartment PVS from cache');
     for (const bm of bms) bm.userData.pvsCull = (cam, info) => aptPvsCull(room, bm, cam, info);
   }).catch((e) => console.warn('apartment PVS off', e));
+}
+// Loose things culled too (each its own draws): furniture props, hanging fittings / vases (breakables), mirrors (a culled
+// mirror also skips its reflection pass). One id each in the bake; at run time hidden from the camera (layer 0 off, so
+// shadows, raycasts and other cameras' layers follow) while outside the cell's set, farther than NEAR and still where
+// they were baked; a prop that moved, is held, or a fitting that broke or fell is always drawn.
+const _pxV = new THREE.Vector3(), _pxM = new THREE.Matrix4();
+function aptPvsExtras(room, G) {
+  const out = [], meshesOf = (o) => { const L = []; o.traverse((m) => { if (m.isMesh && !m.isSkinnedMesh && !m.isInstancedMesh) L.push(m); }); return L; };
+  G.updateMatrixWorld(true); _pxM.copy(G.matrixWorld).invert();
+  for (const p of room.aptProps || []) if (p.root) out.push({ kind: 'prop', ref: p, meshes: meshesOf(p.root), home: p.root.getWorldPosition(new THREE.Vector3()).applyMatrix4(_pxM) });
+  for (const e of (room.aptx && room.aptx.list) || []) out.push({ kind: 'brk', ref: e, meshes: meshesOf(e.holder || e.group) });
+  for (const mi of (room.aptx && room.aptx.mirrors) || []) out.push({ kind: 'mir', ref: mi, meshes: [mi.mesh] });
+  return out.filter((e) => e.meshes.length);
+}
+function aptPvsExtrasTick(room) {
+  const P = room && room.aptPVS, X = room && room.aptPvsX; if (!X) return;
+  let set = null, cx = 0, cy = 0, cz = 0;
+  const on = P && P.ready && P.N > P.NC && !room.aptPvsOff && !APT_PVS.off && stream.current === room;
+  if (on) {
+    const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+    _pxM.copy(room.aptG.matrixWorld).invert();
+    _pxV.setFromMatrixPosition(c.matrixWorld).applyMatrix4(_pxM); cx = _pxV.x; cy = _pxV.y; cz = _pxV.z;
+    set = P.setAt(cx, cy, cz);
+  }
+  for (let j = 0; j < X.length; j++) {
+    const e = X[j];
+    let vis = true;
+    if (set) {
+      const g = P.NC + j;
+      if (!(set[g >> 3] & (1 << (g & 7)))) {
+        const dx = P.cx[g] - cx, dy = P.cy[g] - cy, dz = P.cz[g] - cz, r = P.cr[g] + P.NEAR;
+        vis = dx * dx + dy * dy + dz * dz < r * r;
+        if (!vis) {
+          const f = e.ref;
+          if (e.kind === 'prop') vis = !f.root || !f.root.parent || (f.holders && f.holders.length) || f.root.getWorldPosition(_pxV).applyMatrix4(_pxM).distanceToSquared(e.home) > 0.09;
+          else if (e.kind === 'brk') vis = !!(f.broken || f.dropped || f.fall);
+        }
+      }
+    }
+    if (e.off === !vis) continue;
+    e.off = !vis;
+    for (const m of e.meshes) { if (vis) m.layers.mask |= 1; else m.layers.mask &= ~1; }
+  }
 }
 function aptPvsCull(room, bm, cam, info) {
   const P = room.aptPVS; if (!P || !P.ready || room.aptPvsOff || APT_PVS.off) return;
@@ -51215,7 +51262,7 @@ function aptPanelTick() {
   if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; aptBlink(true); } else if (!APT_RAID.mode) aptBlink(false);   // the security screen blinks red while a raid is on
   if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT_PVS, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT_PVS, aptPvsExtrasTick, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 /* =========================================================================
  *  APARTMENT LOOK (?aptsun=off, ?aptlook=off): the surfaces and the shadows of the apartment without surface.js.

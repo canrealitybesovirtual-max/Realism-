@@ -6,6 +6,8 @@
 // At run time the game hides chunks outside the set of the cell the camera is in (between floors: both floors'),
 // keeps every chunk within NEAR (3.5) m of the camera, and draws everything where no set exists (outside, not baked yet).
 // Nothing that moves is an occluder (doors, furniture props, men are not chunks), so open doorways count as open.
+// Loose things (opts.extras) get an id too and are marked where the chunks leave them in view (the game culls them
+// only while they are still where they were baked).
 // The picture stays the same; only what walls and floors hide is skipped.
 import * as THREE from 'three';
 
@@ -17,11 +19,28 @@ const FRAG = /* glsl */`
 varying float vId;
 void main() { float i = floor( vId + 0.5 ) + 1.0; gl_FragColor = vec4( mod( i, 256.0 ) / 255.0, floor( i / 256.0 ) / 255.0, 1.0, 1.0 ); }`;
 
+// loose things (opts.extras: furniture props, fittings, mirrors): one id per object, drawn after the chunks with no
+// depth write, so they are marked where a chunk does not hide them but never hide anything themselves (they move)
+const VERT_X = /* glsl */`
+uniform float uId;
+varying float vId;
+void main() { vId = uId; gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 ); }`;
+
 const DIRS = [[1, 0, 0, 0, -1, 0], [-1, 0, 0, 0, -1, 0], [0, 1, 0, 0, 0, 1], [0, -1, 0, 0, 0, -1], [0, 0, 1, 0, -1, 0], [0, 0, -1, 0, -1, 0]];
 
 // the ID scene: every batch's whole buffer as one mesh with a per-vertex chunk id (shares the batch's buffers)
-export function makeIdScene(batches, base, inv) {
+export function makeIdScene(batches, base, inv, extras = [], N = 0) {
   const scene = new THREE.Scene(), mats = [], geos = [];
+  extras.forEach((list, j) => {
+    const m = new THREE.ShaderMaterial({ vertexShader: VERT_X, fragmentShader: FRAG, side: THREE.DoubleSide, toneMapped: false, depthWrite: false, uniforms: { uId: { value: N + j } } });
+    mats.push(m);
+    for (const src of list) {
+      if (!src.isMesh || src.isSkinnedMesh || src.isInstancedMesh || src.isBatchedMesh || !src.geometry || !src.geometry.attributes.position) continue;
+      src.updateWorldMatrix(true, false);
+      const mesh = new THREE.Mesh(src.geometry, m); mesh.matrixAutoUpdate = false; mesh.frustumCulled = false; mesh.renderOrder = 2;
+      mesh.matrix.multiplyMatrices(inv, src.matrixWorld); scene.add(mesh);
+    }
+  });
   for (const bm of batches) {
     const g = new THREE.BufferGeometry(), src = bm.geometry, nv = src.attributes.position.count, id = new Float32Array(nv), b0 = base.get(bm);
     for (let i = 0; i < bm._geometryInfo.length; i++) { const G = bm._geometryInfo[i]; id.fill(b0 + i, G.vertexStart, G.vertexStart + G.vertexCount); }
@@ -49,6 +68,7 @@ export function bakePVS(renderer, root, batches, opts = {}) {
   // global chunk ids and their spheres in the root's space
   let N = 0; const base = new Map();
   for (const bm of batches) { base.set(bm, N); N += bm._instanceInfo.length; }
+  const extras = opts.extras || [], NC = N; N += extras.length;   // ids NC.. are the loose things
   const cx = new Float32Array(N), cy = new Float32Array(N), cz = new Float32Array(N), cr = new Float32Array(N);
   const sph = new THREE.Sphere(), rel = new THREE.Matrix4();
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, sig = N * 7;
@@ -62,11 +82,19 @@ export function bakePVS(renderer, root, batches, opts = {}) {
       sig = (sig * 31 + Math.round(sph.center.x * 100 + sph.center.y * 37 + sph.center.z * 71 + sph.radius * 13)) | 0;
     }
   }
+  const bx = new THREE.Box3(), bb = new THREE.Box3();
+  extras.forEach((list, j) => {
+    bx.makeEmpty();
+    for (const m of list) if (m.geometry) { if (!m.geometry.boundingBox) m.geometry.computeBoundingBox(); m.updateWorldMatrix(true, false); bb.copy(m.geometry.boundingBox).applyMatrix4(rel.multiplyMatrices(inv, m.matrixWorld)); bx.union(bb); }
+    const g = NC + j; if (bx.isEmpty()) { cr[g] = 1e9; return; }
+    bx.getBoundingSphere(sph); cx[g] = sph.center.x; cy[g] = sph.center.y; cz[g] = sph.center.z; cr[g] = sph.radius;
+    sig = (sig * 31 + Math.round(sph.center.x * 100 + sph.center.y * 37 + sph.center.z * 71)) | 0;
+  });
   const nx = Math.max(1, Math.ceil((x1 - x0) / cs)), nz = Math.max(1, Math.ceil((z1 - z0) / cs)), NL = levels.length;
   const NB = (N + 7) >> 3, cells = nx * nz * NL;
   const P = {
-    N, base, cx, cy, cz, cr, nx, nz, x0, z0, cs, NEAR, NB, ready: false, done: 0, cells,
-    bits: new Uint8Array(cells * NB), key: `pvs2:${N}:${nx}x${nz}x${NL}:${cs}:${S}:${sig}`,
+    N, NC, base, cx, cy, cz, cr, nx, nz, x0, z0, cs, NEAR, NB, ready: false, done: 0, cells,
+    bits: new Uint8Array(cells * NB), key: `pvs3:${NC}+${N - NC}:${nx}x${nz}x${NL}:${cs}:${S}:${sig}`,
     _u: new Uint8Array(NB),
     // the set for a point in the root's space; null = draw everything
     setAt(x, y, z) {
@@ -86,7 +114,7 @@ export function bakePVS(renderer, root, batches, opts = {}) {
     if (s) { const o = JSON.parse(s); if (o.key === P.key) { const b = atob(o.b); for (let i = 0; i < b.length && i < P.bits.length; i++) P.bits[i] = b.charCodeAt(i); P.ready = true; P.cached = true; return P; } }
   } catch (e) { /* bake again */ }
 
-  const { scene, mats, geos } = makeIdScene(batches, base, inv);
+  const { scene, mats, geos } = makeIdScene(batches, base, inv, extras, NC);
   scene.updateMatrixWorld(true);
   const cam = new THREE.PerspectiveCamera(90, 1, 0.03, 90);
   const raw = new Uint8Array(cells * NB);          // seen from the cell's own samples
