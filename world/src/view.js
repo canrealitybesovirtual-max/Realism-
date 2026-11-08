@@ -31,6 +31,7 @@ void main(){
   vec4 c = texture2D(uMap, vUv);
   if (uMix > 0.0) c = mix(c, texture2D(uMapB, vUv), uMix);   // time of day: the next sun's bake
   gl_FragColor = vec4(c.rgb * uGain, c.a * uOp);       // baked already tone-mapped: only the output encoding (uGain: daylight level for the room probes)
+  #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
 
@@ -40,6 +41,10 @@ const SKY_H = [0.000, 0.017, 0.043, 0.079, 0.129, 0.198, 0.277, 0.351, 0.419, 0.
 const SKY_C = [[0.440, 0.560, 0.670], [0.410, 0.530, 0.664], [0.400, 0.526, 0.650], [0.392, 0.522, 0.648], [0.3312, 0.5038, 0.6823], [0.2423, 0.4501, 0.6804], [0.1763, 0.3840, 0.6734], [0.1194, 0.3277, 0.6408], [0.0773, 0.2643, 0.6137], [0.0508, 0.2176, 0.5610], [0.0305, 0.1850, 0.5330], [0.0203, 0.1567, 0.4937]];
 // uGain: one shared uniform, 1 on screen; the room probes capture the outside at daylight level
 const GAIN = { value: new THREE.Vector3(1, 1, 1) };
+// toneMap(true) (CQC): the city faces go through the renderer's tone mapping like the sky dome. A game that draws
+// straight to the screen (CQC in the headset, Max FPS) otherwise clipped the faces x uGain to pure white beside the
+// tone-mapped dome; through a post chain (render target) three skips both, so the look there is unchanged.
+const TM = { on: false };
 function skyMaterial(look, sun) {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false,
@@ -190,7 +195,7 @@ export async function buildView(scene, renderer, Q) {
       const z = d.clone().negate(), x = new THREE.Vector3().crossVectors(up, z).normalize(), y = new THREE.Vector3().crossVectors(z, x);
       const mat = new THREE.ShaderMaterial({
         uniforms: { uCmp: CMP, uCmpR: CMPR, uGain: GAIN, uMap: { value: map }, uMapB: { value: map }, uMix: { value: 0 }, uDist: { value: dist }, uO: { value: p.world }, uD: { value: d }, uX: { value: x }, uY: { value: y }, uOp: { value: 0 } },
-        vertexShader: CITY_VS, fragmentShader: CITY_FS, transparent: true, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+        vertexShader: CITY_VS, fragmentShader: CITY_FS, transparent: true, depthWrite: false, toneMapped: TM.on, side: THREE.DoubleSide,
       });
       // one mesh per face quadrant: its cluster indices and the cone of directions it covers
       const quads = clusterFace(dist.image.data, N, minStep, d, x, y);
@@ -244,6 +249,10 @@ export async function buildView(scene, renderer, Q) {
     // squeeze the city into r0..r0+r1 m from the eye (CQC's near camera range); the sky dome to radius r0+r1
     compress(on, r0 = 30, r1 = 27) { CMP.value.w = on ? 1 : 0; CMPR.value.set(r0, r1, 2500, 0); sky.scale.setScalar(on ? (r0 + r1 + 0.5) / 5000 : 1); },
     setGain(k) { if (typeof k === 'number') GAIN.value.setScalar(k); else GAIN.value.set(...k); },
+    toneMap(on) {
+      TM.on = !!on;
+      for (const p of probes) if (p.group) for (const m of p.group.children) if (m.material.toneMapped !== TM.on) { m.material.toneMapped = TM.on; m.material.needsUpdate = true; }
+    },
     get sunName() { return suns[si].name; },
     // fade to the next baked time of day (2.5 s); the sun light and sky follow
     async nextSun() {
