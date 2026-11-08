@@ -1675,3 +1675,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Headset KTX2 textures (encoded, off until tested)
 - world/city/quest/*.ktx2 (90 city faces, 154 MB) and world/textures/scans/quest/*.ktx2 (53 scans, 23 MB): UASTC via ktx2-encoder, y-flipped at encode. view.js / materials.js load them with three's KTX2Loader (vendored transcoder) when the switches are on: manifest questKtx2 and SCANS_KTX2, both false until a headset-path test (?q=quest&ktx2=force) passes.
+
+## fogline/ (separate mobile horror game, Vite + TypeScript + three r169)
+- The user's own project, pasted in parts and assembled here. `npm install`, `npm run dev` (or `npm run build` → dist/). Not linked from the apartment or the other games.
+- Loop: find 3 fuse parts (street + shop), restore power at the wall fuse box (-7.86, -15), escape north through the gate into the alley (win past z -23). Enemy patrols, sees in a 115° cone (further when your torch is on), hears running, routes through the shop doorway, chases the last place it saw you. Pickups, crafting (repaired battery, medkit), autosave (30 s, on pause / hide / pagehide, never when dead), settings, quality auto-step-down, title / pause / end screens, touch + keyboard/mouse (pointer lock; losing it pauses).
+- Render: RenderPass → OutputPass (tone mapping + sRGB) → screen FX (vignette, grain, aberration, low-health desaturation). Values were tuned after adding OutputPass (it brightens darks): window panes and beam opacity are low on purpose.
+- Checked headless (Chromium/SwiftShader): no page errors; play-through (all pickups, craft, fuse box, gate, win), death → load save, keyboard panels, enemy chase and shop routing. Not checked on a phone or by ear.
