@@ -531,6 +531,21 @@ function bed(B, M, x, z, ry, W = 2.05, Lb = 2.2, hbMat = null, HWx = 1.4) {
   for (let i = 0; i < nch; i++) { const u = -HW / 2 + HW * (i + 0.5) / nch; add(at(rbox(HW / nch - 0.008, HB, 0.09, hbMat ? 0.006 : 0.035), u, 0.62 + HB / 2 - 0.1, -Lb / 2 - 0.06), hbMat || M.boucleTaupe); }
   B.colliders.push({ t: 'obox', c: [x, 0.35, z], h: [W / 2, 0.35, Lb / 2], yaw: ry, mat: M.linen });
 }
+// counter stool (plan: three at the kitchen peninsula): upholstered round seat with a crowned
+// top and a welt, four slim bronze legs splayed, a foot ring
+function counterStool(B, M, x, z, ry = 0) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  const H = 0.66;
+  add(lathe([[0, 0], [0.2, 0], [0.215, 0.02], [0.21, 0.055], [0.18, 0.075], [0.1, 0.085], [0, 0.088]], 32).translate(0, H - 0.06, 0), M.boucleTaupe);
+  add(lathe([[0.2, 0], [0.212, 0.004], [0.2, 0.008]], 32).translate(0, H - 0.04, 0), M.boucleTaupe);   // welt
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + k * Math.PI / 2, c = Math.cos(a), sn = Math.sin(a);
+    add(tubeGeo([[c * 0.24, 0.0, sn * 0.24], [c * 0.2, H * 0.5, sn * 0.2], [c * 0.15, H - 0.06, sn * 0.15]], 0.011), M.bronzeLight);
+  }
+  const ring = []; for (let i = 0; i <= 32; i++) { const a = i / 32 * Math.PI * 2; ring.push([Math.cos(a) * 0.2, 0.24, Math.sin(a) * 0.2]); }
+  add(tubeGeo(ring, 0.008), M.bronzeLight);
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [0.22, H / 2, 0.22], yaw: ry, mat: M.boucleTaupe });
+}
 function nightstand(B, M, x, z, ry) {
   // walnut case on a recessed plinth, two drawers with 3 mm reveals, bronze bar pulls
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
@@ -1252,6 +1267,8 @@ export function furnish(M, Q) {
   tallUnit(B, M, 13.65, 11.4, Math.PI / 2, 2.4, 2.35);
   kitchenRun(B, M, 13.65, 13.35, Math.PI / 2, 1.5, { uppers: false });
   kitchenRun(B, M, 15.4, 15.61, Math.PI, 2.6, { uppers: false, outlets: false, splash: false });     // the L-return toward the window (apartment-15)
+  B.add(at(counter(2.6, 0.3, 0.03), 15.4, 0.92, 16.06), M.stone);                    // seating overhang on the window side
+  for (const u of [14.65, 15.4, 16.15]) counterStool(B, M, u, 16.36);
   // breakfast room (apartment-14): banquette on the pantry wall, oval dark oak table, chairs,
   // faceted glass pendants
   banquette(B, M, 11.65, 14.35, 0, 2.6);
