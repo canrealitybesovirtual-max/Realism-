@@ -50536,6 +50536,7 @@ function aptViewTick() {
       setTimeout(() => { try { A.surf.bake(); A.surfDone = true; renderer.shadowMap.needsUpdate = true; } catch (e) { console.warn('apartment probes not baked', e); } }, 0);
     }
   }
+  if (!A.surf && A.view && !A.envDone && inA) { A.envDone = true; setTimeout(aptEnvCapture, 0); }   // the real city as the apartment's reflections (once)
   if (!A.view || !A.room.aptG) return;
   const now = performance.now() / 1000, dt = Math.min(0.1, now - (_aptLast || now)); _aptLast = now;
   const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
@@ -50543,6 +50544,39 @@ function aptViewTick() {
   A.view.world.visible = A.view.sky.visible = A.room.visible !== false;
   A.view.update(APT_CAM, dt);
 }
+// Reflections without the full probe bake: one cube capture of the sky and the baked city (alone, uncompressed) from the
+// great hall, prefiltered, set as the envMap of every lit apartment material. Glossy oak, stone, lacquer, metal and glass
+// then mirror the real view; envMapIntensity by finish (glossy more, matte less) so the rooms do not glow.
+function aptEnvCapture() {
+  const A = APTS; if (!A || !A.view || !A.room || !A.room.aptG) return;
+  const V = A.view, G = A.room.aptG, tmp = new THREE.Scene();
+  try {
+    V.compress(false);
+    tmp.add(V.world, V.sky);
+    const rt = new THREE.WebGLCubeRenderTarget(XR_LOW() ? 128 : 256, { type: THREE.HalfFloatType });
+    const cc = new THREE.CubeCamera(1, 100000, rt); cc.position.set(8.8, 1.6, 4.0); tmp.add(cc);
+    const xr = renderer.xr.enabled; renderer.xr.enabled = false;
+    const prevT = renderer.getRenderTarget();
+    cc.update(renderer, tmp);
+    renderer.setRenderTarget(prevT); renderer.xr.enabled = xr;
+    const pm = new THREE.PMREMGenerator(renderer), env = pm.fromCubemap(rt.texture).texture;
+    pm.dispose(); rt.dispose();
+    A.env = env;
+    const seen = new Set();
+    G.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        if (seen.has(m) || !m.isMeshStandardMaterial || m.envMap) continue;
+        seen.add(m);
+        const gloss = 1 - (m.roughness ?? 1);
+        m.envMap = env; m.envMapIntensity = 0.18 + 0.55 * gloss + (m.metalness || 0) * 0.3 + (m.clearcoat || 0) * 0.15;
+        m.needsUpdate = true;
+      }
+    });
+  } catch (e) { console.warn('apartment reflections not captured', e); }
+  G.add(V.world, V.sky); V.compress(true);
+}
+const XR_LOW = () => /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on;
 // Once the apartment is up, you are put in it (only at the start of a visit; a death respawns you in the safe room).
 function aptTick() {
   const A = APTS; if (!A || A.placed || !A.room || !A.room.active || yardModeNow() !== 'apt') return;
@@ -50561,52 +50595,65 @@ function aptTick() {
   _vel.set(0, 0, 0); playerState.hasPrev = false;
 }
 
-// ---- the front door's panel (wall beside the vestibule): GO to the Interstate, bring in an enemy at the far end, clear them.
-// Desktop: the dot on it and E / click (termDeskPress); headset: a fingertip on the glass (glassFinger, as the terminal).
-const APTP = { w: 0.4, h: 0.32, px: 800, mesh: null, ctx: null, tex: null, hover: null, hands: new Map(), deskHit: null, btns: [], leaving: false };
+// ---- panels in the apartment: the front door's (wall beside the vestibule: where the door goes, Interstate, enemies) and
+// the library computer's (raids). Desktop: the dot on one and E / click (termDeskPress); headset: a fingertip on the glass.
+function aptPanelMake(cfg) {
+  const P = { ...cfg, mesh: null, ctx: null, tex: null, hover: null, hands: new Map(), deskHit: null, btns: [] };
+  const cv = document.createElement('canvas'); cv.width = P.px; cv.height = Math.round(P.px * P.h / P.w);
+  P.ctx = cv.getContext('2d'); P.tex = new THREE.CanvasTexture(cv); P.tex.colorSpace = THREE.SRGBColorSpace; P.tex.anisotropy = 8;
+  P.mesh = new THREE.Mesh(new THREE.PlaneGeometry(P.w, P.h), new THREE.MeshBasicMaterial({ map: P.tex, toneMapped: false }));
+  if (P.bezel) { const bez = new THREE.Mesh(new THREE.BoxGeometry(P.w + 0.03, P.h + 0.03, 0.012), new THREE.MeshStandardMaterial({ color: '#6b5236', metalness: 1, roughness: 0.35 })); bez.position.z = -0.007; P.mesh.add(bez); }
+  return P;
+}
+const APTP = aptPanelMake({ w: 0.4, h: 0.32, px: 800, bezel: true, pos: [3.476, 1.38, 12.15], title: 'Front door' });
+const APTC = aptPanelMake({ w: 0.6, h: 0.34, px: 1024, bezel: false, pos: [13.021, 5.78, 2.9], title: 'Apartment security' });   // the library desk's monitor (furniture.js screen)
+const APT_PANELS = [APTP, APTC];
 function aptPanelBuild(room) {
-  const P = APTP;
-  if (!P.mesh) {
-    const cv = document.createElement('canvas'); cv.width = P.px; cv.height = Math.round(P.px * P.h / P.w);
-    P.ctx = cv.getContext('2d'); P.tex = new THREE.CanvasTexture(cv); P.tex.colorSpace = THREE.SRGBColorSpace; P.tex.anisotropy = 8;
-    P.mesh = new THREE.Mesh(new THREE.PlaneGeometry(P.w, P.h), new THREE.MeshBasicMaterial({ map: P.tex, toneMapped: false }));
-    const bez = new THREE.Mesh(new THREE.BoxGeometry(P.w + 0.03, P.h + 0.03, 0.012), new THREE.MeshStandardMaterial({ color: '#6b5236', metalness: 1, roughness: 0.35 }));
-    bez.position.z = -0.007; P.mesh.add(bez);
-  }
-  // apartment frame: on the hallway's west wall (x 3.46, facing +x) beside the vestibule, at z 12.15
-  P.mesh.position.set(3.476, 1.38, 12.15); P.mesh.rotation.set(0, Math.PI / 2, 0);
-  room.aptG.add(P.mesh);
+  for (const P of APT_PANELS) { P.mesh.position.set(...P.pos); P.mesh.rotation.set(0, Math.PI / 2, 0); room.aptG.add(P.mesh); }
   aptPanelDraw();
 }
-function aptPanelDraw() {
-  const P = APTP, c = P.ctx, W = c.canvas.width, H = c.canvas.height, k = W / 800;
-  c.fillStyle = '#0d1014'; c.fillRect(0, 0, W, H);
-  c.fillStyle = '#e9e4da'; c.font = `600 ${40 * k}px system-ui, sans-serif`; c.textBaseline = 'middle'; c.fillText('Front door', 36 * k, 50 * k);
-  c.fillStyle = '#8f99a6'; c.font = `${22 * k}px system-ui, sans-serif`; c.fillText(APTS && APTS.go ? 'The door is open.' : 'Pick where the door goes:', 36 * k, 86 * k);
-  const n = ENEMY.list.filter((e) => e.room && e.room.apt && !e.dead).length;
-  const go = APTS && APTS.go, on = (g) => (go === g ? '#2c4e78' : '#22303c');
-  const rows = [['cqc', go === 'cqc' ? 'CQC loop  ✓ door open' : 'CQC loop', on('cqc')], ['outdoor', go === 'outdoor' ? 'Outpost 17  ✓ door open' : 'Outpost 17 (outdoor)', on('outdoor')],
-    ['go', P.leaving ? 'Leaving…' : 'Interstate  ›', '#2f6f3f'], ['enemy', `+ Enemy at the far end${n ? ' (' + n + ')' : ''}`, '#3a2a22'], ['clear', 'Clear enemies', '#22262c']];
-  P.btns = []; let y = 112 * k;
-  for (const [id, label, col] of rows) {
-    const r = [36 * k, y, W - 72 * k, 68 * k];
-    c.fillStyle = P.hover === id ? '#4a5563' : col; c.beginPath(); c.roundRect(r[0], r[1], r[2], r[3], 14 * k); c.fill();
-    c.fillStyle = '#fff'; c.font = `600 ${30 * k}px system-ui, sans-serif`; c.textAlign = 'center'; c.fillText(label, W / 2, r[1] + r[3] / 2); c.textAlign = 'left';
-    P.btns.push({ id, r }); y += 78 * k;
+function aptRows(P) {
+  const n = ENEMY.list.filter((e) => e.room && e.room.apt && !e.dead).length, R = APT_RAID;
+  if (P === APTP) {
+    const go = APTS && APTS.go, on = (g) => (go === g ? '#2c4e78' : '#22303c');
+    return { note: go ? 'The door is open.' : 'Pick where the door goes:', rows: [['cqc', go === 'cqc' ? 'CQC loop  ✓ door open' : 'CQC loop', on('cqc')], ['outdoor', go === 'outdoor' ? 'Outpost 17  ✓ door open' : 'Outpost 17 (outdoor)', on('outdoor')],
+      ['go', P.leaving ? 'Leaving…' : 'Interstate  ›', '#2f6f3f'], ['enemy', `+ Enemy at the far end${n ? ' (' + n + ')' : ''}`, '#3a2a22'], ['clear', 'Clear enemies', '#22262c']] };
   }
-  P.tex.needsUpdate = true;
+  const live = R.mode ? `RAID: ${APT_RAIDS[R.mode].name}${R.waves ? ` · wave ${R.wave} / ${R.waves}` : ''} · ${n} hostile` : `Quiet. ${n ? n + ' hostile inside' : 'No one inside.'}`;
+  const rows = Object.entries(APT_RAIDS).map(([id, m]) => ['raid:' + id, m.name + '  ·  ' + m.sub, R.mode === id ? '#6b2620' : '#2a1f1e']);
+  rows.push(['raid:stop', R.mode ? 'End the raid (clear them)' : 'Clear enemies', '#22262c']);
+  return { note: live, rows, warn: !!R.mode };
 }
-function aptPanelHit(u, v) { const P = APTP; for (const b of P.btns) if (u >= b.r[0] && u <= b.r[0] + b.r[2] && v >= b.r[1] && v <= b.r[1] + b.r[3]) return b.id; return null; }
-function aptPanelPress(id) {
-  const P = APTP, A = APTS; if (!id || P.leaving || !A || !A.room) return;
+function aptPanelDraw() {
+  for (const P of APT_PANELS) {
+    if (!P.ctx) continue;
+    const c = P.ctx, W = c.canvas.width, H = c.canvas.height, k = W / 800, D = aptRows(P);
+    c.fillStyle = D.warn && (performance.now() / 500 | 0) % 2 ? '#1c0c0c' : '#0d1014'; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#e9e4da'; c.font = `600 ${(P === APTC ? 30 : 40) * k}px system-ui, sans-serif`; c.textBaseline = 'middle'; c.fillText(P.title, 36 * k, (P === APTC ? 34 : 50) * k);
+    c.fillStyle = D.warn ? '#ff8a7a' : '#8f99a6'; c.font = `${(P === APTC ? 19 : 22) * k}px system-ui, sans-serif`; c.fillText(D.note, 36 * k, (P === APTC ? 68 : 86) * k);
+    P.btns = []; let y = (P === APTC ? 88 : 112) * k;
+    const rh = P === APTC ? (H - 98 * k) / D.rows.length - 6 * k : 68 * k;
+    for (const [id, label, col] of D.rows) {
+      const r = [36 * k, y, W - 72 * k, rh];
+      c.fillStyle = P.hover === id ? '#4a5563' : col; c.beginPath(); c.roundRect(r[0], r[1], r[2], r[3], 12 * k); c.fill();
+      c.fillStyle = '#fff'; c.font = `600 ${(P === APTC ? 21 : 30) * k}px system-ui, sans-serif`; c.textAlign = 'center'; c.fillText(label, W / 2, r[1] + r[3] / 2); c.textAlign = 'left';
+      P.btns.push({ id, r }); y += rh + 6 * k;
+    }
+    P.tex.needsUpdate = true;
+  }
+}
+function aptPanelHit(P, u, v) { for (const b of P.btns) if (u >= b.r[0] && u <= b.r[0] + b.r[2] && v >= b.r[1] && v <= b.r[1] + b.r[3]) return b.id; return null; }
+function aptPanelPress(id, P = APTP) {
+  const A = APTS; if (!id || APTP.leaving || !A || !A.room) return;
   try { btnSfx('term', P.mesh.getWorldPosition(new THREE.Vector3())); } catch (e) { /* no sound yet */ }
   if (id === 'go') {
-    P.leaving = true; aptPanelDraw(); toast('Interstate…', 1500);
+    APTP.leaving = true; aptPanelDraw(); toast('Interstate…', 1500);
     const go = () => { location.href = '../interstate/index.html'; };
     const sx = renderer.xr.getSession(); if (sx) sx.end().catch(() => {}).finally(() => setTimeout(go, 300)); else setTimeout(go, 400);
-  } else if (id === 'enemy') aptSpawnEnemy();
-  else if (id === 'clear') { for (const e of ENEMY.list.slice()) if (e.room && e.room.apt) removeEnemy(e); }
+  } else if (id === 'enemy') { APTS.forced = null; aptSpawnEnemy(); }
+  else if (id === 'clear' || id === 'raid:stop') aptRaidStop();
   else if (id === 'cqc' || id === 'outdoor') aptChoose(id);
+  else if (id.startsWith('raid:')) aptRaidStart(id.slice(5));
   aptPanelDraw();
 }
 // The door's destination: the rooms after the apartment are planned (again) from the choice; a fight already started out there keeps it.
@@ -50625,8 +50672,68 @@ function aptChoose(kind) {
   A.go = kind;
   toast(kind === 'outdoor' ? 'Front door: Outpost 17. It opens once the yard is built' : 'Front door: the CQC loop', 2400);
 }
-// the nav cell on floor one farthest from you (path length is not needed: the apartment's rooms are open to each other)
+// ---- raids: men come in where a raid would come in (the front door, the armory passage, the terrace doors), already
+// hunting you (aiNoise at where you stand), in waves; a breach kicks the front door. Floor one is their ground; upstairs
+// holders (waves mode) keep their spot on floor two and fight from it.
+// Entry points in apartment coordinates [x, z]; ups = floor-two holding spots [x, z].
+const APT_ENTRY = { front: [[4.1, 13.0], [4.15, 12.2], [4.1, 11.4], [4.05, 10.6]], armory: [[14.6, 8.45], [14.55, 7.6], [14.5, 9.3]], terrace: [[4.6, 18.4], [6.4, 18.4], [12.8, 18.4], [14.6, 18.4]] };
+const APT_UPS = [[15.6, 2.0], [9.0, 1.6], [5.6, 15.8], [12.4, 16.3]];
+const APT_RAIDS = {
+  breach: { name: 'Breach', sub: 'four through the front door', waves: [[['front', 4]]], kick: true },
+  pincer: { name: 'Pincer', sub: 'front door and armory passage', waves: [[['front', 2], ['armory', 2]]], kick: true },
+  terrace: { name: 'Terrace assault', sub: 'three over the terrace', waves: [[['terrace', 3]]] },
+  siege: { name: 'Siege', sub: 'four waves, men upstairs', waves: [[['front', 3]], [['armory', 2], ['terrace', 2]], [['front', 2], ['up', 2]], [['terrace', 2], ['armory', 2], ['front', 2]]], kick: true, gap: 28 },
+};
+const APT_RAID = { mode: null, wave: 0, waves: 0, next: 0, queue: [], waveAt: 0 };
+function aptRaidStop() {
+  APT_RAID.mode = null; APT_RAID.queue.length = 0; APT_RAID.wave = APT_RAID.waves = 0;
+  for (const e of ENEMY.list.slice()) if (e.room && e.room.apt) removeEnemy(e);
+  aptPanelDraw();
+}
+function aptRaidStart(id) {
+  const M = APT_RAIDS[id], A = APTS; if (!M || !A || !A.room || !A.room.active) return;
+  aptRaidStop();
+  APT_RAID.mode = id; APT_RAID.wave = 0; APT_RAID.waves = M.waves.length; APT_RAID.next = performance.now() / 1000 + 2.5;
+  toast(`Raid: ${M.name}. They are coming in`, 2400); vrNote(`RAID: ${M.name.toUpperCase()}`, 2.5);
+}
+function aptRaidWave() {
+  const M = APT_RAIDS[APT_RAID.mode], W = M.waves[APT_RAID.wave]; if (!W) return;
+  APT_RAID.wave++;
+  let t = performance.now() / 1000;
+  for (const [where, n] of W) {
+    const pts = where === 'up' ? APT_UPS : APT_ENTRY[where];
+    for (let i = 0; i < n; i++) { APT_RAID.queue.push({ at: t, where, p: pts[i % pts.length] }); t += where === 'front' ? 0.9 : 1.3; }
+  }
+  if (M.kick && W.some(([w]) => w === 'front')) {
+    const room = APTS.room, x = rWX(room, aptLX(13.05)), z = rWZ(room, aptLZ(0.5));
+    try { kickSfx('door', new THREE.Vector3(x, room.origin.y + 1.0, z), 0.9); } catch (e) { /* */ }
+  }
+  toast(APT_RAID.waves > 1 ? `Wave ${APT_RAID.wave} of ${APT_RAID.waves}` : 'Contact! Front of the apartment', 1800);
+  vrNote(APT_RAID.waves > 1 ? `WAVE ${APT_RAID.wave}` : 'CONTACT', 1.6);
+}
+function aptRaidTick() {
+  const R = APT_RAID, A = APTS; if (!R.mode || !A || !A.room || !A.room.active) return;
+  const now = performance.now() / 1000, room = A.room;
+  if (R.next && now >= R.next && R.wave < R.waves) { aptRaidWave(); R.next = 0; R.waveAt = now; }
+  while (R.queue.length && now >= R.queue[0].at) {
+    const q = R.queue.shift(), up = q.where === 'up';
+    APTS.forced = { x: aptLX(q.p[1]), z: aptLZ(q.p[0]) };
+    const e = spawnEnemy(room, { gun: ['smg', 'smg', 'shotgun', 'pistol'][Math.floor(Math.random() * 4)], skill: 0.55, aggr: 0.7 }, 0, []);
+    APTS.forced = null;
+    if (!e) continue;
+    if (up) { e.stairHold = true; e.stairY = APT.L2; e.root.position.y = APT.L2; }
+    camera.getWorldPosition(_apSp);
+    try { aiNoise(e, rLX(room, _apSp.x), rLZ(room, _apSp.z), 1.2); } catch (err) { /* */ }
+  }
+  const alive = ENEMY.list.filter((e) => e.room === room && !e.dead && !e.surr).length, M = APT_RAIDS[R.mode];
+  if (!R.queue.length && !R.next) {
+    if (R.wave < R.waves) { if (alive === 0) R.next = now + 4; else if (M.gap && now - R.waveAt > M.gap) R.next = now + 0.5; }   // next wave: when they are down, or on the clock (siege)
+    else if (alive === 0) { toast('Raid over. The apartment is clear', 2600); vrNote('CLEAR', 2); R.mode = null; aptPanelDraw(); }
+  }
+}
+// the nav cell on floor one farthest from you (or a raid's forced entry point)
 function aptSpawnSpot(room, taken) {
+  if (APTS && APTS.forced) { const f = APTS.forced; camera.getWorldPosition(_apSp); const px = rLX(room, _apSp.x), pz = rLZ(room, _apSp.z); return { x: f.x, z: f.z, yaw: Math.atan2(-(px - f.x), -(pz - f.z)) }; }
   const G = room.navCache; if (!G) return null;
   const px = rLX(room, camera.getWorldPosition(_apSp).x), pz = rLZ(room, _apSp.z);
   let best = null, bd = -1;
@@ -50643,37 +50750,44 @@ function aptSpawnSpot(room, taken) {
 const _apSp = new THREE.Vector3();
 function aptSpawnEnemy() {
   const A = APTS, room = A && A.room; if (!room || !room.active) return null;
-  if (ENEMY.list.filter((e) => e.room === room && !e.dead).length >= 6) { toast('At most 6 enemies here', 1600); return null; }
+  if (ENEMY.list.filter((e) => e.room === room && !e.dead).length >= 8) { toast('At most 8 enemies here', 1600); return null; }
   const e = spawnEnemy(room, { gun: ['smg', 'pistol', 'shotgun'][Math.floor(Math.random() * 3)], skill: 0.4, aggr: 0.4 }, 0, []);
   if (!e) toast('The enemy model is still loading', 1600);
   return e;
 }
 function aptDeskPress() {
-  const P = APTP;
-  if (renderer.xr.isPresenting || !P.deskHit) return false;
-  aptPanelPress(P.deskHit); return true;
+  if (renderer.xr.isPresenting) return false;
+  for (const P of APT_PANELS) if (P.deskHit) { aptPanelPress(P.deskHit, P); return true; }
+  return false;
 }
 const _apR = new THREE.Raycaster(); _apR.far = 2.5;
+let _apBlink = 0;
 function aptPanelTick() {
-  const P = APTP, A = APTS; if (!P.mesh || !A || !A.room || !A.room.active) return;
-  let hover = null;
-  P.deskHit = null;
-  if (renderer.xr.isPresenting) {
-    for (const h of vrHands) {
-      let st = P.hands.get(h); if (!st) P.hands.set(h, st = glassState());
-      const r = glassFinger(P.mesh, P.w, P.h, h, st, _apSp); if (!r) continue;
-      const id = aptPanelHit((_apSp.x / P.w + 0.5) * P.ctx.canvas.width, (0.5 - _apSp.y / P.h) * P.ctx.canvas.height);
-      hover = hover || id;
-      if (r === 2 && id) { pulse(h, 0.3, 12); aptPanelPress(id); }
+  const A = APTS; if (!A || !A.room || !A.room.active || !APTP.mesh.parent) return;
+  aptRaidTick();
+  let changed = false;
+  for (const P of APT_PANELS) {
+    let hover = null; P.deskHit = null;
+    if (renderer.xr.isPresenting) {
+      for (const h of vrHands) {
+        let st = P.hands.get(h); if (!st) P.hands.set(h, st = glassState());
+        const r = glassFinger(P.mesh, P.w, P.h, h, st, _apSp); if (!r) continue;
+        const id = aptPanelHit(P, (_apSp.x / P.w + 0.5) * P.ctx.canvas.width, (0.5 - _apSp.y / P.h) * P.ctx.canvas.height);
+        hover = hover || id;
+        if (r === 2 && id) { pulse(h, 0.3, 12); aptPanelPress(id, P); }
+      }
+    } else {
+      camera.getWorldPosition(_apR.ray.origin); camera.getWorldDirection(_apR.ray.direction);
+      const hit = _apR.intersectObject(P.mesh, false)[0];
+      if (hit && hit.uv) { hover = aptPanelHit(P, hit.uv.x * P.ctx.canvas.width, (1 - hit.uv.y) * P.ctx.canvas.height); P.deskHit = hover; }
     }
-  } else {
-    camera.getWorldPosition(_apR.ray.origin); camera.getWorldDirection(_apR.ray.direction);
-    const hit = _apR.intersectObject(P.mesh, false)[0];
-    if (hit && hit.uv) { hover = aptPanelHit(hit.uv.x * P.ctx.canvas.width, (1 - hit.uv.y) * P.ctx.canvas.height); P.deskHit = hover; }
+    if (hover !== P.hover) { P.hover = hover; changed = true; }
   }
-  if (hover !== P.hover) { P.hover = hover; aptPanelDraw(); }
+  const now = performance.now() / 1000;
+  if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; changed = true; }   // the security screen blinks red while a raid is on
+  if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, APTP, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 </script>
 </body>
