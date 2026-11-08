@@ -11478,8 +11478,9 @@ function updateHandBodies() {
     const hb = handBodies[i], hand = vrHands[i];
     if (renderer.xr.isPresenting && hand && hand.ctrl.userData.gamepad && !hand.prop && !hand.door) hand.source.getWorldPosition(_hp);
     else _hp.copy(hb.park);
-    if (_hp.distanceToSquared(hb.last) > 0.25) hb.body.setTranslation(_hp, true);   // jumps teleport, real motion pushes
-    else hb.body.setNextKinematicTranslation(_hp);
+    if (!hb.dv) hb.dv = new THREE.Vector3();
+    if (_hp.distanceToSquared(hb.last) > 0.25) { hb.body.setTranslation(_hp, true); hb.dv.set(0, 0, 0); }   // jumps teleport, real motion pushes
+    else { hb.body.setNextKinematicTranslation(_hp); hb.dv.subVectors(_hp, hb.last); }
     hb.last.copy(_hp);
   }
 }
@@ -11739,8 +11740,8 @@ function updatePlayerBody() {
   headWorld(_head);
   const P = CONFIG.physics.player, y = level.floor + P.halfHeight + P.radius + 0.06;
   _rv.set(_head.x, y, _head.z);
-  if (_rv.distanceToSquared(lastPlayer) > 0.25) playerBody.setTranslation(_rv, true);   // jumps (entering VR) teleport
-  else playerBody.setNextKinematicTranslation(_rv);
+  if (_rv.distanceToSquared(lastPlayer) > 0.25) { playerBody.setTranslation(_rv, true); PUSH.pv.set(0, 0, 0); }   // jumps (entering VR) teleport
+  else { playerBody.setNextKinematicTranslation(_rv); PUSH.pv.subVectors(_rv, lastPlayer); }
   lastPlayer.copy(_rv);
 }
 
@@ -11905,6 +11906,52 @@ function updateHands() {
   }
 }
 
+// PUSH (?push=off): your body, hands and a held gun are kinematic bodies (infinite mass) in the physics, so a loose prop
+// they touched took at least their speed, often more (solver overshoot): chairs and boxes flew off a brushing hand. After
+// each step a prop touching one of them keeps at most what a real body (75 kg), arm (2.5 kg) or gun in hand (4 kg) could
+// give it: momentum exchange at restitution 0.25 on top of its own speed, gravity and a little slack.
+const PUSH = { on: !/[?&]push=off\b/.test(QS), e: 0.25, near2: 2.6 * 2.6, M: { body: 75, hand: 2.5, gun: 4 }, pv: new THREE.Vector3(), cand: [], src: [], head: new THREE.Vector3() };
+function pushSources() {
+  const S = PUSH.src; S.length = 0;
+  if (playerBody) S.push({ col: playerBody.collider(0), d: PUSH.pv, M: PUSH.M.body });
+  for (const hb of handBodies) if (hb.dv && hb.body.numColliders()) S.push({ col: hb.body.collider(0), d: hb.dv, M: PUSH.M.hand });
+  for (const h of vrHands) { const g = h && gunOf(h); if (g && g.probe && g.probe.on && g.probe.props && g.probe.dv) S.push({ col: g.probe.col, d: g.probe.dv, M: PUSH.M.gun }); }
+  return S.length;
+}
+function pushBefore() {
+  const C = PUSH.cand; C.length = 0;
+  if (!pushSources()) return 0;
+  headWorld(PUSH.head);
+  for (const p of props) {
+    if (p.kinematic || p.holders.length || !p.inWorld || !p.mass) continue;
+    if (p.root.position.distanceToSquared(PUSH.head) > PUSH.near2) continue;   // your reach (the body is under your head)
+    if (p.body.isSleeping()) { p.pv0 = 0; p.pw0 = 0; }
+    else { const v = p.body.linvel(), w = p.body.angvel(); p.pv0 = Math.hypot(v.x, v.y, v.z); p.pw0 = Math.hypot(w.x, w.y, w.z); }
+    C.push(p);
+  }
+  return C.length;
+}
+function pushAfter(dt) {
+  const S = PUSH.src, e1 = 1 + PUSH.e;
+  for (const p of PUSH.cand) {
+    let gain = -1;
+    for (const s of S) {
+      let touch = false;
+      world.contactPair(s.col, p.collider, (m) => { if (m.numContacts() > 0) touch = true; });
+      if (touch) gain = Math.max(gain, (s.d.length() / dt) * s.M * e1 / (s.M + p.mass));
+    }
+    if (gain < 0) continue;
+    const v = p.body.linvel(), sp = Math.hypot(v.x, v.y, v.z), cap = p.pv0 + gain + 9.81 * dt + 0.05;
+    if (sp > cap) {
+      const k = cap / sp, w = p.body.angvel();
+      p.body.setLinvel({ x: v.x * k, y: v.y * k, z: v.z * k }, true);
+      p.body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, true);
+    }
+    const w = p.body.angvel(), ws = Math.hypot(w.x, w.y, w.z), r = Math.max(0.05, Math.min(p.half.x, p.half.y, p.half.z));
+    const wcap = p.pw0 + 2 * (gain + 0.05) / r;
+    if (ws > wcap) { const k = wcap / ws; p.body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, true); }
+  }
+}
 function stepPhysics(dt) {
   if (!world || dt <= 0) return;
   const P = CONFIG.physics, now = performance.now() / 1000;
@@ -11915,7 +11962,9 @@ function stepPhysics(dt) {
   updateDoorsPre(now);
   const steps = dt > 1 / 55 ? 2 : 1;                            // 72/90 Hz headsets: one step per frame
   world.timestep = dt / steps;
+  const pushN = PUSH.on ? pushBefore() : 0;
   for (let i = 0; i < steps; i++) world.step();
+  if (pushN) pushAfter(dt);
   updateDoorsPost(dt);
 
   let awake = false;
@@ -16215,6 +16264,8 @@ function updateGunProbe(g, on, pos, quat) {
     const now = performance.now() / 1000;
     if (!pr.on || _gpp.distanceToSquared(pr.last) > 0.25) { pr.body.setTranslation(_gpp, true); pr.body.setRotation(quat, true); pr.since = now; }   // grabbed / teleported: jump
     else { pr.body.setNextKinematicTranslation(_gpp); pr.body.setNextKinematicRotation(quat); }                                      // real motion: pushes
+    if (!pr.dv) pr.dv = new THREE.Vector3();
+    pr.dv.subVectors(_gpp, pr.last); if (pr.dv.lengthSq() > 0.25) pr.dv.set(0, 0, 0);   // PUSH: its motion this frame
     // Step 59.1: a moment after the grab (so it doesn't fling what lay beside it) the probe pushes loose props too.
     const wantProps = GUN_PROBE_PROPS.on && now - pr.since > GUN_PROBE_PROPS.delay;
     if (wantProps !== pr.props && pr.col) { pr.col.setCollisionGroups(wantProps ? COLL.gunProbeProps : COLL.gunProbe); pr.props = wantProps; atcProbeGroups(pr); }
