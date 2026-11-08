@@ -1,6 +1,8 @@
 // Infinite open world: M0 shell. For now: the apartment (architecture pass) high over a generated
 // city, walkable on a computer and in a headset.
 import { createHub } from './hub.js';
+import { createArms } from './arms.js';
+import { createEnemies } from './enemies.js';
 import * as THREE from 'three';
 import { makeMaterials } from './materials.js';
 import { buildApartment } from './apartment.js';
@@ -35,7 +37,7 @@ renderer.xr.setReferenceSpaceType('local-floor');
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.1, 12000);
+const camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.04, 12000);
 const rig = new THREE.Group(); rig.add(camera); scene.add(rig);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
@@ -136,9 +138,6 @@ async function boot() {
     if (e.target && e.target.tagName === 'INPUT') return;
     if (e.code === 'KeyT' && !e.repeat && view) { view.nextSun(); return; }   // T: next baked time of day
     if (e.code === 'KeyG' && !e.repeat && gt) { gt.on = !gt.on; view.world.visible = !gt.on; return; }   // G: Google tiles / baked view
-    if (e.code !== 'KeyR' || e.repeat) return;      // R: dry / damp / wet terrace
-    const steps = [0, 0.45, 0.8, 1]; const i = steps.findIndex((v) => Math.abs(v - surf.wet) < 0.01);
-    surf.setWet(steps[(i + 1) % steps.length]);
   });
 
   status('Physics…');
@@ -147,7 +146,12 @@ async function boot() {
   const spawn = back ? { x: 4.15, y: 0, z: 12.0, yaw: 0 } : { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
   const hub = createHub({ scene, camera, renderer, rig, surf, view, screenPose: furn.screen });
-  window.__world = { hub, scene, camera, rig, renderer, player, apt, furn, city, view, gt, M, THREE, surf, clusters };
+  const note = (t) => { const n = document.getElementById('note'); n.textContent = t; n.style.opacity = '1'; clearTimeout(note.t); note.t = setTimeout(() => { n.style.opacity = '0'; }, 2500); };
+  const enemies = createEnemies({ scene, camera, player, onNote: note });
+  const arms = createArms({ scene, camera, renderer, rig, player, hub, enemies });
+  hub.setActions({ spawn: () => enemies.spawn(), clear: () => enemies.clear(), count: () => enemies.list.length });
+  addEventListener('keydown', (e) => { if (e.code === 'KeyN' && !e.repeat && document.pointerLockElement) enemies.spawn().then(() => hub.press('none')); });
+  window.__world = { arms, enemies, hub, scene, camera, rig, renderer, player, apt, furn, city, view, gt, M, THREE, surf, clusters };
   const gk = document.getElementById('gkey'), gs = document.getElementById('gkeySave');
   if (gk) {
     gk.value = keyStore.get();
@@ -165,6 +169,9 @@ async function boot() {
     const dt = clock.getDelta();
     player.update(dt);
     hub.update();
+    enemies.update(Math.min(dt, 0.1));
+    arms.update(Math.min(dt, 0.1), clock.elapsedTime);
+    player.look.sens = camera.fov / 72;
     if (city) city.update(clock.elapsedTime);
     if (gt) gt.update(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, dt);
     if (view) {

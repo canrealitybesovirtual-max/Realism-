@@ -52,8 +52,9 @@ export async function createPlayer(colliders, rig, camera, renderer, spawn) {
   el.addEventListener('click', () => { if (!renderer.xr.isPresenting && document.pointerLockElement !== el) el.requestPointerLock(); });
   addEventListener('mousemove', (e) => {
     if (document.pointerLockElement !== el) return;
-    look.yaw -= e.movementX * 0.0022;
-    look.pitch = Math.max(-1.45, Math.min(1.45, look.pitch - e.movementY * 0.0022));
+    const k = 0.0022 * (look.sens || 1);
+    look.yaw -= e.movementX * k;
+    look.pitch = Math.max(-1.45, Math.min(1.45, look.pitch - e.movementY * k));
   });
 
   let vy = 0, grounded = true;
@@ -139,5 +140,5 @@ export async function createPlayer(colliders, rig, camera, renderer, spawn) {
     const b = body.translation(); rig.position.set(b.x, b.y - FOOT, b.z);
   });
 
-  return { update, pos, look, colliders: n, teleport(x, y, z, yaw) { body.setTranslation({ x, y: y + FOOT, z }, true); vy = 0; if (yaw !== undefined) look.yaw = yaw; } };
+  return { update, pos, look, colliders: n, world, RAPIER, body: col, teleport(x, y, z, yaw) { body.setTranslation({ x, y: y + FOOT, z }, true); vy = 0; if (yaw !== undefined) look.yaw = yaw; } };
 }

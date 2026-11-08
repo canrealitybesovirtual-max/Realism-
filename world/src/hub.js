@@ -13,7 +13,7 @@ const KEY = 'world.door.dest';
 export function createHub({ scene, camera, renderer, rig, surf, view, screenPose }) {
   const state = { dest: localStorage.getItem(KEY) || 'interstate', leaving: false };
   if (!DESTS.some((d) => d.id === state.dest)) state.dest = DESTS[0].id;
-  const panels = [];
+  const panels = [], actions = {};
 
   // ---- a canvas screen -------------------------------------------------------------------------
   function panel({ x, y, z, face, w, h, px, title, extra }) {
@@ -55,12 +55,13 @@ export function createHub({ scene, camera, renderer, rig, surf, view, screenPose
     P.buttons.push({ id: 'go', r: gr });
     if (P.extra) {
       yy = gr[1] + gr[3] + 22 * k;
-      const opts = [['sun', 'Time of day: ' + (view ? view.sunName : '—')], ['wet', 'Terrace: ' + (surf.wet > 0.6 ? 'wet' : surf.wet > 0.1 ? 'damp' : 'dry')], ['fps', 'Frame meter: ' + (document.getElementById('fps').hidden ? 'off' : 'on')]];
-      const bw = (W - 80 * k - 2 * 16 * k) / 3;
+      const opts = [['sun', 'Time: ' + (view ? view.sunName : '—')], ['wet', 'Terrace: ' + (surf.wet > 0.6 ? 'wet' : surf.wet > 0.1 ? 'damp' : 'dry')], ['fps', 'FPS: ' + (document.getElementById('fps').hidden ? 'off' : 'on')]];
+      if (actions.spawn) opts.push(['enemy', '+ Enemy' + (actions.count ? ' (' + actions.count() + ')' : '')], ['clear', 'Clear enemies']);
+      const bw = (W - 80 * k - (opts.length - 1) * 16 * k) / opts.length;
       opts.forEach(([id, label], i) => {
         const r = [40 * k + i * (bw + 16 * k), yy, bw, 76 * k], hv = P.hover === id;
         ctx.fillStyle = hv ? '#2a323c' : '#1b2027'; round(ctx, ...r, 12 * k); ctx.fill();
-        ctx.fillStyle = '#d9d4cb'; ctx.font = `${24 * k}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.fillText(label, r[0] + bw / 2, r[1] + r[3] / 2); ctx.textAlign = 'left';
+        ctx.fillStyle = '#d9d4cb'; ctx.font = `${21 * k}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.fillText(label, r[0] + bw / 2, r[1] + r[3] / 2); ctx.textAlign = 'left';
         P.buttons.push({ id, r });
       });
     }
@@ -87,6 +88,8 @@ export function createHub({ scene, camera, renderer, rig, surf, view, screenPose
     if (id.startsWith('d:')) { state.dest = id.slice(2); localStorage.setItem(KEY, state.dest); }
     else if (id === 'sun' && view) view.nextSun();
     else if (id === 'wet') { const st = [0, 0.45, 0.8, 1]; const i = st.findIndex((v) => Math.abs(v - surf.wet) < 0.01); surf.setWet(st[(i + 1) % st.length]); }
+    else if (id === 'enemy' && actions.spawn) { await actions.spawn(); }
+    else if (id === 'clear' && actions.clear) actions.clear();
     else if (id === 'fps') { const f = document.getElementById('fps'); f.hidden = !f.hidden; }
     else if (id === 'go') {
       state.leaving = true; redraw();
@@ -153,5 +156,7 @@ export function createHub({ scene, camera, renderer, rig, surf, view, screenPose
       setHover([deskHit]);
     }
   }
-  return { update, state, press, panels };
+  // a screen is under the dot / that controller's ray (the guns hold their fire)
+  const aimed = (i) => (i === undefined ? !!(deskHit && deskHit.id) : !!(ctrls[i] && ctrls[i].hit));
+  return { update, state, press, panels, aimed, setActions(a) { Object.assign(actions, a); redraw(); } };
 }
