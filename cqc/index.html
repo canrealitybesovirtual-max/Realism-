@@ -29549,7 +29549,7 @@ const OPT_GROUPS = [
   ['physics', 'PHYSICS', [['pen', 'Penetration + real bullet push'], ['downed', 'Wounded men fall and crawl'], ['surrender', 'Enemies surrender'], ['stealth', 'Stealth (light, noise)'],
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
-    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack'], ['aptbreak', 'Apartment lights, glass break'], ['fallback', 'Men fall back under fire']]],
+    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack'], ['aptbreak', 'Apartment lights, glass break'], ['aptvol', 'Apartment baked bounce light'], ['fallback', 'Men fall back under fire']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
@@ -50364,7 +50364,7 @@ const APT = {
   cx: 8.8, cz: 9.625, w: 19.25, d: 17.6, h: 8.6,
   entryAz: 8.45, exitAz: 13.05,                                   // apartment z of the two doorways
   start: { ax: 8.8, az: 5.6 }, lib: { ax: 14.0, az: 4.3 },                                    // great hall, looking north at the park
-  viewGain: 1.6, sunI: 3.0, hemiI: 1.0,                                       // the baked city through CQC's tone mapping; the sun
+  viewGain: 1.6, sunI: 3.0, hemiI: 1.0, hemiVol: 0.5, volK: 1.0,                                       // the baked city through CQC's tone mapping; the sun
   stair: { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, risers: 26, sweep: 330 * Math.PI / 180, rise: 4.6 }, L2: 4.6
 };
 function aptState() { if (!APTS) APTS = { mod: null, err: null, placed: false, room: null }; return APTS; }
@@ -50791,7 +50791,8 @@ function aptViewTick() {
   const A = APTS; if (!A || !A.room || !A.room.active) { if (A && A.sun && A.sun.intensity) A.sun.intensity = 0; return; }
   const cur = stream.current, inA = !!(cur && cur.apt);
   if (A.sun) { const k = inA ? APT.sunI : 0; if (A.sun.intensity !== k) { A.sun.intensity = k; renderer.shadowMap.needsUpdate = true; } }
-  if (A.hemi) A.hemi.intensity = inA ? (A.surfDone ? 0.12 : APT.hemiI) : 0;   // after the probe bake the probes carry the bounce
+  if (A.hemi) A.hemi.intensity = inA ? (A.surfDone ? 0.12 : A.vol ? APT.hemiVol : APT.hemiI) : 0;   // after the probe bake the probes carry the bounce
+  if (A.vol && A.mod && A.mod[5]) A.mod[5].FIN.u.uFinV.value.set(1, APT.volK, A.hemi && A.hemi.intensity > 0 ? 0.12 / A.hemi.intensity : 1, 0);   // apartment surfaces: the volume, hemisphere down to 0.12; men and guns keep hemiVol
   if (!A.surf) aptLookTick(A, inA);                              // APARTMENT LOOK: sun shadow, downlights, apartment frame
   if (A.mirTick) A.mirTick(inA && A.room.visible !== false ? (renderer.xr.isPresenting ? renderer.xr.getCamera() : camera) : null);   // the nearest mirror you face reflects for real
   if (A.surf) {
@@ -51244,6 +51245,13 @@ function aptLookBuild(room, A, apt, furn, M) {
   const FM = A.mod[5];
   try {
     if (FM) {
+      // baked light (?aptvol=off): the world page's irradiance volume as the apartment's indirect diffuse. Compiled into the
+      // apartment programs now (FIN.vol is read when they build); uFinV.x turns it on once the files are in.
+      A.vol = false;
+      if (FM.loadVolume && !/[?&]aptvol=off\b/.test(QS) && !/[?&]aptsurf=on\b/.test(QS)) {
+        FM.FIN.vol = true;
+        FM.loadVolume('../world/').then(() => { A.vol = true; }).catch((e) => console.info('apartment light volume not loaded', e.message));
+      }
       FM.finishAll(apt.group); FM.finishAll(furn.group);
       const fset = new Set(furn.colliders);
       FM.useContactField(FM.bakeContactField([...apt.colliders, ...furn.colliders].map((c) => (fset.has(c) ? { ...c, furn: true } : c)), M.glass, APT.L2));
