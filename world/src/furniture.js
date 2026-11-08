@@ -682,7 +682,7 @@ function tv(B, M, x, y, z, ry, w = 1.45, h = 0.83) {
 
 // ---- kitchen (apartment-15): dark oak base run, stone counter and splash, white lacquer uppers;
 // local x along the run, the front faces +z (turned by ry)
-function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null } = {}) {
+function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null, outlets = true, splash = true } = {}) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
   const D = 0.62, H = 0.89;
   add(at(rbox(L, 0.1, D - 0.08, 0.002, 1), 0, 0.05, -0.04), M.blackMatte);
@@ -696,9 +696,9 @@ function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null } = {}) {
   // stone counter, cut out over an undermount stainless bowl (220 mm deep) when there is a sink
   const holes = sink != null ? [[sink, 0.03, 0.58, 0.4, 0.035]] : [];
   add(at(counter(L, D + 0.02, 0.03, holes), 0, H + 0.03, 0.01), M.stone);
-  add(at(rbox(L, 0.58, 0.015, 0.002, 1), 0, H + 0.03 + 0.29, -D / 2 + 0.008), M.stone);
+  if (splash) add(at(rbox(L, 0.58, 0.015, 0.002, 1), 0, H + 0.03 + 0.29, -D / 2 + 0.008), M.stone);
   // two duplex outlets in the stone backsplash
-  for (const u of [-L / 2 + 0.35, L / 2 - 0.35]) {
+  if (outlets) for (const u of [-L / 2 + 0.35, L / 2 - 0.35]) {
     const o = outletPlate(), y = H + 0.03 + 0.24, v = -D / 2 + 0.0155;
     add(at(o.plate, u, y, v), M.lacquerWhite); add(at(o.face, u, y, v), M.lacquerWhite); add(at(o.cavity, u, y, v), M.blackMatte);
   }
@@ -1251,6 +1251,7 @@ export function furnish(M, Q) {
   tallUnit(B, M, 16.39, 10.35, -Math.PI / 2, 0.66, 2.35, true);
   tallUnit(B, M, 13.65, 11.4, Math.PI / 2, 2.4, 2.35);
   kitchenRun(B, M, 13.65, 13.35, Math.PI / 2, 1.5, { uppers: false });
+  kitchenRun(B, M, 15.4, 15.61, Math.PI, 2.6, { uppers: false, outlets: false, splash: false });     // the L-return toward the window (apartment-15)
   // breakfast room (apartment-14): banquette on the pantry wall, oval dark oak table, chairs,
   // faceted glass pendants
   banquette(B, M, 11.65, 14.35, 0, 2.6);
