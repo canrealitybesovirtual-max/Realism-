@@ -139,9 +139,11 @@ export function buildStreet(scene: THREE.Scene): StreetBuild {
   // ---- streetlights: all three work, one is failing ----
   const streetlights: Streetlight[] = [];
   for (const [x, z, right] of [
-    [-7.2, -12, true],
-    [-7.2, 4, true],
-    [7.2, 15, false]
+    [-7.2, -16, true],
+    [7.2, -8, false],
+    [-7.2, 0, true],
+    [7.2, 15, false],
+    [-7.2, 12, true]
   ] as const) {
     const sl = createStreetlight(x, z, right);
     scene.add(sl.group);

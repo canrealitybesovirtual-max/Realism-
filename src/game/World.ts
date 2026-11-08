@@ -25,7 +25,11 @@ export class World {
     this.scene.fog = new THREE.FogExp2(CONFIG.render.fogColor, CONFIG.render.fogDensityOutdoor);
 
     // overcast night sky glow from above, near-black bounce from below
-    this.scene.add(new THREE.HemisphereLight(0x35424f, 0x0b0d0f, 0.7));
+    this.scene.add(new THREE.HemisphereLight(0x5a7086, 0x24211d, 2.4));
+    // moonlight through thin cloud: gives walls and cars their shape
+    const moon = new THREE.DirectionalLight(0xa8bcd6, 0.9);
+    moon.position.set(-6, 14, 8);
+    this.scene.add(moon);
 
     const street = buildStreet(this.scene);
     this.colliders.push(...street.colliders);
@@ -62,18 +66,18 @@ export class World {
     (this.shopSign.material as THREE.MeshBasicMaterial).color.setRGB(0.68 * flick, 0.26 * flick, 0.14 * flick);
 
     // the third streetlight is dying: random stutters, then steady again
-    const sl = this.streetlights[2];
+    const sl = this.streetlights[3];
     if (sl) {
       if (this.time > this.nextFlicker) {
         this.flickerUntil = this.time + 0.4 + Math.random() * 1.2;
         this.nextFlicker = this.flickerUntil + 3 + Math.random() * 9;
       }
       const on = this.time < this.flickerUntil ? (Math.random() < 0.5 ? 0.05 : 0.7) : 1;
-      sl.light.intensity = 10 * on;
+      sl.light.intensity = 30 * on;
       sl.lampMat.color.setRGB(1 * on, 0.63 * on, 0.29 * on);
     }
 
     // the bare bulb sways very slightly on its cord: light breathes
-    this.bulb.intensity = 5 * (0.94 + Math.sin(this.time * 1.3) * 0.04 + Math.sin(this.time * 7.1) * 0.02);
+    this.bulb.intensity = 14 * (0.94 + Math.sin(this.time * 1.3) * 0.04 + Math.sin(this.time * 7.1) * 0.02);
   }
 }

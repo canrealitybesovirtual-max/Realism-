@@ -27,7 +27,7 @@ export function buildInterior(scene: THREE.Scene): InteriorBuild {
 
   const ceil = new THREE.Mesh(
     new THREE.PlaneGeometry(maxX - minX, maxZ - minZ),
-    new THREE.MeshLambertMaterial({ map: tex.plaster, color: 0x777777 })
+    new THREE.MeshLambertMaterial({ map: tex.plaster, color: 0x9a9a9a })
   );
   ceil.rotation.x = Math.PI / 2;
   ceil.position.set(cx, height, 0);
@@ -92,7 +92,7 @@ export function buildInterior(scene: THREE.Scene): InteriorBuild {
   cord.position.set(11, 2.6 + (height - 2.6) / 2, 0);
   scene.add(cord);
 
-  const bulb = new THREE.PointLight(0xffd59a, 5, 8, 2);
+  const bulb = new THREE.PointLight(0xffd59a, 14, 11, 2);
   bulb.position.set(11, 2.5, 0);
   scene.add(bulb);
 

@@ -22,7 +22,7 @@ export class Flashlight {
   private initialised = false;
   private static readonly FORWARD = new THREE.Vector3(0, 0, -1);
 
-  private static readonly BASE_INTENSITY = 46;
+  private static readonly BASE_INTENSITY = 70;
   private static readonly BEAM_COLOR = 0xffe6ba;
 
   constructor(scene: THREE.Scene) {

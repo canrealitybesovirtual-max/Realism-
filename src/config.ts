@@ -8,11 +8,11 @@ export const CONFIG = {
     fov: 72,
     near: 0.05,
     far: 90,
-    clearColor: 0x07090b,
-    fogColor: 0x0d1114,
-    fogDensityOutdoor: 0.052,
-    fogDensityIndoor: 0.11,
-    exposure: 1.15
+    clearColor: 0x1a2128,
+    fogColor: 0x1a2128,
+    fogDensityOutdoor: 0.028,
+    fogDensityIndoor: 0.05,
+    exposure: 1.6
   },
   player: {
     radius: 0.34,
@@ -40,7 +40,7 @@ export const CONFIG = {
     maxBattery: 100,
     drainPerSec: 0.5,
     flickerThreshold: 30,
-    distance: 26,
+    distance: 32,
     angle: 0.3,
     penumbra: 0.45,
     beamLength: 8,
@@ -48,7 +48,7 @@ export const CONFIG = {
   },
   postfx: {
     grain: 0.045,
-    vignette: 0.62,
+    vignette: 0.45,
     aberration: 0.0016
   },
   audio: {

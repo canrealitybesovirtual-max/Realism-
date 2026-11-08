@@ -170,7 +170,7 @@ export class Objective {
       const filled = this.powerRestored || i < this.fusesCollected;
       (slot.material as THREE.MeshBasicMaterial).color.setHex(filled ? 0x2ea870 : 0x0a0c0d);
     });
-    if (this.gateLamp) this.gateLamp.intensity = this.powerRestored ? 4 : 0;
+    if (this.gateLamp) this.gateLamp.intensity = this.powerRestored ? 9 : 0;
   }
 
   private buildFuseBox(scene: THREE.Scene): void {
