@@ -5,6 +5,7 @@
 // z 0..6.72, north glass at z = 0.
 import * as THREE from 'three';
 import { Builder } from './build.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { barPull, counter, basin, drain, kitchenFaucet, bathFaucet, toiletSeat, flushPlate, showerSet, towelRing, outletPlate } from './hw.js';
 
 // ---- geometry kit ----------------------------------------------------------------------------
@@ -447,16 +448,84 @@ function bowl(B, M, x, y, z, r = 0.16) {
 
 // king bed (apartment-10): upholstered channel headboard, fluted base, layered bedding, pillows.
 // Local: head at -z, foot at +z
+// a smooth grid surface from fn(s, t) -> [x, y, z] (s, t in 0..1), uvs in metres (su, sv: spans)
+function gridGeo(nu, nv, fn, su, sv) {
+  const pos = [], uv = [], idx = [];
+  for (let j = 0; j <= nv; j++) for (let i = 0; i <= nu; i++) { pos.push(...fn(i / nu, j / nv)); uv.push(su * i / nu, sv * j / nv); }
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) { const a = j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1; idx.push(a, c, b, b, c, d); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
+  g.computeVertexNormals();
+  return g.toNonIndexed();
+}
+const hash1 = (n) => { const x = Math.sin(n * 127.1) * 43758.5453; return x - Math.floor(x); };
+// a duvet laid over a mattress top (width W, from z0 at the turn-down to the foot z1 at height top)
+// that rounds over the sides and the foot and hangs `hang` m, with folds that grow as it drops;
+// the corners hang lower. Returns { cloth, hem } (hem: the rolled edge along sides and foot).
+function duvetGeo(W, z0, z1, top, hang, seed = 1) {
+  const rc = 0.05, arc = rc * Math.PI / 2;
+  const bend = (e) => e <= arc ? [rc * Math.sin(e / rc), rc * (1 - Math.cos(e / rc))] : [rc + 0.04 * (e - arc), rc + (e - arc)];
+  const ph = [hash1(seed) * 6, hash1(seed + 1) * 6, hash1(seed + 2) * 6];
+  const fn = (s, t) => {
+    const a = (s - 0.5) * (W + 2 * hang), l = t * (z1 - z0 + hang);
+    const ea = Math.max(0, Math.abs(a) - W / 2), el = Math.max(0, l - (z1 - z0));
+    const [oa, da] = bend(ea), [ol, dl] = bend(el);
+    let x = Math.sign(a) * (Math.min(Math.abs(a), W / 2) + oa), z = z0 + Math.min(l, z1 - z0) + ol;
+    let y = top - da - dl * (1 + 0.15 * Math.min(1, ea / 0.1));
+    // folds: hanging cloth swings in and out, more as it drops; soft wrinkles on top
+    const fa = Math.min(1, da / 0.25), fl = Math.min(1, dl / 0.25);
+    x += Math.sign(a) * fa * (0.018 * Math.sin(z * 9.5 + ph[0]) + 0.01 * Math.sin(z * 23 + ph[1]));
+    z += fl * (0.018 * Math.sin(x * 9 + ph[1]) + 0.01 * Math.sin(x * 21 + ph[2]));
+    if (!ea && !el) y += 0.007 * Math.sin(a * 13 + ph[2]) * Math.sin(l * 7 + ph[0]) + 0.004 * Math.sin(a * 31 + l * 17);
+    return [x, Math.max(0.08, y), z];
+  };
+  const cloth = gridGeo(72, 64, fn, W + 2 * hang, z1 - z0 + hang);
+  const pts = [];
+  for (let i = 0; i <= 60; i++) pts.push(fn(0, Math.min(1, i / 60 * 1.02)));
+  for (let i = 1; i <= 60; i++) pts.push(fn(i / 60, 1));
+  for (let i = 59; i >= 0; i--) pts.push(fn(1, i / 60));
+  const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(p[0], p[1] + 0.012, p[2])));
+  const hem = new THREE.TubeGeometry(curve, 240, 0.016, 8, false).toNonIndexed();
+  return { cloth, hem: metricUV(hem) };
+}
+// a filled pillow: puffed both faces, corners pinched, a seam flange round the edge (w across,
+// h tall, d thick; frame: centred, faces +-z)
+function pillowGeo(w, h, d, flange = 0.012) {
+  const face = (sg) => gridGeo(24, 18, (s, t) => {
+    const u = s * 2 - 1, v = t * 2 - 1;
+    const f = Math.pow(Math.max(0, (1 - u * u) * (1 - v * v)), 0.42) * (1 + 0.05 * Math.sin(u * 5.3 + v * 3.1));   // domed, slightly lumpy
+    const pinch = 1 - 0.06 * Math.abs(u * v);                                  // corners draw in
+    return [u * w / 2 * pinch, v * h / 2 * pinch - 0.02 * f * f, sg * (d / 2) * f];
+  }, w, h);
+  const back = face(-1); const p = back.attributes.position;           // flip winding of the back
+  for (let i = 0; i < p.count; i += 3) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i); p.setXYZ(i, p.getX(i + 1), p.getY(i + 1), p.getZ(i + 1)); p.setXYZ(i + 1, x, y, z); }
+  back.computeVertexNormals();
+  const ring = [];
+  for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a); const k = 1 / Math.max(Math.abs(c), Math.abs(sn)); ring.push(new THREE.Vector3(c * k * w / 2 * 0.97, sn * k * h / 2 * 0.97, 0)); }
+  const seam = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(ring, true), 128, flange / 2, 6, true).toNonIndexed();
+  return merge3([face(1), back, metricUV(seam)]);
+}
+const merge3 = (gs) => mergeGeometries(gs.map((g) => { g = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k); return g; }), false);
 function bed(B, M, x, z, ry, W = 2.05, Lb = 2.2, hbMat = null, HWx = 1.4) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
   // fluted base: vertical ribs round the box
   add(at(rbox(W, 0.36, Lb, 0.03), 0, 0.2, 0), M.boucleTaupe);
   for (let i = 0; i < 40; i++) { const u = -W / 2 + 0.03 + (W - 0.06) * i / 39; add(at(rbox(0.035, 0.32, 0.02, 0.012, 2), u, 0.2, Lb / 2 + 0.005), M.boucleTaupe); }
   add(at(rbox(W - 0.06, 0.24, Lb - 0.08, 0.06), 0, 0.5, 0.02), M.linen);                   // mattress
-  add(at(cushion(W + 0.02, 0.07, Lb * 0.62, 0.035, 0.02), 0, 0.64, Lb * 0.19), M.duvet);    // folded duvet
-  add(at(cushion(W + 0.06, 0.04, 0.55, 0.02, 0.015), 0, 0.69, Lb * 0.35), M.throwSand);     // throw at the foot
-  for (const [u, w, mat, yy, tilt] of [[-0.5, 0.9, M.linen, 0.75, -0.35], [0.5, 0.9, M.linen, 0.75, -0.35], [-0.48, 0.66, M.throwSand, 0.82, -0.25], [0.48, 0.66, M.throwSand, 0.82, -0.25], [0, 0.55, M.boucle, 0.74, -0.15]])
-    add(at(cushion(w, 0.5, 0.16, 0.08, 0.06), u, yy, -Lb / 2 + 0.3 + (mat === M.boucle ? 0.18 : 0), 0, tilt), mat);
+  // sheet over the mattress top, duvet turned down and draped, folded throw at the foot
+  const top = 0.62, zt = -Lb / 2 + 0.62;
+  const dv = duvetGeo(W - 0.06, zt, Lb / 2 - 0.04, top + 0.035, 0.3, x * 7 + z);
+  add(dv.cloth, M.duvet); add(dv.hem, M.duvet);
+  add(at(cushion(W + 0.02, 0.06, 0.2, 0.03, 0.02), 0, top + 0.06, zt + 0.06), M.linen);        // turn-down
+  add(at(rbox(W - 0.04, 0.012, 0.75, 0.006), 0, top + 0.006, -Lb / 2 + 0.38), M.linen);         // sheet under the pillows
+  const tf = duvetGeo(W + 0.1, Lb / 2 - 0.5, Lb / 2 - 0.02, top + 0.075, 0.12, x + 3 * z);       // throw over the foot
+  add(tf.cloth, M.throwSand); add(tf.hem, M.throwSand);
+  // pillows: two euro shams against the headboard, two sleeping pillows, two shams, a lumbar
+  const P = (w, h, d, u, y, v, tilt, mat, yaw = 0) => { const g = pillowGeo(w, h, d); g.rotateX(tilt); g.rotateY(yaw); add(at(g, u, y, v), mat); };
+  for (const u of [-0.47, 0.47]) P(0.66, 0.66, 0.2, u * (W / 2.05), top + 0.36, -Lb / 2 + 0.16, -0.28, M.linen);
+  for (const u of [-0.48, 0.48]) P(0.9, 0.5, 0.2, u * (W / 2.05), top + 0.22, -Lb / 2 + 0.34, -0.75, M.duvet);
+  for (const u of [-0.42, 0.42]) P(0.6, 0.45, 0.17, u * (W / 2.05), top + 0.23, -Lb / 2 + 0.47, -0.36, M.throwSand, -u * 0.12);
+  P(0.56, 0.3, 0.15, 0, top + 0.15, -Lb / 2 + 0.7, -0.22, M.boucle);
   // headboard wall panel: channels
   const HB = 1.35, HW = W + HWx, nch = Math.round(HW / 0.24);
   for (let i = 0; i < nch; i++) { const u = -HW / 2 + HW * (i + 0.5) / nch; add(at(rbox(HW / nch - 0.008, HB, 0.09, hbMat ? 0.006 : 0.035), u, 0.62 + HB / 2 - 0.1, -Lb / 2 - 0.06), hbMat || M.boucleTaupe); }
