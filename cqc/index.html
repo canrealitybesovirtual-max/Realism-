@@ -4665,6 +4665,7 @@ nvgToneChunk();                                   // step 118: the night vision 
 const TFILL = { on: !/[?&]tfill=off\b/.test(QS), max: LITE.on ? 1 : 2, maxXR: 1,   // PERF: lite = 3 diffuse-only fill lights (compiled that way)
   I: 14, P: Array.from({ length: 11 }, () => new THREE.Vector4()), idx: [], dist: new Float32Array(96), head: new THREE.Vector3(), col: new THREE.Color(), was: 0 };
 tfillChunk();                                     // room fill: every ceiling fitting lights the room (before anything compiles)
+aptSunChunk();                                    // apartment: the sun's own shadow map in every lit program (APARTMENT LOOK)
 renderer.shadowMap.enabled = REAL_LIGHT;         // step 58: Real lighting off = no shadow maps
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // STEP 2 PERFORMANCE: the room and its lights never move, so shadow maps are rendered
@@ -50365,7 +50366,7 @@ const aptLX = (az) => APT.cz - az, aptLZ = (ax) => ax - APT.cx;
 const aptAX = (lz) => lz + APT.cx, aptAZ = (lx) => APT.cz - lx;
 function aptLoad() {
   const A = aptState();
-  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js'), import('../world/src/view.js'), import('../world/src/surface.js')])
+  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js'), import('../world/src/view.js'), import('../world/src/surface.js'), import('../world/src/finish.js')])
     .then((m) => { A.mod = m; }).catch((e) => { A.err = e; console.error('apartment modules', e); });
   return A.loadP;
 }
@@ -50402,6 +50403,7 @@ function* aptBuilder(room) {
   room.group.add(G);
   if (apt.panes) { apt.panes.mesh.castShadow = false; apt.panes.mesh.receiveShadow = false; }
   room.aptG = G;
+  aptLookBuild(room, A, apt, furn, M);                          // APARTMENT LOOK: paint, contact field, the sun's shadow proxy
   if (!/[?&]aptclusters=off\b/.test(QS) && !/[?&]aptsurf=on\b/.test(QS) && renderer.extensions.get('WEBGL_multi_draw')) import('../world/src/clusters.js').then((cm) => cm.clusterize([...apt.meshes, ...furn.meshes])).then((r) => { apt.meshes.length = 0; furn.meshes.length = 0; room.aptTri = null; if (room.active) setTimeout(() => aptTriBuild(room), 0); console.log('apartment clusters', JSON.stringify(r.stats)); }).catch((e) => console.warn('apartment clusters off', e));   // meshlet clusters: only what can be seen is drawn
   A.mirTick = null; import('../world/src/mirrors.js').then((mm) => { A.mirTick = mm.setupMirrors(G, renderer, Q, furn.mirrors || furn.meshes); }).catch((e) => console.warn('apartment mirrors', e));   // real reflections in the apartment's mirrors
   // the real city outside (the apartment's baked view), squeezed into CQC's camera range, and the sun through the glass
@@ -50409,7 +50411,7 @@ function* aptBuilder(room) {
   else if (A.view) { G.add(A.view.world, A.view.sky); }
   if (!A.sun) {
     const L = A.sun = new THREE.DirectionalLight('#fff3e2', 0);
-    L.castShadow = true; L.shadow.mapSize.set(xr ? 1024 : 2048, xr ? 1024 : 2048);
+    L.castShadow = false; L.shadow.mapSize.set(xr ? 1024 : 2048, xr ? 1024 : 2048);   // APARTMENT LOOK draws its shadow (aptSunRender)
     const sc = L.shadow.camera; sc.left = -16; sc.right = 16; sc.top = 16; sc.bottom = -16; sc.near = 20; sc.far = 110;
     L.shadow.bias = -0.0004; L.shadow.normalBias = 0.03;
   }
@@ -50709,7 +50711,7 @@ function aptSunAim() {
   const A = APTS; if (!A || !A.sun) return;
   const d = A.view ? A.view.sun : new THREE.Vector3(-0.55, 0.45, -0.7).normalize();
   A.sun.position.set(8.8 + d.x * 60, 4 + d.y * 60, 9.5 + d.z * 60);
-  A.sun.shadow.needsUpdate = true; renderer.shadowMap.needsUpdate = true;
+  A.sun.shadow.needsUpdate = true; renderer.shadowMap.needsUpdate = true; aptSunDirty();
 }
 // The view and the sun while you are in (or can see) the apartment: the camera seen from the apartment's own frame.
 const _apQ = new THREE.Quaternion();
@@ -50724,6 +50726,7 @@ function aptViewTick() {
   const cur = stream.current, inA = !!(cur && cur.apt);
   if (A.sun) { const k = inA ? APT.sunI : 0; if (A.sun.intensity !== k) { A.sun.intensity = k; renderer.shadowMap.needsUpdate = true; } }
   if (A.hemi) A.hemi.intensity = inA ? (A.surfDone ? 0.12 : APT.hemiI) : 0;   // after the probe bake the probes carry the bounce
+  if (!A.surf) aptLookTick(A, inA);                              // APARTMENT LOOK: sun shadow, downlights, apartment frame
   if (A.mirTick) A.mirTick(inA && A.room.visible !== false ? (renderer.xr.isPresenting ? renderer.xr.getCamera() : camera) : null);   // the nearest mirror you face reflects for real
   if (A.surf) {
     A.surf.syncFrame();                                           // floating origin / room placement: shaders read apartment coordinates
@@ -50998,6 +51001,193 @@ function aptPanelTick() {
   if (changed) aptPanelDraw();
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+
+/* =========================================================================
+ *  APARTMENT LOOK (?aptsun=off, ?aptlook=off): the surfaces and the shadows of the apartment without surface.js.
+ *  Surfaces (../world/src/finish.js): walls, ceilings and the stair white are the scanned painted plaster with
+ *  stochastic anti-tiling, roller laps, scuffs and hand grime at jambs; every apartment material reads a contact
+ *  field baked once here from the colliders (furniture footprints, wall occupancy per floor): darker floor-wall and
+ *  ceiling-wall junctions, inside corners, floor under and round furniture (indirect light, a little of the fill).
+ *  Sun: the apartment's DirectionalLight casts no three.js shadow (Real lighting is off by default, and its map was
+ *  redrawn with every other shadow request). Instead one depth map from the sun (aptSunRender: own Scene, own
+ *  orthographic camera fitted to the apartment's box seen from the sun, 2048 px / 1024 headset and lite) holds a
+ *  proxy of every opaque apartment and furniture surface (positions only, merged once; DoubleSide) and of the
+ *  movable furniture (aptProps, matrices copied), and every lit program reads it in the directional-light loop
+ *  (aptSunChunk, patched into three's shared chunk at boot, so no program compiles mid-game): normal offset + depth
+ *  bias, hardware bilinear compare, 3 x 3 taps on the computer, 2 x 2 in the headset; outside the box the sun is
+ *  dark (it never leaks into the rooms next door), other scenes' directional lights (viewmodel, store) untouched.
+ *  Redrawn when the sun moves, the apartment is placed or shifted, and while movables move (computer 4 Hz, headset 1 Hz).
+ *  The men do not cast the sun's shadow (they receive it). Downlights: the pool's two spots go to the two fittings
+ *  nearest you on your floor (hysteresis), with a downlight's beam (0.48 rad, soft edge); the room fill takes the next.
+ * ========================================================================= */
+var APTSS;                                                         // set by aptSunChunk at boot (no initializer: hoisted)
+function aptSunChunk() {
+  if (/[?&]aptsun=off\b/.test(QS)) return;
+  const C = THREE.ShaderChunk, L = THREE.ShaderLib, lf = C.lights_fragment_begin;
+  const call = 'RE_Direct( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );';
+  const i0 = lf.indexOf('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )'), i1 = i0 < 0 ? -1 : lf.indexOf(call, i0);
+  if (i1 < 0) { console.warn('apartment sun shadow: three chunk changed'); return; }
+  const low = IS_HEADSET || LITE.on, size = low ? 1024 : 2048;
+  const taps = low ? [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]] : [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+  C.lights_pars_begin += `
+uniform vec4 uAsK[ 2 ];
+uniform mat4 uAsM[ 1 ];
+uniform sampler2DShadow uAsD[ 1 ];
+float aptSunVis( vec3 vp, vec3 ld ) {
+  if ( uAsK[ 0 ].x < 0.5 ) return 1.0;
+  mat3 iv = transpose( mat3( viewMatrix ) );
+  vec3 wd = iv * ld;
+  if ( dot( wd, uAsK[ 1 ].xyz ) < 0.999 ) return 1.0;               // not the apartment's sun
+  vec3 fn = iv * normalize( cross( dFdx( vp ), dFdy( vp ) ) );
+  float nl = dot( fn, wd ); if ( nl < 0.0 ) { fn = - fn; nl = - nl; }
+  vec3 wp = iv * ( vp - viewMatrix[ 3 ].xyz ) + fn * uAsK[ 0 ].w * ( 0.5 + sqrt( max( 1.0 - nl * nl, 0.0 ) ) );
+  vec3 c = ( uAsM[ 0 ] * vec4( wp, 1.0 ) ).xyz;
+  if ( any( lessThan( c, vec3( 0.0 ) ) ) || any( greaterThan( c, vec3( 1.0 ) ) ) ) return 0.0;   // outside the apartment: no sun
+  c.z -= uAsK[ 0 ].z;
+  float t = uAsK[ 0 ].y, s = 0.0;
+  ${taps.map(([x, y]) => `s += texture( uAsD[ 0 ], vec3( c.xy + vec2( ${x.toFixed(1)}, ${y.toFixed(1)} ) * t, c.z ) );`).join('\n  ')}
+  return s * ${(1 / taps.length).toFixed(6)};
+}
+`;
+  C.lights_fragment_begin = lf.slice(0, i1) + 'directLight.color *= aptSunVis( geometryPosition, directLight.direction );\n\t\t' + lf.slice(i1);
+  const dt = new THREE.DepthTexture(1, 1);
+  dt.compareFunction = THREE.LessEqualCompare; dt.minFilter = dt.magFilter = THREE.LinearFilter;
+  const rt = new THREE.WebGLRenderTarget(1, 1, { format: THREE.RedFormat, depthTexture: dt, depthBuffer: true });
+  APTSS = { size, rt, K: [new THREE.Vector4(), new THREE.Vector4()], M: [new THREE.Matrix4()], D: [dt],
+    cam: new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100), scene: new THREE.Scene(), root: new THREE.Group(), proxy: null, movers: [],
+    mat: new THREE.MeshDepthMaterial({ side: THREE.DoubleSide }), dirty: true, last: 0, moveSum: 0, gSig: 0, sunW: new THREE.Vector3(), sized: false };
+  APTSS.root.matrixAutoUpdate = false; APTSS.scene.add(APTSS.root); APTSS.scene.overrideMaterial = APTSS.mat;
+  for (const k of ['standard', 'physical', 'lambert', 'phong', 'toon']) if (L[k]) Object.assign(L[k].uniforms, { uAsK: { value: APTSS.K }, uAsM: { value: APTSS.M }, uAsD: { value: APTSS.D } });
+  const prev = renderer.getRenderTarget(); renderer.setRenderTarget(rt); renderer.clear(); renderer.setRenderTarget(prev);   // a real depth texture from the start (a shadow sampler must never see an empty unit)
+}
+// At build: the proxy of every opaque static surface (apartment coordinates, positions only).
+function aptSunBuild(G, meshes) {
+  const S = APTSS; if (!S) return;
+  if (S.proxy) { S.root.remove(S.proxy); S.proxy.geometry.dispose(); S.proxy = null; }
+  G.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(G.matrixWorld).invert(), rel = new THREE.Matrix4(), v = new THREE.Vector3();
+  const parts = []; let n = 0;
+  for (const m of meshes) {
+    const mt = m.material, g = m.geometry;
+    if (!m.isMesh || !g || !g.attributes.position || !mt || Array.isArray(mt) || mt.transparent || (mt.userData && mt.userData.shadow === 'none') || m.castShadow === false) continue;
+    rel.multiplyMatrices(inv, m.matrixWorld);
+    parts.push([g, rel.clone()]); n += g.index ? g.index.count : g.attributes.position.count;
+  }
+  const P = new Float32Array(n * 3); let o = 0;
+  for (const [g, M] of parts) {
+    const p = g.attributes.position, ix = g.index, cnt = ix ? ix.count : p.count;
+    for (let i = 0; i < cnt; i++) { v.fromBufferAttribute(p, ix ? ix.getX(i) : i).applyMatrix4(M); P[o++] = v.x; P[o++] = v.y; P[o++] = v.z; }
+  }
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(P, 3));
+  geo.attributes.position.onUpload(function () { this.array = null; });   // the GPU keeps it
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(8.8, 4, 9.6), 16);
+  S.proxy = new THREE.Mesh(geo, S.mat); S.proxy.frustumCulled = false; S.root.add(S.proxy);
+  S.tris = n / 3;
+  if (!S.sized) { S.rt.setSize(S.size, S.size); S.sized = true; }
+  S.dirty = true;
+}
+function aptSunMovers(room) {                                      // movable furniture: proxies sharing the props' geometry
+  const S = APTSS; if (!S) return;
+  for (const m of S.movers) S.scene.remove(m.px);
+  S.movers.length = 0;
+  for (const p of room.aptProps || []) p.root.traverse((o) => {
+    if (!o.isMesh || !o.material || o.material.transparent) return;
+    const px = new THREE.Mesh(o.geometry, S.mat); px.matrixAutoUpdate = false; px.matrixWorldAutoUpdate = false; px.frustumCulled = false;
+    S.scene.add(px); S.movers.push({ px, src: o, prop: p });
+  });
+  S.dirty = true;
+}
+const _asV = [0, 1, 2, 3, 4, 5, 6, 7].map(() => new THREE.Vector3()), _asC = new THREE.Vector3(), _asT = new THREE.Vector3();
+function aptSunRender(G) {
+  const S = APTSS, A = APTS; if (!S || !S.proxy || !A || !A.sun) return;
+  G.updateMatrixWorld(true);
+  S.root.matrix.copy(G.matrixWorld); S.root.matrixWorld.copy(G.matrixWorld);
+  S.proxy.matrixWorld.copy(G.matrixWorld);
+  for (const m of S.movers) { m.px.visible = !!(m.src.parent && m.prop.root.parent) && m.src.visible; m.px.matrixWorld.copy(m.src.matrixWorld); }
+  A.sun.getWorldPosition(_asC); A.sun.target.getWorldPosition(_asT);
+  const d = S.sunW.subVectors(_asC, _asT).normalize(), cam = S.cam;
+  const B = [[-0.15, 17.75], [-0.65, 8.75], [-0.15, 19.4]];          // the apartment's box (terrace included), apartment coordinates
+  let k = 0;
+  for (const x of B[0]) for (const y of B[1]) for (const z of B[2]) _asV[k++].set(x, y, z).applyMatrix4(G.matrixWorld);
+  _asC.set(0, 0, 0); for (const p of _asV) _asC.add(p); _asC.multiplyScalar(1 / 8);
+  cam.up.set(0, 1, 0); if (Math.abs(d.y) > 0.98) cam.up.set(0, 0, 1);
+  cam.position.copy(_asC).addScaledVector(d, 60); cam.lookAt(_asC); cam.updateMatrixWorld(true);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const p of _asV) { _asT.copy(p).applyMatrix4(cam.matrixWorldInverse); x0 = Math.min(x0, _asT.x); x1 = Math.max(x1, _asT.x); y0 = Math.min(y0, _asT.y); y1 = Math.max(y1, _asT.y); z0 = Math.min(z0, -_asT.z); z1 = Math.max(z1, -_asT.z); }
+  cam.left = x0; cam.right = x1; cam.bottom = y0; cam.top = y1; cam.near = Math.max(0.05, z0 - 0.5); cam.far = z1 + 0.5; cam.updateProjectionMatrix();
+  S.M[0].set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+  const texel = Math.max(x1 - x0, y1 - y0) / S.size;
+  S.K[0].set(S.K[0].x, 1 / S.size, 0.0025 / (cam.far - cam.near), texel * 1.4);
+  S.K[1].set(d.x, d.y, d.z, 0);
+  const xr = renderer.xr.enabled, sm = renderer.shadowMap.enabled, prev = renderer.getRenderTarget(), ac = renderer.autoClear;
+  renderer.xr.enabled = false; renderer.shadowMap.enabled = false; renderer.autoClear = true;
+  try { renderer.setRenderTarget(S.rt); renderer.render(S.scene, cam); }
+  finally { renderer.setRenderTarget(prev); renderer.xr.enabled = xr; renderer.shadowMap.enabled = sm; renderer.autoClear = ac; }
+  S.dirty = false; S.renders = (S.renders || 0) + 1;
+}
+// Downlights: the pool's spots to the fittings nearest you on your floor; the room fill takes the next ones.
+const APTL = { off: /[?&]aptlook=off\b/.test(QS), angle: 0.48, pen: 0.6, t: 0, lv: -1, room: null, all: null };
+function aptLampTick(room, inA) {
+  for (let i = 0; i < 2; i++) {
+    const s = pool.main[i]; if (!s || s.userData.torch) continue;
+    const want = inA ? APTL.angle : Math.PI * 0.42, pen = inA ? APTL.pen : 1.0;
+    if (s.angle !== want) { s.angle = want; s.penumbra = pen; dirtyShadows(); }
+  }
+  if (!inA || !room.apt || !room.apt.lamps) return;
+  const now = performance.now() / 1000; if (now - APTL.t < 0.5) return; APTL.t = now;
+  if (!APTL.all || APTL.room !== room) {
+    APTL.room = room; APTL.lv = -1;
+    APTL.all = room.apt.lamps.map((l) => { const dm = new THREE.MeshBasicMaterial(); room.ownMat.push(dm); return { x: aptLX(l[2]), z: aptLZ(l[0]), y: l[1], ax: l[0], az: l[2], diffMat: dm, d: 0 }; });
+  }
+  const lv = aptYouLv(room);
+  camera.getWorldPosition(_asT); room.aptG.worldToLocal(_asT);
+  const mine = APTL.all.filter((t) => (lv ? t.y > 4.6 : t.y < 4.4));
+  if (mine.length < 2) return;
+  for (const t of mine) t.d = Math.hypot(t.ax - _asT.x, t.az - _asT.z);
+  mine.sort((a, b) => a.d - b.d);
+  const cur = room.troffers;
+  const keep = APTL.lv === lv && cur.length >= 2 && mine.includes(cur[0]) && mine.includes(cur[1]) && Math.max(cur[0].d, cur[1].d) < mine[1].d + 0.8;
+  if (keep) { room.troffers = [cur[0], cur[1], ...mine.filter((t) => t !== cur[0] && t !== cur[1])]; return; }
+  APTL.lv = lv; room.troffers = mine;
+  pool.key = '';                                                   // assignLights places the spots again
+}
+// Build (from aptBuilder, before the wall damage chains onto the plaster): finish, contact field, sun proxy.
+function aptLookBuild(room, A, apt, furn, M) {
+  if (A.sun) A.sun.castShadow = false;
+  if (/[?&]aptlook=off\b/.test(QS)) return;
+  const FM = A.mod[5];
+  try {
+    if (FM) {
+      FM.finishAll(apt.group); FM.finishAll(furn.group);
+      const fset = new Set(furn.colliders);
+      FM.useContactField(FM.bakeContactField([...apt.colliders, ...furn.colliders].map((c) => (fset.has(c) ? { ...c, furn: true } : c)), M.glass, APT.L2));
+      FM.finishFrame(room.aptG);
+    }
+  } catch (e) { console.warn('apartment finish off', e); }
+  try { aptSunBuild(room.aptG, [...apt.meshes, ...furn.meshes]); } catch (e) { console.warn('apartment sun shadow off', e); }
+}
+const _asMv = new THREE.Vector3();
+function aptLookTick(A, inA) {
+  const room = A.room, G = room.aptG, S = APTSS; if (!G) return;
+  if (APTL.off) { if (S) S.K[0].x = 0; return; }                  // ?aptlook=off: the old apartment (no sun shadow either)
+  if (A.mod && A.mod[5]) A.mod[5].finishFrame(G);                 // floating origin: the shaders read apartment coordinates
+  aptLampTick(room, inA);
+  if (!S || !S.proxy) return;
+  const on = inA && A.sun && A.sun.intensity > 0 ? 1 : 0;
+  S.K[0].x = on; if (!on) return;
+  if (room.aptProps && S.moverOf !== room.aptProps) { S.moverOf = room.aptProps; aptSunMovers(room); }   // (a new array each activation)
+  const now = performance.now() / 1000;
+  if (now - S.last >= (XR_LOW() ? 1 : 0.25)) {
+    S.last = now;
+    let sum = 0; for (const m of S.movers) { m.src.getWorldPosition(_asMv); sum += _asMv.x * 1.3 + _asMv.y * 2.1 + _asMv.z * 0.7 + (m.src.parent ? 0 : 7); }
+    if (Math.abs(sum - S.moveSum) > 0.002) { S.moveSum = sum; S.dirty = true; }
+    const e = G.matrixWorld.elements, gs = e[12] * 1.7 + e[13] * 2.3 + e[14] * 0.9 + e[0] + e[2] * 3;
+    if (gs !== S.gSig) { S.gSig = gs; S.dirty = true; }
+  }
+  if (S.dirty) aptSunRender(G);
+}
+function aptSunDirty() { if (APTSS) APTSS.dirty = true; }
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APTSS, APTL, aptSunRender, aptSunBuild, aptLampTick, aptLookBuild });
 
 
 /* =========================================================================

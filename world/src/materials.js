@@ -2,6 +2,7 @@
 // built by tools/interior); terrace pavers and floor grilles are still generated on a canvas. Plaster uses the scanned normal map in ../textures. UVs are metric, so each
 // texture's repeat is 1 / (metres the texture covers).
 import * as THREE from 'three';
+import { finishMat } from './finish.js';
 
 // ---- small noise kit --------------------------------------------------------------------------
 function hash(x, y, s) {
@@ -118,6 +119,7 @@ const SCANS = {
   stone_travertine: [4.8, 4.8], stone_onyx: [4.8, 4.8], stone_marble: [4.8, 4.8], stone_greymarble: [4.8, 4.8],
   stone_cream: [4.8, 4.8], fabric_boucle: [0.3, 0.3], fabric_rug: [1.7, 1.7], fabric_linen: [1.0, 1.0],
   wood_bleached: [1.0, 1.0], wood_dark: [1.0, 1.0], wood_mid: [1.0, 1.0], wood_walnut: [1.0, 1.0], wood_oak: [1.83, 1.83],
+  paint_plaster: [2.0, 2.0],                        // Poly Haven painted_plaster_wall (tools/interior/build_paint.py)
 };
 // one loader for all of them; M.ready resolves when every scan has arrived (the reflection
 // probes are baked after it)
@@ -126,8 +128,10 @@ function scanKit(Q) {
   const tl = new THREE.TextureLoader(mgr);
   const dir = (Q.base || './') + 'textures/scans/' + (Q.quest ? 'quest/' : '');
   const ready = new Promise((res) => { mgr.onLoad = res; mgr.onError = (u) => console.warn('scan failed', u); });
+  const cache = new Map();                          // one texture per file (paint and trim share their scans)
   const tex = (name, k, srgb) => {
-    const t = tl.load(`${dir}${name}_${k}.webp`);
+    const ck = name + '_' + k; if (cache.has(ck)) return cache.get(ck);
+    const t = tl.load(`${dir}${name}_${k}.webp`); cache.set(ck, t);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
     t.anisotropy = Q.quest ? 4 : 8;
@@ -143,13 +147,13 @@ function scanKit(Q) {
     if (coat) base.roughness = coat.quest / 0.6;      // the scan's roughness is ~0.6: scale it to the headset value
     return new THREE.MeshStandardMaterial(base);
   };
-  return { scan, ready };
+  return { scan, ready, tex };
 }
 
 export function makeMaterials(Q) {
   const M = {};
   COAT_OK = !Q.quest;
-  const { scan, ready } = scanKit(Q);
+  const { scan, ready, tex } = scanKit(Q);
   M.ready = ready;
   // floors: oiled smoke-grey oak laid as herringbone (great hall), Versailles panels (dining),
   // long planks (bedrooms); polished stones (sharp reflections), honed travertine (soft); the
@@ -179,22 +183,29 @@ export function makeMaterials(Q) {
   M.pavers = finish(SS, genStone(SS, 17, { base: lin('#b9b6ae'), vein: lin('#9d9a93'), veinW: 0.01, veinK: 0.2, mottle: 0.7, tile: 2.4, slab: [0.6, 0.6], rough: 0.8 }), 2.5, [2.4, 2.4]);
   M.treadStone = M.stone.clone(); M.treadStone.side = THREE.DoubleSide;
 
-  // plaster walls and ceilings: warm white paint over the scanned plaster normal map
-  const tl = new THREE.TextureLoader();
-  const pn = tl.load((Q.base || './') + 'textures/plaster_nor.jpg');
-  pn.wrapS = pn.wrapT = THREE.RepeatWrapping; pn.repeat.set(1 / 1.5, 1 / 1.5); pn.anisotropy = 8;
-  M.plaster = new THREE.MeshStandardMaterial({ color: '#e9e4db', roughness: 0.92, normalMap: pn, normalScale: new THREE.Vector2(0.12, 0.12) });
-  M.plasterWarm = new THREE.MeshStandardMaterial({ color: '#ddd3c6', roughness: 0.92, normalMap: pn, normalScale: new THREE.Vector2(0.12, 0.12) });
-  M.plasterStair = new THREE.MeshStandardMaterial({ color: '#c9b9aa', roughness: 0.88, normalMap: pn, normalScale: new THREE.Vector2(0.14, 0.14), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });   // wins where the shell meets the hall walls' faces   // greige plaster of the stair hall (apartment-12)
-  M.ceiling = new THREE.MeshStandardMaterial({ color: '#f1efea', roughness: 0.95 });
-  M.stairWhite = new THREE.MeshStandardMaterial({ color: '#eeebe5', roughness: 0.75, side: THREE.DoubleSide });
+  // walls and ceilings: one coat of paint over plaster, from a scan (Poly Haven painted_plaster_wall, 2 x 2 m): its
+  // normal map is the roller stipple and the trowel waves under the paint, its roughness map the sheen that varies
+  // with them, its grey diffuse the faint unevenness of the coat. The colour is the paint (the grey map averages 0.85
+  // linear, so the colour is divided by it). finish.js samples it without visible repeats and wears it.
+  const paint = (hex, rough, nS, more = {}) => {
+    const c = new THREE.Color(hex).multiplyScalar(1 / 0.85);
+    const m = scan('paint_plaster', { nScale: nS, more: { color: c, roughness: rough, aoMapIntensity: 0.5, ...more } });
+    return finishMat(m, 'paint');
+  };
+  M.plaster = paint('#e9e4db', 1.0, 0.32);                       // eggshell (roughness ~0.8)
+  M.plasterWarm = paint('#ddd3c6', 1.0, 0.32);
+  M.plasterStair = paint('#c9b9aa', 1.04, 0.42, { polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });   // greige plaster of the stair hall (apartment-12); wins where the shell meets the hall walls' faces
+  M.ceiling = paint('#f1efea', 1.2, 0.16);                       // flat ceiling white (roughness ~0.95), the stipple faint
+  M.stairWhite = paint('#eeebe5', 0.95, 0.2, { side: THREE.DoubleSide });
 
   // metals, wood trim, glass
   M.bronze = new THREE.MeshStandardMaterial({ color: '#3b3029', metalness: 0.75, roughness: 0.38 });
   M.bronzeLight = new THREE.MeshStandardMaterial({ color: '#7a6248', metalness: 0.85, roughness: 0.3 });
   M.blackMetal = new THREE.MeshStandardMaterial({ color: '#141414', metalness: 0.5, roughness: 0.45 });
-  M.darkOak = coated(0, '#3a2b21', 0.5, 0.5, 0.2, 0.42);                          // lacquered trim
-  M.doorWhite = coated(0, '#efece6', 0.4, 0.6, 0.12, 0.3);                         // lacquered doors
+  // trim: dark oak skirting and casings under a satin lacquer (the scan's grain runs along u = along the board);
+  // doors and their casings lacquered white over wood: the grain shows only in the sheen
+  M.darkOak = scan('wood_dark', { coat: { clearcoat: 0.55, clearcoatRoughness: 0.14, quest: 0.42 }, nScale: 0.6, more: { color: new THREE.Color(0.5, 0.34, 0.25) } });   // the scan x this = the old #3a2b21 on average
+  M.doorWhite = coated(0, '#efece6', 0.42, 0.65, 0.1, 0.3, { normalMap: tex('wood_mid', 'nor', false), normalScale: new THREE.Vector2(0.14, 0.14) });
   M.fireDoor = new THREE.MeshStandardMaterial({ color: '#b9b5ad', roughness: 0.55, metalness: 0.2 });
   M.slot = new THREE.MeshStandardMaterial({ color: '#141414', roughness: 0.9 });
   M.glass = new THREE.MeshStandardMaterial({ color: '#000000', roughness: 0.02, metalness: 0.0, transparent: true, opacity: 1, depthWrite: false });
