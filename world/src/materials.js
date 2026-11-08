@@ -124,7 +124,7 @@ const SCANS = {
 };
 // one loader for all of them; M.ready resolves when every scan has arrived (the reflection
 // probes are baked after it)
-const SCANS_KTX2 = false;                           // on once every headset scan has its .ktx2 beside it
+const SCANS_KTX2 = false;                            // on once every headset scan has its .ktx2 beside it
 function scanKit(Q) {
   const mgr = new THREE.LoadingManager();
   const tl = new THREE.TextureLoader(mgr);

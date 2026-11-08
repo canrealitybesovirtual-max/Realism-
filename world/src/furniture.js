@@ -950,34 +950,195 @@ function tv(B, M, x, y, z, ry, w = 1.45, h = 0.83) {
 
 // ---- kitchen (apartment-15): dark oak base run, stone counter and splash, white lacquer uppers;
 // local x along the run, the front faces +z (turned by ry)
+// ---- openable interiors (kitchen) ----------------------------------------------------------------
+// Cabinet doors, drawers, the fridge and pantry doors and the oven doors are their own parts: each is built in its own
+// frame (pivot at the origin: a hinge line, a drawer's back plane, an oven door's bottom edge) and handed back as an
+// openable { kind, type: 'hinge' | 'drawer' | 'flap', group (the pivot, placed in apartment coordinates), max }, so the
+// game can swing / slide / drop it. Behind them the carcasses are hollow: shelves, racks, liners, and what is kept there.
+let OPN = [];
+const _ov = new THREE.Vector3(), _oy = new THREE.Vector3(0, 1, 0);
+function opnPart(kind, x, z, ry, lx, ly, lz, spec) {
+  _ov.set(lx, 0, lz).applyAxisAngle(_oy, ry);
+  const b = new Builder();
+  OPN.push({ kind, b, x: x + _ov.x, y: ARTY + ly, z: z + _ov.z, ry, ...spec });
+  return b;
+}
+// a hollow box (open at the front, +z): back, bottom, top, two sides; t = panel thickness
+function hollow(add, x0, x1, y0, y1, z0, z1, t, m, top = true) {
+  const box = (a0, a1, b0, b1, c0, c1) => add(at(rbox(a1 - a0, b1 - b0, c1 - c0, 0.001, 1), (a0 + a1) / 2, (b0 + b1) / 2, (c0 + c1) / 2), m);
+  box(x0, x1, y0, y1, z0, z0 + t); box(x0, x1, y0, y0 + t, z0, z1); if (top) box(x0, x1, y1 - t, y1, z0, z1);
+  box(x0, x0 + t, y0, y1, z0, z1); box(x1 - t, x1, y0, y1, z0, z1);
+}
+// things kept inside (simple, real sizes)
+function stackPlates(add, M, x, y, z, n = 6, r = 0.13) { for (let i = 0; i < n; i++) add(at(lathe([[0, 0], [r * 0.62, 0], [r * 0.7, 0.008], [r, 0.02], [r - 0.004, 0.022], [r * 0.66, 0.012], [0, 0.012]], 32), x, y + i * 0.014, z), M.ceramic); }
+function bowls(add, M, x, y, z, n = 3) { for (let i = 0; i < n; i++) add(at(lathe([[0, 0], [0.04, 0], [0.075, 0.05], [0.072, 0.052], [0.037, 0.006], [0, 0.006]], 28), x, y + i * 0.022, z), M.ceramic); }
+function pot(add, M, x, y, z, r = 0.1, h = 0.11) {
+  add(at(lathe([[0, 0], [r, 0], [r, h], [r - 0.003, h], [r - 0.003, 0.004], [0, 0.004]], 32), x, y, z), M.steel);
+  add(at(lathe([[0, h + 0.012], [r * 0.25, h + 0.01], [r + 0.004, h], [r + 0.004, h - 0.003], [0, h - 0.003]], 32), x, y, z), M.steel);
+  add(at(lathe([[0, h + 0.012], [0.012, h + 0.012], [0.012, h + 0.03], [0, h + 0.03]], 12), x, y, z), M.blackMatte);
+}
+function glasses(add, M, x, y, z, nx = 3, nz = 2) { for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) add(at(lathe([[0, 0], [0.034, 0], [0.036, 0.11], [0.033, 0.11], [0.031, 0.006], [0, 0.006]], 20), x + i * 0.085, y, z + j * 0.085), M.glass); }
+function jar(add, M, x, y, z, r, h, lid) { add(at(lathe([[0, 0], [r, 0], [r, h], [r * 0.85, h + 0.01], [0, h + 0.01]], 20), x, y, z), M.glass); add(at(lathe([[0, h + 0.01], [r * 0.88, h + 0.01], [r * 0.88, h + 0.025], [0, h + 0.025]], 20), x, y, z), lid); }
+function carton(add, m, x, y, z, w, h, d) { add(at(rbox(w, h, d, 0.004, 1), x, y + h / 2, z), m); }
+function bottle(add, m, cap, x, y, z, r = 0.035, h = 0.26) { add(at(lathe([[0, 0], [r, 0], [r, h * 0.62], [r * 0.4, h * 0.82], [r * 0.32, h], [0, h]], 20), x, y, z), m); add(at(lathe([[0, h], [r * 0.34, h], [r * 0.34, h + 0.02], [0, h + 0.02]], 12), x, y, z), cap); }
+function can(add, M, x, y, z, r = 0.037, h = 0.11, label) { add(at(lathe([[0, 0], [r, 0], [r, h], [0, h]], 20), x, y, z), label || M.steel); }
+
+// base cabinet bay: a hollow carcass, a shelf, a hinged door (lower) and a drawer (upper); w = bay width
+function baseBay(B, M, x, z, ry, cx, w, D, H, i, contents) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  const fz = D / 2 - 0.02, back = -D / 2 + 0.01;
+  hollow((g, m) => add(at(g, cx, 0, 0), m), -w / 2 + 0.002, w / 2 - 0.002, 0.1, H, back, fz, 0.018, M.melamine, false);
+  add(at(rbox(w - 0.04, 0.018, D - 0.08, 0.001, 1), cx, 0.33, -0.02), M.melamine);           // shelf
+  add(at(rbox(w - 0.04, 0.018, D - 0.06, 0.001, 1), cx, 0.556, -0.02), M.melamine);          // rail under the drawer
+  if (contents) contents((g, m) => add(at(g, cx, 0, 0), m));
+  // door: hinged on the side away from the neighbour's hinge (alternating), opens 105 deg
+  const left = i % 2 === 0, hx = cx + (left ? -w / 2 + 0.002 : w / 2 - 0.002);
+  const d = opnPart('cab', x, z, ry, hx, 0, fz, { type: 'hinge', max: (left ? -1 : 1) * 1.83, w: w - 0.004, h: 0.42, handle: [(left ? 1 : -1) * (w - 0.06), 0.54, 0.02] });
+  d.add(at(rbox(w - 0.004, 0.42, 0.02, 0.002, 1), (left ? 1 : -1) * (w / 2 - 0.002), 0.33, 0.01), M.woodDark);
+  // drawer: front + box (sides, bottom, back) 0.48 deep, slides out 0.42
+  const dr = opnPart('drawer', x, z, ry, cx, 0, fz, { type: 'drawer', max: 0.42, w: w - 0.004, h: 0.24, handle: [0, 0.81, 0.02] });
+  dr.add(at(rbox(w - 0.004, 0.24, 0.02, 0.002, 1), 0, 0.7, 0.01), M.woodDark);
+  hollow((g, m) => dr.add(g, m), -w / 2 + 0.035, w / 2 - 0.035, 0.6, 0.78, -0.48, 0, 0.012, M.melamine, false);
+  // cutlery insert: grey tray with dividers
+  dr.add(at(rbox(w - 0.1, 0.006, 0.4, 0.001, 1), 0, 0.615, -0.24), M.frameGrey);
+  for (let k = -2; k <= 2; k++) dr.add(at(rbox(0.004, 0.04, 0.38, 0.001, 1), k * (w - 0.12) / 5, 0.635, -0.24), M.frameGrey);
+}
+// wall cabinet bay (white lacquer, 0.35 deep): two shelves, a hinged door
+function upperBay(B, M, x, z, ry, cx, w, y0, h, dz, i, contents) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  const D = 0.35, fz = dz + D / 2 - 0.018, back = dz - D / 2;
+  hollow((g, m) => add(at(g, cx, 0, 0), m), -w / 2 + 0.002, w / 2 - 0.002, y0, y0 + h, back, fz, 0.018, M.melamine, true);
+  for (const k of [1, 2]) add(at(rbox(w - 0.04, 0.016, D - 0.05, 0.001, 1), cx, y0 + h * k / 3, dz - 0.01), M.melamine);
+  if (contents) contents((g, m) => add(at(g, cx, 0, 0), m), y0, h, dz);
+  const left = i % 2 === 0, hx = cx + (left ? -w / 2 + 0.002 : w / 2 - 0.002);
+  const d = opnPart('cab', x, z, ry, hx, 0, fz, { type: 'hinge', max: (left ? -1 : 1) * 1.83, w: w - 0.004, h, handle: [(left ? 1 : -1) * (w - 0.05), y0 + 0.04, 0.02] });
+  d.add(at(rbox(w - 0.004, h - 0.004, 0.018, 0.003, 1), (left ? 1 : -1) * (w / 2 - 0.002), y0 + h / 2, 0.009), M.lacquerWhite);
+}
+// tall units: an integrated fridge (French doors over a freezer drawer) and a pantry behind wood panel doors, or an oven stack
+function tallUnitOpen(B, M, x, z, ry, W, H, ovens) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  const D = 0.62, fz = D / 2 - 0.02, back = -D / 2;
+  if (ovens) {
+    // carcass with two oven niches; each oven: black enamel cavity, two racks, a lamp, a drop-down steel and smoked-glass door
+    const ys = [0.95, 1.55];
+    const solid = (y0, y1) => add(at(rbox(W, y1 - y0, D - 0.02, 0.003, 1), 0, (y0 + y1) / 2, -0.01), M.woodDark);
+    solid(0, ys[0]); solid(ys[0] + 0.58, ys[1]); solid(ys[1] + 0.58, H);
+    for (const yy of ys) {
+      add(at(rbox(W, 0.58, 0.02, 0.002, 1), 0, yy + 0.29, back + 0.01), M.woodDark);
+      add(at(rbox(0.02, 0.58, D - 0.02, 0.002, 1), -W / 2 + 0.01, yy + 0.29, -0.01), M.woodDark); add(at(rbox(0.02, 0.58, D - 0.02, 0.002, 1), W / 2 - 0.01, yy + 0.29, -0.01), M.woodDark);
+      const cw = W - 0.16, ch = 0.38, cy0 = yy + 0.08, cz0 = -0.24, cz1 = fz - 0.03;
+      hollow(add, -cw / 2, cw / 2, cy0, cy0 + ch, cz0, cz1, 0.01, M.ovenEnamel, true);
+      add(at(rbox(W - 0.04, 0.1, 0.02, 0.003, 1), 0, yy + 0.51, fz), M.steel);                        // control strip
+      for (const k of [-1, 1]) add(at(lathe([[0, 0], [0.018, 0], [0.018, 0.018], [0, 0.022]], 20).rotateX(Math.PI / 2), k * 0.22, yy + 0.51, fz + 0.01), M.blackMatte);
+      add(at(rbox(0.12, 0.03, 0.004, 0.002, 1), 0, yy + 0.51, fz + 0.011), M.ledStrip);               // display
+      for (const r of [0.13, 0.25]) for (let k = 0; k < 9; k++) add(at(lathe([[0.0025, 0], [0.0025, cz1 - cz0 - 0.04]], 6).rotateX(Math.PI / 2), -cw / 2 + 0.03 + k * (cw - 0.06) / 8, cy0 + r, (cz0 + cz1) / 2), M.steel);
+      add(at(lathe([[0, 0], [0.018, 0], [0.018, 0.006], [0, 0.012]], 16).rotateX(Math.PI / 2), -cw / 2 + 0.05, cy0 + ch - 0.04, cz0 + 0.012), M.ledStrip);   // oven lamp
+      const d = opnPart('oven', x, z, ry, 0, yy + 0.02, fz, { type: 'flap', max: 1.48, w: W - 0.04, h: 0.44, handle: [0, 0.4, 0.05] });
+      d.add(at(rbox(W - 0.04, 0.44, 0.022, 0.004, 1), 0, 0.22, 0.011), M.steel);
+      d.add(at(rbox(W - 0.14, 0.27, 0.006, 0.004, 1), 0, 0.2, 0.025), M.smoke);
+      d.add(at(barPull(W - 0.2, 0.009, 0.04, 0.03).rotateZ(Math.PI / 2), 0, 0.4, 0.023), M.steel);
+    }
+    B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.woodDark });
+    return;
+  }
+  const n = Math.max(1, Math.round(W / 0.6)), dw = W / n, fr = n >= 4 ? 2 : 0;       // the first two doors: the fridge
+  add(at(rbox(W, 0.1, D - 0.06, 0.002, 1), 0, 0.05, -0.03), M.blackMatte);              // plinth
+  add(at(rbox(W, 0.12, D - 0.02, 0.002, 1), 0, H - 0.06, -0.01), M.woodDark);            // top panel
+  add(at(rbox(W, H - 0.22, 0.02, 0.002, 1), 0, (H - 0.22) / 2 + 0.1, back + 0.01), M.woodDark);
+  add(at(rbox(0.02, H, D - 0.02, 0.002, 1), -W / 2 + 0.01, H / 2, -0.01), M.woodDark); add(at(rbox(0.02, H, D - 0.02, 0.002, 1), W / 2 - 0.01, H / 2, -0.01), M.woodDark);
+  if (fr) {
+    const fw = dw * fr, x0 = -W / 2 + 0.02, x1 = x0 + fw - 0.03, fc = (x0 + x1) / 2, yF = 0.82, yT = H - 0.13;
+    add(at(rbox(0.02, H - 0.22, D - 0.02, 0.002, 1), x1 + 0.01, (H - 0.22) / 2 + 0.1, -0.01), M.woodDark);   // division to the pantry
+    hollow(add, x0, x1, yF, yT, back + 0.03, fz - 0.03, 0.02, M.fridgeLiner, true);                         // fridge liner
+    add(at(rbox(x1 - x0, 0.03, D - 0.1, 0.004, 1), fc, yF - 0.015, -0.03), M.fridgeLiner);
+    add(at(rbox(x1 - x0 - 0.06, 0.012, 0.02, 0.004, 1), fc, yT - 0.05, fz - 0.06), M.ledStrip);             // LED along the top front
+    for (const sy of [1.12, 1.42, 1.72, 2.0]) {                                                             // glass shelves, aluminium nosing
+      add(at(rbox(x1 - x0 - 0.05, 0.005, D - 0.16, 0.001, 1), fc, sy, -0.05), M.glass);
+      add(at(rbox(x1 - x0 - 0.05, 0.016, 0.012, 0.003, 1), fc, sy - 0.004, fz - 0.115), M.nickel);
+    }
+    for (const cx of [fc - (x1 - x0) / 4, fc + (x1 - x0) / 4]) {                                            // crisper bins with vegetables
+      add(at(rbox((x1 - x0) / 2 - 0.05, 0.2, D - 0.18, 0.012, 2), cx, yF + 0.12, -0.05), M.smokeClear);
+      for (let k = 0; k < 5; k++) add(at(new THREE.SphereGeometry(0.035 + (k % 3) * 0.006, 12, 8), cx - 0.1 + k * 0.05, yF + 0.06, -0.05 + (k % 2) * 0.08), k % 2 ? M.vegRed : M.vegGreen);
+    }
+    // what is in it
+    carton(add, M.milk, fc - 0.4, 1.125, -0.05, 0.07, 0.24, 0.07); carton(add, M.juice, fc - 0.3, 1.125, -0.08, 0.07, 0.22, 0.07);
+    for (let k = 0; k < 3; k++) jar(add, M, fc - 0.12 + k * 0.1, 1.425, -0.04 - (k % 2) * 0.06, 0.04, 0.09, k % 2 ? M.blackMatte : M.brass);
+    carton(add, M.eggs, fc + 0.2, 1.425, -0.05, 0.3, 0.07, 0.11); carton(add, M.takeout, fc + 0.3, 1.725, -0.08, 0.18, 0.08, 0.14);
+    for (let k = 0; k < 4; k++) bottle(add, k % 2 ? M.glass : M.amberGlass, M.blackMatte, fc - 0.35 + k * 0.09, 1.725, -0.15, 0.03, 0.22);
+    // French doors (wood panel outside, liner and bins inside), hinged at the outer edges
+    for (const side of [-1, 1]) {
+      const hx = side < 0 ? x0 - 0.018 : x1 + 0.018, w = (fw - 0.004) / 2;
+      const d = opnPart('fridge', x, z, ry, hx, 0, fz, { type: 'hinge', max: side < 0 ? -1.9 : 1.9, w, h: H - 0.12 - 0.84, handle: [side < 0 ? w - 0.06 : -(w - 0.06), 1.5, 0.05] });
+      const sx = side < 0 ? w / 2 : -w / 2;
+      d.add(at(rbox(w, yT - yF + 0.02, 0.02, 0.002, 1), sx, (yF + yT) / 2, 0.01), M.woodDark);
+      d.add(at(rbox(w - 0.03, yT - yF - 0.04, 0.03, 0.006, 1), sx, (yF + yT) / 2, -0.016), M.fridgeLiner);
+      for (const by of [1.0, 1.4, 1.8]) {
+        d.add(at(rbox(w - 0.08, 0.07, 0.08, 0.006, 2), sx, by, -0.07), M.smokeClear);
+        for (let k = 0; k < 3; k++) bottle(d.add.bind(d), k === 1 ? M.juice : M.glass, M.blackMatte, sx - 0.12 + k * 0.12, by - 0.03, -0.07, 0.028, 0.2 - k * 0.02);
+      }
+      d.add(at(barPull(0.9, 0.0095, 0.04, 0.03), side < 0 ? w - 0.06 : -(w - 0.06), 1.5, 0.02), M.steel);
+    }
+    // freezer drawer
+    const fd = opnPart('freezer', x, z, ry, fc, 0, fz, { type: 'drawer', max: 0.45, w: fw - 0.034, h: 0.68, handle: [0, 0.74, 0.05] });
+    fd.add(at(rbox(fw - 0.034, 0.68, 0.02, 0.002, 1), 0, 0.46, 0.01), M.woodDark);
+    hollow((g, m) => fd.add(g, m), -(fw - 0.12) / 2, (fw - 0.12) / 2, 0.16, 0.72, -0.5, 0, 0.012, M.fridgeLiner, false);
+    for (let k = 0; k < 6; k++) carton((g, m) => fd.add(g, m), k % 2 ? M.frost : M.takeout, -0.4 + (k % 3) * 0.3, 0.18, -0.12 - Math.floor(k / 3) * 0.24, 0.24, 0.07 + (k % 2) * 0.03, 0.2);
+    fd.add(at(barPull(fw - 0.3, 0.0095, 0.04, 0.03).rotateZ(Math.PI / 2), 0, 0.74, 0.02), M.steel);
+  }
+  // pantry: shelves with tins, jars, boxes and bottles, behind panel doors
+  const p0 = -W / 2 + dw * fr + 0.02, p1 = W / 2 - 0.02, pc = (p0 + p1) / 2, pw = p1 - p0;
+  hollow(add, p0, p1, 0.1, H - 0.12, back + 0.02, fz, 0.018, M.melamine, false);
+  const shelves = [0.5, 0.92, 1.34, 1.76];
+  for (const sy of shelves) add(at(rbox(pw - 0.04, 0.018, D - 0.08, 0.001, 1), pc, sy, -0.02), M.melamine);
+  const shelfItems = (sy, kind) => {
+    for (let k = 0; k < 6; k++) {
+      const u = p0 + 0.1 + k * (pw - 0.2) / 5, v = -0.12 + (k % 2) * 0.12;
+      if (kind === 0) can(add, M, u, sy + 0.009, v, 0.037, 0.11, k % 3 ? M.steel : M.canRed);
+      else if (kind === 1) carton(add, k % 2 ? M.cereal : M.pasta, u, sy + 0.009, v - 0.06, 0.07 + (k % 2) * 0.12, 0.28 - (k % 2) * 0.06, 0.07);
+      else if (kind === 2) jar(add, M, u, sy + 0.009, v, 0.05, 0.16, M.brass);
+      else bottle(add, k % 2 ? M.amberGlass : M.glass, M.blackMatte, u, sy + 0.009, v, 0.035, 0.28);
+    }
+  };
+  shelfItems(0.1 + 0.018, 3); shelves.forEach((sy, k) => shelfItems(sy, k % 3));
+  for (let i = fr; i < n; i++) {
+    const left = (i - fr) % 2 === 0, hx = -W / 2 + dw * (left ? i : i + 1) + (left ? 0.002 : -0.002);
+    const w = dw - 0.004, d = opnPart('pantry', x, z, ry, hx, 0, fz, { type: 'hinge', max: left ? -1.9 : 1.9, w, h: H - 0.12, handle: [left ? w - 0.06 : -(w - 0.06), H * 0.52, 0.05] });
+    d.add(at(rbox(w, H - 0.12, 0.02, 0.002, 1), left ? w / 2 : -w / 2, (H - 0.12) / 2 + 0.1, 0.01), M.woodDark);
+    d.add(at(barPull(H * 0.55, 0.0095, 0.04, 0.03), left ? w - 0.06 : -(w - 0.06), H * 0.52, 0.02), M.steel);
+  }
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.woodDark });
+}
 function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null, outlets = true, splash = true } = {}) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
   const D = 0.62, H = 0.89;
   add(at(rbox(L, 0.1, D - 0.08, 0.002, 1), 0, 0.05, -0.04), M.blackMatte);
-  // carcass: open above the sink base so the 220 mm bowl hangs under the counter's cut-out
-  const seg = (a, b, y0, y1, z0 = -D / 2, z1 = D / 2 - 0.04) => add(at(rbox(b - a, y1 - y0, z1 - z0, 0.002, 1), (a + b) / 2, (y0 + y1) / 2, (z0 + z1) / 2), M.woodDark);
-  if (sink == null) seg(-L / 2, L / 2, 0.1, H);
-  else {
-    const xa = sink - 0.33, xb = sink + 0.33, yb = H - 0.26;
-    seg(-L / 2, xa, 0.1, H); seg(xb, L / 2, 0.1, H); seg(xa, xb, 0.1, yb);
-    seg(xa, xb, yb, H, D / 2 - 0.058, D / 2 - 0.04); seg(xa, xb, yb, H, -D / 2, -D / 2 + 0.018);
-  }
   const n = Math.max(1, Math.round(L / 0.6)), w = L / n;
+  const lowItems = [
+    (a) => { stackPlates(a, M, -0.08, 0.118, -0.05, 6); stackPlates(a, M, 0.12, 0.118, -0.08, 4, 0.11); bowls(a, M, 0, 0.348, -0.06, 4); },
+    (a) => { pot(a, M, -0.1, 0.118, -0.06, 0.11, 0.12); pot(a, M, 0.13, 0.118, -0.1, 0.08, 0.09); pot(a, M, 0.02, 0.348, -0.06, 0.12, 0.08); },
+    (a) => { for (let k = 0; k < 4; k++) bottle(a, k % 2 ? M.amberGlass : M.glass, M.blackMatte, -0.16 + k * 0.1, 0.118, -0.08, 0.035, 0.27); for (let k = 0; k < 3; k++) jar(a, M, -0.12 + k * 0.12, 0.348, -0.06, 0.05, 0.12, M.brass); },
+  ];
   for (let i = 0; i < n; i++) {
-    add(at(rbox(w - 0.004, 0.42, 0.02, 0.002, 1), -L / 2 + w * (i + 0.5), 0.33, D / 2 - 0.01), M.woodDark);
-    add(at(rbox(w - 0.004, 0.24, 0.02, 0.002, 1), -L / 2 + w * (i + 0.5), 0.7, D / 2 - 0.01), M.woodDark);
+    const cx = -L / 2 + w * (i + 0.5);
+    if (sink != null && Math.abs(cx - sink) < w / 2 + 0.33) {     // under the sink: no drawer box (the bowl hangs there), a false front, the trap
+      hollow((g, m) => add(at(g, cx, 0, 0), m), -w / 2 + 0.002, w / 2 - 0.002, 0.1, H - 0.26, -D / 2 + 0.01, D / 2 - 0.02, 0.018, M.melamine, false);
+      add(at(rbox(w - 0.004, 0.24, 0.02, 0.002, 1), cx, 0.7, D / 2 - 0.01), M.woodDark);
+      if (Math.abs(cx - sink) < w / 2) add(at(tubeGeo([[0.1, H - 0.24, 0.04], [0.1, 0.5, 0.04], [0.1, 0.42, 0.08], [0.1, 0.5, 0.12], [0.1, 0.56, 0.12], [0.1, 0.56, -0.28]], 0.02), sink, 0, 0), M.steel);
+      const left = i % 2 === 0, hx = cx + (left ? -w / 2 + 0.002 : w / 2 - 0.002);
+      const d = opnPart('cab', x, z, ry, hx, 0, D / 2 - 0.02, { type: 'hinge', max: (left ? -1 : 1) * 1.83, w: w - 0.004, h: 0.42, handle: [(left ? 1 : -1) * (w - 0.06), 0.54, 0.02] });
+      d.add(at(rbox(w - 0.004, 0.42, 0.02, 0.002, 1), (left ? 1 : -1) * (w / 2 - 0.002), 0.33, 0.01), M.woodDark);
+    } else baseBay(B, M, x, z, ry, cx, w, D, H, i, lowItems[i % 3]);
   }
   for (const yy of [0.565, H - 0.035]) add(at(rbox(L, 0.03, 0.012, 0.001, 1), 0, yy, D / 2 - 0.022), M.blackMatte);   // recessed pull channels
-  // stone counter, cut out over an undermount stainless bowl (220 mm deep) when there is a sink
   const holes = sink != null ? [[sink, 0.03, 0.58, 0.4, 0.035]] : [];
   add(at(counter(L, D + 0.02, 0.03, holes), 0, H + 0.03, 0.01), M.stone);
   if (splash) add(at(rbox(L, 0.58, 0.015, 0.002, 1), 0, H + 0.03 + 0.29, -D / 2 + 0.008), M.stone);
-  // two duplex outlets in the stone backsplash
   if (outlets) for (const u of [-L / 2 + 0.35, L / 2 - 0.35]) {
     const o = outletPlate(), y = H + 0.03 + 0.24, v = -D / 2 + 0.0155;
     add(at(o.plate, u, y, v), M.lacquerWhite); add(at(o.face, u, y, v), M.lacquerWhite); add(at(o.cavity, u, y, v), M.blackMatte);
   }
-  if (uppers) for (let i = 0; i < n; i++) add(at(rbox(w - 0.004, 0.86, 0.35, 0.003, 1), -L / 2 + w * (i + 0.5), 1.5 + 0.43, -D / 2 + 0.175), M.lacquerWhite);
+  const upItems = (a, y0, h, dz) => { stackPlates(a, M, -0.08, y0 + 0.018, dz - 0.02, 5, 0.12); glasses(a, M, -0.15, y0 + h / 3 + 0.008, dz - 0.07, 3, 2); bowls(a, M, 0.02, y0 + 2 * h / 3 + 0.008, dz - 0.02, 3); };
+  if (uppers) for (let i = 0; i < n; i++) upperBay(B, M, x, z, ry, -L / 2 + w * (i + 0.5), w, 1.5, 0.86, -D / 2 + 0.175, i, upItems);
   if (sink != null) {
     add(at(basin(0.6, 0.42, 0.22, 0.04), sink, H, 0.04), M.sinkSteel);
     add(at(drain(0.045), sink + 0.1, H - 0.22, 0.04), M.steel);
@@ -990,25 +1151,7 @@ function tubeGeo(pts, r) {
   const g = new THREE.TubeGeometry(curve, pts.length * 3, r, 10, false).toNonIndexed();
   return metricUV(g);
 }
-// tall units: integrated fridge / pantry panels or an oven stack (two ovens)
-function tallUnit(B, M, x, z, ry, W, H, ovens = false) {
-  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
-  const D = 0.62;
-  add(at(rbox(W, H, D - 0.02, 0.003, 1), 0, H / 2, -0.01), M.woodDark);
-  if (ovens) {
-    for (const yy of [0.95, 1.55]) {
-      add(at(rbox(W - 0.04, 0.56, 0.02, 0.004, 1), 0, yy + 0.28, D / 2), M.steel);
-      add(at(rbox(W - 0.12, 0.36, 0.006, 0.004, 1), 0, yy + 0.25, D / 2 + 0.012), M.tvGlass);
-      add(at(barPull(W - 0.2, 0.009, 0.04, 0.03).rotateZ(Math.PI / 2), 0, yy + 0.49, D / 2 + 0.01), M.steel);
-    }
-  } else {
-    const n = Math.max(1, Math.round(W / 0.6));
-    for (let i = 0; i < n; i++) add(at(rbox(W / n - 0.004, H - 0.12, 0.02, 0.002, 1), -W / 2 + W / n * (i + 0.5), (H - 0.12) / 2 + 0.1, D / 2), M.woodDark);
-    // appliance pulls: 19 mm round bar on standoffs, the pair meeting at the centre of each door pair
-    for (let i = 0; i < n; i++) add(at(barPull(H * 0.55, 0.0095, 0.04, 0.03), -W / 2 + W / n * (i + 0.5) + (i % 2 ? -1 : 1) * (W / n / 2 - 0.06), H * 0.52, D / 2 + 0.01), M.steel);
-  }
-  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.woodDark });
-}
+function tallUnit(B, M, x, z, ry, W, H, ovens = false) { tallUnitOpen(B, M, x, z, ry, W, H, ovens); }
 // oval dark oak breakfast table and an upholstered banquette (apartment-14)
 function ovalTable(B, M, x, z, ry, L = 1.9, W = 1.05) {
   const top = lathe([[0, 0.72], [0.47, 0.72], [0.5, 0.735], [0.5, 0.75], [0.494, 0.756], [0, 0.756]], 64); top.scale(L, 1, W);
@@ -1559,6 +1702,16 @@ function furnitureMaterials(M, Q) {
     M.contact = [0.25, 0.4, 0.55, 0.7].map((o) => { const m = new THREE.MeshBasicMaterial({ color: '#000000', alphaMap: t, transparent: true, opacity: o, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }); m.userData = { shadow: 'none', order: 2 }; return m; });
   }
   M.ledStrip = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffe6c4', emissiveIntensity: 1.6, roughness: 0.5 });
+  // kitchen interiors (openable cabinets, fridge, pantry, ovens)
+  const S = (c, r, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: r, ...o });
+  M.melamine = S('#e7e3dc', 0.55);                                // carcass interior board
+  M.fridgeLiner = S('#f4f5f3', 0.22);                             // moulded white liner
+  M.ovenEnamel = S('#16181c', 0.38, { metalness: 0.1 });          // dark blue-black cavity enamel
+  M.smokeClear = new THREE.MeshStandardMaterial({ color: '#dfe6ea', roughness: 0.08, transparent: true, opacity: 0.35, depthWrite: false });
+  M.smokeClear.userData = { shadow: 'none', order: 5 };
+  M.vegRed = S('#9c2a1d', 0.45); M.vegGreen = S('#4f7a2c', 0.5);
+  M.milk = S('#f2f2ee', 0.6); M.juice = S('#d9881e', 0.5); M.eggs = S('#a9a49a', 0.95); M.takeout = S('#bfa98a', 0.85);
+  M.frost = S('#d8e2e6', 0.7); M.canRed = S('#8e1f1a', 0.35, { metalness: 0.4 }); M.cereal = S('#c5a03a', 0.8); M.pasta = S('#2f4f8a', 0.7);
   M.ledStrip.userData = { shadow: 'none' };
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
   M.amberGlass = new THREE.MeshStandardMaterial({ color: '#8a7656', emissive: '#d9b27c', emissiveIntensity: 0.3, roughness: 0.16, metalness: 0.4 });
@@ -1585,7 +1738,7 @@ export function furnish(M, Q) {
   SOFT.step = qq ? 0.08 : 0.045; SOFT.edge = qq ? 2 : 3; SOFT.pipe = qq ? 0.06 : 0.04; SOFT.ring = qq ? 4 : 5; WSEED = 12345;
   M_BED = M.settingBed;
   const B = new Builder();
-  MOV = Q && Q.cqc ? [] : null; BRK = Q && Q.cqc ? [] : null;
+  MOV = Q && Q.cqc ? [] : null; BRK = Q && Q.cqc ? [] : null; OPN = [];
   const group = new THREE.Group(); group.name = 'furniture';
   const ceil = 4.2;
 
@@ -1802,6 +1955,13 @@ export function furnish(M, Q) {
     return { kind: m.kind, mass: m.mass, group: g, meshes: ms, box: bb, x: m.x, y: m.y, z: m.z, ry: m.ry };
   });
   MOV = null;
+  // openables: each part's pivot group in apartment coordinates (rotation ry), its meshes in the part's own frame
+  const openables = OPN.map((o) => {
+    const g = new THREE.Group(); g.name = o.kind; g.position.set(o.x, o.y, o.z); g.rotation.y = o.ry;
+    const ms = o.b.finish(g); group.add(g);
+    return { ...o, b: undefined, group: g, meshes: ms, open: 0 };
+  });
+  OPN = [];
   const breakables = (BRK || []).map((k) => {                    // CQC: own meshes, apartment coordinates
     for (const bb of [k.b, k.b.rod]) for (const list of bb.buckets.values()) for (const g of list) if (k.y) g.translate(0, k.y, 0);
     const g = new THREE.Group(); g.name = k.kind; const ms = k.b.finish(g), rod = new THREE.Group(), rs = k.b.rod.finish(rod);
@@ -1810,5 +1970,5 @@ export function furnish(M, Q) {
   });
   BRK = null;
   for (const m of meshes) if (m.material.userData && m.material.userData.mirror) m.userData.mirror = m.material.userData.mirror;
-  return { group, meshes, movables, breakables, mirrors: meshes.filter((m) => m.userData.mirror), colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  return { group, meshes, movables, breakables, openables, mirrors: meshes.filter((m) => m.userData.mirror), colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }
