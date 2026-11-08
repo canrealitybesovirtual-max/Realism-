@@ -27202,6 +27202,7 @@ class WebXRManager extends EventDispatcher {
 
 			const state = renderer.state;
 			if ( mv.fb === null ) mv.fb = gl.createFramebuffer();
+			depth = null;   // CQC patch: always our own depth array (see the layer creation)
 			if ( mv.color === color && mv.depth === depth ) return;
 			state.bindFramebuffer( gl.FRAMEBUFFER, mv.fb );
 			if ( ! depth ) {
@@ -27227,12 +27228,26 @@ class WebXRManager extends EventDispatcher {
 
 			} else {
 
-				mv.ext.framebufferTextureMultiviewOVR( gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, color, 0, 0, 2 );
-				mv.ext.framebufferTextureMultiviewOVR( gl.FRAMEBUFFER, att, depth, 0, 0, 2 );
+				mv.ovr2.framebufferTextureMultiviewOVR( gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, color, 0, 0, 2 );
+				mv.ovr2.framebufferTextureMultiviewOVR( gl.FRAMEBUFFER, att, depth, 0, 0, 2 );
 
 			}
 
 			mv.color = color; mv.depth = depth === mv.ownDepth ? null : depth;
+			if ( ! mv.checked ) {
+
+				mv.checked = true;
+				const st = gl.checkFramebufferStatus( gl.FRAMEBUFFER );
+				if ( st !== gl.FRAMEBUFFER_COMPLETE ) {   // CQC patch: never show a broken frame: leave VR, the next session draws each eye
+
+					console.warn( 'THREE.WebXRManager: multiview framebuffer incomplete (' + st + '), ending the session' );
+					scope.multiview = false; scope.mvFailed = true;
+					scope.dispatchEvent( { type: 'multiviewfail' } );
+					if ( session ) session.end();
+
+				}
+
+			}
 
 		}
 
@@ -27512,7 +27527,10 @@ class WebXRManager extends EventDispatcher {
 
 						try {
 
-							glProjLayer = glBinding.createProjectionLayer( Object.assign( {}, projectionlayerInit, { textureType: 'texture-array' } ) );
+							// CQC patch: no layer depth in multiview. The multisampled multiview pass draws into our own depth
+							// array; a layer depth texture would reach the compositor unresolved, and the Quest reprojects
+							// frames with it (flashing, the view swimming the wrong way when you turn).
+							glProjLayer = glBinding.createProjectionLayer( Object.assign( {}, projectionlayerInit, { textureType: 'texture-array', depthFormat: 0 } ) );
 
 						} catch ( e ) {
 
@@ -27534,8 +27552,8 @@ class WebXRManager extends EventDispatcher {
 
 				if ( glProjLayer !== null && glProjLayer.textureArrayLength >= 2 ) {
 
-					const mvExt = gl.getExtension( 'OCULUS_multiview' ) || gl.getExtension( 'OVR_multiview2' );
-					mv = { ext: mvExt, samples: ( attributes.antialias && mvExt.framebufferTextureMultisampleMultiviewOVR ) ? 4 : 0, fb: null, color: null, depth: null,
+					const ovr2 = gl.getExtension( 'OVR_multiview2' ), mvExt = gl.getExtension( 'OCULUS_multiview' ) || ovr2;   // shaders need OVR_multiview2 enabled
+					mv = { ext: mvExt, ovr2: ovr2 || mvExt, samples: ( attributes.antialias && mvExt.framebufferTextureMultisampleMultiviewOVR ) ? 4 : 0, fb: null, color: null, depth: null, order: [ 0, 1 ],
 						ownDepth: null, w: glProjLayer.textureWidth, h: glProjLayer.textureHeight, stencil: !! attributes.stencil };
 					scope.isMultiview = true;
 					newRenderTarget = new WebGLRenderTarget( glProjLayer.textureWidth, glProjLayer.textureHeight, {
@@ -27854,6 +27872,8 @@ class WebXRManager extends EventDispatcher {
 
 		}
 
+		this.getMultiviewOrder = function () { return mv !== null ? mv.order : null; };   // CQC patch: array layer -> view index
+
 		this.getCamera = function () {
 
 			return cameraXR;
@@ -27952,9 +27972,10 @@ class WebXRManager extends EventDispatcher {
 						viewport = glSubImage.viewport;
 
 						// For side-by-side projection, we only produce a single texture for both eyes.
+						if ( mv !== null && glSubImage.imageIndex !== undefined && glSubImage.imageIndex < 2 ) mv.order[ glSubImage.imageIndex ] = i;   // CQC patch: view -> array layer
 						if ( i === 0 && mv !== null ) {
 
-							mvAttach( glSubImage.colorTexture, glProjLayer.ignoreDepthValues ? null : glSubImage.depthStencilTexture );
+							mvAttach( glSubImage.colorTexture, null );
 							renderer.setRenderTargetFramebuffer( newRenderTarget, mv.fb );
 							renderer.setRenderTarget( newRenderTarget );
 
@@ -30221,9 +30242,10 @@ class WebGLRenderer {
 				// (lights, view positions, normals); each eye gets P_eye * V_eye * V_common^-1.
 				const cameras = camera.cameras;
 
+				const order = xr.getMultiviewOrder();
 				for ( let i = 0; i < 2; i ++ ) {
 
-					const c = cameras[ i ];
+					const c = cameras[ order ? order[ i ] : i ];   // layer i shows the view the headset maps to it
 					_mvM.multiplyMatrices( c.projectionMatrix, c.matrixWorldInverse ).multiply( camera.matrixWorld );
 					_mvM.toArray( _mvProj, i * 16 );
 					_vector3.setFromMatrixPosition( c.matrixWorld );
