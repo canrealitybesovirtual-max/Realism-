@@ -50335,7 +50335,7 @@ const aptLX = (az) => APT.cz - az, aptLZ = (ax) => ax - APT.cx;
 const aptAX = (lz) => lz + APT.cx, aptAZ = (lx) => APT.cz - lx;
 function aptLoad() {
   const A = aptState();
-  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js'), import('../world/src/view.js')])
+  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js'), import('../world/src/view.js'), import('../world/src/surface.js')])
     .then((m) => { A.mod = m; }).catch((e) => { A.err = e; console.error('apartment modules', e); });
   return A.loadP;
 }
@@ -50356,8 +50356,9 @@ function* aptBuilder(room) {
   const xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on;
   const Q = { quest: xr, tex: xr ? 512 : 1024, stoneTex: 512, base: '../world/', cqc: true };
   const M = MAT.makeMaterials(Q);
-  // no surface.js here: the window glass as plain thin clear glass (the world page draws it with its own shader)
-  for (const g of [M.glass, M.balGlass]) if (g) { g.color.set('#c7d0cd'); g.opacity = 0.1; g.roughness = 0.03; g.needsUpdate = true; }
+  // the window glass is drawn by surface.js (below); the balustrade glass (and the window glass if that fails) as plain thin clear glass
+  const aptClear = (g) => { if (g) { g.color.set('#c7d0cd'); g.opacity = 0.1; g.roughness = 0.03; g.needsUpdate = true; } };
+  aptClear(M.balGlass);
   yield;
   const apt = AP.buildApartment(M, Q);
   yield;
@@ -50412,6 +50413,32 @@ function* aptBuilder(room) {
   room.doorVisual = put(dg, leaf, ex, cy, -hd - T + 0.03);
   freezeStatic(dg, room.doorVisual);
   G.updateMatrixWorld(true);
+  // surface realism (../world/src/surface.js): reflection probes, AO / contact / daylight fields, the baked irradiance volume and
+  // the real glass. Its shaders read apartment coordinates through G's inverse (frame: G); no lights are added (bakeLamps false);
+  // the probes are baked once the room is up and you are in it (aptViewTick), never here in the time-sliced build.
+  A.surf = null; A.surfBaked = false; A.surfDone = false; A.surfReady = false;
+  if (A.mod[4] && !/[?&]aptsurf=off\b/.test(QS)) {
+    try {
+      const fset = new Set(furn.colliders);
+      for (const m of furn.meshes) m.userData.noOver = true;      // furniture is not a ceiling
+      const surf = A.mod[4].setupSurfaces({ scene, renderer, M, Q, hemi: A.hemi, frame: G, lamps: apt.lamps, bakeLamps: false,
+        apt: { meshes: [...apt.meshes, ...furn.meshes], colliders: room.apt.colliders.map((c) => (fset.has(c) ? { ...c, furn: true } : c)), lamps: apt.lamps, grilles: apt.grilles },
+        viewGain: (k) => { if (A.view) A.view.setGain(k === 1 ? APT.viewGain : k); } });
+      A.surf = surf;
+      M.ready.then(() => { A.surfReady = true; });
+      if (!/[?&]volume=off\b/.test(QS)) (async () => {
+        try {
+          const meta = await (await fetch('../world/textures/light/volume.json')).json();
+          const h = new Uint16Array(await (await fetch('../world/textures/light/volume.bin')).arrayBuffer());
+          const n = h.length / 12, data = new Float32Array(n * 16);
+          for (let j = 0; j < n; j++) for (let m = 0; m < 4; m++) for (let c = 0; c < 3; c++) data[j * 16 + m * 4 + c] = THREE.DataUtils.fromHalfFloat(h[j * 12 + m * 3 + c]);
+          surf.useVolume(meta, data);
+        } catch (e) { console.info('apartment light volume not loaded', e.message); }
+      })();
+    } catch (e) { console.warn('apartment surfaces off', e); A.surf = null; }
+  }
+  if (!A.surf) aptClear(M.glass);
+  yield;
   A.room = room;
   try { renderer.compileAsync(G, camera, scene).catch(() => { /* compiled on first draw */ }); } catch (e) { /* older three */ }
 }
@@ -50488,7 +50515,14 @@ function aptViewTick() {
   const A = APTS; if (!A || !A.room || !A.room.active) { if (A && A.sun && A.sun.intensity) A.sun.intensity = 0; return; }
   const cur = stream.current, inA = !!(cur && cur.apt);
   if (A.sun) { const k = inA ? APT.sunI : 0; if (A.sun.intensity !== k) { A.sun.intensity = k; renderer.shadowMap.needsUpdate = true; } }
-  if (A.hemi) A.hemi.intensity = inA ? APT.hemiI : 0;
+  if (A.hemi) A.hemi.intensity = inA ? (A.surfDone ? 0.12 : APT.hemiI) : 0;   // after the probe bake the probes carry the bounce
+  if (A.surf) {
+    A.surf.syncFrame();                                           // floating origin / room placement: shaders read apartment coordinates
+    if (!A.surfBaked && A.surfReady && A.view && inA) {           // once: reflection probes + room light (cube captures), off the frame loop
+      A.surfBaked = true;
+      setTimeout(() => { try { A.surf.bake(); A.surfDone = true; renderer.shadowMap.needsUpdate = true; } catch (e) { console.warn('apartment probes not baked', e); } }, 0);
+    }
+  }
   if (!A.view || !A.room.aptG) return;
   const now = performance.now() / 1000, dt = Math.min(0.1, now - (_aptLast || now)); _aptLast = now;
   const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;

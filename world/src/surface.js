@@ -261,6 +261,15 @@ varying vec3 vSrNrm;`;
 const VERT_MAIN = /* glsl */`
 vSrPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;
 vSrNrm = normalize( mat3( modelMatrix ) * objectNormal );`;
+// framed (the apartment inside another world, e.g. CQC): apartment coordinates = uSrInv x world
+const VERT_PARS_F = VERT_PARS + `
+uniform mat4 uSrInv;`;
+const VERT_MAIN_F = /* glsl */`
+vSrPos = ( uSrInv * modelMatrix * vec4( transformed, 1.0 ) ).xyz;
+vSrNrm = normalize( mat3( uSrInv ) * mat3( modelMatrix ) * objectNormal );`;
+// SR_A: a world direction into apartment axes; SR_W: back (rotation only, so the inverse is the transpose)
+const FRAME_ID = '#define SR_A( v ) ( v )\n#define SR_W( v ) ( v )\n';
+const FRAME_ON = 'uniform mat4 uSrInv;\n#define SR_A( v ) ( mat3( uSrInv ) * ( v ) )\n#define SR_W( v ) ( ( v ) * mat3( uSrInv ) )\n';
 
 const FRAG_PARS = /* glsl */`
 varying vec3 vSrPos;
@@ -412,8 +421,8 @@ vec3 getIBLIrradiance( const in vec3 normal ) {
   #ifdef ENVMAP_TYPE_CUBE_UV
     vec3 worldNormal = inverseTransformDirection( normal, viewMatrix );
     if ( uIrrOn > 0.5 ) {
-      if ( uIVOn > 0.5 && vSrPos.z < 19.3 ) return srIV( vSrPos, worldNormal ) * uIrrK;
-      int k = srBox( vSrPos + worldNormal * 0.1 );
+      if ( uIVOn > 0.5 && vSrPos.z < 19.3 ) return srIV( vSrPos, SR_A( worldNormal ) ) * uIrrK;
+      int k = srBox( vSrPos + SR_A( worldNormal ) * 0.1 );
       if ( k >= 0 ) return srSH( int( uBTex[ k ] + 0.5 ), worldNormal ) * uIrrK;
     }
     vec4 envMapColor = textureCubeUV( envMap, envMapRotation * worldNormal, 1.0 );
@@ -430,15 +439,16 @@ vec3 getIBLRadiance( const in vec3 viewDir, const in vec3 normal, const in float
     if ( uProbeOn > 0.5 ) {
       // the room the reflected ray goes into: a point just along it (so a wall or a pane
       // between two rooms, or between a room and outside, reflects the side the eye is on)
-      int k = srBox( vSrPos + reflectVec * 0.12 );
+      vec3 srRA = SR_A( reflectVec );
+      int k = srBox( vSrPos + srRA * 0.12 );
       if ( k >= 0 ) {
         vec3 bmin = uBMin[ k ] - 0.03, bmax = uBMax[ k ] + 0.03;
-        vec3 rv = reflectVec + vec3( equal( reflectVec, vec3( 0.0 ) ) ) * 1e-4;
+        vec3 rv = srRA + vec3( equal( srRA, vec3( 0.0 ) ) ) * 1e-4;
         vec3 tf = max( ( bmax - vSrPos ) / rv, ( bmin - vSrPos ) / rv );
         float dd = max( min( min( tf.x, tf.y ), tf.z ), 0.0 );
         vec3 bp = normalize( vSrPos + rv * dd - uBPos[ k ] );
-        vec3 d = normalize( mix( bp, reflectVec, roughness ) );
-        return srProbe( uBTex[ k ], d, roughness );
+        vec3 d = normalize( mix( bp, srRA, roughness ) );
+        return srProbe( uBTex[ k ], SR_W( d ), roughness );
       }
     }
     vec4 envMapColor = textureCubeUV( envMap, envMapRotation * reflectVec, roughness );
@@ -483,14 +493,14 @@ float srF = 0.04 + 0.96 * pow( 1.0 - saturate( dot( normal, geometryViewDir ) ),
 float srK = mix( 0.22, 1.0, srF );
 gl_FragColor = vec4( totalSpecular * srK, srF * srK + ( 1.0 - srF * srK ) * uGlassAbs );`;
 
-function patch(mat, kind, U) {
+function patch(mat, kind, U, framed = false) {
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>' + VERT_PARS)
-      .replace('#include <fog_vertex>', '#include <fog_vertex>' + VERT_MAIN);
+      .replace('#include <common>', '#include <common>' + (framed ? VERT_PARS_F : VERT_PARS))
+      .replace('#include <fog_vertex>', '#include <fog_vertex>' + (framed ? VERT_MAIN_F : VERT_MAIN));
     let f = sh.fragmentShader
-      .replace('#include <common>', '#include <common>' + FRAG_PARS)
+      .replace('#include <common>', '#include <common>\n' + (framed ? FRAME_ON : FRAME_ID) + FRAG_PARS)
       .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n  if ( uSrOn > 0.5 ) srHoles( vSrPos, normalize( vSrNrm ) * ( gl_FrontFacing ? 1.0 : - 1.0 ) );')
       .replace('#include <envmap_physical_pars_fragment>', ENV_PARS);
     if (kind !== 'glass') f = f.replace('#include <aomap_fragment>', '#include <aomap_fragment>' + AO_APPLY);
@@ -501,12 +511,24 @@ function patch(mat, kind, U) {
     if (kind === 'glass') f = f.replace('#include <opaque_fragment>', GLASS_OUT).replace('#include <premultiplied_alpha_fragment>', '');
     sh.fragmentShader = f;
   };
-  mat.customProgramCacheKey = () => 'sr5-' + kind;
+  mat.customProgramCacheKey = () => (framed ? 'sr5f-' : 'sr5-') + kind;
   mat.needsUpdate = true;
 }
 
-export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.1, 1.0, 0.93], lamps = [], lampPower = 16 }) {
+export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.1, 1.0, 0.93], lamps = [], lampPower = 16, frame = null, bakeLamps = true }) {
   const t0 = performance.now();
+  // frame: the apartment's group when it is placed inside another world (CQC); positions / directions
+  // given here are apartment coordinates, so captures go through frame.matrixWorld and the shaders
+  // through its inverse (uSrInv). No frame = world == apartment (the world page), the identity path.
+  const FM = new THREE.Matrix4(), _fv = new THREE.Vector3();
+  const toW = (a) => (frame ? _fv.set(a[0], a[1], a[2]).applyMatrix4(FM) : _fv.set(a[0], a[1], a[2]));
+  function syncFrame() {
+    if (!frame) return false;
+    frame.updateWorldMatrix(true, false);
+    if (FM.equals(frame.matrixWorld)) return false;
+    FM.copy(frame.matrixWorld); U.uSrInv.value.copy(FM).invert();
+    return true;
+  }
   const F = bakeFields(apt.meshes, apt.colliders, M);
   const env = scene.environment;
   const vec = (a) => new THREE.Vector3(...a);
@@ -523,6 +545,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     uIVOn: { value: 0 }, uIV0: { value: null }, uIV1: { value: null }, uIV2: { value: null }, uIV3: { value: null },
     uIVG: { value: new THREE.Vector4() }, uIVT: { value: new THREE.Vector2(1, 1) }, uIVY: { value: new Array(8).fill(0) },
   };
+  if (frame) { U.uSrInv = { value: new THREE.Matrix4() }; FM.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0); syncFrame(); }
   // openings: lamp cans (per floor: nearest lamp offset, its height, a flag) and grille strips
   const LC = 0.05, LW = Math.ceil((GRID.x1 - GRID.x0) / LC), LD = Math.ceil((GRID.z1 - GRID.z0) / LC);
   const lampTex = [0, 1].map((fl) => {
@@ -551,7 +574,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
   const mats = new Set(apt.meshes.map((m) => m.material));
   for (const mat of mats) {
     if (mat === M.light) continue;
-    patch(mat, mat === M.glass ? 'glass' : mat === M.pavers ? 'wet' : 'in', U);
+    patch(mat, mat === M.glass ? 'glass' : mat === M.pavers ? 'wet' : 'in', U, !!frame);
   }
   // glass blends as premultiplied: reflection added, the view behind dimmed by alpha
   M.glass.blending = THREE.CustomBlending;
@@ -568,6 +591,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
   // probes the pass before made (light bounces once more each pass); the fill drops to a trace
   function bakeProbes(pass) {
     const t = performance.now();
+    syncFrame();
     U.uProbeOn.value = 0;
     U.uIrrOn.value = pass > 0 ? 1 : 0;
     if (hemi) hemi.intensity = pass > 0 ? hemiGI : hemi.userData.full ?? (hemi.userData.full = hemi.intensity);
@@ -592,7 +616,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
     // the ceiling downlights light the rooms through the probes: a pool of 8 spots moves to the
     // lamps nearest each probe (inside its room) for that probe's captures
     const pool = [];
-    for (let k = 0; k < 8; k++) {
+    for (let k = 0; bakeLamps && k < 8; k++) {
       const L = new THREE.SpotLight('#fffaf4', 0, 0, 1.05, 0.7, 2);
       L.castShadow = false; scene.add(L, L.target); pool.push(L);
     }
@@ -602,16 +626,16 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
       const near = lampsFor(p);
       pool.forEach((L, k) => {
         const q = near[k];
-        if (q) { L.position.set(...q); L.target.position.set(q[0], q[1] - 3, q[2]); L.intensity = lampPower; } else L.intensity = 0;
+        if (q) { L.position.copy(toW(q)); L.target.position.copy(toW([q[0], q[1] - 3, q[2]])); L.intensity = lampPower; } else L.intensity = 0;
         L.updateMatrixWorld(); L.target.updateMatrixWorld();
       });
       // irradiance: the outside at daylight level, projected on 9 spherical harmonics
-      shCam.position.set(...p.pos); shCam.updateMatrixWorld(true);
+      shCam.position.copy(toW(p.pos)); shCam.updateMatrixWorld(true);
       if (viewGain) viewGain(whiteBalance.map((c) => c * daylight));   // daylight level, white-balanced as the photos are
       shCam.update(renderer, scene);
       if (viewGain) viewGain(1);
       shNew.push(projectSH(renderer, shRT, shCam));
-      cam.position.set(...p.pos); cam.updateMatrixWorld(true);
+      cam.position.copy(toW(p.pos)); cam.updateMatrixWorld(true);
       cam.update(renderer, scene);
       out = pm.fromCubemap(rt.texture, out);
       copy.material.uniforms.t.value = out.texture;
@@ -659,8 +683,8 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
         const box = PROBES.find((p) => q[0] >= p.min[0] && q[0] <= p.max[0] && q[2] >= p.min[2] && q[2] <= p.max[2] && q[1] >= p.min[1] && q[1] <= p.max[1]);
         const near = box ? lamps.filter(([x, y, z]) => x >= box.min[0] && x <= box.max[0] && z >= box.min[2] && z <= box.max[2] && y >= box.min[1] && y <= box.max[1] + 0.3)
           .sort((a, b) => Math.hypot(a[0] - q[0], a[2] - q[2]) - Math.hypot(b[0] - q[0], b[2] - q[2])).slice(0, 8) : [];
-        pool.forEach((L, m) => { const w = near[m]; if (w) { L.position.set(...w); L.target.position.set(w[0], w[1] - 3, w[2]); L.intensity = lampPower; } else L.intensity = 0; L.updateMatrixWorld(); L.target.updateMatrixWorld(); });
-        cam.position.set(...q); cam.updateMatrixWorld(true);
+        pool.forEach((L, m) => { const w = near[m]; if (w) { L.position.copy(toW(w)); L.target.position.copy(toW([w[0], w[1] - 3, w[2]])); L.intensity = lampPower; } else L.intensity = 0; L.updateMatrixWorld(); L.target.updateMatrixWorld(); });
+        cam.position.copy(toW(q)); cam.updateMatrixWorld(true);
         cam.update(renderer, scene);
         const c = projectSH(renderer, rt, cam, size);
         for (let m = 0; m < 4; m++) { out[j * 16 + m * 4] = c[m].x; out[j * 16 + m * 4 + 1] = c[m].y; out[j * 16 + m * 4 + 2] = c[m].z; }
@@ -709,7 +733,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
 
   const api = {
     U, fields: F, bakeMs: 0, fieldMs: performance.now() - t0, atlas,
-    bakeVolume, useVolume, IV,
+    bakeVolume, useVolume, IV, syncFrame,
     bake(passes = 3) { api.bakeMs = 0; for (let i = 0; i < passes; i++) api.bakeMs += bakeProbes(i); return api.bakeMs; },
     setWet(v) { U.uWet.value = Math.max(0, Math.min(1, v)); },
     get wet() { return U.uWet.value; },
