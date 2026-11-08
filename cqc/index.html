@@ -14522,6 +14522,7 @@ function fragBlast(P, inHand) {
   nadeSound('frag', P);
   enemiesHear(P);
   fixturesBlast(P, 1);                     // step 87: the tubes stutter, the fittings shed dust
+  aptPanesBlast(P, 6);                     // APARTMENT: windows within 6 m blow out
   shelfBlast(P, 5, 1);                     // SHELF: boxes blown off the shelves (the same blast push as loose props)
   trickleBlast(P);                         // step 88: and the ceiling over it
   // Dust and smoke that hang in the room, a scorch on the floor (step 115: the cloud, soot on the floor and the walls).
@@ -16958,6 +16959,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
     return;
   }
   const info = colliderInfo.get(h);
+  if (info && info.aptPane !== undefined) { aptPaneBreak(info.room, info.aptPane, _fp, dir, k); return; }   // APARTMENT: a window pane shatters
   if (info && info.sbox) {                                        // SHELF: a box on a shelf becomes a real one, takes the round
     const p = shelfWake(info.room, info.sbox, imp, _fp);
     impactFx('wood', _fp, _hn);
@@ -23658,7 +23660,7 @@ function penHit(hit, toi, P, N, dir, d, E) {
   }
   const ex = PEN.ex, en = PEN.en;
   if (!inside || th > 0.01) {                                      // the way out: a torn hole, the bits, the crack
-    if (info && !info.sbox) {                                     // (a shelf box woke on the way in: no hole left hanging in the air)
+    if (info && !info.sbox && info.aptPane === undefined) {       // (a shelf box woke / a pane shattered on the way in: no hole left hanging in the air)
       const r = penExitRoom(info.room, ex, dir), xk = penX(kind);
       if (WEAPON.decalMat[xk]) addRoomHole(r, xk, ex, en, true, undefined, penXS());
       if (TRICKLE.on) trickleAdd(r, kind, ex, en);
@@ -36425,7 +36427,7 @@ function impactSound(kind, p) {
 // Step 86: props landing, bumping, knocked over. Speed lost in one frame (floor, wall, bounce) is a knock;
 // friction and gravity never lose 0.6 m/s a frame. Lower and longer the heavier it is. Items stay silent here (step 87: dropKnock).
 // Not heard by the men (no aiNoise). stepPhysics calls knockTick (loose) and knockSfx (held, on contact).
-const KNOCK_MAT = { 'cardboard box': 'card', 'cardboard flap': 'card', 'small crate': 'wood', 'two-by-four': 'wood', board: 'wood', table: 'wood', 'steel pipe': 'pipe', 'ammo can': 'can', 'paint tin': 'can', 'jerry can': 'drum', 'concrete block': 'block', 'drywall chunk': 'plaster', 'glass bottle': 'glass', 'office chair': 'chair' };
+const KNOCK_MAT = { 'cardboard box': 'card', 'cardboard flap': 'card', 'small crate': 'wood', 'two-by-four': 'wood', board: 'wood', table: 'wood', 'steel pipe': 'pipe', 'ammo can': 'can', 'paint tin': 'can', 'jerry can': 'drum', 'concrete block': 'block', 'drywall chunk': 'plaster', 'glass bottle': 'glass', 'office chair': 'chair', 'dining chair': 'chair', armchair: 'chair', 'counter stool': 'chair', 'barrel stool': 'chair', 'side table': 'block', 'table lamp': 'glass' };
 const KNOCK_SND = {   // (t, j pitch, g gain, s = 1/j decay stretch)
   card: (t, j, g, s) => { nBurst(t, 0.06 * s, 'bandpass', 850 * j, 1.1, 0.3 * g, 0.04 * s, 0.2); nBurst(t, 0.04, 'highpass', 3000, 0.7, 0.07 * g, 0.025, 0.1); },
   wood: (t, j, g, s) => { nBurst(t, 0.09 * s, 'bandpass', 520 * j, 1.6, 0.34 * g, 0.06 * s, 0.3); nBurst(t, 0.04, 'bandpass', 1900 * j, 2.2, 0.12 * g, 0.025, 0.2); },
@@ -50382,6 +50384,7 @@ function* aptBuilder(room) {
   G.rotation.y = -Math.PI / 2; G.position.set(APT.cz, 0, -APT.cx);
   G.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   room.group.add(G);
+  if (apt.panes) { apt.panes.mesh.castShadow = false; apt.panes.mesh.receiveShadow = false; }
   room.aptG = G;
   // the real city outside (the apartment's baked view), squeezed into CQC's camera range, and the sun through the glass
   if (!A.viewP) A.viewP = A.mod[3].buildView(G, renderer, Q).then((v) => { A.view = v; v.compress(true); v.setGain(APT.viewGain); aptSunAim(); }).catch((e) => console.warn('apartment view not loaded', e));
@@ -50397,7 +50400,7 @@ function* aptBuilder(room) {
   G.add(A.hemi);
   aptPanelBuild(room);
   aptSunAim();
-  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps };
+  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps, mov: furn.movables || [], panes: apt.panes };
   room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
     qc: { pass: true, score: 100, attempt: 1, fails: [], notes: ['apartment'], visible: 1, hidden: 0, density: 0 } };
   room.wear93 = { wet: 0, leak: 0, hw: room.w / 2, hd, s1: 0, s2: 0 };
@@ -50487,15 +50490,103 @@ function aptActivate(room, box, walk) {
     } else continue;
     if (hx < 0.004 || hy < 0.004 || hz < 0.004) continue;
     const lx = aptLX(cz), lz = aptLZ(cx), ly = yaw - Math.PI / 2;   // the box turns with the apartment
-    box(hx, hy, hz, lx, cy, lz, 0.6, ly, kindOf(c));
+    const bc = box(hx, hy, hz, lx, cy, lz, 0.6, ly, kindOf(c));
+    if (c.pane !== undefined) {                                   // a window pane: shatters (aptPaneBreak)
+      const P = room.apt.panes.list[c.pane];
+      if (P.broken) { world.removeCollider(bc, false); colliderInfo.delete(bc.handle); room.colliderHandles.pop(); continue; }
+      colliderInfo.get(bc.handle).aptPane = c.pane; P.col = bc;
+    }
     const y0 = cy - hy, y1 = cy + hy;
     // floors, ceilings, the floor-two slab and the roof: no walk boxes (the floor function walks them)
     const slab = !c.furn && Math.max(hx, hz) > 0.6 && (2 * hy < 0.5 || y1 <= 0.12 || (y0 >= 3.4 && y1 <= 4.75 && 2 * hy < 1.3) || y0 >= 8.0);
     if (slab) continue;
     walk(lx, lz, hx, hz, y1, ly, y0 > 0.3 ? { bot: y0 - 0.05 } : undefined);
+    if (c.pane !== undefined) room.apt.panes.list[c.pane].walk = room.walkLocal[room.walkLocal.length - 1];
   }
   room.navCache = yardNav(room, []);                              // floor one (walk boxes held up on floor two are left out)
+  aptMovables(room);
 }
+// Loose furniture (chairs, stools, side tables, lamps): real physics props, so rounds, kicks, blasts and bodies push
+// them about and knock them over. Built afresh each time the room activates (props go with the room, as any room's).
+// ?aptprops=off = the old fixed furniture (static colliders of the same boxes).
+const APT_PROPS = !/[?&]aptprops=off/.test(QS);
+function aptMovables(room) {
+  const A = room.apt; if (!A || !A.mov) return;
+  room.aptProps = [];
+  for (const m of A.mov) {
+    const b = m.box, cx = (b.min.x + b.max.x) / 2, cy = (b.min.y + b.max.y) / 2, cz = (b.min.z + b.max.z) / 2;
+    const hx = Math.max(0.03, (b.max.x - b.min.x) / 2 - 0.004), hy = Math.max(0.03, (b.max.y - b.min.y) / 2 - 0.004), hz = Math.max(0.03, (b.max.z - b.min.z) / 2 - 0.004);
+    const c = Math.cos(m.ry), sn = Math.sin(m.ry), ax = m.x + c * cx + sn * cz, az = m.z - sn * cx + c * cz;
+    const ay = aptSupport(A, m, ax, az) + (b.min.y + b.max.y) / 2 + 0.003;   // resting on what is under it, never inside it
+    const lx = aptLX(az), lz = aptLZ(ax), ly = m.ry - Math.PI / 2;
+    if (!APT_PROPS) {
+      const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(lx, ay, lz).setRotation(_aptQY(ly)).setFriction(0.6).setCollisionGroups(COLL.static), room.body);
+      colliderInfo.set(col.handle, { room, kind: 'wood' }); room.colliderHandles.push(col.handle);
+      if (!m.fixed) { m.fixed = m.group.clone(); m.fixed.position.set(m.x, m.y, m.z); m.fixed.rotation.y = m.ry; room.aptG.add(m.fixed); }
+      continue;
+    }
+    const root = new THREE.Group(), g = m.group.clone();
+    g.position.set(-cx, -cy, -cz); root.add(g);
+    g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.matrixAutoUpdate = true; } });
+    const p = addProp(root, { name: m.kind, mass: m.mass, half: [hx, hy, hz], friction: 0.55, restitution: 0.08,
+      pos: [rWX(room, lx), room.origin.y + ay, rWZ(room, lz)], rot: new THREE.Euler(0, ly + rYaw(room), 0) });
+    p.spawnRoom = room; p.aptMov = true;
+    if (m.kind === 'table lamp') p.brk = { hp: 0.8, fx: 'glass' };
+    room.aptProps = room.aptProps || []; room.aptProps.push(p);
+  }
+}
+// the top of whatever a piece stands on (a nightstand, a side table already placed), in apartment coordinates; at least
+// its own floor height: the highest top within 12 cm above its foot whose footprint holds its centre
+function aptSupport(A, m, ax, az) {
+  let y0 = m.y;
+  const tops = (c) => {
+    if (c.t === 'box') { if (ax < c.min[0] || ax > c.max[0] || az < c.min[2] || az > c.max[2]) return; const t = c.max[1]; if (t > y0 && t < m.y + 0.12) y0 = t; }
+    else if (c.t === 'obox') { const dx = ax - c.c[0], dz = az - c.c[2], k = Math.cos(c.yaw || 0), q = Math.sin(c.yaw || 0), u = k * dx - q * dz, v = q * dx + k * dz;
+      if (Math.abs(u) > c.h[0] || Math.abs(v) > c.h[2]) return; const t = c.c[1] + c.h[1]; if (t > y0 && t < m.y + 0.12) y0 = t; }
+  };
+  for (const c of A.colliders) tops(c);
+  for (const o of A.mov) { if (o === m) break; if (o.top) tops(o.top); }
+  m.top = { t: 'obox', c: [ax, y0 + (m.box.max.y + m.box.min.y) / 2, az], h: [(m.box.max.x - m.box.min.x) / 2, (m.box.max.y - m.box.min.y) / 2, (m.box.max.z - m.box.min.z) / 2], yaw: m.ry };
+  return y0;
+}
+// Window panes (tempered glass): a round or a blast shatters a whole pane. Its instance goes, its collider and walk
+// box go (you can walk out onto the ledge, rounds fly on), glass bursts out along the shot, shards land on the floor
+// inside (glassFloor), the crash plays. Broken panes stay broken while the room lives (activate reads P.broken).
+function aptPaneBreak(room, i, at, dir, k = 1) {
+  const A = room && room.apt, PN = A && A.panes, P = PN && PN.list[i];
+  if (!P || P.broken) return;
+  P.broken = true;
+  PN.mesh.getMatrixAt(i, _aptM); _aptM.makeScale(0, 0, 0); PN.mesh.setMatrixAt(i, _aptM); PN.mesh.instanceMatrix.needsUpdate = true;
+  if (P.col) { colliderInfo.delete(P.col.handle); const j = room.colliderHandles.indexOf(P.col.handle); if (j >= 0) room.colliderHandles.splice(j, 1); world.removeCollider(P.col, false); P.col = null; }
+  if (P.walk) { const W = room.walkLocal, j = W.indexOf(P.walk); if (j >= 0) W.splice(j, 1); rebuildWalk(); P.walk = null; }
+  // the pane's centre and size in world space, the shards spread over it
+  const cx = (P.min[0] + P.max[0]) / 2, cy = (P.min[1] + P.max[1]) / 2, cz = (P.min[2] + P.max[2]) / 2, w = Math.max(P.max[0] - P.min[0], P.max[2] - P.min[2]), hgt = P.max[1] - P.min[1];
+  const lx = aptLX(cz), lz = aptLZ(cx), wx = rWX(room, lx), wz = rWZ(room, lz), wy = room.origin.y + cy;
+  const n = Math.min(14, 4 + Math.round(w * hgt * 2));
+  for (let q = 0; q < n; q++) {
+    _aptV.set(wx + (Math.random() - 0.5) * (P.max[2] - P.min[2] > P.max[0] - P.min[0] ? 0 : w) * 0.9, wy + (Math.random() - 0.5) * hgt * 0.9, wz + (Math.random() - 0.5) * (P.max[2] - P.min[2] > P.max[0] - P.min[0] ? w : 0) * 0.9);
+    if (at && q < 3) _aptV.copy(at);
+    _aptN.copy(dir || Y_AXIS).negate();
+    impactFx('glass', _aptV, _aptN);
+  }
+  glassSfx(at || _aptV.set(wx, wy, wz));
+  glassFloor(room, _aptV.set(wx, wy, wz), 1.6);
+  dirtyShadows();
+}
+function aptPanesBlast(P, r) {
+  for (const room of stream.rooms.values()) {
+    const PN = room && room.active && room.apt && room.apt.panes; if (!PN) continue;
+    PN.list.forEach((q, i) => {
+      if (q.broken) return;
+      const cx = (q.min[0] + q.max[0]) / 2, cy = (q.min[1] + q.max[1]) / 2, cz = (q.min[2] + q.max[2]) / 2;
+      const d = Math.hypot(rWX(room, aptLX(cz)) - P.x, room.origin.y + cy - P.y, rWZ(room, aptLZ(cx)) - P.z);
+      if (d < r * (0.6 + 0.4 * Math.random())) aptPaneBreak(room, i, null, _aptN.set(rWX(room, aptLX(cz)) - P.x, 0, rWZ(room, aptLZ(cx)) - P.z).normalize(), 1);
+    });
+  }
+}
+const _aptM = new THREE.Matrix4(), _aptV = new THREE.Vector3(), _aptN = new THREE.Vector3();
+const _aptQ = new THREE.Quaternion();
+function _aptQY(a) { _aptQ.setFromAxisAngle(Y_AXIS, a); return { x: _aptQ.x, y: _aptQ.y, z: _aptQ.z, w: _aptQ.w }; }
 // Floor height at a room-local point: the helical stair (a smooth ramp through the tread middles), floor two (when you
 // come from up there), else floor one.
 function aptFloor(r, lx, lz, hint = 0) {
@@ -50787,7 +50878,7 @@ function aptPanelTick() {
   if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; changed = true; }   // the security screen blinks red while a raid is on
   if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 </script>
 </body>

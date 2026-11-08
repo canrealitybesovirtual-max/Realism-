@@ -8,7 +8,18 @@ import { Builder } from './build.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { barPull, counter, basin, drain, kitchenFaucet, bathFaucet, toiletSeat, flushPlate, showerSet, towelRing, outletPlate } from './hw.js';
 
-const ART = []; let ARTY = 0;              // wall-hung art, for the clipping check
+const ART = []; let ARTY = 0;
+// CQC (Q.cqc): loose pieces are built on their own (origin at their foot, unturned) and handed
+// back as movables, so the game can make them physics props
+let MOV = null;
+function movable(kind, mass, fn, hasRy = true) {
+  return function (B, M, x, ...a) {
+    if (!MOV) return fn(B, M, x, ...a);
+    const b = new Builder();
+    if (hasRy) { const [z, ry = 0, ...r] = a; fn(b, M, 0, 0, 0, ...r); MOV.push({ kind, mass, b, x, y: ARTY, z, ry }); }
+    else { const [y, z] = a; fn(b, M, 0, 0, 0); MOV.push({ kind, mass, b, x, y: ARTY + y, z, ry: 0 }); }
+  };
+}              // wall-hung art, for the clipping check
 // ---- geometry kit ----------------------------------------------------------------------------
 // Rounded box centred at the origin: w x h x d, edge radius r, seg steps per rounded edge.
 // Metric UVs projected from the dominant normal axis (fabric and wood read at true scale).
@@ -241,7 +252,7 @@ function diningTable(B, M, x, z, ry, L = 2.7, Wd = 1.05, H = 0.75) {
 
 // bouclé dining chair (apartment-17): a wide plump seat in a low upholstered shell whose back
 // wraps round into arms that slope down to the front; slim black tapered legs, splayed
-function diningChair(B, M, x, z, ry) {
+const diningChair = movable('dining chair', 7, function (B, M, x, z, ry) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
   add(at(cushion(0.5, 0.12, 0.48, 0.05, 0.018), 0, 0.47, 0.03), M.boucle);
   add(at(rbox(0.54, 0.07, 0.5, 0.03), 0, 0.41, 0.02), M.boucle);
@@ -270,7 +281,7 @@ function diningChair(B, M, x, z, ry) {
     add(at(leg, u, 0, v), M.blackMatte);
   }
   B.colliders.push({ t: 'obox', c: [x, 0.4, z], h: [0.29, 0.4, 0.28], yaw: ry, mat: M.boucle });
-}
+});
 
 // tiered chandelier of hanging glass leaves (apartment-17): rings of leaves on a brass frame
 function chandelier(B, M, x, z, yBottom, ceil) {
@@ -408,7 +419,7 @@ function wallRug(B, M, x, z, w, h, yBottom, face) {
 }
 
 // tub armchair (apartment-18): bouclé shell round a deep seat, short oak legs
-function armchair(B, M, x, z, ry) {
+const armchair = movable('armchair', 16, function (B, M, x, z, ry) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
   add(at(cushion(0.62, 0.14, 0.6, 0.06, 0.02), 0, 0.42, 0.03), M.boucle);
   add(at(rbox(0.66, 0.16, 0.64, 0.05), 0, 0.3, 0), M.boucle);
@@ -422,18 +433,18 @@ function armchair(B, M, x, z, ry) {
   add(at(lathe([[0.29, 0.8], [0.325, 0.825], [0.36, 0.8]], 40, a0, aL), 0, 0, -0.02), M.boucle);
   for (const [u, v] of [[-0.24, 0.22], [0.24, 0.22], [-0.24, -0.22], [0.24, -0.22]]) add(at(lathe([[0.016, 0], [0.02, 0.22]], 10), u, 0, v), M.woodMid);
   B.colliders.push({ t: 'obox', c: [x, 0.4, z], h: [0.36, 0.4, 0.36], yaw: ry, mat: M.boucle });
-}
+});
 
 // drum side table (travertine) and a table lamp on a dark figure base (apartment-20)
-function sideTable(B, M, x, z, r = 0.27, h = 0.55) {
+const sideTable = movable('side table', 30, function (B, M, x, z, ry, r = 0.27, h = 0.55) {
   B.add(at(lathe([[0, 0], [r, 0], [r, h - 0.03], [r - 0.01, h], [0, h]], 36), x, 0, z), M.creamStone);
   B.colliders.push({ t: 'obox', c: [x, h / 2, z], h: [r, h / 2, r], yaw: 0, mat: M.creamStone });
-}
-function tableLamp(B, M, x, y, z) {
+});
+const tableLamp = movable('table lamp', 3.5, function (B, M, x, y, z) {
   B.add(at(lathe([[0, 0], [0.09, 0], [0.09, 0.02], [0.05, 0.05], [0.075, 0.16], [0.045, 0.3], [0.06, 0.36], [0.015, 0.42], [0, 0.42]], 24), x, y, z), M.stoneBlack);
   B.add(at(lathe([[0.006, 0.42], [0.006, 0.66]], 8), x, y, z), M.bronzeLight);
   B.add(at(lathe([[0.2, 0.6], [0.17, 0.84]], 36), x, y, z), M.shade);
-}
+});
 // coffee table things: a stack of books, a white ceramic bowl
 function books(B, M, x, y, z, ry, n = 3) {
   const cols = [M.bookCream, M.bookGrey, M.bookBlack];
@@ -536,7 +547,7 @@ function bed(B, M, x, z, ry, W = 2.05, Lb = 2.2, hbMat = null, HWx = 1.4) {
 }
 // counter stool (plan: three at the kitchen peninsula): upholstered round seat with a crowned
 // top and a welt, four slim bronze legs splayed, a foot ring
-function counterStool(B, M, x, z, ry = 0) {
+const counterStool = movable('counter stool', 6, function (B, M, x, z, ry = 0) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
   const H = 0.66;
   add(lathe([[0, 0], [0.2, 0], [0.215, 0.02], [0.21, 0.055], [0.18, 0.075], [0.1, 0.085], [0, 0.088]], 32).translate(0, H - 0.06, 0), M.boucleTaupe);
@@ -548,7 +559,7 @@ function counterStool(B, M, x, z, ry = 0) {
   const ring = []; for (let i = 0; i <= 32; i++) { const a = i / 32 * Math.PI * 2; ring.push([Math.cos(a) * 0.2, 0.24, Math.sin(a) * 0.2]); }
   add(tubeGeo(ring, 0.008), M.bronzeLight);
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [0.22, H / 2, 0.22], yaw: ry, mat: M.boucleTaupe });
-}
+});
 // stair-foot table (apartment-12): round bronze top on a hammered brass trumpet pedestal; a
 // matte black ceramic vase with leafy branches, two books, an open magazine
 function pedestalTable(B, M, x, z, seed = 7) {
@@ -1047,14 +1058,14 @@ function dressVanity(B, M, x, z, ry, L = 1.15, D = 0.45) {
   B.colliders.push({ t: 'obox', c: [x, 0.38, z], h: [L / 2, 0.38, D / 2], yaw: ry, mat: M.lacquerWhite });
 }
 // barrel stool: white bouclé tub, the back higher than the sides (apartment-07)
-function barrelStool(B, M, x, z, ry) {
+const barrelStool = movable('barrel stool', 9, function (B, M, x, z, ry) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
   add(lathe([[0, 0.02], [0.2, 0.02], [0.225, 0.06], [0.23, 0.3], [0.215, 0.44], [0.17, 0.465], [0, 0.47]], 40), M.boucle);
   // the back: a thick curved band round the rear 200 degrees, rounded top
   add(rboxArc(0.15, 0.235, 0.42, 0.78, Math.PI - 1.75, Math.PI + 1.75, 0.035, 40), M.boucle);
   add(lathe([[0, 0], [0.19, 0], [0.19, 0.02], [0, 0.02]], 32), M.blackMetal);
   B.colliders.push({ t: 'obox', c: [x, 0.39, z], h: [0.23, 0.39, 0.23], yaw: ry, mat: M.boucle });
-}
+});
 // big floor-standing-height mirror hung on the wall over the vanity, pale grey lacquered frame
 function framedMirror(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
@@ -1333,6 +1344,7 @@ export function furnish(M, Q) {
   furnitureMaterials(M, Q);
   M_BED = M.settingBed;
   const B = new Builder();
+  MOV = Q && Q.cqc ? [] : null;
   const group = new THREE.Group(); group.name = 'furniture';
   const ceil = 4.2;
 
@@ -1383,7 +1395,7 @@ export function furnish(M, Q) {
     nightstand(b, M, 12.3, 2.45, -Math.PI / 2); nightstand(b, M, 12.3, 5.15, -Math.PI / 2);
     tableLamp(b, M, 12.3, 0.53, 2.45); tableLamp(b, M, 12.3, 0.53, 5.15);
     armchair(b, M, 6.3, 2.2, 2.3); armchair(b, M, 7.6, 5.4, -2.6);
-    sideTable(b, M, 6.0, 3.3, 0.22, 0.5);
+    sideTable(b, M, 6.0, 3.3, 0, 0.22, 0.5);
     for (const [a, c] of [[5.66, 6.1], [11.55, 11.98]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);   // sheers bunched at the corners (apartment-10)
     print(b, M, 12.61, 2.35, 3.2, 0.5, 0.62, '-x', M.lineArt1); print(b, M, 12.61, 2.3, 4.4, 0.42, 0.52, '-x', M.lineArt2);
   });
@@ -1414,7 +1426,7 @@ export function furnish(M, Q) {
     rugPlain(B, M.rug, 4.6, 16.0, 3.4, 2.4);
     curvedSofa(B, M, 4.4, 16.6, Math.PI, 2.2, 0.85, 0.9);
     armchair(B, M, 6.4, 16.3, -2.5);
-    sideTable(B, M, 1.45, 15.1, 0.22, 0.5); tableLamp(B, M, 1.45, 0.5, 15.1);
+    sideTable(B, M, 1.45, 15.1, 0, 0.22, 0.5); tableLamp(B, M, 1.45, 0.5, 15.1);
     print(B, M, 0.91, 1.7, 14.98, 0.72, 0.95, '+x', M.lineArt2);   // clear of the slot window
   }
 
@@ -1531,5 +1543,11 @@ export function furnish(M, Q) {
   vanity(B, M, 6.47, 0, 13.55, Math.PI / 2, 0.75, M.marbleGrey, M.woodDark);
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  const movables = (MOV || []).map((m) => {
+    const g = new THREE.Group(); g.name = m.kind; const ms = m.b.finish(g);
+    const bb = new THREE.Box3(); for (const k of ms) { k.geometry.computeBoundingBox(); bb.union(k.geometry.boundingBox); }
+    return { kind: m.kind, mass: m.mass, group: g, meshes: ms, box: bb, x: m.x, y: m.y, z: m.z, ry: m.ry };
+  });
+  MOV = null;
+  return { group, meshes, movables, colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }

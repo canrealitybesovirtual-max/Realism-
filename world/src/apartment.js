@@ -17,6 +17,19 @@ export const STAIR = { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, rw: 1.565, risers: 
 
 export function buildApartment(M, Q) {
   const B = new Builder();
+  // CQC (Q.cqc): every window pane is its own instance (one draw for all) with its own collider (c.pane), so the
+  // game can shatter it; the long glass runs are cut at their mullions
+  const PANES = [];
+  if (Q && Q.cqc) {
+    const box0 = B.box.bind(B);
+    B.box = (x0, y0, z0, x1, y1, z1, mat, col = true) => {
+      if (mat !== M.glass) return box0(x0, y0, z0, x1, y1, z1, mat, col);
+      const mn = [Math.min(x0, x1), Math.min(y0, y1), Math.min(z0, z1)], mx = [Math.max(x0, x1), Math.max(y0, y1), Math.max(z0, z1)];
+      if (mx[0] - mn[0] < 1e-4 || mx[1] - mn[1] < 1e-4 || mx[2] - mn[2] < 1e-4) return;
+      B.colliders.push({ t: 'box', min: mn, max: mx, mat, pane: PANES.length });
+      PANES.push({ min: mn, max: mx });
+    };
+  }
   const group = new THREE.Group();
   group.name = 'apartment';
 
@@ -113,7 +126,8 @@ export function buildApartment(M, Q) {
     const md = 0.16 * inward;                       // mullion depth into the room
     for (const [y0, y1] of bands) {
       // glass panes (skip door gaps)
-      const cuts = new Set([s0, s1]); for (const d of doors) if (d.lo < y1 && d.hi > y0) { cuts.add(d.a); cuts.add(d.b); }
+      const cuts = new Set([s0, s1]); if (Q && Q.cqc) for (let k = 1; k < n; k++) cuts.add(s0 + k * st);
+      for (const d of doors) if (d.lo < y1 && d.hi > y0) { cuts.add(d.a); cuts.add(d.b); }
       const xs = [...cuts].sort((p, q) => p - q);
       for (let k = 0; k < xs.length - 1; k++) {
         const a = xs[k], b = xs[k + 1], m = (a + b) / 2;
@@ -474,7 +488,14 @@ export function buildApartment(M, Q) {
   tray(9.98, 14.48, XE, ZS - 0.6, C2);     // bedroom three
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders, lamps, grilles };
+  let panes = null;
+  if (PANES.length) {
+    const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), M.glass, PANES.length), o = new THREE.Object3D();
+    PANES.forEach((q, i) => { o.position.set((q.min[0] + q.max[0]) / 2, (q.min[1] + q.max[1]) / 2, (q.min[2] + q.max[2]) / 2); o.scale.set(q.max[0] - q.min[0], q.max[1] - q.min[1], q.max[2] - q.min[2]); o.updateMatrix(); im.setMatrixAt(i, o.matrix); });
+    im.name = 'panes'; im.castShadow = false; im.receiveShadow = false; im.renderOrder = M.glass.userData.order || 0;
+    group.add(im); panes = { mesh: im, list: PANES };
+  }
+  return { group, meshes, colliders: B.colliders, lamps, grilles, panes };
 }
 
 // The helical stair: 26 risers over 330 degrees, from floor one (north of the centre, heading
