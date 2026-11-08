@@ -1057,6 +1057,17 @@
  * ========================================================================== */
 (function titleScreen() {
   const root = document.getElementById('title');
+  // Apartment start: the start screen is the apartment's (you spawn inside it; the loop is a choice at its front door)
+  try {
+    const m = /[?&]start=(apt|cqc|outdoor|outonly)\b/.exec(location.search), st = m ? m[1] : (localStorage.getItem('cqc.start.v1') || 'apt');
+    if (st === 'apt') {
+      root.classList.add('apt');
+      root.querySelector('.plate').innerHTML = '<b>76</b>Penthouse';
+      root.querySelector('h1').innerHTML = 'The<br>apartment';
+      root.querySelector('.tag').textContent = 'You start at home. The panel by the front door takes you on: the CQC loop, Outpost 17 or the Interstate. The armory is through the pantry.';
+      const reel = root.querySelector('.reel'); if (reel) reel.style.display = 'none';
+    }
+  } catch (e) { /* the CQC screen */ }
   // Step 30.1: a still screen. No footage, no camera tags, no clock.
 
   // ---- the start buttons -----------------------------------------------------
@@ -47819,8 +47830,10 @@ function yardRegister() {
 function yardPlanAt(s, wing, k, level0) {
   const mode = yardModeNow();
   const b = yardState().base;                                     // the yard's slot: 1, or the slot after the safe room it was chosen in
-  if (mode === 'cqc' || s > b + 1 || s < b) return null;
+  const aptOut = mode === 'apt' && APTS && APTS.go === 'outdoor';   // apartment start, Outpost 17 chosen at the door: apartment, yard, stairwell down
+  if (mode === 'cqc' || s > b + (aptOut ? 2 : 1) || s < b) return null;
   if (mode === 'apt') aptRegister(); else yardRegister();          // apartment start: the apartment, then the stairwell down
+  if (aptOut && s === b + 1) { yardRegister(); return { slot: s, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` }; }
   if (s === b) return mode === 'apt' ? { slot: s, wing, k, type: 'apt', level: level0, number: 'PH-76' } : { slot: s, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` };
   if ((mode !== 'outdoor' && mode !== 'apt') || !CONFIG.stairs.on) return null;
   const SC = CONFIG.stairs, dir = level0 - 1 >= SC.levels[0] ? -1 : 1;
@@ -47839,7 +47852,7 @@ function yardSafeEnter(here) {
   const p = _plans[here.slot + 1]; if (p && p.type === 'yard') return;
   yardReplan(Y.mode);
 }
-const yardStop = (s) => yardModeNow() === 'outonly' && s >= yardState().base + 1;   // updateStreaming: nothing past the yard
+const yardStop = (s) => (yardModeNow() === 'outonly' && s >= yardState().base + 1) || (yardModeNow() === 'apt' && !(APTS && APTS.go) && s >= yardState().base + 1);   // updateStreaming: nothing past the yard; apartment: nothing past it until you pick where the door goes
 // The start choice. Re-plans slot 1 on (before you have walked into it).
 function yardSetMode(m) {
   if (!YC.modes.includes(m)) return;
@@ -50569,15 +50582,17 @@ function aptPanelDraw() {
   const P = APTP, c = P.ctx, W = c.canvas.width, H = c.canvas.height, k = W / 800;
   c.fillStyle = '#0d1014'; c.fillRect(0, 0, W, H);
   c.fillStyle = '#e9e4da'; c.font = `600 ${40 * k}px system-ui, sans-serif`; c.textBaseline = 'middle'; c.fillText('Front door', 36 * k, 50 * k);
-  c.fillStyle = '#8f99a6'; c.font = `${22 * k}px system-ui, sans-serif`; c.fillText('The door opens onto the CQC loop. Or:', 36 * k, 96 * k);
+  c.fillStyle = '#8f99a6'; c.font = `${22 * k}px system-ui, sans-serif`; c.fillText(APTS && APTS.go ? 'The door is open.' : 'Pick where the door goes:', 36 * k, 86 * k);
   const n = ENEMY.list.filter((e) => e.room && e.room.apt && !e.dead).length;
-  const rows = [['go', P.leaving ? 'Leaving…' : 'GO  ›  Interstate', '#2f6f3f'], ['enemy', `+ Enemy at the far end${n ? ' (' + n + ')' : ''}`, '#3a2a22'], ['clear', 'Clear enemies', '#22262c']];
-  P.btns = []; let y = 128 * k;
+  const go = APTS && APTS.go, on = (g) => (go === g ? '#2c4e78' : '#22303c');
+  const rows = [['cqc', go === 'cqc' ? 'CQC loop  ✓ door open' : 'CQC loop', on('cqc')], ['outdoor', go === 'outdoor' ? 'Outpost 17  ✓ door open' : 'Outpost 17 (outdoor)', on('outdoor')],
+    ['go', P.leaving ? 'Leaving…' : 'Interstate  ›', '#2f6f3f'], ['enemy', `+ Enemy at the far end${n ? ' (' + n + ')' : ''}`, '#3a2a22'], ['clear', 'Clear enemies', '#22262c']];
+  P.btns = []; let y = 112 * k;
   for (const [id, label, col] of rows) {
-    const r = [36 * k, y, W - 72 * k, 120 * k];
+    const r = [36 * k, y, W - 72 * k, 68 * k];
     c.fillStyle = P.hover === id ? '#4a5563' : col; c.beginPath(); c.roundRect(r[0], r[1], r[2], r[3], 14 * k); c.fill();
-    c.fillStyle = '#fff'; c.font = `${id === 'go' ? 700 : 600} ${(id === 'go' ? 44 : 32) * k}px system-ui, sans-serif`; c.textAlign = 'center'; c.fillText(label, W / 2, r[1] + r[3] / 2); c.textAlign = 'left';
-    P.btns.push({ id, r }); y += 140 * k;
+    c.fillStyle = '#fff'; c.font = `600 ${30 * k}px system-ui, sans-serif`; c.textAlign = 'center'; c.fillText(label, W / 2, r[1] + r[3] / 2); c.textAlign = 'left';
+    P.btns.push({ id, r }); y += 78 * k;
   }
   P.tex.needsUpdate = true;
 }
@@ -50591,7 +50606,24 @@ function aptPanelPress(id) {
     const sx = renderer.xr.getSession(); if (sx) sx.end().catch(() => {}).finally(() => setTimeout(go, 300)); else setTimeout(go, 400);
   } else if (id === 'enemy') aptSpawnEnemy();
   else if (id === 'clear') { for (const e of ENEMY.list.slice()) if (e.room && e.room.apt) removeEnemy(e); }
+  else if (id === 'cqc' || id === 'outdoor') aptChoose(id);
   aptPanelDraw();
+}
+// The door's destination: the rooms after the apartment are planned (again) from the choice; a fight already started out there keeps it.
+function aptChoose(kind) {
+  const A = APTS; if (!A || !A.room) return;
+  if (A.go === kind) return;
+  const s = A.room.slot + 1;
+  for (const r of stream.rooms.values()) if (r.slot >= s && r.enemies && r.enemies.some((e) => e.engaged || e.dead)) { toast('A fight out there already started', 1800); return; }
+  if (stream.building && stream.building.slot >= s) { try { unloadRoom(stream.building); } catch (e) { /* half built */ } stream.building = null; }
+  for (let i = stream.ready.length - 1; i >= 0; i--) if (stream.ready[i].slot >= s) { try { unloadRoom(stream.ready[i]); } catch (e) { /* */ } stream.ready.splice(i, 1); }
+  for (const r of [...stream.rooms.values()]) if (r.slot >= s && r.kind !== 'safe') unloadRoom(r);
+  _plans.length = Math.min(_plans.length, s); _facing.length = Math.min(_facing.length, s + 1);
+  for (const k of [..._paramCache.keys()]) if (k >= s) _paramCache.delete(k);
+  anchors.length = Math.min(anchors.length, s); anchorY.length = Math.min(anchorY.length, s);
+  for (const k of [...roomMemory.keys()]) { const n = +k.split(':')[1]; if (n >= s && !k.startsWith('safe')) roomMemory.delete(k); }
+  A.go = kind;
+  toast(kind === 'outdoor' ? 'Front door: Outpost 17. It opens once the yard is built' : 'Front door: the CQC loop', 2400);
 }
 // the nav cell on floor one farthest from you (path length is not needed: the apartment's rooms are open to each other)
 function aptSpawnSpot(room, taken) {
@@ -50641,7 +50673,7 @@ function aptPanelTick() {
   }
   if (hover !== P.hover) { P.hover = hover; aptPanelDraw(); }
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, APTP, aptSpawnEnemy, aptPanelPress, aptSpawnSpot });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, APTP, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 </script>
 </body>
