@@ -17152,6 +17152,8 @@ function roomRoll(room, wn, roll) {
 }
 function addRoomHole(room, kind, wp, wn, save, tag, sc = 1) {   // tag: which crate / drywall cell it's on (step 6); sc: size (step 119: calibre, exit)
   if (!room.active) return;
+  if (room.aptTri && !(wp = aptSnap(room, wp, wn))) return;   // APARTMENT: on the drawn surface
+  if (room.aptTri) wn = APTSN.n;
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83: in the room's frame
   const roll = Math.random() * Math.PI * 2, s = (0.85 + Math.random() * 0.3) * sc;   // random: no need to turn it
   putDecal(decalLayer(room, room.group, kind), kind, lx, ly, lz, nx, wn.y, nz, roll, s);
@@ -35016,6 +35018,8 @@ function rollAlong(n, dir) {
 }
 function addBloodDecal(room, kind, wp, wn, roll, s, save = true) {
   if (!room || !room.active) return null;
+  if (room.aptTri && !(wp = aptSnap(room, wp, wn))) return null;   // APARTMENT: on the drawn surface, never floating
+  if (room.aptTri) wn = APTSN.n;
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83
   roll = roomRoll(room, wn, roll);
   const L = decalLayer(room, room.group, kind);
@@ -50409,7 +50413,7 @@ function* aptBuilder(room) {
   aptPanelBuild(room);
   aptWallsInit(room, apt, M); aptRackBuild(room, M);           // wall damage masks (before the compile below), the gun rack beside the raid computer
   aptSunAim();
-  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps, mov: furn.movables || [], panes: apt.panes };
+  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps, mov: furn.movables || [], panes: apt.panes, statics: [apt.group, furn.group] };
   room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
     qc: { pass: true, score: 100, attempt: 1, fails: [], notes: ['apartment'], visible: 1, hidden: 0, density: 0 } };
   room.wear93 = { wet: 0, leak: 0, hw: room.w / 2, hd, s1: 0, s2: 0 };
@@ -50598,6 +50602,75 @@ function aptPanesBlast(P, r) {
       if (d < r * (0.6 + 0.4 * Math.random())) aptPaneBreak(room, i, null, _aptN.set(rWX(room, aptLX(cz)) - P.x, 0, rWZ(room, aptLZ(cx)) - P.z).normalize(), 1);
     });
   }
+}
+// Decals on the drawn surface (?aptsnap=off): the apartment's colliders are boxes round what is drawn (a sofa's box
+// stands over its cushions, the curved stair wall is chords, a rug lies on the floor box), so a decal placed where a
+// ray met a collider floats. aptTriBuild (once, after activation) puts every static apartment triangle (architecture
+// and the fixed furniture, in apartment space) into a 0.5 m grid; aptSnap casts a short ray through the hit point
+// along -n and moves the decal onto the nearest drawn triangle with its face normal. No drawn surface within reach =
+// no decal.
+const APTSN = { on: !/[?&]aptsnap=off\b/.test(QS), cs: 0.5, reach: 0.3, n: new THREE.Vector3(), p: new THREE.Vector3(), inv: new THREE.Matrix4(), o: new THREE.Vector3(), d: new THREE.Vector3(), e1: new THREE.Vector3(), e2: new THREE.Vector3(), h: new THREE.Vector3(), q: new THREE.Vector3(), t: new THREE.Vector3(), nn: new THREE.Vector3() };
+function aptTriBuild(room) {
+  const G = room.aptG; if (!G || !room.apt.statics) return;
+  G.updateMatrixWorld(true);
+  const gi = new THREE.Matrix4().copy(G.matrixWorld).invert(), M = new THREE.Matrix4(), v = new THREE.Vector3();
+  const ms = [];
+  for (const root of room.apt.statics) root.traverse((o) => {
+    if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh || !o.visible || !o.geometry || !o.geometry.attributes.position) return;
+    const m = o.material; if (!m || m.transparent && m.opacity < 0.5) return;
+    ms.push(o);
+  });
+  let nv = 0; for (const o of ms) nv += o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count;
+  const T = new Float32Array(nv * 3); let w = 0;
+  for (const o of ms) {
+    M.multiplyMatrices(gi, o.matrixWorld);
+    const P = o.geometry.attributes.position, I = o.geometry.index, n = I ? I.count : P.count;
+    for (let k = 0; k < n; k++) { v.fromBufferAttribute(P, I ? I.getX(k) : k).applyMatrix4(M); T[w++] = v.x; T[w++] = v.y; T[w++] = v.z; }
+  }
+  const nt = Math.floor(T.length / 9), cs = APTSN.cs;
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (let i = 0; i < T.length; i += 3) { x0 = Math.min(x0, T[i]); x1 = Math.max(x1, T[i]); z0 = Math.min(z0, T[i + 2]); z1 = Math.max(z1, T[i + 2]); }
+  const nx = Math.ceil((x1 - x0) / cs) + 1, nz = Math.ceil((z1 - z0) / cs) + 1, cnt = new Int32Array(nx * nz + 1);
+  const span = (t, f) => { const a = t * 9;
+    const i0 = Math.floor((Math.min(T[a], T[a + 3], T[a + 6]) - x0) / cs), i1 = Math.floor((Math.max(T[a], T[a + 3], T[a + 6]) - x0) / cs);
+    const j0 = Math.floor((Math.min(T[a + 2], T[a + 5], T[a + 8]) - z0) / cs), j1 = Math.floor((Math.max(T[a + 2], T[a + 5], T[a + 8]) - z0) / cs);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) f(j * nx + i); };
+  for (let t = 0; t < nt; t++) span(t, (c) => cnt[c + 1]++);
+  for (let c = 0; c < nx * nz; c++) cnt[c + 1] += cnt[c];
+  const fill = cnt.slice(), list = new Int32Array(cnt[nx * nz]);
+  for (let t = 0; t < nt; t++) span(t, (c) => { list[fill[c]++] = t; });
+  room.aptTri = { T, nt, x0, z0, nx, nz, cs, start: cnt, list, stamp: new Uint32Array(nt), gen: 0 };
+}
+// wp, wn: world point and normal of the collider hit. Returns the drawn point (APTSN.p, world) and sets APTSN.n, or null.
+function aptSnap(room, wp, wn) {
+  const A = room.aptTri, S = APTSN, G = room.aptG;
+  S.inv.copy(G.matrixWorld).invert();
+  S.o.copy(wn).multiplyScalar(S.reach).add(wp).applyMatrix4(S.inv);           // from in front of the hit, through it
+  S.d.copy(wn).negate().transformDirection(S.inv);
+  const L = 2 * S.reach, ex = S.o.x + S.d.x * L, ez = S.o.z + S.d.z * L;
+  const i0 = Math.max(0, Math.floor((Math.min(S.o.x, ex) - A.x0) / A.cs)), i1 = Math.min(A.nx - 1, Math.floor((Math.max(S.o.x, ex) - A.x0) / A.cs));
+  const j0 = Math.max(0, Math.floor((Math.min(S.o.z, ez) - A.z0) / A.cs)), j1 = Math.min(A.nz - 1, Math.floor((Math.max(S.o.z, ez) - A.z0) / A.cs));
+  if (i0 > i1 || j0 > j1) return null;
+  const T = A.T, gen = ++A.gen; let best = L, bt = -1, bd = 0;
+  for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+    const c = j * A.nx + i;
+    for (let k = A.start[c]; k < A.start[c + 1]; k++) {
+      const t = A.list[k]; if (A.stamp[t] === gen) continue; A.stamp[t] = gen;
+      const a = t * 9;                                             // Moller-Trumbore, both faces
+      S.e1.set(T[a + 3] - T[a], T[a + 4] - T[a + 1], T[a + 5] - T[a + 2]); S.e2.set(T[a + 6] - T[a], T[a + 7] - T[a + 1], T[a + 8] - T[a + 2]);
+      S.h.crossVectors(S.d, S.e2); const det = S.e1.dot(S.h); if (Math.abs(det) < 1e-9) continue;
+      const f = 1 / det; S.t.set(S.o.x - T[a], S.o.y - T[a + 1], S.o.z - T[a + 2]);
+      const u = f * S.t.dot(S.h); if (u < 0 || u > 1) continue;
+      S.q.crossVectors(S.t, S.e1); const w = f * S.d.dot(S.q); if (w < 0 || u + w > 1) continue;
+      const d = f * S.e2.dot(S.q); if (d > 0.002 && d < L && Math.abs(d - S.reach) < best) { best = Math.abs(d - S.reach); bt = t; bd = d; }
+    }
+  }
+  if (bt < 0) return null;
+  const a = bt * 9;
+  S.e1.set(T[a + 3] - T[a], T[a + 4] - T[a + 1], T[a + 5] - T[a + 2]); S.e2.set(T[a + 6] - T[a], T[a + 7] - T[a + 1], T[a + 8] - T[a + 2]);
+  S.nn.crossVectors(S.e1, S.e2).normalize(); if (S.nn.dot(S.d) > 0) S.nn.negate();
+  S.n.copy(S.nn).transformDirection(G.matrixWorld);
+  return S.p.copy(S.d).multiplyScalar(bd).add(S.o).applyMatrix4(G.matrixWorld);
 }
 const _aptM = new THREE.Matrix4(), _aptV = new THREE.Vector3(), _aptN = new THREE.Vector3();
 const _aptQ = new THREE.Quaternion();
@@ -50902,7 +50975,7 @@ function aptPanelTick() {
   if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; changed = true; }   // the security screen blinks red while a raid is on
   if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 
 /* =========================================================================
