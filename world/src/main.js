@@ -49,6 +49,7 @@ async function boot() {
   // furniture joins the apartment (surfaces, probes and physics treat it the same)
   const furn = furnish(M, Q);
   for (const m of furn.meshes) m.userData.noOver = true;      // furniture is not a ceiling
+  for (const c of furn.colliders) c.furn = true;              // contact shadows (surface.js)
   apt.group.add(furn.group); apt.meshes.push(...furn.meshes); apt.colliders.push(...furn.colliders);
   // scanned pieces (Poly Haven, CC0): marble busts on the dining room plinths (apartment-17)
   try {

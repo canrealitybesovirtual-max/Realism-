@@ -226,7 +226,32 @@ function bakeFields(meshes, colliders, M) {
   for (let j = 0; j < Wc * Dc; j++) dl[j * 4 + 3] = 255;
   const dlTex = new THREE.DataTexture(dl, Wc, Dc, THREE.RGBAFormat);
   dlTex.magFilter = dlTex.minFilter = THREE.LinearFilter; dlTex.needsUpdate = true;
-  return { aoTex, dlTex, W, D, solid };
+  // contact shadows: furniture standing on the floor darkens the floor round its footprint and
+  // its own base (5 cm grid, blurred 15 cm twice), taller pieces darker
+  const ct = [new Float32Array(N), new Float32Array(N)];
+  for (const c of colliders) {
+    if (!c.furn) continue;
+    const bot = c.t === 'box' ? c.min[1] : c.c[1] - c.h[1], top = c.t === 'box' ? c.max[1] : c.c[1] + c.h[1];
+    const f = bot > 4.45 ? 1 : 0, lv = f ? 4.6 : 0;
+    if (bot - lv > 0.2 || top - bot < 0.05) continue;
+    const wgt = Math.min(1, 0.45 + (top - bot) / 0.9);
+    const cx = c.t === 'box' ? (c.min[0] + c.max[0]) / 2 : c.c[0], cz = c.t === 'box' ? (c.min[2] + c.max[2]) / 2 : c.c[2];
+    const hx = c.t === 'box' ? (c.max[0] - c.min[0]) / 2 : c.h[0], hz = c.t === 'box' ? (c.max[2] - c.min[2]) / 2 : c.h[2];
+    const yaw = c.t === 'box' ? 0 : c.yaw, co = Math.cos(yaw), si = Math.sin(yaw), r = Math.hypot(hx, hz);
+    const [i0, k0] = cell(cx - r, cz - r), [i1, k1] = cell(cx + r, cz + r);
+    for (let k = Math.max(0, k0); k <= Math.min(D - 1, k1); k++)
+      for (let i = Math.max(0, i0); i <= Math.min(W - 1, i1); i++) {
+        const dx = x0 + (i + 0.5) * cs - cx, dz = z0 + (k + 0.5) * cs - cz;
+        const lx = dx * co - dz * si, lz = dx * si + dz * co;
+        if (Math.abs(lx) <= hx && Math.abs(lz) <= hz) { const j = k * W + i; ct[f][j] = Math.max(ct[f][j], wgt); }
+      }
+  }
+  const ctb = ct.map((a) => blur(a, 3, 2));
+  const ctd = new Uint8Array(N * 4);
+  for (let j = 0; j < N; j++) { ctd[j * 4] = Math.min(1, ctb[0][j]) * 255; ctd[j * 4 + 1] = Math.min(1, ctb[1][j]) * 255; ctd[j * 4 + 3] = 255; }
+  const ctTex = new THREE.DataTexture(ctd, W, D, THREE.RGBAFormat);
+  ctTex.magFilter = ctTex.minFilter = THREE.LinearFilter; ctTex.needsUpdate = true;
+  return { aoTex, dlTex, ctTex, W, D, solid };
 }
 
 // ---- shader patch ----------------------------------------------------------------------------
@@ -241,6 +266,7 @@ const FRAG_PARS = /* glsl */`
 varying vec3 vSrPos;
 varying vec3 vSrNrm;
 uniform sampler2D uSrAO;
+uniform sampler2D uSrCT;
 uniform sampler2D uSrDL;
 uniform vec4 uSrG;
 uniform float uSrOn;
@@ -292,6 +318,11 @@ float srAO( vec3 p, vec3 n ) {
     float corner = clamp( ( occ - 0.36 ) * 1.7, 0.0, 1.0 );
     ao = ( 1.0 - 0.42 * exp( - h / 0.2 ) ) * ( 1.0 - 0.32 * exp( - up / 0.2 ) ) * ( 1.0 - 0.45 * corner );
   }
+  // contact shadow from furniture on the floor (sampled just outside the surface)
+  vec4 ctt = texture2D( uSrCT, ( p.xz + n.xz * 0.05 - uSrG.xy ) * uSrG.zw );
+  float ctc = f2 ? ctt.g : ctt.r;
+  if ( n.y > 0.6 ) ao *= 1.0 - 0.6 * ctc * ( 1.0 - smoothstep( 0.02, 0.08, h ) );
+  else if ( n.y > - 0.6 ) ao *= 1.0 - 0.4 * ctc * exp( - h / 0.14 );
   return clamp( ao, 0.0, 1.0 );
 }
 float srDay( vec3 p, vec3 n ) {
@@ -474,14 +505,14 @@ function patch(mat, kind, U) {
   mat.needsUpdate = true;
 }
 
-export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.16, 1.0, 0.88], lamps = [], lampPower = 16 }) {
+export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI = 0.12, viewGain = null, daylight = 8, whiteBalance = [1.1, 1.0, 0.93], lamps = [], lampPower = 16 }) {
   const t0 = performance.now();
   const F = bakeFields(apt.meshes, apt.colliders, M);
   const env = scene.environment;
   const vec = (a) => new THREE.Vector3(...a);
   const boxes = [...PROBES.map((p, i) => ({ ...p, tex: i })), ...FALLBACK.map((b) => ({ ...b, pos: PROBES[b.tex].pos }))];
   const U = {
-    uSrAO: { value: F.aoTex }, uSrDL: { value: F.dlTex },
+    uSrAO: { value: F.aoTex }, uSrCT: { value: F.ctTex }, uSrDL: { value: F.dlTex },
     uSrG: { value: new THREE.Vector4(GRID.x0, GRID.z0, 1 / (F.W * GRID.cs), 1 / (F.D * GRID.cs)) },
     uSrOn: { value: 1 }, uSrDLMin: { value: 0.7 }, uWet: { value: 0.8 }, uGlassAbs: { value: 0.08 },
     uPAtlas: { value: null }, uPAtlasSize: { value: new THREE.Vector2(1, 1) },
