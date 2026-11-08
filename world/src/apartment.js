@@ -325,7 +325,7 @@ export function buildApartment(M, Q) {
   solid(6.03, 6.92, 7.91, 8.95, L1, C2, M.plaster, 'es');
   for (const y of [L1, L2]) panel('z', 7.91, 7.4, 8.4, y, y + 2.4, M.bronzeLight, 1);
   solid(6.03, 8.95, 7.6, 9.42, L1, C2, M.plaster, '');
-  B.add(shellGeo(S.cx, S.cz, S.r1, S.rw, 0, 190 * Math.PI / 180, L1, C2, 48), M.plaster);
+  B.add(shellGeo(S.cx, S.cz, S.r1, S.rw, 0, 190 * Math.PI / 180, L1, C2, 192), M.plasterStair);   // 1 deg facets: no saw-tooth where it meets the flat walls
   shellColliders(B, S.cx, S.cz, S.r1, S.rw, 0, 190 * Math.PI / 180, L1, C2, 24);
   solid(6.03, 12.75, 7.91, 12.95, L1, C2, M.plaster, '');
   floor(6.03, 8.95, 7.91, 12.95, L1, M.stone);
@@ -473,6 +473,8 @@ function buildStair(B, M) {
   const soffit = (a) => (a / dA) * rise + rise - 0.3;     // underside, smooth
   const ramp = (a) => (a / dA + 0.5) * rise;              // walking surface for physics
   const rail = (a) => (a / dA) * rise + rise + 0.9;
+  const R1 = STAIR.r1 - 0.005;   // the outer stringer face stands 5 mm off the curved wall (no z-fighting)
+  const SW = 0.07, strTop = (a) => (a / dA) * rise + rise + 0.12;   // stringer width, smooth top line
 
   const P = [], N = [];
   const quad = (a, b, c, d) => {
@@ -491,22 +493,30 @@ function buildStair(B, M) {
     let done = use(body);
     for (let k = 0; k < sub; k++) {
       const pa = a0 + (a1 - a0) * k / sub, pb = a0 + (a1 - a0) * (k + 1) / sub;
-      quad(at(S.r0, pa, soffit(pa)), at(S.r1, pa, soffit(pa)), at(S.r1, pb, soffit(pb)), at(S.r0, pb, soffit(pb)));   // soffit (faces down)
-      quad(at(S.r1, pa, soffit(pa)), at(S.r1, pa, t - 0.04), at(S.r1, pb, t - 0.04), at(S.r1, pb, soffit(pb)));       // outer face
-      quad(at(S.r0, pb, soffit(pb)), at(S.r0, pb, t - 0.04), at(S.r0, pa, t - 0.04), at(S.r0, pa, soffit(pa)));       // inner face
+      quad(at(S.r0, pa, soffit(pa)), at(R1, pa, soffit(pa)), at(R1, pb, soffit(pb)), at(S.r0, pb, soffit(pb)));   // soffit (faces down)
+      // closed stringers (apartment-12): both sides rise to a smooth helix 12 cm over the nosing
+      // line, 7 cm thick, the treads run into them
+      const ha = strTop(pa), hb = strTop(pb);
+      quad(at(R1, pa, soffit(pa)), at(R1, pa, ha), at(R1, pb, hb), at(R1, pb, soffit(pb)));       // outer face
+      quad(at(S.r0, pb, soffit(pb)), at(S.r0, pb, hb), at(S.r0, pa, ha), at(S.r0, pa, soffit(pa)));       // inner face
+      const ri = S.r0 + SW, ro = R1 - SW;
+      quad(at(ri, pa, t), at(ri, pa, ha), at(ri, pb, hb), at(ri, pb, t));                                 // inner stringer, tread side
+      quad(at(ro, pb, t), at(ro, pb, hb), at(ro, pa, ha), at(ro, pa, t));                                 // outer stringer, tread side
+      quad(at(S.r0, pb, hb), at(ri, pb, hb), at(ri, pa, ha), at(S.r0, pa, ha));                           // stringer caps
+      quad(at(ro, pb, hb), at(R1, pb, hb), at(R1, pa, ha), at(ro, pa, ha));
     }
-    quad(at(S.r0, a0, soffit(a0)), at(S.r0, a0, t), at(S.r1, a0, t), at(S.r1, a0, soffit(a0)));                      // riser face
+    quad(at(S.r0, a0, soffit(a0)), at(S.r0, a0, t), at(R1, a0, t), at(R1, a0, soffit(a0)));                      // riser face
     done();
     // marble tread, 4 cm, with a 2 cm nosing
     done = use(cap);
-    const n0 = a0 - 0.02 / 1.0;
+    const n0 = a0 - 0.02 / 1.0, tr0 = S.r0 + SW - 0.01, tr1 = S.r1 - SW + 0.01;   // ends run 1 cm into the stringers
     for (let k = 0; k < sub; k++) {
       const pa = n0 + (a1 - n0) * k / sub, pb = n0 + (a1 - n0) * (k + 1) / sub;
-      quad(at(S.r0, pb, t), at(S.r1, pb, t), at(S.r1, pa, t), at(S.r0, pa, t));
-      quad(at(S.r1, pa, t - 0.04), at(S.r1, pa, t), at(S.r1, pb, t), at(S.r1, pb, t - 0.04));
-      quad(at(S.r0, pb, t - 0.04), at(S.r0, pb, t), at(S.r0, pa, t), at(S.r0, pa, t - 0.04));
+      quad(at(tr0, pb, t), at(tr1, pb, t), at(tr1, pa, t), at(tr0, pa, t));
+      quad(at(tr1, pa, t - 0.04), at(tr1, pa, t), at(tr1, pb, t), at(tr1, pb, t - 0.04));
+      quad(at(tr0, pb, t - 0.04), at(tr0, pb, t), at(tr0, pa, t), at(tr0, pa, t - 0.04));
     }
-    quad(at(S.r0, n0, t - 0.04), at(S.r0, n0, t), at(S.r1, n0, t), at(S.r1, n0, t - 0.04));
+    quad(at(tr0, n0, t - 0.04), at(tr0, n0, t), at(tr1, n0, t), at(tr1, n0, t - 0.04));
     done();
     // physics: smooth ramp body (top = ramp line, bottom = soffit)
     const hp = [];
@@ -527,14 +537,15 @@ function buildStair(B, M) {
   B.add(mk(cap), M.treadStone);
 
   // balusters and handrails
-  const bal = (x, y0, z, y1) => B.box(x - 0.008, y0, z - 0.008, x + 0.008, y1, z + 0.008, M.blackMetal, false);
+  const balG = new THREE.CylinderGeometry(0.0085, 0.0085, 1, 10, 1, true).toNonIndexed();          // 17 mm round bar
+  const bal = (x, y0, z, y1) => B.add(balG.clone().scale(1, y1 - y0, 1).translate(x, (y0 + y1) / 2, z), M.blackMetal);
   const innerR = S.r0 + 0.04, outerR = S.r1 - 0.04;
   const rIn = [], rOut = [];
   for (let i = 0; i < n; i++) {
     for (const f of [0.25, 0.75]) {
       const a = (i + f) * dA;
-      const [x, z] = polar(S.cx, S.cz, innerR, a); bal(x, top(i), z, rail(a));
-      if (a > 190 * Math.PI / 180) { const [xo, zo] = polar(S.cx, S.cz, outerR, a); bal(xo, top(i), zo, rail(a)); }
+      const [x, z] = polar(S.cx, S.cz, innerR, a); bal(x, strTop(a) - 0.01, z, rail(a));
+      if (a > 190 * Math.PI / 180) { const [xo, zo] = polar(S.cx, S.cz, outerR, a); bal(xo, strTop(a) - 0.01, zo, rail(a)); }
     }
   }
   for (let k = 0; k <= 60; k++) { const a = -0.05 + (S.sweep + 0.05) * k / 60; rIn.push([...polar(S.cx, S.cz, innerR, a)].flatMap((v, j) => (j === 0 ? [v, rail(Math.max(0, a))] : [v]))); }

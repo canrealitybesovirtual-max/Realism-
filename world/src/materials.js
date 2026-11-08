@@ -181,6 +181,7 @@ export function makeMaterials(Q) {
   pn.wrapS = pn.wrapT = THREE.RepeatWrapping; pn.repeat.set(1 / 1.5, 1 / 1.5); pn.anisotropy = 8;
   M.plaster = new THREE.MeshStandardMaterial({ color: '#e9e4db', roughness: 0.92, normalMap: pn, normalScale: new THREE.Vector2(0.12, 0.12) });
   M.plasterWarm = new THREE.MeshStandardMaterial({ color: '#ddd3c6', roughness: 0.92, normalMap: pn, normalScale: new THREE.Vector2(0.12, 0.12) });
+  M.plasterStair = new THREE.MeshStandardMaterial({ color: '#c9b9aa', roughness: 0.88, normalMap: pn, normalScale: new THREE.Vector2(0.14, 0.14), polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });   // wins where the shell meets the hall walls' faces   // greige plaster of the stair hall (apartment-12)
   M.ceiling = new THREE.MeshStandardMaterial({ color: '#f1efea', roughness: 0.95 });
   M.stairWhite = new THREE.MeshStandardMaterial({ color: '#eeebe5', roughness: 0.75, side: THREE.DoubleSide });
 
