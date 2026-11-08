@@ -2676,7 +2676,8 @@ const CONFIG = {
     dazzle: { on: true, cd: 160, gain: 1, la: 5.5, laExp: 0.45, adapt: 0.00087, rise: 0.3, relax: 3, dimMax: 0.7, core: 1, splash: 0.5, splashR: 50, pupil: 0.003, minE: 0.5,
       aft: 0.35, aftK: 0.005, aftTau: [1, 3], aftDose: 1, aftSize: 1.8 },   // step 110: weapon lights in your eyes. cd real candela per game light unit; glare B = gain x lux / (la x fill^laExp + adapt x eased lux) deg^2; rise / relax s pupil; dimMax view darkening; core deg; splash x your own light off what it lights within splashR m (50: the longer flashlight's reach); pupil m; minE lux; afterimage gain, strength per B, fade s by exposure (aftDose s), size deg; ?dazzle=off
     audio: {
-      spatial: true, hrtf: true, voices: 8,   // PERFORMANCE: hrtf false = cheaper equal-power panning
+      spatial: true, hrtf: true, voices: 12,   // 3D sound: 12 voices (8 stole sounds mid-play in a fight)
+        // PERFORMANCE: hrtf false = cheaper equal-power panning
       refDistance: 1.2, rolloff: 0.75,        // inverse distance model
       occludedHz: 750, occludedGain: 0.5,     // through a wall or a shut door
       speedOfSound: true,                     // far sounds arrive late (343 m/s)
@@ -4666,6 +4667,13 @@ nvgToneChunk();                                   // step 118: the night vision 
 const TFILL = { on: !/[?&]tfill=off\b/.test(QS), max: LITE.on ? 1 : 2, maxXR: 1,   // PERF: lite = 3 diffuse-only fill lights (compiled that way)
   I: 14, P: Array.from({ length: 11 }, () => new THREE.Vector4()), idx: [], dist: new Float32Array(96), head: new THREE.Vector3(), col: new THREE.Color(), was: 0 };
 tfillChunk();                                     // room fill: every ceiling fitting lights the room (before anything compiles)
+// BOUNCE: the light the room's own floor, walls and ceiling throw back (a small radiosity solve per room, CPU, at load),
+// as an irradiance grid that shapes the ambient fill: ceilings and far corners darker, the floor's colour on the walls.
+const BNC = { on: !/[?&]bounce=off\b/.test(QS), NX: 24, NZ: 24, tex: null, room: null, job: null, done: new WeakMap(),
+  u: { uBvT: { value: null }, uBvO: { value: new THREE.Vector4(0, 0, 0, 1) }, uBvS: { value: new THREE.Vector4(1, 1, 1, 0) },
+    uBvN: { value: new THREE.Vector4(2, 2, 0.3, 0) }, uBvK: { value: new THREE.Vector4(0, 3, 0.5, 0) } } };   // K: on, gain (x3: the room has more lights than the 2 pool spots), share of the old fill kept
+bncChunk();
+if (/[?&]dev\b/.test(QS)) window.__cqcBounce = { BNC, get SPORT() { return SPORT; }, get soundPortal() { return soundPortal; }, get occluded() { return occluded; } };   // tests
 aptSunChunk();                                    // apartment: the sun's own shadow map in every lit program (APARTMENT LOOK)
 renderer.shadowMap.enabled = REAL_LIGHT;         // step 58: Real lighting off = no shadow maps
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -10180,7 +10188,7 @@ function applyBoost() {
   if (P10.contact) P10.contact.cap = on ? B.contactCap : CONFIG.polish.contact.cap;
   const ip = world && world.integrationParameters;
   if (ip && 'numSolverIterations' in ip) ip.numSolverIterations = on ? B.solverIterations : CONFIG.physics.solverIterations;
-  for (const v of SPAT.voices) { try { v.pan.panningModel = on || !CONFIG.polish.audio.hrtf ? 'equalpower' : 'HRTF'; } catch (err) { /* older browsers */ } }
+  for (const v of SPAT.voices) { try { v.pan.panningModel = (ex && !xr) || !CONFIG.polish.audio.hrtf ? 'equalpower' : 'HRTF'; } catch (err) { /* older browsers */ } }   // 3D sound: HRTF in every mode but Max FPS on a computer (it runs on the audio thread)
   // UI
   if (ui.boost) ui.boost.textContent = ex ? 'max fps' : on ? 'sharp' : 'cinematic';
   if (ui.post) ui.post.textContent = on ? `off (${ex ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off';
@@ -29598,11 +29606,11 @@ const OPT_GROUPS = [
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
     ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack'], ['aptbreak', 'Apartment lights, glass break'], ['aptvol', 'Apartment baked bounce light'], ['fallback', 'Men fall back under fire']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
-  ['look', 'GRAPHICS', [['mv', 'Multiview stereo (VR)'], ['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
+  ['look', 'GRAPHICS', [['mv', 'Multiview stereo (VR)'], ['bounce', 'Bounce light in rooms'], ['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
     ['beam', 'Flashlight beam pattern'], ['shelflight', 'Locker shelf light'], ['paint', 'Gun finishes'], ['elod', 'Enemy detail LODs'], ['wetx', 'Outdoor rain runs, drips'], ['lightning', 'Lightning']]],
   ['fx', 'EFFECTS', [['trickle', 'Dust from bullet holes'], ['mblast', 'Muzzle blast dust'], ['wisp', 'Barrel smoke'], ['torchhaze', 'Torch beams in haze'], ['laserbeam', 'Laser beam in smoke'], ['tracer', 'Tracer rounds']]],
-  ['audio', 'AUDIO', [['hrec', 'Recorded gun handling'], ['naderec', 'Recorded grenades'], ['foley', 'Gun foley'], ['amb', 'Building sounds'], ['ambbed', 'Room machine hum'], ['doorsnd', 'Door sounds'],
+  ['audio', 'AUDIO', [['portal', 'Sound through doorways'], ['hrec', 'Recorded gun handling'], ['naderec', 'Recorded grenades'], ['foley', 'Gun foley'], ['amb', 'Building sounds'], ['ambbed', 'Room machine hum'], ['doorsnd', 'Door sounds'],
     ['doorrec', 'Recorded doors'], ['creak', 'Door creaks'], ['bump', 'Body bumps'], ['underfoot', 'Steps on brass, glass'], ['guntouch', 'Gun touches walls'], ['stress', 'Breathing, heartbeat']]],
   ['ctl', 'CONTROLS', [['tiponly', 'Buttons by fingertip (VR)'], ['mechhap', 'Mechanism haptics (VR)'], ['slinganim', 'Animated sling'], ['thumbsel', 'Thumb fire selector (VR)'],
     ['vmsleeves', 'Tactical sleeves (VR)'], ['glove104', 'Gloved hands'], ['vm', 'Viewmodel arms (PC)'], ['benchzoom', 'Bench zoom (PC)'], ['wszoom', 'Workshop zoom (PC)'],
@@ -32868,8 +32876,189 @@ function tfillChunk() {
 ` + C.lights_fragment_maps;
   for (const k of ['standard', 'physical', 'lambert', 'phong', 'toon']) if (L[k]) L[k].uniforms.uTfP = { value: TFILL.P };
 }
+/* ---------------------------------------------------------------------------
+ *  BOUNCE (?bounce=off): indirect light of the CQC rooms
+ *  Each room's box (floor, four walls, ceiling) is cut into ~0.5 m patches with the albedo of its own materials;
+ *  every live ceiling fitting lights them (Lambertian downlight), two radiosity bounces between the patches, then
+ *  an L1 irradiance grid (up to 24 x 3 x 24 probes) is gathered from them, divided by its own mean (so the room keeps
+ *  its brightness and only the shape changes) and put in one 3D texture. Every lit program multiplies its ambient /
+ *  environment irradiance by it inside the current room's box. CPU in slices (bncTick, ~2 ms a frame), no GPU renders.
+ * ========================================================================== */
+function bncChunk() {
+  if (!BNC.on) return;
+  const C = THREE.ShaderChunk, L = THREE.ShaderLib;
+  const NX = BNC.NX, NZ = BNC.NZ, data = new Uint16Array(NX * 9 * NZ * 4);
+  const t = new THREE.Data3DTexture(data, NX, 9, NZ);
+  t.format = THREE.RGBAFormat; t.type = THREE.HalfFloatType; t.minFilter = t.magFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = t.wrapR = THREE.ClampToEdgeWrapping; t.unpackAlignment = 1; t.generateMipmaps = false;
+  t.clone = function () { return this; };                       // one texture shared by every program (cloneUniforms would copy it)
+  t.needsUpdate = true;
+  BNC.tex = t; BNC.u.uBvT.value = t;
+  C.lights_pars_begin += '\nuniform mediump sampler3D uBvT;\nuniform vec4 uBvO, uBvS, uBvN, uBvK;\n';
+  C.lights_fragment_maps += `
+#if defined( RE_IndirectDiffuse )
+if ( uBvK.x > 0.0 ) {
+  vec3 bvW = transpose( mat3( viewMatrix ) ) * ( geometryPosition - viewMatrix[ 3 ].xyz );
+  vec3 bvL = vec3( uBvO.w * ( bvW.x - uBvO.x ), bvW.y - uBvO.y, uBvO.w * ( bvW.z - uBvO.z ) ), bvH = uBvS.xyz * 0.5;
+  if ( abs( bvL.x ) < bvH.x + 0.08 && abs( bvL.z ) < bvH.z + 0.08 && bvL.y > -0.08 && bvL.y < uBvS.y + 0.08 ) {
+    vec3 bvN = transpose( mat3( viewMatrix ) ) * geometryNormal; bvN.xz *= uBvO.w;
+    float bvX = clamp( ( bvL.x + bvH.x - uBvS.w ) / max( uBvS.x - 2.0 * uBvS.w, 0.01 ), 0.0, 1.0 ) * ( uBvN.x - 1.0 );
+    float bvZ = clamp( ( bvL.z + bvH.z - uBvS.w ) / max( uBvS.z - 2.0 * uBvS.w, 0.01 ), 0.0, 1.0 ) * ( uBvN.y - 1.0 );
+    float bvY = clamp( ( bvL.y - uBvN.z ) / max( uBvS.y - 2.0 * uBvN.z, 0.01 ), 0.0, 1.0 ) * 2.0;
+    float bvu = ( bvX + 0.5 ) / ${NX}.0, bvw = ( bvZ + 0.5 ) / ${NZ}.0;
+    vec4 bvR = texture( uBvT, vec3( bvu, ( bvY + 0.5 ) / 9.0, bvw ) );
+    vec4 bvG = texture( uBvT, vec3( bvu, ( bvY + 3.5 ) / 9.0, bvw ) );
+    vec4 bvB = texture( uBvT, vec3( bvu, ( bvY + 6.5 ) / 9.0, bvw ) );
+    vec3 bvE = max( vec3( bvR.x + dot( bvR.yzw, bvN ), bvG.x + dot( bvG.yzw, bvN ), bvB.x + dot( bvB.yzw, bvN ) ), vec3( 0.0 ) );
+    float bvKeep = mix( 1.0, uBvK.z, uBvK.x );                   // the old flat fill gives way to the computed bounce
+    irradiance = irradiance * bvKeep + bvE * ( uBvK.x * uBvK.y ); iblIrradiance *= bvKeep;
+  }
+}
+#endif
+`;
+  for (const k in BNC.u) { const v = BNC.u[k].value; if (v && v.clone) v.clone = function () { return this; }; }   // shared, not copied per program
+  for (const k of ['standard', 'physical', 'lambert', 'phong', 'toon']) if (L[k]) Object.assign(L[k].uniforms, BNC.u);
+}
+const BNC_ALB = new Map();
+function bncAlbedo(mat, fb) {
+  if (!mat || !mat.color) return fb;
+  let v = BNC_ALB.get(mat);
+  if (v) return v;
+  let k = [1, 1, 1];
+  if (mat.map && mat.map.image) { const m = [0, 1, 2].map((c) => paintMapMean(mat.map, c)); if (m[0] === null) return fb; k = m.map((x) => Math.pow(x, 2.2)); }
+  v = [0, 1, 2].map((c) => clamp([mat.color.r, mat.color.g, mat.color.b][c] * k[c], 0.03, 0.9));
+  BNC_ALB.set(mat, v);
+  return v;
+}
+function bncWants(room) {
+  return !!(BNC.on && room && room.active && room.troffers && room.troffers.length && room.kind !== 'stair' && !room.yard
+    && !(room.plan && (room.plan.type === 'yard' || room.plan.type === 'apt')) && room.w > 0 && room.d > 0 && room.h > 0);
+}
+// The bake, in slices. Returns { nx, nz, yin, data } (half floats, already laid out for the texture).
+function* bncBakeGen(room) {
+  const w = room.w, d = room.d, h = room.h, RM = room.mats || {}, KM = KIT.mat || {};
+  const aF = bncAlbedo(RM.floor, [0.25, 0.24, 0.22]), aW = bncAlbedo(RM.wall, [0.55, 0.53, 0.5]), aL = bncAlbedo(RM.lower || RM.wall, aW), aC = bncAlbedo(RM.ceil || KM.ceil, [0.7, 0.7, 0.68]);
+  const area = 2 * w * d + 2 * (w + d) * h, ps = clamp(Math.sqrt(area / 520), 0.45, 2.5);
+  const px = [], py = [], pz = [], nx = [], ny = [], nz = [], pa = [], rho = [];
+  const rect = (cx, cy, cz, ux, uy, uz, ul, vx, vy, vz, vl, n0, n1, n2, alb) => {   // a rectangle cut into patches
+    const nu = Math.max(1, Math.round(ul / ps)), nv = Math.max(1, Math.round(vl / ps)), A = (ul / nu) * (vl / nv);
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+      const s = ((i + 0.5) / nu - 0.5) * ul, t = ((j + 0.5) / nv - 0.5) * vl;
+      const X = cx + ux * s + vx * t, Y = cy + uy * s + vy * t, Z = cz + uz * s + vz * t;
+      px.push(X); py.push(Y); pz.push(Z); nx.push(n0); ny.push(n1); nz.push(n2); pa.push(A);
+      rho.push(typeof alb === 'function' ? alb(Y) : alb);
+    }
+  };
+  const wallA = (y) => (y < 1.0 ? aL : aW);
+  rect(0, 0, 0, 1, 0, 0, w, 0, 0, 1, d, 0, 1, 0, aF);
+  rect(0, h, 0, 1, 0, 0, w, 0, 0, 1, d, 0, -1, 0, aC);
+  rect(0, h / 2, -d / 2, 1, 0, 0, w, 0, 1, 0, h, 0, 0, 1, wallA);
+  rect(0, h / 2, d / 2, 1, 0, 0, w, 0, 1, 0, h, 0, 0, -1, wallA);
+  rect(-w / 2, h / 2, 0, 0, 0, 1, d, 0, 1, 0, h, 1, 0, 0, wallA);
+  rect(w / 2, h / 2, 0, 0, 0, 1, d, 0, 1, 0, h, -1, 0, 0, wallA);
+  const N = px.length, E = new Float32Array(N * 3), B = new Float32Array(N * 3), E2 = new Float32Array(N * 3);
+  // direct light from the fittings (downlights, cosine lobe), a warm-white tube
+  const I0 = CONFIG.light.spot, tc = [I0, I0 * 0.97, I0 * 0.9];   // each fitting like the pool spots: candela, cosine lobe down
+  for (const tr of room.troffers) {
+    if (tr.out) continue;
+    const tx = tr.x, ty = (tr.y !== undefined ? tr.y : h) - 0.06, tz = tr.z;
+    for (let i = 0; i < N; i++) {
+      const dx = tx - px[i], dy = ty - py[i], dz = tz - pz[i], d2 = dx * dx + dy * dy + dz * dz + 0.08, r = Math.sqrt(d2);
+      const ce = dy / r, cr = (dx * nx[i] + dy * ny[i] + dz * nz[i]) / r;
+      if (ce <= 0 || cr <= 0) continue;
+      const v = ce * cr / d2;
+      E[i * 3] += v * tc[0]; E[i * 3 + 1] += v * tc[1]; E[i * 3 + 2] += v * tc[2];
+    }
+  }
+  for (let i = 0; i < N; i++) for (let c = 0; c < 3; c++) B[i * 3 + c] = rho[i][c] * E[i * 3 + c];
+  yield;
+  // two bounces between the patches (form factor A cos cos / pi r^2)
+  for (let it = 0; it < 2; it++) {
+    for (let j = 0; j < N; j++) {
+      let r0 = 0, g0 = 0, b0 = 0;
+      for (let i = 0; i < N; i++) {
+        if (i === j) continue;
+        const dx = px[i] - px[j], dy = py[i] - py[j], dz = pz[i] - pz[j], d2 = dx * dx + dy * dy + dz * dz;
+        const cj = dx * nx[j] + dy * ny[j] + dz * nz[j]; if (cj <= 0) continue;
+        const ci = -(dx * nx[i] + dy * ny[i] + dz * nz[i]); if (ci <= 0) continue;
+        const f = pa[i] * cj * ci / (Math.PI * d2 * Math.max(d2, pa[i]));
+        r0 += B[i * 3] * f; g0 += B[i * 3 + 1] * f; b0 += B[i * 3 + 2] * f;
+      }
+      E2[j * 3] = r0; E2[j * 3 + 1] = g0; E2[j * 3 + 2] = b0;
+      if ((j & 63) === 63) yield;
+    }
+    for (let i = 0; i < N; i++) for (let c = 0; c < 3; c++) B[i * 3 + c] = rho[i][c] * (E[i * 3 + c] + E2[i * 3 + c]);
+  }
+  // probes: L1 irradiance E(n) = 0.25 S0 + 0.5 S1.n from the patches' radiance B / pi
+  const yin = Math.min(0.3, h * 0.15), inset = Math.min(0.25, w * 0.1, d * 0.1);
+  const gx = clamp(Math.round((w - 2 * inset) / 0.75) + 1, 2, BNC.NX), gz = clamp(Math.round((d - 2 * inset) / 0.75) + 1, 2, BNC.NZ);
+  const S = new Float32Array(gx * 3 * gz * 12);
+  for (let k = 0; k < gz; k++) {
+    const qz = -d / 2 + inset + (d - 2 * inset) * k / (gz - 1);
+    for (let l = 0; l < 3; l++) {
+      const qy = yin + (h - 2 * yin) * l / 2;
+      for (let m = 0; m < gx; m++) {
+        const qx = -w / 2 + inset + (w - 2 * inset) * m / (gx - 1), o = ((k * 3 + l) * gx + m) * 12;
+        for (let i = 0; i < N; i++) {
+          const dx = px[i] - qx, dy = py[i] - qy, dz = pz[i] - qz, d2 = Math.max(dx * dx + dy * dy + dz * dz, pa[i] * 0.5), r = Math.sqrt(d2);
+          const ci = -(dx * nx[i] + dy * ny[i] + dz * nz[i]) / r; if (ci <= 0) continue;
+          const dw = pa[i] * ci / d2 / Math.PI, ox = dx / r, oy = dy / r, oz = dz / r;
+          for (let c = 0; c < 3; c++) { const L = B[i * 3 + c] * dw; S[o + c * 4] += L; S[o + c * 4 + 1] += L * ox; S[o + c * 4 + 2] += L * oy; S[o + c * 4 + 3] += L * oz; }
+        }
+      }
+      yield;
+    }
+  }
+  // to irradiance coefficients (three's units: the same as the lights' direct irradiance)
+  const n6 = gx * 3 * gz, div = [1, 1, 1];
+  let mean = 0;
+  for (let p = 0; p < n6; p++) for (let c = 0; c < 3; c++) {
+    const o = p * 12 + c * 4;
+    S[o] *= 0.25; S[o + 1] *= 0.5; S[o + 2] *= 0.5; S[o + 3] *= 0.5;
+    if (c === 1) mean += S[o];
+  }
+  const data = new Uint16Array(BNC.NX * 9 * BNC.NZ * 4), H = THREE.DataUtils.toHalfFloat;
+  for (let k = 0; k < gz; k++) for (let l = 0; l < 3; l++) for (let m = 0; m < gx; m++) {
+    const o = ((k * 3 + l) * gx + m) * 12;
+    for (let c = 0; c < 3; c++) {
+      const t = ((k * 9 + c * 3 + l) * BNC.NX + m) * 4;
+      for (let q = 0; q < 4; q++) data[t + q] = H(S[o + c * 4 + q] / div[c]);
+    }
+  }
+  return { gx, gz, yin, inset, data, mean: mean / n6, sig: bncSig(room) };
+}
+function bncSig(room) { let n = 0; for (const t of room.troffers) if (t.out) n++; return n; }   // shot-out fittings: bake again
+function bncTick() {
+  if (!BNC.on || !BNC.tex) return;
+  const cur = stream.current;
+  // the current room first, then any other active room not yet baked; ~2 ms a frame
+  if (!BNC.job) {
+    let r = bncWants(cur) && !BNC.done.has(cur) ? cur : null;
+    if (!r) for (const x of stream.rooms.values()) if (bncWants(x) && !BNC.done.has(x)) { r = x; break; }
+    if (r) BNC.job = { room: r, g: bncBakeGen(r) };
+  }
+  if (BNC.job) {
+    const t0 = performance.now(), J = BNC.job;
+    try {
+      for (;;) { const s = J.g.next(); if (s.done) { BNC.done.set(J.room, s.value); BNC.job = null; if (J.room === BNC.room) BNC.room = null; break; } if (performance.now() - t0 > 2) break; }
+    } catch (e) { console.warn('[bounce] bake failed', e); BNC.done.set(J.room, null); BNC.job = null; }
+  }
+  if (!BNC.job && bncWants(cur)) { const R0 = BNC.done.get(cur); if (R0 && R0.sig !== bncSig(cur)) { BNC.done.delete(cur); BNC.room = null; } }
+  const K = BNC.u.uBvK.value, R = bncWants(cur) && !nightDark(cur) ? BNC.done.get(cur) : null;
+  if (!R) { K.x = 0; BNC.room = null; return; }
+  if (BNC.room !== cur) {
+    BNC.room = cur;
+    BNC.tex.image.data.set(R.data); BNC.tex.needsUpdate = true;
+    BNC.u.uBvO.value.set(cur.origin.x, cur.origin.y, cur.origin.z, cur.f || 1);
+    BNC.u.uBvS.value.set(cur.w, cur.h, cur.d, R.inset);
+    BNC.u.uBvN.value.set(R.gx, R.gz, R.yin, 0);
+  }
+  BNC.u.uBvO.value.x = cur.origin.x; BNC.u.uBvO.value.y = cur.origin.y; BNC.u.uBvO.value.z = cur.origin.z;   // the world re-bases
+  K.x = 1;
+}
 function tfillTick() {
   vrNoteTick();
+  bncTick();                                                      // BOUNCE: bake rooms in slices, the current room's grid on
   SURF.u.uSfK.value.y = renderer.xr.isPresenting ? 1 : 0;           // surfaces: the headset's lighter path
   if (!TFILL.on) return;
   const P = TFILL.P, cur = stream.current, xr = renderer.xr.isPresenting;
@@ -35820,6 +36009,28 @@ function occluded(from, to) {
   _p10.c.multiplyScalar(1 / L);
   return !!p10Ray(from, _p10.c, L - 0.25, P10_OCCLUDE_RAY);
 }
+const SPORT = { on: !/[?&]portal=off\b/.test(QS), a: new THREE.Vector3(), b: new THREE.Vector3(), out: { x: 0, y: 0, z: 0, L: 0, k: 0 } };
+// The shortest way from a source behind a wall to you through one doorway with both legs clear (null = none)
+function soundPortal(head, src) {
+  let best = Infinity;
+  const D = SPORT.out;
+  for (const door of doors) {
+    const w = door.walk; if (!w) continue;
+    const cy = (w.bot !== undefined ? w.bot : (door.room ? door.room.origin.y : 0)) + 1.7;   // high in the opening: over desks, crates and half walls
+    const sh = (head.x - w.x) * w.s + (head.z - w.z) * w.c, ss = (src.x - w.x) * w.s + (src.z - w.z) * w.c;
+    if (sh * ss >= 0 || Math.abs(head.y - cy) > 3 || Math.abs(src.y - cy) > 3.5) continue;   // same side, or another floor
+    const ah = Math.hypot(head.x - w.x, head.z - w.z, head.y - cy), as = Math.hypot(src.x - w.x, src.z - w.z, src.y - cy);
+    if (ah > 25 || as > 25 || ah + as >= best) continue;
+    const sg = sh > 0 ? 0.35 : -0.35;
+    SPORT.a.set(w.x + w.s * sg, cy, w.z + w.c * sg);
+    if (occluded(head, SPORT.a)) continue;
+    SPORT.b.set(w.x - w.s * sg, cy, w.z - w.c * sg);
+    if (occluded(SPORT.b, src)) continue;
+    best = ah + as; D.x = SPORT.a.x; D.y = cy; D.z = SPORT.a.z; D.L = best;
+    D.k = clamp(Math.abs(door.angle || 0) / 0.6, 0, 1);            // how far the leaf is open
+  }
+  return best < Infinity ? D : null;
+}
 // Play fn() from a point in the room. fn(dist, occluded) uses nBurst / tone / playBaked as usual.
 function soundAt(pos, fn, o = null) {
   if (!audio.ctx || audio.ctx.state !== 'running') return;
@@ -35827,17 +36038,26 @@ function soundAt(pos, fn, o = null) {
   headWorld(_p10.h);
   const dist = _p10.h.distanceTo(pos);
   if (!SPAT.ok || !A.spatial) { fn(dist, false); return; }
-  const occl = !(o && o.occlude === false) && occluded(_p10.h, pos);
+  let occl = !(o && o.occlude === false) && occluded(_p10.h, pos);
   const v = SPAT.voices[SPAT.next];
   SPAT.next = (SPAT.next + 1) % SPAT.voices.length;
-  setPannerPos(v.pan, pos.x, pos.y, pos.z);
-  const air = A.air ? 20000 * Math.exp(-dist / A.air) : 20000;   // step 85: air takes the top end off far sounds (45 m: about 9 kHz)
-  const f = occl ? Math.min(A.occludedHz, air) : air, g = occl ? A.occludedGain : 1;
+  // Sound through doorways: behind a wall but reachable through a doorway = heard from the doorway, at the path's length,
+  // clear through an open door, muffled through a shut one (?portal=off: straight through the wall as before)
+  let dist2 = dist, k = -1;
+  const P = occl && SPORT.on && !(o && o.portal === false) ? soundPortal(_p10.h, pos) : null;
+  if (P) {
+    dist2 = P.L; k = P.k;
+    _p10.d.set(P.x - _p10.h.x, P.y - _p10.h.y, P.z - _p10.h.z).normalize().multiplyScalar(P.L).add(_p10.h);
+    setPannerPos(v.pan, _p10.d.x, _p10.d.y, _p10.d.z);
+  } else setPannerPos(v.pan, pos.x, pos.y, pos.z);
+  const air = A.air ? 20000 * Math.exp(-dist2 / A.air) : 20000;   // step 85: air takes the top end off far sounds (45 m: about 9 kHz)
+  let f = occl ? Math.min(A.occludedHz, air) : air, g = occl ? A.occludedGain : 1;
+  if (P) { f = Math.min(air, A.occludedHz * 1.3 + (7000 - A.occludedHz * 1.3) * k * k); g = A.occludedGain * 1.15 + (0.95 - A.occludedGain * 1.15) * k; if (k > 0.5) occl = false; }
   v.occ.frequency.value = f; v.wocc.frequency.value = occl ? f * 1.6 : 20000; v.eocc.frequency.value = occl ? f * 1.6 : 20000;
   v.input.gain.value = g; v.wet.gain.value = occl ? 0.8 : 1; v.echo.gain.value = 1;
   audio.dest = v.input; audio.verbDest = v.wet; audio.echoDest = v.echo;
-  audio.delay = A.speedOfSound ? dist / 343 : 0;
-  try { fn(dist, occl); } finally { audio.dest = null; audio.verbDest = null; audio.echoDest = null; audio.delay = 0; }
+  audio.delay = A.speedOfSound ? dist2 / 343 : 0;
+  try { fn(dist2, occl); } finally { audio.dest = null; audio.verbDest = null; audio.echoDest = null; audio.delay = 0; }
 }
 function updateListener() {
   const L = audio.ctx.listener;
