@@ -53,7 +53,7 @@ document.addEventListener('visibilitychange', () => {
 
 game.start();
 
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+if ('serviceWorker' in navigator && import.meta.env.PROD && !import.meta.env.VITE_SINGLE) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('[sw] registration failed', err));
   });

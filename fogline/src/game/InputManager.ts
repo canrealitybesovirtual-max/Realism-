@@ -88,7 +88,11 @@ export class InputManager {
       if (this.joyId !== null) return;
       e.preventDefault();
       this.joyId = e.pointerId;
-      el.setPointerCapture(e.pointerId);
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // not capturable (e.g. pointer lock just took it)
+      }
       const r = el.getBoundingClientRect();
       this.joyBase = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
       this.joyRadius = r.width * 0.36;
@@ -123,19 +127,25 @@ export class InputManager {
     this.lookEl = el;
 
     const down = (e: PointerEvent) => {
-      if (e.pointerType === 'mouse') {
-        if (this.enabled) this.requestPointerLock();
-        return;
-      }
+      if (e.pointerType === 'mouse' && this.enabled) this.requestPointerLock();
+      // drag-to-look also works for the mouse, so the game is playable where pointer lock is refused
       if (this.lookId !== null) return;
       e.preventDefault();
       this.lookId = e.pointerId;
-      el.setPointerCapture(e.pointerId);
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // not capturable (e.g. pointer lock just took it)
+      }
       this.lookPrev = { x: e.clientX, y: e.clientY };
     };
     const move = (e: PointerEvent) => {
       if (e.pointerId !== this.lookId) return;
       e.preventDefault();
+      if (this.pointerLocked) {
+        this.lookPrev = { x: e.clientX, y: e.clientY };
+        return; // movementX path handles it
+      }
       this.lookAcc.x += e.clientX - this.lookPrev.x;
       this.lookAcc.y += e.clientY - this.lookPrev.y;
       this.lookPrev = { x: e.clientX, y: e.clientY };
@@ -171,7 +181,11 @@ export class InputManager {
     const down = (e: PointerEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      el.setPointerCapture(e.pointerId);
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        // not capturable (e.g. pointer lock just took it)
+      }
       held = true;
       onDown();
     };
