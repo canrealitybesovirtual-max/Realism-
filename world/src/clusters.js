@@ -6,21 +6,77 @@
 // the camera (meshoptimizer's normal cone). Shadow passes draw every cluster (they render back
 // faces). Transparent meshes stay as they are (they need sorting by object).
 import * as THREE from 'three';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeVertices, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { MeshoptClusterizer } from '../vendor/meshopt/meshopt_clusterizer.js';
 
 const _cam = new THREE.Vector3(), _inv = new THREE.Matrix4();
 
-export async function clusterize(meshes) {
+// Plain materials (standard, no maps, opaque, front side, no emissive) differ only in colour, roughness and metalness:
+// their meshes are merged into one mesh with those per vertex (color + aRM), drawn by one shared material, so they
+// become one batch (one draw) instead of one per material. opts.prep(mat) patches the shared material (finish.js).
+const PLAIN_MAT = { m: null };
+function isPlain(m) {
+  return m && m.isMeshStandardMaterial && !m.isMeshPhysicalMaterial && !m.map && !m.normalMap && !m.roughnessMap && !m.metalnessMap &&
+    !m.emissiveMap && !m.alphaMap && !m.aoMap && !m.transparent && !m.alphaTest && m.side === THREE.FrontSide && !m.userData.mirror &&
+    m.emissive.r + m.emissive.g + m.emissive.b === 0 && !m.vertexColors && !(m.userData && m.userData.order);
+}
+function plainMaterial(prep) {
+  if (PLAIN_MAT.m) return PLAIN_MAT.m;
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 1 });
+  m.name = 'plain (merged)';
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute vec2 aRM;\nvarying vec2 vRM;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRM = aRM;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vRM;')
+      .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = roughness * vRM.x;')
+      .replace('#include <metalnessmap_fragment>', 'float metalnessFactor = metalness * vRM.y;');
+  };
+  m.customProgramCacheKey = () => 'plainRM';
+  if (prep) prep(m);
+  return (PLAIN_MAT.m = m);
+}
+function mergePlain(meshes, prep) {
+  const groups = new Map(), rest = [];
+  for (const m of meshes) {
+    if (!m.isMesh || m.isBatchedMesh || !m.parent || m.geometry.index || !isPlain(m.material) || !m.geometry.attributes.normal || !m.geometry.attributes.uv) { rest.push(m); continue; }
+    const k = m.parent.uuid + (m.castShadow ? 'c' : '') + (m.receiveShadow ? 'r' : '');
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(m);
+  }
+  const out = [...rest];
+  for (const list of groups.values()) {
+    if (list.length < 2) { out.push(...list); continue; }
+    const parts = list.map((m) => {
+      const g = new THREE.BufferGeometry(), n = m.geometry.attributes.position.count, mat = m.material, col = new Float32Array(n * 3), rm = new Float32Array(n * 2);
+      for (const a of ['position', 'normal', 'uv']) g.setAttribute(a, m.geometry.attributes[a]);
+      for (let i = 0; i < n; i++) { col[i * 3] = mat.color.r; col[i * 3 + 1] = mat.color.g; col[i * 3 + 2] = mat.color.b; rm[i * 2] = mat.roughness; rm[i * 2 + 1] = mat.metalness; }
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3)); g.setAttribute('aRM', new THREE.BufferAttribute(rm, 2));
+      if (!m.matrix.equals(new THREE.Matrix4())) g.applyMatrix4(m.matrix);
+      return g;
+    });
+    const geo = mergeGeometries(parts, false);
+    if (!geo) { out.push(...list); continue; }
+    const mm = new THREE.Mesh(geo, plainMaterial(prep));
+    mm.castShadow = list[0].castShadow; mm.receiveShadow = list[0].receiveShadow; mm.userData = { plainMerged: list.length };
+    mm.matrixAutoUpdate = false; mm.updateMatrix();
+    list[0].parent.add(mm);
+    for (const m of list) { m.parent.remove(m); m.geometry.dispose(); }
+    out.push(mm);
+  }
+  return out;
+}
+
+export async function clusterize(meshes, opts = {}) {
   await MeshoptClusterizer.ready;
-  const stats = { meshes: 0, clusters: 0, tris: 0 };
+  const stats = { meshes: 0, clusters: 0, tris: 0, plain: 0 };
   const replaced = [];
+  if (opts.mergePlain) { const n0 = meshes.length; meshes = mergePlain(meshes, opts.prep); stats.plain = n0 - meshes.length; }
   for (const m of meshes) {
     const mat = m.material;
     if (!m.isMesh || m.isBatchedMesh || mat.transparent || m.userData.mirror || !m.geometry.attributes.normal || m.geometry.index) continue;
     if (!m.parent) continue;
     const g0 = new THREE.BufferGeometry();
-    for (const k of ['position', 'normal', 'uv']) if (m.geometry.attributes[k]) g0.setAttribute(k, m.geometry.attributes[k]);
+    for (const k of ['position', 'normal', 'uv', 'color', 'aRM']) if (m.geometry.attributes[k]) g0.setAttribute(k, m.geometry.attributes[k]);
     const g = mergeVertices(g0, 1e-5);
     const pos = g.attributes.position.array, idx = Uint32Array.from(g.index.array);
     const ml = MeshoptClusterizer.buildMeshlets(idx, pos, 3, 64, 124, 0.25);
