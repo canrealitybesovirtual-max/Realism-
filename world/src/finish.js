@@ -21,8 +21,15 @@ export const FIN = {
     uFinCT: { value: blank },
     uFinG: { value: new THREE.Vector4(-0.2, -0.2, 1, 1) },     // field origin x, z; 1 / size x, z (metres)
     uFinK: { value: new THREE.Vector4(0, 1, 0, 4.3) },          // x field on, y wear strength, z -, w floor split height
+    // baked irradiance volume (world/textures/light/volume.*): L1 SH, one 3D texture per coefficient (x, z, layer)
+    uFinV0: { value: null }, uFinV1: { value: null }, uFinV2: { value: null }, uFinV3: { value: null },
+    uFinVG: { value: new THREE.Vector4(-0.25, -0.25, 0.5, 0) },   // x0, z0, spacing
+    uFinVN: { value: new THREE.Vector3(37, 41, 8) },               // nx, nz, layers
+    uFinVY: { value: [0.35, 1.2, 2.2, 3.3, 4.95, 5.8, 6.8, 7.8] },
+    uFinV: { value: new THREE.Vector4(0, 1, 1, 0) },               // x on, y gain, z scale of the other indirect diffuse (hemisphere fill)
   },
   L2: 4.6,
+  vol: false,          // compile the volume code (read when a program is built; CQC turns it on, the world page leaves it off)
 };
 
 const VERT_PARS = `
@@ -39,7 +46,14 @@ const VERT_MAIN = `
       finW = instanceMatrix * finW;
     #endif
     vFinP = ( uFinInv * ( modelMatrix * finW ) ).xyz;
-    vFinN = mat3( uFinInv ) * ( mat3( modelMatrix ) * objectNormal );
+    vec3 finN = objectNormal;
+    #ifdef USE_BATCHING
+      finN = mat3( batchingMatrix ) * finN;
+    #endif
+    #ifdef USE_INSTANCING
+      finN = mat3( instanceMatrix ) * finN;
+    #endif
+    vFinN = mat3( uFinInv ) * ( mat3( modelMatrix ) * finN );
   }`;
 const FRAG_PARS = `
 varying vec3 vFinP;
@@ -70,6 +84,37 @@ vec4 finT( sampler2D t, vec2 uv ) {
 #endif
 float finFloorY( float y ) { return y > uFinK.w ? ${FIN.L2.toFixed(2)} : 0.0; }
 vec4 finField( vec3 P, vec3 N ) { return texture2D( uFinCT, ( P.xz + N.xz * 0.06 - uFinG.xy ) * uFinG.zw ); }`;
+
+// irradiance volume: 4 fetches (hardware trilinear in a 3D texture per SH coefficient; y is mapped to a fractional
+// layer index and clamped inside its floor, so floor one never blends with floor two). Replaces the image light's
+// diffuse (iblIrradiance: three splits it between diffuse and the specular's multiscatter) inside the apartment and
+// scales the hemisphere fill down; the contact field (AO, after this) still multiplies it.
+const VOL_PARS = `
+uniform mat4 uFinInv;
+uniform highp sampler3D uFinV0, uFinV1, uFinV2, uFinV3;
+uniform vec4 uFinVG;
+uniform vec3 uFinVN;
+uniform float uFinVY[ 8 ];
+uniform vec4 uFinV;
+vec3 finVol( vec3 p, vec3 n ) {
+  vec3 q = p + n * 0.18;
+  vec2 g = clamp( ( q.xz - uFinVG.xy ) / uFinVG.z, vec2( 0.0 ), uFinVN.xy - 1.0 );
+  int lo = p.y > 4.45 ? 4 : 0;
+  float y = clamp( q.y, uFinVY[ lo ], uFinVY[ lo + 3 ] );
+  int l = lo;
+  if ( y > uFinVY[ lo + 1 ] ) l = lo + 1;
+  if ( y > uFinVY[ lo + 2 ] ) l = lo + 2;
+  float t = clamp( ( y - uFinVY[ l ] ) / ( uFinVY[ l + 1 ] - uFinVY[ l ] ), 0.0, 1.0 );
+  vec3 uvw = vec3( ( g + 0.5 ) / uFinVN.xy, ( float( l ) + t + 0.5 ) / uFinVN.z );
+  vec3 c = texture( uFinV0, uvw ).rgb + texture( uFinV1, uvw ).rgb * n.y + texture( uFinV2, uvw ).rgb * n.z + texture( uFinV3, uvw ).rgb * n.x;
+  return max( c, vec3( 0.0 ) );
+}`;
+const VOL_APPLY = `
+  if ( uFinV.x > 0.5 && vFinP.x > -0.3 && vFinP.x < 17.9 && vFinP.z > -0.3 && vFinP.z < 19.3 && vFinP.y > -0.5 && vFinP.y < 9.0 ) {
+    vec3 fvN = normalize( mat3( uFinInv ) * inverseTransformDirection( geometryNormal, viewMatrix ) );
+    iblIrradiance = finVol( vFinP, fvN ) * uFinV.y;
+    irradiance *= uFinV.z;
+  }`;
 
 // paint: the scan's maps through finT (expanded chunks, so the change stays in this program)
 const C = THREE.ShaderChunk;
@@ -136,7 +181,8 @@ export function finishMat(mat, kind = 'ao') {
     Object.assign(sh.uniforms, FIN.u);
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>' + VERT_PARS)
       .replace('#include <project_vertex>', '#include <project_vertex>' + VERT_MAIN);
-    let f = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + (paint ? '#define FIN_PAINT\n' : '') + FRAG_PARS);
+    let f = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + (paint ? '#define FIN_PAINT\n' : '') + FRAG_PARS + (FIN.vol ? VOL_PARS : ''));
+    if (FIN.vol) f = f.replace('#include <lights_fragment_maps>', '#include <lights_fragment_maps>' + VOL_APPLY);
     if (paint) {
       f = f.replace('#include <map_fragment>', 'finSetup( vMapUv );\n' + MAP_PAINT())
         .replace('#include <roughnessmap_fragment>', ROUGH_PAINT() + WEAR)
@@ -145,7 +191,7 @@ export function finishMat(mat, kind = 'ao') {
     } else f = f.replace('#include <aomap_fragment>', '#include <aomap_fragment>' + AO);
     sh.fragmentShader = f;
   };
-  mat.customProgramCacheKey = () => (key ? key.call(mat) : '') + '|fin-' + (paint ? 'paint' : 'ao');
+  mat.customProgramCacheKey = () => (key ? key.call(mat) : '') + '|fin-' + (paint ? 'paint' : 'ao') + (FIN.vol ? 'v' : '');
   mat.needsUpdate = true;
   return mat;
 }
@@ -223,4 +269,29 @@ export function useContactField(F) {
   FIN.u.uFinCT.value = F.tex;
   FIN.u.uFinG.value.set(x0, z0, 1 / (F.W * cs), 1 / (F.D * cs));
   FIN.u.uFinK.value.x = 1;
+}
+
+// ---- the irradiance volume --------------------------------------------------------------------
+// volume.json (x0, z0, step, nx, nz, layers) + volume.bin (12 half floats a probe: 4 coefficients x rgb, layer-major,
+// then z, then x). One RGBA half-float 3D texture per coefficient, no float conversion on the CPU.
+export async function loadVolume(base = '../world/') {
+  const meta = await (await fetch(base + 'textures/light/volume.json')).json();
+  const h = new Uint16Array(await (await fetch(base + 'textures/light/volume.bin')).arrayBuffer());
+  const { nx, nz, layers } = meta, nl = layers.length, n = nx * nz * nl;
+  if (h.length < n * 12) throw new Error('volume.bin too short');
+  const one = THREE.DataUtils.toHalfFloat(1);
+  const u = FIN.u, names = ['uFinV0', 'uFinV1', 'uFinV2', 'uFinV3'];
+  for (let m = 0; m < 4; m++) {
+    const a = new Uint16Array(n * 4);
+    for (let j = 0; j < n; j++) { a[j * 4] = h[j * 12 + m * 3]; a[j * 4 + 1] = h[j * 12 + m * 3 + 1]; a[j * 4 + 2] = h[j * 12 + m * 3 + 2]; a[j * 4 + 3] = one; }
+    const t = new THREE.Data3DTexture(a, nx, nz, nl);
+    t.format = THREE.RGBAFormat; t.type = THREE.HalfFloatType;
+    t.minFilter = t.magFilter = THREE.LinearFilter; t.wrapS = t.wrapT = t.wrapR = THREE.ClampToEdgeWrapping;
+    t.unpackAlignment = 1; t.needsUpdate = true;
+    if (u[names[m]].value) u[names[m]].value.dispose();
+    u[names[m]].value = t;
+  }
+  u.uFinVG.value.set(meta.x0, meta.z0, meta.step, 0); u.uFinVN.value.set(nx, nz, nl); u.uFinVY.value = layers.slice();
+  u.uFinV.value.x = 1;
+  return meta;
 }
