@@ -546,6 +546,51 @@ function counterStool(B, M, x, z, ry = 0) {
   add(tubeGeo(ring, 0.008), M.bronzeLight);
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [0.22, H / 2, 0.22], yaw: ry, mat: M.boucleTaupe });
 }
+// stair-foot table (apartment-12): round bronze top on a hammered brass trumpet pedestal; a
+// matte black ceramic vase with leafy branches, two books, an open magazine
+function pedestalTable(B, M, x, z, seed = 7) {
+  const add = (g, m) => B.add(at(g, x, 0, z), m);
+  const H = 0.7, R = 0.46;
+  add(lathe([[0, 0], [0.235, 0], [0.24, 0.012], [0.2, 0.08], [0.13, 0.2], [0.085, 0.36], [0.075, 0.48], [0.09, 0.6], [0.13, 0.665], [0.14, H - 0.02], [0, H - 0.02]], 48), M.brassHammered);
+  add(lathe([[0, H - 0.022], [R - 0.004, H - 0.022], [R, H - 0.016], [R, H - 0.004], [R - 0.004, H], [0, H]], 64), M.brassTop);
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [R * 0.72, H / 2, R * 0.72], yaw: 0, mat: M.bronzeLight });
+  // vase: wide shoulder, narrow neck, lip
+  const vx = 0.12, vz = -0.08;
+  add(at(lathe([[0, 0], [0.07, 0], [0.11, 0.05], [0.135, 0.13], [0.13, 0.2], [0.1, 0.26], [0.05, 0.3], [0.042, 0.33], [0.048, 0.345], [0.04, 0.35], [0.035, 0.33]], 40), vx, H, vz), M.vaseBlack);
+  let sd = seed; const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  for (let b = 0; b < 7; b++) {
+    const a = rnd() * Math.PI * 2, lean = 0.25 + rnd() * 0.45, L = 0.35 + rnd() * 0.3;
+    const p0 = [vx, H + 0.32, vz], p2 = [vx + Math.cos(a) * Math.sin(lean) * L, H + 0.32 + Math.cos(lean) * L, vz + Math.sin(a) * Math.sin(lean) * L];
+    const p1 = [(p0[0] + p2[0]) / 2 + (rnd() - 0.5) * 0.05, (p0[1] + p2[1]) / 2 + 0.03, (p0[2] + p2[2]) / 2 + (rnd() - 0.5) * 0.05];
+    B.add(at(tubeGeo([p0, p1, p2], 0.0035), x, 0, z), M.bark);
+    for (let k = 0; k < 9; k++) {
+      const t = 0.3 + 0.7 * k / 9, q = [p0[0] + (p2[0] - p0[0]) * t, p0[1] + (p2[1] - p0[1]) * t + 0.02 * Math.sin(t * 3), p0[2] + (p2[2] - p0[2]) * t];
+      const sz = 0.05 + rnd() * 0.035, g = leafBlade(sz, rnd);
+      g.rotateX(-0.6 - rnd() * 0.9); g.rotateZ((rnd() - 0.5) * 0.8); g.rotateY(a + (rnd() - 0.5) * 2.8);
+      B.add(at(g, x + q[0], q[1], z + q[2]), M.leaf);
+    }
+  }
+  add(at(rbox(0.26, 0.022, 0.19, 0.003, 1), -0.16, H + 0.011, 0.04, 0.3), M.bookBlack);
+  add(at(rbox(0.23, 0.018, 0.17, 0.003, 1), -0.15, H + 0.031, 0.05, 0.45), M.bookCream);
+  add(at(rbox(0.28, 0.006, 0.21, 0.002, 1), 0.02, H + 0.003, 0.2, -0.25), M.ivory);
+}
+// one leaf blade on the photographed leaf atlas: a 4 x 6 grid, cupped, drooping (frame: stalk at
+// the origin, along +y)
+function leafBlade(sz, rnd) {
+  const half = rnd() < 0.5 ? 0 : 0.5, w = sz * 0.55, l = sz, cup = 0.18 + rnd() * 0.12, droop = 0.25 + rnd() * 0.35;
+  const P = [], U = [];
+  const pt = (i, j) => { const u = i / 4 - 0.5, v = j / 6; return [u * w, v * l - droop * l * v * v, Math.abs(u) * w * cup * 2]; };
+  const uv = (i, j) => [half + 0.5 * (i / 4), j / 6];
+  for (let j = 0; j < 6; j++) for (let i = 0; i < 4; i++) {
+    const a = pt(i, j), b = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
+    P.push(...a, ...b, ...c, ...a, ...c, ...d);
+    U.push(...uv(i, j), ...uv(i + 1, j), ...uv(i + 1, j + 1), ...uv(i, j), ...uv(i + 1, j + 1), ...uv(i, j + 1));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+  return smooth(g);
+}
 function nightstand(B, M, x, z, ry) {
   // walnut case on a recessed plinth, two drawers with 3 mm reveals, bronze bar pulls
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
@@ -1072,6 +1117,27 @@ function bedroomRugTexture() {
   c.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / 2.5, 1 / 2.5); return t;
 }
+// hammered metal: overlapping shallow round dents as a normal map (4 cm tile, metric UVs)
+function hammerNormal() {
+  const N = 256, h = new Float32Array(N * N);
+  let s = 41; const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  for (let k = 0; k < 90; k++) {
+    const cx = rnd() * N, cy = rnd() * N, r = 14 + rnd() * 18, d = 0.6 + rnd() * 0.4;
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) {
+      const q = (x * x + y * y) / (r * r); if (q >= 1) continue;
+      const i = ((Math.floor(cy + y) % N + N) % N) * N + ((Math.floor(cx + x) % N + N) % N);
+      h[i] = Math.min(h[i], -d * (1 - q));
+    }
+  }
+  const data = new Uint8Array(N * N * 4);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const H = (a, b) => h[((b + N) % N) * N + ((a + N) % N)];
+    const dx = (H(x + 1, y) - H(x - 1, y)) * 2.2, dy = (H(x, y + 1) - H(x, y - 1)) * 2.2, l = Math.hypot(dx, dy, 1), i = (y * N + x) * 4;
+    data[i] = (-dx / l * 0.5 + 0.5) * 255; data[i + 1] = (-dy / l * 0.5 + 0.5) * 255; data[i + 2] = (1 / l * 0.5 + 0.5) * 255; data[i + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, N, N, THREE.RGBAFormat); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / 0.08, 1 / 0.08); t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.needsUpdate = true;
+  return t;
+}
 // ---- materials the furniture adds ----------------------------------------------------------------
 function furnitureMaterials(M, Q) {
   const pc = !Q.quest;
@@ -1093,6 +1159,9 @@ function furnitureMaterials(M, Q) {
   const lnor = tl.load(dir + 'leaf_ficus_nor.webp'); lnor.anisotropy = 4;
   M.leaf = new THREE.MeshStandardMaterial({ map: lmap, normalMap: lnor, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.42 });
   M.bark = new THREE.MeshStandardMaterial({ color: '#7a6c5c', roughness: 0.8 });
+  M.vaseBlack = new THREE.MeshStandardMaterial({ color: '#141312', roughness: 0.62 });         // matte black stoneware
+  M.brassTop = new THREE.MeshStandardMaterial({ color: '#a8977a', metalness: 1, roughness: 0.42 });   // spun brass table top (champagne, as apartment-12)
+  M.brassHammered = new THREE.MeshStandardMaterial({ color: '#9f8a66', metalness: 1, roughness: 0.32, normalMap: hammerNormal(), normalScale: new THREE.Vector2(0.9, 0.9) });
   M.potStone = M.creamStone.clone(); M.potStone.color = new THREE.Color('#77706a');
   M.moss = new THREE.MeshStandardMaterial({ color: '#3f4a2a', roughness: 1 });
   M.wallRug = new THREE.MeshStandardMaterial({ map: rugTexture(), roughness: 0.95, side: THREE.DoubleSide });
@@ -1254,9 +1323,8 @@ export function furnish(M, Q) {
   });
   // hallway, floor one: two line prints
   print(B, M, 4.73, 1.6, 9.8, 0.5, 0.65, '-x', M.lineArt1); print(B, M, 4.73, 1.6, 11.6, 0.5, 0.65, '-x', M.lineArt2);
-  B.add(at(lathe([[0, 0], [0.24, 0], [0.25, 0.02], [0.25, 0.46], [0.24, 0.48], [0, 0.48]], 40), 9.45, 0, 13.4), M.bronzeLight);
-  for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; B.add(at(rbox(0.012, 0.42, 0.008, 0.003, 1), 9.45 + Math.sin(a) * 0.252, 0.24, 13.4 + Math.cos(a) * 0.252, a), M.bronzeLight); }
-  B.colliders.push({ t: 'obox', c: [9.45, 0.24, 13.4], h: [0.25, 0.24, 0.25], yaw: 0, mat: M.bronzeLight });
+  pedestalTable(B, M, 9.35, 13.45);                                                   // foot of the stair (apartment-12)
+  figTree(B, M, 8.9, 16.75, 11);                                                    // planter at the gallery's south end (floor plan)
 
   // ---- kitchen, floor one (apartment-15): galley from the passage south to the glass; base run
   // with sink on the east wall, white uppers, an oven stack; tall integrated fridge / pantry
