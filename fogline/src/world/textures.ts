@@ -122,7 +122,7 @@ export function getTextures(): TextureSet {
   if (cache) return cache;
   cache = {
     asphalt: makeNoiseTexture({
-      base: '#1b1e21',
+      base: '#2c2f32',
       variance: 30,
       blotches: 14,
       blotchColor: 'rgba(0,0,0,0.3)',
@@ -133,7 +133,7 @@ export function getTextures(): TextureSet {
       seed: 11
     }),
     sidewalk: makeNoiseTexture({
-      base: '#2c3033',
+      base: '#4c4f51',
       variance: 20,
       blotches: 8,
       speckles: 60,
@@ -143,7 +143,7 @@ export function getTextures(): TextureSet {
       seed: 27
     }),
     wall: makeNoiseTexture({
-      base: '#262a2c',
+      base: '#4e4f4d',
       variance: 18,
       blotches: 16,
       blotchColor: 'rgba(0,0,0,0.28)',
@@ -154,7 +154,7 @@ export function getTextures(): TextureSet {
       seed: 43
     }),
     plaster: makeNoiseTexture({
-      base: '#2e2e2a',
+      base: '#625d55',
       variance: 22,
       blotches: 12,
       blotchColor: 'rgba(40,30,10,0.25)',
@@ -165,7 +165,7 @@ export function getTextures(): TextureSet {
       seed: 61
     }),
     wood: makeNoiseTexture({
-      base: '#2c241f',
+      base: '#54402f',
       variance: 16,
       blotches: 6,
       speckles: 30,

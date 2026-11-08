@@ -42,7 +42,7 @@ export function createStreetlight(x: number, z: number, facingRight: boolean): S
 
   group.position.set(x, 0, z);
 
-  const light = new THREE.PointLight(SODIUM, 10, 14, 2);
+  const light = new THREE.PointLight(SODIUM, 30, 22, 2);
   light.position.set(x + dir * 1.0, 5.0, z);
 
   return { group, light, lampMat };
@@ -123,8 +123,8 @@ export function createWindows(
       panes.setMatrixAt(i, m);
 
       const r = rng();
-      if (r < 0.1) c.setRGB(0.03, 0.017, 0.006); // warm lamp behind a curtain
-      else if (r < 0.14) c.setRGB(0.006, 0.01, 0.016); // TV glow
+      if (r < 0.22) c.setRGB(0.09, 0.055, 0.02); // warm lamp behind a curtain
+      else if (r < 0.28) c.setRGB(0.02, 0.035, 0.055); // TV glow
       else c.setRGB(0.006, 0.008, 0.011).multiplyScalar(0.7 + rng() * 0.6); // dark glass
       panes.setColorAt(i, c);
       i++;

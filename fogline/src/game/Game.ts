@@ -16,7 +16,6 @@ import { ITEMS } from './items';
 import { InventoryPanel } from '../ui/InventoryPanel';
 import { CraftingPanel } from '../ui/CraftingPanel';
 import { Toast } from '../ui/Toast';
-import { Enemy } from './Enemy';
 import { TensionDirector } from './TensionDirector';
 import { Objective } from './Objective';
 import { SaveSystem } from './SaveSystem';
@@ -39,7 +38,6 @@ export class Game {
   readonly inventory: Inventory;
   readonly crafting: Crafting;
   readonly interaction: Interaction;
-  readonly enemy: Enemy;
   readonly tension: TensionDirector;
   readonly objective: Objective;
   readonly quality: QualityManager;
@@ -73,7 +71,6 @@ export class Game {
   private autosaveTimer: number = CONFIG.save.autosaveInterval;
 
   private readonly tmpDir = new THREE.Vector3();
-  private readonly tmpRight = new THREE.Vector3();
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -85,7 +82,6 @@ export class Game {
     this.input = new InputManager();
     this.audio = new AudioManager();
     this.flashlight = new Flashlight(this.world.scene);
-    this.enemy = new Enemy(this.world.scene);
     this.tension = new TensionDirector(this.audio, this.flashlight);
     this.objective = new Objective(this.world.scene, this.world.colliders);
     // fuse parts are pickups like any other (the interaction ray sees them)
@@ -162,20 +158,9 @@ export class Game {
 
     // ---- gameplay hooks ----
     this.player.onFootstep = (sprinting, indoors) => this.audio.footstep(sprinting, indoors);
-    this.enemy.onContact = (dmg) => this.applyDamage(dmg);
-    this.enemy.onAlert = () => this.audio.enemyAlert();
-    this.enemy.onStep = (pos, running) => {
-      const dx = pos.x - this.player.position.x;
-      const dz = pos.z - this.player.position.z;
-      const dist = Math.hypot(dx, dz);
-      this.tmpRight.set(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const pan = dist > 0.01 ? (dx * this.tmpRight.x + dz * this.tmpRight.z) / dist : 0;
-      this.audio.enemyStep(dist, pan, running);
-    };
     this.objective.onPowerRestored = () => {
       this.toast.show('Power restored. The gate is opening: head north.', 3.2);
       this.audio.powerRestored();
-      this.enemy.hear(this.player.position); // the relay and gate motor are loud
       this.queueSave();
     };
     this.inventory.onChange = () => this.refreshPanels();
@@ -366,7 +351,6 @@ export class Game {
       p.mesh.visible = !p.taken;
     }
     this.objective.applySave(data.objective.powerRestored);
-    this.enemy.reset();
     this.overlay = 'none';
     this.interaction.forceRefresh();
     this.syncHud();
@@ -477,7 +461,6 @@ export class Game {
     this.input.releaseAll();
     this.input.exitPointerLock();
     this.audio.died();
-    this.audio.setEnemyPresence(0);
     this.hud.setVisible(false);
     this.toast.clear();
     this.endScreen.show('lose', SaveSystem.exists(), this.playTime);
@@ -490,7 +473,6 @@ export class Game {
     this.input.releaseAll();
     this.input.exitPointerLock();
     this.audio.win();
-    this.audio.setEnemyPresence(0);
     this.hud.setVisible(false);
     this.toast.clear();
     this.endScreen.show('win', false, this.playTime);
@@ -508,7 +490,6 @@ export class Game {
       p.mesh.visible = true;
     }
     this.objective.reset();
-    this.enemy.reset();
     this.endScreen.hide();
     this.overlay = 'none';
     this.input.enabled = true;
@@ -650,17 +631,7 @@ export class Game {
       this.objective.update(dt);
       this.audio.setIndoors(this.world.isIndoors(this.player.position));
 
-      const sp = this.player.speed;
-      const noise = this.player.isSprinting ? 1 : Math.min(0.35, (sp / CONFIG.player.walkSpeed) * 0.3);
-      this.enemy.update(
-        dt,
-        { playerPos: this.player.position, playerAlive: this.player.health > 0, noise, light: this.flashlight.output },
-        this.world.colliders
-      );
-      const dist = this.enemy.position.distanceTo(this.player.position);
-      this.tension.update(dt, dist, this.enemy.currentState === 'chase');
-      const prox = Math.max(0, 1 - dist / 18);
-      this.audio.setEnemyPresence(prox * (this.enemy.hasLOS ? 1 : 0.32));
+      this.tension.update(dt, Infinity, false);
 
       if (controlling) {
         this.interaction.update(dt);
@@ -698,7 +669,7 @@ export class Game {
       this.touch.setFlashlightState(this.flashlight.isOn, this.flashlight.isDead);
       if (controlling) this.refreshInteractPrompt();
       const info = this.renderer.info.render;
-      this.debug.update(this.fps.value, info.calls, info.triangles, this.quality.tier, this.enemy.currentState);
+      this.debug.update(this.fps.value, info.calls, info.triangles, this.quality.tier);
     }
   };
 }

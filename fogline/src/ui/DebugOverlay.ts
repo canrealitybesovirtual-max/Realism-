@@ -14,10 +14,10 @@ export class DebugOverlay {
     this.el.style.display = this.visible ? 'block' : 'none';
   }
 
-  update(fps: number, calls: number, tris: number, tier: string, enemy: string): void {
+  update(fps: number, calls: number, tris: number, tier: string): void {
     if (!this.visible) return;
     const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
     const heap = mem ? (mem.usedJSHeapSize / 1048576).toFixed(1) + ' MB' : '—';
-    this.el.textContent = `FPS ${fps}\nDraw ${calls}\nTris ${tris}\nHeap ${heap}\nQuality ${tier}\nEnemy ${enemy}`;
+    this.el.textContent = `FPS ${fps}\nDraw ${calls}\nTris ${tris}\nHeap ${heap}\nQuality ${tier}`;
   }
 }
