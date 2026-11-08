@@ -14524,6 +14524,7 @@ function fragBlast(P, inHand) {
   enemiesHear(P);
   fixturesBlast(P, 1);                     // step 87: the tubes stutter, the fittings shed dust
   aptPanesBlast(P, 6);                     // APARTMENT: windows within 6 m blow out
+  aptxBlast(P);                            // APARTMENT DESTRUCTION: fittings, mirrors, lenses, decor
   shelfBlast(P, 5, 1);                     // SHELF: boxes blown off the shelves (the same blast push as loose props)
   trickleBlast(P);                         // step 88: and the ceiling over it
   // Dust and smoke that hang in the room, a scorch on the floor (step 115: the cloud, soot on the floor and the walls).
@@ -16968,7 +16969,8 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
     return;
   }
   if (info) {
-    if (FIX_ON && _hn.y < -0.7 && fixtureShot(info.room, _fp, dir)) return;   // step 87: a round into a troffer
+    if (info.room && info.room.aptx && aptxHit(info, _fp, _hn, dir, k)) return;   // APARTMENT DESTRUCTION: lenses, mirrors, decor, furniture
+    if (FIX_ON && _hn.y < -0.7 && !(info.room && info.room.apt) && fixtureShot(info.room, _fp, dir)) return;   // step 87: a round into a troffer
     if ((SPLASH.on || SPLASH.yardOn && info.room && info.room.yard) && CONFIG.splash.bullets && info.kind === 'concrete' && _hn.y > 0.7 && splashShot(info.room, _fp)) return;   // step 94: into standing water (the yard's puddles too)
     addRoomHole(info.room, info.kind, _fp, _hn, true, undefined, PEN.live ? PEN.holeS : 1);   // step 119: sized to the calibre
     impactFx(info.kind, _fp, _hn);
@@ -23491,7 +23493,7 @@ function traceBullet0(origin, dir, d, type, opts = null) {
   for (let pass = 0; pass < 6; pass++) {
     _rapRay.origin = { x: _tbo.x, y: _tbo.y, z: _tbo.z };
     _rapRay.dir = { x: dir.x, y: dir.y, z: dir.z };
-    const hit = world.castRayAndGetNormal(_rapRay, range, true, undefined, fromEnemy ? ENEMY_RAY_GROUPS : RAY_GROUPS);
+    const hit = world.castRayAndGetNormal(_rapRay, range, true, undefined, (fromEnemy ? ENEMY_RAY_GROUPS : RAY_GROUPS) | APTX.bit);   // APARTMENT DESTRUCTION: breakables only rounds see
     const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : range;
     if (!fromEnemy) {                                            // step 7: a man in the way?
       const eh = enemyRayTest(_tbo, dir, toi);
@@ -23505,7 +23507,7 @@ function traceBullet0(origin, dir, d, type, opts = null) {
     if (_cv.n.lengthSq() < 0.25) _cv.n.copy(dir).negate();     // started inside something (stacked cover): face the shooter
     else if (_cv.n.dot(dir) > 0) _cv.n.negate();
     const Eb = E;                                                // step 119: what it had going in
-    const r = coverHit(hit, _cv.p, _cv.n, dir, d, E) || (PEN.live ? penHit(hit, toi, _cv.p, _cv.n, dir, d, E) : null);   // step 119: walls, doors, props
+    const r = (APTX.on && aptxPass(hit, _cv.p, dir, E)) || coverHit(hit, _cv.p, _cv.n, dir, d, E) || (PEN.live ? penHit(hit, toi, _cv.p, _cv.n, dir, d, E) : null);   // step 119: walls, doors, props
     if (TRC.rec >= 0) trcSeg(_tbo, dir, toi, r && !r.stop ? 3 : 1, _cv.n);   // step 121: a tracer's path (stopped here or through)
     if (!r) { bulletHit(hit, dir, d, E); return false; }
     if (r.stop) return false;
@@ -25917,7 +25919,7 @@ function enemyFace(e, dt) {   // facing (shared with the stair / tower men, who 
   // Facing: where he walks when running, otherwise toward the threat (or his post when idle).
   let want = e.yaw;
   if (e.state === 'idle') want = e.yardRole && e.path && e.speed > 0.25 ? Math.atan2(-e.vel.x, -e.vel.y) : e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;   // a patrol faces where he walks
-  else if ((e.state === 'move' || e.state === 'hunt') && e.speed > 0.6 && !e.visible) want = Math.atan2(-e.vel.x, -e.vel.y);
+  else if ((e.state === 'move' || e.state === 'hunt') && e.speed > 0.6 && !e.visible && !e.fbOn) want = Math.atan2(-e.vel.x, -e.vel.y);   // falling back: facing you
   else if (e.hasKnown || e.los || e.watch) { threatLocal(e, _ev.c); want = Math.atan2(-(_ev.c.x - e.pos.x), -(_ev.c.z - e.pos.y)); }
   if (e.state === 'flashed') want = (e.flashYaw ?? e.yaw) + Math.sin(wnow() * 1000 / 650 + (e.idx || 0)) * 0.45;   // step 23: turned away from it
   let dy = want - e.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
@@ -26157,7 +26159,7 @@ function enemyFire(e, dt, now) {
   // Step 11: suppressed men shoot worse; suppressive fire is aimed at where you were, with a wide cone.
   if (AI_ON() && e.suppress > 1.2) e.err = Math.max(e.err, C.errBase * e.errK * 0.5 * Math.min(1, e.suppress - 1.2));
   const st = e.state;
-  const blind = st === 'suppress' && !e.visible && now > e.suppressAt;
+  const blind = ((st === 'suppress' && now > e.suppressAt) || (EFB.on && efbBlind(e, now))) && !e.visible;   // falling back: a blind burst
   if (blind) e.err = Math.max(e.err, CONFIG.ai.suppressSpread * e.errK);
   const aimed = (st === 'peek' || st === 'fight' || st === 'ambush' || st === 'suppress' || st === 'search') && e.visible && now > e.acquire;
   const wantFire = (aimed || blind) && e.aim > 0.9 && e.reloadT <= 0 && e.ammo > 0 && now - e.hitT > 0.25;
@@ -27662,6 +27664,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if (!(e.room.visible || e.room === stream.current) || !e.room.group.visible || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
     if (e.surr) { surrTick(e, dt, now); continue; }             // step 117: he has given up (his own brain, move and pose)
     enemyThink(e, dt, now);
+    if (EFB.on) efbTick(e, dt, now);                            // fall back under fire (CONFIG.enemy.fallback)
     enadeTick(e, dt, now);                                      // enemy grenades (CONFIG.enemy.nades, ?enade=off)
     if (SURR.on && surrCheck(e, dt, now)) { surrTick(e, dt, now); continue; }   // step 117: he gives up now
     enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
@@ -28674,6 +28677,7 @@ function aiRoundPassed(o, dir, toi) {
     const miss = _ai.p.addScaledVector(dir, -t).length();
     if (miss > R) continue;
     e.suppress = Math.min(3, e.suppress + 0.2 + 0.7 * (1 - miss / R));
+    if (EFB.on) efbPass(e, miss);                               // fall back under fire: head pressure
     e.morale = Math.max(0, e.morale - M.nearMiss);
     e.err = Math.min(CONFIG.enemy.errBase * e.errK * 1.6, e.err + 0.012);
     if (!e.engaged) {
@@ -29538,7 +29542,7 @@ const OPT_GROUPS = [
   ['physics', 'PHYSICS', [['pen', 'Penetration + real bullet push'], ['downed', 'Wounded men fall and crawl'], ['surrender', 'Enemies surrender'], ['stealth', 'Stealth (light, noise)'],
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
-    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack']]],
+    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack'], ['aptbreak', 'Apartment lights, glass break'], ['fallback', 'Men fall back under fire']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
@@ -50392,6 +50396,7 @@ function* aptBuilder(room) {
   yield;
   const G = new THREE.Group(); G.name = 'apartment';
   G.add(apt.group, furn.group);
+  aptxBuild(room, apt, furn, G, M);                               // APARTMENT DESTRUCTION: fittings, glass, decor on their own
   G.rotation.y = -Math.PI / 2; G.position.set(APT.cz, 0, -APT.cx);
   G.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   room.group.add(G);
@@ -50506,6 +50511,7 @@ function aptActivate(room, box, walk) {
     const lx = aptLX(cz), lz = aptLZ(cx), ly = yaw - Math.PI / 2;   // the box turns with the apartment
     const bc = box(hx, hy, hz, lx, cy, lz, 0.6, ly, kindOf(c));
     if (c.awi !== undefined) aptWallCol(room, c, bc);             // a partition: shaped damage (APARTMENT WALL DAMAGE)
+    if (room.aptx) aptxTag(room, c, bc);                            // APARTMENT DESTRUCTION: furniture's own holes and dust
     if (c.pane !== undefined) {                                   // a window pane: shatters (aptPaneBreak)
       const P = room.apt.panes.list[c.pane];
       if (P.broken) { world.removeCollider(bc, false); colliderInfo.delete(bc.handle); room.colliderHandles.pop(); continue; }
@@ -50524,6 +50530,7 @@ function aptActivate(room, box, walk) {
   aptCoverBuild(room);                                            // cover on both floors
   aptMovables(room);
   aptRackActivate(room, box, walk);                               // the gun rack's board and shelf
+  aptxActivate(room);                                             // APARTMENT DESTRUCTION: ray colliders, broken things kept
 }
 // Loose furniture (chairs, stools, side tables, lamps): real physics props, so rounds, kicks, blasts and bodies push
 // them about and knock them over. Built afresh each time the room activates (props go with the room, as any room's).
@@ -50958,7 +50965,7 @@ let _apBlink = 0;
 function aptPanelTick() {
   const A = APTS; if (!A || !A.room || !A.room.active || !APTP.mesh.parent) return;
   aptRaidTick();
-  aptRackTick(A.room); aptWallsTick();
+  aptRackTick(A.room); aptWallsTick(); aptxTick();
   let changed = false;
   for (const P of APT_PANELS) {
     let hover = null; P.deskHit = null;
@@ -51773,6 +51780,502 @@ function aptWallsTick() {
   A.u.uAwInv.value.copy(room.aptG.matrixWorld).invert();
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APTR, aptRackBuild, aptRackFit, aptRackRestock, aptRackHooks, aptRackTick, glReady, AWALL, aptWallPick, aptWallLayout, aptWallIndex, aptWallData, aptWallHit, awStamp, awOpen, awBreak });
+
+/* ==================================================================
+ *  MEN FALL BACK UNDER FIRE (CONFIG.enemy.fallback, ?fallback=off): every CQC room. Rounds cracking past a man's
+ *  head (aiRoundPassed: within CONFIG.ai.passBy of it, more the closer) and hits on him build head pressure (e.fbP,
+ *  eased away over tau s). Past its trip level (scaled by his aggression, a shotgunner's rush and his morale) an
+ *  engaged man breaks off: he picks cover farther from you (hidden from you, along his own nav, never a move that
+ *  takes him toward you; else straight back 3-6 m), calls it on the radio, moves there facing you and now and then
+ *  throws a blind burst back at where you were. In cover he stays down (no peeks) while the pressure is high, at least
+ *  hold[0] s, then re-engages (enemyDecide) once it falls under the off level (hysteresis), or after hold[1] s. One
+ *  fall-back, then cool s before the next. AI_ON only (basic tactics are unchanged). ?dev: window.__cqcFallback.
+ * ================================================================== */
+if (!CONFIG.enemy.fallback) CONFIG.enemy.fallback = { on: true, trip: 2.6, off: 0.8, tau: 1.7, hit: 1.1, gain: 1.5, reach: 13, hold: [2.5, 9], cool: [7, 13] };
+const EFB = { on: !/[?&]fallback=off\b/.test(QS) && CONFIG.enemy.fallback.on !== false, C: CONFIG.enemy.fallback,
+  states: new Set(['fight', 'peek', 'cover', 'suppress', 'move', 'ambush', 'search', 'hunt']),
+  t: new THREE.Vector3(), h: new THREE.Vector3(), p: new THREE.Vector3(), stat: { n: 0, back: 0, blind: 0 } };
+// a round passed his head 'miss' m off (aiRoundPassed, inside passBy)
+function efbPass(e, miss) {
+  const R = CONFIG.ai.passBy, k = clamp(1 - miss / R);
+  e.fbP = (e.fbP || 0) + k * (0.55 + 0.45 * k) + (miss < 0.3 ? 0.35 : 0);
+}
+function efbBlind(e, now) { return !!(e.fbOn && e.state === 'move' && now > (e.fbBlindAt || 0) && now < (e.fbBlindUntil || 0)); }
+function efbEnd(e, now, reengage) {
+  const C = EFB.C;
+  e.fbOn = false; e.fbHold = 0; e.fbCool = now + rnd2(C.cool[0], C.cool[1]); EFB.stat.back++;
+  if (reengage && !e.dead && e.state === 'ambush') { e.watch = null; enemyDecide(e); }
+}
+// cover farther from you than he is now, hidden from you, the move never toward you; else straight back
+function efbSpot(e, now) {
+  const C = EFB.C, room = e.room, T = aiBelief(e, EFB.t, now);
+  const distT = Math.hypot(T.x - e.pos.x, T.z - e.pos.y) || 0.01, ux = (T.x - e.pos.x) / distT, uz = (T.z - e.pos.y) / distT;
+  headWorld(EFB.h);
+  let best = null, bs = -Infinity;
+  for (const c of coverPoints(room)) {
+    if (!c.useable || (c.lv !== undefined && c.lv !== aptLv(e))) continue;
+    const lx = rLX(room, c.x), lz = rLZ(room, c.z), tx = T.x - lx, tz = T.z - lz, l = Math.hypot(tx, tz) || 1;
+    if (l < distT + C.gain) continue;
+    const facing = -(c.nx * tx + c.nz * tz) / l;
+    if (facing < 0.2) continue;
+    const mx = lx - e.pos.x, mz = lz - e.pos.y, travel = Math.hypot(mx, mz);
+    if (travel < 0.8 || travel > C.reach || (mx * ux + mz * uz) / travel > 0.3) continue;   // never toward you
+    if (loopCoverClaimed(e, lx, lz)) continue;
+    EFB.p.set(c.x, (c.y0 || 0) + (c.height === 'low' ? 0.95 : 1.55), c.z);
+    const hidden = !clearLine(EFB.h, EFB.p, 0.05);
+    const s = (hidden ? 2 : 0) + (l - distT) * 0.35 + facing - travel * 0.12 - penCoverMalus(e, c);
+    if (s > bs) { bs = s; best = { lx, lz, nx: c.nx, nz: c.nz, low: c.height === 'low', peek: c.peek, source: c.source }; }
+  }
+  if (best) return best;
+  const hw = room.w / 2 - 0.45, hd = room.d / 2 - 0.45;
+  for (const d of [5, 3.5]) {
+    const tx = clamp(e.pos.x - ux * d, -hw, hw), tz = clamp(e.pos.y - uz * d, -hd, hd);
+    if (Math.hypot(tx - e.pos.x, tz - e.pos.y) < 2 || !findPath(room, e.pos.x, e.pos.y, tx, tz)) continue;
+    return { lx: tx, lz: tz, nx: ux, nz: uz, low: false, peek: 0, source: null };
+  }
+  return null;
+}
+// after enemyThink, every live man in a drawn room
+function efbTick(e, dt, now) {
+  const C = EFB.C;
+  if (e.fbP) e.fbP *= Math.exp(-dt / C.tau);
+  if (e.hitT && e.fbHitT !== e.hitT && now - e.hitT < 0.3) { e.fbHitT = e.hitT; e.fbP = (e.fbP || 0) + C.hit; }
+  if (!AI_ON()) return;
+  if (e.fbOn) {
+    if (e.state === 'flashed' || (e.intent !== 'fallback' && e.state !== 'ambush')) { efbEnd(e, now, false); return; }   // cornered, flashed, fighting again
+    if (e.state === 'move') {                                     // going: facing you (enemyFace), a blind burst now and then
+      if (now < (e.fbBlindUntil || 0)) { e.aimT = 1; e.crouchT = 0.25; }
+      else if (now > (e.fbBlindNext || 0) && e.w.pellets === 1 && e.ammo > 3 && e.hasKnown && !e.visible && e.reloadT <= 0) {
+        e.fbBlindAt = now + 0.35; e.fbBlindUntil = now + rnd2(0.8, 1.3); e.fbBlindNext = now + rnd2(2, 3.5); EFB.stat.blind++;
+      }
+    } else {                                                      // in cover (aiSetAmbush): heads down while it is hot
+      if (!e.fbHold) e.fbHold = now;
+      const held = now - e.fbHold;
+      if (held > C.hold[1] || ((e.fbP || 0) < C.off && held >= C.hold[0])) { efbEnd(e, now, true); return; }
+      e.peekT = 0; e.crouchT = e.cover && e.cover.low ? 1 : 0.35;
+      if (!e.visible) e.aimT = 0.5;
+      e.stateT = Math.max(e.stateT, 0.5);
+    }
+    return;
+  }
+  if (!e.engaged || now < (e.fbCool || 0) || !EFB.states.has(e.state) || e.stairHold || e.enade || e.surr) return;
+  const trip = C.trip * mix(0.75, 1.4, e.aggr) * (e.w.rush ? 1.25 : 1) * mix(0.8, 1.1, e.morale);
+  if ((e.fbP || 0) < trip) return;
+  const spot = efbSpot(e, now);
+  if (!spot || !aiGoTo(e, spot, 'fallback', now)) { e.fbCool = now + 1.5; return; }
+  e.fbOn = true; e.fbHold = 0; e.fbBlindNext = now + rnd2(0.5, 1.1); e.fbBlindUntil = 0; e.search = null; e.watch = null;
+  e.morale = Math.max(0, e.morale - 0.05);
+  if (aiBoard(e.room).radioT < now - 0.05) aiRadio(e, 'moving', true);   // "falling back" (aiGoTo's call may have been gated)
+  EFB.stat.n++;
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcFallback = { EFB, efbPass, efbTick, efbSpot, efbBlind, efbEnd };
+
+/* ==================================================================
+ *  APARTMENT DESTRUCTION (?aptbreak=off): the CQC apartment's light fittings, glass, decor and furniture take damage.
+ *  furniture.js (Q.cqc) builds the breakables on their own (furn.breakables: smoked glass pendants and faceted
+ *  pendants, the leaf-glass and bead chandeliers, the gold leaf chandelier, bowls, vases, the coffee table's glass top),
+ *  so each is its own mesh here (never in the meshlet clusters); a fitting hangs from a pivot at its ceiling rose, its
+ *  rod and canopy apart. Each gets a ray-only collider (member APTX.bit: only rounds see it, traceBullet0's filter):
+ *  a round passes through (aptxPass) and does to it: a glass pendant shatters (its rod swings on), a chandelier swings,
+ *  sheds crystal and after a few rounds falls off its rod to the floor or table under it (one ray), the gold one rings
+ *  and falls whole, a vase / bowl bursts into chips, the glass top shatters. Shards lie on the floor (glassFloor).
+ *  Downlights: a round into one (bulletHit, ceiling within 6 cm of its lens) pops the lens (a dark empty can left);
+ *  if it is one of the pool's fittings (room.troffers) its light goes out like a shot-out tube (tr.out, tOut). Mirrors:
+ *  a round cracks (star decal on the glass), the third shatters it (backing left, shards). Furniture: hits on its
+ *  colliders take the hole and dust of what they are (fabric: stuffing puffs and a soft thud; wood and lacquer:
+ *  splinters; stone: chips; metal), not plaster. Grenades (aptxBlast from fragBlast) do all of it by distance. Broken
+ *  things are kept in room memory (aptxB / aptLens / aptMir) and stay broken when the room is rebuilt.
+ *  Floor lamp: a physics prop now (movable 'floor lamp', knocked over like the chairs).
+ * ================================================================== */
+const APTX = { on: !/[?&]aptbreak=off\b/.test(QS), bit: 0x100, grp: groups(0x100, GROUP.PROP), byCol: new Map(), moving: new Set(), res: { E: 0, exit: new THREE.Vector3(), through: 0 },
+  inv: new THREE.Matrix4(), pa: new THREE.Vector3(), da: new THREE.Vector3(), v: new THREE.Vector3(), w: new THREE.Vector3(), n: new THREE.Vector3(), q: new THREE.Quaternion(),
+  dn: new THREE.Vector3(0, -1, 0), b1: new THREE.Vector3(), b2: new THREE.Vector3(), z: new THREE.Vector3(0, 0, 1), zero: new THREE.Matrix4().makeScale(0, 0, 0), m: new THREE.Matrix4(), last: 0,
+  discGeo: null, discMat: null, crackTex: null, crackMat: null, plane: null };
+const APTX_KIND = { pendant: 'glassFit', 'facet pendant': 'glassFit', 'leaf chandelier': 'crystal', 'bead chandelier': 'crystal', 'gold chandelier': 'gold', vase: 'decor', bowl: 'decor', 'glass top': 'glass' };
+const APTX_HP = { crystal: 2.6, gold: 3.6 };
+const APTX_STUFF = { c: [0.93, 0.91, 0.87], a: 0.9, sp: [0.25, 1.0], life: [1.6, 2.8], size: [0.008, 0.02], grow: 0.012, drag: 3.4, grav: 0.6, land: 2 };
+const APTX_FIBRE = { c: [0.6, 0.55, 0.5], a: 0.95, sp: [0.6, 1.8], life: [0.7, 1.3], size: [0.003, 0.006], grow: 0, drag: 2.2, grav: 3 };
+const APTX_SPLINTER = { c: [0.55, 0.42, 0.28], a: 1, sp: [1.4, 3.4], life: [0.7, 1.3], size: [0.004, 0.009], grow: 0, drag: 1.2, grav: 9.8, land: 3 };
+const APTX_CHIP = { c: [0.8, 0.77, 0.7], a: 1, sp: [1.2, 3.0], life: [0.6, 1.2], size: [0.003, 0.008], grow: 0, drag: 1.4, grav: 9.8, land: 4 };
+const APTX_CERAMIC = { c: [0.95, 0.94, 0.91], a: 1, sp: [0.8, 2.6], life: [0.9, 1.6], size: [0.006, 0.014], grow: 0, drag: 0.8, grav: 9.8, land: 6 };
+const APTX_FAB = /boucle|velvet|linen|fabric|towel|duvet|throw|rug|shade|sheer|cushion|upholst|felt|leather|bench/i, APTX_STONE = /stone|marble|onyx|travert|concrete|granite/i,
+  APTX_WOOD = /wood|oak|walnut|veneer|parquet|lacquer|bark|frame/i, APTX_METAL = /brass|bronze|steel|nickel|metal|gold|chrome|iron/i;
+function aptxCrackTex() {
+  const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d'), c = S / 2;
+  g.clearRect(0, 0, S, S); g.lineCap = 'round';
+  let sd = 77; const r = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  const n = 11;
+  for (let i = 0; i < n; i++) {                                   // radial cracks, each a jagged run with a branch
+    let a = (i + r() * 0.6) / n * Math.PI * 2, x = c, y = c, L = S * (0.28 + r() * 0.2);
+    g.strokeStyle = `rgba(235,240,242,${0.55 + r() * 0.3})`; g.lineWidth = 1 + r() * 1.2;
+    g.beginPath(); g.moveTo(x, y);
+    for (let s = 0; s < 7; s++) { a += (r() - 0.5) * 0.35; x += Math.cos(a) * L / 7; y += Math.sin(a) * L / 7; g.lineTo(x, y);
+      if (s === 3 && r() < 0.6) { const b = a + (r() < 0.5 ? -0.6 : 0.6); g.moveTo(x, y); g.lineTo(x + Math.cos(b) * L * 0.3, y + Math.sin(b) * L * 0.3); g.moveTo(x, y); } }
+    g.stroke();
+  }
+  for (const R of [0.09, 0.17, 0.26]) {                           // concentric rings, broken
+    g.strokeStyle = 'rgba(230,236,238,0.45)'; g.lineWidth = 0.9;
+    for (let i = 0; i < n; i++) { if (r() < 0.35) continue; const a0 = i / n * Math.PI * 2, a1 = a0 + Math.PI * 2 / n * (0.6 + r() * 0.4); g.beginPath(); g.arc(c, c, S * R * (0.9 + r() * 0.2), a0, a1); g.stroke(); }
+  }
+  const gr = g.createRadialGradient(c, c, 0, c, c, S * 0.07);    // the crushed centre
+  gr.addColorStop(0, 'rgba(20,22,24,0.95)'); gr.addColorStop(0.35, 'rgba(225,232,235,0.8)'); gr.addColorStop(1, 'rgba(225,232,235,0)');
+  g.fillStyle = gr; g.beginPath(); g.arc(c, c, S * 0.07, 0, Math.PI * 2); g.fill();
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+function aptxKit() {
+  if (APTX.discGeo) return;
+  APTX.discGeo = new THREE.CircleGeometry(0.031, 16).rotateX(Math.PI / 2);   // faces down
+  APTX.discMat = new THREE.MeshStandardMaterial({ color: '#0b0a09', roughness: 0.85, metalness: 0.2 });
+  APTX.crackTex = aptxCrackTex();
+  APTX.crackMat = new THREE.MeshBasicMaterial({ map: APTX.crackTex, transparent: true, depthWrite: false, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  APTX.plane = new THREE.PlaneGeometry(1, 1);
+}
+const aptxWorld = (room, a, out) => out.copy(a).applyMatrix4(room.aptG.matrixWorld);
+// aptBuilder, right after the apartment and the furniture are in G (before the shadow flags are set)
+function aptxBuild(room, apt, furn, G, M) {
+  room.aptx = null;
+  if (!APTX.on) return;
+  aptxKit();
+  const mk = new Map(); for (const [k, v] of Object.entries(M)) if (v && v.isMaterial && !mk.has(v)) mk.set(v, k);
+  const glass = new Set([M.smoke, M.leafGlass, M.crystal].filter(Boolean));
+  const X = room.aptx = { G, mk, list: [], mirrors: [], lamps: apt.lamps || [], lens: null, lensOut: new Set(), furn: new Set(furn.colliders), live: [] };
+  for (const b of furn.breakables || []) {
+    const cls = APTX_KIND[b.kind] || 'decor', e = { i: X.list.length, room, kind: b.kind, cls, group: b.group, rod: b.rod, holder: null, box: b.box.clone(), body: new THREE.Box3(),
+      c: new THREE.Vector3(), hp: APTX_HP[cls] || 0.5, broken: false, dropped: false, col: null, glass: b.meshes.filter((m) => glass.has(m.material)), sw: null, fall: null };
+    for (const m of b.meshes) e.body.union(m.geometry.boundingBox);
+    if (e.body.isEmpty()) e.body.copy(e.box);
+    e.body.getCenter(e.c);
+    if (b.rods.length) {                                          // a fitting: hung from its ceiling rose
+      const h = e.holder = new THREE.Group(); h.position.set(e.c.x, e.box.max.y, e.c.z);
+      b.group.position.set(-e.c.x, -e.box.max.y, -e.c.z); b.rod.position.copy(b.group.position);
+      h.add(b.rod, b.group); G.add(h);
+      e.sw = { ax: 0, az: 0, wx: 0, wz: 0, L: Math.max(0.3, e.box.max.y - e.c.y) };
+    } else G.add(b.group);
+    X.list.push(e);
+  }
+  for (const m of furn.mirrors || []) {
+    const u = m.userData.mirror; if (!u) continue;
+    m.geometry.computeBoundingBox();
+    X.mirrors.push({ i: X.mirrors.length, mesh: m, p: new THREE.Vector3(...u.p), n: new THREE.Vector3(...u.n).normalize(), box: m.geometry.boundingBox.clone().expandByScalar(0.03), hits: 0, broken: false, cracks: [], back: null });
+  }
+  const im = X.lens = new THREE.InstancedMesh(APTX.discGeo, APTX.discMat, Math.max(1, X.lamps.length));
+  for (let i = 0; i < im.count; i++) im.setMatrixAt(i, APTX.zero);
+  im.frustumCulled = false; G.add(im);
+  const dummy = new THREE.Mesh(APTX.plane, APTX.crackMat); dummy.scale.setScalar(1e-4); dummy.position.set(8.8, 2, 3.6); dummy.frustumCulled = false; G.add(dummy);   // compiled with the room
+}
+// aptActivate: a furniture collider gets the class of what it is made of (its own hole and dust)
+function aptxTag(room, c, bc) {
+  const X = room.aptx; if (!X || !X.furn.has(c) || !c.mat) return;
+  const info = colliderInfo.get(bc.handle); if (!info) return;
+  const k = X.mk.get(c.mat) || '';
+  info.aptK = APTX_FAB.test(k) ? 'fabric' : APTX_STONE.test(k) ? 'stone' : APTX_METAL.test(k) ? 'metal' : 'wood';
+  info.aptC = c.mat.color && !c.mat.map ? [c.mat.color.r, c.mat.color.g, c.mat.color.b] : null;
+}
+// end of aptActivate: ray-only colliders for what still stands, broken things re-applied from room memory
+function aptxActivate(room) {
+  const X = room.aptx; if (!X) return;
+  for (const [h, e] of APTX.byCol) if (e.room === room) APTX.byCol.delete(h);
+  X.lens.castShadow = false; X.lens.receiveShadow = false;
+  const mem = roomMemory.get(memKey(room));
+  if (mem) {
+    for (const i of mem.aptxB || []) { const e = X.list[i]; if (e && !e.broken) aptxGone(e); }
+    for (const i of mem.aptLens || []) aptxLensSet(room, X, i);
+    for (const i of mem.aptMir || []) { const r = X.mirrors[i]; if (r && !r.broken) aptxMirShatter(room, X, r, null, true); }
+  }
+  for (const e of X.list) {
+    e.col = null;
+    if (e.broken || e.dropped) continue;
+    const b = e.body, cx = (b.min.x + b.max.x) / 2, cy = (b.min.y + b.max.y) / 2, cz = (b.min.z + b.max.z) / 2;
+    const hxA = Math.max(0.02, (b.max.x - b.min.x) / 2), hy = Math.max(0.02, (b.max.y - b.min.y) / 2), hzA = Math.max(0.02, (b.max.z - b.min.z) / 2);
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hzA, hy, hxA).setTranslation(aptLX(cz), cy, aptLZ(cx)).setCollisionGroups(APTX.grp), room.body);   // apartment x / z = local z / x
+    room.colliderHandles.push(col.handle); APTX.byCol.set(col.handle, e);
+    e.col = col; e.half = [hzA, hy, hxA];
+  }
+}
+// silently: as it is after its break (room memory on a rebuild)
+function aptxGone(e) {
+  e.broken = true;
+  if (e.cls === 'glassFit') for (const m of e.glass) m.visible = false;
+  else if (e.cls === 'crystal' || e.cls === 'gold') { e.dropped = true; e.group.visible = false; }
+  else e.group.visible = false;
+}
+function aptxMark(room, key, i) { const m = roomMem(room), L = m[key] || (m[key] = []); if (!L.includes(i)) L.push(i); }
+function aptxDropCol(e) {
+  if (!e.col) return;
+  const room = e.room, h = e.col.handle, j = room.colliderHandles.indexOf(h);
+  if (j >= 0) room.colliderHandles.splice(j, 1);
+  APTX.byCol.delete(h);
+  try { world.removeCollider(e.col, false); } catch (err) { /* gone with the room */ }
+  e.col = null;
+}
+// traceBullet0: a round meets a breakable's ray collider. It does its damage and flies on (null = not ours).
+function aptxPass(hit, P, dir, E) {
+  const e = APTX.byCol.get(hit.collider.handle); if (!e) return null;
+  const room = e.room, b = e.body, R = APTX.res;
+  aptxWorld(room, APTX.v.set((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2), APTX.w);
+  APTX.q.identity();                                             // rooms turn by 0 or 180 deg: the box is the same box
+  R.through = obbExit(P, dir, APTX.w, APTX.q, e.half[0], e.half[1], e.half[2], R.exit, APTX.n);
+  aptxShoot(room, e, P, dir, E);
+  R.E = E * (e.cls === 'gold' ? 0.85 : 0.96);
+  return R;
+}
+// the swing a push of size k gives a hanging fitting (dir world)
+function aptxPush(e, dirW, k) {
+  if (!e.sw || !e.holder) return;
+  APTX.inv.copy(e.room.aptG.matrixWorld).invert();
+  const d = APTX.da.copy(dirW).transformDirection(APTX.inv), L = e.sw.L;
+  e.sw.wz += d.x * k / L; e.sw.wx -= d.z * k / L;
+  APTX.moving.add(e);
+}
+function aptxSnd(P, fn) { if (audio.ctx && audio.ctx.state === 'running' && audio.noise) soundAt(P, fn); }
+function aptxTinkSnd() { const t = audio.ctx.currentTime + 0.003; fixTinkle(t, 0.5); KNOCK_SND.glass(t, 1.2, 1.4, 1); }
+function aptxCeramicSnd() { const t = audio.ctx.currentTime + 0.003; nBurst(t, 0.05, 'bandpass', 2400, 1.4, 0.32, 0.035, 0.25); KNOCK_SND.glass(t, 0.65, 2, 1.2); fixTinkle(t + 0.01, 0.55); fixTinkle(t + 0.32, 0.3); }
+function aptxClangSnd() { const t = audio.ctx.currentTime + 0.003; KNOCK_SND.pipe(t, 0.7, 1.6, 1.4); nBurst(t, 0.03, 'highpass', 3800, 0.8, 0.12, 0.02, 0.1); }
+function aptxCrashSnd() { const t = audio.ctx.currentTime + 0.003; KNOCK_SND.pipe(t, 0.45, 2.4, 2.2); KNOCK_SND.block(t, 0.8, 1.2, 1.3); fixTinkle(t + 0.02, 1); fixTinkle(t + 0.4, 0.6); }
+function aptxFabSnd() { const t = audio.ctx.currentTime + 0.003; nBurst(t, 0.06, 'lowpass', 520, 0.8, 0.34, 0.05, 0.25); nBurst(t + 0.004, 0.05, 'bandpass', 1800, 1.2, 0.05, 0.04, 0.15); }
+function aptxPopSnd() { const t = audio.ctx.currentTime + 0.003; nBurst(t, 0.035, 'bandpass', 1300, 1.4, 0.4, 0.025, 0.3); fixTinkle(t + 0.01, 0.55); fixTinkle(t + 0.5, 0.35); }
+// what a round (k: its energy) or a blast does to a breakable; P, dir world
+function aptxShoot(room, e, P, dir, k = 1) {
+  if (e.broken && e.cls !== 'crystal' && e.cls !== 'gold') return;
+  if (e.dropped) return;
+  APTX.n.copy(dir).negate();
+  switch (e.cls) {
+    case 'glassFit': {                                            // the blown glass goes; the rod swings on
+      e.broken = true; aptxDropCol(e); aptxMark(room, 'aptxB', e.i);
+      for (const m of e.glass) m.visible = false;
+      aptxWorld(room, e.c, APTX.v);
+      for (let q = 0; q < 3; q++) impactFx('glass', APTX.w.copy(APTX.v).addScaledVector(dir, (q - 1) * 0.08), APTX.n);
+      fixShards(APTX.v, 8, FIX_SHARD);
+      glassSfx(APTX.v); glassFloor(room, APTX.v, 0.9);
+      aptxPush(e, dir, 0.9 + 0.5 * Math.min(2, k));
+      break;
+    }
+    case 'crystal': case 'gold': {                                // it swings, sheds crystal / rings; enough and it falls
+      e.hp -= Math.min(2, k);
+      aptxPush(e, dir, 0.6 + 0.4 * Math.min(2, k));
+      if (e.cls === 'crystal') { impactFx('glass', P, APTX.n); fixShards(P, 5, FIX_SHARD); aptxSnd(P, aptxTinkSnd); if (Math.random() < 0.5) glassFloor(room, P, 0.5); }
+      else { impactFx('metal', P, APTX.n); aptxSnd(P, aptxClangSnd); }
+      if (e.hp <= 0) aptxDrop(room, e);
+      break;
+    }
+    case 'glass': {                                               // the coffee table's glass top
+      e.broken = true; aptxDropCol(e); aptxMark(room, 'aptxB', e.i); e.group.visible = false;
+      const b = e.body;
+      for (let q = 0; q < 6; q++) impactFx('glass', aptxWorld(room, APTX.v.set(mix(b.min.x, b.max.x, Math.random()), b.max.y, mix(b.min.z, b.max.z, Math.random())), APTX.w), Y_AXIS);
+      aptxWorld(room, e.c, APTX.v); glassSfx(APTX.v); glassFloor(room, APTX.v, 1.3); dirtyShadows();
+      break;
+    }
+    default: {                                                    // vase, bowl: bursts into chips
+      e.broken = true; aptxDropCol(e); aptxMark(room, 'aptxB', e.i); e.group.visible = false;
+      aptxWorld(room, e.c, APTX.v);
+      fxEmit(APTX.v, APTX.w.copy(dir).multiplyScalar(0.6).add(Y_AXIS).normalize(), 0.8, 14, APTX_CERAMIC);
+      impactFx('glass', APTX.v, APTX.n);
+      aptxSnd(APTX.v, aptxCeramicSnd); glassFloor(room, APTX.v, 0.6); dirtyShadows();
+    }
+  }
+}
+// off its rod: falls to the floor or the table under it
+function aptxDrop(room, e) {
+  e.dropped = true; aptxDropCol(e); aptxMark(room, 'aptxB', e.i);
+  room.aptG.attach(e.group);                                      // leaves the swinging rod where it is
+  aptxWorld(room, APTX.v.set(e.c.x, e.body.min.y - 0.02, e.c.z), APTX.w);
+  const hit = p10Ray(APTX.w, APTX.dn, 6, P10_STATIC_RAY);
+  const fl = e.body.min.y >= APT.L2 - 0.05 ? APT.L2 : 0;
+  const land = hit ? e.body.min.y - 0.02 - p10Toi(hit) : fl;
+  e.fall = { v: 0, d: 0, y0: e.group.position.y, to: Math.min(0, land - e.body.min.y) };
+  APTX.moving.add(e);
+}
+function aptxLand(room, e) {
+  const f = e.fall; e.fall = null;
+  aptxWorld(room, APTX.w.set(e.c.x, e.c.y + f.to, e.c.z), APTX.v);   // its new centre
+  if (e.cls === 'crystal') {
+    for (const m of e.glass) m.visible = false;
+    for (let q = 0; q < 5; q++) impactFx('glass', APTX.w.copy(APTX.v).add(APTX.n.set((Math.random() - 0.5) * 0.4, 0, (Math.random() - 0.5) * 0.4)), Y_AXIS);
+    fixShards(APTX.v, 10, FIX_SHARD); glassSfx(APTX.v); glassFloor(room, APTX.v, 1.6);
+  } else impactFx('metal', APTX.v, Y_AXIS);
+  hazeEmit(APTX.v, Y_AXIS, { n: 2, c: CONFIG.polish.haze.plaster, a: 0.12, sp: [0.2, 0.6], life: [1.4, 2.6], size: [0.05, 0.08], grow: 0.25, drag: 2.4, buoy: -0.02 });
+  aptxSnd(APTX.v, aptxCrashSnd);
+  dirtyShadows();
+}
+// every frame (aptPanelTick): swings and falls
+function aptxTick() {
+  if (!APTX.moving.size) return;
+  const now = performance.now() / 1000, dt = Math.min(0.05, now - (APTX.last || now)); APTX.last = now;
+  if (dt <= 0) return;
+  for (const e of APTX.moving) {
+    let busy = false;
+    const s = e.sw;
+    if (s) {
+      const g = 9.81 / s.L, c = e.cls === 'glassFit' ? 0.9 : 0.55;
+      for (let k = 0; k < 2; k++) {
+        const h = dt / 2;
+        s.wx += (-g * Math.sin(s.ax) - c * s.wx) * h; s.wz += (-g * Math.sin(s.az) - c * s.wz) * h;
+        s.wx = clamp(s.wx, -6, 6); s.wz = clamp(s.wz, -6, 6);
+        s.ax = clamp(s.ax + s.wx * h, -1.2, 1.2); s.az = clamp(s.az + s.wz * h, -1.2, 1.2);
+      }
+      e.holder.rotation.set(s.ax, 0, s.az);
+      if (Math.abs(s.ax) + Math.abs(s.az) + Math.abs(s.wx) + Math.abs(s.wz) > 2e-3) busy = true;
+      else { s.ax = s.az = s.wx = s.wz = 0; e.holder.rotation.set(0, 0, 0); }
+    }
+    const f = e.fall;
+    if (f) {
+      f.v += 9.81 * dt; f.d = Math.max(f.to, f.d - f.v * dt);
+      e.group.position.y = f.y0 + f.d;                            // attached to G (aptxDrop): where it was, then the drop
+      if (f.d <= f.to) aptxLand(e.room, e); else busy = true;
+    }
+    if (busy) motionShadows(); else APTX.moving.delete(e);
+  }
+}
+// bulletHit, apartment colliders: lenses, mirrors, a breakable in the line, furniture. True = handled (no plaster hole).
+function aptxHit(info, P, N, dir, k) {
+  const room = info.room, X = room.aptx; if (!X || !room.aptG) return false;
+  APTX.inv.copy(room.aptG.matrixWorld).invert();
+  const pa = APTX.pa.copy(P).applyMatrix4(APTX.inv), da = APTX.da.copy(dir).transformDirection(APTX.inv);
+  if (N.y < -0.7) { const r = aptxLensHit(room, X, pa, P); if (r) return true; }
+  for (const r of X.mirrors) {
+    if (r.broken || !r.box.containsPoint(pa)) continue;
+    if (Math.abs(APTX.v.copy(pa).sub(r.p).dot(r.n)) > 0.06) continue;
+    aptxMirHit(room, X, r, pa, P, dir, k);
+    return true;
+  }
+  let best = null, bt = 0.55;                                     // a vase on a shelf, the glass under a table's top: inside the collider the round met
+  for (const e of X.list) {
+    if (e.broken || e.dropped) continue;
+    const b = e.body;
+    if (pa.x < b.min.x - 0.6 || pa.x > b.max.x + 0.6 || pa.z < b.min.z - 0.6 || pa.z > b.max.z + 0.6 || pa.y < b.min.y - 0.6 || pa.y > b.max.y + 0.6) continue;
+    let t0 = -0.03, t1 = bt, ok = true;
+    for (const ax of ['x', 'y', 'z']) {
+      const o = pa[ax], d = da[ax], lo = b.min[ax] - 0.01, hi = b.max[ax] + 0.01;
+      if (Math.abs(d) < 1e-6) { if (o < lo || o > hi) { ok = false; break; } continue; }
+      let ta = (lo - o) / d, tb = (hi - o) / d; if (ta > tb) { const s = ta; ta = tb; tb = s; }
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); if (t0 > t1) { ok = false; break; }
+    }
+    if (ok && t0 < bt) { bt = t0; best = e; }
+  }
+  if (best) { aptxShoot(room, best, P, dir, k); return true; }
+  if (info.aptK) return aptxFurn(room, info, P, N, dir);
+  return false;
+}
+function aptxFurn(room, info, P, N, dir) {
+  const K = info.aptK, c = info.aptC;
+  APTX.w.copy(N).multiplyScalar(0.8).addScaledVector(dir, -0.2).normalize();
+  if (K === 'fabric') {
+    addRoomHole(room, 'wood', P, N, true, undefined, 0.55);      // a small dark hole in the cloth
+    fxEmit(P, APTX.w, 0.6, 10, APTX_STUFF);                       // stuffing puffs out of it
+    if (c) { APTX_FIBRE.c[0] = c[0]; APTX_FIBRE.c[1] = c[1]; APTX_FIBRE.c[2] = c[2]; } else { APTX_FIBRE.c[0] = 0.62; APTX_FIBRE.c[1] = 0.58; APTX_FIBRE.c[2] = 0.52; }
+    fxEmit(P, APTX.w, 0.5, 5, APTX_FIBRE);
+    hazeEmit(P, N, { n: 1, c: APTX_STUFF.c, a: 0.07, sp: [0.1, 0.35], life: [1.2, 2.2], size: [0.03, 0.05], grow: 0.12, drag: 2.6, buoy: -0.01 });
+    aptxSnd(P, aptxFabSnd);
+    return true;
+  }
+  if (K === 'stone') {
+    addRoomHole(room, 'concrete', P, N, true, undefined, 0.8); impactFx('concrete', P, N);
+    const o = APTX_CHIP; if (c) { o.c[0] = c[0] * 1.1; o.c[1] = c[1] * 1.1; o.c[2] = c[2] * 1.1; } else { o.c[0] = 0.8; o.c[1] = 0.77; o.c[2] = 0.7; }
+    fxEmit(P, APTX.w, 0.7, 7, o);
+    return true;
+  }
+  if (K === 'metal') { addRoomHole(room, 'metal', P, N, true); impactFx('metal', P, N); return true; }
+  addRoomHole(room, 'wood', P, N, true); impactFx('wood', P, N);  // wood, lacquer: the hole and splinters along the shot's way out
+  const o = APTX_SPLINTER; if (c) { o.c[0] = Math.min(1, c[0] * 1.3 + 0.08); o.c[1] = Math.min(1, c[1] * 1.3 + 0.06); o.c[2] = Math.min(1, c[2] * 1.3 + 0.04); } else { o.c[0] = 0.55; o.c[1] = 0.42; o.c[2] = 0.28; }
+  fxEmit(P, APTX.w, 0.7, 7, o);
+  return true;
+}
+// a round into the ceiling within 6 cm of a downlight: its lens pops
+function aptxLensHit(room, X, pa, P) {
+  const L = X.lamps;
+  for (let i = 0; i < L.length; i++) {
+    const l = L[i], dx = pa.x - l[0], dz = pa.z - l[2];
+    if (dx * dx + dz * dz > 0.0036 || Math.abs(pa.y - (l[1] + 0.086)) > 0.22) continue;
+    if (X.lensOut.has(i)) { impactFx('metal', P, _fxDN); return true; }   // the empty can
+    aptxLensPop(room, X, i, P);
+    return true;
+  }
+  return false;
+}
+function aptxLensSet(room, X, i) {
+  const l = X.lamps[i]; if (!l || X.lensOut.has(i)) return false;
+  X.lensOut.add(i);
+  X.lens.setMatrixAt(i, APTX.m.makeTranslation(l[0], l[1] + 0.0855, l[2])); X.lens.instanceMatrix.needsUpdate = true;
+  const lx = aptLX(l[2]), lz = aptLZ(l[0]), T = room.troffers || [];   // one of the pool's fittings: its light goes out
+  for (let j = 0; j < T.length; j++) {
+    const tr = T[j];
+    if (Math.abs(tr.x - lx) > 0.02 || Math.abs(tr.z - lz) > 0.02 || Math.abs((tr.y ?? 0) - l[1]) > 0.05) continue;
+    if (!tr.out) {
+      tr.out = true; tr.jt = 0; if (tr.diffMat) tr.diffMat.emissiveIntensity = 0;
+      if (flicker.fixture && flicker.fixture.diffMat === tr.diffMat) flicker.fixture = null;
+      const m = roomMem(room); (m.tOut || (m.tOut = [])).includes(j) || m.tOut.push(j);
+      if (room === stream.current || room === pool.portalRoom) pool.key = '';
+    }
+    return tr;
+  }
+  return null;
+}
+function aptxLensPop(room, X, i, P) {
+  const tr = aptxLensSet(room, X, i); if (tr === false) return;
+  aptxMark(room, 'aptLens', i);
+  impactFx('glass', P, _fxDN); fixShards(P, 6, FIX_SHARD);
+  const live = !!tr && !nightDark(room);
+  if (live) { fixShards(P, 6, FIX_SPARK); const at = P.clone(); P10.pending.push({ at: P10.time + 0.05, fn: () => fixArc(at) }); }
+  aptxSnd(P, live ? fixSfxLive : aptxPopSnd);
+  glassFloor(room, P, 0.5);
+}
+// mirrors: cracks, the third (or a hard hit) shatters it
+function aptxMirHit(room, X, r, pa, P, dir, k) {
+  r.hits += Math.max(0.6, Math.min(2, k));
+  APTX.n.copy(dir).negate();
+  impactFx('glass', P, APTX.n);
+  if (r.hits >= 3) { aptxMirShatter(room, X, r, P, false); return; }
+  const d = new THREE.Mesh(APTX.plane, APTX.crackMat);
+  d.position.copy(pa).addScaledVector(r.n, 0.0015 - APTX.v.copy(pa).sub(r.p).dot(r.n));
+  d.quaternion.setFromUnitVectors(APTX.z, r.n); d.rotateZ(Math.random() * Math.PI * 2);
+  d.scale.setScalar(rnd2(0.22, 0.36)); d.renderOrder = 2; d.castShadow = false;
+  X.G.add(d); r.cracks.push(d);
+  aptxSnd(P, aptxTinkSnd);
+}
+function aptxMirShatter(room, X, r, P, quiet) {
+  r.broken = true;
+  for (const d of r.cracks) d.removeFromParent();
+  r.cracks.length = 0;
+  r.mesh.visible = false;
+  if (!r.back) { r.back = new THREE.Mesh(r.mesh.geometry, X.backMat || (X.backMat = new THREE.MeshStandardMaterial({ color: '#3d3935', roughness: 0.9 }))); r.back.receiveShadow = true; X.G.add(r.back); }
+  if (quiet) return;
+  aptxMark(room, 'aptMir', r.i);
+  const b = r.box;
+  for (let q = 0; q < 8; q++) impactFx('glass', aptxWorld(room, APTX.v.set(mix(b.min.x, b.max.x, Math.random()), mix(b.min.y, b.max.y, Math.random()), mix(b.min.z, b.max.z, Math.random())), APTX.w), APTX.n.copy(r.n).transformDirection(room.aptG.matrixWorld));
+  b.getCenter(APTX.v); aptxWorld(room, APTX.v, APTX.w);
+  fixShards(APTX.w, 10, FIX_SHARD); glassSfx(P || APTX.w); glassFloor(room, APTX.w.addScaledVector(APTX.n, 0.25), 1.5);
+  dirtyShadows();
+}
+// fragBlast: everything by its distance to P (world)
+function aptxBlast(P) {
+  if (!APTX.on) return;
+  for (const room of stream.rooms.values()) {
+    const X = room && room.active && room.aptx; if (!X || !room.aptG) continue;
+    for (const e of X.list) {
+      if (e.dropped || (e.broken && e.cls !== 'glassFit')) continue;
+      const at = aptxWorld(room, e.c, APTX.b1), d = at.distanceTo(P); if (d > 8) continue;
+      const dir = APTX.b2.copy(at).sub(P).normalize();
+      if (e.cls === 'glassFit') { if (!e.broken && d < 4.5 * (0.6 + 0.4 * Math.random())) aptxShoot(room, e, at, dir, 1); else aptxPush(e, dir, 3 / Math.max(d, 0.8)); }
+      else if (e.cls === 'crystal' || e.cls === 'gold') { if (d < 6) aptxShoot(room, e, at, dir, 3.2 / Math.max(d, 0.8)); else aptxPush(e, dir, 2 / d); }
+      else if (d < 3.2 * (0.6 + 0.4 * Math.random())) aptxShoot(room, e, at, dir, 1);
+    }
+    for (const r of X.mirrors) {
+      if (r.broken) continue;
+      r.box.getCenter(APTX.b2); aptxWorld(room, APTX.b2, APTX.b1);
+      if (APTX.b1.distanceTo(P) < 3 * (0.6 + 0.4 * Math.random())) aptxMirShatter(room, X, r, APTX.b1.clone(), false);
+    }
+    let n = 0;
+    for (let i = 0; i < X.lamps.length && n < 8; i++) {
+      if (X.lensOut.has(i)) continue;
+      const l = X.lamps[i]; aptxWorld(room, APTX.v.set(l[0], l[1] + 0.086, l[2]), APTX.w);
+      if (APTX.w.distanceTo(P) < 2.4 * (0.6 + 0.4 * Math.random())) { aptxLensPop(room, X, i, APTX.w.clone()); n++; }
+    }
+  }
+}
+KNOCK_MAT['floor lamp'] = 'pipe';                                  // the bronze stem on the floor
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APTX, aptxBuild, aptxActivate, aptxPass, aptxShoot, aptxHit, aptxBlast, aptxTick, aptxLensHit, aptxLensPop, aptxMirHit, aptxDrop });
 
 </script>
 </body>

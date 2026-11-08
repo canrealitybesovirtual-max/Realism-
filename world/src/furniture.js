@@ -20,6 +20,21 @@ function movable(kind, mass, fn, hasRy = true) {
     else { const [y, z] = a; fn(b, M, 0, 0, 0); MOV.push({ kind, mass, b, x, y: ARTY + y, z, ry: 0 }); }
   };
 }              // wall-hung art, for the clipping check
+// CQC (Q.cqc): breakable pieces (light fittings, glass and ceramic decor) are built on their own (their own meshes, in
+// apartment coordinates) and handed back as breakables, so the game can shatter, swing or drop them. A fitting's rod and
+// canopy (anything reaching its ceiling) go in b.rod: they stay up when the fitting falls.
+let BRK = null;
+function brkOwn(kind) { const b = new Builder(); b.rod = new Builder(); BRK.push({ kind, b, y: ARTY }); return b; }
+function breakable(kind, fn, fixture = false) {
+  return function (B, M, ...a) {
+    if (!BRK) return fn(B, M, ...a);
+    const b = brkOwn(kind);
+    if (fixture) { const top = a[3] - 0.05, own = { add: b.add.bind(b) }; b.add = (geo, mat) => { geo.computeBoundingBox(); (geo.boundingBox.max.y > top ? b.rod : own).add(geo, mat); }; }
+    fn(b, M, ...a);
+    for (const c of b.colliders) B.colliders.push(c);
+  };
+}
+const brkAdd = (kind, x, z, ry, fall) => { if (!BRK) return fall; const b = brkOwn(kind); return (geo, m) => b.add(at(geo, x, 0, z, ry), m); };
 // ---- geometry kit ----------------------------------------------------------------------------
 // Rounded box centred at the origin: w x h x d, edge radius r, seg steps per rounded edge.
 // Metric UVs projected from the dominant normal axis (fabric and wood read at true scale).
@@ -327,7 +342,7 @@ function coffeeTable(B, M, x, z, ry, S = 1.0, H = 0.4, solid = false) {
   for (const u of [-1, 1]) add(at(wcut(rbox(S - 2 * lw + 0.004, fh, lw, 0.006)).rotateY(Math.PI / 2), u * (S / 2 - lw / 2), H - fh / 2, 0), M.oakNat);
   add(at(boardTop(S - 2 * lw + 0.01, 0.022, S - 2 * lw + 0.01, 0.13), 0, 0.075, 0), M.oakNat);   // low shelf
   if (solid) add(at(boardTop(S + 0.02, 0.03, S + 0.02, 0.17, 0.002), 0, H + 0.015, 0), M.oakNat);   // a solid oak top instead of the glass
-  else add(at(rbox(S - 2 * lw + 0.02, 0.012, S - 2 * lw + 0.02, 0.003), 0, H - 0.02, 0), M.smoke);
+  else brkAdd('glass top', x, z, ry, add)(at(rbox(S - 2 * lw + 0.02, 0.012, S - 2 * lw + 0.02, 0.003), 0, H - 0.02, 0), M.smoke);   // CQC: breakable
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [S / 2, H / 2, S / 2], yaw: ry, mat: M.oakNat });
 }
 
@@ -828,9 +843,9 @@ function shelfDecor(B, M, sh, x, z, ry, W, H, d, seed) {
       for (let i = 0; i < n; i++) { const w = 0.025 + rnd() * 0.02, h = Math.min(rh - 0.06, 0.2 + rnd() * 0.1); sh.add(at(rbox(w, h, 0.17 + rnd() * 0.05, 0.002, 1), uu + w / 2, y + h / 2, 0), [M.bookCream, M.bookGrey, M.bookBlack][Math.floor(rnd() * 3)]); uu += w + 0.002; }
     } else if (k < 0.6) {     // a vase
       const r0 = 0.05 + rnd() * 0.05, h = 0.14 + rnd() * 0.18;
-      sh.add(at(lathe([[0, 0], [r0 * 0.6, 0], [r0, h * 0.4], [r0 * 0.5, h * 0.85], [r0 * 0.55, h], [0, h]], 24), u + (rnd() - 0.5) * cw * 0.4, y, 0), rnd() < 0.5 ? M.ceramic : M.stoneBlack);
+      brkAdd('vase', x, z, ry, sh.add)(at(lathe([[0, 0], [r0 * 0.6, 0], [r0, h * 0.4], [r0 * 0.5, h * 0.85], [r0 * 0.55, h], [0, h]], 24), u + (rnd() - 0.5) * cw * 0.4, y, 0), rnd() < 0.5 ? M.ceramic : M.stoneBlack);   // CQC: breakable
     } else if (k < 0.75) {    // a bowl
-      bowlGeo(sh, M, u, y, 0, 0.08 + rnd() * 0.05);
+      bowlGeo(BRK ? { add: brkAdd('bowl', x, z, ry) } : sh, M, u, y, 0, 0.08 + rnd() * 0.05);   // CQC: breakable
     }
   }
 }
@@ -1558,6 +1573,11 @@ function furnitureMaterials(M, Q) {
 }
 
 // ---- the rooms ---------------------------------------------------------------------------------
+// CQC breakables (see brkOwn): light fittings (rods stay up) and decor
+pendant = breakable('pendant', pendant, true); facetPendant = breakable('facet pendant', facetPendant, true);
+chandelier = breakable('leaf chandelier', chandelier, true); beadChandelier = breakable('bead chandelier', beadChandelier, true);
+goldChandelier = breakable('gold chandelier', goldChandelier, true); bowl = breakable('bowl', bowl); driedVase = breakable('vase', driedVase);
+const floorLampM = movable('floor lamp', 8, floorLamp);
 export function furnish(M, Q) {
   furnitureMaterials(M, Q);
   MIRRORS = [];
@@ -1565,7 +1585,7 @@ export function furnish(M, Q) {
   SOFT.step = qq ? 0.08 : 0.045; SOFT.edge = qq ? 2 : 3; SOFT.pipe = qq ? 0.06 : 0.04; SOFT.ring = qq ? 4 : 5; WSEED = 12345;
   M_BED = M.settingBed;
   const B = new Builder();
-  MOV = Q && Q.cqc ? [] : null;
+  MOV = Q && Q.cqc ? [] : null; BRK = Q && Q.cqc ? [] : null;
   const group = new THREE.Group(); group.name = 'furniture';
   const ceil = 4.2;
 
@@ -1586,7 +1606,7 @@ export function furnish(M, Q) {
   // piano corner, west end (apartment-18 / -19): the grand on its own rug, a lamp beside it
   rug(B, M, 2.75, 3.9, 3.0, 2.6, 0);
   piano(B, M, 2.6, 4.3, 0.55);
-  floorLamp(B, M, 1.5, 1.9);
+  floorLampM(B, M, 1.5, 1.9);
   wallRug(B, M, 0.905, 4.0, 1.5, 2.5, 0.75, '+x');
   figTree(B, M, 1.5, 5.9);
   armchair(B, M, 1.0, 0.95, 2.4); armchair(B, M, 2.25, 0.85, 3.6);
@@ -1780,6 +1800,13 @@ export function furnish(M, Q) {
     return { kind: m.kind, mass: m.mass, group: g, meshes: ms, box: bb, x: m.x, y: m.y, z: m.z, ry: m.ry };
   });
   MOV = null;
+  const breakables = (BRK || []).map((k) => {                    // CQC: own meshes, apartment coordinates
+    for (const bb of [k.b, k.b.rod]) for (const list of bb.buckets.values()) for (const g of list) if (k.y) g.translate(0, k.y, 0);
+    const g = new THREE.Group(); g.name = k.kind; const ms = k.b.finish(g), rod = new THREE.Group(), rs = k.b.rod.finish(rod);
+    const box = new THREE.Box3(); for (const m of [...ms, ...rs]) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
+    return { kind: k.kind, group: g, rod, meshes: ms, rods: rs, box };
+  });
+  BRK = null;
   for (const m of meshes) if (m.material.userData && m.material.userData.mirror) m.userData.mirror = m.material.userData.mirror;
-  return { group, meshes, movables, mirrors: meshes.filter((m) => m.userData.mirror), colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  return { group, meshes, movables, breakables, mirrors: meshes.filter((m) => m.userData.mirror), colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }
