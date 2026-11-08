@@ -1453,6 +1453,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Keep the whole project in view: don't sink all the time into one piece. Finish a piece to the bar, then move on (order now: window view done -> apartment interior, which matters a lot).
 - No props or assets in the game that the user has not seen first: show them (renders next to the reference photo) and get a yes before they ship. Model only what the photos show.
 - Geometry budget by clusters, not by cutting detail: big meshes are split into small clusters (meshlets, ~128 triangles) that are culled (frustum, back-facing cone, distance LOD) and drawn with multi-draw, so triangle counts can rise without losing frame rate. WebGL / WebGPU / the Quest browser have no mesh shaders, so this is the CPU / multi-draw form of a meshlet pipeline.
+- Realism beats photo matching (user, Nov 8): the photos are a guide for layout, sizes and materials, not a colour target. Judge every change by "would this pass as a real photograph": physically based light (sun, sky, bounce, soft shadows, contact darkening), real-world material values and scans, real proportions and detail up close. Do not tune colours toward a photo at the cost of physical correctness.
 - These rules belong to the repo (this file), so every session and environment of this project gets them.
 
 ## New project: world/ (Infinite Open-World master prompt v6; separate from the office, CQC and Interstate)
