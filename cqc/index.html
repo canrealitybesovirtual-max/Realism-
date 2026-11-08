@@ -29778,6 +29778,7 @@ function termPress(u, v, hand) {
 // Desktop / phone: E, Grab or a click while the dot is on the screen. Returns true if it took the press.
 function termDeskPress(fromClick = false) {
   if (aptDeskPress()) return true;                                  // apartment start: the front door's panel
+  if (aptOpenDesk()) return true;                                   // APARTMENT OPENABLES: a cabinet door, drawer, fridge, oven
   if (benchLampDesk()) return true;                                 // the lamp over the gunsmith bench
   if (wbDeskButton()) return true;                                  // step 88: the VISE button on the gunsmith bench
   if (wsDeskPress()) return true;                                   // the gunsmith workshop computer
@@ -40503,11 +40504,12 @@ for (let i = 0; i < 2; i++) {
     if (p) { grab(hand, p); return; }
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
     if (d) { grabDoor(hand, d); return; }
+    if (aptOpenGrip(hand)) return;                                   // APARTMENT OPENABLES: a handle
     if (benchLampGrip(hand)) return;                                 // the lamp over the gunsmith bench: grip its head
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { benchLampRelease(hand); release(hand); releaseDoor(hand); };   // the bench lamp let go where you hold it
+  const squeezeEnd = () => { aptOpenRelease(hand); benchLampRelease(hand); release(hand); releaseDoor(hand); };   // the bench lamp let go where you hold it
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
@@ -50776,6 +50778,7 @@ function* aptBuilder(room) {
   yield;
   const furn = FU.furnish(M, Q);
   room.aptFurn = furn;                                            // openables (cabinet doors, drawers, fridge, ovens)
+  aptOpenInit(room, furn);                                        // APARTMENT OPENABLES: doors and drawers open
   yield;
   const G = new THREE.Group(); G.name = 'apartment';
   G.add(apt.group, furn.group);
@@ -51168,6 +51171,7 @@ let _aptLast = 0;
 function aptViewTick() {
   if (APTS && APTS.room && APTS.room.active && APTS.room.yardDoors) yardDoorsTick(APTS.room, performance.now() / 1000);   // the men open the apartment doors they walk into
   const A = APTS; if (!A || !A.room || !A.room.active) { if (A && A.sun && A.sun.intensity) A.sun.intensity = 0; return; }
+  { const n = performance.now() / 1000; aptOpenTick(Math.min(0.05, n - (AOPEN.last || n))); AOPEN.last = n; }   // APARTMENT OPENABLES
   const cur = stream.current, inA = !!(cur && cur.apt);
   if (A.sun) { const k = inA ? APT.sunI : 0; if (A.sun.intensity !== k) { A.sun.intensity = k; renderer.shadowMap.needsUpdate = true; } }
   if (A.hemi) A.hemi.intensity = inA ? (A.surfDone ? 0.12 : A.vol ? APT.hemiVol : APT.hemiI) : 0;   // after the probe bake the probes carry the bounce
@@ -51224,6 +51228,7 @@ function aptPvsExtras(room, G) {
   for (const p of room.aptProps || []) if (p.root) out.push({ kind: 'prop', ref: p, meshes: meshesOf(p.root), home: p.root.getWorldPosition(new THREE.Vector3()).applyMatrix4(_pxM) });
   for (const e of (room.aptx && room.aptx.list) || []) out.push({ kind: 'brk', ref: e, meshes: meshesOf(e.holder || e.group) });
   for (const mi of (room.aptx && room.aptx.mirrors) || []) out.push({ kind: 'mir', ref: mi, meshes: [mi.mesh] });
+  if (AOPEN.room === room) for (const it of AOPEN.list) out.push({ kind: 'opn', ref: it, meshes: it.o.meshes });   // APARTMENT OPENABLES: shut doors / drawers as baked; an open one always draws
   return out.filter((e) => e.meshes.length);
 }
 function aptPvsExtrasTick(room) {
@@ -51248,6 +51253,7 @@ function aptPvsExtrasTick(room) {
           const f = e.ref;
           if (e.kind === 'prop') vis = !f.root || !f.root.parent || (f.holders && f.holders.length) || f.root.getWorldPosition(_pxV).applyMatrix4(_pxM).distanceToSquared(e.home) > 0.09;
           else if (e.kind === 'brk') vis = !!(f.broken || f.dropped || f.fall);
+          else if (e.kind === 'opn') vis = f.v > 0.02 || !!f.held;
         }
       }
     }
@@ -53126,6 +53132,126 @@ function aptxBlast(P) {
 }
 KNOCK_MAT['floor lamp'] = 'pipe';                                  // the bronze stem on the floor
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APTX, aptxBuild, aptxActivate, aptxPass, aptxShoot, aptxHit, aptxBlast, aptxTick, aptxLensHit, aptxLensPop, aptxMirHit, aptxDrop });
+
+
+/* ===========================================================================
+ *  APARTMENT OPENABLES (?aptopen=off = everything stays shut)
+ *  Every cabinet door, drawer, the fridge doors and freezer drawer, the oven
+ *  doors, the pantry, nightstand and vanity drawers and the shelving cabinets
+ *  are parts on their own pivots (world/src/furniture.js openables). Computer:
+ *  E / click with the dot on one opens or shuts it (eased). Headset: squeeze
+ *  the grip at its handle and pull: a drawer follows the hand along its run, a
+ *  door swings about its hinge to where the hand is, an oven door drops about
+ *  its bottom edge; let go and it stays (a tick at either stop). No colliders
+ *  on the moving parts (the carcass keeps its own).
+ * ========================================================================= */
+const AOPEN_ON = !/[?&]aptopen=off\b/.test(QS);
+const AOPEN = { list: [], pick: [], room: null, ray: new THREE.Raycaster(), v: new THREE.Vector3(), d: new THREE.Vector3(), L: new THREE.Vector3(),
+  hp: new THREE.Vector3(), hq: new THREE.Quaternion(), mI: new THREE.Matrix4(), sp: new THREE.Vector3(), sk: { kind: 'open', g: 1 }, reach: 0.13 };
+function aptOpenInit(room, furn) {
+  AOPEN.list = []; AOPEN.pick = []; AOPEN.room = room;
+  if (!AOPEN_ON || !furn || !furn.openables) return;
+  for (const o of furn.openables) {
+    const g = o.group; if (o.type === 'flap') g.rotation.order = 'YXZ';
+    const it = { o, g, ry: o.ry, p0: g.position.clone(), v: 0, t: 0, held: null, a0: 0, v0: 0, at0: 0 };
+    for (const m of o.meshes) { m.userData.aptOpen = it; AOPEN.pick.push(m); }
+    AOPEN.list.push(it);
+  }
+}
+function aptOpenPose(it) {
+  const o = it.o, g = it.g, v = it.v;
+  if (o.type === 'hinge') g.rotation.y = it.ry + o.max * v;
+  else if (o.type === 'flap') g.rotation.x = o.max * v;
+  else g.position.set(it.p0.x + Math.sin(it.ry) * o.max * v, it.p0.y, it.p0.z + Math.cos(it.ry) * o.max * v);
+}
+function aptOpenLive() { const r = AOPEN.room; return !!(AOPEN.list.length && r && r.active && stream.current === r); }
+// a world point into the part's base frame (pivot at the origin, unturned by the opening)
+function aptOpenLocal(it, P, out) {
+  it.g.parent.updateWorldMatrix(true, false);
+  AOPEN.mI.copy(it.g.parent.matrixWorld).invert();
+  out.copy(P).applyMatrix4(AOPEN.mI).sub(it.p0).applyAxisAngle(_aoY, -it.ry);
+  return out;
+}
+const _aoY = new THREE.Vector3(0, 1, 0);
+function aptOpenAng(it, L) { return it.o.type === 'hinge' ? Math.atan2(-L.z, L.x) : it.o.type === 'flap' ? Math.atan2(L.z, L.y) : L.z; }
+function aptOpenHandleW(it, out) { const h = it.o.handle || [0, 0.5, 0.02]; return it.g.localToWorld(out.set(h[0], h[1], h[2])); }
+// sounds: a catch letting go / a drawer runner / a soft-close bump (synth, positional)
+function aptOpenSndPlay(dist) {
+  const S = AOPEN.sk, t = audio.ctx.currentTime, g = S.g * clamp(1.15 - dist / 9, 0.12, 1);
+  if (S.kind === 'slide') { nBurst(t, 0.32, 'bandpass', 1100, 1.2, 0.05 * g, 0.28, 0.2); nBurst(t + 0.02, 0.2, 'lowpass', 380, 0.8, 0.04 * g, 0.18, 0.15); }
+  else if (S.kind === 'shut') { nBurst(t, 0.12, 'lowpass', 260, 0.9, 0.14 * g, 0.1, 0.35); nBurst(t, 0.05, 'highpass', 2600, 0.7, 0.05 * g, 0.03, 0.2); }
+  else if (S.kind === 'stop') nBurst(t, 0.08, 'lowpass', 520, 1, 0.07 * g, 0.06, 0.25);
+  else { nBurst(t, 0.04, 'highpass', 3000, 0.8, 0.06 * g, 0.025, 0.2); if (S.seal) nBurst(t + 0.01, 0.18, 'lowpass', 180, 0.7, 0.08 * g, 0.14, 0.2); }
+}
+function aptOpenSnd(it, kind, k = 1) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  const S = AOPEN.sk; S.kind = kind; S.g = k * (CONFIG.polish.audio.doors ? CONFIG.polish.audio.doors.gain * 2 : 1); S.seal = it.o.kind === 'fridge' || it.o.kind === 'freezer';
+  aptOpenHandleW(it, AOPEN.sp); soundAt(AOPEN.sp, aptOpenSndPlay);
+}
+function aptOpenSet(it, t) {
+  if (t === it.t) return;
+  it.t = t;
+  aptOpenSnd(it, it.o.type === 'drawer' ? 'slide' : 'open', 0.8);
+}
+// Computer: E / click (termDeskPress asks first) with the dot on a part within 2.2 m; a prop nearer on the same line wins.
+function aptOpenDesk() {
+  if (renderer.xr.isPresenting || !aptOpenLive()) return false;
+  camera.getWorldPosition(AOPEN.v); camera.getWorldDirection(AOPEN.d);
+  const R = AOPEN.ray; R.set(AOPEN.v, AOPEN.d); R.near = 0; R.far = 2.2;
+  const hit = R.intersectObjects(AOPEN.pick, false)[0];
+  if (!hit) return false;
+  const p = aimedProp(); if (p && p.root.position.distanceTo(AOPEN.v) < hit.distance) return false;
+  const sh = p10Ray(AOPEN.v, AOPEN.d, hit.distance, P10_STATIC_RAY);             // a wall between you and it
+  if (sh && p10Toi(sh) < hit.distance - 0.35) return false;
+  const it = hit.object.userData.aptOpen;
+  aptOpenSet(it, it.t > 0.5 ? 0 : 1);
+  return true;
+}
+// Headset: an empty hand squeezing within reach of a handle takes it (squeezeStart, after door levers)
+function aptOpenGrip(hand) {
+  if (!renderer.xr.isPresenting || hand.prop || !aptOpenLive()) return false;
+  handPose(hand, AOPEN.hp, AOPEN.hq);
+  let best = null, bd = AOPEN.reach;
+  for (const it of AOPEN.list) {
+    if (it.held) continue;
+    const d = aptOpenHandleW(it, AOPEN.v).distanceTo(AOPEN.hp);
+    if (d < bd) { bd = d; best = it; }
+  }
+  if (!best) return false;
+  const L = aptOpenLocal(best, AOPEN.hp, AOPEN.L);
+  best.held = hand; best.v0 = best.v; best.t = best.v; best.a0 = aptOpenAng(best, L);
+  if (best.o.type !== 'drawer' && Math.hypot(best.o.type === 'hinge' ? L.x : L.y, L.z) < 0.06) { best.held = null; return false; }   // too near the hinge line to turn it
+  pulse(hand, 0.25, 16);
+  if (best.v < 0.02) aptOpenSnd(best, best.o.type === 'drawer' ? 'slide' : 'open', 0.6);
+  return true;
+}
+function aptOpenRelease(hand) { for (const it of AOPEN.list) if (it.held === hand) { it.held = null; it.t = it.v; } }
+function aptOpenFollow(it) {
+  const hand = it.held;
+  if (!renderer.xr.isPresenting) { it.held = null; return; }
+  handPose(hand, AOPEN.hp, AOPEN.hq);
+  const L = aptOpenLocal(it, AOPEN.hp, AOPEN.L), o = it.o;
+  let a = aptOpenAng(it, L) - it.a0;
+  if (o.type !== 'drawer') { a = Math.atan2(Math.sin(a), Math.cos(a)); a = a / Math.abs(o.max) * Math.sign(o.max); }
+  else a /= o.max;
+  const v = clamp(it.v0 + a, 0, 1), was = it.v;
+  it.v = it.t = v; aptOpenPose(it);
+  if ((v === 0 || v === 1) && was !== v) { pulse(hand, v ? 0.3 : 0.45, 14); aptOpenSnd(it, v ? 'stop' : 'shut', 0.7); }
+  if (aptOpenHandleW(it, AOPEN.v).distanceTo(AOPEN.hp) > 0.3) { it.held = null; it.t = it.v; }   // hand pulled off the handle
+}
+function aptOpenTick(dt) {
+  if (!AOPEN.list.length) return;
+  for (const it of AOPEN.list) {
+    if (it.held) { aptOpenFollow(it); continue; }
+    if (it.v === it.t) continue;
+    const dv = it.t - it.v, sp = it.o.type === 'drawer' ? 1.9 : 1.25;
+    const step = Math.max(sp * 0.35 * dt, Math.abs(dv) * Math.min(1, 7 * dt));
+    it.v = Math.abs(dv) <= step ? it.t : it.v + Math.sign(dv) * step;
+    aptOpenPose(it);
+    if (it.v === it.t) aptOpenSnd(it, it.t ? 'stop' : 'shut', it.t ? 0.6 : 1);
+  }
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { AOPEN, aptOpenInit, aptOpenSet, aptOpenDesk, aptOpenGrip, aptOpenTick, aptOpenPose });
 
 </script>
 </body>

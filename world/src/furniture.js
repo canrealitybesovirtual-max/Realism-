@@ -803,18 +803,29 @@ function leafBlade(sz, rnd) {
   return smooth(g);
 }
 function nightstand(B, M, x, z, ry) {
-  // walnut case on a recessed plinth, two drawers with 3 mm reveals, bronze bar pulls
+  // walnut case on a recessed plinth, two real drawers (3 mm reveals, bronze bar pulls) that slide out
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  const W = 0.55, D = 0.42, H = 0.56, pl = 0.06;
+  const W = 0.55, D = 0.42, H = 0.56, pl = 0.06, t = 0.018, y0 = pl, y1 = H - 0.025, fz = D / 2 - 0.019;
   add(at(rbox(W - 0.06, pl, D - 0.06, 0.004, 1), 0, pl / 2, -0.01), M.blackMatte);
-  add(at(wcut(rbox(W, H - pl - 0.025, D - 0.02, 0.004, 2)), 0, pl + (H - pl - 0.025) / 2, -0.01), M.walnut);
-  add(at(boardTop(W + 0.006, 0.025, D - 0.014, 0.21, 0.0025), 0, H - 0.0125, -0.008), M.walnut);   // solid top, a hair proud
+  // case: sides, back, bottom (walnut outside), a divider between the drawers
+  const box = (a0, a1, b0, b1, c0, c1, m) => add(at(wcut(rbox(a1 - a0, b1 - b0, c1 - c0, 0.002, 1)), (a0 + a1) / 2, (b0 + b1) / 2, (c0 + c1) / 2), m);
+  box(-W / 2, -W / 2 + t, y0, y1, -D / 2 + 0.0, fz, M.walnut); box(W / 2 - t, W / 2, y0, y1, -D / 2, fz, M.walnut);
+  box(-W / 2, W / 2, y0, y1, -D / 2, -D / 2 + t, M.walnut); box(-W / 2 + t, W / 2 - t, y0, y0 + t, -D / 2 + t, fz, M.walnut);
   const fh = (H - pl - 0.05 - 0.003) / 2;
+  box(-W / 2 + t, W / 2 - t, pl + 0.025 + fh - 0.006, pl + 0.025 + fh + 0.009, -D / 2 + t, fz, M.walnut);
+  add(at(boardTop(W + 0.006, 0.025, D - 0.014, 0.21, 0.0025), 0, H - 0.0125, -0.008), M.walnut);   // solid top, a hair proud
+  const things = [
+    (a) => { a(at(rbox(0.15, 0.022, 0.21, 0.002, 1), -0.1, 0.011, -0.2), M.bookCream); a(at(rbox(0.13, 0.016, 0.19, 0.002, 1), -0.1, 0.03, -0.2), M.bookBlack);
+             a(at(rbox(0.09, 0.05, 0.09, 0.006, 1), 0.12, 0.025, -0.16), M.lacquer); },                                // books, a watch box
+    (a) => { a(at(rbox(0.3, 0.06, 0.2, 0.01, 2), -0.02, 0.03, -0.18), M.linen); a(at(rbox(0.1, 0.03, 0.14, 0.003, 1), 0.16, 0.015, -0.22), M.bookGrey); },   // folded linen, a notebook
+  ];
   for (const k of [0, 1]) {
     const y = pl + 0.025 + fh / 2 + k * (fh + 0.003);
-    add(at(rbox(W - 0.03, fh, 0.004, 0.0015, 1), 0, y, D / 2 - 0.022), M.blackMatte);          // reveal shadow
-    add(at(wcut(rbox(W - 0.036, fh - 0.006, 0.019, 0.003, 2)), 0, y, D / 2 - 0.0095), M.walnut);     // drawer front
-    add(at(barPull(0.12, 0.0055, 0.022, 0.018).rotateZ(Math.PI / 2), 0, y + fh * 0.18, D / 2), M.bronzeLight);
+    const d = opnPart('drawer', x, z, ry, 0, y - fh / 2, fz, { type: 'drawer', max: 0.3, w: W - 0.036, h: fh, handle: [0, fh / 2 + fh * 0.18, 0.019] });
+    d.add(at(wcut(rbox(W - 0.036, fh - 0.006, 0.019, 0.003, 2)), 0, fh / 2, 0.0095), M.walnut);     // drawer front
+    d.add(at(barPull(0.12, 0.0055, 0.022, 0.018).rotateZ(Math.PI / 2), 0, fh / 2 + fh * 0.18, 0.019), M.bronzeLight);
+    hollow((g, m) => d.add(g, m), -W / 2 + t + 0.012, W / 2 - t - 0.012, 0.012, fh - 0.03, -0.34, 0, 0.01, M.melamine, false);
+    things[k]((g, m) => d.add(at(g, 0, 0.022, 0), m));
   }
   B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.walnut });
 }
@@ -823,9 +834,25 @@ function nightstand(B, M, x, z, ry) {
 // uprights on cabinets, along x at depth z0..z0+d facing +z (turned by ry)
 function shelving(B, M, x, z, ry, W, H, d, mat, cols = 4, rows = 5) {
   const add = (geo, m) => B.add(at(geo, x, 0, z, ry), m);
-  const t = 0.035, cab = 0.7;
-  add(at(rbox(W, cab, d, 0.004, 1), 0, cab / 2, 0), mat);
-  for (let c = 1; c < cols; c++) add(at(rbox(0.004, cab - 0.06, 0.003, 0.001, 1), -W / 2 + W * c / cols, cab / 2, d / 2 + 0.001), M.blackMatte);
+  const t = 0.035, cab = 0.7, pt = 0.018, fz = d / 2 - 0.02;
+  // base cabinet: hollow carcass, a shelf in each bay, hinged doors (pairs per bay, 3 mm gaps)
+  const pan = (a0, a1, b0, b1, c0, c1) => add(at(rbox(a1 - a0, b1 - b0, c1 - c0, 0.002, 1), (a0 + a1) / 2, (b0 + b1) / 2, (c0 + c1) / 2), mat);
+  pan(-W / 2, -W / 2 + pt, 0, cab, -d / 2, fz); pan(W / 2 - pt, W / 2, 0, cab, -d / 2, fz); pan(-W / 2, W / 2, 0, cab, -d / 2, -d / 2 + pt);
+  pan(-W / 2 + pt, W / 2 - pt, 0.06, 0.06 + pt, -d / 2 + pt, fz); pan(-W / 2, W / 2, cab - 0.03, cab, -d / 2, d / 2);
+  add(at(rbox(W - 0.03, 0.06, d - 0.06, 0.002, 1), 0, 0.03, -0.03), M.blackMatte);
+  const bw = W / cols;
+  for (let c = 0; c < cols; c++) {
+    const u0 = -W / 2 + bw * c, u1 = u0 + bw;
+    if (c) pan(u0 - pt / 2, u0 + pt / 2, 0.06, cab - 0.03, -d / 2 + pt, fz);
+    add(at(rbox(bw - pt - 0.006, 0.016, d - 0.08, 0.001, 1), (u0 + u1) / 2, 0.36, -0.02), M.melamine);
+    for (const [y, kk] of [[0.06 + pt, c], [0.368, c + 1]]) for (let i = 0; i < 5; i++) { const bh = 0.2 + ((i + kk) % 3) * 0.03; add(at(rbox(0.032 + (i * 7 + kk) % 3 * 0.008, bh, 0.2, 0.002, 1), u0 + 0.08 + i * 0.045, y + bh / 2, -0.04), [M.bookCream, M.bookGrey, M.bookBlack][(i + kk) % 3]); }
+    for (const side of [-1, 1]) {
+      const hx = side < 0 ? u0 + 0.0015 : u1 - 0.0015, w = bw / 2 - 0.003, sx = side < 0 ? w / 2 : -w / 2, dh = cab - 0.03 - 0.06 - 0.006;
+      const dd = opnPart('cab', x, z, ry, hx, 0.063, fz, { type: 'hinge', max: side < 0 ? -1.75 : 1.75, w, h: dh, handle: [side < 0 ? w - 0.03 : -(w - 0.03), dh - 0.08, 0.02] });
+      dd.add(at(rbox(w, dh, 0.02, 0.002, 1), sx, dh / 2, 0.01), mat);
+      dd.add(at(rbox(0.004, 0.08, 0.003, 0.001, 1), side < 0 ? w - 0.012 : -(w - 0.012), dh - 0.08, 0.0205), M.blackMatte);   // finger pull groove
+    }
+  }
   for (let c = 0; c <= cols; c++) add(at(rbox(t, H - cab, d - 0.04, 0.003, 1), -W / 2 + t / 2 + (W - t) * c / cols, cab + (H - cab) / 2, -0.02), mat);
   for (let r = 1; r <= rows; r++) add(at(rbox(W, t, d - 0.04, 0.003, 1), 0, cab + (H - cab) * r / rows - t / 2, -0.02), mat);
   add(at(rbox(W, H - cab, 0.02, 0.002, 1), 0, cab + (H - cab) / 2, -d / 2 + 0.01), mat);
@@ -1217,21 +1244,28 @@ function tub(B, M, x, y, z, ry, L = 1.7, W = 0.78) {
 function vanity(B, M, x, y, z, ry, L, top, body, basins = [0], wall = 0) {
   const add = (g, m) => B.add(at(g, x, y, z, ry), m);
   const D = 0.56, H = 0.86;
-  // carcass: solid below the basins, a frame round them (front, back and end panels, 18 mm) so the
-  // bowls hang open in the cabinet under the stone, as undermount basins are fitted
-  const y0 = H - 0.2, pt = 0.018;
-  add(at(rbox(L, y0 - 0.12, D - 0.02, 0.004, 1), 0, 0.12 + (y0 - 0.12) / 2, -0.01), body);
-  add(at(rbox(L, H - y0, pt, 0.002, 1), 0, (y0 + H) / 2, D / 2 - 0.02 - pt / 2), body);
-  add(at(rbox(L, H - y0, pt, 0.002, 1), 0, (y0 + H) / 2, -D / 2 + pt / 2), body);
-  for (const sg of [-1, 1]) add(at(rbox(pt, H - y0, D - 0.02, 0.002, 1), sg * (L / 2 - pt / 2), (y0 + H) / 2, -0.01), body);
+  // carcass: hollow (sides, back, bottom, a rail between the drawers, the shadowed shelf under the bowls) and a frame round
+  // the bowls (front, back and end panels, 18 mm) so they hang open in the cabinet under the stone, as undermount basins are fitted
+  const y0 = H - 0.2, pt = 0.018, fz = D / 2 - 0.02;
+  const pan = (a0, a1, b0, b1, c0, c1, m) => add(at(rbox(a1 - a0, b1 - b0, c1 - c0, 0.002, 1), (a0 + a1) / 2, (b0 + b1) / 2, (c0 + c1) / 2), m);
+  for (const sg of [-1, 1]) pan(sg * L / 2 - (sg > 0 ? pt : 0), sg * L / 2 + (sg < 0 ? pt : 0), 0.12, H, -D / 2, fz, body);
+  pan(-L / 2, L / 2, 0.12, H, -D / 2, -D / 2 + pt, body); pan(-L / 2 + pt, L / 2 - pt, 0.12, 0.12 + pt, -D / 2 + pt, fz, body);
+  pan(-L / 2 + pt, L / 2 - pt, 0.49, 0.508, -D / 2 + pt, fz, body);
+  add(at(rbox(L, H - y0, pt, 0.002, 1), 0, (y0 + H) / 2, fz - pt / 2), body);
   add(at(rbox(L - 2 * pt, 0.006, D - 0.02 - 2 * pt, 0.001, 1), 0, y0 + 0.003, -0.01), M.blackMatte);   // the shadowed shelf under the bowls
   add(at(rbox(L - 0.04, 0.12, D - 0.06, 0.002, 1), 0, 0.06, -0.03), M.blackMatte);          // recessed toe kick
-  // drawer fronts: columns per basin, two drawers each, 3 mm gaps, slim bronze pulls
+  // drawers: columns per basin, two each (a deep one, a shallow one under the bowl), 3 mm gaps, slim bronze pulls
   const cols = Math.max(1, basins.length), cw = L / cols;
-  for (let c = 0; c < cols; c++) for (const [y0, y1] of [[0.12, 0.5], [0.503, H - 0.003]]) {
-    const u = -L / 2 + cw * (c + 0.5);
-    add(at(rbox(cw - 0.003, y1 - y0 - 0.003, 0.02, 0.002, 1), u, (y0 + y1) / 2, D / 2 - 0.01), body);
-    add(at(barPull(0.13, 0.006, 0.026, 0.02).rotateZ(Math.PI / 2), u, y1 - 0.05, D / 2), M.bronzeLight);
+  for (let c = 0; c < cols; c++) for (const [d0, d1, k] of [[0.12, 0.5, 0], [0.503, H - 0.003, 1]]) {
+    const u = -L / 2 + cw * (c + 0.5), fh = d1 - d0 - 0.003;
+    const d = opnPart('drawer', x, z, ry, u, y + d0, fz, { type: 'drawer', max: 0.36, w: cw - 0.003, h: fh, handle: [0, fh - 0.05, 0.02] });
+    d.add(at(rbox(cw - 0.003, fh, 0.02, 0.002, 1), 0, fh / 2, 0.01), body);
+    d.add(at(barPull(0.13, 0.006, 0.026, 0.02).rotateZ(Math.PI / 2), 0, fh - 0.05, 0.02), M.bronzeLight);
+    const bh = k ? Math.min(0.11, y0 - d0 - 0.03) : fh - 0.06;                                 // the top drawer is a shallow tray under the bowl
+    hollow((g, m) => d.add(g, m), -cw / 2 + pt + 0.012, cw / 2 - pt - 0.012, 0.015, 0.015 + bh, -0.42, 0, 0.01, M.melamine, false);
+    const a = (g, m) => d.add(at(g, 0, 0.025, 0), m);
+    if (k) { for (let i = 0; i < 3; i++) a(at(lathe([[0, 0], [0.022, 0], [0.022, 0.07], [0.012, 0.085], [0, 0.085]], 16), -0.12 + i * 0.07, 0, -0.1 - (i % 2) * 0.08), i % 2 ? M.lacquerWhite : M.amberGlass); a(at(rbox(0.12, 0.02, 0.08, 0.004, 1), 0.1, 0.01, -0.25), M.bronzeLight); }
+    else { for (let i = 0; i < 2; i++) a(at(rbox(0.3, 0.07, 0.22, 0.03, 2), -0.05 + i * 0.02, 0.035 + i * 0.07, -0.18), M.towel || M.linen); a(at(rbox(0.09, 0.2, 0.06, 0.006, 1), 0.16, 0.1, -0.3), M.lacquerWhite); }
   }
   let vm = null;                                   // the basins' mirrors share one plane (one mirror material)
   // stone top cut over undermount basins (150 mm deep), deck faucets behind them
