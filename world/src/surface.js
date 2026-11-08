@@ -446,8 +446,11 @@ normal = normalize( mix( normal, nonPerturbedNormal, max( srPud, uWet * 0.55 ) )
 
 // glass: Fresnel reflection on top, grey absorption below, nothing scattered
 const GLASS_OUT = /* glsl */`
+// the room seen in the glass is weighed against daylight outside, which is ~20x brighter than the
+// room: the photos show only a faint ghost, strongest at grazing angles
 float srF = 0.04 + 0.96 * pow( 1.0 - saturate( dot( normal, geometryViewDir ) ), 5.0 );
-gl_FragColor = vec4( totalSpecular, srF + ( 1.0 - srF ) * uGlassAbs );`;
+float srK = mix( 0.22, 1.0, srF );
+gl_FragColor = vec4( totalSpecular * srK, srF * srK + ( 1.0 - srF * srK ) * uGlassAbs );`;
 
 function patch(mat, kind, U) {
   mat.onBeforeCompile = (sh) => {
