@@ -1412,7 +1412,7 @@ export function furnish(M, Q) {
     books(b, M, 14.75, 0.36, 3.4, 0.2, 2); bowl(b, M, 15.0, 0.36, 3.7, 0.12);
     desk(b, M, 13.17, 2.9, Math.PI / 2);                               // the computer (hub.js draws its screen)
     diningChair(b, M, 13.92, 2.9, -Math.PI / 2);
-    print(b, M, 12.79, 1.95, 5.3, 0.9, 1.2, '+x', M.shardArt);
+    print(b, M, 12.79, 1.95, Q && Q.cqc ? 6.05 : 5.3, 0.9, 1.2, '+x', M.shardArt);   // CQC: moved south for the gun rack beside the desk
     for (const [a, c] of [[13.42, 13.86], [16.2, 16.65]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);
   });
   goldChandelier(B, M, 14.8, 3.5, F2 + 2.75, C2c);

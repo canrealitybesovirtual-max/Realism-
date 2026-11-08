@@ -23938,6 +23938,7 @@ function coverHit(hit, P, N, dir, d, E) {
   if (rh) return ragdollHit(rh, P, N, dir, d, E);
   const prop = propByCollider.get(h);
   if (prop) return prop.table ? tableHit(prop, hit.collider, P, N, dir, d, E) : null;
+  const aw = AWALL.byCol.get(h); if (aw) return aptWallHit(aw, P, N, dir, E);   // APARTMENT WALL DAMAGE: an interior partition
   const rec = coverByCollider.get(h);
   if (!rec) return null;
   if (rec.type === 'crate') return crateHit(rec, P, N, dir, E);
@@ -29529,7 +29530,7 @@ const OPT_GROUPS = [
   ['physics', 'PHYSICS', [['pen', 'Penetration + real bullet push'], ['downed', 'Wounded men fall and crawl'], ['surrender', 'Enemies surrender'], ['stealth', 'Stealth (light, noise)'],
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
-    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks']]],
+    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
@@ -50399,6 +50400,7 @@ function* aptBuilder(room) {
   if (!A.hemi) A.hemi = new THREE.HemisphereLight('#fbf3e8', '#ddd6cc', 0);   // daylight sky + bounce (only while you are in the apartment)
   G.add(A.hemi);
   aptPanelBuild(room);
+  aptWallsInit(room, apt, M); aptRackBuild(room, M);           // wall damage masks (before the compile below), the gun rack beside the raid computer
   aptSunAim();
   room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps, mov: furn.movables || [], panes: apt.panes };
   room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
@@ -50491,6 +50493,7 @@ function aptActivate(room, box, walk) {
     if (hx < 0.004 || hy < 0.004 || hz < 0.004) continue;
     const lx = aptLX(cz), lz = aptLZ(cx), ly = yaw - Math.PI / 2;   // the box turns with the apartment
     const bc = box(hx, hy, hz, lx, cy, lz, 0.6, ly, kindOf(c));
+    if (c.awi !== undefined) aptWallCol(room, c, bc);             // a partition: shaped damage (APARTMENT WALL DAMAGE)
     if (c.pane !== undefined) {                                   // a window pane: shatters (aptPaneBreak)
       const P = room.apt.panes.list[c.pane];
       if (P.broken) { world.removeCollider(bc, false); colliderInfo.delete(bc.handle); room.colliderHandles.pop(); continue; }
@@ -50505,6 +50508,7 @@ function aptActivate(room, box, walk) {
   }
   room.navCache = yardNav(room, []);                              // floor one (walk boxes held up on floor two are left out)
   aptMovables(room);
+  aptRackActivate(room, box, walk);                               // the gun rack's board and shelf
 }
 // Loose furniture (chairs, stools, side tables, lamps): real physics props, so rounds, kicks, blasts and bodies push
 // them about and knock them over. Built afresh each time the room activates (props go with the room, as any room's).
@@ -50785,6 +50789,7 @@ function aptRaidStop() {
 function aptRaidStart(id) {
   const M = APT_RAIDS[id], A = APTS; if (!M || !A || !A.room || !A.room.active) return;
   aptRaidStop();
+  try { aptRackRestock(A.room); } catch (e) { console.warn('apartment gun rack not restocked', e); }   // the rack is full when they come
   APT_RAID.mode = id; APT_RAID.wave = 0; APT_RAID.waves = M.waves.length; APT_RAID.next = performance.now() / 1000 + 2.5;
   toast(`Raid: ${M.name}. They are coming in`, 2400); vrNote(`RAID: ${M.name.toUpperCase()}`, 2.5);
 }
@@ -50857,6 +50862,7 @@ let _apBlink = 0;
 function aptPanelTick() {
   const A = APTS; if (!A || !A.room || !A.room.active || !APTP.mesh.parent) return;
   aptRaidTick();
+  aptRackTick(A.room); aptWallsTick();
   let changed = false;
   for (const P of APT_PANELS) {
     let hover = null; P.deskHit = null;
@@ -50880,6 +50886,462 @@ function aptPanelTick() {
   if (changed) aptPanelDraw();
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+
+
+/* =========================================================================
+ *  APARTMENT GUN RACK (?aptrack=off): a wall-mounted rack on the library's west wall (floor two), right beside the
+ *  raid computer's desk. Dark oak back board, three rows of rubber-sleeved powder-coated J-hooks for the long guns
+ *  (AKM bottom, M4A1-S, AWM on top; muzzles south, left side out, each resting on its hooks under the handguard and
+ *  the stock, measured from the drawn gun), a felt-lined oak shelf on steel brackets with the Glock 17 and the M1911
+ *  standing muzzle-in on pegs and two magazines of every gun. The guns and magazines are the real items, kinematic at
+ *  rest like the safe room's gun locker (GL): grip in VR, aim + E / click on a computer. Restocked when the room
+ *  activates and when a raid starts (never a second of a gun type you carry). Board and shelf have colliders and one
+ *  floor-two walk box. Rack frame: x along the wall (= room-local x), y up from floor two, z out of the wall
+ *  (= room-local z); apartment: x = wx + z, z = zc - x.
+ * ========================================================================= */
+const APTR = {
+  on: !/[?&]aptrack=off\b/.test(QS), long: ['akmn', 'm4a1s', 'awp'], pist: ['g17', 'm1911'],
+  wx: 12.78, zc: 4.62, W: 1.46, bT: 0.022, y0: 0.8, top: 2.42, shelf: 0.92, sD: 0.27, clr: 0.03,
+  fit: null, guns: {}, spare: {}, mspare: {}, at: 0,
+  qL: new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0))),   // muzzle -x, left side out
+  qP: new THREE.Quaternion(), qMag: new THREE.Quaternion().setFromAxisAngle(Y_AXIS, Math.PI)
+};
+// The board, shelf and brackets (sizes fixed, so the colliders do not wait for the guns); the hooks and pegs come with the fit.
+function aptRackBuild(room, M) {
+  if (!APTR.on || !room.aptG) return;
+  const { W, bT, y0, top, shelf, sD } = APTR, g = new THREE.Group(), wood = [], steel = [], felt = [], brass = [];
+  g.name = 'gun rack'; g.position.set(APTR.wx, APT.L2, APTR.zc); g.rotation.y = Math.PI / 2;
+  const B = (a, w, h, d, x, y, z, r = 0.003) => a.push(placed(rbox(w, h, d, Math.min(r, Math.min(w, h, d) * 0.45)), x, y, z));
+  B(wood, W, top - y0, bT, 0, (y0 + top) / 2, bT / 2, 0.004);                                  // back board
+  B(wood, W + 0.03, 0.035, bT + 0.018, 0, top + 0.0175, (bT + 0.018) / 2, 0.006);            // crown
+  B(wood, W + 0.01, 0.028, bT + 0.008, 0, y0 + 0.014, (bT + 0.008) / 2, 0.005);             // base rail
+  B(wood, W, 0.024, sD, 0, shelf - 0.012, bT + sD / 2, 0.004);                                 // shelf
+  B(wood, W, 0.032, 0.014, 0, shelf + 0.004, bT + sD - 0.007, 0.003);                          // its front lip
+  B(felt, W - 0.01, 0.004, sD - 0.02, 0, shelf + 0.002, bT + (sD - 0.02) / 2, 0.001);          // felt pad
+  for (const sx of [-W / 2 + 0.14, W / 2 - 0.14]) {                                             // shelf brackets: steel L with a gusset
+    B(steel, 0.022, 0.2, 0.004, sx, shelf - 0.124, bT + 0.002, 0.001);
+    B(steel, 0.022, 0.004, sD - 0.03, sx, shelf - 0.026, bT + (sD - 0.03) / 2, 0.001);
+    steel.push(placed(new THREE.BoxGeometry(0.004, 0.13, 0.004), sx, shelf - 0.09, bT + 0.07, 0.95, 0, 0));
+  }
+  for (const sx of [-W / 2 + 0.05, W / 2 - 0.05]) for (const sy of [y0 + 0.07, top - 0.07]) {  // brass screw heads
+    brass.push(placed(new THREE.CylinderGeometry(0.0055, 0.0055, 0.003, 14), sx, sy, bT + 0.0015, Math.PI / 2));
+  }
+  const black = M.blackMetal || KIT.mat.steel, rubber = KIT.mat.blackPlastic || KIT.mat.dark || black;
+  const ms = [merged(wood, M.woodDark || KIT.mat.wood, true), merged(felt, KIT.mat.fabric, false), merged(steel, black, false), merged(brass, M.bronze || KIT.mat.steel, false)];
+  for (const m of ms) g.add(m);
+  const pl = glPlate('APARTMENT ARMORY', 0.3, 0.04); pl.position.set(0, top - 0.04, bT + 0.0012); g.add(pl);
+  room.aptG.add(g);
+  room.aptRack = { grp: g, hooks: false, stocked: false, black, rubber };
+}
+// Colliders (board, shelf) and one walk box held up on floor two (aptActivate).
+function aptRackActivate(room, box, walk) {
+  const R = room.aptRack; if (!R) return;
+  const { W, bT, y0, top, shelf, sD } = APTR, L2 = APT.L2, lx = aptLX(APTR.zc), lz = APTR.wx - APT.cx;
+  box(W / 2, (top - y0) / 2, bT / 2, lx, L2 + (y0 + top) / 2, lz + bT / 2, 0.6, 0, 'wood');
+  box(W / 2, 0.014, sD / 2, lx, L2 + shelf - 0.012, lz + bT + sD / 2, 0.6, 0, 'wood');
+  walk(lx, lz + (bT + sD) / 2, W / 2, (bT + sD) / 2, L2 + top + 0.04, 0, { bot: L2 - 0.05 });
+  R.stocked = false;
+}
+const _arB = new THREE.Box3();
+function aptRackSec(root, z) {                                   // the drawn gun's section around z (a long barrel has vertices only at its ends)
+  for (const dz of [0.012, 0.03, 0.08]) { const s = glBounds(root, _arB, { z, dz }); if (!s.isEmpty()) return s.clone(); }
+  return null;
+}
+// The layout, measured once from the drawn guns and magazines (null until every model is loaded).
+function aptRackFit() {
+  if (APTR.fit) return APTR.fit;
+  const all = APTR.long.concat(APTR.pist);
+  if (!all.every((k) => glReady(k))) return null;
+  const { W, bT, shelf, clr } = APTR, F = { long: [], pist: [], mags: [] };
+  const take = (k) => { const p = createGun(k); APTR.spare[k] = p; return glBounds(p.root, new THREE.Box3()).clone(); };
+  let x = -W / 2 + 0.07;
+  for (const k of APTR.pist) {                                   // pistols standing on the shelf, muzzle on a peg in the board
+    const b = take(k), w = b.max.x - b.min.x, mz = WEAPON_DEFS[k].muzzle || [0, 0, b.min.z];
+    const pos = new THREE.Vector3(x + w / 2 - (b.min.x + b.max.x) / 2, shelf + 0.006 - b.min.y, bT + 0.035 - b.min.z);
+    F.pist.push({ k, pos, quat: APTR.qP, peg: [pos.x + mz[0], pos.y + mz[1], pos.z + mz[2] + 0.04] });
+    x += w + 0.075;
+  }
+  const types = [...new Set(all.map((k) => WEAPON_DEFS[k].magType).filter((m) => MAG_DEFS[m]))];
+  let mTop = shelf + 0.2;
+  const slots = [];
+  for (const m of types) for (let j = 0; j < 2; j++) {
+    const p = createMag(m, MAG_DEFS[m].capacity), b = glBounds(p.root, new THREE.Box3()).clone();
+    (APTR.mspare[m] || (APTR.mspare[m] = [])).push(p);
+    slots.push({ k: m, b, w: b.max.x - b.min.x });
+    mTop = Math.max(mTop, shelf + 0.006 + b.max.y - b.min.y);
+  }
+  const room0 = W / 2 - 0.05 - x, gap = slots.length ? Math.max(0.008, (room0 - slots.reduce((s, q) => s + q.w, 0)) / slots.length) : 0;
+  for (const S of slots) {
+    const cx = x + S.w / 2;
+    F.mags.push({ k: S.k, p: null, at: new THREE.Vector3(cx + (S.b.min.x + S.b.max.x) / 2, shelf + 0.006 - S.b.min.y, bT + 0.15 + (S.b.min.z + S.b.max.z) / 2) });
+    x += S.w + gap;
+  }
+  // long guns, bottom up, each on two hooks (handguard, stock)
+  let base = mTop + 0.06;
+  const rows = APTR.long.map((k) => ({ k, b: take(k) }));
+  const need = rows.reduce((s, r) => s + r.b.max.y - r.b.min.y + 0.05, 0), spare = APTR.top - 0.05 - base - need;
+  const gapY = clamp(0.05 + spare / Math.max(1, rows.length), 0.02, 0.12);
+  for (const { k, b } of rows) {
+    const L = b.max.z - b.min.z, px = -(b.min.z + b.max.z) / 2, py = base - b.min.y, pz = bT + clr + b.max.x;
+    const hooks = [];
+    for (const zh of [b.min.z + 0.36 * L, b.max.z - 0.2 * L]) {
+      const s = aptRackSec(APTR.spare[k].root, zh); if (!s) continue;
+      hooks.push({ x: zh + px, y: py + s.min.y, z0: bT, z1: pz - s.min.x + 0.014, zc: pz - (s.min.x + s.max.x) / 2 });
+    }
+    F.long.push({ k, pos: new THREE.Vector3(px, py, pz), quat: APTR.qL, hooks });
+    base = py + b.max.y + gapY;
+  }
+  APTR.fit = F;
+  return F;
+}
+// Hooks and pegs, once per built rack: black powder-coated rod out of the board, a rubber sleeve, an upturned tip.
+function aptRackHooks(R, F) {
+  if (R.hooks) return;
+  R.hooks = true;
+  const st = [], rub = [], r = 0.006;
+  for (const S of F.long) for (const h of S.hooks) {
+    const len = h.z1 - h.z0, y = h.y - r - 0.004;
+    st.push(placed(new THREE.CylinderGeometry(0.014, 0.016, 0.006, 16), h.x, y, h.z0 + 0.003, Math.PI / 2));   // base rose
+    st.push(placed(new THREE.CylinderGeometry(r, r, len, 12), h.x, y, h.z0 + len / 2, Math.PI / 2));
+    rub.push(placed(new THREE.CylinderGeometry(r + 0.004, r + 0.004, Math.max(0.02, len - 0.03), 14), h.x, y, h.z0 + 0.015 + (len - 0.03) / 2, Math.PI / 2));
+    rub.push(placed(new THREE.CylinderGeometry(r + 0.003, r + 0.004, 0.034, 12), h.x, y + 0.017, h.z1, 0));   // upturned tip
+    rub.push(placed(new THREE.SphereGeometry(r + 0.003, 10, 8), h.x, y + 0.034, h.z1));
+  }
+  for (const S of F.pist) {
+    const [x0, y0, z1] = S.peg, L = z1 - APTR.bT;
+    st.push(placed(new THREE.CylinderGeometry(0.0034, 0.0034, L, 10), x0, y0, APTR.bT + L / 2, Math.PI / 2));
+    st.push(placed(new THREE.CylinderGeometry(0.009, 0.01, 0.005, 16), x0, y0, APTR.bT + 0.0025, Math.PI / 2));
+  }
+  if (st.length) R.grp.add(merged(st, R.black, false));
+  if (rub.length) R.grp.add(merged(rub, R.rubber, false));
+  dirtyShadows();
+}
+function arWorld(R, pos, quat) { return GL.M.compose(pos, quat, GL.one).premultiply(R.grp.matrixWorld).decompose(GL.v, GL.q, GL.s); }
+function arAt(R, p, pos, quat) { if (!p.inWorld || !p.kinematic || p.holders.length) return false; arWorld(R, pos, quat); return p.root.position.distanceTo(GL.v) < 0.01; }
+function arPut(room, R, p, pos, quat) { arWorld(R, pos, quat); itemToWorld(p, GL.v, GL.q, room); setKinematic(p); }
+function aptRackRestock(room) {
+  const R = room && room.aptRack, F = aptRackFit();
+  if (!R || !F || !room.active) return 0;
+  aptRackHooks(R, F);
+  R.grp.updateWorldMatrix(true, false);
+  let n = 0;
+  for (const S of F.long.concat(F.pist)) {
+    let p = APTR.guns[S.k];
+    if (p && (p.removing || !p.inWorld)) p = APTR.guns[S.k] = null;
+    if (props.some((q) => q.item && q.item.kind === 'gun' && q.item.type === S.k && q !== p && glCarried(q.item))) continue;   // never a second of a gun you carry
+    if (p && (arAt(R, p, S.pos, S.quat) || glCarried(p.item))) continue;
+    if (!p) { p = APTR.spare[S.k] || createGun(S.k); APTR.spare[S.k] = null; }
+    APTR.guns[S.k] = p;
+    arPut(room, R, p, S.pos, S.quat); n++;
+  }
+  for (const S of F.mags) {
+    let p = S.p;
+    if (p && (p.removing || !p.inWorld || p.holders.length)) p = S.p = null;        // seated, in a hand or gone: a fresh one
+    if (p && arAt(R, p, S.at, APTR.qMag)) continue;
+    if (!p) { const sp = APTR.mspare[S.k]; p = S.p = (sp && sp.length ? sp.pop() : null) || createMag(S.k, MAG_DEFS[S.k].capacity); }
+    p.item.rounds = MAG_DEFS[S.k].capacity; updateMagVisual(p.item);
+    arPut(room, R, p, S.at, APTR.qMag); n++;
+  }
+  R.stocked = true;
+  return n;
+}
+function aptRackTick(room) {                                     // stocks the rack once the guns' models are in (they load after the apartment is built)
+  const R = room && room.aptRack; if (!R || R.stocked || !room.active) return;
+  const now = performance.now(); if (now - APTR.at < 1000) return; APTR.at = now;
+  try { aptRackRestock(room); } catch (e) { console.warn('apartment gun rack not stocked', e); R.stocked = true; }
+}
+
+/* =========================================================================
+ *  APARTMENT WALL DAMAGE (?aptwalls=off): the apartment's interior partitions (thin plaster boxes of its own colliders:
+ *  8-24 cm, both floors) are stud walls that tear like CQC's drywall partitions (PDMG). The walls are merged meshes, so
+ *  the damage lives in apartment coordinates: every partition face has a region in one R8 mask atlas (2 cm texels), a
+ *  5 cm top-down index texture (one channel per floor) says which partition a fragment is in, a small float texture
+ *  holds each partition's box and atlas regions. One onBeforeCompile on the apartment plaster: open = the view looks
+ *  into the stud cavity (the far board's brown back, a galvanised stud web where the view crosses one, every 406 mm)
+ *  or straight through where the far face is open too (discard); round the holes crushed paint and the gypsum core.
+ *  Rounds (coverHit): each face is a sheet (CONFIG.cover.resist.sheet), a stud between the two points costs
+ *  resist.stud, an open point lets it through free; every round tears its own hole (entry ~1 cm, exit 2-3 cm), cells
+ *  of CONFIG.cover.cell take its damage (+ splash) and break out as ~17 cm ragged blobs that merge (chunks of board,
+ *  dust, the break sound; decals in a blob purged). Holes and cell damage are kept in room memory while the room lives
+ *  and re-stamped when it is rebuilt. Thick plaster (outer walls, cores, clad columns) and stone stay hard: holes and
+ *  spall only (step 119's plaster-over-block / concrete).
+ * ========================================================================= */
+const AWALL = { on: !/[?&]aptwalls=off\b/.test(QS), px: 50, AW: 2048, cap: 900, list: [], byCol: new Map(), room: null, mask: null, maskData: null,
+  ix: { x0: -0.6, z0: -0.6, cs: 0.05, nx: 384, nz: 416 }, floorY: 4.42, studs: 0.406, studOff: 0.02,
+  u: { uAwInv: { value: new THREE.Matrix4() }, uAwIdx: { value: null }, uAwDat: { value: null }, uAwMask: { value: null }, uAwI: { value: new THREE.Vector4() }, uAwMs: { value: new THREE.Vector3() } } };
+const AW_GLSL = `
+varying vec3 vAwP; varying vec3 vAwN;
+uniform mat4 uAwInv; uniform sampler2D uAwIdx; uniform highp sampler2D uAwDat; uniform sampler2D uAwMask; uniform vec4 uAwI; uniform vec3 uAwMs;
+float awH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float awN(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(awH(i), awH(i + vec2(1.0, 0.0)), f.x), mix(awH(i + vec2(0.0, 1.0)), awH(i + vec2(1.0, 1.0)), f.x), f.y); }
+float awMaskAt(vec2 o, vec2 sy) { return texture2D(uAwMask, (o + sy * uAwMs.z + 0.5) / uAwMs.xy).r; }`;
+const AW_FRAG = `
+  float awM = 0.0, awPn = 0.5, awIn = 0.0;
+  {
+    vec3 ap = (uAwInv * vec4(vAwP, 1.0)).xyz, an = normalize(mat3(uAwInv) * vAwN), q = ap - an * 0.02;
+    ivec2 ic = ivec2(floor((q.xz - uAwI.xy) * uAwI.z));
+    if (ic.x >= 0 && ic.y >= 0 && ic.x < ${AWALL.ix.nx} && ic.y < ${AWALL.ix.nz}) {
+      vec2 rg = texelFetch(uAwIdx, ic, 0).rg;
+      int id = int((q.y < uAwI.w ? rg.r : rg.g) * 255.0 + 0.5);
+      if (id > 0) {
+        vec4 A = texelFetch(uAwDat, ivec2(0, id), 0), B = texelFetch(uAwDat, ivec2(1, id), 0), C = texelFetch(uAwDat, ivec2(2, id), 0);
+        bool zx = A.w > 0.5;
+        float nt = zx ? an.x : an.z;
+        if (all(greaterThan(q, A.xyz - 0.003)) && all(lessThan(q, B.xyz + 0.003)) && abs(nt) > 0.7) {
+          float face = nt > 0.0 ? 1.0 : 0.0;
+          vec2 sy = vec2(zx ? ap.z - A.z : ap.x - A.x, ap.y - A.y);
+          awPn = awN(sy * 70.0) * 0.6 + awN(sy * 220.0) * 0.4;
+          awM = awMaskAt(face > 0.5 ? C.zw : C.xy, sy);
+          if (awM > 0.5 + (awPn - 0.5) * 0.32) {                  // open: look into the cavity along the view
+            vec3 V = normalize(ap - (uAwInv * vec4(cameraPosition, 1.0)).xyz);
+            float vt = zx ? V.x : V.z, th = zx ? B.x - A.x : B.z - A.z;
+            vec3 bp = ap + V * (th / max(abs(vt), 0.06));
+            vec2 sy2 = vec2(zx ? bp.z - A.z : bp.x - A.x, bp.y - A.y), ext = vec2(zx ? B.z - A.z : B.x - A.x, B.y - A.y);
+            bool stud = floor((sy.x - ${AWALL.studOff}) / ${AWALL.studs}) != floor((sy2.x - ${AWALL.studOff}) / ${AWALL.studs});
+            bool inside = all(greaterThan(sy2, vec2(0.0))) && all(lessThan(sy2, ext));
+            float m2 = inside ? awMaskAt(face > 0.5 ? C.xy : C.zw, sy2) : 0.0;
+            if (!stud && m2 > 0.5 + (awN(sy2 * 70.0) - 0.5) * 0.19) discard;   // the far face is open too: straight through
+            awIn = stud ? 2.0 : 1.0;
+          }
+        }
+      }
+    }
+  }`;
+const AW_COL = `
+  if (awIn > 1.5) { diffuseColor.rgb = vec3(0.40, 0.41, 0.42) * (0.55 + 0.25 * awPn); roughnessFactor = 0.42; metalnessFactor = 0.7; }   // a galvanised stud web
+  else if (awIn > 0.5) { diffuseColor.rgb = vec3(0.30, 0.24, 0.16) * (0.85 + 0.3 * awPn) * 0.42; roughnessFactor = 0.95; metalnessFactor = 0.0; }   // the far board's paper back, in the cavity's shade
+  else if (awM > 0.05) {
+    float crush = smoothstep(0.05, 0.42, awM), core = smoothstep(0.36, 0.5, awM + (awPn - 0.5) * 0.1);
+    diffuseColor.rgb *= 1.0 - crush * (0.18 + 0.22 * awPn);
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.60, 0.58, 0.53), core);
+    roughnessFactor = mix(roughnessFactor, 0.97, crush);
+  }`;
+// The partitions among the apartment's colliders: thin plaster boxes (8-24 cm), at least 30 cm long and tall.
+function aptWallPick(colliders, plaster) {
+  const out = [];
+  for (const c of colliders) {
+    if (c.t !== 'box' || c.mat !== plaster || c.pane !== undefined) continue;
+    const dx = c.max[0] - c.min[0], dy = c.max[1] - c.min[1], dz = c.max[2] - c.min[2], th = Math.min(dx, dz), L = Math.max(dx, dz);
+    if (th < 0.08 || th > 0.24 || L < 0.3 || dy < 0.3) continue;
+    out.push(c);
+    if (out.length >= 254) break;
+  }
+  return out;
+}
+// Records, atlas regions (shelf packing), the three textures. Pure data (Node-testable): textures are made by aptWallsInit.
+function aptWallLayout(walls, px = AWALL.px, AW = AWALL.AW) {
+  const list = walls.map((c, i) => {
+    const zx = c.max[0] - c.min[0] < c.max[2] - c.min[2];      // thin in x: faces are -x (0) / +x (1), along z
+    const s0 = zx ? c.min[2] : c.min[0], s1 = zx ? c.max[2] : c.max[0], L = s1 - s0, H = c.max[1] - c.min[1];
+    const cell = CONFIG.cover.cell, cols = Math.max(1, Math.round(L / cell)), rows = Math.max(1, Math.round(H / cell));
+    return { i, c, id: i + 1, zx, s0, s1, L, H, y0: c.min[1], y1: c.max[1], t0: zx ? c.min[0] : c.min[2], t1: zx ? c.max[0] : c.max[2],
+      ns: Math.ceil(L * px) + 1, nh: Math.ceil(H * px) + 1, reg: [null, null], cols, rows, cw: L / cols, ch: H / rows, last: [null, null], hp: null, col: null, room: null };
+  });
+  const faces = [];
+  for (const w of list) for (const f of [0, 1]) faces.push({ w, f, wd: w.ns + 2, ht: w.nh + 2 });
+  faces.sort((a, b) => b.ht - a.ht);
+  let x = 0, y = 0, sh = 0;
+  for (const F of faces) {
+    if (F.wd > AW) throw new Error('apartment wall longer than the mask atlas');
+    if (x + F.wd > AW) { x = 0; y += sh; sh = 0; }
+    F.w.reg[F.f] = { col: x + 1, row: y + 1 };
+    x += F.wd; sh = Math.max(sh, F.ht);
+  }
+  const AH = y + sh;
+  return { list, AH };
+}
+function aptWallIndex(list) {                                    // top-down 5 cm cells -> partition id, channel 0 floor one, 1 floor two
+  const I = AWALL.ix, idx = new Uint8Array(I.nx * I.nz * 2);
+  for (const w of list) {
+    const c = w.c, i0 = Math.max(0, Math.floor((c.min[0] - I.x0) / I.cs)), i1 = Math.min(I.nx - 1, Math.ceil((c.max[0] - I.x0) / I.cs) - 1);
+    const j0 = Math.max(0, Math.floor((c.min[2] - I.z0) / I.cs)), j1 = Math.min(I.nz - 1, Math.ceil((c.max[2] - I.z0) / I.cs) - 1);
+    for (const ch of [0, 1]) {
+      if (ch === 0 ? w.y0 >= AWALL.floorY : w.y1 <= AWALL.floorY) continue;
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) idx[(j * I.nx + i) * 2 + ch] = w.id;
+    }
+  }
+  return idx;
+}
+function aptWallData(list) {                                     // per id: box min + axis, box max, atlas regions (face 0 col / row, face 1 col / row)
+  const n = list.length + 1, d = new Float32Array(4 * n * 4);
+  for (const w of list) {
+    const o = w.id * 16, c = w.c;
+    d.set([c.min[0], c.min[1], c.min[2], w.zx ? 1 : 0, c.max[0], c.max[1], c.max[2], 0, w.reg[0].col, w.reg[0].row, w.reg[1].col, w.reg[1].row], o);
+  }
+  return d;
+}
+function aptWallsInit(room, apt, M) {
+  const A = AWALL;
+  if (!A.on || !M || !M.plaster) return;
+  try {
+    const walls = aptWallPick(apt.colliders, M.plaster);
+    if (!walls.length) return;
+    const { list, AH } = aptWallLayout(walls);
+    for (const t of [A.mask, A.u.uAwIdx.value, A.u.uAwDat.value]) if (t) t.dispose();
+    A.list = list; A.room = room; A.byCol.clear();
+    walls.forEach((c, i) => { c.awi = i; });
+    A.maskData = new Uint8Array(A.AW * AH);
+    const mt = A.mask = new THREE.DataTexture(A.maskData, A.AW, AH, THREE.RedFormat, THREE.UnsignedByteType);
+    mt.magFilter = mt.minFilter = THREE.LinearFilter; mt.generateMipmaps = false; mt.needsUpdate = true;
+    const it = new THREE.DataTexture(aptWallIndex(list), A.ix.nx, A.ix.nz, THREE.RGFormat, THREE.UnsignedByteType);
+    it.magFilter = it.minFilter = THREE.NearestFilter; it.generateMipmaps = false; it.needsUpdate = true;
+    const dt = new THREE.DataTexture(aptWallData(list), 4, list.length + 1, THREE.RGBAFormat, THREE.FloatType);
+    dt.magFilter = dt.minFilter = THREE.NearestFilter; dt.generateMipmaps = false; dt.needsUpdate = true;
+    A.u.uAwMask.value = mt; A.u.uAwIdx.value = it; A.u.uAwDat.value = dt;
+    A.u.uAwI.value.set(A.ix.x0, A.ix.z0, 1 / A.ix.cs, A.floorY); A.u.uAwMs.value.set(A.AW, AH, A.px);
+    aptWallMat(M.plaster);
+    // what this room remembers: cell damage and holes (a rebuilt apartment is re-stamped)
+    const m = roomMem(room), C = m.awc || (m.awc = {});
+    for (const w of list) {
+      const n = 2 * w.cols * w.rows;
+      w.hp = C[w.i] && C[w.i].length === n ? C[w.i] : (C[w.i] = new Float32Array(n).fill(CONFIG.cover.cellHp));
+      w.room = room;
+    }
+    for (const h of m.awh || []) { const w = list[h[0]]; if (w) awStamp(w, h[1], h[2], h[3], h[4], h[5], h[6]); }
+  } catch (e) { console.warn('apartment wall damage off', e); A.list = []; A.byCol.clear(); }
+}
+function aptWallMat(mat) {
+  if (mat.userData.aw) return;
+  mat.userData.aw = true;
+  const base = mat.onBeforeCompile, key = mat.customProgramCacheKey;
+  mat.onBeforeCompile = (sh, r) => {
+    if (base) base.call(mat, sh, r);
+    Object.assign(sh.uniforms, AWALL.u);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vAwP; varying vec3 vAwN;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\n  vAwP = (modelMatrix * vec4(transformed, 1.0)).xyz; vAwN = mat3(modelMatrix) * objectNormal;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + AW_GLSL)
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n' + AW_FRAG)
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + AW_COL);
+  };
+  mat.customProgramCacheKey = () => (key ? key.call(mat) : '') + '|aw';
+  mat.needsUpdate = true;
+}
+// aptActivate: the collider made for a partition
+function aptWallCol(room, c, bc) {
+  const w = AWALL.list[c.awi]; if (!w || AWALL.room !== room) return;
+  if (w.col) AWALL.byCol.delete(w.col);
+  w.col = bc.handle; w.room = room; AWALL.byCol.set(bc.handle, w);
+}
+function awStamp(w, face, s, y, R, crush, seed) {
+  const A = AWALL, PX = A.px, reg = w.reg[face], data = A.maskData; if (!reg || !data) return;
+  const s1 = seed * 1.7, s2 = seed * 2.9, s3 = seed * 4.3, edge = 0.012, ring = R * 1.3 * crush + 0.015 * crush, reach = R * 1.45 + ring;
+  const i0 = Math.max(0, Math.floor((s - reach) * PX)), i1 = Math.min(w.ns - 1, Math.ceil((s + reach) * PX));
+  const j0 = Math.max(0, Math.floor((y - reach) * PX)), j1 = Math.min(w.nh - 1, Math.ceil((y + reach) * PX));
+  for (let j = j0; j <= j1; j++) {
+    const yy = j / PX - y, o = (reg.row + j) * A.AW + reg.col;
+    for (let i = i0; i <= i1; i++) {
+      const xx = i / PX - s, d = Math.hypot(xx, yy), th = Math.atan2(yy, xx);
+      const Rt = R * (1 + 0.26 * Math.sin(3 * th + s1) + 0.16 * Math.sin(5 * th + s2) + 0.09 * Math.sin(9 * th + s3));
+      const open = clamp((Rt - d) / edge * 0.5 + 0.5), rim = ring > 0 ? clamp(1 - (d - Rt) / ring) : 0;
+      const v = Math.max(open * 255, rim * rim * 115) | 0;
+      if (v > data[o + i]) data[o + i] = v;
+    }
+  }
+  if (A.mask) A.mask.needsUpdate = true;
+}
+function awOpen(w, face, s, y) {
+  const reg = w.reg[face], i = Math.round(s * AWALL.px), j = Math.round(y * AWALL.px);
+  if (!reg || i < 0 || i >= w.ns || j < 0 || j >= w.nh) return false;
+  return AWALL.maskData[(reg.row + j) * AWALL.AW + reg.col + i] > 150;
+}
+function awHole(w, face, s, y, R, crush) {
+  const seed = Math.random() * 100;
+  awStamp(w, face, s, y, R, crush, seed);
+  if (!w.room) return;
+  const m = roomMem(w.room), L = m.awh || (m.awh = []);
+  if (L.length < AWALL.cap) L.push([w.i, face, +s.toFixed(3), +y.toFixed(3), +R.toFixed(4), crush, +seed.toFixed(2)]);
+}
+// A face point (s along, y up from the wall's foot) in world space, and the face's outward normal.
+const _awwP = new THREE.Vector3(), _awwN = new THREE.Vector3(), _awwE = new THREE.Vector3(), _awwEN = new THREE.Vector3(), _awwQ = new THREE.Quaternion(), _awwV = new THREE.Vector3(), _awwR = { E: 0, exit: null, through: 0 };
+function awWorld(w, face, s, y, out, nOut) {
+  const room = w.room, t = face ? w.t1 : w.t0, ax = w.zx ? t : w.s0 + s, az = w.zx ? w.s0 + s : t;
+  out.set(rWX(room, aptLX(az)), room.origin.y + w.y0 + y, rWZ(room, aptLZ(ax)));
+  if (nOut) { const sg = face ? 1 : -1, nax = w.zx ? sg : 0, naz = w.zx ? 0 : sg, f = rF(room); nOut.set(f * -naz, 0, f * nax); }   // room-local x = -apartment z, z = apartment x
+  return out;
+}
+// coverHit: a round into a partition. Entry sheet, maybe a stud, exit sheet; open points let it through free.
+function aptWallHit(w, P, N, dir, E) {
+  const room = w.room; if (!room || !room.active) return null;
+  const f = rF(room), lx = rLX(room, P.x), lz = rLZ(room, P.z), y = P.y - room.origin.y;
+  const ax = aptAX(lz), az = aptAZ(lx), dax = f * dir.z, daz = -f * dir.x;
+  const dt = w.zx ? dax : daz, ds = w.zx ? daz : dax, s = (w.zx ? az : ax) - w.s0, yy = y - w.y0;
+  const face = dt > 0 ? 0 : 1;                                   // going +t: in through face 0
+  E = awSheet(w, face, s, yy, P, N, E, dir, false);
+  if (E <= 0) return STOP;
+  if (Math.abs(dt) < 0.08) return STOP;                          // grazing along the wall: it ends in the board
+  const tt = (w.t1 - w.t0) / Math.abs(dt), s2 = s + ds * tt, y2 = yy + dir.y * tt;
+  if (s2 < 0 || s2 > w.L || y2 < 0 || y2 > w.H) return STOP;     // out through the end or the top: into the frame
+  const k0 = Math.floor((s - AWALL.studOff) / AWALL.studs), k1 = Math.floor((s2 - AWALL.studOff) / AWALL.studs);
+  if (k0 !== k1) {                                               // a light-gauge stud in the way
+    _awwV.copy(P).addScaledVector(dir, tt * 0.5); impactFx('metal', _awwV, N);
+    E -= CONFIG.cover.resist.stud;
+    if (E <= 0) return STOP;
+  }
+  _awwE.copy(P).addScaledVector(dir, tt);
+  awWorld(w, 1 - face, s2, y2, _awwV, _awwEN);
+  E = awSheet(w, 1 - face, s2, y2, _awwE, _awwEN, E, dir, true);
+  if (E <= 0) return STOP;
+  _awwR.E = E; _awwR.exit = _awwE; _awwR.through = tt;
+  return _awwR;
+}
+function awCell(w, face, s, y) { const c = clamp(Math.floor(s / w.cw), 0, w.cols - 1), r = clamp(Math.floor(y / w.ch), 0, w.rows - 1); return face * w.cols * w.rows + r * w.cols + c; }
+function awSheet(w, face, s, y, wp, wn, E, dir, exit) {
+  if (awOpen(w, face, s, y)) return E;                           // an open hole: straight through
+  const hs = exit ? penXS() : PEN.live ? PEN.holeS : 1, b = awCell(w, face, s, y);
+  awHole(w, face, s, y, (exit ? 0.024 : 0.009) * hs * (0.8 + Math.random() * 0.4), exit ? 1 : 0.55);
+  w.last[face] = [s, y];
+  addRoomHole(w.room, exit ? penX('plaster') : 'plaster', wp, wn, true, `aw${w.i}:${b}`, exit ? penXS() : PEN.live ? PEN.holeS : 1);
+  impactFx('plaster', wp, wn);
+  if (exit) penCoverExit('plaster', wp, dir);
+  coverSfx('plaster', E);
+  awDamage(w, b, E, dir);
+  const per = w.cols * w.rows, c = (b % per) % w.cols, r = Math.floor((b % per) / w.cols), sp = E * CONFIG.cover.splash;
+  for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const c2 = c + dc, r2 = r + dr;
+    if (c2 >= 0 && c2 < w.cols && r2 >= 0 && r2 < w.rows) awDamage(w, face * per + r2 * w.cols + c2, sp, dir);
+  }
+  return E - CONFIG.cover.resist.sheet;
+}
+function awDamage(w, b, dmg, dir) {
+  if (!w.hp || w.hp[b] <= 0) return;
+  w.hp[b] -= dmg;
+  if (w.hp[b] <= 0) awBreak(w, b, dir);
+}
+// A cell breaks out: a ragged blob ~17 cm across round where it was hit, merging with the holes beside it.
+function awBreak(w, b, dir) {
+  w.hp[b] = 0;
+  const per = w.cols * w.rows, face = b >= per ? 1 : 0, r = Math.floor((b % per) / w.cols), c = (b % per) % w.cols, room = w.room;
+  const cx = (c + 0.5) * w.cw, cy = (r + 0.5) * w.ch, lh = w.last[face];
+  const hx = lh ? mix(cx, clamp(lh[0], cx - w.cw / 2, cx + w.cw / 2), 0.6) : cx, hy = lh ? mix(cy, clamp(lh[1], cy - w.ch / 2, cy + w.ch / 2), 0.6) : cy;
+  const R = 0.42 * Math.min(w.cw, w.ch) * (0.8 + Math.random() * 0.45);
+  awHole(w, face, hx, hy, R, 1);
+  purgeTag(room, `aw${w.i}:${b}`);
+  for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const c2 = c + dc, r2 = r + dr;
+    if (c2 < 0 || c2 >= w.cols || r2 < 0 || r2 >= w.rows) continue;
+    const nx0 = c2 * w.cw, ny0 = r2 * w.ch, ddx = Math.max(nx0 - hx, 0, hx - (nx0 + w.cw)), ddy = Math.max(ny0 - hy, 0, hy - (ny0 + w.ch));
+    if (Math.hypot(ddx, ddy) < R * 0.9) purgeTag(room, `aw${w.i}:${face * per + r2 * w.cols + c2}`);
+  }
+  awWorld(w, face, hx, hy, _awwP, _awwN);
+  impactFx('plaster', _awwP, _awwN); impactFx('plaster', _awwP, _awwN);
+  awWorld(w, 1 - face, hx, hy, _awwV, _awwEN); impactFx('plaster', _awwV, _awwEN);   // dust out of the cavity on the far side too
+  if (COVER.kit && COVER.kit.chunks && COVER.kit.chunks.length && Math.random() < 0.8) {   // a chunk of board comes away along the shot
+    const def = COVER.kit.chunks[Math.floor(Math.random() * COVER.kit.chunks.length)];
+    _awwP.addScaledVector(dir, 0.04);
+    _awwQ.setFromEuler(_cv.e.set((Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6, Math.random() * Math.PI));
+    _awwV.copy(dir).multiplyScalar(0.5 + Math.random() * 1.2); _awwV.y += 0.3 + Math.random() * 0.6;
+    spawnDebris(room, def, _awwP, _awwQ, _awwV, _awwEN.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10));
+  }
+  coverSfx('cellBreak');
+}
+// every frame (aptViewTick): the shaders read apartment coordinates through the apartment group's inverse
+function aptWallsTick() {
+  const A = AWALL, room = A.room; if (!A.list.length || !room || !room.aptG) return;
+  room.aptG.updateWorldMatrix(true, false);
+  A.u.uAwInv.value.copy(room.aptG.matrixWorld).invert();
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APTR, aptRackBuild, aptRackFit, aptRackRestock, aptRackHooks, aptRackTick, glReady, AWALL, aptWallPick, aptWallLayout, aptWallIndex, aptWallData, aptWallHit, awStamp, awOpen, awBreak });
 
 </script>
 </body>
