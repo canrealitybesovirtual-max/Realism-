@@ -41380,7 +41380,9 @@ function tickSafe(timeMs, frame) {
     }
   }
 }
+var TICK_AT = 0;                                                    // last game frame (the PVS bake goes slower while the game runs)
 function tick(timeMs) {
+  TICK_AT = performance.now();
   if (!ready) return;
   bzPre();               // bench zoom: your own view back before anything reads or moves it
   wzPre();               // workshop zoom: your own field of view back
@@ -50483,10 +50485,11 @@ function* aptBuilder(room) {
   room.group.add(G);
   if (apt.panes) { apt.panes.mesh.castShadow = false; apt.panes.mesh.receiveShadow = false; }
   room.aptG = G;
+  if (!xr) { const an = Math.min(16, renderer.capabilities.getMaxAnisotropy()); G.traverse((o) => { for (const m of [].concat(o.material || [])) for (const k of ['map', 'normalMap', 'roughnessMap', 'aoMap', 'metalnessMap']) { const t = m[k]; if (t && t.anisotropy < an) { t.anisotropy = an; if (t.image && (t.image.width || t.image.data)) t.needsUpdate = true; } } }); }   // VISUAL: floors at a grazing angle stay sharp (computer; ~free on desktop GPUs)
   aptEnvAssign(G);                                                // PERF: the reflections' envMap is there from the start (a black placeholder the
                                                                   // city capture later renders into), so the capture never recompiles every apartment program
   aptLookBuild(room, A, apt, furn, M);                          // APARTMENT LOOK: paint, contact field, the sun's shadow proxy
-  if (!/[?&]aptclusters=off\b/.test(QS) && !/[?&]aptsurf=on\b/.test(QS) && renderer.extensions.get('WEBGL_multi_draw')) import('../world/src/clusters.js').then((cm) => cm.clusterize([...apt.meshes, ...furn.meshes], { mergePlain: !/[?&]aptmerge=off\b/.test(QS), prep: (m) => { const FM = APTS.mod && APTS.mod[5]; if (FM && FM.finishMat && !/[?&]aptlook=off\b/.test(QS)) FM.finishMat(m, 'ao'); } })).then((r) => { aptEnvAssign(G); apt.meshes.length = 0; furn.meshes.length = 0; room.aptTri = null; if (room.active) setTimeout(() => aptTriBuild(room), 0); console.log('apartment clusters', JSON.stringify(r.stats)); }).catch((e) => console.warn('apartment clusters off', e));   // meshlet clusters: only what can be seen is drawn
+  if (!/[?&]aptclusters=off\b/.test(QS) && !/[?&]aptsurf=on\b/.test(QS) && renderer.extensions.get('WEBGL_multi_draw')) import('../world/src/clusters.js').then((cm) => cm.clusterize([...apt.meshes, ...furn.meshes], { mergePlain: !/[?&]aptmerge=off\b/.test(QS), prep: (m) => { const FM = APTS.mod && APTS.mod[5]; if (FM && FM.finishMat && !/[?&]aptlook=off\b/.test(QS)) FM.finishMat(m, 'ao'); } })).then((r) => { aptEnvAssign(G); aptPvsStart(room, G, r.replaced.map((x) => x[1])); apt.meshes.length = 0; furn.meshes.length = 0; room.aptTri = null; if (room.active) setTimeout(() => aptTriBuild(room), 0); console.log('apartment clusters', JSON.stringify(r.stats)); }).catch((e) => console.warn('apartment clusters off', e));   // meshlet clusters: only what can be seen is drawn
   A.mirTick = null; import('../world/src/mirrors.js').then((mm) => { A.mirTick = mm.setupMirrors(G, renderer, Q, furn.mirrors || furn.meshes, { cubes: false, range: 3.2, scale: 0.4, samples: 0, vrPx: 384 }); }).catch((e) => console.warn('apartment mirrors', e));   // real reflections in the apartment's mirrors (perf: no cube captures, live one within 3.2 m, small picture)
   // the real city outside (the apartment's baked view), squeezed into CQC's camera range, and the sun through the glass
   if (!A.viewP) A.viewP = A.mod[3].buildView(G, renderer, Q).then((v) => { A.view = v; v.compress(true); v.setGain(APT.viewGain); if (v.toneMap) v.toneMap(true); aptSunAim(); }).catch((e) => console.warn('apartment view not loaded', e));
@@ -50891,6 +50894,43 @@ function aptViewTick() {
   A.view.world.visible = A.view.sky.visible = A.room.visible !== false;
   A.view.update(APT_CAM, dt);
 }
+// APT PVS (?aptpvs=off): occlusion culling for the clustered apartment (world/src/pvs.js bakes, at load, which chunks
+// each 1.5 m cell can see; cached in localStorage). Only the game's own view is culled (the desktop camera or a headset
+// eye), never mirrors, stills or shadow passes. Chunks within 2.5 m always draw. A hole you could see through
+// (wall damage blob) turns it off for that visit.
+const APT_PVS = { off: /[?&]aptpvs=off\b/.test(QS), frame: -1, cam: null, x: 0, y: 0, z: 0, set: null, m: new THREE.Matrix4(), v: new THREE.Vector3(), stats: { culled: 0 } };
+function aptPvsStart(room, G, bms) {
+  if (APT_PVS.off || !bms.length) return;
+  import('../world/src/pvs.js').then((PV) => {
+    if (!room.active && !room.built) return;
+    const qn = (k) => { const m = QS.match(new RegExp('[?&]' + k + '=([0-9.]+)')); return m ? +m[1] : undefined; };
+    const P = room.aptPVS = PV.bakePVS(renderer, G, bms, { cell: qn('aptpvscell'), px: qn('aptpvspx'), busy: () => performance.now() - TICK_AT < 800, delay: 300, onReady: (p) => console.info('apartment PVS ready', p.cells, 'cells', p.N, 'chunks') });
+    if (P.cached) console.info('apartment PVS from cache');
+    for (const bm of bms) bm.userData.pvsCull = (cam, info) => aptPvsCull(room, bm, cam, info);
+  }).catch((e) => console.warn('apartment PVS off', e));
+}
+function aptPvsCull(room, bm, cam, info) {
+  const P = room.aptPVS; if (!P || !P.ready || room.aptPvsOff || APT_PVS.off) return;
+  if (cam !== camera && !(renderer.xr.isPresenting && cam.isPerspectiveCamera && renderer.xr.getCamera().cameras.includes(cam))) return;
+  const S = APT_PVS, f = renderer.info.render.frame;
+  if (S.frame !== f || S.cam !== cam) {
+    S.frame = f; S.cam = cam;
+    S.v.setFromMatrixPosition(cam.matrixWorld).applyMatrix4(S.m.copy(room.aptG.matrixWorld).invert());
+    S.x = S.v.x; S.y = S.v.y; S.z = S.v.z;
+    const set = P.setAt(S.x, S.y, S.z); S.set = set ? (S.copy && S.copy.length === set.length ? S.copy : (S.copy = new Uint8Array(set.length))) : null; if (set) S.set.set(set);
+  }
+  const set = S.set; if (!set) return;
+  const b0 = P.base.get(bm), N2 = P.NEAR;
+  for (let i = 0, n = info.length; i < n; i++) {
+    if (!info[i].visible) continue;
+    const g = b0 + i;
+    if (set[g >> 3] & (1 << (g & 7))) continue;
+    const dx = P.cx[g] - S.x, dy = P.cy[g] - S.y, dz = P.cz[g] - S.z, r = P.cr[g] + N2;
+    if (dx * dx + dy * dy + dz * dz < r * r) continue;
+    if (S.only && !S.only.has(g)) continue;                        // tests: only these may be culled
+    info[i].visible = false; S.stats.culled++; if (S.list) S.list.push(g);
+  }
+}
 // PERF: before a raid, off the frame: one gun of each kind the men carry gets its LODs (cached by shape, enemyLodGeo), and
 // the men's and those guns' textures are uploaded one per ~30 ms (they uploaded mid-fight, the first time a man was seen).
 function aptRaidWarm() {
@@ -51175,7 +51215,7 @@ function aptPanelTick() {
   if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; aptBlink(true); } else if (!APT_RAID.mode) aptBlink(false);   // the security screen blinks red while a raid is on
   if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT_PVS, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 /* =========================================================================
  *  APARTMENT LOOK (?aptsun=off, ?aptlook=off): the surfaces and the shadows of the apartment without surface.js.
@@ -52071,7 +52111,7 @@ function aptWallsInit(room, apt, M) {
       w.hp = C[w.i] && C[w.i].length === n ? C[w.i] : (C[w.i] = new Float32Array(n).fill(CONFIG.cover.cellHp));
       w.room = room;
     }
-    for (const h of m.awh || []) { const w = list[h[0]]; if (w) awStamp(w, h[1], h[2], h[3], h[4], h[5], h[6]); }
+    for (const h of m.awh || []) { const w = list[h[0]]; if (w) { awStamp(w, h[1], h[2], h[3], h[4], h[5], h[6]); if (h[4] >= 0.04 && w.room) w.room.aptPvsOff = true; } }
   } catch (e) { console.warn('apartment wall damage off', e); A.list = []; A.byCol.clear(); }
 }
 function aptWallMat(mat) {
@@ -52122,6 +52162,7 @@ function awHole(w, face, s, y, R, crush) {
   const seed = Math.random() * 100;
   awStamp(w, face, s, y, R, crush, seed);
   if (!w.room) return;
+  if (R >= 0.04) w.room.aptPvsOff = true;                          // a hole big enough to see through: occlusion culling stops (APT PVS)
   const m = roomMem(w.room), L = m.awh || (m.awh = []);
   if (L.length < AWALL.cap) L.push([w.i, face, +s.toFixed(3), +y.toFixed(3), +R.toFixed(4), crush, +seed.toFixed(2)]);
 }

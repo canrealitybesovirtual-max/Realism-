@@ -160,6 +160,7 @@ export async function clusterize(meshes, opts = {}) {
           info[i].visible = (dx * cone[o + 3] + dy * cone[o + 4] + dz * cone[o + 5]) / l < cut + 0.02;
         }
       }
+      if (!shadowPass && bm.userData.pvsCull) bm.userData.pvsCull(camera, info);   // occlusion culling (pvs.js), set by the game
       bm._visibilityChanged = true;
       baseRender(renderer, scene, camera, geometry, material, group);
     };
