@@ -494,7 +494,10 @@ float srK = mix( 0.22, 1.0, srF );
 gl_FragColor = vec4( totalSpecular * srK, srF * srK + ( 1.0 - srF * srK ) * uGlassAbs );`;
 
 function patch(mat, kind, U, framed = false) {
-  mat.onBeforeCompile = (sh) => {
+  const base = mat.userData.srBase !== undefined ? mat.userData.srBase : (mat.userData.srBase = mat.onBeforeCompile || null);   // finish.js (paint, wear) stays under it
+  const baseKey = mat.userData.srKey !== undefined ? mat.userData.srKey : (mat.userData.srKey = mat.customProgramCacheKey && mat.customProgramCacheKey !== THREE.Material.prototype.customProgramCacheKey ? mat.customProgramCacheKey : null);
+  mat.onBeforeCompile = (sh, r) => {
+    if (base) base.call(mat, sh, r);
     Object.assign(sh.uniforms, U);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>' + (framed ? VERT_PARS_F : VERT_PARS))
@@ -511,7 +514,7 @@ function patch(mat, kind, U, framed = false) {
     if (kind === 'glass') f = f.replace('#include <opaque_fragment>', GLASS_OUT).replace('#include <premultiplied_alpha_fragment>', '');
     sh.fragmentShader = f;
   };
-  mat.customProgramCacheKey = () => (framed ? 'sr5f-' : 'sr5-') + kind;
+  mat.customProgramCacheKey = () => (baseKey ? baseKey.call(mat) + '|' : '') + (framed ? 'sr5f-' : 'sr5-') + kind;
   mat.needsUpdate = true;
 }
 
