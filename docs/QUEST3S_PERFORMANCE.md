@@ -58,6 +58,11 @@ Check a value with `adb shell getprop <name>`. Never use `setprop persist.*` (su
 
 **Application SpaceWarp, CPU/GPU level APIs, eye-tracked foveation:** native-only (OpenXR/OVR). Not available to WebXR in the browser **[unverified for current browser builds]**.
 
-## 4. The next big engine step (not done yet)
+## 4. Multiview stereo (in the game, on by default; headset check needed)
 
-**Multiview stereo** (one draw call renders both eyes; `OCULUS_multiview` / `OVR_multiview2` in Quest Browser, WebGL2). Today every draw is issued twice in VR. three.js only implements multiview in its WebGPU renderer (`three.webgpu.js`, checked in r180); the `WebGLRenderer` these games use (r170, and r180) has none. Getting it means either moving to the WebGPU renderer (every custom GLSL patch in CQC — wear, blood, gore, volume, sun, PVS — would have to be rewritten in TSL) or patching `WebGLRenderer` for multiview (every custom shader needs `gl_ViewID_OVR` view/projection selection, and post-processing must stay off in VR, which it already is). Expected gain: roughly halves the CPU cost of drawing in VR. It is the largest remaining win and the largest job.
+One draw call renders both eyes (`OCULUS_multiview` / `OVR_multiview2` on a `texture-array` projection layer), so the CPU cost of drawing in VR is roughly halved. three.js's `WebGLRenderer` has no multiview (checked up to r187), so CQC's vendored three.js r170 is patched:
+- shaders are shaded in one common view space (the XR camera's); only `projectionMatrix` (P_eye x V_eye x V_common^-1) and `cameraPosition` are per eye, and the specular view direction starts at each eye, so every existing custom shader works unchanged **[verified here: a test scene and the game's own scenes, multiview vs each eye drawn alone, pixel-identical]**;
+- MSAA comes from `OCULUS_multiview`'s multisampled attachments (resolved on the tile, as before);
+- mirrors draw each eye's reflection side by side; cluster and PVS culling test both eyes.
+
+Off switch: OPTIONS > GRAPHICS "Multiview stereo (VR)" or `?mv=off`. If the first frames of a VR session raise a GL error, the game says so in the headset and the next session is drawn the old way (cleared by turning the option back on). A/B on the headset: OVR Metrics CPU % and `cqcHitches('vr')` with and without `?mv=off`.

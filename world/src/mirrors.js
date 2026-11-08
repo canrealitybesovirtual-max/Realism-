@@ -16,11 +16,18 @@ const RANGE = 6, KEEP = 0.6;
 
 const VERT = /* glsl */`
 uniform mat4 textureMatrix;
+#ifdef VIEW_ID
+uniform mat4 textureMatrices[2];   // multiview (CQC): each eye's reflection, side by side in one texture
+#endif
 varying vec4 vUv;
 #include <common>
 #include <logdepthbuf_pars_vertex>
 void main() {
+  #ifdef VIEW_ID
+  vUv = textureMatrices[ VIEW_ID ] * vec4( position, 1.0 );
+  #else
   vUv = textureMatrix * vec4( position, 1.0 );
+  #endif
   gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
   #include <logdepthbuf_vertex>
 }`;
@@ -58,10 +65,10 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
   const size = new THREE.Vector2();
   const rt = new THREE.WebGLRenderTarget(512, 512, { type: THREE.HalfFloatType, samples: xrLow ? 0 : (opts.samples ?? 4) });
   rt.texture.generateMipmaps = false;
-  const textureMatrix = new THREE.Matrix4();
+  const textureMatrix = new THREE.Matrix4(), textureMatrices = [new THREE.Matrix4(), new THREE.Matrix4()];
   const mat = new THREE.ShaderMaterial({
     name: 'mirror-planar',
-    uniforms: { color: { value: new THREE.Color(0.86, 0.885, 0.87) }, tDiffuse: { value: rt.texture }, textureMatrix: { value: textureMatrix } },
+    uniforms: { color: { value: new THREE.Color(0.86, 0.885, 0.87) }, tDiffuse: { value: rt.texture }, textureMatrix: { value: textureMatrix }, textureMatrices: { value: textureMatrices } },
     vertexShader: VERT, fragmentShader: FRAG,
   });
   const vcam = new THREE.PerspectiveCamera();
@@ -87,6 +94,16 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
     if (busy || !active || this !== active.mesh || !camOK(camera) || scene.overrideMaterial) return;
     if (camera === lastCam && frame === lastFrame) return;          // drawn already for this camera this frame (a second pass)
     lastCam = camera; lastFrame = frame;
+    const tgtRT = r.getRenderTarget();
+    if (camera.isArrayCamera && tgtRT && tgtRT.multiview === true) {   // multiview: both eyes, side by side
+      for (let i = 0; i < 2; i++) drawEye(r, scene, camera.cameras[i], i, 2, textureMatrices[i]);
+      if (camera.cameras[0].viewport !== undefined) r.state.viewport(camera.cameras[0].viewport);
+      return;
+    }
+    drawEye(r, scene, camera, 0, 1, textureMatrix);
+    if (camera.viewport !== undefined) r.state.viewport(camera.viewport);
+  }
+  function drawEye(r, scene, camera, slot, slots, tm) {
     const e = active;
     cPos.setFromMatrixPosition(camera.matrixWorld);
     vPos.subVectors(e.p, cPos);
@@ -103,8 +120,9 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
     vcam.updateMatrixWorld();
     vcam.projectionMatrix.copy(camera.projectionMatrix);
     vcam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
-    textureMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
-    textureMatrix.multiply(vcam.projectionMatrix).multiply(vcam.matrixWorldInverse).multiply(e.mesh.matrixWorld);
+    const su = 0.5 / slots, ou = (slot + 0.5) / slots;               // this eye's half of the texture (multiview)
+    tm.set(su, 0, 0, ou, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+    tm.multiply(vcam.projectionMatrix).multiply(vcam.matrixWorldInverse).multiply(e.mesh.matrixWorld);
     // oblique near plane on the glass (Lengyel): nothing behind the mirror is drawn
     plane.setFromNormalAndCoplanarPoint(e.n, e.p).applyMatrix4(vcam.matrixWorldInverse);
     clip.set(plane.normal.x, plane.normal.y, plane.normal.z, plane.constant);
@@ -119,14 +137,16 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
     e.mesh.visible = false;
     r.xr.enabled = false; r.shadowMap.autoUpdate = false; r.shadowMap.needsUpdate = false;
     try {
+      const w = rt.width / slots;
+      rt.viewport.set(slot * w, 0, w, rt.height); rt.scissor.set(slot * w, 0, w, rt.height); rt.scissorTest = slots > 1;
       r.setRenderTarget(rt);
       r.state.buffers.depth.setMask(true);
       if (r.autoClear === false) r.clear();
       r.render(scene, vcam);
     } finally {
+      rt.viewport.set(0, 0, rt.width, rt.height); rt.scissorTest = false;
       r.xr.enabled = prevXR; r.shadowMap.autoUpdate = prevAuto; r.shadowMap.needsUpdate = prevNeed;
       r.setRenderTarget(prevRT);
-      if (camera.viewport !== undefined) r.state.viewport(camera.viewport);
       e.mesh.visible = vis;
       busy = false;
     }
@@ -189,6 +209,7 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
       // reflection size: half the drawing buffer on a computer, 512 square per eye on the headset
       let w = VRPX, h = VRPX;
       if (!(renderer.xr.isPresenting || xrLow)) { renderer.getDrawingBufferSize(size); w = Math.max(256, Math.round(size.x * SCALE)); h = Math.max(256, Math.round(size.y * SCALE)); }
+      else if (renderer.xr.isMultiview) w *= 2;                       // both eyes side by side
       if (rt.width !== w || rt.height !== h) rt.setSize(w, h);
     }
     if (pendingCube) { const e = pendingCube; pendingCube = null; if (!e.cube) capture(e); }

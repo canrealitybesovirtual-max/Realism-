@@ -4677,6 +4677,33 @@ renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 renderer.xr.setFramebufferScaleFactor(perf.xr.scale);       // learned per headset (see ADAPTIVE QUALITY)
 renderer.xr.setFoveation(CONFIG.xr.foveation);
+// MULTIVIEW (vendored three.js is patched, see CLAUDE.md): both eyes drawn by one draw call (OCULUS_multiview /
+// OVR_multiview2 on a texture-array projection layer). ?mv=off or OPTIONS > GRAPHICS turns it off; a session whose
+// first frames raise a GL error is not multiview the next time (cqc.mv.fail; ?mv=on forces it).
+const MV = { frames: 0, drain: 0, on: !/[?&]mv=off\b/.test(QS) && (/[?&]mv=on\b/.test(QS) || (() => { try { return localStorage.getItem('cqc.mv.fail') !== '1'; } catch (e) { return true; } })()) };
+renderer.xr.multiview = MV.on;
+renderer.xr.addEventListener('sessionstart', () => { MV.frames = 0; });
+{                                                        // the first 40 multiview frames: errors raised by the frame's own draw
+  const render0 = renderer.render.bind(renderer);
+  renderer.render = function (s, c) {
+    if (MV.frames >= 40 || !renderer.xr.enabled || !renderer.xr.isPresenting || !renderer.xr.isMultiview) return render0(s, c);
+    const gl = renderer.getContext();
+    while (gl.getError() !== 0 && MV.drain++ < 8) { /* errors from before this draw are not multiview's */ }
+    render0(s, c);
+    mvCheck();
+  };
+}
+function mvCheck() {                                     // any GL error in the first 40 multiview frames -> off next session
+  if (!renderer.xr.isPresenting || !renderer.xr.isMultiview || MV.frames >= 40) return;
+  MV.frames++; MV.drain = 0;
+  const e = renderer.getContext().getError();
+  if (e !== 0) {
+    MV.frames = 40;
+    try { localStorage.setItem('cqc.mv.fail', '1'); } catch (err) { /* private mode */ }
+    console.warn('[XR] multiview drew with GL error ' + e + ': off from the next VR session');
+    if (typeof vrNote === 'function') vrNote('Multiview failed: leave VR and enter again', 6);
+  }
+}
 document.body.appendChild(renderer.domElement);
 renderer.domElement.addEventListener('webglcontextlost', () => { BOOT.lost++; bootSave(BOOT.stage, BOOT.pct); console.warn('[start] the graphics context was lost during: ' + BOOT.stage); });   // step 40
 maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET || LITE.on ? 4 : 8);   // PERF: lite = 4   // higher costs Quest bandwidth for no visible gain
@@ -29571,7 +29598,7 @@ const OPT_GROUPS = [
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
     ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair'], ['aptwalls', 'Apartment walls tear'], ['aptrack', 'Apartment gun rack'], ['aptbreak', 'Apartment lights, glass break'], ['aptvol', 'Apartment baked bounce light'], ['fallback', 'Men fall back under fire']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
-  ['look', 'GRAPHICS', [['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
+  ['look', 'GRAPHICS', [['mv', 'Multiview stereo (VR)'], ['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
     ['beam', 'Flashlight beam pattern'], ['shelflight', 'Locker shelf light'], ['paint', 'Gun finishes'], ['elod', 'Enemy detail LODs'], ['wetx', 'Outdoor rain runs, drips'], ['lightning', 'Lightning']]],
   ['fx', 'EFFECTS', [['trickle', 'Dust from bullet holes'], ['mblast', 'Muzzle blast dust'], ['wisp', 'Barrel smoke'], ['torchhaze', 'Torch beams in haze'], ['laserbeam', 'Laser beam in smoke'], ['tracer', 'Tracer rounds']]],
@@ -29590,6 +29617,7 @@ function optNow(k, onVal) {
   return onVal ? v === onVal : v !== 'off';
 }
 function optSet(k, on, onVal) {
+  if (k === 'mv') { renderer.xr.multiview = MV.on = on; if (on) { try { localStorage.removeItem('cqc.mv.fail'); } catch (e) { /* private mode */ } } }   // from the next VR session
   if (k === 'lite') OPT.lite = on ? 'on' : 'off';
   else if (!onVal && liteForced(k)) { if (on) OPT[k] = 'on'; else delete OPT[k]; }
   else if (onVal) { if (on) OPT[k] = onVal; else delete OPT[k]; } else if (on) delete OPT[k]; else OPT[k] = 'off';
@@ -50958,7 +50986,7 @@ function aptPvsExtrasTick(room) {
 }
 function aptPvsCull(room, bm, cam, info) {
   const P = room.aptPVS; if (!P || !P.ready || room.aptPvsOff || APT_PVS.off) return;
-  if (cam !== camera && !(renderer.xr.isPresenting && cam.isPerspectiveCamera && renderer.xr.getCamera().cameras.includes(cam))) return;
+  if (cam !== camera && !(renderer.xr.isPresenting && (cam === renderer.xr.getCamera() || (cam.isPerspectiveCamera && renderer.xr.getCamera().cameras.includes(cam))))) return;   // + the multiview pass (ArrayCamera)
   const S = APT_PVS, f = renderer.info.render.frame;
   if (S.frame !== f || S.cam !== cam) {
     S.frame = f; S.cam = cam;

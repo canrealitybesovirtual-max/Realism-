@@ -151,13 +151,19 @@ export async function clusterize(meshes, opts = {}) {
       if (shadowPass || material.side === THREE.DoubleSide || mat.side === THREE.DoubleSide) {
         for (let i = 0; i < n; i++) info[i].visible = true;
       } else {
-        _cam.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(_inv.copy(bm.matrixWorld).invert());   // cone data is in the mesh's own space
-        for (let i = 0; i < n; i++) {
-          const o = i * 7, cut = cone[o + 6];
-          if (cut >= 1) { info[i].visible = true; continue; }
-          let dx = cone[o] - _cam.x, dy = cone[o + 1] - _cam.y, dz = cone[o + 2] - _cam.z;
-          const l = Math.hypot(dx, dy, dz) || 1;
-          info[i].visible = (dx * cone[o + 3] + dy * cone[o + 4] + dz * cone[o + 5]) / l < cut + 0.02;
+        // multiview (CQC): one pass for both eyes, so a cluster stays if either eye can see its front
+        const eyes = camera.isArrayCamera && camera.cameras.length ? camera.cameras : null, ne = eyes ? eyes.length : 1;
+        _inv.copy(bm.matrixWorld).invert();
+        for (let k = 0; k < ne; k++) {
+          _cam.setFromMatrixPosition((eyes ? eyes[k] : camera).matrixWorld).applyMatrix4(_inv);   // cone data is in the mesh's own space
+          for (let i = 0; i < n; i++) {
+            if (k > 0 && info[i].visible) continue;
+            const o = i * 7, cut = cone[o + 6];
+            if (cut >= 1) { info[i].visible = true; continue; }
+            let dx = cone[o] - _cam.x, dy = cone[o + 1] - _cam.y, dz = cone[o + 2] - _cam.z;
+            const l = Math.hypot(dx, dy, dz) || 1;
+            info[i].visible = (dx * cone[o + 3] + dy * cone[o + 4] + dz * cone[o + 5]) / l < cut + 0.02;
+          }
         }
       }
       if (!shadowPass && bm.userData.pvsCull) bm.userData.pvsCull(camera, info);   // occlusion culling (pvs.js), set by the game

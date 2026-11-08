@@ -20059,10 +20059,10 @@ function WebGLProgram( renderer, cacheKey, parameters, bindingStates ) {
 
 			'uniform mat4 modelMatrix;',
 			'uniform mat4 modelViewMatrix;',
-			'uniform mat4 projectionMatrix;',
+			parameters.multiview ? 'uniform mat4 mvProjectionMatrices[2];\n#define projectionMatrix mvProjectionMatrices[VIEW_ID]' : 'uniform mat4 projectionMatrix;',
 			'uniform mat4 viewMatrix;',
 			'uniform mat3 normalMatrix;',
-			'uniform vec3 cameraPosition;',
+			parameters.multiview ? 'uniform vec3 mvCameraPositions[2];\n#define cameraPosition mvCameraPositions[VIEW_ID]' : 'uniform vec3 cameraPosition;',
 			'uniform bool isOrthographic;',
 
 			'#ifdef USE_INSTANCING',
@@ -20225,7 +20225,7 @@ function WebGLProgram( renderer, cacheKey, parameters, bindingStates ) {
 			parameters.reverseDepthBuffer ? '#define USE_REVERSEDEPTHBUF' : '',
 
 			'uniform mat4 viewMatrix;',
-			'uniform vec3 cameraPosition;',
+			parameters.multiview ? 'uniform vec3 mvCameraPositions[2];\n#define cameraPosition mvCameraPositions[VIEW_ID]\nuniform vec3 mvEyeVS[2];' : 'uniform vec3 cameraPosition;',
 			'uniform bool isOrthographic;',
 
 			( parameters.toneMapping !== NoToneMapping ) ? '#define TONE_MAPPING' : '',
@@ -20289,8 +20289,21 @@ function WebGLProgram( renderer, cacheKey, parameters, bindingStates ) {
 
 	}
 
-	const vertexGlsl = versionString + prefixVertex + vertexShader;
-	const fragmentGlsl = versionString + prefixFragment + fragmentShader;
+	let vertexGlsl = versionString + prefixVertex + vertexShader;
+	let fragmentGlsl = versionString + prefixFragment + fragmentShader;
+
+	if ( parameters.multiview && parameters.isRawShaderMaterial !== true ) {
+
+		// CQC patch: everything is shaded in one common view space (the XR camera's); projectionMatrix is per eye
+		// (P_eye * V_eye * V_common^-1), cameraPosition per eye, and the light view direction starts at the eye
+		vertexGlsl = versionString + '#extension GL_OVR_multiview2 : require\n#define VIEW_ID gl_ViewID_OVR\n' + prefixVertex +
+			'layout(num_views = 2) in;\nflat out uint vMvView;\n#define main mvUserMain\n' + vertexShader +
+			'\n#undef main\nvoid main() { vMvView = gl_ViewID_OVR; mvUserMain(); }\n';
+		fragmentGlsl = versionString + 'flat in uint vMvView;\n#define VIEW_ID vMvView\n' + prefixFragment +
+			fragmentShader.replace( 'vec3 geometryViewDir = ( isOrthographic ) ? vec3( 0, 0, 1 ) : normalize( vViewPosition );',
+				'vec3 geometryViewDir = ( isOrthographic ) ? vec3( 0, 0, 1 ) : normalize( vViewPosition + mvEyeVS[ VIEW_ID ] );' );
+
+	}
 
 	// console.log( '*VERTEX*', vertexGlsl );
 	// console.log( '*FRAGMENT*', fragmentGlsl );
@@ -20959,6 +20972,9 @@ function WebGLPrograms( renderer, cubemaps, cubeuvmaps, extensions, capabilities
 
 			rendererExtensionParallelShaderCompile: extensions.has( 'KHR_parallel_shader_compile' ),
 
+			// CQC patch: multiview stereo (OVR_multiview2 / OCULUS_multiview): one draw renders both eyes
+			multiview: currentRenderTarget !== null && currentRenderTarget.multiview === true,
+
 			customProgramCacheKey: material.customProgramCacheKey()
 
 		};
@@ -21164,6 +21180,8 @@ function WebGLPrograms( renderer, cubemaps, cubeuvmaps, extensions, capabilities
 			_programLayers.enable( 20 );
 		if ( parameters.alphaToCoverage )
 			_programLayers.enable( 21 );
+		if ( parameters.multiview )
+			_programLayers.enable( 22 );
 
 		array.push( _programLayers.mask );
 
@@ -27173,6 +27191,59 @@ class WebXRManager extends EventDispatcher {
 		//
 
 		this.cameraAutoUpdate = true;
+
+		// CQC patch: multiview stereo. Set multiview = true before the session starts (needs the 'layers'
+		// session feature and OCULUS_multiview or OVR_multiview2); isMultiview tells whether it is in use.
+		this.multiview = false;
+		this.isMultiview = false;
+		let mv = null;   // { ext, samples, fb, color, depth, ownDepth, w, h, stencil }
+
+		function mvAttach( color, depth ) {
+
+			const state = renderer.state;
+			if ( mv.fb === null ) mv.fb = gl.createFramebuffer();
+			if ( mv.color === color && mv.depth === depth ) return;
+			state.bindFramebuffer( gl.FRAMEBUFFER, mv.fb );
+			if ( ! depth ) {
+
+				if ( mv.ownDepth === null ) {
+
+					mv.ownDepth = gl.createTexture();
+					state.bindTexture( gl.TEXTURE_2D_ARRAY, mv.ownDepth );
+					gl.texStorage3D( gl.TEXTURE_2D_ARRAY, 1, mv.stencil ? gl.DEPTH24_STENCIL8 : gl.DEPTH_COMPONENT24, mv.w, mv.h, 2 );
+					state.unbindTexture();
+
+				}
+
+				depth = mv.ownDepth;
+
+			}
+
+			const att = mv.stencil ? gl.DEPTH_STENCIL_ATTACHMENT : gl.DEPTH_ATTACHMENT;
+			if ( mv.samples > 0 && mv.ext.framebufferTextureMultisampleMultiviewOVR ) {
+
+				mv.ext.framebufferTextureMultisampleMultiviewOVR( gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, color, 0, mv.samples, 0, 2 );
+				mv.ext.framebufferTextureMultisampleMultiviewOVR( gl.FRAMEBUFFER, att, depth, 0, mv.samples, 0, 2 );
+
+			} else {
+
+				mv.ext.framebufferTextureMultiviewOVR( gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, color, 0, 0, 2 );
+				mv.ext.framebufferTextureMultiviewOVR( gl.FRAMEBUFFER, att, depth, 0, 0, 2 );
+
+			}
+
+			mv.color = color; mv.depth = depth === mv.ownDepth ? null : depth;
+
+		}
+
+		function mvDispose() {
+
+			if ( mv === null ) return;
+			if ( mv.fb ) gl.deleteFramebuffer( mv.fb );
+			if ( mv.ownDepth ) gl.deleteTexture( mv.ownDepth );
+			mv = null; scope.isMultiview = false;
+
+		}
 		this.enabled = false;
 
 		this.isPresenting = false;
@@ -27276,6 +27347,8 @@ class WebXRManager extends EventDispatcher {
 			// restore framebuffer/rendering state
 
 			renderer.setRenderTarget( initialRenderTarget );
+
+			mvDispose();
 
 			glBaseLayer = null;
 			glProjLayer = null;
@@ -27432,12 +27505,54 @@ class WebXRManager extends EventDispatcher {
 
 					glBinding = new XRWebGLBinding( session, gl );
 
-					glProjLayer = glBinding.createProjectionLayer( projectionlayerInit );
+					const mvExt = scope.multiview ? ( gl.getExtension( 'OCULUS_multiview' ) || gl.getExtension( 'OVR_multiview2' ) ) : null;
+					glProjLayer = null;
+
+					if ( mvExt ) {
+
+						try {
+
+							glProjLayer = glBinding.createProjectionLayer( Object.assign( {}, projectionlayerInit, { textureType: 'texture-array' } ) );
+
+						} catch ( e ) {
+
+							console.warn( 'THREE.WebXRManager: multiview layer refused, drawing each eye', e );
+							glProjLayer = null;
+
+						}
+
+					}
+
+					if ( glProjLayer === null ) glProjLayer = glBinding.createProjectionLayer( projectionlayerInit );
 
 					session.updateRenderState( { layers: [ glProjLayer ] } );
 
 					renderer.setPixelRatio( 1 );
 					renderer.setSize( glProjLayer.textureWidth, glProjLayer.textureHeight, false );
+
+				}
+
+				if ( glProjLayer !== null && glProjLayer.textureArrayLength >= 2 ) {
+
+					const mvExt = gl.getExtension( 'OCULUS_multiview' ) || gl.getExtension( 'OVR_multiview2' );
+					mv = { ext: mvExt, samples: ( attributes.antialias && mvExt.framebufferTextureMultisampleMultiviewOVR ) ? 4 : 0, fb: null, color: null, depth: null,
+						ownDepth: null, w: glProjLayer.textureWidth, h: glProjLayer.textureHeight, stencil: !! attributes.stencil };
+					scope.isMultiview = true;
+					newRenderTarget = new WebGLRenderTarget( glProjLayer.textureWidth, glProjLayer.textureHeight, {
+						format: RGBAFormat, type: UnsignedByteType, depthBuffer: false, stencilBuffer: false, colorSpace: renderer.outputColorSpace } );
+					newRenderTarget.multiview = true;
+
+				} else if ( glProjLayer !== null ) {
+
+					let depthFormat = null;
+					let depthType = null;
+
+					if ( attributes.depth ) {
+
+						depthFormat = attributes.stencil ? DepthStencilFormat : DepthFormat;
+						depthType = attributes.stencil ? UnsignedInt248Type : UnsignedIntType;
+
+					}
 
 					newRenderTarget = new WebGLRenderTarget(
 						glProjLayer.textureWidth,
@@ -27837,7 +27952,13 @@ class WebXRManager extends EventDispatcher {
 						viewport = glSubImage.viewport;
 
 						// For side-by-side projection, we only produce a single texture for both eyes.
-						if ( i === 0 ) {
+						if ( i === 0 && mv !== null ) {
+
+							mvAttach( glSubImage.colorTexture, glProjLayer.ignoreDepthValues ? null : glSubImage.depthStencilTexture );
+							renderer.setRenderTargetFramebuffer( newRenderTarget, mv.fb );
+							renderer.setRenderTarget( newRenderTarget );
+
+						} else if ( i === 0 ) {
 
 							renderer.setRenderTargetTextures(
 								newRenderTarget,
@@ -29061,6 +29182,7 @@ class WebGLRenderer {
 		const _currentProjectionMatrix = new Matrix4();
 		const _projScreenMatrix = new Matrix4();
 
+		const _mvProj = new Float32Array( 32 ), _mvCam = new Float32Array( 6 ), _mvEye = new Float32Array( 6 ), _mvM = new Matrix4(); let _mvWarned = false;
 		const _vector3 = new Vector3();
 
 		const _vector4 = new Vector4();
@@ -30093,7 +30215,35 @@ class WebGLRenderer {
 
 			currentRenderState.setupLights();
 
-			if ( camera.isArrayCamera ) {
+			if ( camera.isArrayCamera && camera.cameras.length === 2 && _currentRenderTarget !== null && _currentRenderTarget.multiview === true ) {
+
+				// CQC patch: multiview, both eyes in one pass. Common view space = this ArrayCamera's
+				// (lights, view positions, normals); each eye gets P_eye * V_eye * V_common^-1.
+				const cameras = camera.cameras;
+
+				for ( let i = 0; i < 2; i ++ ) {
+
+					const c = cameras[ i ];
+					_mvM.multiplyMatrices( c.projectionMatrix, c.matrixWorldInverse ).multiply( camera.matrixWorld );
+					_mvM.toArray( _mvProj, i * 16 );
+					_vector3.setFromMatrixPosition( c.matrixWorld );
+					_vector3.toArray( _mvCam, i * 3 );
+					_vector3.applyMatrix4( camera.matrixWorldInverse ).toArray( _mvEye, i * 3 );
+
+				}
+
+				if ( transmissiveObjects.length > 0 && _mvWarned !== true ) {
+
+					_mvWarned = true;
+					console.warn( 'THREE.WebGLRenderer: transmission is not drawn in multiview' );
+
+				}
+
+				if ( _renderBackground ) background.render( scene );
+
+				renderScene( currentRenderList, scene, camera, cameras[ 0 ].viewport );
+
+			} else if ( camera.isArrayCamera ) {
 
 				const cameras = camera.cameras;
 
@@ -30641,6 +30791,7 @@ class WebGLRenderer {
 			materialProperties.vertexAlphas = parameters.vertexAlphas;
 			materialProperties.vertexTangents = parameters.vertexTangents;
 			materialProperties.toneMapping = parameters.toneMapping;
+			materialProperties.multiview = parameters.multiview === true;
 
 		}
 
@@ -30795,6 +30946,10 @@ class WebGLRenderer {
 
 					needsProgramChange = true;
 
+				} else if ( ( materialProperties.multiview === true ) !== ( _currentRenderTarget !== null && _currentRenderTarget.multiview === true ) ) {
+
+					needsProgramChange = true;
+
 				} else if ( materialProperties.morphTargetsCount !== morphTargetsCount ) {
 
 					needsProgramChange = true;
@@ -30863,6 +31018,20 @@ class WebGLRenderer {
 				}
 
 				p_uniforms.setValue( _gl, 'viewMatrix', camera.matrixWorldInverse );
+
+				if ( p_uniforms.map.mvProjectionMatrices !== undefined ) {
+
+					// CQC patch: multiview camera data (computed once a frame in render())
+					p_uniforms.setValue( _gl, 'mvProjectionMatrices', _mvProj );
+					p_uniforms.setValue( _gl, 'mvCameraPositions', _mvCam );
+					if ( p_uniforms.map.mvEyeVS !== undefined ) p_uniforms.setValue( _gl, 'mvEyeVS', _mvEye );
+
+				} else if ( p_uniforms.map.mvCameraPositions !== undefined ) {
+
+					p_uniforms.setValue( _gl, 'mvCameraPositions', _mvCam );
+					if ( p_uniforms.map.mvEyeVS !== undefined ) p_uniforms.setValue( _gl, 'mvEyeVS', _mvEye );
+
+				}
 
 				const uCamPos = p_uniforms.map.cameraPosition;
 
@@ -31368,6 +31537,7 @@ class WebGLRenderer {
 					_gl.bindBuffer( _gl.PIXEL_PACK_BUFFER, glBuffer );
 					_gl.bufferData( _gl.PIXEL_PACK_BUFFER, buffer.byteLength, _gl.STREAM_READ );
 					_gl.readPixels( x, y, width, height, utils.convert( textureFormat ), utils.convert( textureType ), 0 );
+					_gl.bindBuffer( _gl.PIXEL_PACK_BUFFER, null );   // CQC patch: never leave it bound while waiting (breaks every other readPixels meanwhile)
 
 					// reset the frame buffer to the currently set buffer before waiting
 					const currFramebuffer = _currentRenderTarget !== null ? properties.get( _currentRenderTarget ).__webglFramebuffer : null;
@@ -31383,6 +31553,7 @@ class WebGLRenderer {
 					// read the data and delete the buffer
 					_gl.bindBuffer( _gl.PIXEL_PACK_BUFFER, glBuffer );
 					_gl.getBufferSubData( _gl.PIXEL_PACK_BUFFER, 0, buffer );
+					_gl.bindBuffer( _gl.PIXEL_PACK_BUFFER, null );
 					_gl.deleteBuffer( glBuffer );
 					_gl.deleteSync( sync );
 
