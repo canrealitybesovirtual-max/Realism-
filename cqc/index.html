@@ -2549,6 +2549,7 @@ const CONFIG = {
     health: 100,
     dmg: { head: 400, neck: 120, torso: 40, plate: 7, pelvis: 45, limb: 24 },   // per 9 mm round at full energy
     radius: 0.26,              // m, his body for walking and paths
+    nades: { on: true, per: [1, 2], roomCool: 12, hidden: [2.5, 18], press: 0.55, rate: 0.35, flash: 0.45, minD: 4.5, minFlash: 2.5, maxD: 17, mateR: 6.5, mateFlash: 3.5, wind: 0.7, vMax: 14 },   // enemy grenades (ENADE section; ?enade=off)
     walk: 1.2, run: 2.7, turn: 6,             // m/s, m/s, rad/s
     fov: 2.1,                  // rad (about 120 deg) he notices you in; inside 2.2 m he always does
     sight: 30, hear: 18,       // m
@@ -24586,6 +24587,7 @@ function coverPoints(room) {
   }
   if (room.layout && room.layout.fac) facCoverPoints(room, add, out);   // facility section: piers, landing, gates, barriers
   if (room.yard) yardCover(room, out);                          // outdoor start: barriers, corners, poles
+  if (room.aptCovers) aptCover(room, out);                      // apartment: wall ends, jambs, columns, counters (both floors)
   for (const p of props) {
     if (!p.table || !p.inWorld || p.holders.length) continue;
     const t = p.root.position;
@@ -25390,7 +25392,7 @@ function removeEnemy(e) {
 }
 // A stairwell man stands on the stair's floor (his room's local y); everyone else on 0.
 function enemyBaseY(e) { return (e.room ? e.room.origin.y : 0) + enemyFloorY(e); }   // world y of the floor he stands on
-function enemyFloorY(e) { const r = e.room; return r && (r.stair || r.yard) && e.stairY != null ? e.stairY : 0; }   // outdoor start: the tower man
+function enemyFloorY(e) { const r = e.room; return r && (r.stair || r.yard) && e.stairY != null ? e.stairY : r && r.apt ? (e.aptY || 0) : 0; }   // apartment: floor one, the stair, floor two   // outdoor start: the tower man
 // Stairwells: CONFIG.stairs.men of them (fixed per slot) put 1 (sometimes 2) men on the top half: the half landing or the top floor's pad.
 function stairMenSpot(room, taken) {
   const S = room.stair, R = mulberry32((roomSeed(room.slot) ^ 0x57A1E5 ^ (taken.length * 977)) >>> 0);
@@ -25527,6 +25529,7 @@ function navLine(G, ax, az, bx, bz) {
   return true;
 }
 function findPath(room, sx, sz, tx, tz) {
+  if (room.aptNav && !APT_NAV.inner) return aptFindPath(room, sx, sz, tx, tz);   // apartment: two floors and the helical stair
   const G = navGrid(room), s = navSnap(G, sx, sz), t = navSnap(G, tx, tz);
   if (!s || !t) return null;
   // Buffers kept per grid and reused (the outdoor yard's grid is 56k cells: fresh arrays per search were GC stalls).
@@ -25666,7 +25669,7 @@ function chooseCover(e) {
   headWorld(_ev.h);
   let best = null, bestS = -Infinity;
   for (const c of coverPoints(room)) {
-    if (!c.useable) continue;
+    if (!c.useable || (c.lv !== undefined && c.lv !== aptLv(e))) continue;   // apartment: cover on his own floor
     const lx = rLX(room, c.x), lz = rLZ(room, c.z);
     const tx = _ev.c.x - lx, tz = _ev.c.z - lz, l = Math.hypot(tx, tz) || 1;
     const facing = -(c.nx * tx + c.nz * tz) / l;               // 1 = the cover is right between you
@@ -25677,7 +25680,7 @@ function chooseCover(e) {
     s -= penCoverMalus(e, c);                                    // step 119: soft cover your rounds came through
     if (e.cover && Math.hypot(e.cover.lx - lx, e.cover.lz - lz) < 0.3) s -= 1.5;   // move somewhere new
     // Does it actually hide him from where you are standing now?
-    _ev.p.set(c.x, c.height === 'low' ? 0.95 : 1.55, c.z);
+    _ev.p.set(c.x, (c.y0 || 0) + (c.height === 'low' ? 0.95 : 1.55), c.z);   // apartment: y0 = its floor
     if (!clearLine(_ev.h, _ev.p, 0.05)) s += 1.5;
     if (s > bestS) { bestS = s; best = { lx, lz, nx: c.nx, nz: c.nz, low: c.height === 'low', peek: c.peek, source: c.source }; }
   }
@@ -25869,7 +25872,7 @@ function enemyMove(e, dt) {
   } else {
     // Hold position at the anchor; when peeking round a wall end, step out past it.
     tx = e.anchor.x; tz = e.anchor.y;
-    if (e.cover && e.cover.peek) { e.peek += (e.peekT - e.peek) * (1 - Math.exp(-dt * 6)); tx += e.cover.peek * 0.8 * Math.abs(e.peek); }
+    if (e.cover && e.cover.peek) { e.peek += (e.peekT - e.peek) * (1 - Math.exp(-dt * 6)); const pv = e.cover.source && e.cover.source.aptPv, pk = 0.8 * Math.abs(e.peek); if (pv) { tx += pv[0] * pk; tz += pv[1] * pk; } else tx += e.cover.peek * pk; }   // apartment cover: steps out along its own way (a wall end, a jamb)
     else e.peek += (0 - e.peek) * (1 - Math.exp(-dt * 6));
     _mv.set(tx - e.pos.x, tz - e.pos.y).multiplyScalar(5);
     const L = _mv.length(); if (L > 1.6) _mv.multiplyScalar(1.6 / L);
@@ -25878,7 +25881,7 @@ function enemyMove(e, dt) {
   e.vel.lerp(_mv, 1 - Math.exp(-dt * 8));
   e.pos.addScaledVector(e.vel, dt);
   // Collide: room walls, furniture, partitions, doors, tables.
-  const er = e.room, r = C.radius, fy = er.origin.y;
+  const er = e.room, r = C.radius, fy = er.origin.y + (er.apt ? e.aptY || 0 : 0);   // apartment: the floor he is on (floor two's walls, not floor one's)
   _mp.x = rWX(er, e.pos.x); _mp.z = rWZ(er, e.pos.y);
   for (let pass = 0; pass < 2; pass++) {
     for (const col of colliders) if (!colOffLevel(col, fy)) pushOutOf(col, _mp, r);   // invisible enemy fix: the walls and furniture of a room on another floor (stacked wings) shoved him out through his own walls
@@ -25886,13 +25889,14 @@ function enemyMove(e, dt) {
   }
   // Step 9: teammates don't walk through each other.
   for (const m of e.room.enemies || []) {
-    if (m === e || m.dead) continue;
+    if (m === e || m.dead || (er.apt && Math.abs((m.aptY || 0) - (e.aptY || 0)) > 1.2)) continue;   // apartment: a man on the other floor
     const mx = rWX(er, m.pos.x) - _mp.x, mz = rWZ(er, m.pos.y) - _mp.z, md = Math.hypot(mx, mz), R = 2 * r + 0.05;
     if (md < R && md > 1e-4) { _mp.x -= mx / md * (R - md) * 0.5; _mp.z -= mz / md * (R - md) * 0.5; }
   }
   // Invisible enemy fix: he never leaves his own room (its nav grid stops r short of the walls). Outside it he stood in a
   // wall, the gap between rooms or another room's space: drawn with a room you could not see into, still fighting.
   e.pos.set(clamp(rLX(er, _mp.x), -er.w / 2 + r, er.w / 2 - r), clamp(rLZ(er, _mp.z), -er.d / 2 + r, er.d / 2 - r));
+  if (er.apt) aptEnemyY(e);                                       // apartment: his floor height (the stair ramps it)
   e.speed = e.vel.length();
   // Never stand inside you: you get pushed, gently (only on your floor: stacked wings share x and z).
   headWorld(_ev.h);
@@ -26032,7 +26036,7 @@ function enemyPose(e, dt, now) {
   B.pelvis.position.set(0, hipY, 0.04 * cr);
   B.pelvis.rotation.set(-0.12 * cr - gait * 0.08, 0, Math.sin(e.phase) * 0.04 * gait);
   // lean toward the side he steps out to (room x, turned into his own right/left)
-  const leanSide = e.cover && e.cover.peek ? e.cover.peek * Math.abs(e.peek) * Math.sign(Math.cos(e.yaw) || 1) : 0;
+  const lpv = e.cover && e.cover.source && e.cover.source.aptPv, leanSide = e.cover && e.cover.peek ? (lpv ? Math.sign(lpv[0] * Math.cos(e.yaw) - lpv[1] * Math.sin(e.yaw)) : e.cover.peek * Math.sign(Math.cos(e.yaw) || 1)) * Math.abs(e.peek) : 0;   // apartment cover: lean toward its step-out side
   B.spine.rotation.set(-0.42 * cr - gait * 0.06 + f.p, e.twist * 0.5 + f.y, -leanSide * 0.18 + f.r, 'YXZ');
   // aim pitch: what he's looking at, relative to the chest
   threatLocal(e, _ev.c);
@@ -26131,6 +26135,7 @@ function enemyPose(e, dt, now) {
     _ev.c.set(0, 0, -1).applyQuaternion(_ecq);
     solveIK(B['upperArm' + side], B['foreArm' + side], sk.upper, sk.fore, _ev.t, _ev.p, _ev.c, B['hand' + side], _ev.q);
   }
+  if (e.enade) enadeArm(e, _ecq);                                 // enemy grenades: the throwing arm
   e.root.updateWorldMatrix(false, true);
   enemySkinSync(e);                                               // step 66
   if (CONFIG.enemy.castShadow && (e.speed > 0.15 || e.turning)) motionShadows();
@@ -26992,7 +26997,7 @@ function enemiesDyingUpdate(dt) {
 const DOWNED_URL_OFF = /[?&]downed=off/.test(QS);
 function downedOn() { return !!CONFIG.enemy.downed && !DOWNED_URL_OFF; }
 // Not on stairs or a raised spot (stairwell men, the tower sniper): the floor loop poses him at one fixed height on a flat nav floor, so on a flight he sank into the treads and lay there alive. There he dies into the ragdoll, which lands on the real tread colliders.
-function downedFor(e) { return downedOn() && !(e.room && e.room.stair) && !e.stairHold; }
+function downedFor(e) { return downedOn() && !(e.room && e.room.stair) && !e.stairHold && !(e.room && e.room.apt && (e.aptY || 0) > 0.3); }   // apartment: on the stair or upstairs he dies into the ragdoll (the downed crawl is floor one's)
 const DOWNED = {
   life: [60, 120],             // step 111: s he lasts on the floor (was 0.5-1.05 x blood.bleedTime = 11-23 s), x lifeK by the wound
   lifeK: { chest: 0.7, spine: 1.15, pelvis: 1.15, leg: 1.3, arm: 1.2 },   // chest shorter, gut and legs longer
@@ -27654,6 +27659,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if (!(e.room.visible || e.room === stream.current) || !e.room.group.visible || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
     if (e.surr) { surrTick(e, dt, now); continue; }             // step 117: he has given up (his own brain, move and pose)
     enemyThink(e, dt, now);
+    enadeTick(e, dt, now);                                      // enemy grenades (CONFIG.enemy.nades, ?enade=off)
     if (SURR.on && surrCheck(e, dt, now)) { surrTick(e, dt, now); continue; }   // step 117: he gives up now
     enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
     // Step 25.2: a man you can't see is posed at CONFIG.enemy.offscreenPoseHz (time adds up, nothing is skipped).
@@ -28817,7 +28823,7 @@ function aiDecide(e) {
   const bear = engaged.map((m) => Math.atan2(m.pos.x - T.x, m.pos.y - T.z));
   let bestC = null, sC = -Infinity, bestF = null, sF = -Infinity, bestB = null, sB = -Infinity;
   for (const c of coverPoints(room)) {
-    if (!c.useable) continue;
+    if (!c.useable || (c.lv !== undefined && c.lv !== aptLv(e))) continue;   // apartment: cover on his own floor
     const lx = rLX(room, c.x), lz = rLZ(room, c.z);
     const tx = T.x - lx, tz = T.z - lz, l = Math.hypot(tx, tz) || 1;
     const facing = -(c.nx * tx + c.nz * tz) / l;                // 1 = the cover is right between you
@@ -28825,7 +28831,7 @@ function aiDecide(e) {
     if (loopCoverClaimed(e, lx, lz)) continue;
     const travel = Math.hypot(lx - e.pos.x, lz - e.pos.y);
     if (travel > 9) continue;
-    _ai.p.set(c.x, c.height === 'low' ? 0.95 : 1.55, c.z);
+    _ai.p.set(c.x, (c.y0 || 0) + (c.height === 'low' ? 0.95 : 1.55), c.z);   // apartment: y0 = its floor
     const hidden = !clearLine(_ai.a, _ai.p, 0.05);
     const pref = Math.abs(l - e.w.pref) * (e.w.rush ? 0.35 : 0.15);
     const spot = { lx, lz, nx: c.nx, nz: c.nz, low: c.height === 'low', peek: c.peek, source: c.source };
@@ -29529,7 +29535,7 @@ const OPT_GROUPS = [
   ['physics', 'PHYSICS', [['pen', 'Penetration + real bullet push'], ['downed', 'Wounded men fall and crawl'], ['surrender', 'Enemies surrender'], ['stealth', 'Stealth (light, noise)'],
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
-    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks']]],
+    ['facility', 'Facility rooms'], ['nature', 'Outdoor trees and rocks'], ['enade', 'Enemies throw grenades'], ['aptnav', 'Apartment: men use the stair']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
@@ -50501,9 +50507,12 @@ function aptActivate(room, box, walk) {
     const slab = !c.furn && Math.max(hx, hz) > 0.6 && (2 * hy < 0.5 || y1 <= 0.12 || (y0 >= 3.4 && y1 <= 4.75 && 2 * hy < 1.3) || y0 >= 8.0);
     if (slab) continue;
     walk(lx, lz, hx, hz, y1, ly, y0 > 0.3 ? { bot: y0 - 0.05 } : undefined);
+    if (kindOf(c) === 'glass') room.walkLocal[room.walkLocal.length - 1].glass = true;   // APT NAV: glass is no cover
     if (c.pane !== undefined) room.apt.panes.list[c.pane].walk = room.walkLocal[room.walkLocal.length - 1];
   }
   room.navCache = yardNav(room, []);                              // floor one (walk boxes held up on floor two are left out)
+  aptNavBuild(room);                                              // floor two and the stair link (APT NAV section)
+  aptCoverBuild(room);                                            // cover on both floors
   aptMovables(room);
 }
 // Loose furniture (chairs, stools, side tables, lamps): real physics props, so rounds, kicks, blasts and bodies push
@@ -50813,7 +50822,7 @@ function aptRaidTick() {
     const e = spawnEnemy(room, { gun: ['smg', 'smg', 'shotgun', 'pistol'][Math.floor(Math.random() * 4)], skill: 0.55, aggr: 0.7 }, 0, []);
     APTS.forced = null;
     if (!e) continue;
-    if (up) { e.stairHold = true; e.stairY = APT.L2; e.root.position.y = APT.L2; }
+    if (up) { e.stairHold = true; e.stairY = APT.L2; e.aptY = APT.L2; e.root.position.y = APT.L2; }   // siege holders keep their spot upstairs (enemyFloorY reads aptY)
     camera.getWorldPosition(_apSp);
     try { aiNoise(e, rLX(room, _apSp.x), rLZ(room, _apSp.z), 1.2); } catch (err) { /* */ }
   }
@@ -50825,18 +50834,23 @@ function aptRaidTick() {
 }
 // the nav cell on floor one farthest from you (or a raid's forced entry point)
 function aptSpawnSpot(room, taken) {
+  if (APTS) APTS.spotY = 0;
   if (APTS && APTS.forced) { const f = APTS.forced; camera.getWorldPosition(_apSp); const px = rLX(room, _apSp.x), pz = rLZ(room, _apSp.z); return { x: f.x, z: f.z, yaw: Math.atan2(-(px - f.x), -(pz - f.z)) }; }
-  const G = room.navCache; if (!G) return null;
-  const px = rLX(room, camera.getWorldPosition(_apSp).x), pz = rLZ(room, _apSp.z);
+  const G1 = room.navCache; if (!G1) return null;
+  const px = rLX(room, camera.getWorldPosition(_apSp).x), pz = rLZ(room, _apSp.z), you = aptYouLv(room);
   let best = null, bd = -1;
-  for (let j = 2; j < G.nz - 2; j += 2) for (let i = 2; i < G.nx - 2; i += 2) {
-    if (G.g[j * G.nx + i]) continue;
-    const x = -G.w / 2 + (i + 0.5) * G.cs, z = -G.d / 2 + (j + 0.5) * G.cs;
-    if (aptAZ(x) > 17.4) continue;                                   // not out on the terrace
-    if (taken.some((t) => Math.hypot(t.x - x, t.z - z) < 1.2) || ENEMY.list.some((e) => e.room === room && !e.dead && Math.hypot(e.pos.x - x, e.pos.y - z) < 1.2)) continue;
-    const d = Math.hypot(x - px, z - pz);
-    if (d > bd) { bd = d; best = { x, z, yaw: Math.atan2(-(px - x), -(pz - z)) }; }
-  }
+  [G1, room.aptNav && room.aptNav.G2].forEach((G, lv) => {        // APT NAV: floor two too (the other floor counts 7 m more)
+    if (!G) return;
+    for (let j = 2; j < G.nz - 2; j += 2) for (let i = 2; i < G.nx - 2; i += 2) {
+      if (G.g[j * G.nx + i]) continue;
+      const x = -G.w / 2 + (i + 0.5) * G.cs, z = -G.d / 2 + (j + 0.5) * G.cs;
+      if (aptAZ(x) > 17.4) continue;                                 // not out on the terrace
+      if (taken.some((t) => Math.hypot(t.x - x, t.z - z) < 1.2) || ENEMY.list.some((e) => e.room === room && !e.dead && aptLv(e) === lv && Math.hypot(e.pos.x - x, e.pos.y - z) < 1.2)) continue;
+      const d = Math.hypot(x - px, z - pz) + (lv !== you ? 7 : 0);
+      if (d > bd) { bd = d; best = { x, z, yaw: Math.atan2(-(px - x), -(pz - z)), lv }; }
+    }
+  });
+  if (best && APTS) APTS.spotY = best.lv ? APT.L2 : 0;
   return best;
 }
 const _apSp = new THREE.Vector3();
@@ -50845,6 +50859,7 @@ function aptSpawnEnemy() {
   if (ENEMY.list.filter((e) => e.room === room && !e.dead).length >= 8) { toast('At most 8 enemies here', 1600); return null; }
   const e = spawnEnemy(room, { gun: ['smg', 'pistol', 'shotgun'][Math.floor(Math.random() * 3)], skill: 0.4, aggr: 0.4 }, 0, []);
   if (!e) toast('The enemy model is still loading', 1600);
+  else e.aptY = APTS.spotY || 0;                                   // APT NAV: he may start upstairs
   return e;
 }
 function aptDeskPress() {
@@ -50880,6 +50895,344 @@ function aptPanelTick() {
   if (changed) aptPanelDraw();
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+
+
+/* =========================================================================
+ *  APARTMENT NAV (?aptnav=off): the men walk both floors. Floor one is yardNav's grid (room.navCache); floor two
+ *  a second grid of the same size (aptNavBuild): free over the floor-two slab (the footprint north of the south
+ *  glass, less the stair void) where no walk box holds on floor two (its walls, furniture, the guards round the
+ *  void). The helical stair is a link between them: its disc is shut on both grids, and a path that changes floor
+ *  runs grid -> foot / top approach -> waypoints along the tread middles (APT_NAV.rm, every APT_NAV.step rad) ->
+ *  the other grid. findPath hands every apartment search to aptFindPath (the man is found by his position; his
+ *  floor is e.aptY, kept by aptEnemyY from aptFloor as he walks, so the root rides the ramp and enemyFloorY /
+ *  enemyBaseY follow). The target's floor: a cover point's own, else the floor he last knew you on (e.aptKLv,
+ *  noted when lastKnown changes), else the only floor that has it, else his own.
+ *  Cover (aptCoverBuild, once per activation; aptCover adds it to coverPoints): the corners of every tall walk box
+ *  (wall ends, door jambs, columns, tall furniture) as high cover with a step-out way along the face (source.aptPv:
+ *  enemyMove peeks along it, not only along room x), low furniture (0.95-1.3 m) as low cover; each point on its
+ *  own floor (c.lv, c.y0); chooseCover / aiDecide only take points on his floor.
+ * ========================================================================= */
+var APT_NAV = { on: !/[?&]aptnav=off\b/.test(QS), inner: false, step: 0.22, rm: 1.025, zS: 17.55, under: 3.1 };   // under: below this flight angle (rad) the soffit is too low to walk under
+function aptLv(e) { return e && (e.aptY || 0) > 2.3 ? 1 : 0; }
+function aptYouLv(room) { return level.floor - room.origin.y > 2.3 ? 1 : 0; }
+function aptPt(ax, az) { return [aptLX(az), aptLZ(ax)]; }                                    // apartment -> room-local
+function aptStairPt(r, a) { const S = APT.stair; return aptPt(S.cx - r * Math.sin(a), S.cz - r * Math.cos(a)); }
+function aptNavBuild(room) {
+  room.aptNav = null;
+  if (!APT_NAV.on || !room.navCache) return;
+  const S = APT.stair, rad = CONFIG.enemy.radius, G1 = room.navCache, nx = G1.nx, nz = G1.nz, cs = G1.cs;
+  const G2 = { g: new Uint8Array(nx * nz), nx, nz, cs, w: G1.w, d: G1.d };
+  const fy = APT.L2, disc = S.r1 + rad + 0.04;
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const k = j * nx + i, x = -G1.w / 2 + (i + 0.5) * cs, z = -G1.d / 2 + (j + 0.5) * cs, ax = aptAX(z), az = aptAZ(x);
+    const inS = Math.hypot(S.cx - ax, S.cz - az) < disc;
+    let a = Math.atan2(S.cx - ax, S.cz - az); if (a < 0) a += Math.PI * 2;
+    if (inS && a < APT_NAV.under) G1.g[k] = 1;                    // floor one: the low half of the flight (the high half, open to the gallery, is walked under)
+    if (inS || Math.abs(x) > room.w / 2 - rad || Math.abs(z) > room.d / 2 - rad || az > APT_NAV.zS - rad - 0.05) G2.g[k] = 1;   // over the slab only (the terrace has none)
+  }
+  for (const b of room.walkLocal || []) {                        // what holds on floor two (colOnFloor's rule at L2)
+    if (!((b.bot === undefined || fy + 1.2 >= b.bot) && b.top > fy + 0.02)) continue;
+    const ext = Math.hypot(b.hx, b.hz) + rad + cs;
+    const i0 = Math.max(0, Math.floor((b.x - ext + G1.w / 2) / cs)), i1 = Math.min(nx - 1, Math.ceil((b.x + ext + G1.w / 2) / cs));
+    const j0 = Math.max(0, Math.floor((b.z - ext + G1.d / 2) / cs)), j1 = Math.min(nz - 1, Math.ceil((b.z + ext + G1.d / 2) / cs));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const k = j * nx + i; if (G2.g[k]) continue;
+      if (boxDist(-G1.w / 2 + (i + 0.5) * cs, -G1.d / 2 + (j + 0.5) * cs, b) < rad) G2.g[k] = 1;
+    }
+  }
+  // the link: floor one's approach runs east to the first riser (the flight starts heading west), floor two's leaves the
+  // landing (the last 30 degrees) outward; both ends must be open on their grid (else the link is off: men keep a floor)
+  const rm = APT_NAV.rm;
+  const N = { G1, G2, ok: false,
+    Fout: aptPt(S.cx + 1.2, S.cz - rm), Fmid: aptPt(S.cx + 0.5, S.cz - rm),
+    Tb: aptStairPt(rm, S.sweep + 0.26), Tmid: aptStairPt(1.75, S.sweep + 0.26), Tout: aptPt(8.65, 9.05) };   // floor two: off the landing past the guard's end, clear of the lift core
+  N.ok = navFree(G1, N.Fout[0], N.Fout[1]) && navFree(G2, N.Tout[0], N.Tout[1]);
+  if (!N.ok) console.warn('apartment nav: stair link ends blocked', navFree(G1, N.Fout[0], N.Fout[1]), navFree(G2, N.Tout[0], N.Tout[1]));
+  room.aptNav = N;
+}
+// waypoints along the tread middles from angle a0 to a1 (both included)
+function aptHelix(a0, a1, out) {
+  const n = Math.max(1, Math.ceil(Math.abs(a1 - a0) / APT_NAV.step));
+  for (let k = 0; k <= n; k++) { const p = aptStairPt(APT_NAV.rm, a0 + (a1 - a0) * k / n); out.push(new THREE.Vector2(p[0], p[1])); }
+  return out;
+}
+function aptLeg(room, G, ax, az, bx, bz) {                        // a path on one floor's grid (findPath on it)
+  if (Math.hypot(bx - ax, bz - az) < 0.15) return [];
+  const keep = room.navCache; room.navCache = G; APT_NAV.inner = true;
+  try { return findPath(room, ax, az, bx, bz); } finally { room.navCache = keep; APT_NAV.inner = false; }
+}
+function aptTargetLv(room, e, tx, tz, sl) {
+  const N = room.aptNav;
+  const cv = room.aptCovers ? room.aptCovers.filter((c) => Math.abs(c.lx - tx) < 1e-4 && Math.abs(c.lz - tz) < 1e-4) : [];
+  if (cv.length) return cv.some((c) => c.lv === sl) ? sl : cv[0].lv;   // a wall corner on both floors: his own
+  if (e && e.hasKnown && Math.hypot(e.lastKnown.x - tx, e.lastKnown.z - tz) < 3) return e.aptKLv ?? aptYouLv(room);
+  const f1 = navFree(N.G1, tx, tz), f2 = navFree(N.G2, tx, tz);
+  if (f1 !== f2) return f1 ? 0 : 1;
+  return sl < 0 ? (e && e.aptKLv) ?? aptYouLv(room) : sl;
+}
+function aptFindPath(room, sx, sz, tx, tz) {
+  const N = room.aptNav, S = APT.stair, L2 = APT.L2;
+  const e = ENEMY.list.find((m) => m.room === room && m.pos.x === sx && m.pos.y === sz);
+  const sy = e ? e.aptY || 0 : 0, ax = aptAX(sz), az = aptAZ(sx), rr = Math.hypot(S.cx - ax, S.cz - az);
+  let a = Math.atan2(S.cx - ax, S.cz - az); if (a < 0) a += Math.PI * 2;
+  const pre = [];
+  let sl, aS = 0, x0 = sx, z0 = sz;
+  if (sy > 0.3 && sy < L2 - 0.15 && rr < S.r1 + 0.5) { sl = -1; aS = a > S.sweep + 0.3 ? 0 : Math.min(a, S.sweep); }   // on the flight
+  else {
+    sl = sy > 2.3 ? 1 : 0;
+    if (rr < S.r1 + CONFIG.enemy.radius + 0.1 && !navFree(sl ? N.G2 : N.G1, sx, sz)) { const o = sl ? N.Tout : N.Fout; pre.push(new THREE.Vector2(o[0], o[1])); x0 = o[0]; z0 = o[1]; }   // off the stair's disc first
+  }
+  const tl = N.ok ? aptTargetLv(room, e, tx, tz, sl) : Math.max(0, sl);
+  const G = [N.G1, N.G2];
+  const cat = (...parts) => { const out = []; for (const p of parts) { if (!p) return null; for (const v of p) out.push(v); } return out; };
+  if (sl === tl) return cat(pre, aptLeg(room, G[sl], x0, z0, tx, tz));
+  if (!N.ok) return null;
+  const up = [new THREE.Vector2(N.Tb[0], N.Tb[1]), new THREE.Vector2(N.Tmid[0], N.Tmid[1]), new THREE.Vector2(N.Tout[0], N.Tout[1])];
+  const down = [new THREE.Vector2(N.Fmid[0], N.Fmid[1]), new THREE.Vector2(N.Fout[0], N.Fout[1])];
+  if (sl < 0) {
+    if (tl === 1) return cat(aptHelix(aS, S.sweep, []), up, aptLeg(room, N.G2, N.Tout[0], N.Tout[1], tx, tz));
+    return cat(aptHelix(aS, 0, []), down, aptLeg(room, N.G1, N.Fout[0], N.Fout[1], tx, tz));
+  }
+  if (sl === 0) return cat(pre, aptLeg(room, N.G1, x0, z0, N.Fout[0], N.Fout[1]), [down[0]], aptHelix(0, S.sweep, []), up, aptLeg(room, N.G2, N.Tout[0], N.Tout[1], tx, tz));
+  return cat(pre, aptLeg(room, N.G2, x0, z0, N.Tout[0], N.Tout[1]), [up[1], up[0]], aptHelix(S.sweep, 0, []), down, aptLeg(room, N.G1, N.Fout[0], N.Fout[1], tx, tz));
+}
+// his floor height as he walks (aptFloor ramps the flight from the floor he is on), a careful pace on the treads, and
+// which floor you were on when his last-known point last changed
+function aptEnemyY(e) {
+  const r = e.room;
+  e.aptY = aptFloor(r, e.pos.x, e.pos.y, e.aptY || 0);
+  if (e.aptY > 0.3 && e.aptY < APT.L2 - 0.1) { const v = e.vel.length(); if (v > 1.6) e.vel.multiplyScalar(1.6 / v); }
+  const lk = e.lastKnown;
+  if (e.hasKnown && (lk.x !== e._akx || lk.z !== e._akz)) { e._akx = lk.x; e._akz = lk.z; e.aptKLv = aptYouLv(r); }
+}
+function aptCoverBuild(room) {
+  room.aptCovers = null;
+  const N = room.aptNav, Gs = [room.navCache, N && N.G2], gap = 0.42, list = [];
+  if (!Gs[0]) return;
+  const push = (lv, lx, lz, nx, nz, top, pv) => {
+    const G = Gs[lv]; if (!G || !navFree(G, lx, lz)) return;
+    if (pv && !(navLine(G, lx, lz, lx + pv[0] * 0.85, lz + pv[1] * 0.85) && navFree(G, lx + pv[0] * 0.85, lz + pv[1] * 0.85))) return;   // room to step out past the corner
+    for (const s of list) if (s.lv === lv && Math.abs(s.lx - lx) < 0.55 && Math.abs(s.lz - lz) < 0.55) return;
+    list.push({ lx, lz, nx, nz, top, lv, pv, src: pv ? { type: 'apt', aptPv: pv } : null });
+  };
+  for (const b of room.walkLocal || []) {
+    if (b.glass || Math.min(b.hx, b.hz) < 0.01) continue;           // glass, the curved wall's thin chords
+    for (const lv of [0, 1]) {
+      const fy = lv ? APT.L2 : 0;
+      if (lv === 0 && b.bot !== undefined && b.bot > 1.2) continue;   // held up on floor two
+      if (lv === 1 && !((b.bot === undefined || fy + 1.2 >= b.bot) && b.top > fy + 0.02)) continue;
+      const top = b.top - fy; if (top < 0.95) continue;
+      const c = Math.cos(b.a), s = Math.sin(b.a), X = [c, -s], Z = [s, c];      // the box's own axes (boxDist's frame)
+      for (const [nv, ext, tv, half] of [[X, b.hx, Z, b.hz], [Z, b.hz, X, b.hx]]) for (const sd of [1, -1]) {
+        const nx = nv[0] * sd, nz = nv[1] * sd, fx = b.x + nx * (ext + gap), fz = b.z + nz * (ext + gap);
+        if (top < 1.3) { for (const t of half > 0.8 ? [-half + 0.35, 0, half - 0.35] : [0]) push(lv, fx + tv[0] * t, fz + tv[1] * t, nx, nz, top, null); }
+        else if (half >= 0.3) for (const se of [1, -1]) { const t = se * Math.max(0, half - 0.3); push(lv, fx + tv[0] * t, fz + tv[1] * t, nx, nz, top, [tv[0] * se, tv[1] * se]); }
+      }
+    }
+  }
+  room.aptCovers = list;
+}
+function aptCover(room, out) {
+  for (const c of room.aptCovers) out.push({ x: rWX(room, c.lx), z: rWZ(room, c.lz), nx: c.nx, nz: c.nz, height: c.top < 1.3 ? 'low' : 'high', peek: c.pv ? 1 : 0,
+    soft: false, source: c.src, useable: true, lv: c.lv, y0: room.origin.y + (c.lv ? APT.L2 : 0) });
+}
+
+/* =========================================================================
+ *  ENEMY GRENADES (CONFIG.enemy.nades, ?enade=off): every CQC room. A man in a fight who has lost sight of you behind
+ *  cover for a while, or is pressed (rounds cracking past him: e.suppress, teammates down, you close, hurt, just hit),
+ *  throws a flashbang (close, or by chance) or a frag at where he last knew you were. Twice a second a pressure score
+ *  (enadePress) against nades.press, then a roll. Never: a teammate within nades.mateR (frag) / mateFlash of the
+ *  landing point or himself inside minD; nades.per [1, 2] a man, one a room every roomCool s.
+ *  The throw: a shout first (his radio call + "Grenade!" / "Flashbang!" on screen and in the headset), gun down,
+ *  standing (out past his cover's corner when it has one), his left hand takes it from the vest and cocks it over the
+ *  shoulder (enadeArm: two-bone IK on the driver, the grenade drawn in the hand), wind s later it leaves: a real
+ *  grenade item (createNade, pin out, spoon off: the real fuse, NREC throw and spoon sounds) on a lob solved for the
+ *  target (enadePlan: launch angles tried high to low, each arc checked with LOS rays against walls, ceilings, doors and
+ *  props), aimed a little short for a frag (it rolls on), with an error by his skill. It bounces and rolls on Rapier,
+ *  goes off by fragBlast / flashBlast (fragments, overpressure, the white-out, ears), his men run from it (nadeEvade),
+ *  and you can pick it up and throw it back. Shot while cocking (pin out): it drops at his feet, live.
+ * ========================================================================= */
+var ENADE = null;
+const _en = { r: new THREE.Vector3(), t: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3(), v: new THREE.Vector3(), c: new THREE.Vector3(),
+  p: new THREE.Vector3(), q: new THREE.Quaternion(), pole: new THREE.Vector3(), fr: new THREE.Vector3() };
+const ENADE_K = { pouch: [-0.1, -0.2, -0.2], cock: [-0.22, 0.24, 0.14], rel: [-0.12, 0.26, -0.55] };   // chest-local left hand (x right, -z forward)
+function enadeOn() {
+  if (!ENADE) { const C = CONFIG.enemy.nades || {}; ENADE = { on: !!C.on && !/[?&]enade=off\b/.test(QS), C, live: new Set(), vis: { frag: [], flash: [] }, sweepT: -1, stat: { thrown: 0, frag: 0, flash: 0, tries: 0, noArc: 0, dropped: 0 } }; }
+  return ENADE.on;
+}
+function enadePress(e, now) {
+  const mates = e.room.enemies || [], down = mates.filter((m) => m !== e && m.dead).length, lk = e.lastKnown, C = ENADE.C;
+  const d = Math.hypot(lk.x - e.pos.x, lk.z - e.pos.y), ago = now - (e.lastSeenT ?? -99);
+  const hid = !e.visible && ago > C.hidden[0] && ago < C.hidden[1];
+  return Math.min(1, e.suppress / 3) * 0.55 + Math.min(2, down) * 0.25 + (d < 7 ? (7 - d) / 7 * 0.45 : 0) + (e.hp < CONFIG.enemy.health * 0.6 ? 0.2 : 0)
+    + (now - (e.hitT ?? -99) < 3 ? 0.25 : 0) + (hid ? 0.5 : 0) + (e.aggr ?? 0.5) * 0.2;
+}
+function enadeTick(e, dt, now) {
+  if (!enadeOn() || !NADE.ready) return;
+  enadeSweep(now);
+  if (e.enade) { enadeRun(e, dt, now); return; }
+  const C = ENADE.C, st = e.state;
+  if (!e.engaged || !e.hasKnown || e.reloadT > 0 || e.downed || e.surr || playerState.dead || now < (e.flashUntil || 0)) return;
+  if (st !== 'cover' && st !== 'peek' && st !== 'fight' && st !== 'ambush' && st !== 'search' && st !== 'suppress') return;
+  if (now < (e.enadeNext || 0)) return;
+  e.enadeNext = now + 0.5;
+  if (e.enadeLeft === undefined) e.enadeLeft = C.per[0] + Math.floor(Math.random() * (C.per[1] - C.per[0] + 1));
+  if (e.enadeLeft <= 0 || now < (e.room.enadeAt || 0)) return;
+  const pr = enadePress(e, now); e.enadePr = pr;
+  if (pr < C.press || Math.random() > Math.min(0.6, (pr - C.press + 0.2) * C.rate)) return;
+  ENADE.stat.tries++;
+  const d = Math.hypot(e.lastKnown.x - e.pos.x, e.lastKnown.z - e.pos.y);
+  const first = d < 6 || Math.random() < C.flash ? 'flash' : 'frag';
+  let type = first, plan = enadePlan(e, type, null, null);
+  if (!plan) { type = first === 'flash' ? 'frag' : 'flash'; plan = enadePlan(e, type, null, null); }
+  if (!plan) { ENADE.stat.noArc++; e.enadeNext = now + 2; return; }
+  e.enade = { type, t: 0, plan, gone: false, vis: null };
+  ENADE.live.add(e);
+  e.room.enadeAt = now + C.roomCool; e.enadeLeft--;
+  enadeShout(e, type);
+}
+// where it should land (world), or null: not too close to him, not too far, none of his men near it
+function enadeTarget(e, type, out) {
+  const C = ENADE.C, room = e.room, lk = e.lastKnown;
+  let tx = lk.x, tz = lk.z;
+  const ex = tx - e.pos.x, ez = tz - e.pos.y, L = Math.hypot(ex, ez) || 1;
+  if (type === 'frag') { tx -= ex / L * 0.7; tz -= ez / L * 0.7; }  // short: it rolls on
+  const er = (0.2 + 0.6 * Math.random()) * clamp(e.errK || 1, 0.5, 1.6) * (0.6 + L / 20), ea = Math.random() * Math.PI * 2;
+  tx += Math.cos(ea) * er; tz += Math.sin(ea) * er;
+  const fy = room.apt ? (e.aptKLv ? APT.L2 : 0) : roomFloorAt(room, tx, tz, Math.max(0, lk.y - room.origin.y - 1.3));
+  out.set(rWX(room, tx), room.origin.y + fy + 0.08, rWZ(room, tz));
+  const me = Math.hypot(tx - e.pos.x, tz - e.pos.y), dy = Math.abs(room.origin.y + fy - enemyBaseY(e));
+  if (me < (type === 'frag' ? C.minD : C.minFlash) && dy < 2 || me > C.maxD) return null;
+  const R = type === 'frag' ? C.mateR : C.mateFlash;
+  for (const m of room.enemies || []) {
+    if (m === e || m.dead) continue;
+    if (Math.hypot(m.pos.x - tx, m.pos.y - tz) < R && Math.abs(enemyBaseY(m) - (room.origin.y + fy)) < 2) return null;
+  }
+  return out;
+}
+// the lob: launch angles high to low, speed solved for the landing point, the arc checked against the room
+function enadePlan(e, type, R, T) {
+  const C = ENADE.C;
+  if (!T) { T = enadeTarget(e, type, new THREE.Vector3()); if (!T) return null; }
+  if (!R) {                                                       // where his hand will be: standing, out past his cover's corner
+    let lx = e.pos.x, lz = e.pos.y;
+    const cv = e.cover, pv = cv && cv.peek && cv.source && cv.source.aptPv;
+    if (cv && cv.peek) { lx = e.anchor.x + (pv ? pv[0] : cv.peek) * 0.8; lz = e.anchor.y + (pv ? pv[1] : 0) * 0.8; }
+    R = _en.r.set(rWX(e.room, lx), enemyBaseY(e) + 1.72, rWZ(e.room, lz));
+    _en.a.set(T.x - R.x, 0, T.z - R.z).normalize(); R.addScaledVector(_en.a, 0.2);
+  }
+  const g = 9.81, dx = T.x - R.x, dz = T.z - R.z, d = Math.hypot(dx, dz), dy = T.y - R.y;
+  if (d < 1) return null;
+  for (const th of [0.62, 0.45, 0.3, 0.8, 0.16]) {
+    const c = Math.cos(th), den = 2 * c * c * (d * Math.tan(th) - dy);
+    if (den <= 0.01) continue;
+    const v = Math.sqrt(g * d * d / den); if (!(v < C.vMax)) continue;
+    const vh = v * c, vy = v * Math.sin(th), tf = d / vh;
+    if (!enadeArcClear(R, dx / d * vh, vy, dz / d * vh, tf)) continue;
+    return { v: new THREE.Vector3(dx / d * vh, vy, dz / d * vh), T: T.clone ? T.clone() : T, R: R.clone(), tf, th };
+  }
+  return null;
+}
+function enadeArcClear(R, vx, vy, vz, tf) {
+  const n = 10, end = tf * 0.9;
+  _en.b.copy(R);
+  for (let k = 1; k <= n; k++) {
+    const t = end * k / n;
+    _en.c.set(R.x + vx * t, R.y + vy * t - 4.905 * t * t, R.z + vz * t);
+    if (!clearLine(_en.b, _en.c, 0.02)) return false;
+    _en.b.copy(_en.c);
+  }
+  return true;
+}
+function enadeShout(e, type) {
+  try { aiRadio(e, 'grenade', true); } catch (err) { /* no audio yet */ }
+  headWorld(_en.p);
+  const near = roomCanSense(e.room) && _en.p.distanceTo(_en.a.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 1.5, rWZ(e.room, e.pos.y))) < 24;
+  if (!near) return;
+  const s = type === 'frag' ? '“Grenade!”' : '“Flashbang!”';
+  toast(s, 1400); vrNote(s.toUpperCase(), 1.4);
+}
+function enadeRun(e, dt, now) {
+  const N = e.enade, C = ENADE.C;
+  N.t += dt;
+  e.aimT = 0; e.crouchT = 0; e.acquire = Math.max(e.acquire || 0, now + 0.3);
+  if (e.cover && e.cover.peek) e.peekT = e.cover.peek;            // out past the corner to throw
+  if (!N.gone && N.t >= C.wind) enadeRelease(e, now);
+  if (N.t >= C.wind + 0.45) enadeEnd(e);
+}
+function enadeVis(type) {
+  const pool = ENADE.vis[type];
+  let v = pool.find((x) => !x.used);
+  if (!v) { const m = buildNadeModel(type); m.root.traverse((o) => { if (o.isMesh) o.castShadow = false; }); v = { root: m.root, used: false }; pool.push(v); }
+  v.used = true; if (!v.root.parent) scene.add(v.root); v.root.visible = false;
+  return v;
+}
+function enadeEnd(e) {
+  const N = e.enade;
+  if (N && N.vis) { N.vis.used = false; N.vis.root.visible = false; }
+  e.enade = null; ENADE.live.delete(e);
+}
+// a man shot while cocking it (pin out) drops it live; one removed or gone quiet just puts it away
+function enadeSweep(now) {
+  if (ENADE.sweepT === now) return;
+  ENADE.sweepT = now;
+  for (const e of ENADE.live) {
+    if (!e.enade) { ENADE.live.delete(e); continue; }
+    const gone = !ENEMY.list.includes(e);
+    if (!gone && !e.dead && !e.surr && e.room.active) continue;
+    const N = e.enade;
+    if (!gone && !N.gone && N.t > C_ENADE_PIN && N.vis && N.vis.root.visible) {
+      enadeSpawn(e, N.type, N.vis.root.position, _en.v.set((Math.random() - 0.5) * 0.6, -0.3, (Math.random() - 0.5) * 0.6), false);
+      ENADE.stat.dropped++;
+    }
+    enadeEnd(e);
+  }
+}
+const C_ENADE_PIN = 0.25;                                          // s into the wind-up: the pin is out
+function enadeSpawn(e, type, P, vel, swing) {
+  const p = createNade(type), it = p.item;
+  it.pin = false; if (it.pinG.parent) it.pinG.parent.remove(it.pinG);
+  _en.q.setFromAxisAngle(Y_AXIS, e.yaw + rYaw(e.room));
+  itemToWorld(p, P, _en.q, e.room);
+  dropItem(p, vel);
+  if (swing) nadeSwingSfx(P, vel.length());
+  nadeSpoon(it);
+  it.byEnemy = true;
+  return p;
+}
+function enadeRelease(e, now) {
+  const N = e.enade; N.gone = true;
+  const P = N.vis && N.vis.root.visible ? _en.p.copy(N.vis.root.position) : _en.p.copy(N.plan.R);
+  if (!clearLine(N.plan.R, P, 0.0)) P.copy(N.plan.R);             // the hand went into a wall: from the planned spot
+  const plan = enadePlan(e, N.type, P, N.plan.T) || N.plan;
+  enadeSpawn(e, N.type, P, plan.v, true);
+  if (N.vis) N.vis.root.visible = false;
+  ENADE.stat.thrown++; ENADE.stat[N.type]++;
+}
+// the throwing arm (from enemyPose, after the gun's arms): the left hand from the vest to over the shoulder, held, thrown
+function enadeArm(e, ecq) {
+  const N = e.enade, C = ENADE.C, B = e.B, K = ENADE_K;
+  const t = N.t, w = C.wind, a = _en.a, b = _en.b;
+  if (t < w * 0.4) { a.fromArray(K.pouch); b.fromArray(K.cock); a.lerp(b, smoothstep(0, 1, t / (w * 0.4))); }
+  else if (t < w) { a.fromArray(K.cock); a.z += 0.05 * (t - w * 0.4) / (w * 0.6); }                                  // drawn back a little more
+  else { const k = Math.min(1, (t - w) / 0.16); a.fromArray(K.cock); b.fromArray(K.rel); a.lerp(b, k); if (t > w + 0.2) { b.fromArray(K.pouch); a.lerp(b, Math.min(1, (t - w - 0.2) / 0.25)); } }
+  B.chest.localToWorld(_en.t.copy(a));
+  _en.pole.set(-0.8, -0.35, 0.25).applyQuaternion(ecq);
+  _en.fr.set(0, 0, -1).applyQuaternion(ecq);
+  solveIK(B.upperArmL, B.foreArmL, e.sk.upper, e.sk.fore, _en.t, _en.pole, _en.fr);
+  if (!N.gone) {
+    if (!N.vis && t > 0.05) N.vis = enadeVis(N.type);
+    if (N.vis) {
+      B.handL.updateWorldMatrix(true, false);
+      B.handL.getWorldPosition(N.vis.root.position);
+      _en.c.set(0, -0.06, 0).applyQuaternion(B.handL.getWorldQuaternion(_en.q));   // in the palm, past the wrist
+      N.vis.root.position.add(_en.c); N.vis.root.quaternion.copy(_en.q);
+      N.vis.root.visible = true; N.vis.root.updateMatrixWorld(true);
+    }
+  }
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT_NAV, aptNavBuild, aptFindPath, aptHelix, aptTargetLv, aptEnemyY, aptCoverBuild, aptCover, aptLv, aptYouLv,
+  ENADE: (enadeOn(), ENADE), enadeOn, enadeTick, enadePress, enadePlan, enadeTarget, enadeArcClear, enadeRelease, enadeSpawn, enadeArm });
 
 </script>
 </body>
