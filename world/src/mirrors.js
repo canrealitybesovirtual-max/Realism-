@@ -167,6 +167,7 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
       camera.getWorldDirection(fwd);
       let bd = Infinity;
       for (const e of list) {
+        if (!e.mesh.visible || !e.mesh.parent) continue;          // shattered (the game hides it): never the live one
         place(e);
         toM.subVectors(cPos, e.p);
         const front = toM.dot(e.n), d = e.sphere.distanceToPoint(cPos);

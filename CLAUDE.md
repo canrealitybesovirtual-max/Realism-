@@ -1592,3 +1592,4 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC apartment: you start in the library (?aptspawn=hall = the great hall)
 - aptTick puts you on floor two (level.floor = origin + APT.L2) at APT.lib (apartment x 14.0, z 4.3: in the door's walk, between the desk chair and the moved sofa), facing the north glass, beside the raid computer and the gun rack. Headless: eye 6.30 m (4.6 + 1.7), at the planned point.
+- Follow-up: bloodDropLanded takes the height it landed at (drips, your bleeding, drag-trail drops), so drips on the apartment's floor two snap there instead of being dropped; mirrors.js skips hidden (shattered) mirrors when picking the live one.
