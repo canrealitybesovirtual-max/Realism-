@@ -929,12 +929,33 @@ function blobMirror(B, M, x, y, z, w, h, face) {
   metricUV(g); B.add(at(g, x, y, z, ry), M.mirror);
 }
 // dark wood console (apartment-06)
-function console_(B, M, x, z, ry, L = 1.6) {
+function console_(B, M, x, z, ry, L = 1.6, stone = null) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  if (stone) {
+    // travertine waterfall console (apartment-11): a 6 cm slab top on two slab legs, eased edges
+    add(at(rbox(L, 0.06, 0.36, 0.006, 2), 0, 0.82, 0), stone);
+    for (const u of [-1, 1]) add(at(rbox(0.06, 0.79, 0.34, 0.006, 2), u * (L / 2 - 0.03), 0.395, 0), stone);
+    B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [L / 2, 0.42, 0.18], yaw: ry, mat: stone });
+    return;
+  }
   add(at(rbox(L, 0.05, 0.4, 0.008), 0, 0.8, 0), M.woodDark);
   for (const u of [-1, 1]) add(at(rbox(0.05, 0.78, 0.4, 0.006), u * (L / 2 - 0.025), 0.39, 0), M.woodDark);
   add(at(rbox(L - 0.1, 0.02, 0.36, 0.004), 0, 0.2, 0), M.woodDark);
   B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [L / 2, 0.42, 0.2], yaw: ry, mat: M.woodDark });
+}
+// a stoneware vase of dried flowers (apartment-11): ribbed ochre vase, wiry stems with round
+// seed heads, and a small brass sphere beside it (frame: on a top at y)
+function driedVase(B, M, x, y, z, seed = 5) {
+  let sd = seed; const rnd = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  B.add(at(smooth(lathe([[0, 0], [0.05, 0], [0.085, 0.05], [0.095, 0.11], [0.08, 0.17], [0.045, 0.21], [0.04, 0.23], [0.046, 0.24], [0.038, 0.245], [0.032, 0.23]], 48)), x, y, z), M.vaseOchre);
+  for (let i = 0; i < 9; i++) {
+    const a = rnd() * Math.PI * 2, lean = 0.15 + rnd() * 0.5, L = 0.22 + rnd() * 0.22;
+    const p0 = [x, y + 0.22, z], p2 = [x + Math.cos(a) * Math.sin(lean) * L, y + 0.22 + Math.cos(lean) * L, z + Math.sin(a) * Math.sin(lean) * L];
+    const p1 = [(p0[0] + p2[0]) / 2 + (rnd() - 0.5) * 0.04, (p0[1] + p2[1]) / 2, (p0[2] + p2[2]) / 2 + (rnd() - 0.5) * 0.04];
+    B.add(tubeGeo([p0, p1, p2], 0.0022), M.bark);
+    B.add(new THREE.IcosahedronGeometry(0.018 + rnd() * 0.012, 1).toNonIndexed().translate(...p2), M.driedHead);
+  }
+  B.add(new THREE.SphereGeometry(0.035, 24, 16).toNonIndexed().translate(x - 0.22, y + 0.035, z + 0.04), M.brassTop);
 }
 
 // crumpled relief artwork (apartment-11): a black panel pushed into folds and creases, real
@@ -1160,6 +1181,8 @@ function furnitureMaterials(M, Q) {
   M.leaf = new THREE.MeshStandardMaterial({ map: lmap, normalMap: lnor, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.42 });
   M.bark = new THREE.MeshStandardMaterial({ color: '#7a6c5c', roughness: 0.8 });
   M.vaseBlack = new THREE.MeshStandardMaterial({ color: '#141312', roughness: 0.62 });         // matte black stoneware
+  M.vaseOchre = new THREE.MeshStandardMaterial({ color: '#a7865c', roughness: 0.7 });          // ribbed stoneware (apartment-11)
+  M.driedHead = new THREE.MeshStandardMaterial({ color: '#c9a77e', roughness: 0.9 });          // dried seed heads
   M.brassTop = new THREE.MeshStandardMaterial({ color: '#a8977a', metalness: 1, roughness: 0.42 });   // spun brass table top (champagne, as apartment-12)
   M.brassHammered = new THREE.MeshStandardMaterial({ color: '#9f8a66', metalness: 1, roughness: 0.32, normalMap: hammerNormal(), normalScale: new THREE.Vector2(0.9, 0.9) });
   M.potStone = M.creamStone.clone(); M.potStone.color = new THREE.Color('#77706a');
@@ -1318,8 +1341,8 @@ export function furnish(M, Q) {
   up((b) => {
     plinth(b, M, 9.95, 7.35, 0.36, 1.1, M.creamStone);
     reliefArt(b, M, 10.29, 1.75, 9.6, 1.1, 1.3, '-x');
-    console_(b, M, 10.08, 9.6, -Math.PI / 2, 1.4);
-    bowl(b, M, 10.05, 0.825, 9.95, 0.12);
+    console_(b, M, 10.08, 9.6, -Math.PI / 2, 1.4, M.creamStone);
+    driedVase(b, M, 10.08, 0.85, 9.85);
   });
   // hallway, floor one: two line prints
   print(B, M, 4.73, 1.6, 9.8, 0.5, 0.65, '-x', M.lineArt1); print(B, M, 4.73, 1.6, 11.6, 0.5, 0.65, '-x', M.lineArt2);
