@@ -19,7 +19,7 @@ export function buildApartment(M, Q) {
   const B = new Builder();
   // CQC (Q.cqc): every window pane is its own instance (one draw for all) with its own collider (c.pane), so the
   // game can shatter it; the long glass runs are cut at their mullions
-  const PANES = [];
+  const PANES = [], LEAVES = [];
   if (Q && Q.cqc) {
     const box0 = B.box.bind(B);
     B.box = (x0, y0, z0, x1, y1, z1, mat, col = true) => {
@@ -196,6 +196,17 @@ export function buildApartment(M, Q) {
   const floor = (x0, z0, x1, z1, y, mat) => B.box(x0, y - 0.03, z0, x1, y, z1, mat, false);
   // door leaf standing open: hinge at (hx, hz), the leaf runs from the hinge in direction yaw
   const leaf = (hx, hz, y0, w, h, yaw, mat = M.doorWhite) => {
+    if (Q && Q.cqc && mat === M.doorWhite) {                       // CQC: a real door (its own leaf, built at the origin, unturned; the game swings it)
+      const LB = new Builder();
+      LB.obox(0, 0, 0, w / 2, h / 2, 0.025, 0, mat, false);
+      const put = (g, lx, ly, lz) => { g.translate(lx, ly, lz); LB.add(g, M.bronzeLight); };
+      put(leverGeo(-1), w / 2 - 0.065, 1.0 - h / 2, 0.025);
+      put(mirrorZ(leverGeo(-1)), w / 2 - 0.065, 1.0 - h / 2, -0.025);
+      for (const hy of [0.22, h * 0.5, h - 0.22]) put(hingeGeo().rotateY(Math.PI / 2).scale(1, 1, 0.6), -w / 2 - 0.004, hy - h / 2, 0);
+      const g = new THREE.Group(); g.name = 'door leaf'; LB.finish(g);
+      LEAVES.push({ group: g, hx, hz, y0, w, h, yaw });
+      return;
+    }
     const dx = Math.cos(yaw), dz = -Math.sin(yaw);
     B.obox(hx + dx * w / 2, y0 + h / 2, hz + dz * w / 2, w / 2, h / 2, 0.025, yaw, mat);
     // bronze levers on both faces at the free end (arm toward the hinge), hinge knuckles
@@ -495,7 +506,24 @@ export function buildApartment(M, Q) {
     im.name = 'panes'; im.castShadow = false; im.receiveShadow = false; im.renderOrder = M.glass.userData.order || 0;
     group.add(im); panes = { mesh: im, list: PANES };
   }
-  return { group, meshes, colliders: B.colliders, lamps, grilles, panes };
+  // CQC doors: which way each one shuts (the quarter turn from its open pose whose leaf centre lies in the opening,
+  // not in a wall)
+  const inCol = (x, y, z) => B.colliders.some((c) => {
+    if (c.t === 'box') return x > c.min[0] && x < c.max[0] && y > c.min[1] && y < c.max[1] && z > c.min[2] && z < c.max[2];
+    if (c.t === 'obox') { const dx = x - c.c[0], dz = z - c.c[2], k = Math.cos(c.yaw || 0), q = Math.sin(c.yaw || 0), u = k * dx - q * dz, v = q * dx + k * dz; return Math.abs(u) < c.h[0] && Math.abs(v) < c.h[2] && Math.abs(y - c.c[1]) < c.h[1]; }
+    return false;
+  });
+  for (const L of LEAVES) {
+    let best = null;
+    for (const d of [Math.PI / 2, -Math.PI / 2]) {
+      const c = Math.round((L.yaw + d) / (Math.PI / 2)) * (Math.PI / 2), m = L.w / 2;
+      const px = L.hx + Math.cos(c) * m, pz = L.hz - Math.sin(c) * m;
+      const free = !inCol(px, L.y0 + 1.0, pz) && !inCol(L.hx + Math.cos(c) * m * 1.6, L.y0 + 1.0, L.hz - Math.sin(c) * m * 1.6);
+      if (free && !best) best = c;
+    }
+    L.shut = best ?? Math.round((L.yaw + Math.PI / 2) / (Math.PI / 2)) * (Math.PI / 2);
+  }
+  return { group, meshes, colliders: B.colliders, lamps, grilles, panes, leaves: LEAVES };
 }
 
 // The helical stair: 26 risers over 330 degrees, from floor one (north of the centre, heading

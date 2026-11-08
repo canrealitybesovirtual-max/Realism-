@@ -9018,6 +9018,7 @@ function updateDoorsPre(now) {
   const P = CONFIG.doorPhys;
   for (const door of doors) {
     let target = 0, k = P.closerStiffness, c = P.closerDamping, mode = 'closer';
+    if (door.free) { target = door.angle; k = 0; c = 3; }               // apartment doors: no closer, a leaf stays where you leave it
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
     const next = door.sec ? null : stream.rooms.get(door.room.slot + 1);
     if (door.sec ? door.sec.locked : (!next || !next.active)) {     // outdoor start: a side door is locked only when it leads nowhere
@@ -9111,8 +9112,11 @@ function updateDoorsPost(dt = 0) {
     const dk = dt > 0 && door.drawn && door.group.position.distanceToSquared(_dvP) < 0.25 ? 1 - Math.exp(-dt * 14) : 1;
     door.group.position.lerp(_dvP, dk); door.group.quaternion.slerp(_dvQ, dk); door.drawn = true;
     const w = door.walk;
+    if (door.aptLy !== undefined) { aptDoorWalk(door, t.x, t.z, aw); w.top = t.y - door.cy + door.aptH; w.bot = w.top - door.aptH; }   // apartment door: body on the hinge
+    else {
     w.x = t.x; w.z = t.z; w.c = Math.cos(aw + (door.vis || 0)); w.s = Math.sin(aw + (door.vis || 0));
     w.top = t.y - door.cy + CONFIG.door.height; w.bot = w.top - CONFIG.door.height;   // step 12: follows vertical re-bases
+    }
   }
 }
 function nearestDoorHandle(point, reach) {
@@ -50421,7 +50425,7 @@ function* aptBuilder(room) {
   aptPanelBuild(room);
   aptWallsInit(room, apt, M); aptRackBuild(room, M);           // wall damage masks (before the compile below), the gun rack beside the raid computer
   aptSunAim();
-  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps, mov: furn.movables || [], panes: apt.panes, statics: [apt.group, furn.group] };
+  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps, mov: furn.movables || [], panes: apt.panes, leaves: apt.leaves || [], statics: [apt.group, furn.group] };
   room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
     qc: { pass: true, score: 100, attempt: 1, fails: [], notes: ['apartment'], visible: 1, hidden: 0, density: 0 } };
   room.wear93 = { wet: 0, leak: 0, hw: room.w / 2, hd, s1: 0, s2: 0 };
@@ -50539,6 +50543,7 @@ function aptActivate(room, box, walk) {
   aptNavBuild(room);                                              // floor two and the stair link (APT NAV section)
   aptCoverBuild(room);                                            // cover on both floors
   aptMovables(room);
+  aptDoorsActivate(room);                                         // the interior doors swing
   aptRackActivate(room, box, walk);                               // the gun rack's board and shelf
   aptxActivate(room);                                             // APARTMENT DESTRUCTION: ray colliders, broken things kept
 }
@@ -50690,6 +50695,64 @@ function aptSnap(room, wp, wn) {
   S.n.copy(S.nn).transformDirection(G.matrixWorld);
   return S.p.copy(S.d).multiplyScalar(bd).add(S.o).applyMatrix4(G.matrixWorld);
 }
+// The apartment's interior doors are real doors (?aptdoors=off = the old fixed open leaves): the door system's secondary
+// leaves (as the outdoor yard's side doors): own body on a revolute joint at the hinge, collider, walk box; E / click /
+// the VR hand on the lever, pushes, kicks, holes, creaks; no closer (door.free: it stays where you leave it); they
+// start open as drawn. The men open the ones they walk into (yardDoorsTick).
+const APT_DOORS = !/[?&]aptdoors=off\b/.test(QS);
+function aptDoorsActivate(room) {
+  const A = room.apt; if (!A || !A.leaves || !A.leaves.length) return;
+  if (room.yardDoors) yardDoorsUnload(room);
+  room.yardDoors = [];
+  if (!room.aptLeafG) { room.aptLeafG = new THREE.Group(); room.aptLeafG.name = 'apartment doors'; room.group.add(room.aptLeafG); }
+  const P = CONFIG.doorPhys, o = room.origin, rb = rYaw(room);
+  A.leaves.forEach((L, i) => {
+    // hinge group (posed by the door system from the body) > turn to the shut direction > the leaf, its centre w/2 out
+    if (!L.hg) {
+      L.hg = new THREE.Group(); L.rg = new THREE.Group(); L.hg.add(L.rg); L.rg.add(L.group);
+      L.group.position.set(L.w / 2, 0, 0);
+      L.group.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; m.matrixAutoUpdate = true; } });
+    }
+    if (!L.hg.parent) room.aptLeafG.add(L.hg);
+    const ly = L.shut - Math.PI / 2, cy = L.h / 2, sw = L.w, hlx = aptLX(L.hz), hlz = aptLZ(L.hx);
+    L.rg.rotation.set(0, ly, 0);
+    let a0 = L.yaw - L.shut; a0 = Math.atan2(Math.sin(a0), Math.cos(a0)); a0 = clamp(a0, -P.maxBack + 0.02, P.maxOpen - 0.02);
+    L.hg.position.set(hlx, L.y0 + cy, hlz); L.hg.rotation.set(0, a0, 0);
+    if (!APT_DOORS) { L.hg.rotation.set(0, L.yaw - L.shut, 0); return; }
+    // the body sits on the hinge, square to the room at shut (a revolute joint's zero is the bodies' relative turn), the
+    // leaf's collider turned and set out inside it
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(rWX(room, hlx), o.y + L.y0 + cy, rWZ(room, hlz))
+      .setRotation({ x: 0, y: Math.sin(rb / 2), z: 0, w: Math.cos(rb / 2) }).setLinearDamping(0.4).setAngularDamping(2.2));
+    const q = { x: 0, y: Math.sin(ly / 2), z: 0, w: Math.cos(ly / 2) };
+    const col = world.createCollider(RAPIER.ColliderDesc.cuboid(sw / 2, L.h / 2 - 0.01, 0.0225).setTranslation(Math.cos(ly) * sw / 2, 0, -Math.sin(ly) * sw / 2).setRotation(q)
+      .setMass(22).setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.door), body);
+    const jd = RAPIER.JointData.revolute({ x: hlx, y: L.y0 + cy, z: hlz }, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 });
+    jd.limitsEnabled = true; jd.limits = [-P.maxBack, P.maxOpen];
+    const joint = world.createImpulseJoint(jd, room.body, body, true);
+    if (joint.setLimits) joint.setLimits(-P.maxBack, P.maxOpen);
+    if (joint.configureMotorModel && RAPIER.MotorModel) joint.configureMotorModel(RAPIER.MotorModel.AccelerationBased);
+    const yaw = rb + a0;
+    body.setRotation({ x: 0, y: Math.sin(yaw / 2), z: 0, w: Math.cos(yaw / 2) }, true);  // start open as drawn
+    const door = {
+      room, body, joint, group: L.hg, sw, cy, base: rb, vis: 0, free: true, aptLy: ly, aptH: L.h,
+      angle: a0, prevAngle: a0, mode: '', target: -1, drive: null, holder: null, grabOffset: 0, grabR: 0, grabY: 0, settled: false,
+      walk: { x: 0, z: 0, c: 1, s: 0, hx: sw / 2, hz: 0.033, top: o.y + L.y0 + L.h, bot: o.y + L.y0 },
+      sec: { i, id: 'apt' + i, locked: false, hx: hlx, hz: hlz }
+    };
+    aptDoorWalk(door, rWX(room, hlx), rWZ(room, hlz), yaw);
+    L.hg.userData.door = door; L.group.userData.door = door;
+    door.colHandle = col.handle; door.col = col; door.latching = false;
+    doorCreak(door); door.crP = 0.95 + 0.15 * ((i * 0.618) % 1);
+    doors.push(door); doorByCollider.set(col.handle, door);
+    room.yardDoors.push(door);
+  });
+  rebuildWalk();
+}
+// an apartment door's walk box: its body is on the hinge, the leaf runs out along aptLy (room-local) turned by the swing
+function aptDoorWalk(door, hx, hz, aw) {
+  const w = door.walk, a = aw + door.aptLy, c = Math.cos(a), sn = Math.sin(a);
+  w.x = hx + c * door.sw / 2; w.z = hz - sn * door.sw / 2; w.c = c; w.s = sn;
+}
 const _aptM = new THREE.Matrix4(), _aptV = new THREE.Vector3(), _aptN = new THREE.Vector3();
 const _aptQ = new THREE.Quaternion();
 function _aptQY(a) { _aptQ.setFromAxisAngle(Y_AXIS, a); return { x: _aptQ.x, y: _aptQ.y, z: _aptQ.z, w: _aptQ.w }; }
@@ -50722,6 +50785,7 @@ const APT_CAM = {
 };
 let _aptLast = 0;
 function aptViewTick() {
+  if (APTS && APTS.room && APTS.room.active && APTS.room.yardDoors) yardDoorsTick(APTS.room, performance.now() / 1000);   // the men open the apartment doors they walk into
   const A = APTS; if (!A || !A.room || !A.room.active) { if (A && A.sun && A.sun.intensity) A.sun.intensity = 0; return; }
   const cur = stream.current, inA = !!(cur && cur.apt);
   if (A.sun) { const k = inA ? APT.sunI : 0; if (A.sun.intensity !== k) { A.sun.intensity = k; renderer.shadowMap.needsUpdate = true; } }
@@ -51000,7 +51064,7 @@ function aptPanelTick() {
   if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; changed = true; }   // the security screen blinks red while a raid is on
   if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 /* =========================================================================
  *  APARTMENT LOOK (?aptsun=off, ?aptlook=off): the surfaces and the shadows of the apartment without surface.js.
