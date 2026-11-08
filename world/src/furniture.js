@@ -444,7 +444,7 @@ const tableLamp = movable('table lamp', 3.5, function (B, M, x, y, z) {
   B.add(at(lathe([[0, 0], [0.09, 0], [0.09, 0.02], [0.05, 0.05], [0.075, 0.16], [0.045, 0.3], [0.06, 0.36], [0.015, 0.42], [0, 0.42]], 24), x, y, z), M.stoneBlack);
   B.add(at(lathe([[0.006, 0.42], [0.006, 0.66]], 8), x, y, z), M.bronzeLight);
   B.add(at(lathe([[0.2, 0.6], [0.17, 0.84]], 36), x, y, z), M.shade);
-});
+}, false);
 // coffee table things: a stack of books, a white ceramic bowl
 function books(B, M, x, y, z, ry, n = 3) {
   const cols = [M.bookCream, M.bookGrey, M.bookBlack];
