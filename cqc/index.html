@@ -4656,6 +4656,7 @@ function realLightMsg(v) { return `Real lighting: ${v ? 'on' : 'off'}${v === REA
  *  RENDERER, SCENE, CAMERA RIG
  * ========================================================================== */
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.debug.checkShaderErrors = /[?&](dev|shadercheck)\b/.test(location.search) && !/[?&]noshadercheck\b/.test(location.search);   // PERF: the error check reads every program's info logs after linking, a sync wait per new shader (hitches mid-fight); on with ?dev
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));   // adaptive quality takes over at boot
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -24861,9 +24862,26 @@ async function enemyLodPrep() {
 }
 if (/[?&]dev\b/.test(QS)) window.__cqcLod = () => ({ ENEMY_LOD, enemyLodTick });
 // LODs for one static (unskinned) geometry, made once and cached (his gun: the AK alone is ~66k triangles).
+// PERF: his gun is rebuilt for every man (GUN_SPECS makes new geometry), so the LODs were welded and simplified again on
+// each spawn (a stall when a raid wave came in). Same shape = same LODs: a signature of the vertex data finds them.
+const ENEMY_LOD_SIG = new Map();
+function enemyLodSig(g) {
+  const p = g.attributes && g.attributes.position; if (!p || !p.array) return null;
+  const a = p.array, n = a.length; let h = n;
+  for (let i = 0; i < 64; i++) { const v = a[Math.floor(i * (n - 1) / 63)]; h = (h * 31 + Math.round(v * 1e5)) | 0; }
+  return (g.index ? 'i' + g.index.count : 'n') + ':' + n + ':' + h + ':' + g.groups.length;
+}
 function enemyLodGeo(g) {
   const L = ENEMY_LOD;
   if (L.map.has(g)) return L.map.get(g);
+  const sig = enemyLodSig(g), hit = sig && ENEMY_LOD_SIG.get(sig);
+  if (hit !== undefined) { const lods = hit ? [g, hit[1], hit[2]] : null; L.map.set(g, lods); return lods; }
+  const lods = enemyLodGeo0(g);
+  if (sig) ENEMY_LOD_SIG.set(sig, lods);
+  return lods;
+}
+function enemyLodGeo0(g) {
+  const L = ENEMY_LOD;
   let lods = null, src = g;
   const p0 = g.attributes && g.attributes.position;
   if (L.MS && p0 && !g.index && !p0.isInterleavedBufferAttribute && !g.morphAttributes.position && p0.count >= 9000) {
@@ -50863,7 +50881,7 @@ function aptViewTick() {
   if (inA && !A.warmed && renderer.compileAsync) {                 // the men, their guns and grenades under the apartment's lights: compiled
     A.warmed = true;                                              // off the main path before a raid (they were linked mid-fight when first seen)
     const mine = !ENEMY.precompile && ENEMY.models && ENEMY.models.length;
-    try { if (mine) enemyPrecompile(true); renderer.compileAsync(scene, camera).catch(() => {}).finally(() => { if (mine) enemyPrecompile(false); }); } catch (e) { if (mine) enemyPrecompile(false); }
+    try { if (mine) enemyPrecompile(true); renderer.compileAsync(scene, camera).catch(() => {}).finally(() => { if (mine) enemyPrecompile(false); setTimeout(aptRaidWarm, 500); }); } catch (e) { if (mine) enemyPrecompile(false); }
   }
   if (!A.surf && A.view && !A.envDone && inA) { A.envDone = true; setTimeout(aptEnvCapture, 0); }   // the real city as the apartment's reflections (once)
   if (!A.view || !A.room.aptG) return;
@@ -50872,6 +50890,22 @@ function aptViewTick() {
   APT_CAM.G = A.room.aptG; APT_CAM.isArrayCamera = !!c.isArrayCamera; APT_CAM.cameras = c.cameras; APT_CAM.projectionMatrix = c.projectionMatrix;
   A.view.world.visible = A.view.sky.visible = A.room.visible !== false;
   A.view.update(APT_CAM, dt);
+}
+// PERF: before a raid, off the frame: one gun of each kind the men carry gets its LODs (cached by shape, enemyLodGeo), and
+// the men's and those guns' textures are uploaded one per ~30 ms (they uploaded mid-fight, the first time a man was seen).
+function aptRaidWarm() {
+  const work = [];
+  if (ENEMY_LOD.MS) for (const k of new Set(Object.values(ENEMY_LOADOUTS).map((l) => l.gun))) if (GUN_BUILD[k]) work.push(() => {
+    const gb = GUN_BUILD[k](); gb.root.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) enemyLodGeo(o.geometry); });
+    aptTexWarm(gb.root);
+  });
+  for (const m of ENEMY.models || []) if (m.holder) work.push(() => aptTexWarm(m.holder));
+  const next = () => { const f = work.shift(); if (!f) return; try { f(); } catch (e) { /* warm-up only */ } setTimeout(next, 30); };
+  next();
+}
+function aptTexWarm(root) {
+  const seen = new Set();
+  root.traverse((o) => { for (const m of [].concat(o.material || [])) for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap', 'alphaMap']) { const t = m[k]; if (t && !seen.has(t)) { seen.add(t); try { renderer.initTexture(t); } catch (e) { /* drawn later */ } } } });
 }
 // Reflections without the full probe bake: one cube capture of the sky and the baked city (alone, uncompressed) from the
 // great hall, prefiltered, set as the envMap of every lit apartment material. Glossy oak, stone, lacquer, metal and glass
@@ -50964,11 +50998,17 @@ function aptRows(P) {
   rows.push(['raid:stop', R.mode ? 'End the raid (clear them)' : 'Clear enemies', '#22262c']);
   return { note: live, rows, warn: !!R.mode };
 }
+// PERF: the raid blink is a red layer over the screen switched on and off (it used to redraw and re-upload the canvas)
+function aptBlink(on) {
+  const P = APTC; if (!P.mesh) return;
+  if (!P.flash) { P.flash = new THREE.Mesh(new THREE.PlaneGeometry(P.w, P.h), new THREE.MeshBasicMaterial({ color: '#5a0f0b', transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })); P.flash.position.z = 0.001; P.flash.visible = false; P.mesh.add(P.flash); }
+  P.flash.visible = on ? !P.flash.visible : false;
+}
 function aptPanelDraw(only) {
   for (const P of APT_PANELS) {
     if (!P.ctx || only && P !== only) continue;
     const c = P.ctx, W = c.canvas.width, H = c.canvas.height, k = W / 800, D = aptRows(P);
-    c.fillStyle = D.warn && (performance.now() / 1000 | 0) % 2 ? '#1c0c0c' : '#0d1014'; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#0d1014'; c.fillRect(0, 0, W, H);
     c.fillStyle = '#e9e4da'; c.font = `600 ${(P === APTC ? 30 : 40) * k}px system-ui, sans-serif`; c.textBaseline = 'middle'; c.fillText(P.title, 36 * k, (P === APTC ? 34 : 50) * k);
     c.fillStyle = D.warn ? '#ff8a7a' : '#8f99a6'; c.font = `${(P === APTC ? 19 : 22) * k}px system-ui, sans-serif`; c.fillText(D.note, 36 * k, (P === APTC ? 68 : 86) * k);
     P.btns = []; let y = (P === APTC ? 88 : 112) * k;
@@ -51132,9 +51172,8 @@ function aptPanelTick() {
     if (hover !== P.hover) { P.hover = hover; changed = true; }
   }
   const now = performance.now() / 1000;
-  let blink = false;
-  if (APT_RAID.mode && now - _apBlink > 1.0) { _apBlink = now; blink = true; }   // the security screen blinks red while a raid is on (PERF: once a second, that screen only)
-  if (changed) aptPanelDraw(); else if (blink) aptPanelDraw(APTC);
+  if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; aptBlink(true); } else if (!APT_RAID.mode) aptBlink(false);   // the security screen blinks red while a raid is on
+  if (changed) aptPanelDraw();
 }
 if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
