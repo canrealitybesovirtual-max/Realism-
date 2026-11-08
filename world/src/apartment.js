@@ -175,7 +175,7 @@ export function buildApartment(M, Q) {
       const x = x0 + (i + 0.5) * (x1 - x0) / nx, z = z0 + (k + 0.5) * (z1 - z0) / nz;
       B.add(canGeo.clone().translate(x, y, z), M.slot);
       B.add(ringGeo.clone().translate(x, y, z), M.slot);
-      B.add(lensGeo.clone().translate(x, y, z), M.light);
+      B.add(lensGeo.clone().translate(x, y, z), M.lens);
       lamps.push([x, y - 0.02, z]);
     }
   };

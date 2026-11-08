@@ -196,6 +196,7 @@ export function makeMaterials(Q) {
   M.glass.userData = { shadow: 'none', order: 10 };
   M.balGlass = M.glass;
   M.light = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#fff4e2', emissiveIntensity: 2.2, roughness: 1 });
+  M.lens = new THREE.MeshStandardMaterial({ color: '#3a3936', roughness: 0.25, metalness: 0.1 });   // downlight lens, off by day (the photos' dark dots)
   M.light.userData = { shadow: 'none' };
 
   // linear floor grille along the window walls (fan-coil HVAC), slots across the strip

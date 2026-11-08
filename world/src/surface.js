@@ -122,7 +122,7 @@ function bakeFields(meshes, colliders, M) {
   // heads, the stair's underside)
   const P = new THREE.Vector3(), Q = new THREE.Vector3(), R = new THREE.Vector3();
   for (const m of meshes) {
-    if (m.material === M.glass || m.material === M.light || m.material.transparent || m.geometry.index || m.userData.noField) continue;
+    if (m.material === M.glass || m.material === M.light || m.material.transparent || m.geometry.index || m.userData.noField || m.userData.noOver) continue;
     const a = m.geometry.attributes.position.array;
     for (let t = 0; t < a.length; t += 9) {
       P.set(a[t], a[t + 1], a[t + 2]); Q.set(a[t + 3], a[t + 4], a[t + 5]); R.set(a[t + 6], a[t + 7], a[t + 8]);
@@ -261,7 +261,7 @@ void srHoles( vec3 p, vec3 n ) {
     vec2 tuv = ( cell + 0.5 ) / uLampSz;
     vec4 L = p.y > 4.45 ? texture2D( uLamp1, tuv ) : texture2D( uLamp0, tuv );
     vec2 lc = uLampG.xy + ( cell + 0.5 ) * uLampG.z + L.xy;
-    if ( L.w > 0.5 && abs( p.y - L.z ) < 0.03 && distance( p.xz, lc ) < 0.05 ) discard;
+    if ( L.w > 0.5 && p.y > L.z - 0.03 && p.y < L.z + 0.045 && distance( p.xz, lc ) < 0.05 ) discard;   // the ceiling and the slab face above it
   } else if ( n.y > 0.7 ) {
     for ( int i = 0; i < 4; i ++ ) {
       vec4 r = uHoleR[ i ];
