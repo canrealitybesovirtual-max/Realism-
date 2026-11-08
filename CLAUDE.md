@@ -1639,3 +1639,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC apartment: Terrace assault raid removed
 - APT_RAIDS has Breach, Pincer, Siege (the library screen lists them from the table). Siege's waves still bring some men in by the terrace doors.
+
+## CQC apartment: rack guns at distance detail (headset check needed)
+- Measured: the five rack guns are 308k triangles (160 meshes), more than the rest of the library view. aptRackLod (from aptRackCull, every frame): a gun or magazine resting on the rack (p.aptOnRack, set by arPut, cleared when a hand takes it) uses enemyLodGeo's simplified copies (cached by shape): full within 2 m (so always full within reach of a hand), 30 % to 5 m, 10 % beyond; back to full the frame it is taken. Copies are made in idle time (aptLodQueue, one geometry per 60 ms; full detail until they exist). enemyLodGeo now also simplifies mid-size parts (indexed from 400 triangles, non-indexed welded from 600 vertices; was 1000 / 3000), so the men's guns get lighter too.
+- Headless: on the rack from 6 m 308k -> 64k triangles; within 2 m unchanged. Frustum culling (per chunk / per object), back-face cone culling, small-object culling (CONFIG.detail, pixel size) and the PVS were already in.

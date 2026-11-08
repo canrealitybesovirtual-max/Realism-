@@ -24884,11 +24884,11 @@ function enemyLodGeo0(g) {
   const L = ENEMY_LOD;
   let lods = null, src = g;
   const p0 = g.attributes && g.attributes.position;
-  if (L.MS && p0 && !g.index && !p0.isInterleavedBufferAttribute && !g.morphAttributes.position && p0.count >= 9000) {
+  if (L.MS && p0 && !g.index && !p0.isInterleavedBufferAttribute && !g.morphAttributes.position && p0.count >= 1800) {
     try { src = mergeVertices(g); } catch (e) { src = g; }          // non-indexed gun parts: welded once (LOD buffers only; LOD 0 stays the original)
   }
   const pos = src.attributes && src.attributes.position;
-  if (L.MS && src.index && pos && !pos.isInterleavedBufferAttribute && pos.array instanceof Float32Array && pos.itemSize === 3 && src.index.count >= 3000) {
+  if (L.MS && src.index && pos && !pos.isInterleavedBufferAttribute && pos.array instanceof Float32Array && pos.itemSize === 3 && src.index.count >= 1200) {   // PERF: mid-size gun parts too (rack guns, his gun)
     const idx = src.index.array instanceof Uint32Array ? src.index.array : new Uint32Array(src.index.array), n = idx.length;
     lods = [g];
     for (let l = 0; l < 2; l++) {
@@ -51958,7 +51958,7 @@ function aptRackHooks(R, F) {
 }
 function arWorld(R, pos, quat) { return GL.M.compose(pos, quat, GL.one).premultiply(R.grp.matrixWorld).decompose(GL.v, GL.q, GL.s); }
 function arAt(R, p, pos, quat) { if (!p.inWorld || !p.kinematic || p.holders.length) return false; arWorld(R, pos, quat); return p.root.position.distanceTo(GL.v) < 0.01; }
-function arPut(room, R, p, pos, quat) { arWorld(R, pos, quat); itemToWorld(p, GL.v, GL.q, room); setKinematic(p); }
+function arPut(room, R, p, pos, quat) { arWorld(R, pos, quat); itemToWorld(p, GL.v, GL.q, room); setKinematic(p); p.aptOnRack = true; }
 function aptRackRestock(room) {
   const R = room && room.aptRack, F = aptRackFit();
   if (!R || !F || !room.active) return 0;
@@ -51987,17 +51987,45 @@ function aptRackRestock(room) {
 }
 // PERF: the rack (floor two, inside the library's walls) and the guns / magazines resting on it (~100k triangles) are not
 // drawn while you are on floor one: the walls hide them there, but the frustum still took them in from the hall.
-const _arc = new THREE.Vector3(), _arg = new THREE.Vector3();
+const _arc = new THREE.Vector3(), _arg = new THREE.Vector3(), _arcE = new THREE.Vector3();
+const APT_RACK_LOD = [2.0, 5.0];                                   // m: full / 30 % / 10 % (enemyLodGeo's simplified copies, cached by shape)
+function aptRackLod(p, l) {
+  if ((p.aptLod || 0) === l || !ENEMY_LOD.on || !ENEMY_LOD.MS) return;   // (-1 = waiting for its copies)
+  let ready = true;
+  p.root.traverse((m) => {
+    if (!m.isMesh || m.isSkinnedMesh || !m.geometry) return;
+    const u = m.userData, g0 = u.lod0 || m.geometry;
+    if (l && !ENEMY_LOD.map.has(g0) && !(ENEMY_LOD_SIG.has(enemyLodSig(g0)))) { ready = false; aptLodQueue(g0); return; }   // made in idle time, not mid-frame
+    const L = l ? enemyLodGeo(g0) : null;
+    if (L) { u.lod0 = g0; m.geometry = L[l]; } else if (u.lod0) m.geometry = u.lod0;
+  });
+  p.aptLod = ready ? l : -1;                                       // -1: try again next frame once the copies exist
+}
+const APT_LODQ = { q: [], busy: false };
+function aptLodQueue(g) {
+  if (APT_LODQ.q.includes(g)) return;
+  APT_LODQ.q.push(g);
+  if (APT_LODQ.busy) return;
+  APT_LODQ.busy = true;
+  const next = () => { const g1 = APT_LODQ.q.shift(); if (!g1) { APT_LODQ.busy = false; return; } try { enemyLodGeo(g1); } catch (e) { ENEMY_LOD.map.set(g1, null); } setTimeout(next, 60); };
+  setTimeout(next, 60);
+}
 function aptRackCull(room) {
   const R = room && room.aptRack; if (!R || !R.grp) return;
   const show = !room.active || aptYouLv(room) === 1;
   if (R.grp.visible !== show) R.grp.visible = show;
   R.grp.getWorldPosition(_arg);
+  camera.getWorldPosition(_arcE);
   const one = (p) => {
-    if (!p || !p.root || p.holders && p.holders.length) return;
+    if (!p || !p.root) return;
+    if (p.holders && p.holders.length) { p.aptOnRack = false; aptRackLod(p, 0); return; }
     const near = p.root.getWorldPosition(_arc).distanceToSquared(_arg) < 2.2;
     const v = near ? show : true;
+    const onRack = !!p.aptOnRack;                                    // put there by the rack, not taken since
     if (p.aptRackHid !== !v) { p.aptRackHid = !v; p.root.visible = v; }
+    // PERF: distance detail while it rests on the rack (full within 2 m, so always full in reach of a hand)
+    const d = onRack && p.root.visible ? _arc.distanceTo(_arcE) : 0;
+    aptRackLod(p, d > APT_RACK_LOD[1] ? 2 : d > APT_RACK_LOD[0] ? 1 : 0);
   };
   for (const k in APTR.guns) one(APTR.guns[k]);
   const F = R.stocked && aptRackFit();
