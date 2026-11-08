@@ -41,6 +41,7 @@ void main() {
 
 export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) {
   const xrLow = !!Q.quest;
+  const RNG = opts.range || RANGE, SCALE = opts.scale || 0.5, VRPX = opts.vrPx || 512;   // the game passes a shorter range and a smaller picture
   const list = [];
   const src = meshes || [];
   if (!meshes) group.traverse((o) => { if (o.isMesh && o.userData.mirror) src.push(o); });
@@ -55,7 +56,7 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
 
   // one planar reflection at a time: its render target, mirrored camera and glass material
   const size = new THREE.Vector2();
-  const rt = new THREE.WebGLRenderTarget(512, 512, { type: THREE.HalfFloatType, samples: xrLow ? 0 : 4 });
+  const rt = new THREE.WebGLRenderTarget(512, 512, { type: THREE.HalfFloatType, samples: xrLow ? 0 : (opts.samples ?? 4) });
   rt.texture.generateMipmaps = false;
   const textureMatrix = new THREE.Matrix4();
   const mat = new THREE.ShaderMaterial({
@@ -171,8 +172,8 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
         place(e);
         toM.subVectors(cPos, e.p);
         const front = toM.dot(e.n), d = e.sphere.distanceToPoint(cPos);
-        if (cubes && !e.cube && !pendingCube && d < RANGE * 1.6 && front > 0) pendingCube = e;
-        if (front < 0.03 || d > RANGE + (e === active ? KEEP : 0)) continue;
+        if (cubes && !e.cube && !pendingCube && d < RNG * 1.6 && front > 0) pendingCube = e;
+        if (front < 0.03 || d > RNG + (e === active ? KEEP : 0)) continue;
         if (!frustum.intersectsSphere(e.sphere) && !(camera.isArrayCamera)) continue;
         if (camera.isArrayCamera && toM.copy(e.sphere.center).sub(cPos).normalize().dot(fwd) < 0.1) continue;
         const score = d - (e === active ? KEEP : 0);
@@ -186,8 +187,8 @@ export function setupMirrors(group, renderer, Q = {}, meshes = null, opts = {}) 
     }
     if (active) {
       // reflection size: half the drawing buffer on a computer, 512 square per eye on the headset
-      let w = 512, h = 512;
-      if (!(renderer.xr.isPresenting || xrLow)) { renderer.getDrawingBufferSize(size); w = Math.max(256, Math.round(size.x * 0.5)); h = Math.max(256, Math.round(size.y * 0.5)); }
+      let w = VRPX, h = VRPX;
+      if (!(renderer.xr.isPresenting || xrLow)) { renderer.getDrawingBufferSize(size); w = Math.max(256, Math.round(size.x * SCALE)); h = Math.max(256, Math.round(size.y * SCALE)); }
       if (rt.width !== w || rt.height !== h) rt.setSize(w, h);
     }
     if (pendingCube) { const e = pendingCube; pendingCube = null; if (!e.cube) capture(e); }
