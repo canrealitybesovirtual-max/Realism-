@@ -1676,3 +1676,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## Headset KTX2 textures (encoded, off until tested)
 - world/city/quest/*.ktx2 (90 city faces, 154 MB) and world/textures/scans/quest/*.ktx2 (53 scans, 23 MB): UASTC via ktx2-encoder, y-flipped at encode. view.js / materials.js load them with three's KTX2Loader (vendored transcoder) when the switches are on: manifest questKtx2 and SCANS_KTX2, both false until a headset-path test (?q=quest&ktx2=force) passes.
+
+## CQC: multiview off by default
+- User report in the headset: fast black flashing and an inverted view. Multiview stereo (the only change to how each eye is drawn) is now opt-in: ?mv=on or OPTIONS > GRAPHICS "Multiview stereo (VR, experimental)". Default = the old two-pass stereo.
