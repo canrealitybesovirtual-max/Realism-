@@ -7,10 +7,11 @@ import * as THREE from 'three';
 
 let BASE = './city/';
 const FAR = 60000;                      // sky texels and the horizon
+const CMP = { value: new THREE.Vector4(0, 0, 0, 0) }, CMPR = { value: new THREE.Vector4(30, 27, 2500, 0) };
 const LOGMAX = Math.log(200000 / 5);
 
 const CITY_VS = /* glsl */`
-uniform sampler2D uDist; uniform vec3 uO, uD, uX, uY; uniform float uN;
+uniform sampler2D uDist; uniform vec3 uO, uD, uX, uY; uniform float uN; uniform vec4 uCmp, uCmpR;
 varying vec2 vUv;
 void main(){
   vUv = uv;
@@ -19,7 +20,9 @@ void main(){
   float d = e > 0.0 ? 5.0 * exp(e * ${LOGMAX.toFixed(6)}) : ${FAR.toFixed(1)};
   vec3 dir = normalize(uD + (uv.x * 2.0 - 1.0) * uX + (uv.y * 2.0 - 1.0) * uY);
   vec3 p = uO + dir * d;
-  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  // inside CQC (camera far 60 m): squeezed along the ray from the eye into r0..r0+r1 (same look, nearer depth)
+  if (uCmp.w > 0.0) { vec3 v = p - uCmp.xyz; float L = max(length(v), 1e-3); p = uCmp.xyz + v / L * (uCmpR.x + uCmpR.y * (1.0 - exp(-L / uCmpR.z))); }
+  gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(p, 1.0);
 }`;
 const CITY_FS = /* glsl */`
 uniform sampler2D uMap, uMapB; uniform float uOp, uMix; uniform vec3 uGain;
@@ -186,7 +189,7 @@ export async function buildView(scene, renderer, Q) {
       const d = new THREE.Vector3(...f.d), up = new THREE.Vector3(...f.up);
       const z = d.clone().negate(), x = new THREE.Vector3().crossVectors(up, z).normalize(), y = new THREE.Vector3().crossVectors(z, x);
       const mat = new THREE.ShaderMaterial({
-        uniforms: { uGain: GAIN, uMap: { value: map }, uMapB: { value: map }, uMix: { value: 0 }, uDist: { value: dist }, uO: { value: p.world }, uD: { value: d }, uX: { value: x }, uY: { value: y }, uOp: { value: 0 } },
+        uniforms: { uCmp: CMP, uCmpR: CMPR, uGain: GAIN, uMap: { value: map }, uMapB: { value: map }, uMix: { value: 0 }, uDist: { value: dist }, uO: { value: p.world }, uD: { value: d }, uX: { value: x }, uY: { value: y }, uOp: { value: 0 } },
         vertexShader: CITY_VS, fragmentShader: CITY_FS, transparent: true, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
       });
       // one mesh per face quadrant: its cluster indices and the cone of directions it covers
@@ -238,6 +241,8 @@ export async function buildView(scene, renderer, Q) {
   const fwd = new THREE.Vector3();
   const api = {
     sky, sun, manifest: man, suns, world,
+    // squeeze the city into r0..r0+r1 m from the eye (CQC's near camera range); the sky dome to radius r0+r1
+    compress(on, r0 = 30, r1 = 27) { CMP.value.w = on ? 1 : 0; CMPR.value.set(r0, r1, 2500, 0); sky.scale.setScalar(on ? (r0 + r1 + 0.5) / 5000 : 1); },
     setGain(k) { if (typeof k === 'number') GAIN.value.setScalar(k); else GAIN.value.set(...k); },
     get sunName() { return suns[si].name; },
     // fade to the next baked time of day (2.5 s); the sun light and sky follow
@@ -275,6 +280,7 @@ export async function buildView(scene, renderer, Q) {
         if (mix >= 1) { si = sj; sj = -1; mix = 0; api.fadeT = -1; fading = false; probes.forEach((p) => bind(p)); }
       }
       sky.position.copy(eye);
+      if (CMP.value.w > 0) CMP.value.set(eye.x, eye.y, eye.z, 1);
     },
   };
   return api;

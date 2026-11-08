@@ -1010,7 +1010,7 @@
 
 <div id="title">
   <div class="plate"><b>00</b>Safe room</div>
-  <a class="studio" href="../index.html">&larr; Back to the apartment</a>
+  <a class="studio" href="../interstate/index.html">Interstate &rarr;</a>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
     <figure class="still main"><div class="frame"><img alt=""><span class="nosig">No signal</span></div><figcaption></figcaption></figure>
@@ -25316,7 +25316,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   root.add(gb.root);
   room.group.add(root);
   const gun = { root: gb.root, model: gb.model, parts: gb.parts, flashT: 0, def: gd, wr: WR[W.gun], prop: { root: gb.root }, primary: null };
-  const sp = (room.yard && yardSpawnSpot(room, taken, spec)) || enemySpawnSpot(room, taken);   // outdoor start: door squad, yard, tower
+  const sp = (room.yard && yardSpawnSpot(room, taken, spec)) || (room.apt && aptSpawnSpot(room, taken)) || enemySpawnSpot(room, taken);   // apartment: the far end   // outdoor start: door squad, yard, tower
   taken.push(sp);
   const e = {
     room, root, B, gun, hp: CONFIG.enemy.health,
@@ -29637,6 +29637,7 @@ function termPress(u, v, hand) {
 }
 // Desktop / phone: E, Grab or a click while the dot is on the screen. Returns true if it took the press.
 function termDeskPress(fromClick = false) {
+  if (aptDeskPress()) return true;                                  // apartment start: the front door's panel
   if (benchLampDesk()) return true;                                 // the lamp over the gunsmith bench
   if (wbDeskButton()) return true;                                  // step 88: the VISE button on the gunsmith bench
   if (wsDeskPress()) return true;                                   // the gunsmith workshop computer
@@ -41313,6 +41314,8 @@ function tick(timeMs) {
   nightUpdate(dtW);      // step 11: dark rooms, the men's weapon lights
   yardTick(dtW, t);      // outdoor start (sky, rain, fog, lamps) + stealth (light level, meter)
   aptTick();             // apartment start: put you in it once it is up
+  aptViewTick();         // apartment start: the city outside, the sun through the glass
+  aptPanelTick();        // apartment start: the front door's panel
   profMark('enemies');
   weaponsUpdate(dt, t);  // step 5: gun poses, triggers, mechanisms, magazines (before physics)
   thumbSelectorUpdate(dt);   // step 30: a tracked thumb flicks the fire selector
@@ -50324,6 +50327,7 @@ const APT = {
   cx: 8.8, cz: 9.625, w: 19.25, d: 17.6, h: 8.6,
   entryAz: 8.45, exitAz: 13.05,                                   // apartment z of the two doorways
   start: { ax: 8.8, az: 5.6 },                                    // great hall, looking north at the park
+  viewGain: 1.6, sunI: 3.0, hemiI: 1.0,                                       // the baked city through CQC's tone mapping; the sun
   stair: { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, risers: 26, sweep: 330 * Math.PI / 180, rise: 4.6 }, L2: 4.6
 };
 function aptState() { if (!APTS) APTS = { mod: null, err: null, placed: false, room: null }; return APTS; }
@@ -50331,7 +50335,7 @@ const aptLX = (az) => APT.cz - az, aptLZ = (ax) => ax - APT.cx;
 const aptAX = (lz) => lz + APT.cx, aptAZ = (lx) => APT.cz - lx;
 function aptLoad() {
   const A = aptState();
-  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js')])
+  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js'), import('../world/src/view.js')])
     .then((m) => { A.mod = m; }).catch((e) => { A.err = e; console.error('apartment modules', e); });
   return A.loadP;
 }
@@ -50352,6 +50356,8 @@ function* aptBuilder(room) {
   const xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on;
   const Q = { quest: xr, tex: xr ? 512 : 1024, stoneTex: 512, base: '../world/', cqc: true };
   const M = MAT.makeMaterials(Q);
+  // no surface.js here: the window glass as plain thin clear glass (the world page draws it with its own shader)
+  for (const g of [M.glass, M.balGlass]) if (g) { g.color.set('#c7d0cd'); g.opacity = 0.1; g.roughness = 0.03; g.needsUpdate = true; }
   yield;
   const apt = AP.buildApartment(M, Q);
   yield;
@@ -50363,6 +50369,20 @@ function* aptBuilder(room) {
   G.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   room.group.add(G);
   room.aptG = G;
+  // the real city outside (the apartment's baked view), squeezed into CQC's camera range, and the sun through the glass
+  if (!A.viewP) A.viewP = A.mod[3].buildView(G, renderer, Q).then((v) => { A.view = v; v.compress(true); v.setGain(APT.viewGain); aptSunAim(); }).catch((e) => console.warn('apartment view not loaded', e));
+  else if (A.view) { G.add(A.view.world, A.view.sky); }
+  if (!A.sun) {
+    const L = A.sun = new THREE.DirectionalLight('#fff3e2', 0);
+    L.castShadow = true; L.shadow.mapSize.set(xr ? 1024 : 2048, xr ? 1024 : 2048);
+    const sc = L.shadow.camera; sc.left = -16; sc.right = 16; sc.top = 16; sc.bottom = -16; sc.near = 20; sc.far = 110;
+    L.shadow.bias = -0.0004; L.shadow.normalBias = 0.03;
+  }
+  G.add(A.sun, A.sun.target); A.sun.target.position.set(8.8, 4, 9.5);
+  if (!A.hemi) A.hemi = new THREE.HemisphereLight('#fbf3e8', '#ddd6cc', 0);   // daylight sky + bounce (only while you are in the apartment)
+  G.add(A.hemi);
+  aptPanelBuild(room);
+  aptSunAim();
   room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps };
   room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
     qc: { pass: true, score: 100, attempt: 1, fails: [], notes: ['apartment'], visible: 1, hidden: 0, density: 0 } };
@@ -50428,9 +50448,10 @@ function aptActivate(room, box, walk) {
     if (hx < 0.004 || hy < 0.004 || hz < 0.004) continue;
     const lx = aptLX(cz), lz = aptLZ(cx), ly = yaw - Math.PI / 2;   // the box turns with the apartment
     box(hx, hy, hz, lx, cy, lz, 0.6, ly, kindOf(c));
-    const slab = 2 * hy < 0.5 && Math.max(hx, hz) > 0.6 && !c.furn; // floors, ceilings, the floor-two slab
-    if (slab) continue;
     const y0 = cy - hy, y1 = cy + hy;
+    // floors, ceilings, the floor-two slab and the roof: no walk boxes (the floor function walks them)
+    const slab = !c.furn && Math.max(hx, hz) > 0.6 && (2 * hy < 0.5 || y1 <= 0.12 || (y0 >= 3.4 && y1 <= 4.75 && 2 * hy < 1.3) || y0 >= 8.0);
+    if (slab) continue;
     walk(lx, lz, hx, hz, y1, ly, y0 > 0.3 ? { bot: y0 - 0.05 } : undefined);
   }
   room.navCache = yardNav(room, []);                              // floor one (walk boxes held up on floor two are left out)
@@ -50449,6 +50470,32 @@ function aptFloor(r, lx, lz, hint = 0) {
   return hint > 2.3 ? APT.L2 : 0;
 }
 const aptFlat = (r, lx, lz, hint) => aptFloor(r, lx, lz, hint) < 0.01;
+function aptSunAim() {
+  const A = APTS; if (!A || !A.sun) return;
+  const d = A.view ? A.view.sun : new THREE.Vector3(-0.55, 0.45, -0.7).normalize();
+  A.sun.position.set(8.8 + d.x * 60, 4 + d.y * 60, 9.5 + d.z * 60);
+  A.sun.shadow.needsUpdate = true; renderer.shadowMap.needsUpdate = true;
+}
+// The view and the sun while you are in (or can see) the apartment: the camera seen from the apartment's own frame.
+const _apQ = new THREE.Quaternion();
+const APT_CAM = {
+  isArrayCamera: false, cameras: null, projectionMatrix: null, G: null,
+  getWorldPosition(v) { const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera; c.getWorldPosition(v); return this.G.worldToLocal(v); },
+  getWorldDirection(v) { const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera; c.getWorldDirection(v); return v.applyQuaternion(this.G.getWorldQuaternion(_apQ).invert()); }
+};
+let _aptLast = 0;
+function aptViewTick() {
+  const A = APTS; if (!A || !A.room || !A.room.active) { if (A && A.sun && A.sun.intensity) A.sun.intensity = 0; return; }
+  const cur = stream.current, inA = !!(cur && cur.apt);
+  if (A.sun) { const k = inA ? APT.sunI : 0; if (A.sun.intensity !== k) { A.sun.intensity = k; renderer.shadowMap.needsUpdate = true; } }
+  if (A.hemi) A.hemi.intensity = inA ? APT.hemiI : 0;
+  if (!A.view || !A.room.aptG) return;
+  const now = performance.now() / 1000, dt = Math.min(0.1, now - (_aptLast || now)); _aptLast = now;
+  const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  APT_CAM.G = A.room.aptG; APT_CAM.isArrayCamera = !!c.isArrayCamera; APT_CAM.cameras = c.cameras; APT_CAM.projectionMatrix = c.projectionMatrix;
+  A.view.world.visible = A.view.sky.visible = A.room.visible !== false;
+  A.view.update(APT_CAM, dt);
+}
 // Once the apartment is up, you are put in it (only at the start of a visit; a death respawns you in the safe room).
 function aptTick() {
   const A = APTS; if (!A || A.placed || !A.room || !A.room.active || yardModeNow() !== 'apt') return;
@@ -50466,7 +50513,101 @@ function aptTick() {
   rig.updateMatrixWorld(true);
   _vel.set(0, 0, 0); playerState.hasPrev = false;
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick });
+
+// ---- the front door's panel (wall beside the vestibule): GO to the Interstate, bring in an enemy at the far end, clear them.
+// Desktop: the dot on it and E / click (termDeskPress); headset: a fingertip on the glass (glassFinger, as the terminal).
+const APTP = { w: 0.4, h: 0.32, px: 800, mesh: null, ctx: null, tex: null, hover: null, hands: new Map(), deskHit: null, btns: [], leaving: false };
+function aptPanelBuild(room) {
+  const P = APTP;
+  if (!P.mesh) {
+    const cv = document.createElement('canvas'); cv.width = P.px; cv.height = Math.round(P.px * P.h / P.w);
+    P.ctx = cv.getContext('2d'); P.tex = new THREE.CanvasTexture(cv); P.tex.colorSpace = THREE.SRGBColorSpace; P.tex.anisotropy = 8;
+    P.mesh = new THREE.Mesh(new THREE.PlaneGeometry(P.w, P.h), new THREE.MeshBasicMaterial({ map: P.tex, toneMapped: false }));
+    const bez = new THREE.Mesh(new THREE.BoxGeometry(P.w + 0.03, P.h + 0.03, 0.012), new THREE.MeshStandardMaterial({ color: '#6b5236', metalness: 1, roughness: 0.35 }));
+    bez.position.z = -0.007; P.mesh.add(bez);
+  }
+  // apartment frame: on the hallway's west wall (x 3.46, facing +x) beside the vestibule, at z 12.15
+  P.mesh.position.set(3.476, 1.38, 12.15); P.mesh.rotation.set(0, Math.PI / 2, 0);
+  room.aptG.add(P.mesh);
+  aptPanelDraw();
+}
+function aptPanelDraw() {
+  const P = APTP, c = P.ctx, W = c.canvas.width, H = c.canvas.height, k = W / 800;
+  c.fillStyle = '#0d1014'; c.fillRect(0, 0, W, H);
+  c.fillStyle = '#e9e4da'; c.font = `600 ${40 * k}px system-ui, sans-serif`; c.textBaseline = 'middle'; c.fillText('Front door', 36 * k, 50 * k);
+  c.fillStyle = '#8f99a6'; c.font = `${22 * k}px system-ui, sans-serif`; c.fillText('The door opens onto the CQC loop. Or:', 36 * k, 96 * k);
+  const n = ENEMY.list.filter((e) => e.room && e.room.apt && !e.dead).length;
+  const rows = [['go', P.leaving ? 'Leaving…' : 'GO  ›  Interstate', '#2f6f3f'], ['enemy', `+ Enemy at the far end${n ? ' (' + n + ')' : ''}`, '#3a2a22'], ['clear', 'Clear enemies', '#22262c']];
+  P.btns = []; let y = 128 * k;
+  for (const [id, label, col] of rows) {
+    const r = [36 * k, y, W - 72 * k, 120 * k];
+    c.fillStyle = P.hover === id ? '#4a5563' : col; c.beginPath(); c.roundRect(r[0], r[1], r[2], r[3], 14 * k); c.fill();
+    c.fillStyle = '#fff'; c.font = `${id === 'go' ? 700 : 600} ${(id === 'go' ? 44 : 32) * k}px system-ui, sans-serif`; c.textAlign = 'center'; c.fillText(label, W / 2, r[1] + r[3] / 2); c.textAlign = 'left';
+    P.btns.push({ id, r }); y += 140 * k;
+  }
+  P.tex.needsUpdate = true;
+}
+function aptPanelHit(u, v) { const P = APTP; for (const b of P.btns) if (u >= b.r[0] && u <= b.r[0] + b.r[2] && v >= b.r[1] && v <= b.r[1] + b.r[3]) return b.id; return null; }
+function aptPanelPress(id) {
+  const P = APTP, A = APTS; if (!id || P.leaving || !A || !A.room) return;
+  try { btnSfx('term', P.mesh.getWorldPosition(new THREE.Vector3())); } catch (e) { /* no sound yet */ }
+  if (id === 'go') {
+    P.leaving = true; aptPanelDraw(); toast('Interstate…', 1500);
+    const go = () => { location.href = '../interstate/index.html'; };
+    const sx = renderer.xr.getSession(); if (sx) sx.end().catch(() => {}).finally(() => setTimeout(go, 300)); else setTimeout(go, 400);
+  } else if (id === 'enemy') aptSpawnEnemy();
+  else if (id === 'clear') { for (const e of ENEMY.list.slice()) if (e.room && e.room.apt) removeEnemy(e); }
+  aptPanelDraw();
+}
+// the nav cell on floor one farthest from you (path length is not needed: the apartment's rooms are open to each other)
+function aptSpawnSpot(room, taken) {
+  const G = room.navCache; if (!G) return null;
+  const px = rLX(room, camera.getWorldPosition(_apSp).x), pz = rLZ(room, _apSp.z);
+  let best = null, bd = -1;
+  for (let j = 2; j < G.nz - 2; j += 2) for (let i = 2; i < G.nx - 2; i += 2) {
+    if (G.g[j * G.nx + i]) continue;
+    const x = -G.w / 2 + (i + 0.5) * G.cs, z = -G.d / 2 + (j + 0.5) * G.cs;
+    if (aptAZ(x) > 17.4) continue;                                   // not out on the terrace
+    if (taken.some((t) => Math.hypot(t.x - x, t.z - z) < 1.2) || ENEMY.list.some((e) => e.room === room && !e.dead && Math.hypot(e.pos.x - x, e.pos.y - z) < 1.2)) continue;
+    const d = Math.hypot(x - px, z - pz);
+    if (d > bd) { bd = d; best = { x, z, yaw: Math.atan2(-(px - x), -(pz - z)) }; }
+  }
+  return best;
+}
+const _apSp = new THREE.Vector3();
+function aptSpawnEnemy() {
+  const A = APTS, room = A && A.room; if (!room || !room.active) return null;
+  if (ENEMY.list.filter((e) => e.room === room && !e.dead).length >= 6) { toast('At most 6 enemies here', 1600); return null; }
+  const e = spawnEnemy(room, { gun: ['smg', 'pistol', 'shotgun'][Math.floor(Math.random() * 3)], skill: 0.4, aggr: 0.4 }, 0, []);
+  if (!e) toast('The enemy model is still loading', 1600);
+  return e;
+}
+function aptDeskPress() {
+  const P = APTP;
+  if (renderer.xr.isPresenting || !P.deskHit) return false;
+  aptPanelPress(P.deskHit); return true;
+}
+const _apR = new THREE.Raycaster(); _apR.far = 2.5;
+function aptPanelTick() {
+  const P = APTP, A = APTS; if (!P.mesh || !A || !A.room || !A.room.active) return;
+  let hover = null;
+  P.deskHit = null;
+  if (renderer.xr.isPresenting) {
+    for (const h of vrHands) {
+      let st = P.hands.get(h); if (!st) P.hands.set(h, st = glassState());
+      const r = glassFinger(P.mesh, P.w, P.h, h, st, _apSp); if (!r) continue;
+      const id = aptPanelHit((_apSp.x / P.w + 0.5) * P.ctx.canvas.width, (0.5 - _apSp.y / P.h) * P.ctx.canvas.height);
+      hover = hover || id;
+      if (r === 2 && id) { pulse(h, 0.3, 12); aptPanelPress(id); }
+    }
+  } else {
+    camera.getWorldPosition(_apR.ray.origin); camera.getWorldDirection(_apR.ray.direction);
+    const hit = _apR.intersectObject(P.mesh, false)[0];
+    if (hit && hit.uv) { hover = aptPanelHit(hit.uv.x * P.ctx.canvas.width, (1 - hit.uv.y) * P.ctx.canvas.height); P.deskHit = hover; }
+  }
+  if (hover !== P.hover) { P.hover = hover; aptPanelDraw(); }
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick, APTP, aptSpawnEnemy, aptPanelPress, aptSpawnSpot });
 
 </script>
 </body>
