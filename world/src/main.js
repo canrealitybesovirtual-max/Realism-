@@ -1,5 +1,6 @@
 // Infinite open world: M0 shell. For now: the apartment (architecture pass) high over a generated
 // city, walkable on a computer and in a headset.
+import { createHub } from './hub.js';
 import * as THREE from 'three';
 import { makeMaterials } from './materials.js';
 import { buildApartment } from './apartment.js';
@@ -141,9 +142,12 @@ async function boot() {
   });
 
   status('Physics…');
-  const spawn = { x: 8.9, y: 0, z: 8.4, yaw: 0 };
+  // back from a destination (Interstate / CQC): you come in at the front door
+  const back = /\/(interstate|cqc)\//.test(document.referrer) || /[?&]from=door\b/.test(location.search);
+  const spawn = back ? { x: 4.15, y: 0, z: 12.0, yaw: 0 } : { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
-  window.__world = { scene, camera, rig, renderer, player, apt, furn, city, view, gt, M, THREE, surf, clusters };
+  const hub = createHub({ scene, camera, renderer, rig, surf, view, screenPose: furn.screen });
+  window.__world = { hub, scene, camera, rig, renderer, player, apt, furn, city, view, gt, M, THREE, surf, clusters };
   const gk = document.getElementById('gkey'), gs = document.getElementById('gkeySave');
   if (gk) {
     gk.value = keyStore.get();
@@ -160,6 +164,7 @@ async function boot() {
   renderer.setAnimationLoop(() => {
     const dt = clock.getDelta();
     player.update(dt);
+    hub.update();
     if (city) city.update(clock.elapsedTime);
     if (gt) gt.update(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, dt);
     if (view) {

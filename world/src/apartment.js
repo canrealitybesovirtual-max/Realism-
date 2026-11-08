@@ -314,7 +314,7 @@ export function buildApartment(M, Q) {
 
   // fire stair (closed core, both floors)
   solid(XW, 6.92, 3.46, 14.33, L1, C2, M.plaster, 'e');
-  panel('z', 3.46, 12.6, 13.5, L1, DH1 - 0.3, M.fireDoor, 1);
+  panel('z', 3.46, 12.55, 13.55, L1, DH1, M.woodDark, 1);           // the front door (hub.js: its panel beside it)
   panel('z', 3.46, 12.6, 13.5, L2, L2 + DH2, M.fireDoor, 1);
   // hallway (floor one) between the fire stair and the west core
   floor(3.46, 6.72, 4.74, 14.48, L1, M.stone);

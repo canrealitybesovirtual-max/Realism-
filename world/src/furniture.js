@@ -994,6 +994,26 @@ function cooktop(B, M, x, y, z, ry) {
 }
 
 
+
+// ---- the computer (library, floor two): dark oak writing desk on slim bronze legs, a 27 inch
+// monitor on a stand (its screen is drawn by hub.js), a slim keyboard; local x along the desk,
+// the front faces +z
+function desk(B, M, x, z, ry, L = 1.5, D = 0.7, H = 0.75) {
+  const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
+  add(at(rbox(L, 0.035, D, 0.008, 2), 0, H - 0.0175, 0), M.woodDark);
+  add(at(rbox(L - 0.16, 0.09, D - 0.12, 0.004, 1), 0, H - 0.08, -0.02), M.woodDark);             // apron with a shallow drawer
+  add(at(rbox(0.5, 0.003, 0.002, 0.001, 1), 0, H - 0.08, D / 2 - 0.079), M.slot);              // drawer reveal
+  for (const u of [-1, 1]) for (const v of [-1, 1]) add(at(lathe([[0, 0], [0.014, 0], [0.011, H - 0.035], [0, H - 0.035]], 16), u * (L / 2 - 0.06), 0, v * (D / 2 - 0.06)), M.bronzeLight);
+  // monitor: arm stand, thin body, bezel; screen plane is hub.js's
+  add(at(rbox(0.24, 0.012, 0.18, 0.004, 1), 0, H + 0.006, -0.18), M.blackMetal);
+  add(at(rbox(0.04, 0.34, 0.025, 0.006, 1), 0, H + 0.18, -0.2), M.blackMetal);
+  add(at(rbox(0.64, 0.385, 0.03, 0.008, 2), 0, H + 0.43, -0.17), M.blackMetal);
+  add(at(rbox(0.38, 0.012, 0.13, 0.004, 1), 0, H + 0.006, 0.08), M.blackMetal);                 // keyboard
+  add(at(rbox(0.36, 0.004, 0.11, 0.002, 1), 0, H + 0.013, 0.08), M.slot);
+  add(at(cushion(0.065, 0.025, 0.11, 0.012, 0.006), 0.3, H + 0.012, 0.09), M.blackMetal);       // mouse
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [L / 2, H / 2, D / 2], yaw: ry, mat: M.woodDark });
+}
+
 // ---- dressing hall (apartment-07) -----------------------------------------------------------
 // vanity table: white lacquer top on two fluted pill-section pedestals (two grooves a face);
 // local x along the wall, the front faces +z
@@ -1378,9 +1398,9 @@ export function furnish(M, Q) {
     curvedSofa(b, M, 14.8, 4.85, Math.PI, 2.4, 0.95);
     roundTable(b, M, 14.8, 3.45, 0.5, 0.36);
     books(b, M, 14.75, 0.36, 3.4, 0.2, 2); bowl(b, M, 15.0, 0.36, 3.7, 0.12);
-    armchair(b, M, 13.55, 1.75, 0.7);
-    sideTable(b, M, 13.95, 0.95, 0.22, 0.55); tableLamp(b, M, 13.95, 0.55, 0.95);
-    print(b, M, 12.79, 1.8, 3.6, 1.05, 1.4, '+x', M.shardArt);
+    desk(b, M, 13.17, 2.9, Math.PI / 2);                               // the computer (hub.js draws its screen)
+    diningChair(b, M, 13.92, 2.9, -Math.PI / 2);
+    print(b, M, 12.79, 1.95, 5.3, 0.9, 1.2, '+x', M.shardArt);
     for (const [a, c] of [[13.42, 13.86], [16.2, 16.65]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);
   });
   goldChandelier(B, M, 14.8, 3.5, F2 + 2.75, C2c);
@@ -1511,5 +1531,5 @@ export function furnish(M, Q) {
   vanity(B, M, 6.47, 0, 13.55, Math.PI / 2, 0.75, M.marbleGrey, M.woodDark);
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders, art: ART, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  return { group, meshes, colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }
