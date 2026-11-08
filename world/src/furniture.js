@@ -1628,21 +1628,23 @@ export function furnish(M, Q) {
   });
   beadChandelier(B, M, 9.7, 3.8, F2 + 2.15, C2c);
   // library (apartment-09): bleached oak shelving on the south wall, the abstract on the west
-  // partition, curved bouclé sofa facing the north glass, round travertine table, armchair and
+  // partition, curved bouclé sofa facing the north glass (east half, clear of the door), round travertine table, armchair and
   // lamp at the corner, gold leaf chandelier
   up((b) => {
     const sh = shelving(b, M, 15.55, 6.5, Math.PI, 2.1, 3.1, 0.4, M.woodLight, 3, 5);      // east of the door swing
     shelfDecor(b, M, sh, 15.55, 6.5, Math.PI, 2.1, 3.1, 0.4, 7);
-    rugPlain(b, M.rug, 14.8, 3.6, 3.2, 3.4);
-    curvedSofa(b, M, 14.8, 4.85, Math.PI, 2.4, 0.95);
-    roundTable(b, M, 14.8, 3.45, 0.5, 0.36);
-    books(b, M, 14.75, 0.36, 3.4, 0.2, 2); bowl(b, M, 15.0, 0.36, 3.7, 0.12);
+    // seating group in the east half (the door's walk north from 13.55..14.45 stays open, >= 1.3 m to the gun
+    // rack / desk side): a shorter curved sofa (outer chord 2.0 m, x 14.55..16.55) facing the north glass
+    rugPlain(b, M.rug, 15.5, 3.6, 2.3, 3.2);
+    curvedSofa(b, M, 15.55, 4.85, Math.PI, 2.4, 0.6);
+    roundTable(b, M, 15.55, 3.45, 0.5, 0.36);
+    books(b, M, 15.5, 0.36, 3.4, 0.2, 2); bowl(b, M, 15.75, 0.36, 3.7, 0.12);
     desk(b, M, 13.17, 2.9, Math.PI / 2);                               // the computer (hub.js draws its screen)
     diningChair(b, M, 13.92, 2.9, -Math.PI / 2);
     print(b, M, 12.79, 1.95, Q && Q.cqc ? 6.05 : 5.3, 0.9, 1.2, '+x', M.shardArt);   // CQC: moved south for the gun rack beside the desk
     for (const [a, c] of [[13.42, 13.86], [16.2, 16.65]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);
   });
-  goldChandelier(B, M, 14.8, 3.5, F2 + 2.75, C2c);
+  goldChandelier(B, M, 15.55, 3.5, F2 + 2.75, C2c);
 
   // ---- media room, floor one (apartment-13): dark oak media wall with the TV on the north wall,
   // curvy bouclé sofa facing it from the glass, a lounge chair, rug, lamp, a print on the west wall

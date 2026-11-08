@@ -561,11 +561,11 @@ function buildStair(B, M) {
     // inner guard collider (the balustrade) and, over the gallery, the outer guard
     const gp = [];
     for (const r of [S.r0 - 0.02, S.r0 + 0.05]) for (const a of [a0, a1]) { gp.push(...at(r, a, top(i))); gp.push(...at(r, a, rail(a))); }
-    B.convex(gp);
+    B.convex(gp); railTag(B, S.r0 - 0.02, S.r0 + 0.05, a0, a1, top(i), rail(a1));
     if (a0 >= 190 * Math.PI / 180) {
       const op = [];
       for (const r of [S.r1 - 0.05, S.r1 + 0.02]) for (const a of [a0, a1]) { op.push(...at(r, a, top(i))); op.push(...at(r, a, rail(a))); }
-      B.convex(op);
+      B.convex(op); railTag(B, S.r1 - 0.05, S.r1 + 0.02, a0, a1, top(i), rail(a1));
     }
   }
   const mk = (o) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(o.P, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(o.N, 3)); return g; };
@@ -597,9 +597,21 @@ function buildStair(B, M) {
   const len = gR * (a1g - a0g), nb = Math.round(len / 0.11);
   for (let k = 0; k <= nb; k++) { const a = a0g + (a1g - a0g) * k / nb; const [x, z] = polar(S.cx, S.cz, gR, a); bal(x, gy0, z, gy1); arc.push([x, gy1, z]); }
   B.add(tube(arc, 0.03), M.darkOak);
+  const nc0 = B.colliders.length;
   shellColliders(B, S.cx, S.cz, gR - 0.03, gR + 0.03, a0g, a1g, gy0, gy1 + 0.05, 12);
+  for (let k = nc0; k < B.colliders.length; k++) B.colliders[k].rail = true;
   const rad = [];
   for (let k = 0; k <= 14; k++) { const r = 0.05 + (S.r1 - 0.05) * k / 14; const [x, z] = polar(S.cx, S.cz, r, 0.012); bal(x, gy0, z, gy1); rad.push([x, gy1, z]); }
   B.add(tube(rad, 0.03), M.darkOak);
   B.box(S.cx - 0.04, gy0, S.cz - S.r1, S.cx + 0.03, gy1, S.cz - 0.02, null, true);
+  B.colliders[B.colliders.length - 1].rail = true;
+}
+// A baluster guard: rounds pass between the bars. The hull just pushed is tagged `rail`, with the same guard
+// as an oriented box (its chord, flat top at the higher end) in `ob`, so a game can keep bodies out with a
+// walk box and let bullets through (CQC: no Rapier collider for rails). The world page ignores the tag.
+function railTag(B, r0, r1, a0, a1, y0, y1) {
+  const c = B.colliders[B.colliders.length - 1], tm = (a0 + a1) / 2, rm = (r0 + r1) / 2;
+  const [x, z] = polar(STAIR.cx, STAIR.cz, rm, tm);
+  c.rail = true;
+  c.ob = { c: [x, (y0 + y1) / 2, z], h: [rm * Math.sin((a1 - a0) / 2) + 0.02, (y1 - y0) / 2, (r1 - r0) / 2], yaw: Math.atan2(-Math.sin(tm), -Math.cos(tm)) };
 }
