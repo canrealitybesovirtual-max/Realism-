@@ -13,7 +13,7 @@ export const LV = { L1: 0, C1: 4.25, L2: 4.6, C2: 8.2, RF: 8.6 };
 const { L1, C1, L2, C2, RF } = LV;
 const XW = 0.9, XE = 16.7, XM = 17.6, ZS = 17.55, ZT = 19.25;
 const DH1 = 2.74, DH2 = 2.44;                       // door heights: 9 ft on floor one, 8 ft on floor two
-export const STAIR = { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, rw: 1.7, risers: 26, sweep: 330 * Math.PI / 180 };
+export const STAIR = { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, rw: 1.565, risers: 26, sweep: 330 * Math.PI / 180 };
 
 export function buildApartment(M, Q) {
   const B = new Builder();
@@ -422,7 +422,7 @@ export function buildApartment(M, Q) {
   wall('x', 14.33, 14.48, XW, 7.91, L2, C2, [{ a: 4.0, b: 4.8, lo: L2, hi: L2 + DH2 }]);
   leaf(4.8, 14.48, L2, 0.8, DH2, -Math.PI / 2 - 0.1);
   wall('x', 14.33, 14.48, 9.88, XE, L2, C2, [{ a: 13.55, b: 14.45, lo: L2, hi: L2 + DH2 }, { a: 15.1, b: 16.2, lo: L2, hi: L2 + DH2 }]);
-  leaf(14.45, 14.48, L2, 0.9, DH2, -Math.PI / 2 - 0.1);
+  leaf(14.45, 14.48, L2, 0.9, DH2, -Math.PI / 2 - 0.22);   // clear of bedroom three's bed
   wall('z', 7.81, 7.91, 14.33, ZS, L2, C2, [{ a: 15.0, b: 15.9, lo: L2, hi: L2 + DH2 }]);
   leaf(7.81, 15.0, L2, 0.9, DH2, Math.PI + 0.1);
   wall('z', 9.88, 9.98, 14.33, ZS, L2, C2, [{ a: 15.0, b: 15.9, lo: L2, hi: L2 + DH2 }]);

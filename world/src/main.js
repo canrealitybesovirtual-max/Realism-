@@ -143,7 +143,7 @@ async function boot() {
   status('Physics…');
   const spawn = { x: 8.9, y: 0, z: 8.4, yaw: 0 };
   const player = await createPlayer(apt.colliders, rig, camera, renderer, spawn);
-  window.__world = { scene, camera, rig, renderer, player, apt, city, view, gt, M, THREE, surf, clusters };
+  window.__world = { scene, camera, rig, renderer, player, apt, furn, city, view, gt, M, THREE, surf, clusters };
   const gk = document.getElementById('gkey'), gs = document.getElementById('gkeySave');
   if (gk) {
     gk.value = keyStore.get();

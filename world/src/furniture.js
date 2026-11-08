@@ -8,6 +8,7 @@ import { Builder } from './build.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { barPull, counter, basin, drain, kitchenFaucet, bathFaucet, toiletSeat, flushPlate, showerSet, towelRing, outletPlate } from './hw.js';
 
+const ART = []; let ARTY = 0;              // wall-hung art, for the clipping check
 // ---- geometry kit ----------------------------------------------------------------------------
 // Rounded box centred at the origin: w x h x d, edge radius r, seg steps per rounded edge.
 // Metric UVs projected from the dominant normal axis (fabric and wood read at true scale).
@@ -294,6 +295,7 @@ function chandelier(B, M, x, z, yBottom, ceil) {
 // made at load, in the palette of the one in apartment-17
 function painting(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  ART.push({ k: 'painting', x, y: y + ARTY, z, w, h, face });
   const cv = new THREE.PlaneGeometry(w, h).toNonIndexed();
   B.add(at(cv, x, y, z, ry), M.canvas);
   const f = 0.022, d = 0.045;
@@ -396,6 +398,7 @@ function figTree(B, M, x, z, seed = 3) {
 // an antique rug hung on a wall (apartment-18 / -19): faded field and borders, on a rod
 function wallRug(B, M, x, z, w, h, yBottom, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  ART.push({ k: 'wallRug', x, y: yBottom + h / 2 + ARTY, z, w, h, face });
   const g = new THREE.PlaneGeometry(w, h, 8, 12).toNonIndexed();
   const p = g.attributes.position;
   for (let i = 0; i < p.count; i++) p.setZ(i, 0.012 + 0.006 * Math.sin(p.getX(i) * 9) * (0.5 - p.getY(i) / h));
@@ -727,6 +730,7 @@ function goldChandelier(B, M, x, z, yc, ceil) {
 // framed print / art on a wall: tex is a canvas texture; face as painting()
 function print(B, M, x, y, z, w, h, face, mat) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  ART.push({ k: 'print', x, y: y + ARTY, z, w, h, face });
   B.add(at(new THREE.PlaneGeometry(w, h).toNonIndexed(), x, y, z, ry), mat);
   const f = 0.02, d = 0.03;
   for (const [u, v, ww, hh] of [[0, h / 2 + f / 2, w + 2 * f, f], [0, -h / 2 - f / 2, w + 2 * f, f], [-w / 2 - f / 2, 0, f, h], [w / 2 + f / 2, 0, f, h]]) {
@@ -923,6 +927,7 @@ function toilet(B, M, x, y, z, ry) {
 // a free-form mirror on a wall (apartment-06): an organic outline, thin bronze edge
 function blobMirror(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  ART.push({ k: 'blobMirror', x, y: y + ARTY, z, w, h, face });
   const sh = new THREE.Shape();
   for (let i = 0; i <= 48; i++) { const a = i / 48 * Math.PI * 2, k = 1 + 0.09 * Math.sin(a * 3 + 0.7) + 0.05 * Math.cos(a * 5); const px = Math.cos(a) * w / 2 * k, py = Math.sin(a) * h / 2 * k; if (i) sh.lineTo(px, py); else sh.moveTo(px, py); }
   const g = new THREE.ExtrudeGeometry(sh, { depth: 0.012, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.006, bevelSegments: 2, curveSegments: 48 }).toNonIndexed();
@@ -962,6 +967,7 @@ function driedVase(B, M, x, y, z, seed = 5) {
 // geometry (a 96 x 112 grid displaced by ridged noise), in a thin white float frame
 function reliefArt(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  ART.push({ k: 'reliefArt', x, y: y + ARTY, z, w, h, face });
   const g = new THREE.PlaneGeometry(w * 0.8, h * 0.8, 96, 112).toNonIndexed();
   const p = g.attributes.position;
   const nz = (a, b) => Math.sin(a * 7.1 + Math.sin(b * 3.3) * 2) * Math.cos(b * 6.3 + Math.sin(a * 2.7) * 2);
@@ -1032,6 +1038,7 @@ function barrelStool(B, M, x, z, ry) {
 // big floor-standing-height mirror hung on the wall over the vanity, pale grey lacquered frame
 function framedMirror(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
+  ART.push({ k: 'framedMirror', x, y: y + ARTY, z, w, h, face });
   B.add(at(new THREE.PlaneGeometry(w, h).toNonIndexed().translate(0, 0, 0.012), x, y, z, ry), M.mirror);
   const f = 0.055, d = 0.045;
   for (const [u, v, ww, hh] of [[0, h / 2 + f / 2, w + 2 * f, f], [0, -h / 2 - f / 2, w + 2 * f, f], [-w / 2 - f / 2, 0, f, h], [w / 2 + f / 2, 0, f, h]]) {
@@ -1347,7 +1354,7 @@ export function furnish(M, Q) {
 
   // ---- floor two ---------------------------------------------------------------------------
   const F2 = 4.6, C2c = 8.2, L1v = 0, DH1v = 2.74;
-  const up = (fn) => { const B0 = new Builder(); fn(B0); for (const [mat, list] of B0.buckets) for (const g of list) B.add(g.translate(0, F2, 0), mat); for (const c of B0.colliders) { if (c.t === 'obox') c.c[1] += F2; else { c.min[1] += F2; c.max[1] += F2; } B.colliders.push(c); } };
+  const up = (fn) => { const B0 = new Builder(); ARTY = F2; fn(B0); ARTY = 0; for (const [mat, list] of B0.buckets) for (const g of list) B.add(g.translate(0, F2, 0), mat); for (const c of B0.colliders) { if (c.t === 'obox') c.c[1] += F2; else { c.min[1] += F2; c.max[1] += F2; } B.colliders.push(c); } };
   // primary bedroom (apartment-10): bed head against the east wall, the park ahead at the north
   // glass, lounge chairs at the west glass, patterned rug, beaded chandelier, two line prints
   up((b) => {
@@ -1365,14 +1372,14 @@ export function furnish(M, Q) {
   // partition, curved bouclé sofa facing the north glass, round travertine table, armchair and
   // lamp at the corner, gold leaf chandelier
   up((b) => {
-    const sh = shelving(b, M, 14.75, 6.5, Math.PI, 3.6, 3.1, 0.4, M.woodLight, 4, 5);
-    shelfDecor(b, M, sh, 14.75, 6.5, Math.PI, 3.6, 3.1, 0.4, 7);
+    const sh = shelving(b, M, 15.55, 6.5, Math.PI, 2.1, 3.1, 0.4, M.woodLight, 3, 5);      // east of the door swing
+    shelfDecor(b, M, sh, 15.55, 6.5, Math.PI, 2.1, 3.1, 0.4, 7);
     rugPlain(b, M.rug, 14.8, 3.6, 3.2, 3.4);
     curvedSofa(b, M, 14.8, 4.85, Math.PI, 2.4, 0.95);
     roundTable(b, M, 14.8, 3.45, 0.5, 0.36);
     books(b, M, 14.75, 0.36, 3.4, 0.2, 2); bowl(b, M, 15.0, 0.36, 3.7, 0.12);
     armchair(b, M, 13.55, 1.75, 0.7);
-    sideTable(b, M, 13.15, 0.95, 0.22, 0.55); tableLamp(b, M, 13.15, 0.55, 0.95);
+    sideTable(b, M, 13.95, 0.95, 0.22, 0.55); tableLamp(b, M, 13.95, 0.55, 0.95);
     print(b, M, 12.79, 1.8, 3.6, 1.05, 1.4, '+x', M.shardArt);
     for (const [a, c] of [[13.42, 13.86], [16.2, 16.65]]) curtain(b, M, a, c, 0.16, 3.29, 6, M.linen);
   });
@@ -1381,14 +1388,14 @@ export function furnish(M, Q) {
   // ---- media room, floor one (apartment-13): dark oak media wall with the TV on the north wall,
   // curvy bouclé sofa facing it from the glass, a lounge chair, rug, lamp, a print on the west wall
   {
-    const sh = shelving(B, M, 5.4, 14.7, 0, 2.8, 3.3, 0.42, M.woodDark, 3, 4);
-    shelfDecor(B, M, sh, 5.4, 14.7, 0, 2.8, 3.3, 0.42, 21);
-    tv(B, M, 5.4, 1.55, 14.93, 0);
+    const sh = shelving(B, M, 4.5, 14.7, 0, 2.3, 3.3, 0.42, M.woodDark, 3, 4);
+    shelfDecor(B, M, sh, 4.5, 14.7, 0, 2.3, 3.3, 0.42, 21);
+    tv(B, M, 4.5, 1.55, 14.93, 0);
     rugPlain(B, M.rug, 4.6, 16.0, 3.4, 2.4);
-    curvedSofa(B, M, 4.4, 16.75, Math.PI, 2.2, 0.85, 0.9);
+    curvedSofa(B, M, 4.4, 16.6, Math.PI, 2.2, 0.85, 0.9);
     armchair(B, M, 6.4, 16.3, -2.5);
     sideTable(B, M, 1.45, 15.1, 0.22, 0.5); tableLamp(B, M, 1.45, 0.5, 15.1);
-    print(B, M, 0.91, 1.75, 15.9, 1.0, 1.25, '+x', M.lineArt2);
+    print(B, M, 0.91, 1.7, 14.98, 0.72, 0.95, '+x', M.lineArt2);   // clear of the slot window
   }
 
   // ---- bedrooms two and three (apartment-04, -06), floor two south
@@ -1404,8 +1411,8 @@ export function furnish(M, Q) {
     // wall, prints, sheer curtains
     rugPlain(b, M.bedRug, 14.6, 16.0, 3.2, 2.6);
     bed(b, M, 15.45, 16.0, -Math.PI / 2, 1.8, 2.1, null, 1.2);
-    nightstand(b, M, 16.27, 14.88, -Math.PI / 2); nightstand(b, M, 16.27, 17.12, -Math.PI / 2);
-    tableLamp(b, M, 16.27, 0.53, 17.12);
+    nightstand(b, M, 16.27, 14.8, -Math.PI / 2); nightstand(b, M, 16.27, 17.2, -Math.PI / 2);
+    tableLamp(b, M, 16.27, 0.53, 17.2);
     console_(b, M, 11.6, 14.72, 0, 1.5);
     print(b, M, 11.2, 1.55, 14.49, 0.42, 0.52, '+z', M.lineArt1);
     print(b, M, 12.0, 1.55, 14.49, 0.42, 0.52, '+z', M.lineArt2);
@@ -1476,7 +1483,7 @@ export function furnish(M, Q) {
     ['x', 9.75, 3.46, 6.03, F2, C2c, 1],
     ['x', 14.33, 3.46, 4.0, F2, C2c, -1], ['x', 14.33, 4.8, 6.03, F2, C2c, -1], ['x', 14.33, 4.0, 4.8, F2 + 2.44, C2c, -1],
   ], 0.016, [0.6, 1.2]);
-  vanity(B, M, 5.74, F2, 10.9, -Math.PI / 2, 1.0, M.creamStone, M.woodDark);
+  vanity(B, M, 5.72, F2, 10.9, -Math.PI / 2, 1.0, M.creamStone, M.woodDark);
   toilet(B, M, 3.476, F2, 12.0, Math.PI / 2);
   builtInTub(B, M, 3.48, 12.55, 4.3, 14.31, F2, M.travertine);
   B.add(at(showerSet(), 3.477, F2 + 1.1, 13.5, Math.PI / 2), M.bronzeLight);          // over the tub, on the west wall
@@ -1504,5 +1511,5 @@ export function furnish(M, Q) {
   vanity(B, M, 6.47, 0, 13.55, Math.PI / 2, 0.75, M.marbleGrey, M.woodDark);
 
   const meshes = B.finish(group);
-  return { group, meshes, colliders: B.colliders, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  return { group, meshes, colliders: B.colliders, art: ART, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }
