@@ -17,7 +17,7 @@ export async function clusterize(meshes) {
   const replaced = [];
   for (const m of meshes) {
     const mat = m.material;
-    if (!m.isMesh || m.isBatchedMesh || mat.transparent || !m.geometry.attributes.normal || m.geometry.index) continue;
+    if (!m.isMesh || m.isBatchedMesh || mat.transparent || m.userData.mirror || !m.geometry.attributes.normal || m.geometry.index) continue;
     if (!m.parent) continue;
     const g0 = new THREE.BufferGeometry();
     for (const k of ['position', 'normal', 'uv']) if (m.geometry.attributes[k]) g0.setAttribute(k, m.geometry.attributes[k]);

@@ -14,6 +14,7 @@ import { createTiles, keyStore } from './tiles.js';
 import { createPlayer } from './player.js';
 import { setupSurfaces } from './surface.js';
 import { clusterize } from './clusters.js';
+import { setupMirrors } from './mirrors.js';
 
 const ua = navigator.userAgent;
 const QUEST = /OculusBrowser|Quest/i.test(ua) || /[?&]q=quest\b/.test(location.search);   // ?q=quest: the headset settings on a computer (tests)
@@ -120,6 +121,7 @@ async function boot() {
     status('Clusters…');
     try { clusters = await clusterize(apt.meshes); } catch (e) { console.warn('clusters off', e); }
   }
+  const mirrors = setupMirrors(furn.group, renderer, Q, furn.mirrors, { cubes: false });   // nearest mirror you face: a real reflection (surface.js probes do the rest)
   status('Loading surfaces…');
   await Promise.race([M.ready, new Promise((r) => setTimeout(r, 20000))]);   // the probes must see the scanned floors
   renderer.compile(scene, camera);
@@ -182,6 +184,7 @@ async function boot() {
         view.sunMoved = view.fadeT >= 0;
       }
     }
+    mirrors(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera);
     renderer.render(scene, camera);
     acc += dt; frames++;
     if (acc > 0.5) {

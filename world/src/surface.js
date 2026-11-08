@@ -573,7 +573,7 @@ export function setupSurfaces({ scene, renderer, apt, M, Q, hemi = null, hemiGI 
 
   const mats = new Set(apt.meshes.map((m) => m.material));
   for (const mat of mats) {
-    if (mat === M.light) continue;
+    if (mat === M.light || !mat.isMeshStandardMaterial) continue;     // contact-shadow cards are plain MeshBasic
     patch(mat, mat === M.glass ? 'glass' : mat === M.pavers ? 'wet' : 'in', U, !!frame);
   }
   // glass blends as premultiplied: reflection added, the view behind dimmed by alpha

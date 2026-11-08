@@ -414,6 +414,10 @@ JOBS = {
     'wood_bleached': lambda: veneer('wood_bleached', 'oak_washed', 0, 0.42, (0.382, 0.333, 0.285), 1.4, (0.45, 0.6)),
     'wood_dark': lambda: veneer('wood_dark', 'oak_white', 1, 0.075, (0.385, 0.33, 0.285), 1.6, (0.5, 0.65)),
     'wood_mid': lambda: veneer('wood_mid', 'oak_grey2', 0, 0.16, (0.39, 0.326, 0.284), 1.4, (0.45, 0.6)),
+    # table tops (lacquered in the game): warm American walnut (dining / coffee / desk / nightstands / consoles)
+    # and natural white oak; grain along u
+    'wood_walnut': lambda: veneer('wood_walnut', 'walnut', 0, 0.075, (0.52, 0.31, 0.17), 1.35, (0.4, 0.55)),
+    'wood_oak': lambda: veneer('wood_oak', 'oak_natural', 1, 0.28, (0.47, 0.33, 0.2), 1.15, (0.4, 0.55), metres=1.83, ppm=600),
     'leaf_ficus': leaves,
     'fabric_boucle': lambda: fabric('fabric_boucle', 'boucle', 0.15, 0.3, 0.62, (0.353, 0.334, 0.313), 0.8, (0.85, 1.0)),
     'fabric_rug': lambda: fabric('fabric_rug', 'rug_cream', 1.7, 1.7, 0.58, (0.348, 0.335, 0.317), 0.9, (0.9, 1.0), ppm=600),
