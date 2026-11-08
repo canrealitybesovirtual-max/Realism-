@@ -122,17 +122,36 @@ function viewHalfAngle(cam) {
 
 // texture loading: colour faces (WebP with coverage alpha), distance grids (uint16)
 const texLoader = new THREE.TextureLoader();
-function loadColor(url, Q) {
+// PERF: decoded off the main thread (createImageBitmap) where the browser has it; the old loader decoded each 2048 px
+// face on the main thread at upload, a stall every time you walked into another bake point's zone
+const bmpLoader = typeof createImageBitmap === 'function' ? new THREE.ImageBitmapLoader().setOptions({ imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' }) : null;
+function loadColor(url, Q, k = 0) {
+  if (bmpLoader && !loadColor.noBmp) return new Promise((res, rej) => bmpLoader.load(url, (bmp) => {
+    const t = new THREE.Texture(bmp); t.flipY = false; t.needsUpdate = true;
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
+    t.anisotropy = Q.quest ? 2 : 8;
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.userData.bmp = bmp;
+    res(t);
+  }, undefined, (e) => (k < 3 ? setTimeout(() => loadColor(url, Q, k + 1).then(res, rej), 400 * (k + 1)) : (loadColor.noBmp = true, loadColor(url, Q, 0).then(res, rej)))));
   return new Promise((res, rej) => texLoader.load(url, (t) => {
     t.colorSpace = THREE.SRGBColorSpace;
     t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.magFilter = THREE.LinearFilter;
     t.anisotropy = Q.quest ? 2 : 8;
     t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
     res(t);
-  }, undefined, rej));
+  }, undefined, (e) => (k < 3 ? setTimeout(() => loadColor(url, Q, k + 1).then(res, rej), 400 * (k + 1)) : rej(e))));
+}
+// a busy browser can refuse a burst of requests (ERR_INSUFFICIENT_RESOURCES): try again a few times
+async function fetchRetry(url, tries = 4) {
+  for (let k = 0; ; k++) {
+    try { const r = await fetch(url); if (!r.ok) throw new Error(url + ' ' + r.status); return r; }
+    catch (e) { if (k >= tries - 1) throw e; await new Promise((res) => setTimeout(res, 400 * (k + 1))); }
+  }
 }
 async function loadDist(url, n) {
-  const r = await fetch(url); if (!r.ok) throw new Error(url);
+  const r = await fetchRetry(url);
   const u16 = new Uint16Array(await r.arrayBuffer());
   const f = new Float32Array(u16.length);
   for (let i = 0; i < f.length; i++) f[i] = u16[i] / 65535;
@@ -184,7 +203,11 @@ export async function buildView(scene, renderer, Q) {
     }
   }
   async function load(p) {
-    if (p.group || p.state === 'loading') return;
+    if (p.group || p.state === 'loading' || (p.retryAt && performance.now() < p.retryAt)) return;
+    try { await loadOnce(p); }
+    catch (e) { p.state = 'idle'; p.retryAt = performance.now() + 3000; console.warn('city view probe not loaded, retrying', e && e.message); }   // was stuck 'loading' for good (a missing view)
+  }
+  async function loadOnce(p) {
     p.state = 'loading';
     const g = new THREE.Group();
     await Promise.all(p.faces.map(async (fi) => {
@@ -209,20 +232,25 @@ export async function buildView(scene, renderer, Q) {
         g.add(m);
       }
     }));
+    // PERF: upload one face texture per ~frame before it is drawn (all at the first draw was a stall)
+    if (renderer.initTexture) {
+      const tex = new Set(); for (const m of g.children) { tex.add(m.material.uniforms.uMap.value); tex.add(m.material.uniforms.uDist.value); }
+      for (const t of tex) { await new Promise((r) => setTimeout(r, 18)); try { renderer.initTexture(t); } catch (e) { /* drawn later */ } }
+    }
     p.group = g; p.state = 'ready';
     if (sj >= 0) { await ensureSun(p, sj); }
     await bind(p);
     world.add(g);
   }
   function unload(p) {
-    if (!p.group) return;
+    if (!p || !p.group) return;
     world.remove(p.group);
     const seen = new Set();
     for (const m of p.group.children) {
       m.geometry.dispose();
       if (seen.has(m.material)) continue;
       seen.add(m.material);
-      for (const k in m.userData.maps) m.userData.maps[k].then((t) => t.dispose());
+      for (const k in m.userData.maps) m.userData.maps[k].then((t) => { t.dispose(); if (t.userData.bmp && t.userData.bmp.close) t.userData.bmp.close(); }).catch(() => {});
       m.material.uniforms.uDist.value.dispose(); m.material.dispose();
     }
     p.group = null; p.state = 'idle'; p.op = 0;
@@ -238,6 +266,9 @@ export async function buildView(scene, renderer, Q) {
     for (const p of probes) { const d = p.world.distanceTo(eye) + (p === cur ? -1 : 0); if (d < bd) { bd = d; best = p; } }
     return best;
   }
+  const KEEP = Q.quest ? 2 : 4;
+  const loadedCount = () => { let n = 0; for (const q of probes) if (q.group) n++; return n; };
+  const lru = (want) => { let o = null; for (const q of probes) if (q.group && q !== cur && q !== want && q.op <= 0 && (!o || (q.used || 0) < (o.used || 0))) o = q; return o; };
   const first = pick({ getWorldPosition: (v) => v.set(8.8, 1.6, 4) });
   await load(first);
   first.op = 1; setOp(first); cur = first;
@@ -271,15 +302,17 @@ export async function buildView(scene, renderer, Q) {
       api.drawn = 0;
       for (const p of probes) if (p.group) for (const m of p.group.children) {
         const c = m.userData.cone;
-        m.visible = Math.acos(Math.max(-1, Math.min(1, fwd.dot(c.dir)))) < half + c.half;
+        m.visible = p.op > 0.001 && Math.acos(Math.max(-1, Math.min(1, fwd.dot(c.dir)))) < half + c.half;   // a kept probe at 0 opacity is not drawn
         if (m.visible) api.drawn += m.userData.tris;
       }
       const want = pick(cam);
-      if (want !== cur) { load(want); if (want.state === 'ready') cur = want; }
+      want.used = performance.now();
+      if (cur && !cur.group) load(cur).catch(() => {});
+      if (want !== cur) { load(want).catch(() => {}); if (want.state === 'ready') cur = want; }
       for (const p of probes) {
         const target = p === cur ? 1 : 0;
         if (p.op !== target) { p.op += Math.sign(target - p.op) * Math.min(Math.abs(target - p.op), dt / 0.45); setOp(p); }
-        if (p !== cur && p.op <= 0 && p.group && p !== want) unload(p);
+        if (p !== cur && p.op <= 0 && p.group && p !== want && loadedCount() > KEEP) unload(lru(want));   // PERF: the last few stay loaded (walking back used to load them again)
       }
       if (api.fadeT >= 0) {
         api.fadeT += dt; mix = Math.min(1, api.fadeT / 2.5);

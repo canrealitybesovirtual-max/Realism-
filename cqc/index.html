@@ -38181,6 +38181,59 @@ function handsUpdate(dt, now) {
  *  a soft dither (a keyhole), and so does anything closer than ~12 cm to
  *  your eyes. Only the torso does this; arms never fade.
  * ========================================================================== */
+/* PERF: skinned meshes of your own body, gloves and sleeves were built with frustumCulled = false (their bind-pose
+ * bounds sit at the origin, not where the bones put them), so ~120k skinned triangles were drawn every frame on the
+ * computer even looking straight ahead, in the mirror pass too. skinCullTick gives each a sphere from its bones: per
+ * bone the farthest vertex it moves (bone-local, from the bind pose, weight >= 0.05), per frame the bones' positions
+ * (bindMatrixInverse, mesh space) -> centre = their mean, radius = max(distance + bone radius) + SKC.pad.
+ * Found by a scan every 2 s (any skinned mesh outside the men with culling off); ?skincull=off. */
+const SKC = { on: !/[?&]skincull=off\b/.test(QS), list: [], seen: new WeakSet(), scanAt: 0, pad: 0.16, v: new THREE.Vector3(), c: new THREE.Vector3(), m: new THREE.Matrix4() };
+function skinCullAdd(m) {
+  SKC.seen.add(m);
+  const sk = m.skeleton, g = m.geometry, P = g && g.attributes.position, I = g && g.attributes.skinIndex, W = g && g.attributes.skinWeight;
+  if (!sk || !P || !I || !W || !sk.boneInverses || sk.boneInverses.length !== sk.bones.length) return;
+  const n = sk.bones.length, r = new Float32Array(n).fill(-1), v = SKC.v, M = SKC.m, ex = new Float32Array(16);
+  const BI = sk.boneInverses.map((bi) => bi.clone().multiply(m.bindMatrix));
+  const draw = g.drawRange, idx = g.index;
+  for (let i = 0; i < P.count; i++) {
+    v.fromBufferAttribute(P, i);
+    for (let k = 0; k < 4; k++) {
+      if (W.getComponent(i, k) < 0.05) continue;
+      const b = I.getComponent(i, k); if (b >= n) continue;
+      const e = BI[b].elements, x = e[0] * v.x + e[4] * v.y + e[8] * v.z + e[12], y = e[1] * v.x + e[5] * v.y + e[9] * v.z + e[13], z = e[2] * v.x + e[6] * v.y + e[10] * v.z + e[14];
+      const d = Math.hypot(x, y, z); if (d > r[b]) r[b] = d;
+    }
+  }
+  const used = []; for (let b = 0; b < n; b++) if (r[b] >= 0) used.push(b, r[b]);
+  if (!used.length) return;
+  m.userData.skc = used; m.userData.skcS = new THREE.Vector3().setFromMatrixScale(m.bindMatrixInverse).x;
+  m.boundingSphere = new THREE.Sphere(); m.frustumCulled = true; SKC.list.push(m);
+  skinCullOne(m);
+}
+function skinCullOne(m) {
+  const u = m.userData.skc, bones = m.skeleton.bones, S = m.boundingSphere, c = SKC.c, v = SKC.v, inv = m.bindMatrixInverse, sc = m.userData.skcS;
+  c.set(0, 0, 0);
+  for (let j = 0; j < u.length; j += 2) c.add(v.setFromMatrixPosition(bones[u[j]].matrixWorld));
+  c.multiplyScalar(2 / u.length).applyMatrix4(inv);
+  let R = 0;
+  for (let j = 0; j < u.length; j += 2) { v.setFromMatrixPosition(bones[u[j]].matrixWorld).applyMatrix4(inv); R = Math.max(R, v.distanceTo(c) + u[j + 1] * sc); }
+  S.center.copy(c); S.radius = R + SKC.pad;
+}
+function skinCullTick() {
+  if (!SKC.on) return;
+  const now = performance.now();
+  if (now - SKC.scanAt > 2000) {
+    SKC.scanAt = now;
+    const men = new Set(); for (const e of ENEMY.list) if (e.root) men.add(e.root);
+    scene.traverse((o) => {
+      if (!o.isSkinnedMesh || o.frustumCulled || SKC.seen.has(o) || o.userData.skcSkip) return;
+      for (let p = o.parent; p; p = p.parent) if (men.has(p) || p.userData && p.userData.enemy) { SKC.seen.add(o); return; }
+      try { skinCullAdd(o); } catch (e) { SKC.seen.add(o); o.frustumCulled = false; }
+    });
+    SKC.list = SKC.list.filter((m) => m.parent);
+  }
+  for (const m of SKC.list) skinCullOne(m);
+}
 const BODY = {
   ready: false, root: null, bones: [], rest: [], restInv: [], mats: null, meshes: [],
   init: false, yaw: 0, s: 1, standEye: 1.7, cal: false, speed: 0, vel: new THREE.Vector3(), lastP: new THREE.Vector3(), hasLast: false,
@@ -41374,6 +41427,7 @@ function tick(timeMs) {
   handsUpdate(dt, t);    // step 13: hands follow the controllers / tracked joints / the gun they hold
   bodyArms(dt);          // step 14: shoulders and arms reach the hands (empty hands hang)
   vmTick(dt);            // step 82: desktop viewmodels
+  skinCullTick();        // PERF: your body / gloves / sleeves get a real bounding sphere (they were drawn every frame, culling off)
   detailUpdate(dt);      // step 25: smart detail (pixel-size culling, shadow distance, struggle mode)
   profMark('fx');
   lightMountCheck();     // entry blackout fix: the flashlight never sits under a hidden parent (a light count change recompiles everything)
@@ -50910,11 +50964,11 @@ function aptRows(P) {
   rows.push(['raid:stop', R.mode ? 'End the raid (clear them)' : 'Clear enemies', '#22262c']);
   return { note: live, rows, warn: !!R.mode };
 }
-function aptPanelDraw() {
+function aptPanelDraw(only) {
   for (const P of APT_PANELS) {
-    if (!P.ctx) continue;
+    if (!P.ctx || only && P !== only) continue;
     const c = P.ctx, W = c.canvas.width, H = c.canvas.height, k = W / 800, D = aptRows(P);
-    c.fillStyle = D.warn && (performance.now() / 500 | 0) % 2 ? '#1c0c0c' : '#0d1014'; c.fillRect(0, 0, W, H);
+    c.fillStyle = D.warn && (performance.now() / 1000 | 0) % 2 ? '#1c0c0c' : '#0d1014'; c.fillRect(0, 0, W, H);
     c.fillStyle = '#e9e4da'; c.font = `600 ${(P === APTC ? 30 : 40) * k}px system-ui, sans-serif`; c.textBaseline = 'middle'; c.fillText(P.title, 36 * k, (P === APTC ? 34 : 50) * k);
     c.fillStyle = D.warn ? '#ff8a7a' : '#8f99a6'; c.font = `${(P === APTC ? 19 : 22) * k}px system-ui, sans-serif`; c.fillText(D.note, 36 * k, (P === APTC ? 68 : 86) * k);
     P.btns = []; let y = (P === APTC ? 88 : 112) * k;
@@ -51078,10 +51132,11 @@ function aptPanelTick() {
     if (hover !== P.hover) { P.hover = hover; changed = true; }
   }
   const now = performance.now() / 1000;
-  if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; changed = true; }   // the security screen blinks red while a raid is on
-  if (changed) aptPanelDraw();
+  let blink = false;
+  if (APT_RAID.mode && now - _apBlink > 1.0) { _apBlink = now; blink = true; }   // the security screen blinks red while a raid is on (PERF: once a second, that screen only)
+  if (changed) aptPanelDraw(); else if (blink) aptPanelDraw(APTC);
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 /* =========================================================================
  *  APARTMENT LOOK (?aptsun=off, ?aptlook=off): the surfaces and the shadows of the apartment without surface.js.
@@ -51109,7 +51164,7 @@ function aptSunChunk() {
   const i0 = lf.indexOf('#if ( NUM_DIR_LIGHTS > 0 ) && defined( RE_Direct )'), i1 = i0 < 0 ? -1 : lf.indexOf(call, i0);
   if (i1 < 0) { console.warn('apartment sun shadow: three chunk changed'); return; }
   const low = IS_HEADSET || LITE.on, size = low ? 1024 : 2048;
-  const taps = low ? [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]] : [[-1, -1], [0, -1], [1, -1], [-1, 0], [0, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+  const taps = low ? [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]] : [[-0.75, -0.75], [0.75, -0.75], [-0.75, 0.75], [0.75, 0.75]];   // PERF: 4 hardware-filtered taps (was 9 on the computer)
   C.lights_pars_begin += `
 uniform vec4 uAsK[ 2 ];
 uniform mat4 uAsM[ 1 ];
