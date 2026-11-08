@@ -1276,7 +1276,7 @@ function furnitureMaterials(M, Q) {
   M.leafGlass.userData = { shadow: 'cast', order: 6 };
   M.shade = M.linen.clone(); M.shade.color = new THREE.Color('#efe6d6');
   { const pt = paintingTexture(); M.canvas = new THREE.MeshStandardMaterial({ map: pt.map, normalMap: pt.normalMap, roughness: 0.7 }); }
-  const tl = new THREE.TextureLoader(), dir = './textures/scans/' + (Q.quest ? 'quest/' : '');
+  const tl = new THREE.TextureLoader(), dir = (Q.base || './') + 'textures/scans/' + (Q.quest ? 'quest/' : '');
   const lmap = tl.load(dir + 'leaf_ficus_diff.webp'); lmap.colorSpace = THREE.SRGBColorSpace; lmap.anisotropy = 4;
   const lnor = tl.load(dir + 'leaf_ficus_nor.webp'); lnor.anisotropy = 4;
   M.leaf = new THREE.MeshStandardMaterial({ map: lmap, normalMap: lnor, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.42 });

@@ -6393,6 +6393,7 @@ function normalParams(i) {
   if (plan.type === 'stair') { const sp = stairParams(i, plan); _paramCache.set(i, sp); return sp; }   // step 12
   if (facIs(plan.type)) { const fp = facParams(i, plan); _paramCache.set(i, fp); return fp; }        // facility section
   if (plan.type === 'yard') { const yp = yardParams(i, plan); _paramCache.set(i, yp); return yp; }  // outdoor start
+  if (plan.type === 'apt') { const ap = aptParams(i, plan); _paramCache.set(i, ap); return ap; }    // apartment start
   const S = ROOM_TYPES[plan.type].size;
   const R = mulberry32(roomSeed(i)), m = CONFIG.door.width / 2 + 0.5;
   let w = Math.round((S.w[0] + (S.w[1] - S.w[0]) * R()) * 10) / 10;
@@ -7336,6 +7337,7 @@ function roomMaterials(room) {
 function* roomBuilder(room) {
   if (room.kind === 'stair') { yield* stairBuilder(room); return; }   // step 12
   if (room.plan && room.plan.type === 'yard') { yield* yardBuilder(room); return; }   // outdoor start
+  if (room.plan && room.plan.type === 'apt') { yield* aptBuilder(room); return; }     // apartment start
   if (!room.layout) room.layout = yield* generateLayout(room);
   const { w, d, h } = room, M = KIT.mat, G = KIT.geo, P = KIT.proto, D = CONFIG.door, T = CONFIG.stream.wallT;
   const L = room.layout, g = room.group, dg = room.doorGroup, RM = room.mats = roomMaterials(room);
@@ -8164,7 +8166,7 @@ function stairFloor(S, lx, lz, hint = 0) {
 }
 // Flat floor at 0 or rise (the corridors and the pads): where the world may re-base vertically.
 function stairFlat(S, lx, lz) { return S.u ? (lz >= S.zc || S.side * (S.xp - lx) <= 0) : (Math.abs(S.zs * lz) >= S.uLo || S.side * (S.xp - lx) <= 0); }
-function roomFloorAt(r, lx, lz, hint = 0) { return r.stair ? stairFloor(r.stair, lx, lz, hint) : r.facMz ? facFloor(r.facMz, lx, lz, hint) : r.yard ? yardFloor(r, lx, lz, hint) : 0; }   // outdoor start: stairs, catwalk, tower   // facility section: the checkpoint landing
+function roomFloorAt(r, lx, lz, hint = 0) { return r.stair ? stairFloor(r.stair, lx, lz, hint) : r.facMz ? facFloor(r.facMz, lx, lz, hint) : r.yard ? yardFloor(r, lx, lz, hint) : r.apt ? aptFloor(r, lx, lz, hint) : 0; }   // outdoor start: stairs, catwalk, tower   // facility section: the checkpoint landing
 function updateFloor() {
   rig.updateMatrixWorld(true);
   headWorld(_fl);
@@ -8172,7 +8174,7 @@ function updateFloor() {
   const r = c && c.active && insideRoom(c, _fl.x, _fl.z, 0.3, _fl.y) ? c : roomContaining(_fl.x, _fl.z, 0.3, _fl.y);
   if (!r) return;
   const lx = rLX(r, _fl.x), lz = rLZ(r, _fl.z);
-  level.flat = r.yard ? yardFlat(r, lx, lz, level.floor - r.origin.y) : r.facMz ? facFloor(r.facMz, lx, lz, level.floor - r.origin.y) < 0.005 : (!r.stair || stairFlat(r.stair, lx, lz));   // facility section: no re-base on the landing
+  level.flat = r.yard ? yardFlat(r, lx, lz, level.floor - r.origin.y) : r.apt ? aptFlat(r, lx, lz, level.floor - r.origin.y) : r.facMz ? facFloor(r.facMz, lx, lz, level.floor - r.origin.y) < 0.005 : (!r.stair || stairFlat(r.stair, lx, lz));   // facility section: no re-base on the landing
   const y = r.origin.y + roomFloorAt(r, lx, lz, level.floor - r.origin.y);
   if (Math.abs(y - level.floor) > 1e-5) { level.floor = y; applyHeight(); rig.updateMatrixWorld(true); propWearSync(); }
 }
@@ -8288,6 +8290,7 @@ function activateRoom(room) {
   }
   room.cover = { list: [] };                                    // step 6: crates, lockers, partitions
   if (room.yard) yardActivate(room, box, walk);                 // outdoor start: real wall heights, buildings, steel, nav
+  if (room.apt) aptActivate(room, box, walk);                   // apartment start: its own walls, furniture, floors
   room.layout.furniture.forEach((f, fi) => {
     const s = FURN[f.type];
     if (CRATE_HP[f.type] && crateBrokenInMemory(room, fi)) return;   // only boards left of it
@@ -41309,6 +41312,7 @@ function tick(timeMs) {
   goreUpdate(dtW);       // step 41: pools drying, you dripping
   nightUpdate(dtW);      // step 11: dark rooms, the men's weapon lights
   yardTick(dtW, t);      // outdoor start (sky, rain, fog, lamps) + stealth (light level, meter)
+  aptTick();             // apartment start: put you in it once it is up
   profMark('enemies');
   weaponsUpdate(dt, t);  // step 5: gun poses, triggers, mechanisms, magazines (before physics)
   thumbSelectorUpdate(dt);   // step 30: a tracked thumb flicks the fire selector
@@ -43793,7 +43797,8 @@ function freeItemHand(h, it, p, P, Q) {
     setShadowSize(CONFIG.shadow.desktop);        // also sizes the smaller portal map
     // The safe room plus the room ahead, built in full before you start.
     setLoad('Building the first rooms', 0.95);
-    if (yardModeNow() !== 'cqc') await natLoad();                  // nature: the yard's trees and rocks (the first rooms are built in one go below)
+    if (yardModeNow() === 'outdoor' || yardModeNow() === 'outonly') await natLoad();   // nature: the yard's trees and rocks (the first rooms are built in one go below)
+    if (yardModeNow() === 'apt') await aptLoad();                  // apartment start: its modules (the first rooms are built in one go below)
     await yieldFrame();
     for (const [slot, kind] of [[0, 'safe'], [1, 'normal']]) {
       bootSave(`Building the first rooms: ${kind === 'safe' ? 'safe room' : 'room ' + slot}`, 95);   // step 46: which room, if it dies
@@ -47776,8 +47781,8 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { ATC, atcFactory, atcDirty,
 var YARD = null;                                                 // var: hooks may run before this section evaluates
 const YC = {
   steamAt: [[3, 0], [3, -14], [-2, 16]],                     // drain grates that steam (room-local x, z; the lane's grates in yardBuilder)
-  key: 'cqc.start.v1', modes: ['cqc', 'outdoor', 'outonly'],
-  label: { cqc: 'CQC ONLY', outdoor: 'OUTDOOR + CQC', outonly: 'OUTDOOR ONLY' },
+  key: 'cqc.start.v1', modes: ['apt', 'cqc', 'outdoor', 'outonly'],
+  label: { apt: 'APARTMENT + CQC', cqc: 'CQC ONLY', outdoor: 'OUTDOOR + CQC', outonly: 'OUTDOOR ONLY' },
   w: 40, d: 56, h: 14, entryX: 8, exitX: -2,
   front: 7.2, back: 12, perim: 3.0, fence: 2.2,
   tex: { wall: 2.4, ground: 6, metal: 1 },
@@ -47791,10 +47796,10 @@ const YC = {
   sniper: { sight: 75, glint: 0.9, gap: 2.6, first: 1.6 }
 };
 function yardMode() {
-  const m = /[?&]start=(cqc|outdoor|outonly)\b/.exec(QS);
+  const m = /[?&]start=(apt|cqc|outdoor|outonly)\b/.exec(QS);
   if (m) return m[1];
   try { const v = localStorage.getItem(YC.key); if (YC.modes.includes(v)) return v; } catch (e) { /* */ }
-  return 'cqc';
+  return 'apt';                                                   // apartment start: the default
 }
 function yardModeNow() { return yardState().mode; }
 function yardState() {
@@ -47812,9 +47817,9 @@ function yardPlanAt(s, wing, k, level0) {
   const mode = yardModeNow();
   const b = yardState().base;                                     // the yard's slot: 1, or the slot after the safe room it was chosen in
   if (mode === 'cqc' || s > b + 1 || s < b) return null;
-  yardRegister();
-  if (s === b) return { slot: s, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` };
-  if (mode !== 'outdoor' || !CONFIG.stairs.on) return null;
+  if (mode === 'apt') aptRegister(); else yardRegister();          // apartment start: the apartment, then the stairwell down
+  if (s === b) return mode === 'apt' ? { slot: s, wing, k, type: 'apt', level: level0, number: 'PH-76' } : { slot: s, wing, k, type: 'yard', level: level0, number: `${wing.letter}-${floorDigit(level0)}17` };
+  if ((mode !== 'outdoor' && mode !== 'apt') || !CONFIG.stairs.on) return null;
   const SC = CONFIG.stairs, dir = level0 - 1 >= SC.levels[0] ? -1 : 1;
   return { slot: s, wing, k, type: 'stair', dir, entryLevel: level0, level: level0 + dir, number: `${wing.letter}-${floorDigit(level0)}00` };
 }
@@ -50301,6 +50306,167 @@ yardFogColour();                                                  // the default
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURF, buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, yardIdle, yardPatrolPoint, yardBodyCheck, YARD: () => YARD, YC, YU, YSKY, NAT: () => NAT, NC, natPlan, natTick, natConceal, natGround, yardLayout, yardFloor, yardWetAt, yardPuddleF, yardNav, yardSetMode, yardReplan, yardLights,
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees, yardSniperGate });
 
+
+
+/* =========================================================================
+ *  APARTMENT START (start mode 'apt', the default; ?start=apt): the open-world apartment (../world/src) is
+ *  slot 1, the room behind CQC's first safe room. You start inside it; its east passage leads back to the
+ *  safe room (the armory: locker, gunsmith, bench), its front door (floor one, end of the hallway: a
+ *  vestibule through to CQC's own door in the west wall) to a stairwell down into the loop. Everything CQC
+ *  does works here: your body and hands, every gun and its handling, attachments, enemies, ragdolls, holes.
+ *  The apartment's own modules build the look (photo-scanned materials, furniture); its colliders become
+ *  Rapier colliders on the room body and walk boxes; aptFloor gives floor one, floor two and the helical stair.
+ *  Frame: room-local x = APT.cz - apartment z, room-local z = apartment x - APT.cx (entry +z = the apartment's
+ *  east wall, exit -z = its west wall).
+ * ========================================================================= */
+var APTS = null;
+const APT = {
+  cx: 8.8, cz: 9.625, w: 19.25, d: 17.6, h: 8.6,
+  entryAz: 8.45, exitAz: 13.05,                                   // apartment z of the two doorways
+  start: { ax: 8.8, az: 5.6 },                                    // great hall, looking north at the park
+  stair: { cx: 7.6, cz: 11.1, r0: 0.5, r1: 1.55, risers: 26, sweep: 330 * Math.PI / 180, rise: 4.6 }, L2: 4.6
+};
+function aptState() { if (!APTS) APTS = { mod: null, err: null, placed: false, room: null }; return APTS; }
+const aptLX = (az) => APT.cz - az, aptLZ = (ax) => ax - APT.cx;
+const aptAX = (lz) => lz + APT.cx, aptAZ = (lx) => APT.cz - lx;
+function aptLoad() {
+  const A = aptState();
+  if (!A.loadP) A.loadP = Promise.all([import('../world/src/materials.js'), import('../world/src/apartment.js'), import('../world/src/furniture.js')])
+    .then((m) => { A.mod = m; }).catch((e) => { A.err = e; console.error('apartment modules', e); });
+  return A.loadP;
+}
+function aptRegister() {
+  if (ROOM_TYPES.apt) return;
+  ROOM_TYPES.apt = { label: 'apartment', size: { w: [APT.w, APT.w], d: [APT.d, APT.d] }, density: [0, 1], sig: false, men: 0, minMen: 0,
+    runs: [], bare: true, marks: {}, clock: 0, partition: 0, pony: 0, table: 0, tipped: 0, panel: 0, whiteboard: 0, props: [], nProps: [0, 0] };
+}
+function aptParams(i, plan) {
+  return { w: APT.w, d: APT.d, h: APT.h, entryX: aptLX(APT.entryAz), exitX: aptLX(APT.exitAz), seed: (roomSeed(i) ^ 0xA9A27) >>> 0, plan, officeSide: 0 };
+}
+function* aptBuilder(room) {
+  const A = aptState(), hd = room.d / 2, D = CONFIG.door, T = CONFIG.stream.wallT, KG = KIT.geo, KM = KIT.mat, dg = room.doorGroup;
+  if (!A.mod) { aptLoad(); for (let k = 0; !A.mod && !A.err && k < 600; k++) yield; }   // boot preloads them; a later visit waits a little
+  if (A.err) throw A.err;
+  if (!A.mod) throw new Error('apartment modules not loaded');
+  const [MAT, AP, FU] = A.mod;
+  const xr = /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on;
+  const Q = { quest: xr, tex: xr ? 512 : 1024, stoneTex: 512, base: '../world/', cqc: true };
+  const M = MAT.makeMaterials(Q);
+  yield;
+  const apt = AP.buildApartment(M, Q);
+  yield;
+  const furn = FU.furnish(M, Q);
+  yield;
+  const G = new THREE.Group(); G.name = 'apartment';
+  G.add(apt.group, furn.group);
+  G.rotation.y = -Math.PI / 2; G.position.set(APT.cz, 0, -APT.cx);
+  G.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  room.group.add(G);
+  room.aptG = G;
+  room.apt = { colliders: [...apt.colliders, ...furn.colliders], lamps: apt.lamps };
+  room.layout = { furniture: [], partitions: [], props: [], troffers: [], sprinklers: [], fixtures: [], decor: [], items: [],
+    qc: { pass: true, score: 100, attempt: 1, fails: [], notes: ['apartment'], visible: 1, hidden: 0, density: 0 } };
+  room.wear93 = { wet: 0, leak: 0, hw: room.w / 2, hd, s1: 0, s2: 0 };
+  // the pool's fittings: floor-one downlights, the great hall's first (CQC lights two with spots, the fill the next ones)
+  const lamps = apt.lamps.filter((l) => l[1] < 4.4).map((l) => ({ l, d: Math.hypot(l[0] - 8.8, l[2] - 3.6) })).sort((a, b) => a.d - b.d).slice(0, 8);
+  room.troffers = lamps.map(({ l }) => { const dm = new THREE.MeshBasicMaterial(); room.ownMat.push(dm); return { x: aptLX(l[2]), z: aptLZ(l[0]), y: l[1], diffMat: dm }; });
+  yield;
+  // the exit doorway's hardware (CQC's door in the west wall), as the yard
+  const put = (parent, obj, x, y, z, ry = 0) => { obj.position.set(x, y, z); obj.rotation.y = ry; parent.add(obj); return obj; };
+  const ex = room.exitX, zg = -hd - T / 2;
+  put(dg, mesh(KG.jamb, KM.door), ex - D.width / 2 - 0.03, (D.height + 0.04) / 2, zg);
+  put(dg, mesh(KG.jamb, KM.door), ex + D.width / 2 + 0.03, (D.height + 0.04) / 2, zg);
+  put(dg, mesh(KG.head, KM.door), ex, D.height + 0.03, zg);
+  put(dg, mesh(KG.threshold, KM.steel, false, true), ex, 0.006, zg);
+  put(dg, mesh(KG.closer, KM.door), ex - D.width / 2 + 0.24, D.height + 0.1, -hd - T - 0.035);
+  room.backer = put(dg, new THREE.Mesh(KG.backer, KM.dark), ex, D.height / 2, -hd - T - 0.004);
+  const sw = D.width - 0.02, cy = (D.height - 0.02) / 2 + 0.008;
+  const leaf = new THREE.Group();
+  leaf.add(mesh(KG.slab, KM.door));
+  for (const s of [-1, 1]) {
+    put(leaf, mesh(KG.kick, KM.steel, false, true), 0, 0.14 - cy, s * 0.024);
+    const rose = mesh(KG.rose, KM.steel); rose.rotation.x = Math.PI / 2; rose.position.set(sw / 2 - 0.07, 1.0 - cy, s * 0.0285); leaf.add(rose);
+    const neck = mesh(KG.neck, KM.steel); neck.rotation.x = Math.PI / 2; neck.position.set(sw / 2 - 0.07, 1.0 - cy, s * 0.042); leaf.add(neck);
+    { const pv = put(leaf, new THREE.Group(), sw / 2 - 0.07, 1.0 - cy, s * 0.055); put(pv, mesh(KG.lever, KM.steel), -0.05, 0, 0); (leaf.userData.levers || (leaf.userData.levers = [])).push(pv); }
+  }
+  room.doorVisual = put(dg, leaf, ex, cy, -hd - T + 0.03);
+  freezeStatic(dg, room.doorVisual);
+  G.updateMatrixWorld(true);
+  A.room = room;
+  try { renderer.compileAsync(G, camera, scene).catch(() => { /* compiled on first draw */ }); } catch (e) { /* older three */ }
+}
+// Colliders: the shell pass's walls go (the apartment has its own, with its doorways); each apartment collider becomes a
+// Rapier collider on the room body and, unless it is a floor or ceiling slab, a walk box (floor-two ones only hold up there).
+function aptActivate(room, box, walk) {
+  for (let i = room.colliderHandles.length - 1; i >= 1; i--) {
+    const h0 = room.colliderHandles[i], c = world.getCollider(h0);
+    if (c) world.removeCollider(c, false);
+    colliderInfo.delete(h0); room.colliderHandles.splice(i, 1);
+  }
+  const kindOf = (c) => { const n = (c.mat && c.mat.name) || ''; return c.mat === 'shell' ? 'plaster' : /stone|marble|onyx|traver|concrete/i.test(n) ? 'concrete' : /oak|wood|walnut/i.test(n) ? 'wood' : /glass/i.test(n) ? 'glass' : /bronze|steel|metal|nickel|brass/i.test(n) ? 'metal' : 'plaster'; };
+  const T = CONFIG.stream.wallT, hd = room.d / 2;
+  // the gap to the next room and the safe room: CQC's end walls (the apartment's own outer walls stop at its face)
+  const D = CONFIG.door, L0 = -room.w / 2 - 0.25, R0 = room.w / 2 + 0.25;
+  for (const [zc, dx] of [[-hd - T / 2, room.exitX], [hd + T / 2, room.entryX]]) {
+    const x0 = dx - D.width / 2, x1 = dx + D.width / 2;
+    box((x0 - L0) / 2, room.h / 2, T / 2, (L0 + x0) / 2, room.h / 2, zc); box((R0 - x1) / 2, room.h / 2, T / 2, (x1 + R0) / 2, room.h / 2, zc);
+    box(D.width / 2, (room.h - D.height) / 2, T / 2, dx, (room.h + D.height) / 2, zc);
+  }
+  for (const c of room.apt.colliders) {
+    let cx, cy, cz, hx, hy, hz, yaw = 0;
+    if (c.t === 'box') { cx = (c.min[0] + c.max[0]) / 2; cy = (c.min[1] + c.max[1]) / 2; cz = (c.min[2] + c.max[2]) / 2; hx = (c.max[0] - c.min[0]) / 2; hy = (c.max[1] - c.min[1]) / 2; hz = (c.max[2] - c.min[2]) / 2; }
+    else if (c.t === 'obox') { [cx, cy, cz] = c.c; [hx, hy, hz] = c.h; yaw = c.yaw || 0; }
+    else if (c.t === 'hull' || c.t === 'tri') {                    // stair ramp and the like: Rapier only (aptFloor walks them)
+      const pts = c.t === 'hull' ? c.p : c.v, out = new Float32Array(pts.length);
+      for (let k = 0; k < pts.length; k += 3) { out[k] = aptLX(pts[k + 2]); out[k + 1] = pts[k + 1]; out[k + 2] = aptLZ(pts[k]); }
+      const desc = c.t === 'hull' ? RAPIER.ColliderDesc.convexHull(out) : RAPIER.ColliderDesc.trimesh(out, c.i);
+      if (!desc) continue;
+      const col = world.createCollider(desc.setFriction(0.8).setCollisionGroups(COLL.static), room.body);
+      colliderInfo.set(col.handle, { room, kind: 'concrete' }); room.colliderHandles.push(col.handle);
+      continue;
+    } else continue;
+    if (hx < 0.004 || hy < 0.004 || hz < 0.004) continue;
+    const lx = aptLX(cz), lz = aptLZ(cx), ly = yaw - Math.PI / 2;   // the box turns with the apartment
+    box(hx, hy, hz, lx, cy, lz, 0.6, ly, kindOf(c));
+    const slab = 2 * hy < 0.5 && Math.max(hx, hz) > 0.6 && !c.furn; // floors, ceilings, the floor-two slab
+    if (slab) continue;
+    const y0 = cy - hy, y1 = cy + hy;
+    walk(lx, lz, hx, hz, y1, ly, y0 > 0.3 ? { bot: y0 - 0.05 } : undefined);
+  }
+  room.navCache = yardNav(room, []);                              // floor one (walk boxes held up on floor two are left out)
+}
+// Floor height at a room-local point: the helical stair (a smooth ramp through the tread middles), floor two (when you
+// come from up there), else floor one.
+function aptFloor(r, lx, lz, hint = 0) {
+  const S = APT.stair, ax = aptAX(lz), az = aptAZ(lx), dx = S.cx - ax, dz = S.cz - az, rr = Math.hypot(dx, dz);
+  if (rr < S.r1 + 0.05) {
+    let a = Math.atan2(dx, dz); if (a < 0) a += Math.PI * 2;      // polar(): x = cx - r sin a, z = cz - r cos a
+    if (a <= S.sweep) {
+      const rise = S.rise / S.risers, dA = S.sweep / (S.risers - 1), y = Math.min(S.rise, (a / dA + 0.5) * rise);
+      if (Math.abs(y - hint) < 0.9) return y;                     // on the flight (you climb onto it from its foot)
+    }
+  }
+  return hint > 2.3 ? APT.L2 : 0;
+}
+const aptFlat = (r, lx, lz, hint) => aptFloor(r, lx, lz, hint) < 0.01;
+// Once the apartment is up, you are put in it (only at the start of a visit; a death respawns you in the safe room).
+function aptTick() {
+  const A = APTS; if (!A || A.placed || !A.room || !A.room.active || yardModeNow() !== 'apt') return;
+  if (playerState.dead) return;
+  const room = A.room;
+  A.placed = true;
+  level.floor = room.origin.y; level.flat = true; applyHeight();
+  rig.updateMatrixWorld(true);
+  const yaw = rYaw(room) - Math.PI / 2;                           // room-local +x = the apartment's north (the park)
+  if (renderer.xr.isPresenting) rotateRigAroundHead(yaw - yawOf(camera)); else { look.yaw = yaw; look.pitch = 0; applyLook(); }
+  rig.updateMatrixWorld(true);
+  headWorld(_pr.h);
+  rig.position.x += rWX(room, aptLX(APT.start.az)) - _pr.h.x;
+  rig.position.z += rWZ(room, aptLZ(APT.start.ax)) - _pr.h.z;
+  rig.updateMatrixWorld(true);
+  _vel.set(0, 0, 0); playerState.hasPrev = false;
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { APT, aptState, aptFloor, aptActivate, aptTick });
 
 </script>
 </body>

@@ -124,7 +124,7 @@ const SCANS = {
 function scanKit(Q) {
   const mgr = new THREE.LoadingManager();
   const tl = new THREE.TextureLoader(mgr);
-  const dir = './textures/scans/' + (Q.quest ? 'quest/' : '');
+  const dir = (Q.base || './') + 'textures/scans/' + (Q.quest ? 'quest/' : '');
   const ready = new Promise((res) => { mgr.onLoad = res; mgr.onError = (u) => console.warn('scan failed', u); });
   const tex = (name, k, srgb) => {
     const t = tl.load(`${dir}${name}_${k}.webp`);
@@ -177,7 +177,7 @@ export function makeMaterials(Q) {
 
   // plaster walls and ceilings: warm white paint over the scanned plaster normal map
   const tl = new THREE.TextureLoader();
-  const pn = tl.load('./textures/plaster_nor.jpg');
+  const pn = tl.load((Q.base || './') + 'textures/plaster_nor.jpg');
   pn.wrapS = pn.wrapT = THREE.RepeatWrapping; pn.repeat.set(1 / 1.5, 1 / 1.5); pn.anisotropy = 8;
   M.plaster = new THREE.MeshStandardMaterial({ color: '#e9e4db', roughness: 0.92, normalMap: pn, normalScale: new THREE.Vector2(0.12, 0.12) });
   M.plasterWarm = new THREE.MeshStandardMaterial({ color: '#ddd3c6', roughness: 0.92, normalMap: pn, normalScale: new THREE.Vector2(0.12, 0.12) });

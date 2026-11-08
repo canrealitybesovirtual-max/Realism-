@@ -260,10 +260,12 @@ export function buildApartment(M, Q) {
   // west / east: the tower's thick walls with full-height slot windows (glass near the outside)
   const slot = (a, lo, hi) => ({ a, b: a + 0.6, lo, hi });
   wall('z', 0, XW, 1.6, ZS, L1, RF, [
+    ...(Q.cqc ? [{ a: 12.55, b: 13.55, lo: L1, hi: DH1 }] : []),
     { ...slot(2.55, 0.0, 3.6), win: 0.06 }, { ...slot(4.85, 0.0, 3.6), win: 0.06 }, { ...slot(15.6, 0.0, 3.6), win: 0.06 },
     { ...slot(2.55, L2 + 0.1, L2 + 3.3), win: 0.06 }, { ...slot(4.85, L2 + 0.1, L2 + 3.3), win: 0.06 }, { ...slot(15.6, L2 + 0.1, L2 + 3.3), win: 0.06 },
   ]);
   wall('z', XE, XM, 1.6, ZS, L1, RF, [
+    ...(Q.cqc ? [{ a: 7.95, b: 8.95, lo: L1, hi: 2.2 }] : []),
     { ...slot(2.55, 0.0, 3.6), win: XM - 0.06 }, { ...slot(4.85, 0.0, 3.6), win: XM - 0.06 },
     { ...slot(11.2, 0.95, 3.6), win: XM - 0.06 }, { ...slot(13.4, 0.95, 3.6), win: XM - 0.06 },
     { ...slot(2.55, L2 + 0.1, L2 + 3.3), win: XM - 0.06 }, { ...slot(4.85, L2 + 0.1, L2 + 3.3), win: XM - 0.06 },
@@ -313,8 +315,15 @@ export function buildApartment(M, Q) {
   leaf(15.12, 6.92, L1, 1.0, DH1, -Math.PI / 2 - 0.05);          // kitchen passage door
 
   // fire stair (closed core, both floors)
-  solid(XW, 6.92, 3.46, 14.33, L1, C2, M.plaster, 'e');
-  panel('z', 3.46, 12.55, 13.55, L1, DH1, M.woodDark, 1);           // the front door (hub.js: its panel beside it)
+  if (Q.cqc) {
+    // inside CQC: the front door's vestibule runs through the fire-stair core to the west wall, where CQC's own
+    // door leads on (the loop); the old fire door panel goes
+    solid(XW, 6.92, 3.46, 12.55, L1, C2, M.plaster, 'e'); solid(XW, 13.55, 3.46, 14.33, L1, C2, M.plaster, 'e');
+    solid(XW, 12.55, 3.46, 13.55, DH1, C2, M.plaster, '');
+    B.box(XW, L1 - 0.03, 12.55, 3.46, L1, 13.55, M.stone, false);
+    for (const [z0, z1] of [[12.53, 12.55], [13.55, 13.57]]) skirt(XW, z0, 3.46, z1, L1, z0 < 13 ? 'n' : 's');
+  } else solid(XW, 6.92, 3.46, 14.33, L1, C2, M.plaster, 'e');
+  if (!Q.cqc) panel('z', 3.46, 12.55, 13.55, L1, DH1, M.woodDark, 1);           // the front door (hub.js: its panel beside it)
   panel('z', 3.46, 12.6, 13.5, L2, L2 + DH2, M.fireDoor, 1);
   // hallway (floor one) between the fire stair and the west core
   floor(3.46, 6.72, 4.74, 14.48, L1, M.stone);
@@ -367,7 +376,11 @@ export function buildApartment(M, Q) {
   solid(9.88, 9.98, 13.34, 14.03, L1, C1, M.plaster, 'wes');
   panel('z', 9.88, 8.2, 9.2, L1, 2.6, M.bronzeLight, -1);
   panel('z', 9.88, 11.4, 12.4, L1, 2.6, M.bronzeLight, -1);
-  solid(15.12, 6.92, XE, 9.98, L1, C1, M.plaster, 'ws');
+  if (Q.cqc) {   // inside CQC: a passage from the pantry corridor east through to the armory (CQC's safe room)
+    solid(15.12, 6.92, XE, 7.95, L1, C1, M.plaster, 'ws'); solid(15.12, 8.95, XE, 9.98, L1, C1, M.plaster, 'ws');
+    solid(15.12, 7.95, XE, 8.95, 2.2, C1, M.plaster, '');
+    B.box(15.12, L1 - 0.03, 7.95, XM, L1, 8.95, M.oak, false);
+  } else solid(15.12, 6.92, XE, 9.98, L1, C1, M.plaster, 'ws');
   wall('z', 9.88, 9.98, 14.03, ZS, L1, C1, [{ a: 14.45, b: 15.85, lo: L1, hi: DH1 }]);
   floor(14.03, 6.72, 15.12, 9.98, L1, M.oak);
   floor(13.34, 9.98, XE, ZS, L1, M.oak);

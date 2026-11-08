@@ -5,7 +5,7 @@
 // The sky is drawn live with the same colours the bake used, so the skyline edges blend.
 import * as THREE from 'three';
 
-const BASE = './city/';
+let BASE = './city/';
 const FAR = 60000;                      // sky texels and the horizon
 const LOGMAX = Math.log(200000 / 5);
 
@@ -134,6 +134,7 @@ async function loadDist(url, n) {
 }
 
 export async function buildView(scene, renderer, Q) {
+  if (Q.base) BASE = Q.base + 'city/';
   const man = await (await fetch(BASE + 'manifest.json')).json();
   const suns = man.suns;                       // baked times of day, by hour
   let si = Math.max(0, suns.findIndex((s) => s.name === 'afternoon'));
