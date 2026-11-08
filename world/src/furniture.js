@@ -80,16 +80,126 @@ export function smooth(g) {
   return g;
 }
 
-// a cushion: rounded box crowned on its big faces (the filling), seams a little pinched
-export function cushion(w, h, d, r, crown, seg = 4) {
-  const g = rbox(w, h, d, r, seg);
-  const p = g.attributes.position;
-  for (let i = 0; i < p.count; i++) {
-    const x = p.getX(i) / (w / 2), y = p.getY(i), z = p.getZ(i) / (d / 2);
-    const f = Math.max(0, 1 - x * x) * Math.max(0, 1 - z * z);
-    p.setY(i, y + Math.sign(y) * crown * f * Math.min(1, Math.abs(y) / (h / 2)));
+// ---- soft upholstery kit ------------------------------------------------------------------------
+// SOFT.step: grid spacing over the flat parts of a soft piece (metres), SOFT.edge: steps over each
+// rounded edge (furnish sets the headset's coarser values)
+const SOFT = { step: 0.045, edge: 3, pipe: 0.04, ring: 5 };
+// coordinates along one axis of a rounded box: the rounded zones get tan-spaced steps (even angles
+// once projected onto the round), the flat middle an even grid
+function axisCoords(L, r, step, ne) {
+  const b = Math.max(0, L / 2 - r), out = [];
+  for (let i = ne; i >= 1; i--) out.push(-b - r * Math.tan(i / ne * Math.PI / 4));
+  const n = Math.max(1, Math.ceil(2 * b / step));
+  for (let i = 0; i <= n; i++) out.push(-b + 2 * b * i / n);
+  for (let i = 1; i <= ne; i++) out.push(b + r * Math.tan(i / ne * Math.PI / 4));
+  return out;
+}
+// a densely gridded rounded box (w x h x d, edge radius r, centred) whose every vertex can be moved
+// by deform(p, n): p the point on the rounded box, n its outward normal (both Vector3, p mutable).
+// skip: faces left out, e.g. ['y-'] for a cushion's underside.
+// Non-indexed, smooth normals after the deformation, metric UVs.
+const _sp = new THREE.Vector3(), _sn = new THREE.Vector3();
+export function softBox(w, h, d, r, deform = null, step = SOFT.step, ne = SOFT.edge, skip = null) {
+  r = Math.max(0.002, Math.min(r, w / 2 - 1e-4, h / 2 - 1e-4, d / 2 - 1e-4));
+  const dims = [w, h, d], b = dims.map((L) => L / 2 - r);
+  const C = dims.map((L) => axisCoords(L, r, step, ne));
+  const P = [];
+  const vert = (q) => {
+    const inner = [0, 1, 2].map((k) => Math.max(-b[k], Math.min(b[k], q[k])));
+    _sn.set(q[0] - inner[0], q[1] - inner[1], q[2] - inner[2]).normalize();
+    _sp.set(inner[0], inner[1], inner[2]).addScaledVector(_sn, r);
+    if (deform) deform(_sp, _sn);
+    return [_sp.x, _sp.y, _sp.z];
+  };
+  for (const k of [0, 1, 2]) for (const sg of [-1, 1]) {
+    if (skip && skip.includes('xyz'[k] + (sg > 0 ? '+' : '-'))) continue;     // a face nobody sees (resting on something)
+    const i = (k + 1) % 3, j = (k + 2) % 3, ci = C[i], cj = C[j];
+    const V = [];
+    for (let a = 0; a < ci.length; a++) { const row = []; for (let c = 0; c < cj.length; c++) { const q = [0, 0, 0]; q[k] = sg * dims[k] / 2; q[i] = ci[a]; q[j] = cj[c]; row.push(vert(q)); } V.push(row); }
+    // (i, j, k) is a right-handed cycle, so a -> a+1 then c -> c+1 winds toward +k
+    for (let a = 0; a < ci.length - 1; a++) for (let c = 0; c < cj.length - 1; c++) {
+      const A = V[a][c], B2 = V[a + 1][c], Cc = V[a + 1][c + 1], D2 = V[a][c + 1];
+      if (sg > 0) P.push(...A, ...B2, ...Cc, ...A, ...Cc, ...D2); else P.push(...A, ...Cc, ...B2, ...A, ...D2, ...Cc);
+    }
   }
-  return smooth(g);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+  smooth(g); metricUV(g);
+  return g;
+}
+// the seam round one face of a soft box (axis 0 x / 1 y / 2 z, side +-1): the line where the face
+// panel meets the boxing strip, half way round the rounded edge. A piped welt (cord radius pr) is a
+// tube along it, moved with the same deform as the box, so it rides the crowned and sagging cover.
+export function piping(w, h, d, r, axis, side, deform = null, pr = 0.0038, step = SOFT.pipe) {
+  r = Math.max(0.002, Math.min(r, w / 2 - 1e-4, h / 2 - 1e-4, d / 2 - 1e-4));
+  const dims = [w, h, d], b = dims.map((L) => L / 2 - r), i = (axis + 1) % 3, j = (axis + 2) % 3;
+  const c45 = Math.SQRT1_2, rc = r * c45, pts = [];
+  // a rounded rectangle in the (i, j) plane: straight runs and quarter arcs (radius rc round the inner corners)
+  const corners = [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+  for (let q = 0; q < 4; q++) {
+    const [si, sj] = corners[q], a0 = q * Math.PI / 2;
+    const arcN = SOFT.edge + 1;
+    for (let t = 0; t <= arcN; t++) {
+      const a = a0 + t / arcN * Math.PI / 2, di = Math.cos(a), dj = Math.sin(a);
+      const pos = [0, 0, 0], n = [0, 0, 0];
+      pos[i] = si * b[i] + di * rc; pos[j] = sj * b[j] + dj * rc; pos[axis] = side * (b[axis] + r * c45);
+      n[i] = di * c45; n[j] = dj * c45; n[axis] = side * c45;
+      // straight run to the next corner, sampled every step
+      _sp.set(...pos); _sn.set(...n);
+      if (deform) deform(_sp, _sn);
+      pts.push(_sp.clone().addScaledVector(_sn, pr * 0.55));
+      if (t === arcN) {
+        const [ni, nj] = corners[(q + 1) % 4], len = Math.abs(ni * b[i] - si * b[i]) + Math.abs(nj * b[j] - sj * b[j]);
+        const m = Math.max(1, Math.round(len / step));
+        for (let s2 = 1; s2 < m; s2++) {
+          const f = s2 / m, p2 = [0, 0, 0];
+          p2[i] = (si * b[i] + (ni * b[i] - si * b[i]) * f) + di * rc; p2[j] = (sj * b[j] + (nj * b[j] - sj * b[j]) * f) + dj * rc; p2[axis] = pos[axis];
+          _sp.set(...p2); _sn.set(...n);
+          if (deform) deform(_sp, _sn);
+          pts.push(_sp.clone().addScaledVector(_sn, pr * 0.55));
+        }
+      }
+    }
+  }
+  const curve = new THREE.CatmullRomCurve3(pts, true, 'centripetal');
+  const g = new THREE.TubeGeometry(curve, pts.length, pr, SOFT.ring, true).toNonIndexed();
+  return metricUV(g);
+}
+// cheap smooth noise for fill lumps and fabric (no allocation)
+const snoise = (x, y, z, s) => (Math.sin(x * 1.7 + s) * Math.sin(y * 2.3 + s * 1.3) + Math.sin(z * 1.9 + x * 0.7 + s * 0.7) * Math.sin(y * 1.1 - z * 0.6 + s * 2.1)) * 0.5;
+// how a filled cushion holds its shape: crowned faces (filling pushes the panels out most in the
+// middle), boxing strips bulging, a seat sag where people sit, small wrinkles along the seams and
+// round the sag, uneven fill. All in the cushion's own frame (y = thickness).
+export function cushionDeform(w, h, d, { crown = 0.012, under = 0.4, bulge = 0.006, sag = 0, sagZ = 0.1, crease = 0.0018, lump = 0.0022, seed = 1 } = {}) {
+  return (p, n) => {
+    const fx = Math.max(-1, Math.min(1, p.x / (w / 2))), fy = Math.max(-1, Math.min(1, p.y / (h / 2))), fz = Math.max(-1, Math.min(1, p.z / (d / 2)));
+    const px = Math.max(0, 1 - fx * fx), pz = Math.max(0, 1 - fz * fz), py = Math.max(0, 1 - fy * fy);
+    const dome = Math.pow(px, 0.7) * Math.pow(pz, 0.7);
+    let k = 0;
+    if (n.y > 0) {
+      k += crown * dome * n.y;
+      if (sag) { const e = Math.exp(-(fx * fx * 2.2 + (fz - sagZ) * (fz - sagZ) * 2.6)); k -= sag * e * n.y; }
+    } else k += crown * under * dome * -n.y;
+    k += bulge * py * (Math.abs(n.x) * Math.pow(pz, 0.6) + Math.abs(n.z) * Math.pow(px, 0.6));
+    // seam wrinkles: short folds running in from the seams, strongest at the corners where the cover gathers
+    const ex = 1 - Math.abs(fx), ez = 1 - Math.abs(fz);
+    const nearX = Math.exp(-ex * w / 2 / 0.045), nearZ = Math.exp(-ez * d / 2 / 0.045), up = n.y > 0 ? 1 : Math.max(0, fy) * 0.6;
+    const corner = 0.5 + 1.5 * nearX * nearZ;
+    k += crease * up * corner * (nearX * Math.sin(p.z * 45 + seed + 2 * snoise(p.x * 9, 0, p.z * 9, seed)) + nearZ * Math.sin(p.x * 45 + seed * 1.7 + 2 * snoise(p.z * 9, 0, p.x * 9, seed)));
+    // folds round the sag (fabric compressed where it is sat on)
+    if (sag && n.y > 0) { const rr = Math.hypot(fx * w / 2, (fz - sagZ) * d / 2); k += crease * 0.8 * Math.sin(Math.atan2(fz - sagZ, fx) * 9 + seed) * Math.exp(-((rr - 0.17) ** 2) / 0.004); }
+    k += lump * snoise(p.x * 11, p.y * 11, p.z * 11, seed) * (0.3 + 0.7 * dome);
+    p.addScaledVector(n, k);
+  };
+}
+// a cushion: soft box crowned on its big faces, the filling's lumps, seam wrinkles; with opts.pipe
+// a welt round both face seams. Same call as before (seg is ignored: the grid follows SOFT).
+export function cushion(w, h, d, r, crown, seg = 4, opts = {}) {
+  void seg;
+  const df = cushionDeform(w, h, d, { crown, bulge: Math.min(0.006, h * 0.05), crease: Math.min(0.0018, h * 0.02), lump: Math.min(0.0022, h * 0.025), ...opts });
+  const big = Math.max(w, d) > 0.4, g = softBox(w, h, d, r, df, Math.max(SOFT.step, Math.max(w, h, d) / 14), big ? SOFT.edge : Math.max(1, SOFT.edge - 1), opts.skip || null);
+  if (!opts.pipe) return g;
+  return merge3([g, piping(w, h, d, r, 1, 1, df), piping(w, h, d, r, 1, -1, df)]);
 }
 
 // lathe from a profile [[r, y], ...] (bottom to top), metric UVs (u round, v along)
@@ -114,42 +224,111 @@ export function at(g, x, y, z, ry = 0, rx = 0, rz = 0) {
 // each takes the builder, materials and a placement (x, z, ry: the front faces local +z
 // turned by ry about y)
 
-// straight bouclé sofa (apartment-19 / -20): low, deep, rounded; loose seat and back cushions,
-// throw pillows; plinth recessed so it floats
-function sofa(B, M, x, z, ry, L = 2.6, D = 1.0) {
-  const g = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  const lx = (u, v) => [u, v];
-  const put = (geo, u, y, v, mat, rr = 0, rx = 0) => { at(geo, u, y, v, rr, rx); g(geo, mat); };
-  const AW = 0.24, BK = 0.24;
-  put(rbox(L - 0.16, 0.07, D - 0.16, 0.01), 0, 0.035, 0, M.blackMatte);
-  put(rbox(L, 0.3, D, 0.05), 0, 0.22, 0, M.boucle);                          // frame
-  put(rbox(AW, 0.6, D, 0.06), -L / 2 + AW / 2, 0.37, 0, M.boucle);           // arms
-  put(rbox(AW, 0.6, D, 0.06), L / 2 - AW / 2, 0.37, 0, M.boucle);
-  put(rbox(L - 2 * AW + 0.02, 0.42, BK, 0.09), 0, 0.58, -D / 2 + BK / 2, M.boucle);   // back
-  const n = 3, sw = (L - 2 * AW) / n;
-  for (let i = 0; i < n; i++) {
-    const u = -L / 2 + AW + sw * (i + 0.5);
-    put(cushion(sw - 0.012, 0.15, D - BK - 0.03, 0.05, 0.012), u, 0.445, (BK + 0.03) / 2, M.boucle);
-    put(cushion(sw - 0.02, 0.44, 0.2, 0.07, 0.025), u, 0.73, -D / 2 + BK + 0.08, M.boucle, 0, -0.2);
+// ---- sofas -------------------------------------------------------------------------------------
+// An upholstered sofa as real ones are made: a recessed black plinth, a sprung base, a back frame and
+// (straight sofas) rolled arms, all upholstered; loose seat and back cushions with piped seams,
+// crowned, a little sat-in, with gaps between them; throw pillows. Local frame: x along the sofa, the
+// seat faces +z, back at -D/2, floor y 0. Returns [geometry, material key] pairs.
+function sofaParts(L, D, { arms = true, n = 3, seed = 1, pillows = [['velvet', -1], ['boucleTaupe', 1]] } = {}) {
+  const out = [], put = (g, m, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => { at(g, x, y, z, ry, rx, rz); out.push([g, m]); };
+  const AW = arms ? 0.22 : 0, BK = 0.2, PL = 0.07, BH = 0.25, SH = 0.17, BCK = 0.74;
+  const coarse = SOFT.step * 1.8;
+  // plinth (recessed 9 cm so the sofa floats), sprung base, back frame
+  put(softBox(L - 0.18, PL, D - 0.18, 0.012, null, 0.12, 1), 'blackMatte', 0, PL / 2, 0);
+  const baseDf = cushionDeform(L, BH, D, { crown: 0.004, bulge: 0.005, crease: 0, lump: 0.0012, seed });
+  put(softBox(L, BH, D, 0.035, baseDf, coarse, SOFT.edge, ['y-']), 'boucle', 0, PL + BH / 2, 0);
+  const bw = L - 2 * AW, bh = BCK - PL - BH, bdf = cushionDeform(bw, bh, BK, { crown: 0.006, bulge: 0.008, crease: 0.001, lump: 0.0015, seed: seed + 3 });
+  put(softBox(bw, bh, BK, arms ? 0.05 : 0.085, bdf, coarse, SOFT.edge, ['y-']), 'boucle', 0, PL + BH + bh / 2, -D / 2 + BK / 2);
+  if (arms) for (const sg of [-1, 1]) {
+    // rolled arm: crowned top, the inside face bowing in, a piped front panel
+    const ah = 0.64 - PL, adf = cushionDeform(AW, ah, D, { crown: 0.012, bulge: 0.009, crease: 0.0012, lump: 0.0015, seed: seed + 5 + sg });
+    put(softBox(AW, ah, D, 0.075, adf, coarse, SOFT.edge, ['y-']), 'boucle', sg * (L / 2 - AW / 2), PL + ah / 2, 0);
+    put(piping(AW, ah, D, 0.075, 2, 1, adf, 0.0042), 'boucle', sg * (L / 2 - AW / 2), PL + ah / 2, 0);
   }
-  put(cushion(0.5, 0.48, 0.14, 0.07, 0.06), -L / 2 + AW + 0.32, 0.72, -D / 2 + BK + 0.2, M.velvet, 0.35, -0.25);
-  put(cushion(0.46, 0.44, 0.13, 0.07, 0.055), L / 2 - AW - 0.32, 0.71, -D / 2 + BK + 0.2, M.boucleTaupe, -0.3, -0.25);
-  // collider: the whole sofa
-  const c = Math.cos(ry), s = Math.sin(ry);
+  // loose seat cushions, a 12 mm gap between them; each sat in a little differently
+  const gap = 0.012, sw = (bw - gap * (n - 1)) / n, sd = D - BK - 0.015;
+  for (let i = 0; i < n; i++) {
+    const u = -bw / 2 + sw / 2 + i * (sw + gap), sd2 = seed * 7 + i * 13;
+    const df = cushionDeform(sw, SH, sd, { crown: 0.018, under: 0.3, bulge: 0.007, sag: 0.008 + 0.006 * ((sd2 * 0.37) % 1), sagZ: 0.05, crease: 0.0018, lump: 0.0024, seed: sd2 });
+    const yc = PL + BH + SH / 2 + 0.004, zc = -D / 2 + BK + sd / 2 + 0.008;
+    put(softBox(sw, SH, sd, 0.05, df, SOFT.step, SOFT.edge, ['y-']), 'boucle', u, yc, zc);
+    for (const sd3 of [1, -1]) put(piping(sw, SH, sd, 0.05, 1, sd3, df), 'boucle', u, yc, zc);
+    // back cushion: built lying (y = thickness, z = height), stood up and leaning back 12 degrees,
+    // fuller toward the bottom (lumbar), resting on the seat cushion's back edge and the frame
+    const th = 0.2, tall = 0.5, bd = cushionDeform(sw, th, tall, { crown: 0.03, under: 0.5, bulge: 0.008, sag: 0, crease: 0.0016, lump: 0.0026, seed: sd2 + 5 });
+    const bdf2 = (p, nn) => { bd(p, nn); if (nn.y > 0) p.y += 0.012 * Math.max(0, p.z / (tall / 2)) * nn.y; };
+    const bgeo = merge3([softBox(sw, th, tall, 0.06, bdf2, SOFT.step * 1.15, SOFT.edge, ['y-']), piping(sw, th, tall, 0.06, 1, 1, bdf2)]);   // its back rests on the frame
+    bgeo.rotateX(Math.PI / 2);                        // lying z (height) -> up (its -z bottom end, the lumbar, ends low), +y face -> +z (the front)
+    bgeo.rotateX(-0.21);                              // leaning back
+    put(bgeo, 'boucle', u, PL + BH + SH + tall / 2 - 0.03, -D / 2 + BK + th / 2 - 0.035);
+  }
+  // throw pillows: corner-stuffed, tipped back against the back cushions, a karate-chop dent
+  for (const [mk, sg] of pillows) {
+    const pg = pillowGeo(0.5, 0.48, 0.16);
+    const pp = pg.attributes.position;
+    for (let k = 0; k < pp.count; k++) { const y = pp.getY(k), x = pp.getX(k); if (y > 0.1) pp.setY(k, y - 0.035 * Math.exp(-x * x / 0.01) * (y - 0.1) / 0.14); }
+    smooth(pg);
+    put(pg, mk, sg * (bw / 2 - 0.3), PL + BH + SH + 0.21, -D / 2 + BK + 0.2 + 0.13, -0.2, sg * -0.28, sg * 0.06);
+  }
+  return out;
+}
+// bend a sofa part laid along x round an arc: local z = 0 goes to radius rm, +z (the seat front)
+// toward the centre; x becomes arc length (handedness kept: both x and z flip)
+function bendArc(g, rm) {
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i), a = -x / rm, r = rm - z;
+    p.setXYZ(i, Math.sin(a) * r, y, Math.cos(a) * r);
+  }
+  return smooth(g);
+}
+// soft contact shadow on the floor under a piece (the darkening right where it meets the floor;
+// the lights' shadow maps are too coarse for it): a plane with a rounded-box falloff, multiplied in
+function contact(B, M, x, y, z, ry, w, d, k = 0.55) {
+  const g = new THREE.PlaneGeometry(w + 0.16, d + 0.16).toNonIndexed().rotateX(-Math.PI / 2);
+  B.add(at(g, x, y + 0.0015, z, ry), M.contact[Math.max(0, Math.min(3, Math.round(k * 4) - 1))]);
+}
+// straight bouclé sofa (apartment-19 / -20)
+function sofa(B, M, x, z, ry, L = 2.6, D = 1.0) {
+  for (const [g, mk] of sofaParts(L, D, { seed: Math.round(x * 13 + z * 7) })) B.add(at(g, x, 0, z, ry), M[mk]);
+  contact(B, M, x, 0, z, ry, L - 0.1, D - 0.1, 0.75);
   B.colliders.push({ t: 'obox', c: [x, 0.38, z], h: [L / 2, 0.38, D / 2], yaw: ry, mat: M.boucle });
-  void lx; void c; void s;
 }
 
-// square coffee table, bleached oak frame with a smoked glass top (apartment-19)
-function coffeeTable(B, M, x, z, ry, S = 1.0, H = 0.4) {
+// ---- solid wood --------------------------------------------------------------------------------
+// every piece of wood takes its own cut of the scan (uv shifted, sometimes end for end), so no two
+// boards show the same figure
+let WSEED = 1;
+function wcut(g, flip = null) {
+  WSEED = (WSEED * 16807) % 2147483647; const a = WSEED / 2147483647;
+  WSEED = (WSEED * 16807) % 2147483647; const b = WSEED / 2147483647;
+  const f = flip == null ? (a > 0.5 ? -1 : 1) : flip, uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, f * uv.getX(i) + a * 7.3, uv.getY(i) + b * 5.1);
+  return g;
+}
+// grain running up a vertical member (legs, posts): metric UVs turned a quarter
+const grainUp = (g) => wcut(metricUV(g, 1));
+// a solid top as it is made: boards about bw wide glued along the length (grain along x), each its
+// own cut of the scan, edges eased 1.5 mm (the eased edges of the glue lines read as fine joints);
+// L along x, centred, T thick
+function boardTop(L, T, D, bw = 0.15, r = 0.0015) {
+  const n = Math.max(1, Math.round(D / bw)), w = D / n, gs = [];
+  for (let i = 0; i < n; i++) gs.push(wcut(rbox(L, T, w, r, 1)).translate(0, 0, -D / 2 + w * (i + 0.5)));
+  return merge3(gs);
+}
+
+// square coffee table (apartment-19): solid natural oak frame, mitred rails and legs with the grain
+// running along each member, an oak slatted low shelf, a smoked glass top
+function coffeeTable(B, M, x, z, ry, S = 1.0, H = 0.4, solid = false) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
   const lw = 0.11, fh = 0.09;
-  for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(at(rbox(lw, H - fh, lw, 0.008), u * (S / 2 - lw / 2), (H - fh) / 2, v * (S / 2 - lw / 2)), M.woodLight);
-  for (const v of [-1, 1]) add(at(rbox(S, fh, lw, 0.008), 0, H - fh / 2, v * (S / 2 - lw / 2)), M.woodLight);
-  for (const u of [-1, 1]) add(at(rbox(lw, fh, S - 2 * lw + 0.004, 0.008), u * (S / 2 - lw / 2), H - fh / 2, 0), M.woodLight);
-  add(at(rbox(S - 2 * lw + 0.01, 0.02, S - 2 * lw + 0.01, 0.003), 0, 0.075, 0), M.woodLight);   // low shelf
-  add(at(rbox(S - 2 * lw + 0.02, 0.012, S - 2 * lw + 0.02, 0.003), 0, H - 0.02, 0), M.smoke);
-  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [S / 2, H / 2, S / 2], yaw: ry, mat: M.woodLight });
+  for (const [u, v] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(at(grainUp(rbox(lw, H - fh, lw, 0.006)), u * (S / 2 - lw / 2), (H - fh) / 2, v * (S / 2 - lw / 2)), M.oakNat);
+  for (const v of [-1, 1]) add(at(wcut(rbox(S, fh, lw, 0.006)), 0, H - fh / 2, v * (S / 2 - lw / 2)), M.oakNat);
+  for (const u of [-1, 1]) add(at(wcut(rbox(S - 2 * lw + 0.004, fh, lw, 0.006)).rotateY(Math.PI / 2), u * (S / 2 - lw / 2), H - fh / 2, 0), M.oakNat);
+  add(at(boardTop(S - 2 * lw + 0.01, 0.022, S - 2 * lw + 0.01, 0.13), 0, 0.075, 0), M.oakNat);   // low shelf
+  if (solid) add(at(boardTop(S + 0.02, 0.03, S + 0.02, 0.17, 0.002), 0, H + 0.015, 0), M.oakNat);   // a solid oak top instead of the glass
+  else add(at(rbox(S - 2 * lw + 0.02, 0.012, S - 2 * lw + 0.02, 0.003), 0, H - 0.02, 0), M.smoke);
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [S / 2, H / 2, S / 2], yaw: ry, mat: M.oakNat });
 }
 
 // a rug with its own material (patterned)
@@ -238,23 +417,25 @@ function pendant(B, M, x, z, yBottom, ceil, seed) {
   B.add(at(lathe([[0, ceil - 0.01], [0.05, ceil - 0.01], [0.05, ceil]], 16), x, 0, z), M.blackMatte);
 }
 
-// travertine dining table for eight on two oval pedestals (apartment-17)
+// dining table for eight (apartment-17): a 45 mm solid walnut top of glued boards, lacquered, its
+// edge eased and undercut (a knife edge seen from the side), on two oval travertine pedestals
 function diningTable(B, M, x, z, ry, L = 2.7, Wd = 1.05, H = 0.75) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  add(at(rbox(Wd, 0.06, L, 0.012), 0, H - 0.03, 0), M.creamStone);
+  add(at(boardTop(L, 0.03, Wd, 0.175, 0.002).rotateY(Math.PI / 2), 0, H - 0.015, 0), M.walnut);
+  add(at(boardTop(L - 0.06, 0.03, Wd - 0.06, 0.175, 0.004).rotateY(Math.PI / 2), 0, H - 0.045, 0), M.walnut);   // the undercut under the eased edge
   for (const v of [-L / 2 + 0.55, L / 2 - 0.55]) {
     const ped = lathe([[0, 0], [0.2, 0], [0.2, 0.01], [0.16, 0.12], [0.15, H - 0.07], [0.19, H - 0.06], [0, H - 0.06]], 32);
     ped.scale(1.15, 1, 0.8);
     add(at(ped, 0, 0, v), M.creamStone);
   }
-  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [Wd / 2, H / 2, L / 2], yaw: ry, mat: M.creamStone });
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [Wd / 2, H / 2, L / 2], yaw: ry, mat: M.walnut });
 }
 
 // bouclé dining chair (apartment-17): a wide plump seat in a low upholstered shell whose back
 // wraps round into arms that slope down to the front; slim black tapered legs, splayed
 const diningChair = movable('dining chair', 7, function (B, M, x, z, ry) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  add(at(cushion(0.5, 0.12, 0.48, 0.05, 0.018), 0, 0.47, 0.03), M.boucle);
+  add(at(cushion(0.5, 0.12, 0.48, 0.05, 0.018, 4, { skip: ['y-'] }), 0, 0.47, 0.03), M.boucle);
   add(at(rbox(0.54, 0.07, 0.5, 0.03), 0, 0.41, 0.02), M.boucle);
   // shell: a band round a superellipse, open at the front; top height falls from back to arms
   const seg = 44, a0 = 0.62, a1 = Math.PI * 2 - 0.62, rx = 0.29, rz = 0.27, th = 0.055, yb = 0.44;
@@ -421,7 +602,7 @@ function wallRug(B, M, x, z, w, h, yBottom, face) {
 // tub armchair (apartment-18): bouclé shell round a deep seat, short oak legs
 const armchair = movable('armchair', 16, function (B, M, x, z, ry) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
-  add(at(cushion(0.62, 0.14, 0.6, 0.06, 0.02), 0, 0.42, 0.03), M.boucle);
+  add(at(cushion(0.62, 0.14, 0.6, 0.06, 0.02, 4, { skip: ['y-'], pipe: true, sag: 0.01 }), 0, 0.42, 0.03), M.boucle);
   add(at(rbox(0.66, 0.16, 0.64, 0.05), 0, 0.3, 0), M.boucle);
   const a0 = Math.PI * 0.28, aL = Math.PI * 1.44;
   const shell = new THREE.CylinderGeometry(0.36, 0.34, 0.42, 40, 4, true, a0, aL).toNonIndexed();
@@ -543,6 +724,7 @@ function bed(B, M, x, z, ry, W = 2.05, Lb = 2.2, hbMat = null, HWx = 1.4) {
   // headboard wall panel: channels
   const HB = 1.35, HW = W + HWx, nch = Math.round(HW / 0.24);
   for (let i = 0; i < nch; i++) { const u = -HW / 2 + HW * (i + 0.5) / nch; add(at(rbox(HW / nch - 0.008, HB, 0.09, hbMat ? 0.006 : 0.035), u, 0.62 + HB / 2 - 0.1, -Lb / 2 - 0.06), hbMat || M.boucleTaupe); }
+  contact(B, M, x, 0, z, ry, W - 0.06, Lb - 0.06, 0.7);
   B.colliders.push({ t: 'obox', c: [x, 0.35, z], h: [W / 2, 0.35, Lb / 2], yaw: ry, mat: M.linen });
 }
 // counter stool (plan: three at the kitchen peninsula): upholstered round seat with a crowned
@@ -610,15 +792,16 @@ function nightstand(B, M, x, z, ry) {
   const add = (geo, mat) => B.add(at(geo, x, 0, z, ry), mat);
   const W = 0.55, D = 0.42, H = 0.56, pl = 0.06;
   add(at(rbox(W - 0.06, pl, D - 0.06, 0.004, 1), 0, pl / 2, -0.01), M.blackMatte);
-  add(at(rbox(W, H - pl, D - 0.02, 0.006, 2), 0, pl + (H - pl) / 2, -0.01), M.woodMid);
+  add(at(wcut(rbox(W, H - pl - 0.025, D - 0.02, 0.004, 2)), 0, pl + (H - pl - 0.025) / 2, -0.01), M.walnut);
+  add(at(boardTop(W + 0.006, 0.025, D - 0.014, 0.21, 0.0025), 0, H - 0.0125, -0.008), M.walnut);   // solid top, a hair proud
   const fh = (H - pl - 0.05 - 0.003) / 2;
   for (const k of [0, 1]) {
     const y = pl + 0.025 + fh / 2 + k * (fh + 0.003);
     add(at(rbox(W - 0.03, fh, 0.004, 0.0015, 1), 0, y, D / 2 - 0.022), M.blackMatte);          // reveal shadow
-    add(at(rbox(W - 0.036, fh - 0.006, 0.019, 0.003, 2), 0, y, D / 2 - 0.0095), M.woodMid);     // drawer front
+    add(at(wcut(rbox(W - 0.036, fh - 0.006, 0.019, 0.003, 2)), 0, y, D / 2 - 0.0095), M.walnut);     // drawer front
     add(at(barPull(0.12, 0.0055, 0.022, 0.018).rotateZ(Math.PI / 2), 0, y + fh * 0.18, D / 2), M.bronzeLight);
   }
-  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.woodMid });
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [W / 2, H / 2, D / 2], yaw: ry, mat: M.walnut });
 }
 
 // open shelving wall (apartment-09 bleached oak, apartment-13 dark oak): a frame of shelves and
@@ -655,25 +838,20 @@ function bowlGeo(sh, M, x, y, z, r) {
   sh.add(at(lathe([[0, 0], [r * 0.45, 0], [r * 0.8, r * 0.25], [r, r * 0.55], [r * 0.97, r * 0.56], [r * 0.77, r * 0.28], [r * 0.4, r * 0.06], [0, r * 0.06]], 32), x, y, z), M.ceramic);
 }
 
-// curved bouclé sofa (apartment-09 / -02): an arc of seat and back, rounded ends.
-// centred on (x, z), arc radius R (to the seat front), sweep sw, facing the arc centre (ry: the
-// direction the middle of the sofa faces)
+// curved bouclé sofa (apartment-09 / -02): the straight sofa's parts (no arms, rounded ends) bent
+// round an arc. Centred on (x, z), arc radius R (to the seat front), sweep sw, facing the arc centre
+// (ry: the direction the middle of the sofa faces)
 function curvedSofa(B, M, x, z, ry, R = 2.2, sw = 1.1, D = 0.95) {
-  const seg = 28;
-  // the arc's centre lies in front of the sofa (on the side it faces)
   const cx = x + Math.sin(ry) * R, cz = z + Math.cos(ry) * R, mid = ry + Math.PI;
-  const a0 = mid - sw / 2, a1 = mid + sw / 2;
-  const add = (g, m) => B.add(at(g, cx, 0, cz), m);
-  // seat block, back roll, plinth
-  add(rboxArc(R - 0.02, R + D - 0.22, 0.08, 0.44, a0, a1, 0.06, seg), M.boucle);
-  add(rboxArc(R + D - 0.3, R + D, 0.08, 0.76, a0 - 0.02, a1 + 0.02, 0.1, seg), M.boucle);
-  add(rboxArc(R + 0.05, R + D - 0.05, 0.0, 0.08, a0 + 0.02, a1 - 0.02, 0.01, seg), M.blackMatte);
-  // two lumbar pillows
-  for (const k of [-0.25, 0.25]) { const a = mid + k * sw; add(at(cushion(0.45, 0.4, 0.13, 0.07, 0.05), Math.sin(a) * (R + D - 0.38), 0.62, Math.cos(a) * (R + D - 0.38), a + Math.PI, -0.25), M.boucle); }
+  const a0 = mid - sw / 2, a1 = mid + sw / 2, rm = R + D / 2, L = rm * sw;
+  const parts = sofaParts(L, D, { arms: false, n: L > 2.4 ? 3 : 2, seed: Math.round(x * 5 + z * 3), pillows: [['boucleTaupe', -1], ['boucleTaupe', 1]] });
+  // the parts lie along x round the middle of the arc (which bends to angle 0, +z); turn it to mid
+  for (const [g, mk] of parts) { bendArc(g, rm); g.rotateY(mid); B.add(at(g, cx, 0, cz), M[mk]); }
   const n = 6;
   for (let i = 0; i < n; i++) {
-    const a = a0 + (a1 - a0) * (i + 0.5) / n;
-    B.colliders.push({ t: 'obox', c: [cx + Math.sin(a) * (R + D / 2), 0.38, cz + Math.cos(a) * (R + D / 2)], h: [(R + D / 2) * (a1 - a0) / n / 2, 0.38, D / 2], yaw: a, mat: M.boucle });
+    const a = a0 + (a1 - a0) * (i + 0.5) / n, ax = cx + Math.sin(a) * (R + D / 2), az = cz + Math.cos(a) * (R + D / 2);
+    B.colliders.push({ t: 'obox', c: [ax, 0.38, az], h: [(R + D / 2) * (a1 - a0) / n / 2, 0.38, D / 2], yaw: a, mat: M.boucle });
+    contact(B, M, ax, 0, az, a, (R + D / 2) * (a1 - a0) / n, D - 0.12, 0.6);
   }
 }
 // an annular sector with rounded edges: inner radius r0, outer r1, heights y0..y1, angles a0..a1
@@ -761,7 +939,14 @@ function kitchenRun(B, M, x, z, ry, L, { uppers = true, sink = null, outlets = t
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
   const D = 0.62, H = 0.89;
   add(at(rbox(L, 0.1, D - 0.08, 0.002, 1), 0, 0.05, -0.04), M.blackMatte);
-  add(at(rbox(L, H - 0.1, D - 0.04, 0.002, 1), 0, 0.1 + (H - 0.1) / 2, -0.02), M.woodDark);
+  // carcass: open above the sink base so the 220 mm bowl hangs under the counter's cut-out
+  const seg = (a, b, y0, y1, z0 = -D / 2, z1 = D / 2 - 0.04) => add(at(rbox(b - a, y1 - y0, z1 - z0, 0.002, 1), (a + b) / 2, (y0 + y1) / 2, (z0 + z1) / 2), M.woodDark);
+  if (sink == null) seg(-L / 2, L / 2, 0.1, H);
+  else {
+    const xa = sink - 0.33, xb = sink + 0.33, yb = H - 0.26;
+    seg(-L / 2, xa, 0.1, H); seg(xb, L / 2, 0.1, H); seg(xa, xb, 0.1, yb);
+    seg(xa, xb, yb, H, D / 2 - 0.058, D / 2 - 0.04); seg(xa, xb, yb, H, -D / 2, -D / 2 + 0.018);
+  }
   const n = Math.max(1, Math.round(L / 0.6)), w = L / n;
   for (let i = 0; i < n; i++) {
     add(at(rbox(w - 0.004, 0.42, 0.02, 0.002, 1), -L / 2 + w * (i + 0.5), 0.33, D / 2 - 0.01), M.woodDark);
@@ -811,16 +996,16 @@ function tallUnit(B, M, x, z, ry, W, H, ovens = false) {
 }
 // oval dark oak breakfast table and an upholstered banquette (apartment-14)
 function ovalTable(B, M, x, z, ry, L = 1.9, W = 1.05) {
-  const top = lathe([[0, 0.72], [0.5, 0.72], [0.5, 0.75], [0.49, 0.755], [0, 0.755]], 48); top.scale(L, 1, W);
-  B.add(at(top, x, 0, z, ry), M.woodDark);
-  for (const v of [-0.45, 0.45]) { const p = lathe([[0, 0], [0.22, 0], [0.12, 0.05], [0.09, 0.7], [0.15, 0.72], [0, 0.72]], 24); p.scale(1, 1, 0.7); B.add(at(p, x + Math.cos(ry) * v * L * 0.6, 0, z - Math.sin(ry) * v * L * 0.6), M.woodDark); }
-  B.colliders.push({ t: 'obox', c: [x, 0.38, z], h: [L / 2, 0.38, W / 2], yaw: ry, mat: M.woodDark });
+  const top = lathe([[0, 0.72], [0.47, 0.72], [0.5, 0.735], [0.5, 0.75], [0.494, 0.756], [0, 0.756]], 64); top.scale(L, 1, W);
+  B.add(at(wcut(metricUV(top)), x, 0, z, ry), M.walnut);              // planar UVs: the grain runs the length of the oval
+  for (const v of [-0.45, 0.45]) { const p = lathe([[0, 0], [0.22, 0], [0.12, 0.05], [0.09, 0.7], [0.15, 0.72], [0, 0.72]], 24); p.scale(1, 1, 0.7); B.add(at(grainUp(p), x + Math.cos(ry) * v * L * 0.6, 0, z - Math.sin(ry) * v * L * 0.6), M.walnut); }
+  B.colliders.push({ t: 'obox', c: [x, 0.38, z], h: [L / 2, 0.38, W / 2], yaw: ry, mat: M.walnut });
 }
 function banquette(B, M, x, z, ry, L) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
   add(at(rbox(L - 0.06, 0.1, 0.5, 0.004), 0, 0.05, 0.0), M.blackMatte);
   add(at(rbox(L, 0.3, 0.56, 0.03), 0, 0.25, 0), M.boucleTaupe);
-  add(at(cushion(L - 0.02, 0.1, 0.52, 0.04, 0.012), 0, 0.44, 0.01), M.boucleTaupe);
+  add(at(cushion(L - 0.02, 0.1, 0.52, 0.04, 0.012, 4, { skip: ['y-'], pipe: true, sag: 0.006 }), 0, 0.44, 0.01), M.boucleTaupe);
   const n = Math.round(L / 0.16);                       // vertical channels on the back
   for (let i = 0; i < n; i++) add(at(cushion(L / n - 0.008, 0.52, 0.11, 0.045, 0.02), -L / 2 + L / n * (i + 0.5), 0.78, -0.24, 0, -0.1), M.boucleTaupe);
   B.colliders.push({ t: 'obox', c: [x, 0.3, z], h: [L / 2, 0.3, 0.28], yaw: ry, mat: M.boucleTaupe });
@@ -874,7 +1059,14 @@ function tub(B, M, x, y, z, ry, L = 1.7, W = 0.78) {
 function vanity(B, M, x, y, z, ry, L, top, body, basins = [0], wall = 0) {
   const add = (g, m) => B.add(at(g, x, y, z, ry), m);
   const D = 0.56, H = 0.86;
-  add(at(rbox(L, H - 0.12, D - 0.02, 0.004, 1), 0, 0.12 + (H - 0.12) / 2, -0.01), body);
+  // carcass: solid below the basins, a frame round them (front, back and end panels, 18 mm) so the
+  // bowls hang open in the cabinet under the stone, as undermount basins are fitted
+  const y0 = H - 0.2, pt = 0.018;
+  add(at(rbox(L, y0 - 0.12, D - 0.02, 0.004, 1), 0, 0.12 + (y0 - 0.12) / 2, -0.01), body);
+  add(at(rbox(L, H - y0, pt, 0.002, 1), 0, (y0 + H) / 2, D / 2 - 0.02 - pt / 2), body);
+  add(at(rbox(L, H - y0, pt, 0.002, 1), 0, (y0 + H) / 2, -D / 2 + pt / 2), body);
+  for (const sg of [-1, 1]) add(at(rbox(pt, H - y0, D - 0.02, 0.002, 1), sg * (L / 2 - pt / 2), (y0 + H) / 2, -0.01), body);
+  add(at(rbox(L - 2 * pt, 0.006, D - 0.02 - 2 * pt, 0.001, 1), 0, y0 + 0.003, -0.01), M.blackMatte);   // the shadowed shelf under the bowls
   add(at(rbox(L - 0.04, 0.12, D - 0.06, 0.002, 1), 0, 0.06, -0.03), M.blackMatte);          // recessed toe kick
   // drawer fronts: columns per basin, two drawers each, 3 mm gaps, slim bronze pulls
   const cols = Math.max(1, basins.length), cw = L / cols;
@@ -883,14 +1075,16 @@ function vanity(B, M, x, y, z, ry, L, top, body, basins = [0], wall = 0) {
     add(at(rbox(cw - 0.003, y1 - y0 - 0.003, 0.02, 0.002, 1), u, (y0 + y1) / 2, D / 2 - 0.01), body);
     add(at(barPull(0.13, 0.006, 0.026, 0.02).rotateZ(Math.PI / 2), u, y1 - 0.05, D / 2), M.bronzeLight);
   }
+  let vm = null;                                   // the basins' mirrors share one plane (one mirror material)
   // stone top cut over undermount basins (150 mm deep), deck faucets behind them
   add(at(counter(L + 0.02, D + 0.02, 0.04, basins.map((u) => [u, 0.04, 0.44, 0.32, 0.06])), 0, H + 0.04, 0.01), top);
   for (const u of basins) {
     add(at(basin(0.46, 0.34, 0.15, 0.07), u, H, 0.05), M.enamel);
     add(at(drain(0.019), u, H - 0.15, 0.05), M.bronzeLight);
+    add(at(new THREE.CircleGeometry(0.0085, 20).scale(1.9, 1, 1).rotateY(Math.PI), u, H - 0.028, 0.05 + 0.17 - 0.0012), M.slot);   // overflow slot in the front wall
     add(at(bathFaucet(), u, H + 0.04, -D / 2 + 0.07), M.bronzeLight);
     if (!wall) {
-      add(at(rbox(0.6, 0.9, 0.012, 0.004, 1), u, H + 0.62, -D / 2 - 0.01), M.mirror);
+      add(at(rbox(0.6, 0.9, 0.012, 0.004, 1), u, H + 0.62, -D / 2 - 0.01), vm || (vm = mirrorMat(M, x, y, z, ry, 0, H + 0.62, -D / 2 - 0.004)));
       add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u - 0.31, H + 0.62, -D / 2), M.ledStrip);
       add(at(rbox(0.012, 0.9, 0.02, 0.004, 1), u + 0.31, H + 0.62, -D / 2), M.ledStrip);
     }
@@ -900,7 +1094,7 @@ function vanity(B, M, x, y, z, ry, L, top, body, basins = [0], wall = 0) {
     // and between the basins
     const mh = wall - H - 0.12, my = H + 0.12 + mh / 2;
     add(at(rbox(L, 0.1, 0.02, 0.002, 1), 0, H + 0.09, -D / 2 + 0.01), top);
-    add(at(rbox(L, mh, 0.012, 0.002, 1), 0, my, -D / 2 - 0.004), M.mirror);
+    add(at(rbox(L, mh, 0.012, 0.002, 1), 0, my, -D / 2 - 0.004), mirrorMat(M, x, y, z, ry, 0, my, -D / 2 + 0.002));
     const posts = [-L / 2 + 0.06, L / 2 - 0.06, ...basins.slice(1).map((b, i) => (basins[i] + b) / 2)];
     for (const u of posts) add(at(rbox(0.11, mh, 0.03, 0.006, 1), u, my, -D / 2 + 0.012), M.amberGlass);
   }
@@ -935,6 +1129,17 @@ function toilet(B, M, x, y, z, ry) {
   add(at(flushPlate(), 0, 1.02, 0.0), M.flushPlate);
 }
 
+// Mirrors: each one gets its own material (so it is its own mesh after the merge) carrying its plane in
+// userData.mirror { p, n } (apartment coordinates: a point on the glass, the normal into the room);
+// mirrors.js reflects the nearest one you face for real and gives the others a cube capture.
+// (x, y, z, ry): the piece's placement as at(); (u, v, w): the glass face point in the piece's frame.
+let MIRRORS = [];
+function mirrorMat(M, x, y, z, ry, u, v, w) {
+  const m = M.mirror.clone(), c = Math.cos(ry), sn = Math.sin(ry);
+  m.userData = { mirror: { p: [x + u * c + w * sn, y + v + ARTY, z - u * sn + w * c], n: [sn, 0, c] } };
+  MIRRORS.push(m);
+  return m;
+}
 // a free-form mirror on a wall (apartment-06): an organic outline, thin bronze edge
 function blobMirror(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
@@ -942,7 +1147,7 @@ function blobMirror(B, M, x, y, z, w, h, face) {
   const sh = new THREE.Shape();
   for (let i = 0; i <= 48; i++) { const a = i / 48 * Math.PI * 2, k = 1 + 0.09 * Math.sin(a * 3 + 0.7) + 0.05 * Math.cos(a * 5); const px = Math.cos(a) * w / 2 * k, py = Math.sin(a) * h / 2 * k; if (i) sh.lineTo(px, py); else sh.moveTo(px, py); }
   const g = new THREE.ExtrudeGeometry(sh, { depth: 0.012, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.006, bevelSegments: 2, curveSegments: 48 }).toNonIndexed();
-  metricUV(g); B.add(at(g, x, y, z, ry), M.mirror);
+  metricUV(g); B.add(at(g, x, y, z, ry), mirrorMat(M, x, y, z, ry, 0, 0, 0.016));
 }
 // dark wood console (apartment-06)
 function console_(B, M, x, z, ry, L = 1.6, stone = null) {
@@ -954,10 +1159,10 @@ function console_(B, M, x, z, ry, L = 1.6, stone = null) {
     B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [L / 2, 0.42, 0.18], yaw: ry, mat: stone });
     return;
   }
-  add(at(rbox(L, 0.05, 0.4, 0.008), 0, 0.8, 0), M.woodDark);
-  for (const u of [-1, 1]) add(at(rbox(0.05, 0.78, 0.4, 0.006), u * (L / 2 - 0.025), 0.39, 0), M.woodDark);
-  add(at(rbox(L - 0.1, 0.02, 0.36, 0.004), 0, 0.2, 0), M.woodDark);
-  B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [L / 2, 0.42, 0.2], yaw: ry, mat: M.woodDark });
+  add(at(boardTop(L, 0.05, 0.4, 0.2, 0.003), 0, 0.8, 0), M.walnut);
+  for (const u of [-1, 1]) add(at(grainUp(rbox(0.05, 0.78, 0.4, 0.003)), u * (L / 2 - 0.025), 0.39, 0), M.walnut);
+  add(at(boardTop(L - 0.1, 0.02, 0.36, 0.18, 0.002), 0, 0.2, 0), M.walnut);
+  B.colliders.push({ t: 'obox', c: [x, 0.42, z], h: [L / 2, 0.42, 0.2], yaw: ry, mat: M.walnut });
 }
 // a stoneware vase of dried flowers (apartment-11): ribbed ochre vase, wiry stems with round
 // seed heads, and a small brass sphere beside it (frame: on a top at y)
@@ -1011,8 +1216,8 @@ function cooktop(B, M, x, y, z, ry) {
 // the front faces +z
 function desk(B, M, x, z, ry, L = 1.5, D = 0.7, H = 0.75) {
   const add = (g, m) => B.add(at(g, x, 0, z, ry), m);
-  add(at(rbox(L, 0.035, D, 0.008, 2), 0, H - 0.0175, 0), M.woodDark);
-  add(at(rbox(L - 0.16, 0.09, D - 0.12, 0.004, 1), 0, H - 0.08, -0.02), M.woodDark);             // apron with a shallow drawer
+  add(at(boardTop(L, 0.035, D, 0.175, 0.002), 0, H - 0.0175, 0), M.walnut);                       // solid walnut top
+  add(at(wcut(rbox(L - 0.16, 0.09, D - 0.12, 0.004, 1)), 0, H - 0.08, -0.02), M.walnut);             // apron with a shallow drawer
   add(at(rbox(0.5, 0.003, 0.002, 0.001, 1), 0, H - 0.08, D / 2 - 0.079), M.slot);              // drawer reveal
   for (const u of [-1, 1]) for (const v of [-1, 1]) add(at(lathe([[0, 0], [0.014, 0], [0.011, H - 0.035], [0, H - 0.035]], 16), u * (L / 2 - 0.06), 0, v * (D / 2 - 0.06)), M.bronzeLight);
   // monitor: arm stand, thin body, bezel; screen plane is hub.js's
@@ -1022,7 +1227,7 @@ function desk(B, M, x, z, ry, L = 1.5, D = 0.7, H = 0.75) {
   add(at(rbox(0.38, 0.012, 0.13, 0.004, 1), 0, H + 0.006, 0.08), M.blackMetal);                 // keyboard
   add(at(rbox(0.36, 0.004, 0.11, 0.002, 1), 0, H + 0.013, 0.08), M.slot);
   add(at(cushion(0.065, 0.025, 0.11, 0.012, 0.006), 0.3, H + 0.012, 0.09), M.blackMetal);       // mouse
-  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [L / 2, H / 2, D / 2], yaw: ry, mat: M.woodDark });
+  B.colliders.push({ t: 'obox', c: [x, H / 2, z], h: [L / 2, H / 2, D / 2], yaw: ry, mat: M.walnut });
 }
 
 // ---- dressing hall (apartment-07) -----------------------------------------------------------
@@ -1070,7 +1275,7 @@ const barrelStool = movable('barrel stool', 9, function (B, M, x, z, ry) {
 function framedMirror(B, M, x, y, z, w, h, face) {
   const ry = { '+x': Math.PI / 2, '-x': -Math.PI / 2, '+z': 0, '-z': Math.PI }[face];
   ART.push({ k: 'framedMirror', x, y: y + ARTY, z, w, h, face });
-  B.add(at(new THREE.PlaneGeometry(w, h).toNonIndexed().translate(0, 0, 0.012), x, y, z, ry), M.mirror);
+  B.add(at(new THREE.PlaneGeometry(w, h).toNonIndexed().translate(0, 0, 0.012), x, y, z, ry), mirrorMat(M, x, y, z, ry, 0, 0, 0.012));
   const f = 0.055, d = 0.045;
   for (const [u, v, ww, hh] of [[0, h / 2 + f / 2, w + 2 * f, f], [0, -h / 2 - f / 2, w + 2 * f, f], [-w / 2 - f / 2, 0, f, h], [w / 2 + f / 2, 0, f, h]]) {
     B.add(at(rbox(ww, hh, d, 0.008, 2).translate(u, v, d / 2), x, y, z, ry), M.frameGrey);
@@ -1324,7 +1529,20 @@ function furnitureMaterials(M, Q) {
   M.sinkDark = new THREE.MeshStandardMaterial({ color: '#2a2a29', metalness: 0.6, roughness: 0.35 });
   M.sinkSteel = new THREE.MeshStandardMaterial({ color: '#c7c5c0', metalness: 1, roughness: 0.32, side: THREE.DoubleSide });
   M.enamel = phys({ color: '#f6f4ef', roughness: 0.12 }, { clearcoat: 1, clearcoatRoughness: 0.04 });
-  M.mirror = new THREE.MeshStandardMaterial({ color: '#f2f2f2', metalness: 1, roughness: 0.015 });
+  M.mirror = new THREE.MeshStandardMaterial({ color: '#e4e6e3', metalness: 1, roughness: 0.012 });
+  M.mirror.name = 'mirror';
+  // contact shadows: four strengths of a soft rounded-rectangle falloff (multiplied over the floor)
+  { const S = 64, cv = document.createElement('canvas'); cv.width = cv.height = S; const cx = cv.getContext('2d'), im = cx.createImageData(S, S);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const u = Math.abs((x + 0.5) / S * 2 - 1), v = Math.abs((y + 0.5) / S * 2 - 1);
+      const e = Math.min(1 - u, 1 - v) * (S / 2) / 5.5;                    // ~ the 8 cm margin, in texels
+      const a = Math.pow(Math.max(0, Math.min(1, e)), 1.6) * 255, i = (y * S + x) * 4;
+      im.data[i] = im.data[i + 1] = im.data[i + 2] = a; im.data[i + 3] = 255;
+    }
+    cx.putImageData(im, 0, 0);
+    const t = new THREE.CanvasTexture(cv);
+    M.contact = [0.25, 0.4, 0.55, 0.7].map((o) => { const m = new THREE.MeshBasicMaterial({ color: '#000000', alphaMap: t, transparent: true, opacity: o, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }); m.userData = { shadow: 'none', order: 2 }; return m; });
+  }
   M.ledStrip = new THREE.MeshStandardMaterial({ color: '#ffffff', emissive: '#ffe6c4', emissiveIntensity: 1.6, roughness: 0.5 });
   M.ledStrip.userData = { shadow: 'none' };
   M.flushPlate = new THREE.MeshStandardMaterial({ color: '#d8d8d6', metalness: 0.4, roughness: 0.25 });
@@ -1342,6 +1560,9 @@ function furnitureMaterials(M, Q) {
 // ---- the rooms ---------------------------------------------------------------------------------
 export function furnish(M, Q) {
   furnitureMaterials(M, Q);
+  MIRRORS = [];
+  const qq = !!(Q && Q.quest);
+  SOFT.step = qq ? 0.08 : 0.045; SOFT.edge = qq ? 2 : 3; SOFT.pipe = qq ? 0.06 : 0.04; SOFT.ring = qq ? 4 : 5; WSEED = 12345;
   M_BED = M.settingBed;
   const B = new Builder();
   MOV = Q && Q.cqc ? [] : null;
@@ -1355,12 +1576,12 @@ export function furnish(M, Q) {
   sofa(B, M, 7.0, 3.55, Math.PI / 2);
   sofa(B, M, 10.6, 3.55, -Math.PI / 2);
   coffeeTable(B, M, 8.55, 2.95, 0.05);
-  coffeeTable(B, M, 9.05, 4.15, -0.04);
+  coffeeTable(B, M, 9.05, 4.15, -0.04, 1.0, 0.4, true);
   for (const [px, s] of [[7.7, 1], [8.8, 2], [9.9, 3]]) pendant(B, M, px, 3.55, 2.35 + 0.15 * (s % 2), ceil, s);
   for (const sx of [6.3, 11.3]) { sideTable(B, M, sx, 1.0); tableLamp(B, M, sx, 0.55, 1.0); }
   bowl(B, M, 8.45, 0.4, 2.85, 0.17);
   books(B, M, 8.75, 0.4, 3.15, 0.3);
-  books(B, M, 9.15, 0.4, 4.05, -0.4, 2);
+  books(B, M, 9.15, 0.43, 4.05, -0.4, 2);
 
   // piano corner, west end (apartment-18 / -19): the grand on its own rug, a lamp beside it
   rug(B, M, 2.75, 3.9, 3.0, 2.6, 0);
@@ -1376,6 +1597,12 @@ export function furnish(M, Q) {
   // dining end, east of the columns (apartment-17): travertine table for eight, bouclé shell
   // chairs, two leaf chandeliers, an abstract canvas between the slot windows, two plinths
   diningTable(B, M, 14.75, 3.6, 0);
+  // on the walnut: a wide stoneware bowl and two brass candlesticks with ivory candles
+  bowl(B, M, 14.75, 0.75, 3.6, 0.21);
+  for (const zz of [2.95, 4.25]) {
+    B.add(at(lathe([[0, 0], [0.045, 0], [0.045, 0.006], [0.014, 0.02], [0.009, 0.2], [0.022, 0.212], [0.016, 0.224], [0, 0.224]], 24), 14.75, 0.75, zz), M.brass);
+    B.add(at(lathe([[0.0105, 0.214], [0.0105, 0.42], [0.006, 0.426], [0, 0.427]], 16), 14.75, 0.75, zz), M.ivory);
+  }
   for (const zz of [2.75, 3.6, 4.45]) { diningChair(B, M, 14.0, zz, Math.PI / 2); diningChair(B, M, 15.5, zz, -Math.PI / 2); }
   diningChair(B, M, 14.75, 2.05, 0); diningChair(B, M, 14.75, 5.15, Math.PI);
   chandelier(B, M, 14.75, 3.0, 2.0, ceil);
@@ -1480,6 +1707,10 @@ export function furnish(M, Q) {
   // units on the west wall
   kitchenRun(B, M, 16.39, 13.0, -Math.PI / 2, 4.6, { sink: -0.4 });
   cooktop(B, M, 16.39, 0.92, 14.4, -Math.PI / 2);
+  // on the counter: an end-grain-edged walnut board leaning on the splash, a stoneware crock of tools
+  B.add(at(boardTop(0.5, 0.028, 0.34, 0.085, 0.003).rotateX(-1.32), 16.62, 0.92 + 0.17, 13.45, Math.PI / 2), M.walnut);
+  B.add(at(lathe([[0, 0], [0.06, 0], [0.065, 0.02], [0.062, 0.16], [0.056, 0.165], [0.052, 0.12], [0, 0.12]], 28), 16.4, 0.92, 13.9), M.vaseBlack);
+  for (const [dx, dz, tl] of [[0.01, 0.005, 0.3], [-0.015, 0.012, 0.27], [0.004, -0.016, 0.32]]) B.add(at(lathe([[0.007, 0], [0.007, tl]], 8), 16.4 + dx, 0.92 + 0.08, 13.9 + dz, 0, dz * 6, -dx * 6), M.woodMid);
   tallUnit(B, M, 16.39, 10.35, -Math.PI / 2, 0.66, 2.35, true);
   tallUnit(B, M, 13.65, 11.4, Math.PI / 2, 2.4, 2.35);
   kitchenRun(B, M, 13.65, 13.35, Math.PI / 2, 1.5, { uppers: false });
@@ -1549,5 +1780,6 @@ export function furnish(M, Q) {
     return { kind: m.kind, mass: m.mass, group: g, meshes: ms, box: bb, x: m.x, y: m.y, z: m.z, ry: m.ry };
   });
   MOV = null;
-  return { group, meshes, movables, colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  for (const m of meshes) if (m.material.userData && m.material.userData.mirror) m.userData.mirror = m.material.userData.mirror;
+  return { group, meshes, movables, mirrors: meshes.filter((m) => m.userData.mirror), colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }

@@ -17,6 +17,9 @@ SCANS = {
     'oak_washed': ('ph', 'washed_grey_oak_veneer', '4k'),
     'oak_silver': ('ph', 'silver_oak_veneer_01', '4k'),
     'oak_white': ('ph', 'white_oak_veneer', '4k'),
+    # furniture tops: warm American walnut and natural white oak (table tops, desk, nightstands, consoles)
+    'walnut': ('ph', 'natural_walnut_veneer', '2k'),
+    'oak_natural': ('ph', 'oak_veneer_01', '2k'),
     # stones
     'travertine_vein': ('acg', 'Travertine007', '2K'),     # vein-cut silver travertine (guest bath)
     'travertine_cream': ('acg', 'Travertine009', '2K'),    # cream travertine (plinths, tables)

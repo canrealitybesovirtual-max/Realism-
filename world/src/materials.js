@@ -117,7 +117,7 @@ const SCANS = {
   floor_herringbone: [1.97990, 2.37588], floor_versailles: [1.5, 1.5], floor_planks: [2.4, 2.4],
   stone_travertine: [4.8, 4.8], stone_onyx: [4.8, 4.8], stone_marble: [4.8, 4.8], stone_greymarble: [4.8, 4.8],
   stone_cream: [4.8, 4.8], fabric_boucle: [0.3, 0.3], fabric_rug: [1.7, 1.7], fabric_linen: [1.0, 1.0],
-  wood_bleached: [1.0, 1.0], wood_dark: [1.0, 1.0], wood_mid: [1.0, 1.0],
+  wood_bleached: [1.0, 1.0], wood_dark: [1.0, 1.0], wood_mid: [1.0, 1.0], wood_walnut: [1.0, 1.0], wood_oak: [1.83, 1.83],
 };
 // one loader for all of them; M.ready resolves when every scan has arrived (the reflection
 // probes are baked after it)
@@ -171,6 +171,10 @@ export function makeMaterials(Q) {
   M.woodLight = scan('wood_bleached', { coat: { clearcoat: 0.25, clearcoatRoughness: 0.3, quest: 0.85 } });
   M.woodDark = scan('wood_dark', { coat: { clearcoat: 0.3, clearcoatRoughness: 0.25, quest: 0.8 } });
   M.woodMid = scan('wood_mid', { coat: { clearcoat: 0.3, clearcoatRoughness: 0.25, quest: 0.8 } });
+  // table tops: warm American walnut and natural white oak scans (Poly Haven, CC0), grain along u;
+  // walnut under a satin-gloss lacquer, oak oiled to a soft sheen (furniture.js lays them as glued boards)
+  M.walnut = scan('wood_walnut', { coat: { clearcoat: 0.75, clearcoatRoughness: 0.09, quest: 0.42 }, nScale: 0.8 });
+  M.oakNat = scan('wood_oak', { coat: { clearcoat: 0.4, clearcoatRoughness: 0.2, quest: 0.6 }, nScale: 0.9 });
   const SS = Q.stoneTex;
   M.pavers = finish(SS, genStone(SS, 17, { base: lin('#b9b6ae'), vein: lin('#9d9a93'), veinW: 0.01, veinK: 0.2, mottle: 0.7, tile: 2.4, slab: [0.6, 0.6], rough: 0.8 }), 2.5, [2.4, 2.4]);
   M.treadStone = M.stone.clone(); M.treadStone.side = THREE.DoubleSide;
