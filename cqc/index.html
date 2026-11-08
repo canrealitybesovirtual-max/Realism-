@@ -51085,6 +51085,26 @@ function aptSunBuild(G, meshes) {
   S.tris = n / 3;
   if (!S.sized) { S.rt.setSize(S.size, S.size); S.sized = true; }
   S.dirty = true;
+  aptSunSimplify(S, P, S.proxy);
+}
+// The proxy only casts a shadow, so it is simplified in the background (meshoptimizer, welded positions, ~2 cm
+// error): every redraw of the sun's map (sun aimed, furniture moving) then draws a fraction of the triangles.
+async function aptSunSimplify(S, P, was) {
+  if (/[?&]aptsunlod=off\b/.test(QS)) return;
+  try {
+    const { MeshoptSimplifier: MS } = await import('./vendor/meshopt/meshopt_simplifier.js');
+    await MS.ready;
+    const g0 = new THREE.BufferGeometry(); g0.setAttribute('position', new THREE.BufferAttribute(P, 3));
+    const g = mergeVertices(g0, 1e-4), pos = g.attributes.position.array, idx = Uint32Array.from(g.index.array);
+    const [out] = MS.simplify(idx, pos, 3, Math.floor(idx.length * 0.15 / 3) * 3, 0.02, ['LockBorder']);
+    if (S.proxy !== was || !out || out.length >= idx.length) return;
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setIndex(new THREE.BufferAttribute(out, 1));
+    geo.boundingSphere = was.geometry.boundingSphere;
+    was.geometry.dispose(); was.geometry = geo;
+    S.tris = out.length / 3; S.dirty = true;
+    console.log('apartment sun proxy', idx.length / 3, '->', out.length / 3);
+    g0.dispose();
+  } catch (e) { console.warn('apartment sun proxy not simplified', e); }
 }
 function aptSunMovers(room) {                                      // movable furniture: proxies sharing the props' geometry
   const S = APTSS; if (!S) return;
