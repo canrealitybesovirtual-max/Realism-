@@ -717,6 +717,7 @@
     background: #050909; border: 2px solid #3a4b46; border-radius: 34px; padding: 18px 18px 14px; color: #c4f5e2;
     font: 600 15px "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif; box-shadow: 0 0 0 6px #111, 0 18px 50px rgba(0,0,0,.6); display: none; }
   body.modOpen #modWatch { display: block; }
+  #modWatch button:focus, #modWatch input:focus, #modWatch select:focus { outline: 3px solid #7fdc5a; outline-offset: 2px; }   /* the pad highlight (padMenu) */
   #modWatch h3 { margin: 0 0 2px; font: 700 15px ui-monospace, Menlo, Consolas, monospace; color: #ffc46b; letter-spacing: .08em; }
   #modWatch .mw-sub { color: #5d8a7c; font-size: 13px; margin-bottom: 12px; }
   #modWatch .mw-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -1181,7 +1182,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109h · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109i · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -10967,7 +10968,7 @@ function padStick(x, y, dead) {                     // radial dead zone, rescale
 function padEmu() {                                 // Edge on Xbox: cursor on menus, raw pad in play
   if (!('gamepadInputEmulation' in navigator)) return;
   try { gameStarted; } catch (e) { return; }         // still loading (gameStarted is declared further down)
-  const want = PAD.on && gameStarted && !renderer.xr.isPresenting && !document.body.classList.contains('modOpen') ? 'gamepad' : 'mouse';
+  const want = PAD.on && gameStarted && !renderer.xr.isPresenting ? 'gamepad' : 'mouse';   // the watch menu is driven by the pad too (padMenu)
   let cur = ''; try { cur = navigator.gamepadInputEmulation; } catch (e) { /* unknown */ }
   if (want !== PAD.emu || cur !== want) { PAD.emu = want; try { navigator.gamepadInputEmulation = want; } catch (e) { /* read-only here */ } }   // re-set while the browser still reports the other mode
 }
@@ -10985,9 +10986,7 @@ function padPoll(dt) {
   if (!gp) for (let i = 0; i < all.length; i++) if (all[i] && all[i].connected) { gp = all[i]; break; }
   const menu = document.body.classList.contains('modOpen') || !gameStarted;
   if (!gp || menu) {
-    if (gp && menu && gameStarted) { const mb = gp.buttons[9], bb = gp.buttons[1];   // Menu / B close the watch menu
-      if ((mb && mb.pressed && !PAD.prev[9]) || (bb && bb.pressed && !PAD.prev[1])) modPanelToggle(false);
-      PAD.prev[9] = !!(mb && mb.pressed); PAD.prev[1] = !!(bb && bb.pressed); }
+    if (gp && menu && gameStarted) padMenu(gp);
     if (PAD.active && !gp) { padRelease(); PAD.active = false; } else if (menu) { PAD.lx = PAD.ly = 0; }
     return;
   }
@@ -10998,7 +10997,7 @@ function padPoll(dt) {
   if (B[8] && B[8].pressed && B[9] && B[9].pressed) { if (!PAD.swapT) PAD.swapT = now; else if (now - PAD.swapT > 1 && PAD.swapT > 0) { PAD.swap = !PAD.swap; PAD.swapT = -1; try { localStorage.setItem('cqc.padswap.v1', PAD.swap ? '1' : '0'); } catch (e) { /* this visit */ } toast(PAD.swap ? 'Sticks swapped' : 'Sticks normal: left moves, right looks', 2600); } } else PAD.swapT = 0;
   const sw = PAD.swap ? 2 : 0;
   const [lx, ly] = padStick(A[sw] || 0, A[sw + 1] || 0, PAD.dead), [rx, ry] = padStick(A[2 - sw] || 0, A[3 - sw] || 0, PAD.dead);
-  if (any || lx || ly || rx || ry) { if (!PAD.active) { PAD.active = true; ui.hint.classList.add('hidden'); let em = ''; try { em = navigator.gamepadInputEmulation || ''; } catch (e) { /* none */ } toast(`Controller on (${gp.mapping || 'raw'}${em ? ', ' + em : ''}). Left stick moves, right looks. View + Menu 1 s swaps them`, 4000); } PAD.lastSeen = now; }
+  if (any || lx || ly || rx || ry) { if (!PAD.active) { PAD.active = true; ui.hint.classList.add('hidden'); ui.hud.classList.add('hidden'); let em = ''; try { em = navigator.gamepadInputEmulation || ''; } catch (e) { /* none */ } toast(`Controller on (${gp.mapping || 'raw'}${em ? ', ' + em : ''}). Left stick moves, right looks. View + Menu 1 s swaps them`, 4000); } PAD.lastSeen = now; }
   if (!PAD.active) return;
   // left stick: move; LS click: run until the stick rests 0.4 s
   PAD.lx = lx; PAD.ly = ly;
@@ -11031,6 +11030,40 @@ function padPoll(dt) {
   PAD.prev[10] = !!(B[10] && B[10].pressed);
 }
 window.addEventListener('gamepaddisconnected', () => { padRelease(); PAD.active = false; });
+// Watch / M menu on the pad: D-pad or left stick moves a highlight over its buttons (nearest in that direction), A presses,
+// B or Menu closes. Inputs and selects get focus (A on a code box asks for the code).
+function padMenu(gp) {
+  const B = gp.buttons, A = gp.axes, now = performance.now() / 1000;
+  const btn = (i) => !!(B[i] && B[i].pressed), edge = (i) => btn(i) && !PAD.prev[i];
+  const box = document.getElementById('modWatch');
+  const items = box ? Array.from(box.querySelectorAll('button, input, select, a[href]')).filter((el) => !el.disabled && el.offsetParent) : [];
+  let cur = items.indexOf(document.activeElement);
+  if (cur < 0 && items.length) { items[0].focus({ preventScroll: false }); cur = 0; }
+  let dx = 0, dy = 0;
+  if (edge(12)) dy = -1; else if (edge(13)) dy = 1; else if (edge(14)) dx = -1; else if (edge(15)) dx = 1;
+  const sx = A[0] || 0, sy = A[1] || 0, mag = Math.hypot(sx, sy);
+  if (mag > 0.6 && now > (PAD.menuT || 0)) { if (Math.abs(sx) > Math.abs(sy)) dx = Math.sign(sx); else dy = Math.sign(sy); PAD.menuT = now + 0.28; }
+  if (mag < 0.3) PAD.menuT = 0;
+  if ((dx || dy) && cur >= 0) {
+    const r0 = items[cur].getBoundingClientRect(), cx = r0.left + r0.width / 2, cy = r0.top + r0.height / 2;
+    let best = -1, bd = 1e9;
+    items.forEach((el, i) => {
+      if (i === cur) return;
+      const r = el.getBoundingClientRect(), ex = r.left + r.width / 2 - cx, ey = r.top + r.height / 2 - cy;
+      const along = dx ? ex * dx : ey * dy, across = dx ? Math.abs(ey) : Math.abs(ex);
+      if (along <= 2) return;
+      const d = along + across * 2.5; if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) { items[best].focus(); items[best].scrollIntoView({ block: 'nearest' }); }
+  }
+  if (edge(0) && document.activeElement && box && box.contains(document.activeElement)) {
+    const el = document.activeElement;
+    if (el.tagName === 'INPUT') { const v = prompt(el.getAttribute('aria-label') || 'Enter', el.value || ''); if (v !== null) { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } }
+    else el.click();
+  }
+  if (edge(1) || edge(9)) modPanelToggle(false);
+  for (const i of [0, 1, 9, 12, 13, 14, 15]) PAD.prev[i] = btn(i);
+}
 /* ============================================================================
  *  MULTIPLAYER (two players, peer to peer; ?net=off)
  *  WebRTC data channels through PeerJS (vendor/peerjs, MIT; loaded only when you host or join). The broker
