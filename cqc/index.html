@@ -11148,6 +11148,7 @@ async function netHost() {
   NET.peer = new window.Peer('cqc-loop-' + NET.code, NET_ICE);
   NET.peer.on('open', () => netSay(`Multiplayer code: ${NET.code}. Your brother picks Join and types it.`, 8));
   NET.peer.on('connection', (c) => netAttach(c));
+  NET.peer.on('call', (c) => netVoiceAnswer(c));   // the other player's voice
   NET.peer.on('error', (e) => { if (e && e.type === 'unavailable-id') { netLeave(true); netHost(); return; } netSay('Multiplayer: ' + (e && e.type || 'error')); netLeave(true); });
 }
 async function netJoin(code) {
@@ -11175,6 +11176,7 @@ function netAttach(c) {
 }
 function netStart() {
   NET.retry = 0;
+  setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
   if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
   if (NET.mode === 'vs' && NET.role === 'host') { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
@@ -11191,6 +11193,7 @@ function netLeave(quiet = false) {
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
   for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } }
   NET.pup.clear(); NET.tgt = null; NET.remOk = false; NET.warp = null; VS.on = false; VS.lock = false;
+  netVoiceStop();
   if (!quiet && was !== 'off') netSay('Multiplayer: off');
   else { try { yardUiSync(); } catch (e) { /* no menu */ } }
 }
@@ -11232,6 +11235,51 @@ function netCoopWant(want) {
   }
   for (let sl = Math.min(c, NET.remSlot) + 1; sl < Math.max(c, NET.remSlot); sl++) if (sl > safeSlot && !want.has(sl) && Math.abs(sl - c) <= 4) want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');   // the rooms between you
 }
+// Voice: the two microphones over the same peer link (PeerJS media call, WebRTC with echo cancellation and noise
+// suppression). His voice comes from his body (a panner at his head, through the game's audio); with no microphone
+// (or one refused) you still hear him. ?voice=off.
+NET.voice = !/[?&]voice=off\b/.test(QS);
+async function netVoiceMic() {
+  if (NET.mic) return NET.mic;
+  try { NET.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); netSay('Voice chat on', 2); }
+  catch (e) { NET.mic = null; }
+  if (!NET.mic) { try { const d = audio.ctx.createMediaStreamDestination(); NET.mic = d.stream; NET.micSilent = true; netSay('Voice: no microphone here, you can still hear him', 3); } catch (e) { /* no audio yet */ } }
+  return NET.mic;
+}
+function netVoicePlay(stream) {
+  let el = NET.vel;
+  if (!el) { el = NET.vel = document.createElement('audio'); el.autoplay = true; el.playsInline = true; el.style.display = 'none'; document.body.appendChild(el); }
+  el.srcObject = stream;
+  // Through the game's audio from his head (Chrome only plays a remote stream in WebAudio while an element holds it: the element stays muted)
+  try {
+    if (audio.ctx && SPAT.voice !== false) {
+      if (NET.vsrc) try { NET.vsrc.disconnect(); } catch (e) { /* gone */ }
+      NET.vsrc = audio.ctx.createMediaStreamSource(stream);
+      if (!NET.vpan) { NET.vpan = audio.ctx.createPanner(); NET.vpan.panningModel = 'HRTF'; NET.vpan.distanceModel = 'inverse'; NET.vpan.refDistance = 1.5; NET.vpan.rolloffFactor = 0.6; NET.vgain = audio.ctx.createGain(); NET.vgain.gain.value = 1.6; NET.vpan.connect(NET.vgain); NET.vgain.connect(audio.out); }
+      NET.vsrc.connect(NET.vpan); el.muted = true;
+    }
+  } catch (e) { el.muted = false; }
+  el.play().catch(() => {});
+}
+function netVoiceTick() {                                          // his voice follows his head
+  if (!NET.vpan || !NET.av || !NET.av.root) return;
+  try { enemyEye(NET.av, NET._p); const p = NET.vpan; if (p.positionX) { p.positionX.value = NET._p.x; p.positionY.value = NET._p.y; p.positionZ.value = NET._p.z; } else p.setPosition(NET._p.x, NET._p.y, NET._p.z); } catch (e) { /* no head yet */ }
+}
+async function netVoiceStart() {
+  if (!NET.voice || NET.role !== 'join' || !NET.peer || NET.call) return;
+  const st = await netVoiceMic(); if (!st || !NET.peer) return;
+  try { const c = NET.peer.call('cqc-loop-' + NET.code, st); if (!c) return; NET.call = c; c.on('stream', netVoicePlay); c.on('close', () => { if (NET.call === c) NET.call = null; }); } catch (e) { /* no voice */ }
+}
+async function netVoiceAnswer(c) {
+  if (!NET.voice) { try { c.close(); } catch (e) { /* closed */ } return; }
+  const st = await netVoiceMic();
+  try { c.answer(st || undefined); NET.call = c; c.on('stream', netVoicePlay); c.on('close', () => { if (NET.call === c) NET.call = null; }); } catch (e) { /* no voice */ }
+}
+function netVoiceStop() {
+  try { NET.call && NET.call.close(); } catch (e) { /* closed */ } NET.call = null;
+  if (NET.mic) { try { NET.mic.getTracks().forEach((t) => t.stop()); } catch (e) { /* stopped */ } NET.mic = null; }
+  if (NET.vsrc) { try { NET.vsrc.disconnect(); } catch (e) { /* gone */ } NET.vsrc = null; }
+}
 function netSendRel(m) { if (NET.rel && NET.rel.open) try { NET.rel.send(m); } catch (e) { /* dropped */ } }
 const netLive = () => NET.st === 'on';
 // --- out: your pose, room-local, 30 Hz ---------------------------------------------------------
@@ -11246,8 +11294,29 @@ function netTx(dt) {
     NET.fast.send({ t: 's', n: ++NET.seq, c: performance.now(), s: r.slot, x: +rLX(r, h.x).toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +rLZ(r, h.z).toFixed(3),
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: stream.frontier,
-      r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0 });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
+      r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
+      ...netHandsTx(r, f, g) });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
   } catch (e) { /* dropped */ }
+}
+// VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
+// really do (a computer player sends none: his copy keeps the aimed pose from the head).
+const _nhq = new THREE.Quaternion(), _nhY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+function netHandsTx(r, f, g) {
+  if (!renderer.xr.isPresenting || !vrHands.length) return {};
+  const o = {}, rd = (v) => +v.toFixed(3);
+  for (const h of vrHands) {
+    if (!h.target || !h.ctrl || !h.ctrl.userData.tracked && !h.ctrl.userData.handedness) continue;
+    const side = h.ctrl.userData.handedness === 'left' ? 'hL' : 'hR';
+    o[side] = [rd(rLX(r, h.target.x)), rd(h.target.y - r.origin.y), rd(rLZ(r, h.target.z))];
+  }
+  if (g && g.prop && g.prop.root) {
+    g.prop.root.getWorldQuaternion(_nhq);
+    if (f < 0) _nhq.premultiply(_nhY);
+    o.gq = [rd(_nhq.x), rd(_nhq.y), rd(_nhq.z), rd(_nhq.w)];
+    const gh = gunOf(vrHands[0]) === g ? vrHands[0] : vrHands[1];
+    o.gh = gh && gh.ctrl && gh.ctrl.userData.handedness === 'left' ? 'L' : 'R';
+  }
+  return o;
 }
 // Your shot (fireGun): the other side plays it from your body.
 function netShot(g, o, d) {
@@ -11499,7 +11568,7 @@ function netSample(rt) {
   if (!b || a === b || b.s !== a.s) return a;
   const k = clamp((rt - a.c) / Math.max(1, b.c - a.c));
   const ang = (x, y) => x + Math.atan2(Math.sin(y - x), Math.cos(y - x)) * k;
-  return { s: a.s, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a };
+  return { s: a.s, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a, hL: b.hL, hR: b.hR, gq: b.gq, gh: b.gh };
 }
 function netTick(dt, now) {
   if (NET.st === 'off') return;
@@ -11511,6 +11580,7 @@ function netTick(dt, now) {
   if (quiet > 4000 && !NET.waitSaid) { NET.waitSaid = true; netSay('Multiplayer: waiting for the other player (loading?)', 3); } else if (quiet < 1000) NET.waitSaid = false;
   if (NET.off == null) return;
   if (NET.mode === 'coop' && NET.role === 'host') netEnTx(dt);
+  netVoiceTick();
   netVsTick();
   if (NET.warp != null) { const wr = stream.rooms.get(NET.warp); if (wr && wr.active && wr.kind === 'safe') { netPlaceIn(wr, false); NET.warp = null; } }
   const s = netSample(performance.now() - NET.off - NET.delay); if (!s) { NET.remOk = false; return; }
@@ -11543,6 +11613,14 @@ function netTick(dt, now) {
   const cp = Math.cos(s.p);
   e.watch.set(s.x - Math.sin(s.yw) * cp * 4, s.y + Math.sin(s.p) * 4, s.z - Math.cos(s.yw) * cp * 4);
   e.aimT = s.g ? (s.a ? 1 : 0.55) : 0;                           // aimed up, else a low ready
+  if (s.hR || s.hL) {                                              // VR player: his real hands and gun
+    const H = e.netH || (e.netH = { R: new THREE.Vector3(), L: new THREE.Vector3(), q: new THREE.Quaternion(), hasR: false, hasL: false, hasQ: false, gh: 'R' });
+    const fr = rF(r);
+    H.hasR = !!s.hR; if (s.hR) H.R.set(rWX(r, s.hR[0]), r.origin.y + s.hR[1], rWZ(r, s.hR[2]));
+    H.hasL = !!s.hL; if (s.hL) H.L.set(rWX(r, s.hL[0]), r.origin.y + s.hL[1], rWZ(r, s.hL[2]));
+    H.hasQ = !!s.gq; if (s.gq) { H.q.set(s.gq[0], s.gq[1], s.gq[2], s.gq[3]).normalize(); if (fr < 0) H.q.premultiply(_nhY); }
+    H.gh = s.gh || 'R';
+  } else e.netH = null;
   e.reloadT = s.r ? 0.5 : 0;                                      // the reload pose (support hand at the magwell, gun canted)
   if (e.gun && e.gun.root) e.gun.root.visible = !!s.g;
 }
@@ -27024,6 +27102,8 @@ function enemyPose(e, dt, now) {
   _ev.q.multiply(_ev.q2.setFromAxisAngle(_ev.x.set(1, 0, 0), e.recoil * 0.12));
   e.gunQ.copy(_ev.q);
   e.gunP.copy(_egp).addScaledVector(_ev.z.set(0, 0, 1).applyQuaternion(e.gunQ), e.recoil * 0.025);
+  const NH = e.net && e.netH;                                     // multiplayer: the VR player's own gun hand and gun turn
+  if (NH && NH.hasQ) { const hp = NH.gh === 'L' ? (NH.hasL ? NH.L : null) : (NH.hasR ? NH.R : null); if (hp) { e.gunP.copy(hp); e.gunQ.copy(NH.q); } }
   // into enemy-root space
   e.root.getWorldQuaternion(_ev.q3);
   e.gun.root.quaternion.copy(_ev.q3).invert().multiply(e.gunQ);
@@ -27039,7 +27119,11 @@ function enemyPose(e, dt, now) {
     _ev.t.applyQuaternion(e.gunQ).add(e.gunP);
     if (s < 0 && e.reloadT > 0) _ev.t.copy(e.gunP).add(_ev.a.set(0, -0.12, 0.05).applyQuaternion(e.gunQ));   // reaching for the magazine
     enemyProtract(e, side, s, _ev.t);                             // step 66: the shoulder comes forward to reach
-    if (s < 0 && e.reloadT <= 0) enemyReachOnGun(e, _ev.t, W.support.z);   // still short: hold the handguard nearer the magwell
+    if (s < 0 && e.reloadT <= 0 && !NH) enemyReachOnGun(e, _ev.t, W.support.z);   // still short: hold the handguard nearer the magwell
+    if (NH) {                                                     // multiplayer: the free hand goes where his real hand is (on the gun if it is there)
+      const free = !NH.hasQ ? (s > 0 ? NH.R : NH.L) : s > 0 ? (NH.gh === 'L' ? NH.R : null) : (NH.gh === 'L' ? null : NH.L), has = s > 0 ? NH.hasR : NH.hasL;   // empty-handed: both hands free
+      if (free && has && (!NH.hasQ || free.distanceTo(_ev.t) > 0.1)) _ev.t.copy(free);
+    }
     // hand orientation: fingers from the wrist toward the palm / handguard
     _ev.d.copy(s > 0 ? _ev.a.set(0, -0.035, -0.07) : _ev.a.set(0.02, 0.03, -0.06)).normalize();
     _hq.setFromUnitVectors(_ev.b.set(0, -1, 0), _ev.d);

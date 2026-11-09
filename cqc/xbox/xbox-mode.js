@@ -89,7 +89,7 @@
   var XboxQualityManager = {
     PROFILES: PROFILES,
     name: function () {
-      var q = qp('xboxprofile'), s = lsGet(KEY_PROFILE), n = PROFILES[q] ? q : PROFILES[s] ? s : 'balanced';
+      var q = qp('xboxprofile'), s = lsGet(KEY_PROFILE), n = PROFILES[q] ? q : PROFILES[s] ? s : 'performance';   // default: the lightest (the console's frame time goes to the people and shots)
       return n;
     },
     profile: function () { return PROFILES[this.name()]; },
