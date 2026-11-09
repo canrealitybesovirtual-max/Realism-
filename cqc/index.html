@@ -966,6 +966,8 @@
   @media (max-height: 560px) and (min-width: 861px) { #title .front h1 { font-size: clamp(48px, 18vh, 120px); } }
 </style>
 
+<!-- Xbox mode: detection, profiles, render scale controller, diagnostics. Defines window.CQCXbox only; inert unless Xbox mode is active. -->
+<script src="./xbox/xbox-mode.js"></script>
 <!-- Three.js r170 and Rapier 0.14.0 (WASM inlined), loaded as ES modules from ./vendor (served with the game). -->
 <script>
   /* Step 46.1: some phone browsers and in-app views ship a console without every method (iOS reported
@@ -1042,6 +1044,7 @@
         <button type="button" id="playVR" class="big vr" disabled><b>Play in VR</b><span id="playVRSub">Quest, controllers or hands</span></button>
         <button type="button" id="playPC" class="big" disabled><b>Play on computer</b><span id="playPCSub">Mouse and keyboard</span></button>
         <button type="button" id="playXbox" class="big"><b>Play on Xbox</b><span>Controller, light graphics for the console</span></button>
+        <div class="space" id="xbRow" role="group" aria-label="Xbox mode"><span id="xbState">Xbox mode</span><button type="button" id="xbModeBtn">Auto</button><button type="button" id="xbProfBtn">Balanced</button></div>
         <button type="button" id="playMobile" class="big" disabled><b>Play on mobile</b><span>Touch controls, full graphics</span></button>
       </div>
       <div class="space" role="group" aria-label="Play space in VR">
@@ -1124,11 +1127,22 @@
   // Xbox: Play on Xbox is the computer game with the console profile (pad, Lite, light start, textures at 512 px). The profile is
   // set at load, so on a browser that does not say "Xbox" the first press saves it and reloads; press it again after.
   const btnXb = document.getElementById('playXbox');
-  const isXbox = (/Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })());
+  const XB = window.CQCXbox, isXbox = !!(XB && XB.active);   // one check (cqc/xbox/xbox-mode.js)
   let xbPending = false;
   if (isXbox && btnXb) { btnXb.classList.add('xbox'); }
+  // Xbox mode switch (Auto = detection / On = manual / Off = never) and its profile; both apply on reload (load-time settings)
+  { const st = document.getElementById('xbState'), mb = document.getElementById('xbModeBtn'), pb = document.getElementById('xbProfBtn');
+    if (XB && st && mb && pb) {
+      const S = XB.state, NAMES = { performance: 'Performance', balanced: 'Balanced', quality: 'Quality' };
+      st.textContent = 'Xbox mode: ' + (S.active ? 'ON' : 'off') + ' (' + S.source + ')';
+      mb.textContent = S.choice === 'on' ? 'Set: On' : S.choice === 'off' ? 'Set: Off' : 'Set: Auto';
+      pb.textContent = 'Profile: ' + NAMES[XB.XboxQualityManager.name()];
+      pb.hidden = !S.active;
+      mb.addEventListener('click', () => { XB.setMode(S.choice === 'auto' ? 'on' : S.choice === 'on' ? 'off' : 'auto'); location.reload(); });
+      pb.addEventListener('click', () => { XB.nextProfile(); location.reload(); });
+    } }
   if (btnXb) btnXb.addEventListener('click', () => {
-    if (!isXbox) { try { localStorage.setItem('cqc.device.v1', 'xbox'); } catch (e) { /* this visit */ } location.reload(); return; }
+    if (!isXbox) { if (XB) XB.setMode('on'); location.reload(); return; }   // manual Xbox mode, applied at load
     toStep2('xbox');
   });
   // Step 2: after the device, how you play: Single player / Co-op / Versus (+ hosting or joining, the code), then Start.
@@ -2207,9 +2221,7 @@ const OPT = (() => { try { const o = JSON.parse(localStorage.getItem(OPT_KEY) ||
 const LITE = (() => {
   const m = /[?&]lite=(on|off)\b/.exec(location.search), o = OPT.lite, ua = navigator.userAgent;
   const headset = /OculusBrowser|Quest|Pico|Wolvic/i.test(ua);
-  const xboxSeen = /Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator);
-  if (xboxSeen) try { localStorage.setItem('cqc.device.v1', 'xbox'); } catch (e) { /* this visit */ }   // sticky: once seen on the console, the console profile stays
-  const xbox = (xboxSeen || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })());   // Edge on Xbox (its gamepadInputEmulation API gives it away even with a desktop user agent), ?xbox, or Play on Xbox chosen   // Xbox (or Play on Xbox chosen): Lite by default
+  const xbox = !!(window.CQCXbox && window.CQCXbox.active);   // Xbox mode: the one check (cqc/xbox/xbox-mode.js: detection, manual on / off)
   let gpu = '';
   if (!headset && !xbox) try {   // never on the Xbox: a probe context made and lost there blocked the game's own ("Error creating WebGL context")
     const c = document.createElement('canvas'), gl = c.getContext('webgl2') || c.getContext('webgl');
@@ -2226,8 +2238,7 @@ const LITE = (() => {
 const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('')
   + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '')   // PERF: lite = the cheap programs
   // Xbox: fewer shader programs (each one compiles slowly on the console) and lighter effects; an OPTIONS switch turned ON wins.
-  + (LITE.xbox ? ['bounce', 'tfill', 'pdmg', 'handshadow', 'dazzle', 'beam', 'shelflight', 'trickle', 'mblast', 'wisp', 'laserbeam', 'splash', 'wetstep', 'glass', 'fixtures', 'buildview', 'canheat', 'mv', 'amb', 'ambbed', 'stills', 'vm', 'vmh', 'glove104', 'vmsleeves']   // vm*: picking up a gun loaded and fitted the viewmodel arms (froze, then a white screen on the console)
-    .filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') + (OPT.gore ? '' : '&gore=mild') : '');
+  + (LITE.xbox ? window.CQCXbox.flags(OPT) : '');   // Xbox mode: the profile's load-time switches (fewer, cheaper shader programs)
 
 /* ============================================================================
  *  CONFIG — every tunable number for step 1 lives here.
@@ -3089,7 +3100,7 @@ const BOOT = (() => {
   const KEY = 'cqc.boot', now = Date.now(), B = { n: 1, stage: 'starting', pct: 0, mb: 0, at: now, done: false, lost: 0, prev: null, light: false, nav: '', key: KEY, phone: false };
   // Step 46: a phone or tablet (not a headset browser) always takes the light start.
   B.phone = (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window) && !/OculusBrowser|Quest|Pico|Wolvic/i.test(navigator.userAgent);
-  if (/Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })()) B.phone = true;           // Xbox (Edge): a console's memory limit and CPU, so the phone's light start (half-size materials, rooms in slices)
+  if (window.CQCXbox && window.CQCXbox.active) B.phone = true;   // Xbox mode: the light start           // Xbox (Edge): a console's memory limit and CPU, so the phone's light start (half-size materials, rooms in slices)
   let prev = null;
   try { prev = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { prev = null; }
   try { const nv = performance.getEntriesByType('navigation')[0]; B.nav = nv ? nv.type : ''; } catch (e) { /* not reported */ }
@@ -3154,6 +3165,10 @@ if (LITE.on && !IS_HEADSET) {                                    // PERF: lite (
   CONFIG.boost.levels = [0.6, 0.7, 0.8, 0.9, 1.0];               // finer steps for the dynamic resolution
   CONFIG.detail.minPx = 2; CONFIG.detail.shadowPx = 10;        // small parts stop drawing sooner (fewer draw calls)
   CONFIG.enemy.offscreenPoseHz = 10;                            // men you cannot see: posed 10x a second (20)
+}
+if (LITE.xbox) {                                                 // Xbox mode: the profile's detail numbers (XboxQualityManager)
+  const XP = window.CQCXbox.profile();
+  CONFIG.detail.minPx = XP.minPx; CONFIG.enemy.offscreenPoseHz = XP.poseHz;
 }
 
 // Saved between visits: the quality you pinned with Q, and the VR framebuffer
@@ -4777,7 +4792,7 @@ const renderer = (() => {
   // Xbox: the browser can refuse a WebGL context for a while after a graphics crash. Try lighter options; if all fail,
   // wait 4 s and load the page again (at most 10 times, counted in sessionStorage), with the reason on the loader.
   const tries = LITE.xbox
-    ? [{ antialias: false }, { antialias: false, depth: true, stencil: false, failIfMajorPerformanceCaveat: false }, { antialias: false, powerPreference: 'low-power' }]
+    ? window.CQCXbox.contextOptions()               // Xbox mode: XboxRendererConfig's options (high-performance first)
     : [{ antialias: true, powerPreference: 'high-performance' }, { antialias: false }, { antialias: false, powerPreference: 'low-power' }];
   for (const o of tries) { try { const r = new THREE.WebGLRenderer(o); try { sessionStorage.removeItem('cqc.glretry'); } catch (e) { /* none */ } return r; } catch (e) { console.warn('[start] WebGL context refused with', o, e); } }
   let n = 0; try { n = +(sessionStorage.getItem('cqc.glretry') || 0); } catch (e) { /* none */ }
@@ -4789,6 +4804,7 @@ const renderer = (() => {
   try { sessionStorage.removeItem('cqc.glretry'); } catch (e) { /* none */ }
   throw new Error('The browser refused 3D graphics (after a graphics crash it blocks a site for a while). Restart the Xbox (Settings, General, Power options, Restart now) and open the page again.');
 })();
+const XBDIAG = window.CQCXbox.diagnostics;   // the optional overlay (Ctrl+Shift+D, ?xboxdiag, both stick clicks 1 s)
 renderer.debug.checkShaderErrors = /[?&](dev|shadercheck)\b/.test(location.search) && !/[?&]noshadercheck\b/.test(location.search);   // PERF: the error check reads every program's info logs after linking, a sync wait per new shader (hitches mid-fight); on with ?dev
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));   // adaptive quality takes over at boot
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -4851,7 +4867,7 @@ document.body.appendChild(renderer.domElement);
 // textures + a ~230 MB script heap). Every texture a rendered scene uses is shrunk to at most LOWMEM.cap px (aspect kept)
 // before it is first uploaded (renderer.render is wrapped: one scan per scene a second, new textures only), and the full
 // image is let go. Data / compressed / render-target textures are left alone.
-const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: LITE.xbox ? 256 : 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
+const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: LITE.xbox ? window.CQCXbox.profile().texCap : 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
 function lowmemTex(t) {
   if (!t || LOWMEM.seen.has(t)) return; LOWMEM.seen.add(t);
   if (t.isDataTexture || t.isCompressedTexture || t.isDepthTexture || t.isVideoTexture || t.isCubeTexture || t.isData3DTexture || t.isDataArrayTexture || t.isRenderTargetTexture || t.isFramebufferTexture) return;
@@ -9948,7 +9964,7 @@ function probeRoomUnloaded(room) {
  *  Performance pass: MSAA on the chain, GTAO at half resolution, and the
  *  pixel ratio is chosen by ADAPTIVE QUALITY below.
  * ========================================================================== */
-let composer = null, filmPass = null, gtaoPass = null, postEnabled = !(LITE.xbox && !/[?&]xboxpost\b/.test(QS)), bloomPass = null;   // step 123: bloomPass kept for Sharpness
+let composer = null, filmPass = null, gtaoPass = null, postEnabled = !(LITE.xbox && !window.CQCXbox.profile().post), bloomPass = null;   // step 123: bloomPass kept for Sharpness
 /* ----------------------------------------------------------------------------
  *  STEP 23.3 — BODY CAM REALISM, LIVE (MENU.bodyCamRealism, terminal GRAPHICS)
  *  A live first-person camera feel: on, your own view looks like a real
@@ -10117,7 +10133,6 @@ function initPerf() {
 // computer at the highest level of at most 1.25x; strong GPUs climb from there in a few seconds.
 function perfStart(n) {
   if (IS_HEADSET) return Math.floor((n - 1) / 2);
-  if (LITE.xbox) return Math.max(0, n - 3);   // Xbox: fixed 0.8x (no auto changes there)
   if (LITE.on) return Math.max(0, n - 2);
   let i = 0; perf.levels.forEach((L, k) => { if (L.pr <= 1.0 + 1e-3 && !L.gtao) i = k; });   // start at 1x without AO; a strong GPU climbs from there
   return Math.min(i, n - 1);
@@ -10126,7 +10141,7 @@ function applyLevel(i) {
   perf.level = Math.max(0, Math.min(perf.levels.length - 1, i));
   const L = perf.levels[perf.level];
   if (!renderer.xr.isPresenting) {
-    if (Math.abs(renderer.getPixelRatio() - L.pr) > 1e-3) {
+    if (!LITE.xbox && Math.abs(renderer.getPixelRatio() - L.pr) > 1e-3) {   // Xbox mode: XboxPerformanceManager owns the render scale
       renderer.setPixelRatio(L.pr);
       if (composer) { composer.setPixelRatio(L.pr); composer.setSize(window.innerWidth, window.innerHeight); }
       updateFilmRes();
@@ -10136,6 +10151,8 @@ function applyLevel(i) {
   if (gtaoPass) gtaoPass.enabled = L.gtao;
   if (ui.quality) ui.quality.textContent = `${perf.mode === 'auto' ? 'auto, ' : ''}${L.name.toLowerCase()} ${L.pr}x`;
 }
+// Xbox mode: the render scale changed (XboxPerformanceManager via XboxRendererConfig): the post chain and the film pass follow
+function xbResize(pr) { if (composer) { composer.setPixelRatio(pr); composer.setSize(window.innerWidth, window.innerHeight); } updateFilmRes(); }
 function cycleQuality() {
   if (renderer.xr.isPresenting || !perf.levels.length) return;
   // Auto -> top level -> ... -> lowest -> Auto
@@ -10657,7 +10674,7 @@ function mobApplyGfx(announce) {
     if (i < 0) i = perf.levels.length - 1; perf.mode = i; }
   applyLevel(perf.mode === 'auto' ? perfStart(perf.levels.length) : perf.mode);
   perf.good = perf.bad = 0; perf.failed = []; perf.holdUntil = performance.now() / 1000 + 2; savePerf();
-  postEnabled = !!S.effects && !(LITE.xbox && !/[?&]xboxpost\b/.test(QS));   // Xbox: straight to the screen (half-float post targets drew nothing on the console)
+  postEnabled = !!S.effects && !(LITE.xbox && !window.CQCXbox.profile().post);   // Xbox: straight to the screen (half-float post targets drew nothing on the console)
   if (ui.post) ui.post.textContent = BOOST.on ? `off (${EXTREME.on ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off';
   if (GFX.shadows !== S.shadows) gfxSet(S.shadows, false);
   syncButtons();
@@ -11027,6 +11044,8 @@ function padPoll(dt) {
   if (!PAD.active) return;
   // any button but View (its hold shows the help) closes the help panel and the hint (in full screen the browser may keep View)
   if (!ui.hud.classList.contains('hidden')) for (let i = 0; i < B.length; i++) if (i !== 8 && B[i].pressed && !PAD.prev[i]) { ui.hud.classList.add('hidden'); ui.hint.classList.add('hidden'); break; }
+  // both stick clicks held 1 s: the diagnostics overlay (XboxDiagnostics)
+  if (B[10] && B[10].pressed && B[11] && B[11].pressed) { if (!PAD.diagT) PAD.diagT = now; else if (PAD.diagT > 0 && now - PAD.diagT > 1) { XBDIAG.toggle(); PAD.diagT = -1; } } else PAD.diagT = 0;
   // left stick: move; LS click: run until the stick rests 0.4 s
   PAD.lx = lx; PAD.ly = ly;
   if (B[10] && B[10].pressed && !PAD.prev[10]) PAD.run = !PAD.run;
@@ -25640,7 +25659,7 @@ async function buildEnemyKit() {
  *  so material seams stay closed) over the SAME vertex attributes, so skinning, wounds and materials are unchanged and
  *  the GPU keeps one vertex buffer. Per man, by distance from the camera (hysteresis 12 %), his parts swap geometry.
  * ------------------------------------------------------------------------- */
-const ENEMY_LOD = { on: !/[?&]elod=off\b/.test(QS), map: new WeakMap(), d: [4.5, 12], dXR: [3.5, 9], k: [0.3, 0.1], err: [0.008, 0.03], p: new THREE.Vector3(), c: new THREE.Vector3() };
+const ENEMY_LOD = { on: !/[?&]elod=off\b/.test(QS), map: new WeakMap(), d: LITE.xbox ? window.CQCXbox.profile().enemyLod.slice() : [4.5, 12], dXR: [3.5, 9], k: [0.3, 0.1], err: [0.008, 0.03], p: new THREE.Vector3(), c: new THREE.Vector3() };
 async function enemyLodPrep() {
   if (!ENEMY_LOD.on) return;
   const { MeshoptSimplifier: MS } = await import('./vendor/meshopt/meshopt_simplifier.js');
@@ -42529,6 +42548,7 @@ function tick(timeMs) {
   flushShadows();        // performance pass: per-light shadow redraws, throttled while things move
   handShadowFlush();     // step 110: the room spot over your hands keeps up with them
   perfTick(dt);          // performance pass: adaptive quality (MacBook) / foveation (Quest)
+  if (LITE.xbox || XBDIAG.on) window.CQCXbox.frame(dt, performance.now() / 1000, renderer.xr.isPresenting);   // Xbox mode: render scale controller (+ the optional overlay)
   profMark('shadows');
   stillsTick(performance.now() / 1000);   // step 42: a body cam still, before this frame's own render
   scopeTick(dt);         // step 74: the view through the AWP scope
@@ -45045,6 +45065,7 @@ function freeItemHand(h, it, p, P, Q) {
     }
     dirtyShadows();                              // the warm-up man must not stay in the shadow maps
     initPerf();
+    window.CQCXbox.attach(renderer, xbResize);   // Xbox mode only: snapshot the renderer, profile's start scale, 60 fps controller (no-op elsewhere)
     applyBoost();                                // step 12: performance boost (saved with the settings)
     if (LITE.on) console.info(`[perf] lite graphics (${LITE.auto ? 'auto: ' : ''}${LITE.gpu || 'set by you'})${LITE.switched ? ', Sharp mode picked once' : ''}`);   // PERF
     applyLook();
