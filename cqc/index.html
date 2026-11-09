@@ -8834,10 +8834,12 @@ function updateStreaming() {
   updateFloor();
   if (level.flat && Math.abs(level.floor) > 0.05) { shiftWorld(0, 0, -level.floor); _vfStale = true; }
 
+  netCoopFrontier();                                               // together: one plan for both (same safe rooms)
   // What should exist right now.
   const c = stream.current.slot, safeSlot = Math.max(0, stream.frontier - S.safeBehind);
   const want = new Map([[safeSlot, 'safe']]);
   for (let s = Math.max(safeSlot + 1, c - S.behind); s <= c + S.ahead; s++) { want.set(s, roomPlan(s).type === 'stair' ? 'stair' : 'normal'); }
+  netCoopWant(want);                                              // together: the other player's room and the next one are built here too
   if (VS.on) netVsWant(want);                                     // multiplayer versus: the match map only   // outdoor only: nothing past the yard
 
   // Unload what's no longer wanted, but never in view.
@@ -11125,7 +11127,7 @@ function padMenu(gp) {
  *  takes it with playerHit. While connected no AI men are spawned (game modes come later).
  * ========================================================================== */
 const NET = { on: !/[?&]net=off\b/.test(QS), st: 'off', role: null, code: '', peer: null, rel: null, fast: null, av: null, avGun: '', avSlot: -1,
-  buf: [], off: null, seq: 0, acc: 0, lastRx: 0, rem: null, hz: 30, delay: 90, msg: '', lost: 6000,
+  buf: [], off: null, seq: 0, acc: 0, lastRx: 0, rem: null, hz: 30, delay: 90, msg: '', lost: 20000,   // 20 s: a console stalls while it builds a room
   _h: new THREE.Vector3(), _f: new THREE.Vector3(), _p: new THREE.Vector3(), _d: new THREE.Vector3() };
 function netLabel() {
   if (NET.st === 'on') return 'Multiplayer: CONNECTED · leave';
@@ -11168,10 +11170,11 @@ function netAttach(c) {
   if (c.label === 'fast') NET.fast = c; else NET.rel = c;
   c.on('open', () => { if (NET.rel && NET.rel.open && NET.fast && NET.fast.open && NET.st !== 'on') netStart(); });
   c.on('data', (m) => netRx(m));
-  c.on('close', () => { if (NET.st === 'on') { netSay('Multiplayer: the other player left'); netLeave(true); } });
+  c.on('close', () => { if (NET.st === 'on') netDropped('the other player left'); });
   c.on('error', () => {});
 }
 function netStart() {
+  NET.retry = 0;
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
   if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
   if (NET.mode === 'vs' && NET.role === 'host') { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
@@ -11191,6 +11194,44 @@ function netLeave(quiet = false) {
   if (!quiet && was !== 'off') netSay('Multiplayer: off');
   else { try { yardUiSync(); } catch (e) { /* no menu */ } }
 }
+// A drop mid-game: the host keeps its code open and waits for him to come back; the joiner tries the same code again
+// (6 times, 3 s apart). Either way the game goes on.
+function netDropped(why) {
+  const role = NET.role, code = NET.code;
+  if (role === 'host' && NET.peer && !NET.peer.destroyed) {
+    try { NET.rel && NET.rel.close(); } catch (e) { /* closed */ } try { NET.fast && NET.fast.close(); } catch (e) { /* closed */ }
+    NET.rel = NET.fast = null; NET.st = 'host'; NET.buf.length = 0; NET.off = null; NET.remOk = false; NET.tgt = null;
+    if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
+    for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } } NET.pup.clear();
+    VS.on = false; VS.lock = false; NET.codeAt = 0;
+    netSay(`Multiplayer: ${why}. Waiting for him to rejoin with ${code}`, 5);
+    return;
+  }
+  netLeave(true);
+  if (role === 'join' && code) {
+    NET.retry = (NET.retry || 0) + 1;
+    if (NET.retry <= 6) { netSay(`Multiplayer: ${why}. Reconnecting (${NET.retry} of 6)…`, 3); setTimeout(() => { if (NET.st === 'off') netJoin(code); }, 3000); }
+    else { NET.retry = 0; netSay('Multiplayer: could not reconnect'); }
+  } else netSay('Multiplayer: ' + why);
+}
+// Together: both play one plan. The furthest either of you has been sets where the safe rooms are (each side worked
+// it out from its own progress, so one saw a safe room where the other had a fight), and the room he is in plus the
+// next one are built on your side as well, so his body, his men and his shots are there when he runs ahead.
+function netCoopFrontier() {
+  if (!netLive() || NET.mode !== 'coop' || NET.remF == null) return;
+  const c = stream.current ? stream.current.slot : 0, cap = c - 1 + CONFIG.stream.safeBehind;   // never so far that the room you stand in would become the safe slot
+  const f = Math.min(NET.remF, cap);
+  if (f > stream.frontier) stream.frontier = f;
+}
+function netCoopWant(want) {
+  if (!netLive() || NET.mode !== 'coop' || NET.remSlot == null) return;
+  const c = stream.current ? stream.current.slot : 0, safeSlot = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
+  for (const sl of [NET.remSlot, NET.remSlot + 1]) {
+    if (sl <= safeSlot || Math.abs(sl - c) > 4 || want.has(sl)) continue;   // never past 4 rooms away (memory)
+    want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');
+  }
+  for (let sl = Math.min(c, NET.remSlot) + 1; sl < Math.max(c, NET.remSlot); sl++) if (sl > safeSlot && !want.has(sl) && Math.abs(sl - c) <= 4) want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');   // the rooms between you
+}
 function netSendRel(m) { if (NET.rel && NET.rel.open) try { NET.rel.send(m); } catch (e) { /* dropped */ } }
 const netLive = () => NET.st === 'on';
 // --- out: your pose, room-local, 30 Hz ---------------------------------------------------------
@@ -11204,7 +11245,7 @@ function netTx(dt) {
   try {
     NET.fast.send({ t: 's', n: ++NET.seq, c: performance.now(), s: r.slot, x: +rLX(r, h.x).toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +rLZ(r, h.z).toFixed(3),
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
-      g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0 });
+      g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: stream.frontier });
   } catch (e) { /* dropped */ }
 }
 // Your shot (fireGun): the other side plays it from your body.
@@ -11226,7 +11267,9 @@ function netRx(m) {
   const now = performance.now(); NET.lastRx = now;
   if (m.t === 's') {
     const o = now - m.c; NET.off = NET.off == null || o < NET.off ? o : NET.off + (o - NET.off) * 0.02;   // clock offset (low edge: the fastest packets)
+    if (NET.buf.length && m.n <= NET.buf[NET.buf.length - 1].n) return;   // out of order (unordered channel): drop the stale one
     NET.buf.push(m); if (NET.buf.length > 40) NET.buf.shift();
+    NET.remSlot = m.s; if (m.f != null) NET.remF = m.f;
   } else if (m.t === 'hit') {
     const r = stream.current; if (!r) return;
     const f = rF(r);
@@ -11462,7 +11505,9 @@ function netTick(dt, now) {
   if (NET.st === 'host' && NET.code && performance.now() - (NET.codeAt || 0) > 20000) { NET.codeAt = performance.now(); netSay(`Multiplayer code: ${NET.code} (waiting for the other player)`, 8); }   // the code again while you wait
   netTx(dt);
   if (!netLive()) return;
-  if (performance.now() - NET.lastRx > NET.lost) { netSay('Multiplayer: lost the other player'); netLeave(true); return; }
+  const quiet = performance.now() - NET.lastRx;
+  if (quiet > NET.lost) { netDropped('lost the other player'); return; }
+  if (quiet > 4000 && !NET.waitSaid) { NET.waitSaid = true; netSay('Multiplayer: waiting for the other player (loading?)', 3); } else if (quiet < 1000) NET.waitSaid = false;
   if (NET.off == null) return;
   if (NET.mode === 'coop' && NET.role === 'host') netEnTx(dt);
   netVsTick();
@@ -11472,8 +11517,12 @@ function netTick(dt, now) {
   NET.remRoom = r && r.active ? r : null; NET.remOk = !!NET.remRoom; NET.remDead = !!s.d;
   if (NET.remRoom) NET.remW.set(rWX(r, s.x), r.origin.y + s.y, rWZ(r, s.z));
   let e = NET.av;
-  if (e && (!ENEMY.list.includes(e) || e.room !== r || (!s.d && e.dead) || NET.avGun !== (s.g || 'smg'))) { if (ENEMY.list.includes(e)) removeEnemy(e); e = NET.av = null; }
-  if (!r || !r.active) return;
+  if (e && ENEMY.list.includes(e) && e.room !== r && r && r.active && !e.dead) {   // he went into another room: carry the body over (rebuilding it each door was slow and flickered)
+    r.group.add(e.root); e.room = r; e.root.visible = true; NET.avMoved = (NET.avMoved || 0) + 1;
+  }
+  if (e && (!ENEMY.list.includes(e) || (!s.d && e.dead) || NET.avGun !== (s.g || 'smg'))) { if (ENEMY.list.includes(e)) removeEnemy(e); e = NET.av = null; }
+  if (!r || !r.active) { if (e && e.root) e.root.visible = false; return; }   // in a room not built here: hidden until it is
+  if (e && e.root) e.root.visible = true;
   if (!e) {
     if (s.d) return;
     e = spawnEnemy(r, { gun: s.g || 'smg', skill: 0, aggr: 0 }, 0, []);
