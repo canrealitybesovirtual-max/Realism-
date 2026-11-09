@@ -114,6 +114,19 @@ export function bakePVS(renderer, root, batches, opts = {}) {
     if (s) { const o = JSON.parse(s); if (o.key === P.key) { const b = atob(o.b); for (let i = 0; i < b.length && i < P.bits.length; i++) P.bits[i] = b.charCodeAt(i); P.ready = true; P.cached = true; return P; } }
   } catch (e) { /* bake again */ }
 
+  // shipped bake (opts.url: a folder with <key>.json files baked offline): no bake on the player's device at all
+  const fill = (o) => { const b = atob(o.b); for (let i = 0; i < b.length && i < P.bits.length; i++) P.bits[i] = b.charCodeAt(i); P.ready = true; P.cached = true; };
+  P.file = P.key.replace(/[^a-z0-9]+/gi, '_') + '.json';
+  if (opts.url) {
+    fetch(opts.url + P.file).then((r) => (r.ok ? r.json() : null)).then((o) => {
+      if (o && o.key === P.key) { fill(o); try { localStorage.setItem('world.pvs', JSON.stringify(o)); } catch (e) { /* not kept */ } if (opts.onReady) opts.onReady(P); }
+      else startBake();
+    }).catch(() => startBake());
+    return P;
+  }
+  startBake();
+  return P;
+  function startBake() {
   const { scene, mats, geos } = makeIdScene(batches, base, inv, extras, NC);
   scene.updateMatrixWorld(true);
   const cam = new THREE.PerspectiveCamera(90, 1, 0.03, 90);
@@ -168,6 +181,8 @@ export function bakePVS(renderer, root, batches, opts = {}) {
   function pump() {
     if (stopped) return;
     const busy = opts.busy ? opts.busy() : false;
+    // never while the player is in the headset (each cell is 12 renders of the whole scene: a dropped frame), slow on a computer
+    if (busy && renderer.xr.isPresenting) { setTimeout(pump, 1000); return; }
     let started = 0;
     while (inFlight < K && next < jobs.length && started < (busy ? 1 : K)) {
       const slot = next % K, [l, ix, iz] = jobs[next++], rt = rts[slot], buf = bufs[slot];
@@ -176,8 +191,8 @@ export function bakePVS(renderer, root, batches, opts = {}) {
       renderer.readRenderTargetPixelsAsync(rt, 0, 0, 6 * S, H * S, buf).then(() => { collect(buf, l, ix, iz); P.done++; }).catch(() => { /* this cell stays empty: covered by its neighbours */ P.done++; })
         .finally(() => { inFlight--; if (P.done >= jobs.length) finish(); });
     }
-    if (next < jobs.length) setTimeout(pump, busy ? (renderer.xr.isPresenting ? 220 : 40) : 4);   // in the headset a cell every 220 ms (a dropped frame now and then, not a stutter)
+    if (next < jobs.length) setTimeout(pump, busy ? 300 : 4);
   }
   setTimeout(pump, opts.delay || 0);
-  return P;
+  }
 }

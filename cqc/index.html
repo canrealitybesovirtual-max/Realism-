@@ -32986,7 +32986,7 @@ function bncAlbedo(mat, fb) {
   return v;
 }
 function bncWants(room) {
-  return !!(BNC.on && room && room.active && room.troffers && room.troffers.length && room.kind !== 'stair' && !room.yard
+  return !!(BNC.on && !renderer.xr.isPresenting && !(LITE.on && !/[?&]bounce=on\b/.test(QS)) && room && room.active && room.troffers && room.troffers.length && room.kind !== 'stair' && !room.yard
     && !(room.plan && (room.plan.type === 'yard' || room.plan.type === 'apt')) && room.w > 0 && room.d > 0 && room.h > 0);
 }
 // The bake, in slices. Returns { nx, nz, yin, data } (half floats, already laid out for the texture).
@@ -51214,7 +51214,7 @@ function aptPvsStart(room, G, bms) {
     if (!room.active && !room.built) return;
     const ex = aptPvsExtras(room, G);
     const qn = (k) => { const m = QS.match(new RegExp('[?&]' + k + '=([0-9.]+)')); return m ? +m[1] : undefined; };
-    const P = room.aptPVS = PV.bakePVS(renderer, G, bms, { cell: qn('aptpvscell'), px: qn('aptpvspx'), extras: ex.map((e) => e.meshes), busy: () => performance.now() - TICK_AT < 800, delay: 300, onReady: (p) => console.info('apartment PVS ready', p.cells, 'cells', p.N, 'chunks') });
+    const P = room.aptPVS = PV.bakePVS(renderer, G, bms, { url: /[?&]pvsbake\b/.test(QS) ? null : 'data/pvs/', cell: qn('aptpvscell'), px: qn('aptpvspx'), extras: ex.map((e) => e.meshes), busy: () => performance.now() - TICK_AT < 800, delay: 300, onReady: (p) => console.info('apartment PVS ready', p.cells, 'cells', p.N, 'chunks') });
     room.aptPvsX = ex;
     if (P.cached) console.info('apartment PVS from cache');
     for (const bm of bms) bm.userData.pvsCull = (cam, info) => aptPvsCull(room, bm, cam, info);
@@ -53149,7 +53149,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { APTX, aptxBuild, aptxActiv
  *  on the moving parts (the carcass keeps its own).
  * ========================================================================= */
 const AOPEN_ON = !/[?&]aptopen=off\b/.test(QS);
-const AOPEN = { list: [], pick: [], room: null, ray: new THREE.Raycaster(), v: new THREE.Vector3(), d: new THREE.Vector3(), L: new THREE.Vector3(),
+const AOPEN = { list: [], pick: [], bb: new THREE.Box3(), room: null, ray: new THREE.Raycaster(), v: new THREE.Vector3(), d: new THREE.Vector3(), L: new THREE.Vector3(),
   hp: new THREE.Vector3(), hq: new THREE.Quaternion(), mI: new THREE.Matrix4(), sp: new THREE.Vector3(), sk: { kind: 'open', g: 1 }, reach: 0.13 };
 function aptOpenInit(room, furn) {
   AOPEN.list = []; AOPEN.pick = []; AOPEN.room = room;
@@ -53157,8 +53157,15 @@ function aptOpenInit(room, furn) {
   for (const o of furn.openables) {
     const g = o.group; if (o.type === 'flap') g.rotation.order = 'YXZ';
     const it = { o, g, ry: o.ry, p0: g.position.clone(), v: 0, t: 0, held: null, a0: 0, v0: 0, at0: 0 };
-    for (const m of o.meshes) { m.userData.aptOpen = it; AOPEN.pick.push(m); }
-    AOPEN.list.push(it);
+    // speed: what sits behind the part's front plane (drawer box, contents, door bins) is not drawn while it is shut
+    it.inner = [];
+    for (const m of o.meshes) {
+      m.userData.aptOpen = it; AOPEN.pick.push(m);
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      AOPEN.bb.copy(m.geometry.boundingBox); m.updateMatrix(); AOPEN.bb.applyMatrix4(m.matrix);
+      if (AOPEN.bb.max.z < -0.004) it.inner.push(m);
+    }
+    AOPEN.list.push(it); aptOpenPose(it);
   }
 }
 function aptOpenPose(it) {
@@ -53166,6 +53173,8 @@ function aptOpenPose(it) {
   if (o.type === 'hinge') g.rotation.y = it.ry + o.max * v;
   else if (o.type === 'flap') g.rotation.x = o.max * v;
   else g.position.set(it.p0.x + Math.sin(it.ry) * o.max * v, it.p0.y, it.p0.z + Math.cos(it.ry) * o.max * v);
+  const show = v > 0.002 || !!it.held;
+  if (it.inner && it.innerOn !== show) { it.innerOn = show; for (const m of it.inner) m.visible = show; }
 }
 function aptOpenLive() { const r = AOPEN.room; return !!(AOPEN.list.length && r && r.active && stream.current === r); }
 // a world point into the part's base frame (pivot at the origin, unturned by the opening)
