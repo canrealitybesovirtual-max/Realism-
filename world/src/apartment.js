@@ -193,7 +193,11 @@ export function buildApartment(M, Q) {
       lamps.push([x, y - 0.02, z]);
     }
   };
-  const floor = (x0, z0, x1, z1, y, mat) => B.box(x0, y - 0.03, z0, x1, y, z1, mat, false);
+  const FLOORS = [];                                               // finish under foot per area (CQC footsteps)
+  const floor = (x0, z0, x1, z1, y, mat) => {
+    FLOORS.push({ x0: Math.min(x0, x1), x1: Math.max(x0, x1), z0: Math.min(z0, z1), z1: Math.max(z0, z1), y, k: mat === M.pavers ? 'pavers' : mat === M.herring || mat === M.parquet || mat === M.oak ? 'wood' : 'stone' });
+    B.box(x0, y - 0.03, z0, x1, y, z1, mat, false);
+  };
   // door leaf standing open: hinge at (hx, hz), the leaf runs from the hinge in direction yaw
   const leaf = (hx, hz, y0, w, h, yaw, mat = M.doorWhite) => {
     if (Q && Q.cqc && mat === M.doorWhite) {                       // CQC: a real door (its own leaf, built at the origin, unturned; the game swings it)
@@ -523,7 +527,7 @@ export function buildApartment(M, Q) {
     }
     L.shut = best ?? Math.round((L.yaw + Math.PI / 2) / (Math.PI / 2)) * (Math.PI / 2);
   }
-  return { group, meshes, colliders: B.colliders, lamps, grilles, panes, leaves: LEAVES };
+  return { group, meshes, colliders: B.colliders, lamps, grilles, panes, leaves: LEAVES, floors: FLOORS };
 }
 
 // The helical stair: 26 risers over 330 degrees, from floor one (north of the centre, heading

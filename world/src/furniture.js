@@ -347,11 +347,14 @@ function coffeeTable(B, M, x, z, ry, S = 1.0, H = 0.4, solid = false) {
 }
 
 // a rug with its own material (patterned)
+let RUGS = [];                                                     // footprint of every floor rug (CQC footsteps)
 function rugPlain(B, mat, x, z, w, d, ry = 0) {
+  RUGS.push({ x, z, w, d, ry, y: ARTY });
   B.add(at(rbox(w, 0.014, d, 0.005, 2), x, 0.007, z, ry), mat);
 }
 // large cream rug, bound edge (apartment-19)
 function rug(B, M, x, z, w, d, ry = 0) {
+  RUGS.push({ x, z, w, d, ry, y: ARTY });
   B.add(at(rbox(w, 0.014, d, 0.005, 2), x, 0.007, z, ry), M.rug);
 }
 
@@ -1767,7 +1770,7 @@ goldChandelier = breakable('gold chandelier', goldChandelier, true); bowl = brea
 const floorLampM = movable('floor lamp', 8, floorLamp);
 export function furnish(M, Q) {
   furnitureMaterials(M, Q);
-  MIRRORS = [];
+  MIRRORS = []; RUGS = [];
   const qq = !!(Q && Q.quest);
   SOFT.step = qq ? 0.08 : 0.045; SOFT.edge = qq ? 2 : 3; SOFT.pipe = qq ? 0.06 : 0.04; SOFT.ring = qq ? 4 : 5; WSEED = 12345;
   M_BED = M.settingBed;
@@ -2004,5 +2007,5 @@ export function furnish(M, Q) {
   });
   BRK = null;
   for (const m of meshes) if (m.material.userData && m.material.userData.mirror) m.userData.mirror = m.material.userData.mirror;
-  return { group, meshes, movables, breakables, openables, mirrors: meshes.filter((m) => m.userData.mirror), colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
+  return { group, meshes, movables, breakables, openables, mirrors: meshes.filter((m) => m.userData.mirror), rugs: RUGS, colliders: B.colliders, art: ART, screen: { x: 12.835 + 0.17 + 0.016, y: 4.6 + 0.75 + 0.43, z: 2.9, w: 0.6, h: 0.34, face: '+x' }, busts: [[13.95, 1.05, 1.35, -2.2], [16.3, 1.15, 6.25, -1.2], [9.95, 4.6 + 1.1, 7.35, -1.9]] };
 }
