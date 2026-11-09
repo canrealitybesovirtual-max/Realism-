@@ -71,7 +71,7 @@
    * enemyLod: distances (m) where the men switch to 30 % / 10 % of their triangles. minPx: small parts stop
    * drawing under this many pixels. poseHz: rate men outside the view are posed. gore: blood detail.
    */
-  var BASE_OFF = ['bounce', 'tfill', 'pdmg', 'handshadow', 'dazzle', 'beam', 'shelflight', 'buildview', 'mv', 'stills', 'vm', 'vmh', 'glove104', 'vmsleeves'];
+  var BASE_OFF = ['bounce', 'tfill', 'pdmg', 'handshadow', 'dazzle', 'beam', 'shelflight', 'buildview', 'mv', 'stills', 'vmh', 'glove104', 'vmsleeves'];   // the computer arms (vm) stay on: they are loaded while the game prepares, not at the first pickup
   var PROFILES = {
     performance: {
       label: 'Xbox Performance', scale: [0.75, 0.6, 0.85], post: false, texCap: 256, minPx: 2.5, poseHz: 8, enemyLod: [3.5, 9], gore: 'mild',
