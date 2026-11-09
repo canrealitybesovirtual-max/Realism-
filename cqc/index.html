@@ -1169,6 +1169,16 @@
     <tr><td>Graphics</td><td>Q cycles quality (Auto, Low, Medium, High). B (away from the bench) cycles Cinematic / Sharp / Max FPS. P post effects, K shadow quality (next load), L light flicker, U smart detail</td></tr>
     <tr><td>Profiler</td><td>O</td></tr>
   </table>
+  <p class="group">Xbox / gamepad</p>
+  <table>
+    <tr><td>Move / look</td><td>Left stick moves (click it to run), right stick looks</td></tr>
+    <tr><td>RT / LT</td><td>Fire (or use what the dot is on) / aim down the sights</td></tr>
+    <tr><td>A / X / B</td><td>Interact, grab, doors, screens / reload (hold: rack) / crouch (hold: hop)</td></tr>
+    <tr><td>Y</td><td>Switch between hip and chest gun (hold: night vision)</td></tr>
+    <tr><td>RB / LB</td><td>Frag / flashbang: hold to pull the pin, let go to throw</td></tr>
+    <tr><td>D-pad</td><td>Up light (hold: IR), down laser, left fire selector, right auto-injector</td></tr>
+    <tr><td>RS click / View / Menu</td><td>Kick / shove (hold: this help) / watch menu (the cursor comes back while it is open; Menu or B closes it)</td></tr>
+  </table>
   <p class="group">The safe room</p>
   <table>
     <tr><td>Terminal</td><td>The screen on the right wall. Aim the dot at a button and press E or click (Grab on a phone). In the headset it is a touchscreen: touch a button with a fingertip</td></tr>
@@ -2108,8 +2118,9 @@ const LITE = (() => {
     }
   } catch (e) { /* unknown GPU: not lite by itself */ }
   const weak = /Intel|Apple M[1-4](?!\s*(Pro|Max|Ultra))|Apple GPU|SwiftShader|llvmpipe|Mali|Adreno|PowerVR|AMD Radeon(\(TM\))? Graphics|Radeon Vega/i.test(gpu);
-  const on = headset ? false : m ? m[1] === 'on' : o === 'on' ? true : o === 'off' ? false : weak;
-  return { on, auto: !m && o !== 'on' && o !== 'off', weak, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
+  const xbox = /Xbox/i.test(ua);   // Xbox: Edge on a console GPU budget: Lite by default
+  const on = headset ? false : m ? m[1] === 'on' : o === 'on' ? true : o === 'off' ? false : weak || xbox;
+  return { on, auto: !m && o !== 'on' && o !== 'off', weak: weak || xbox, xbox, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
 })();
 const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('')
   + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '');   // PERF: lite = the cheap programs
@@ -10276,7 +10287,7 @@ const canvas = renderer.domElement;
 const stance = { lean: 0, crouch: 0, crouchOn: false, roll: 0 };   // step 6: desktop lean / crouch (see updateStance)
 function applyLook() { camera.rotation.set(look.pitch, look.yaw, -stance.roll, 'YXZ'); }
 canvas.addEventListener('click', () => { if (!IS_TOUCH && !renderer.xr.isPresenting && canvas.requestPointerLock) canvas.requestPointerLock(); });
-document.addEventListener('pointerlockchange', () => { if (!IS_TOUCH) ui.hint.classList.toggle('hidden', document.pointerLockElement === canvas || !ready); });
+document.addEventListener('pointerlockchange', () => { if (!IS_TOUCH) ui.hint.classList.toggle('hidden', document.pointerLockElement === canvas || PAD.active || !ready); });
 // Click while holding something = throw it.
 document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas) return;
@@ -10791,6 +10802,97 @@ window.addEventListener('keyup', (e) => {
   if (e.code === 'CapsLock' && IS_MAC_KB && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn;   // step 89: macOS sends Caps Lock off as a keyup only
 });
 window.addEventListener('blur', () => { DESK_ADS.key = DESK_ADS.mouse = false; deskAdsSync(); });   // step 89: a missed keyup never leaves you stuck aiming
+/* ============================================================================
+ *  XBOX / GAMEPAD (computer play; Edge on Xbox, or any pad on a PC; ?pad=off)
+ *  Edge on Xbox drives a mouse cursor with the pad unless the page asks for raw input:
+ *  in play gamepadInputEmulation = 'gamepad' (Gamepad API), on the title / watch menu 'mouse'
+ *  (the cursor clicks the DOM buttons). Buttons send the same key events the keyboard does,
+ *  so every keyboard path (holds, IR mode, grenades) works unchanged; sticks, RT and LT are direct.
+ * ========================================================================== */
+const PAD = { on: !/[?&]pad=off\b/.test(QS), active: false, idx: -1, lx: 0, ly: 0, run: false, idleT: 0,
+  prev: [], downAt: [], held: [], fire: false, ads: false, emu: '', lastSeen: 0,
+  // tap / hold buttons: [code on tap, code on hold, hold s]; plain buttons: code (keydown on press, keyup on release)
+  map: { 0: 'KeyE', 2: ['KeyR', 'KeyV', 0.45], 1: ['crouch', 'KeyJ', 0.35], 3: ['padSwap', 'nvg', 0.5], 4: 'Digit4', 5: 'Digit3',
+    8: ['KeyG', 'KeyH', 0.5], 9: 'KeyM', 11: 'kick', 12: 'KeyF', 13: 'KeyT', 14: 'KeyX', 15: 'KeyI' },
+  lookYaw: 3.3, lookPitch: 2.3, dead: 0.14 };
+function padKey(code, down, shift = false) {
+  if (code === 'padSwap') { if (down) padSwap(); return; }
+  if (code === 'kick') { if (down) kickStart(); return; }
+  if (code === 'crouch') { if (down) stance.crouchOn = !stance.crouchOn; return; }
+  if (code === 'nvg') { if (down) { if (NVG.on && NVG.worn) nvgFlip(); else toast('No night vision on (personal locker)'); } return; }
+  window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code, shiftKey: shift, bubbles: true }));
+}
+function padSwap() {
+  const held = gunOf(deskHand), has = (n) => props.some((p) => p.item && p.item.kind === 'gun' && p.item.slot === n);
+  if (held) { const o = slotFor(held) === 'hip' ? 'chest' : 'hip'; deskSlot(has(o) ? o : slotFor(held)); }
+  else deskSlot(has('chest') ? 'chest' : 'hip');
+}
+function padStick(x, y, dead) {                     // radial dead zone, rescaled, squared response
+  const m = Math.hypot(x, y); if (m < dead) return [0, 0];
+  const k = Math.min(1, (m - dead) / (1 - dead)), c = k * k / m; return [x * c, y * c];
+}
+function padEmu() {                                 // Edge on Xbox: cursor on menus, raw pad in play
+  if (!('gamepadInputEmulation' in navigator)) return;
+  const want = PAD.on && gameStarted && !renderer.xr.isPresenting && !document.body.classList.contains('modOpen') ? 'gamepad' : 'mouse';
+  if (want !== PAD.emu) { PAD.emu = want; try { navigator.gamepadInputEmulation = want; } catch (e) { /* read-only here */ } }
+}
+setInterval(padEmu, 400);
+function padRelease() {                             // pad gone / paused: nothing stays held
+  for (const b in PAD.held) if (PAD.held[b]) { const m = PAD.map[b]; if (typeof m === 'string') padKey(m, false); PAD.held[b] = false; }
+  if (PAD.fire) { PAD.fire = false; deskInput.fire = false; DOORUSE.mouse = false; }
+  if (PAD.ads) { PAD.ads = false; DESK_ADS.pad = false; deskAdsSync(); }
+  PAD.lx = PAD.ly = 0; PAD.run = false; PAD.prev.length = 0; PAD.downAt.length = 0;
+}
+function padPoll(dt) {
+  if (!PAD.on || renderer.xr.isPresenting || !navigator.getGamepads) { if (PAD.active) { padRelease(); PAD.active = false; } return; }
+  let gp = null; const all = navigator.getGamepads();
+  for (let i = 0; i < all.length; i++) { const g = all[i]; if (g && g.connected && g.mapping === 'standard') { gp = g; break; } }
+  if (!gp) for (let i = 0; i < all.length; i++) if (all[i] && all[i].connected) { gp = all[i]; break; }
+  const menu = document.body.classList.contains('modOpen') || !gameStarted;
+  if (!gp || menu) {
+    if (gp && menu && gameStarted) { const mb = gp.buttons[9], bb = gp.buttons[1];   // Menu / B close the watch menu
+      if ((mb && mb.pressed && !PAD.prev[9]) || (bb && bb.pressed && !PAD.prev[1])) modPanelToggle(false);
+      PAD.prev[9] = !!(mb && mb.pressed); PAD.prev[1] = !!(bb && bb.pressed); }
+    if (PAD.active && !gp) { padRelease(); PAD.active = false; } else if (menu) { PAD.lx = PAD.ly = 0; }
+    return;
+  }
+  const B = gp.buttons, A = gp.axes, now = performance.now() / 1000;
+  let any = false;
+  for (let i = 0; i < B.length; i++) if (B[i].pressed) { any = true; break; }
+  const [lx, ly] = padStick(A[0] || 0, A[1] || 0, PAD.dead), [rx, ry] = padStick(A[2] || 0, A[3] || 0, PAD.dead);
+  if (any || lx || ly || rx || ry) { if (!PAD.active) { PAD.active = true; ui.hint.classList.add('hidden'); toast('Controller on. Hold View for the button map', 2600); } PAD.lastSeen = now; }
+  if (!PAD.active) return;
+  // left stick: move; LS click: run until the stick rests 0.4 s
+  PAD.lx = lx; PAD.ly = ly;
+  if (B[10] && B[10].pressed && !PAD.prev[10]) PAD.run = !PAD.run;
+  if (Math.hypot(lx, ly) < 0.2) { PAD.idleT += dt; if (PAD.idleT > 0.4) PAD.run = false; } else PAD.idleT = 0;
+  // right stick: look (slower aimed; the desk scope by its magnification)
+  if (rx || ry) {
+    const dg = gunOf(deskHand); let k = dg ? 1 - 0.5 * dg.ads : 1;
+    if (SCOPE.desk) k *= 6 / Math.max(1, SCOPE.mag) * 0.5;
+    look.yaw -= rx * PAD.lookYaw * k * dt; look.pitch -= ry * PAD.lookPitch * k * dt;
+    look.pitch = clamp(look.pitch, -1.45, 1.45); applyLook();
+  }
+  // RT: fire / use (as the left mouse button); LT: aim
+  const rt = B[7] ? B[7].value : 0, lt = B[6] ? B[6].value : 0;
+  if (!PAD.fire && rt > 0.35) { PAD.fire = true; DOORUSE.mouse = true; if (!deskClickInteract()) { if (gunOf(deskHand)) deskInput.fire = true; else deskThrow(); } }
+  else if (PAD.fire && rt < 0.2) { PAD.fire = false; deskInput.fire = false; DOORUSE.mouse = false; }
+  if (!PAD.ads && lt > 0.35) { PAD.ads = true; DESK_ADS.pad = true; deskAdsSync(); }
+  else if (PAD.ads && lt < 0.2) { PAD.ads = false; DESK_ADS.pad = false; deskAdsSync(); }
+  // buttons
+  for (const k in PAD.map) {
+    const b = +k, m = PAD.map[k], p = !!(B[b] && B[b].pressed), was = !!PAD.prev[b];
+    if (Array.isArray(m)) {                          // tap / hold
+      if (p && !was) { PAD.downAt[b] = now; PAD.held[b] = false; }
+      if (p && !PAD.held[b] && now - PAD.downAt[b] >= m[2]) { PAD.held[b] = true; padKey(m[1], true); padKey(m[1], false); }
+      if (!p && was && !PAD.held[b]) { padKey(m[0], true); padKey(m[0], false); }
+      if (!p) PAD.held[b] = false;
+    } else if (p !== was) { if (m === 'kick') padKey(m, p); else { padKey(m, p); PAD.held[b] = p; } }
+    PAD.prev[b] = p;
+  }
+  PAD.prev[10] = !!(B[10] && B[10].pressed);
+}
+window.addEventListener('gamepaddisconnected', () => { padRelease(); PAD.active = false; });
 function setExposure(v) { renderer.toneMappingExposure = clamp(v, 0.3, 2.5); ui.exp.textContent = renderer.toneMappingExposure.toFixed(2); }
 
 /* ============================================================================
@@ -10922,8 +11024,9 @@ function updateDesktopMove(dt) {
   if (renderer.xr.isPresenting) return;
   let f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0) - stick.y;
   let s = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0) + stick.x;
+  f -= PAD.ly; s += PAD.lx;                   // Xbox / gamepad left stick (padPoll)
   if (Math.hypot(f, s) < 0.12) f = s = 0;     // small dead zone for the thumb stick
-  let speed = keys.has('ShiftLeft') || keys.has('ShiftRight') ? CONFIG.player.fast : CONFIG.player.walk;
+  let speed = keys.has('ShiftLeft') || keys.has('ShiftRight') || PAD.run ? CONFIG.player.fast : CONFIG.player.walk;
   speed *= 1 - 0.55 * stance.crouch;                 // step 6: crouched walking is slow
   locomote(dt, f, s, look.yaw, speed);
 }
@@ -18103,8 +18206,8 @@ function applyRecoil(g, dt, P, Q) {
  * ------------------------------------------------------------------------- */
 const deskInput = { fire: false, ads: false };
 // Step 89: computer aim = right mouse OR hold Space; either one held keeps you aimed (touch and the demo set deskInput.ads directly).
-const DESK_ADS = { mouse: false, key: false };
-function deskAdsSync() { deskInput.ads = DESK_ADS.mouse || DESK_ADS.key; }
+const DESK_ADS = { mouse: false, key: false, pad: false };
+function deskAdsSync() { deskInput.ads = DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad; }
 const IS_MAC_KB = /Mac/.test(navigator.platform || navigator.userAgent || '');
 let lastAmmoText = '';
 const _bq = new THREE.Quaternion();
@@ -41727,6 +41830,7 @@ function tick(timeMs) {
   const dtRaw = Math.min(clock.getDelta(), 0.1), dt = dtRaw;   // you, your hands, input and the quality systems: real time
   const dtW = dtRaw;                               // the world's dt (step 58: one clock again)
   const t = timeMs / 1000, tW = t;
+  padPoll(dt);           // Xbox / gamepad
   updateDesktopMove(dt);
   updateStance(dt);      // step 6: desktop lean / crouch
   trackedSourcePoses();  // step 25.5: tracked hands drive the grip and aim (three.js leaves them frozen)
@@ -43737,7 +43841,7 @@ function bzWanted() {
   if (!BZ.on || comfort.benchZoom === false || renderer.xr.isPresenting || IS_TOUCH || !ready) return false;
   const g = WB.open ? WB.gun : null, R = WB.room;
   if (!g || !g.prop || g.prop.removing || g.primary || !R || !R.active || stream.current !== R) return false;
-  if (deskHand.prop || playerState.dead || SCOPE.desk || document.pointerLockElement !== canvas) return false;
+  if (deskHand.prop || playerState.dead || SCOPE.desk || (document.pointerLockElement !== canvas && !PAD.active)) return false;
   return BZ.dist < BZ.near;
 }
 // Start of the frame: your own view back (only if the camera still carries the zoom: anything that moved it since wins).
