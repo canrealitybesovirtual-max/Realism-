@@ -13963,6 +13963,22 @@ const HAND_FIT = {
 };
 const GRIP_REF = { smg_sup: [0, 0.048, -0.327], sg_sup: [0, -0.01, -0.382], smg_rack: [-0.035, 0.128, -0.384], pistol_rack: [0, 0.065, 0.002] };
 const GUN_BUILD = {};
+// PERF (raid waves): his gun was built from its specs for every man (rounded boxes, merges, UVs: a stall per spawn).
+// One template per type, cloned (geometry and materials shared, as a fresh build shares the kit materials); parts remapped.
+const EGUN_TPL = {}, EGUN_OFF = /[?&]egunclone=off\b/.test(QS);
+function enemyGunBuild(t) {
+  if (EGUN_OFF) return GUN_BUILD[t]();
+  const T = EGUN_TPL[t] || (EGUN_TPL[t] = GUN_BUILD[t]());
+  try {
+    const root = T.root.clone(true), a = [], b = [], map = new Map();
+    T.root.traverse((o) => a.push(o)); root.traverse((o) => b.push(o));
+    if (a.length !== b.length) throw new Error('clone mismatch');
+    for (let i = 0; i < a.length; i++) map.set(a[i], b[i]);
+    const parts = {}, m = (x) => { if (!x || !x.isObject3D) return x; const y = map.get(x); if (!y) throw new Error('part outside the gun'); return y; };
+    for (const k in T.parts) { const v = T.parts[k]; parts[k] = Array.isArray(v) ? v.map(m) : m(v); }
+    return { root, model: map.get(T.model), parts };
+  } catch (e) { return GUN_BUILD[t](); }
+}
 function d_buildFactories() {
   GUN_BUILD.pistol = () => buildSpecGun('pistol');
   GUN_BUILD.ppk = () => buildSpecGun('ppk');
@@ -25439,7 +25455,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   const root = model.driver.clone(true);
   const B = {};
   root.traverse((o) => { if (o.userData.bone) B[o.userData.bone] = o; });
-  const gb = GUN_BUILD[W.gun](), gd = WEAPON_DEFS[W.gun];
+  const gb = enemyGunBuild(W.gun), gd = WEAPON_DEFS[W.gun];
   if (gd.magType) {
     const mag = buildMagModel(gd.magType);
     mag.root.position.set(gd.magSeat.pos[0], gd.magSeat.pos[1], gd.magSeat.pos[2]);
@@ -36866,8 +36882,9 @@ function hitchEnd(n) {
 // Start of the next frame (profBegin): iv is how long the last frame really took.
 function hitchFrame(iv) {
   if (!HITCH_ON) return;
-  const H = HITCH, P = H.P, B = profBudget(), mem = performance.memory;
+  const H = HITCH, P = H.P, B = profBudget();
   H.frames++; H.time += iv;
+  const mem = (iv > B * 1.5 || H.frames % 20 === 0) ? performance.memory : null;   // PERF: the heap read is slow; on hitches and every 20th frame
   let freed = 0;
   if (mem) { const u = mem.usedJSHeapSize; if (H.heap) { const d = u - H.heap; if (d > 0) H.alloc += d; else freed = -d; } H.heap = u; }
   if (iv <= B * 1.5) return;
@@ -51345,7 +51362,7 @@ function aptEnvCapture() {
   } catch (e) { console.warn('apartment reflections not captured', e); }
   G.add(V.world, V.sky); V.compress(true);
 }
-const XR_LOW = () => /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on;
+const XR_LOW = (() => { const v = /OculusBrowser|Quest/i.test(navigator.userAgent) || LITE.on; return () => v; })();
 // Once the apartment is up, you are put in it (only at the start of a visit; a death respawns you in the safe room).
 function aptTick() {
   const A = APTS; if (!A || A.placed || !A.room || !A.room.active || yardModeNow() !== 'apt') return;
@@ -51570,7 +51587,7 @@ function aptPanelTick() {
   if (APT_RAID.mode && now - _apBlink > 0.5) { _apBlink = now; aptBlink(true); } else if (!APT_RAID.mode) aptBlink(false);   // the security screen blinks red while a raid is on
   if (changed) aptPanelDraw();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, tickSafe, TFILL, SKC, APT_PVS, aptPvsExtrasTick, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { getComposer: () => composer, PROF, getWorld2: () => world, tickSafe, TFILL, SKC, APT_PVS, aptPvsExtrasTick, APT, aptState, aptFloor, aptActivate, aptTick, aptMovables, aptDoorsActivate, aptPaneBreak, aptPanesBlast, aptSnap, aptTriBuild, APTSN, APT_PROPS, APTP, APTC, APT_RAIDS, APT_RAID, aptRaidStart, aptRaidStop, aptRaidTick, aptEnvCapture, aptPanelDraw, aptSpawnEnemy, aptPanelPress, aptSpawnSpot, aptChoose });
 
 /* =========================================================================
  *  APARTMENT LOOK (?aptsun=off, ?aptlook=off): the surfaces and the shadows of the apartment without surface.js.

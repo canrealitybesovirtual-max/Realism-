@@ -1686,3 +1686,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Checked headless: a fresh profile loads the shipped file (cached, 0 cells baked); computer and Lite / headset give the same key, so one file. 69 inside meshes (of 225 in the 77 parts) hidden while shut, no part loses its front.
 - Shut drawers, cabinet / fridge / pantry doors and the oven no longer draw what is behind their front (drawer boxes, plates, bottles, door bins): it.inner, shown from the first mm of opening.
 - Bounce light in rooms is off in the headset and on Lite graphics (?bounce=on forces it on Lite).
+
+## CQC: raid lag pass 1
+- CPU profile of a Siege raid (headless, render stubbed): each spawned man's gun was built from its specs (rounded boxes, merges, UVs: ~1 s of work per wave on a computer, more on Quest). enemyGunBuild: one template per gun type, cloned (geometry / materials shared like a fresh build, parts remapped; falls back to a fresh build on any mismatch; ?egunclone=off = old).
+- The hitch monitor read performance.memory every frame (~0.5 ms): now only on a hitch frame and every 20th frame. XR_LOW's user-agent regex is computed once.
