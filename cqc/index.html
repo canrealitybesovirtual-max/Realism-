@@ -1182,7 +1182,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109m · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109n · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -4773,13 +4773,18 @@ function realLightMsg(v) { return `Real lighting: ${v ? 'on' : 'off'}${v === REA
  * ========================================================================== */
 // Xbox: "Error creating WebGL context". Try lighter context options before giving up (the console refused antialias /
 // high-performance contexts, or a context the title had just made and lost).
-const renderer = (() => {
+const renderer = await (async () => {
+  // Xbox: the browser can refuse a WebGL context for a while after a graphics crash (or while it frees the last page's).
+  // Keep asking, with lighter options, for up to ~45 s before giving up; the loading line says what is happening.
   const tries = LITE.xbox
     ? [{ antialias: false }, { antialias: false, depth: true, stencil: false, failIfMajorPerformanceCaveat: false }, { antialias: false, powerPreference: 'low-power' }]
     : [{ antialias: true, powerPreference: 'high-performance' }, { antialias: false }, { antialias: false, powerPreference: 'low-power' }];
-  let last = null;
-  for (const o of tries) { try { return new THREE.WebGLRenderer(o); } catch (e) { last = e; console.warn('[start] WebGL context refused with', o, e); } }
-  throw new Error('The browser refused 3D graphics (usually after a graphics crash it blocks this site for a while). Close the browser fully and open the page again. On Xbox: press the Xbox button, highlight Edge, press Menu, Quit.');
+  for (let round = 0; round < 15; round++) {
+    for (const o of tries) { try { return new THREE.WebGLRenderer(o); } catch (e) { console.warn('[start] WebGL context refused with', o, e); } }
+    try { setLoad(`Waiting for the graphics (try ${round + 2} of 16)…`, 0); } catch (e) { /* loader not ready */ }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  throw new Error('The browser refused 3D graphics for 45 s (after a graphics crash it blocks a site for a while). Restart the Xbox (Settings, General, Power options, Restart now) and open the page again.');
 })();
 renderer.debug.checkShaderErrors = /[?&](dev|shadercheck)\b/.test(location.search) && !/[?&]noshadercheck\b/.test(location.search);   // PERF: the error check reads every program's info logs after linking, a sync wait per new shader (hitches mid-fight); on with ?dev
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));   // adaptive quality takes over at boot
@@ -4876,10 +4881,20 @@ if (LOWMEM.on) {
   if (renderer.compileAsync) { const _lmCA = renderer.compileAsync.bind(renderer); renderer.compileAsync = (sc, ...a) => { if (sc && sc.isObject3D) try { LOWMEM.scan.delete(sc); lowmemScene(sc); } catch (e) { /* scan only */ } return _lmCA(sc, ...a); }; }
   console.info('[start] low memory: textures at most ' + LOWMEM.cap + ' px');
 }
-// The console can drop the graphics (out of video memory): say so on screen instead of a silent black view.
+// The console can drop the graphics (out of video memory). preventDefault lets the browser give it back; three.js rebuilds
+// its state and re-uploads on 'webglcontextrestored'. A message covers the black view meanwhile; only if nothing comes back
+// in 20 s does it say to restart the browser (no automatic reload: repeated crashes make the browser block 3D for the site).
+const GLR = { el: null, t: 0 };
 renderer.domElement.addEventListener('webglcontextlost', (e) => {
   try { e.preventDefault(); } catch (er) { /* restore if the browser offers it */ }
-  try { if (gameStarted) { const d = document.createElement('div'); d.id = 'glLost'; d.style.cssText = 'position:fixed;inset:0;z-index:999;display:grid;place-items:center;background:#000;color:#ece8de;font:600 26px system-ui;text-align:center;padding:24px'; d.innerHTML = 'The graphics ran out of memory on this device.<br>Close the browser fully and open the page again<br>(Xbox: Xbox button, highlight Edge, Menu, Quit).'; document.body.appendChild(d);   // no automatic reload: repeated graphics crashes make the browser block 3D for the site } } catch (er) { /* still loading */ }
+  if (!GLR.el) { GLR.el = document.createElement('div'); GLR.el.style.cssText = 'position:fixed;inset:0;z-index:999;display:grid;place-items:center;background:#000;color:#ece8de;font:600 26px system-ui;text-align:center;padding:24px'; document.body.appendChild(GLR.el); }
+  GLR.el.style.display = 'grid'; GLR.el.innerHTML = 'Graphics reset. Recovering…';
+  clearTimeout(GLR.t); GLR.t = setTimeout(() => { if (GLR.el && GLR.el.style.display !== 'none') GLR.el.innerHTML = 'The graphics did not come back.<br>Restart the Xbox (Settings, General, Power options, Restart now) and open the page again.'; }, 20000);
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  clearTimeout(GLR.t); if (GLR.el) GLR.el.style.display = 'none';
+  try { scene.traverse((o) => { const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : []; for (const m of ms) { m.needsUpdate = true; for (const k in m) { const v = m[k]; if (v && v.isTexture) v.needsUpdate = true; } } }); } catch (er) { /* best effort */ }
+  try { dirtyShadows(); } catch (er) { /* not yet */ }
 });
 renderer.domElement.addEventListener('webglcontextlost', () => { BOOT.lost++; bootSave(BOOT.stage, BOOT.pct); console.warn('[start] the graphics context was lost during: ' + BOOT.stage); });   // step 40
 maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET || LITE.on ? 4 : 8);   // PERF: lite = 4   // higher costs Quest bandwidth for no visible gain
