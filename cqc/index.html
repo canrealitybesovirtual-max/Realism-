@@ -1182,7 +1182,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109n · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109o · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -4773,18 +4773,21 @@ function realLightMsg(v) { return `Real lighting: ${v ? 'on' : 'off'}${v === REA
  * ========================================================================== */
 // Xbox: "Error creating WebGL context". Try lighter context options before giving up (the console refused antialias /
 // high-performance contexts, or a context the title had just made and lost).
-const renderer = await (async () => {
-  // Xbox: the browser can refuse a WebGL context for a while after a graphics crash (or while it frees the last page's).
-  // Keep asking, with lighter options, for up to ~45 s before giving up; the loading line says what is happening.
+const renderer = (() => {
+  // Xbox: the browser can refuse a WebGL context for a while after a graphics crash. Try lighter options; if all fail,
+  // wait 4 s and load the page again (at most 10 times, counted in sessionStorage), with the reason on the loader.
   const tries = LITE.xbox
     ? [{ antialias: false }, { antialias: false, depth: true, stencil: false, failIfMajorPerformanceCaveat: false }, { antialias: false, powerPreference: 'low-power' }]
     : [{ antialias: true, powerPreference: 'high-performance' }, { antialias: false }, { antialias: false, powerPreference: 'low-power' }];
-  for (let round = 0; round < 15; round++) {
-    for (const o of tries) { try { return new THREE.WebGLRenderer(o); } catch (e) { console.warn('[start] WebGL context refused with', o, e); } }
-    try { setLoad(`Waiting for the graphics (try ${round + 2} of 16)…`, 0); } catch (e) { /* loader not ready */ }
-    await new Promise((r) => setTimeout(r, 3000));
+  for (const o of tries) { try { const r = new THREE.WebGLRenderer(o); try { sessionStorage.removeItem('cqc.glretry'); } catch (e) { /* none */ } return r; } catch (e) { console.warn('[start] WebGL context refused with', o, e); } }
+  let n = 0; try { n = +(sessionStorage.getItem('cqc.glretry') || 0); } catch (e) { /* none */ }
+  if (n < 10) {
+    try { sessionStorage.setItem('cqc.glretry', String(n + 1)); } catch (e) { /* none */ }
+    setTimeout(() => location.reload(), 4000);
+    throw new Error(`Waiting for the graphics, trying again in 4 s (${n + 1} of 10)…`);
   }
-  throw new Error('The browser refused 3D graphics for 45 s (after a graphics crash it blocks a site for a while). Restart the Xbox (Settings, General, Power options, Restart now) and open the page again.');
+  try { sessionStorage.removeItem('cqc.glretry'); } catch (e) { /* none */ }
+  throw new Error('The browser refused 3D graphics (after a graphics crash it blocks a site for a while). Restart the Xbox (Settings, General, Power options, Restart now) and open the page again.');
 })();
 renderer.debug.checkShaderErrors = /[?&](dev|shadercheck)\b/.test(location.search) && !/[?&]noshadercheck\b/.test(location.search);   // PERF: the error check reads every program's info logs after linking, a sync wait per new shader (hitches mid-fight); on with ?dev
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));   // adaptive quality takes over at boot
