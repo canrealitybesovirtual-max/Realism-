@@ -1160,7 +1160,7 @@
   stepGo.addEventListener('click', () => {
     mpSave();
     const how = device === 'xbox' ? 'pc' : device;
-    if (api) api.start(how); else if (device !== 'vr') { xbPending = how; stepGoSub.textContent = 'Starting as soon as it has loaded…'; }
+    if (api) { try { api.start(how); } catch (e) { stepGoSub.textContent = 'Could not start: ' + (e && e.message || e); } } else if (device !== 'vr') { xbPending = how; stepGoSub.textContent = 'Starting as soon as it has loaded…'; }
   });
   window.CQC_MP = () => ({ sel: play === 'solo' ? 'off' : role, code, mode: play === 'vs' ? 'vs' : 'coop' });
   // Diagnostics (shown on step 2): browser, WebGL 2, has the game script started, the last error, a clock (if it stops, the page is frozen).
@@ -41834,8 +41834,39 @@ function mobileOn() {
     if (p && p.then) p.then(lock).catch(() => {}); else lock();
   } catch (e) { /* no page fullscreen here (iPhone Safari): play as is */ }
 }
+// Xbox: the first frame used to compile every shader at once. On the console that froze the page for a long time with the
+// title still on screen (the room's sound already playing). Now the shaders compile a few at a time before the title goes,
+// with the count on the Start button; KHR_parallel_shader_compile (if the browser has it) compiles them in the background.
+let XBW = { done: false, busy: false };
+async function xboxWarm(say) {
+  const objs = [], seen = new Set();
+  scene.traverseVisible((o) => {
+    if (!o.material || !(o.isMesh || o.isPoints || o.isLine || o.isSprite)) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    const k = mats.map((m) => m.uuid).join(',') + (o.isSkinnedMesh ? 's' : '') + (o.isInstancedMesh ? 'i' : '') + (o.isBatchedMesh ? 'b' : '');
+    if (seen.has(k)) return; seen.add(k); objs.push(o);
+  });
+  const par = renderer.extensions.has('KHR_parallel_shader_compile');
+  const wait = () => new Promise((r) => setTimeout(r, 0));
+  let t = performance.now();
+  for (let i = 0; i < objs.length; i++) {
+    try { if (par) await renderer.compileAsync(objs[i], camera, scene); else renderer.compile(objs[i], camera, scene); } catch (e) { /* compiles when it shows */ }
+    if (performance.now() - t > 50) { say(`Preparing graphics ${Math.round(100 * (i + 1) / objs.length)}%`); await wait(); t = performance.now(); }
+  }
+  say('Preparing graphics 100%'); await wait();
+}
 function startGame(mode) {
   if (gameStarted) return;
+  if (LITE.xbox && mode !== 'vr' && !XBW.done) {
+    if (XBW.busy) return;
+    XBW.busy = true;
+    if (!IS_TOUCH && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* click the view */ } }
+    audioUnlock();                                   // inside the press (the browser needs the gesture for sound)
+    const sub = document.getElementById('stepGoSub'), say = (t) => { if (sub) sub.textContent = t; };
+    say('Preparing graphics…');
+    xboxWarm(say).catch(() => {}).then(() => { XBW.done = true; XBW.busy = false; startGame(mode); });
+    return;
+  }
   gameStarted = true;
   setTimeout(netTitleBegin, 1200);                   // multiplayer chosen on the title (Host / Join)
   const title = window.CQC_TITLE;
