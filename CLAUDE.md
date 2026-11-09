@@ -1696,3 +1696,14 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - XBOX / GAMEPAD section before setExposure: padPoll (from tick, before updateDesktopMove) reads the first standard-mapping pad. Edge on Xbox: gamepadInputEmulation = 'gamepad' in play, 'mouse' on the title and while the watch menu is open (padEmu every 0.4 s), so the cursor clicks DOM buttons there.
 - Map: LS move (click = run until the stick rests), RS look (squared response, slower aimed / scoped), RT fire or use (as the left mouse button), LT aim, A interact (E), X reload (hold: rack), B crouch (hold: hop), Y hip / chest gun swap (hold: night vision), RB frag / LB flashbang (hold + release), D-pad up light (hold: IR) / down laser / left selector / right injector, RS click kick, View shove (hold: help), Menu watch menu (Menu or B closes it). Buttons send the keyboard's own key events. Help panel has the table.
 - Xbox user agent turns Lite graphics on by default. Checked headless with a mocked pad (look turns, no errors). Not tried on an Xbox.
+
+## The apartment and Outpost 17 removed (Nov 9)
+- Deleted at the user's request: world/ (the apartment, its city view, scans, bakes, tools), CQC's APARTMENT START / LOOK / NAV / GUN RACK / WALL DAMAGE / DESTRUCTION / OPENABLES sections, the OUTDOOR START (Outpost 17) and NATURE sections, cqc/sky, cqc/models/nature.glb, cqc/data/pvs, tools/interior, tools/pack_sky.py, tools/pack_nature.py, and every one-line hook into them (eslint no-undef clean). The CLAUDE.md sections above about world/, the CQC apartment and Outpost 17 are history.
+- Kept: stealth (every room; its yard light and start-choice parts cut, watch / M panel cells Stealth and Detection meter stay), enemy grenades, men falling back, the secondary-door code (unused now). Inert `room.yard` / `room.apt` checks left in place (always false).
+- Root index.html redirects to cqc/index.html; Interstate's "Back to CQC" goes to ../cqc/index.html. CQC starts in the safe room again (old cqc.start.v1 values are ignored).
+- Checked: module parse + eslint no-undef only (the headless run was stopped by the user).
+
+## CQC: armorer's gun vise, workshop screen lower
+- The bench vise (WB.kit vise / jaw) is now a gun vise: base plate with three bolts, swivel ring with a lock knob, tapered cast column, collar and ball joint with a lock lever, slide rail between front and back blocks, a threaded lead screw under the rail with a T-handle, rubber cradle; each moving jaw is a painted carrier on the rail with rubber pads on both faces (same 16 mm thickness and clamp height, so wbJawPoint / jawW are unchanged). Powder-coated cast-iron green, plated steel screw / handle. Static; the jaws still slide in by wbJaws.
+- GUNSMITH screen (workshop) y 1.9 -> 1.74 m.
+- Checked: module parse + eslint. Not seen by eye.
