@@ -1182,7 +1182,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109l · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109m · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -2207,7 +2207,9 @@ const OPT = (() => { try { const o = JSON.parse(localStorage.getItem(OPT_KEY) ||
 const LITE = (() => {
   const m = /[?&]lite=(on|off)\b/.exec(location.search), o = OPT.lite, ua = navigator.userAgent;
   const headset = /OculusBrowser|Quest|Pico|Wolvic/i.test(ua);
-  const xbox = (/Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })());   // Edge on Xbox (its gamepadInputEmulation API gives it away even with a desktop user agent), ?xbox, or Play on Xbox chosen   // Xbox (or Play on Xbox chosen): Lite by default
+  const xboxSeen = /Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator);
+  if (xboxSeen) try { localStorage.setItem('cqc.device.v1', 'xbox'); } catch (e) { /* this visit */ }   // sticky: once seen on the console, the console profile stays
+  const xbox = (xboxSeen || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })());   // Edge on Xbox (its gamepadInputEmulation API gives it away even with a desktop user agent), ?xbox, or Play on Xbox chosen   // Xbox (or Play on Xbox chosen): Lite by default
   let gpu = '';
   if (!headset && !xbox) try {   // never on the Xbox: a probe context made and lost there blocked the game's own ("Error creating WebGL context")
     const c = document.createElement('canvas'), gl = c.getContext('webgl2') || c.getContext('webgl');
@@ -4777,7 +4779,7 @@ const renderer = (() => {
     : [{ antialias: true, powerPreference: 'high-performance' }, { antialias: false }, { antialias: false, powerPreference: 'low-power' }];
   let last = null;
   for (const o of tries) { try { return new THREE.WebGLRenderer(o); } catch (e) { last = e; console.warn('[start] WebGL context refused with', o, e); } }
-  throw last;
+  throw new Error('The browser refused 3D graphics (usually after a graphics crash it blocks this site for a while). Close the browser fully and open the page again. On Xbox: press the Xbox button, highlight Edge, press Menu, Quit.');
 })();
 renderer.debug.checkShaderErrors = /[?&](dev|shadercheck)\b/.test(location.search) && !/[?&]noshadercheck\b/.test(location.search);   // PERF: the error check reads every program's info logs after linking, a sync wait per new shader (hitches mid-fight); on with ?dev
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));   // adaptive quality takes over at boot
@@ -4841,7 +4843,7 @@ document.body.appendChild(renderer.domElement);
 // textures + a ~230 MB script heap). Every texture a rendered scene uses is shrunk to at most LOWMEM.cap px (aspect kept)
 // before it is first uploaded (renderer.render is wrapped: one scan per scene a second, new textures only), and the full
 // image is let go. Data / compressed / render-target textures are left alone.
-const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
+const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: LITE.xbox ? 256 : 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
 function lowmemTex(t) {
   if (!t || LOWMEM.seen.has(t)) return; LOWMEM.seen.add(t);
   if (t.isDataTexture || t.isCompressedTexture || t.isDepthTexture || t.isVideoTexture || t.isCubeTexture || t.isData3DTexture || t.isDataArrayTexture || t.isRenderTargetTexture || t.isFramebufferTexture) return;
@@ -4877,7 +4879,7 @@ if (LOWMEM.on) {
 // The console can drop the graphics (out of video memory): say so on screen instead of a silent black view.
 renderer.domElement.addEventListener('webglcontextlost', (e) => {
   try { e.preventDefault(); } catch (er) { /* restore if the browser offers it */ }
-  try { if (gameStarted) { const d = document.createElement('div'); d.id = 'glLost'; d.style.cssText = 'position:fixed;inset:0;z-index:999;display:grid;place-items:center;background:#000;color:#ece8de;font:600 26px system-ui;text-align:center;padding:24px'; d.textContent = 'The graphics ran out of memory. Reloading…'; document.body.appendChild(d); setTimeout(() => location.reload(), 2500); } } catch (er) { /* still loading */ }
+  try { if (gameStarted) { const d = document.createElement('div'); d.id = 'glLost'; d.style.cssText = 'position:fixed;inset:0;z-index:999;display:grid;place-items:center;background:#000;color:#ece8de;font:600 26px system-ui;text-align:center;padding:24px'; d.innerHTML = 'The graphics ran out of memory on this device.<br>Close the browser fully and open the page again<br>(Xbox: Xbox button, highlight Edge, Menu, Quit).'; document.body.appendChild(d);   // no automatic reload: repeated graphics crashes make the browser block 3D for the site } } catch (er) { /* still loading */ }
 });
 renderer.domElement.addEventListener('webglcontextlost', () => { BOOT.lost++; bootSave(BOOT.stage, BOOT.pct); console.warn('[start] the graphics context was lost during: ' + BOOT.stage); });   // step 40
 maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET || LITE.on ? 4 : 8);   // PERF: lite = 4   // higher costs Quest bandwidth for no visible gain
