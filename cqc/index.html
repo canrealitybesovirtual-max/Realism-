@@ -1175,7 +1175,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109c · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109d · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -41851,9 +41851,13 @@ async function xboxWarm(say) {
   });
   const par = renderer.extensions.has('KHR_parallel_shader_compile');
   const wait = () => new Promise((r) => setTimeout(r, 0));
-  let t = performance.now();
+  let t = performance.now(); const T0 = t;
   for (let i = 0; i < objs.length; i++) {
-    try { if (par) await renderer.compileAsync(objs[i], camera, scene); else renderer.compile(objs[i], camera, scene); } catch (e) { /* compiles when it shows */ }
+    if (performance.now() - T0 > 45000) break;          // never hold the start longer than this: the rest compiles when it shows
+    try {
+      if (par) await Promise.race([renderer.compileAsync(objs[i], camera, scene), new Promise((r) => setTimeout(r, 2500))]);   // a stuck promise never blocks the start
+      else renderer.compile(objs[i], camera, scene);
+    } catch (e) { /* compiles when it shows */ }
     if (performance.now() - t > 50) { say(`Preparing graphics ${Math.round(100 * (i + 1) / objs.length)}%`); await wait(); t = performance.now(); }
   }
   say('Preparing graphics 100%'); await wait();
@@ -41867,7 +41871,9 @@ function startGame(mode) {
     audioUnlock();                                   // inside the press (the browser needs the gesture for sound)
     const sub = document.getElementById('stepGoSub'), say = (t) => { if (sub) sub.textContent = t; };
     say('Preparing graphics…');
-    xboxWarm(say).catch(() => {}).then(() => { XBW.done = true; XBW.busy = false; startGame(mode); });
+    let go = false; const fin = () => { if (go) return; go = true; XBW.done = true; XBW.busy = false; try { startGame(mode); } catch (e) { say('Could not start: ' + (e && e.message || e)); } };
+    xboxWarm(say).catch(() => {}).then(fin);
+    setTimeout(fin, 60000);                            // hard cap: start anyway
     return;
   }
   gameStarted = true;
