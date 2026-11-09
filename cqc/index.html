@@ -856,6 +856,11 @@
   }
   #title .space button[aria-pressed="true"] { color: var(--t-wall); background: var(--t-ink); border-color: var(--t-ink); }
   #title .space button:disabled { opacity: 0.4; cursor: default; }
+  #title .space input { font: 600 18px/1 "Barlow Semi Condensed", "Arial Narrow", sans-serif; width: 5.5em; min-height: 32px; padding: 0 10px; letter-spacing: 0.2em;
+    background: none; color: var(--t-ink); border: 1px solid var(--t-line); border-radius: 16px; text-align: center; }
+  #title .mpnote { margin: 8px 0 0; min-height: 1.2em; color: var(--t-dim); font-size: 14px; }
+  #title .big.xbox { background: #107c10; color: #fff; padding: 0 16px; border-bottom-color: #107c10; }
+  #title .big.xbox span { color: rgba(255, 255, 255, 0.75); }
   #title .foot { display: flex; justify-content: space-between; gap: 24px; margin-top: 28px; color: var(--t-dim); font-size: 14px; }
   #loader { flex: 1; max-width: 420px; }
   #loader p { margin: 0 0 8px; min-height: 1.45em; }
@@ -1028,8 +1033,25 @@
       <div class="pick">
         <button type="button" id="playVR" class="big vr" disabled><b>Play in VR</b><span id="playVRSub">Quest, controllers or hands</span></button>
         <button type="button" id="playPC" class="big" disabled><b>Play on computer</b><span id="playPCSub">Mouse and keyboard</span></button>
+        <button type="button" id="playXbox" class="big" disabled><b>Play on Xbox</b><span>Controller, light graphics for the console</span></button>
         <button type="button" id="playMobile" class="big" disabled><b>Play on mobile</b><span>Touch controls, full graphics</span></button>
       </div>
+      <div class="space" role="group" aria-label="Multiplayer">
+        <span>Multiplayer</span>
+        <button type="button" data-tmp="off" aria-pressed="true">Solo</button>
+        <button type="button" data-tmp="host" aria-pressed="false">Host</button>
+        <button type="button" data-tmp="join" aria-pressed="false">Join</button>
+      </div>
+      <div class="space" role="group" aria-label="Multiplayer mode" id="mpModeRow" hidden>
+        <span>Mode (the host picks)</span>
+        <button type="button" data-tmode="coop" aria-pressed="true">Together</button>
+        <button type="button" data-tmode="vs" aria-pressed="false">Versus</button>
+      </div>
+      <div class="space" id="mpCodeRow" hidden>
+        <span>Host's code</span>
+        <input id="mpCode" type="text" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="1234" aria-label="4-digit code from the host">
+      </div>
+      <p id="mpNote" class="mpnote"></p>
       <div class="space" role="group" aria-label="Play space in VR">
         <span>Play space in VR</span>
         <button type="button" data-tspace="stationary" aria-pressed="true">Stationary</button>
@@ -1074,7 +1096,7 @@
     if (api) api.setSpace(space);
   }));
   function sync() {
-    btnPC.disabled = !api; btnMob.disabled = !api;   // step 47
+    btnPC.disabled = !api; btnMob.disabled = !api; { const bx = document.getElementById('playXbox'); if (bx) bx.disabled = !api; }   // step 47
     btnVR.disabled = !api || vrOK !== true;
     if (vrOK === false) { vrSub.textContent = 'Open this page in your headset\'s browser'; btnVR.classList.add('off'); }
     root.classList.toggle('vroff', vrOK === false);
@@ -1084,6 +1106,35 @@
   btnPC.addEventListener('click', () => api && api.start('pc'));
   btnVR.addEventListener('click', () => api && api.start('vr'));
   btnMob.addEventListener('click', () => api && api.start('mobile'));   // step 47: the only way the touch controls come on
+  // Xbox: Play on Xbox is the computer game with the console profile (pad, Lite, light start, textures at 512 px). The profile is
+  // set at load, so on a browser that does not say "Xbox" the first press saves it and reloads; press it again after.
+  const btnXb = document.getElementById('playXbox');
+  const isXbox = /Xbox/i.test(navigator.userAgent) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })();
+  if (isXbox && btnXb) { btnXb.classList.add('xbox'); }
+  if (btnXb) btnXb.addEventListener('click', () => {
+    if (!isXbox) { try { localStorage.setItem('cqc.device.v1', 'xbox'); } catch (e) { /* this visit */ } location.reload(); return; }
+    if (api) api.start('pc');
+  });
+  // Multiplayer on the title: Solo / Host / Join, the mode (host), the code (join). The game reads it when you press Play.
+  const mpBtns = Array.from(root.querySelectorAll('[data-tmp]')), modeBtns = Array.from(root.querySelectorAll('[data-tmode]'));
+  const mpModeRow = document.getElementById('mpModeRow'), mpCodeRow = document.getElementById('mpCodeRow'), mpCode = document.getElementById('mpCode'), mpNote = document.getElementById('mpNote');
+  let mp = { sel: 'off', code: '' };
+  try { const o = JSON.parse(localStorage.getItem('cqc.mp.v1') || '{}'); if (o && o.sel) mp = { sel: o.sel, code: o.code || '' }; } catch (e) { /* default */ }
+  let mode = 'coop'; try { if (localStorage.getItem('cqc.netmode.v1') === 'vs') mode = 'vs'; } catch (e) { /* default */ }
+  const mpSave = () => { try { localStorage.setItem('cqc.mp.v1', JSON.stringify(mp)); localStorage.setItem('cqc.netmode.v1', mode); } catch (e) { /* this visit */ } };
+  function mpShow() {
+    mpBtns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tmp === mp.sel)));
+    modeBtns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.tmode === mode)));
+    mpModeRow.hidden = mp.sel !== 'host'; mpCodeRow.hidden = mp.sel !== 'join'; mpCode.value = mp.code;
+    mpNote.textContent = mp.sel === 'host' ? (mode === 'vs' ? 'Versus: you get a 4-digit code after Play; the match starts when he joins.' : 'Together: you get a 4-digit code after Play; he joins into your safe room.')
+      : mp.sel === 'join' ? 'Type the code from the host\'s screen, then Play.' : '';
+  }
+  mpBtns.forEach((b) => b.addEventListener('click', () => { mp.sel = b.dataset.tmp; mpSave(); mpShow(); }));
+  modeBtns.forEach((b) => b.addEventListener('click', () => { mode = b.dataset.tmode; mpSave(); mpShow(); }));
+  mpCode.addEventListener('input', () => { mp.code = mpCode.value.replace(/\D/g, '').slice(0, 4); mpCode.value = mp.code; mpSave(); });
+  mpCode.addEventListener('keydown', (e) => e.stopPropagation());
+  mpShow();
+  window.CQC_MP = () => ({ sel: mp.sel, code: mp.code, mode });
 
   // ---- step 42: body cam stills from your runs, shown before the game has even loaded ----
   const reelFigs = Array.from(root.querySelectorAll('.reel .still'));
@@ -1121,7 +1172,7 @@
   window.CQC_TITLE = {
     stills(list) { showStills(Array.isArray(list) ? list : []); },   // step 42: the module hands over new stills
     // The module calls this when the rooms are built and the shaders compiled.
-    ready(a) { api = a; api.setSpace(space); sync(); root.classList.add('ready'); btnPC.focus({ preventScroll: true }); },
+    ready(a) { api = a; api.setSpace(space); sync(); root.classList.add('ready'); const bx = document.getElementById('playXbox'); ((bx && bx.classList.contains('xbox')) ? bx : btnPC).focus({ preventScroll: true }); },
     vr(ok) { vrOK = ok; sync(); },
     where() { /* step 30.1 */ },
     hide() { root.hidden = true; },
@@ -2108,7 +2159,7 @@ const LITE = (() => {
     }
   } catch (e) { /* unknown GPU: not lite by itself */ }
   const weak = /Intel|Apple M[1-4](?!\s*(Pro|Max|Ultra))|Apple GPU|SwiftShader|llvmpipe|Mali|Adreno|PowerVR|AMD Radeon(\(TM\))? Graphics|Radeon Vega/i.test(gpu);
-  const xbox = /Xbox/i.test(ua);   // Xbox: Edge on a console GPU budget: Lite by default
+  const xbox = /Xbox/i.test(ua) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })();   // Xbox (or Play on Xbox chosen): Lite by default
   const on = headset ? false : m ? m[1] === 'on' : o === 'on' ? true : o === 'off' ? false : weak || xbox;
   return { on, auto: !m && o !== 'on' && o !== 'off', weak: weak || xbox, xbox, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
 })();
@@ -2975,7 +3026,7 @@ const BOOT = (() => {
   const KEY = 'cqc.boot', now = Date.now(), B = { n: 1, stage: 'starting', pct: 0, mb: 0, at: now, done: false, lost: 0, prev: null, light: false, nav: '', key: KEY, phone: false };
   // Step 46: a phone or tablet (not a headset browser) always takes the light start.
   B.phone = (matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window) && !/OculusBrowser|Quest|Pico|Wolvic/i.test(navigator.userAgent);
-  if (/Xbox/i.test(navigator.userAgent)) B.phone = true;           // Xbox (Edge): a console's memory limit and CPU, so the phone's light start (half-size materials, rooms in slices)
+  if (/Xbox/i.test(navigator.userAgent) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })()) B.phone = true;           // Xbox (Edge): a console's memory limit and CPU, so the phone's light start (half-size materials, rooms in slices)
   let prev = null;
   try { prev = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { prev = null; }
   try { const nv = performance.getEntriesByType('navigation')[0]; B.nav = nv ? nv.type : ''; } catch (e) { /* not reported */ }
@@ -4720,7 +4771,7 @@ document.body.appendChild(renderer.domElement);
 // textures + a ~230 MB script heap). Every texture a rendered scene uses is shrunk to at most LOWMEM.cap px (aspect kept)
 // before it is first uploaded (renderer.render is wrapped: one scan per scene a second, new textures only), and the full
 // image is let go. Data / compressed / render-target textures are left alone.
-const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || (/Xbox/i.test(navigator.userAgent) && !/[?&]lowmem=off\b/.test(QS)), cap: 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
+const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
 function lowmemTex(t) {
   if (!t || LOWMEM.seen.has(t)) return; LOWMEM.seen.add(t);
   if (t.isDataTexture || t.isCompressedTexture || t.isDepthTexture || t.isVideoTexture || t.isCubeTexture || t.isData3DTexture || t.isDataArrayTexture || t.isRenderTargetTexture || t.isFramebufferTexture) return;
@@ -10971,6 +11022,7 @@ function netStart() {
   if (NET.mode === 'vs' && NET.role === 'host') { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
   netSay(`Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
   if (NET.role === 'host') { const sr = netCurSafe(); netSendRel({ t: 'hi', v: 2, mode: NET.mode, slot: sr ? sr.slot : null }); }
+  if (NET.role === 'host' && NET.mode === 'vs') setTimeout(() => { if (netLive() && !VS.on) netVsBegin(); }, 2500);   // versus: the first match starts on its own
 }
 function netLeave(quiet = false) {
   const was = NET.st;
@@ -11061,6 +11113,14 @@ NET.pup = new Map(); NET.nidC = 0; NET.tgt = null; NET.remW = new THREE.Vector3(
 const VS = { on: false, B: 0, side: 0, my: 0, lock: false, goAt: 0, ready: false, otherReady: false, placed: false, score: [0, 0], wasDead: false, last: -1 };
 const netCoop = () => netLive() && NET.mode === 'coop';
 const netHostAI = () => !netLive() || (NET.mode === 'coop' && NET.role === 'host');   // who runs the AI men
+// The title's choice (Solo / Host / Join, mode, code), read when you press Play.
+function netTitleBegin() {
+  let c = null; try { c = window.CQC_MP ? window.CQC_MP() : null; } catch (e) { c = null; }
+  if (!c || !NET.on || NET.st !== 'off') return;
+  if (c.mode) NET.mode = c.mode === 'vs' ? 'vs' : 'coop';
+  if (c.sel === 'host') { NET.codeAt = performance.now(); netHost(); }
+  else if (c.sel === 'join') { if (/^\d{4}$/.test(c.code || '')) netJoin(c.code); else netSay('Multiplayer: type the host\'s 4-digit code (watch menu: JOIN)', 5); }
+}
 function netModeLabel() { return `Multiplayer mode: ${NET.mode === 'vs' ? 'VERSUS' : 'TOGETHER'}`; }
 function netModeToggle() {
   if (NET.st !== 'off' && NET.role !== 'host') { netSay('Only the host picks the mode'); return; }
@@ -11244,6 +11304,7 @@ function netSample(rt) {
 }
 function netTick(dt, now) {
   if (NET.st === 'off') return;
+  if (NET.st === 'host' && NET.code && performance.now() - (NET.codeAt || 0) > 20000) { NET.codeAt = performance.now(); netSay(`Multiplayer code: ${NET.code} (waiting for the other player)`, 8); }   // the code again while you wait
   netTx(dt);
   if (!netLive()) return;
   if (performance.now() - NET.lastRx > NET.lost) { netSay('Multiplayer: lost the other player'); netLeave(true); return; }
@@ -41723,6 +41784,7 @@ function mobileOn() {
 function startGame(mode) {
   if (gameStarted) return;
   gameStarted = true;
+  setTimeout(netTitleBegin, 1200);                   // multiplayer chosen on the title (Host / Join)
   const title = window.CQC_TITLE;
   if (mode === 'vr') {
     const entering = VRSTART.enter();               // requestSession runs now, before anything else
