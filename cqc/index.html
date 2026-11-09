@@ -1165,6 +1165,7 @@
   stepGo.addEventListener('click', () => {
     mpSave();
     const how = device === 'xbox' ? 'pc' : device;
+    if (device === 'xbox' && 'gamepadInputEmulation' in navigator) { try { navigator.gamepadInputEmulation = 'gamepad'; } catch (e) { /* the game sets it */ } }   // sticks to the game, not the cursor
     if (api) { try { api.start(how); } catch (e) { stepGoSub.textContent = 'Could not start: ' + (e && e.message || e); } } else if (device !== 'vr') { xbPending = how; stepGoSub.textContent = 'Starting as soon as it has loaded…'; }
   });
   window.CQC_MP = () => ({ sel: play === 'solo' ? 'off' : role, code, mode: play === 'vs' ? 'vs' : 'coop' });
@@ -1180,7 +1181,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109g · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109h · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -10942,7 +10943,7 @@ window.addEventListener('blur', () => { DESK_ADS.key = DESK_ADS.mouse = false; d
  *  so every keyboard path (holds, IR mode, grenades) works unchanged; sticks, RT and LT are direct.
  * ========================================================================== */
 const PAD = { on: !/[?&]pad=off\b/.test(QS), active: false, idx: -1, lx: 0, ly: 0, run: false, idleT: 0,
-  prev: [], downAt: [], held: [], fire: false, ads: false, emu: '', lastSeen: 0,
+  prev: [], downAt: [], held: [], fire: false, ads: false, emu: '', lastSeen: 0, swapT: 0, swap: (() => { try { return localStorage.getItem('cqc.padswap.v1') === '1'; } catch (e) { return false; } })(),
   // tap / hold buttons: [code on tap, code on hold, hold s]; plain buttons: code (keydown on press, keyup on release)
   map: { 0: 'KeyE', 2: ['KeyR', 'KeyV', 0.45], 1: ['crouch', 'KeyJ', 0.35], 3: ['padSwap', 'nvg', 0.5], 4: 'Digit4', 5: 'Digit3',
     8: ['KeyG', 'KeyH', 0.5], 9: 'KeyM', 11: 'kick', 12: 'KeyF', 13: 'KeyT', 14: 'KeyX', 15: 'KeyI' },
@@ -10967,7 +10968,8 @@ function padEmu() {                                 // Edge on Xbox: cursor on m
   if (!('gamepadInputEmulation' in navigator)) return;
   try { gameStarted; } catch (e) { return; }         // still loading (gameStarted is declared further down)
   const want = PAD.on && gameStarted && !renderer.xr.isPresenting && !document.body.classList.contains('modOpen') ? 'gamepad' : 'mouse';
-  if (want !== PAD.emu) { PAD.emu = want; try { navigator.gamepadInputEmulation = want; } catch (e) { /* read-only here */ } }
+  let cur = ''; try { cur = navigator.gamepadInputEmulation; } catch (e) { /* unknown */ }
+  if (want !== PAD.emu || cur !== want) { PAD.emu = want; try { navigator.gamepadInputEmulation = want; } catch (e) { /* read-only here */ } }   // re-set while the browser still reports the other mode
 }
 setInterval(padEmu, 400);
 function padRelease() {                             // pad gone / paused: nothing stays held
@@ -10992,8 +10994,11 @@ function padPoll(dt) {
   const B = gp.buttons, A = gp.axes, now = performance.now() / 1000;
   let any = false;
   for (let i = 0; i < B.length; i++) if (B[i].pressed) { any = true; break; }
-  const [lx, ly] = padStick(A[0] || 0, A[1] || 0, PAD.dead), [rx, ry] = padStick(A[2] || 0, A[3] || 0, PAD.dead);
-  if (any || lx || ly || rx || ry) { if (!PAD.active) { PAD.active = true; ui.hint.classList.add('hidden'); toast('Controller on. Hold View for the button map', 2600); } PAD.lastSeen = now; }
+  // View + Menu held 1 s: swap the sticks (saved), for a pad that reports them the other way round
+  if (B[8] && B[8].pressed && B[9] && B[9].pressed) { if (!PAD.swapT) PAD.swapT = now; else if (now - PAD.swapT > 1 && PAD.swapT > 0) { PAD.swap = !PAD.swap; PAD.swapT = -1; try { localStorage.setItem('cqc.padswap.v1', PAD.swap ? '1' : '0'); } catch (e) { /* this visit */ } toast(PAD.swap ? 'Sticks swapped' : 'Sticks normal: left moves, right looks', 2600); } } else PAD.swapT = 0;
+  const sw = PAD.swap ? 2 : 0;
+  const [lx, ly] = padStick(A[sw] || 0, A[sw + 1] || 0, PAD.dead), [rx, ry] = padStick(A[2 - sw] || 0, A[3 - sw] || 0, PAD.dead);
+  if (any || lx || ly || rx || ry) { if (!PAD.active) { PAD.active = true; ui.hint.classList.add('hidden'); let em = ''; try { em = navigator.gamepadInputEmulation || ''; } catch (e) { /* none */ } toast(`Controller on (${gp.mapping || 'raw'}${em ? ', ' + em : ''}). Left stick moves, right looks. View + Menu 1 s swaps them`, 4000); } PAD.lastSeen = now; }
   if (!PAD.active) return;
   // left stick: move; LS click: run until the stick rests 0.4 s
   PAD.lx = lx; PAD.ly = ly;
