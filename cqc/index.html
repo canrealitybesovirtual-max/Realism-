@@ -8636,7 +8636,8 @@ function updateStreaming() {
   // What should exist right now.
   const c = stream.current.slot, safeSlot = Math.max(0, stream.frontier - S.safeBehind);
   const want = new Map([[safeSlot, 'safe']]);
-  for (let s = Math.max(safeSlot + 1, c - S.behind); s <= c + S.ahead; s++) { want.set(s, roomPlan(s).type === 'stair' ? 'stair' : 'normal'); }   // outdoor only: nothing past the yard
+  for (let s = Math.max(safeSlot + 1, c - S.behind); s <= c + S.ahead; s++) { want.set(s, roomPlan(s).type === 'stair' ? 'stair' : 'normal'); }
+  if (VS.on) netVsWant(want);                                     // multiplayer versus: the match map only   // outdoor only: nothing past the yard
 
   // Unload what's no longer wanted, but never in view.
   for (const r of [...stream.rooms.values()]) {
@@ -9047,7 +9048,7 @@ function updateDoorsPre(now) {
     if (door.free) { target = door.angle; k = 0; c = 3; }               // apartment doors: no closer, a leaf stays where you leave it
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
     const next = door.sec ? null : stream.rooms.get(door.room.slot + 1);
-    if (door.sec ? door.sec.locked : (!next || !next.active)) {     // outdoor start: a side door is locked only when it leads nowhere
+    if ((door.sec ? door.sec.locked : (!next || !next.active)) || VS.lock) {   // multiplayer versus: shut until the countdown ends     // outdoor start: a side door is locked only when it leads nowhere
       if (door.holder) { const hl = door.holder; releaseDoor(hl); if (now - (door.rattleAt || 0) > 0.4) { door.rattleAt = now; doorSfx(door, 'rattle'); pulse(hl, 0.45, 35); } }   // step 86: it won't give
       door.drive = null; k = 60; c = 15; mode = 'locked';
     }
@@ -10927,10 +10928,10 @@ function netAttach(c) {
 }
 function netStart() {
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
-  for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e);           // no AI men while two play
-  for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0;
-  netSay('Multiplayer: connected', 3);
-  netSendRel({ t: 'hi', v: 1 });
+  if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
+  if (NET.mode === 'vs' && NET.role === 'host') { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
+  netSay(`Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
+  if (NET.role === 'host') { const sr = netCurSafe(); netSendRel({ t: 'hi', v: 2, mode: NET.mode, slot: sr ? sr.slot : null }); }
 }
 function netLeave(quiet = false) {
   const was = NET.st;
@@ -10939,6 +10940,8 @@ function netLeave(quiet = false) {
   try { NET.peer && NET.peer.destroy(); } catch (e) { /* gone */ }
   NET.peer = NET.rel = NET.fast = null; NET.st = 'off'; NET.role = null; NET.rem = null; NET.buf.length = 0;
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
+  for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } }
+  NET.pup.clear(); NET.tgt = null; NET.remOk = false; NET.warp = null; VS.on = false; VS.lock = false;
   if (!quiet && was !== 'off') netSay('Multiplayer: off');
   else { try { yardUiSync(); } catch (e) { /* no menu */ } }
 }
@@ -10983,6 +10986,21 @@ function netRx(m) {
     const f = rF(r);
     playerHit(m.part === 'head' ? 'head' : 'body', NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), clamp(m.E || 1, 0.2, 1), m.k || 1);
   } else if (m.t === 'shot') netRemoteShot(m);
+  else if (m.t === 'en') { if (NET.role === 'join') netEnRx(m); }
+  else if (m.t === 'eh') { if (NET.role === 'host') netEhRx(m); }
+  else if (m.t === 'es') { if (NET.role === 'join') netEsRx(m); }
+  else if (m.t === 'hi') {
+    if (NET.role === 'join') {
+      NET.mode = m.mode === 'vs' ? 'vs' : 'coop';
+      if (NET.mode === 'coop' && m.slot != null) { NET.warp = m.slot; stream.frontier = m.slot + CONFIG.stream.safeBehind; netSay('Together: joining the host\'s safe room', 3); }
+      else if (NET.mode === 'vs') netSay('Versus: the host starts the match from the watch menu', 5);
+      for (const e of [...ENEMY.list]) if (!e.net && !e.puppet) removeEnemy(e);
+    }
+  }
+  else if (m.t === 'vs') { if (NET.role === 'join') netVsApply(m, 1); }
+  else if (m.t === 'vsready') VS.otherReady = true;
+  else if (m.t === 'vsgo') { if (NET.role === 'join') VS.goAt = performance.now() + 15000; }
+  else if (m.t === 'vsdead') { VS.score[0]++; netSay(`Got him. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
 }
 function netRemoteShot(m) {
   const r = stream.rooms.get(m.s); if (!r || !r.active) return;
@@ -10998,7 +11016,179 @@ function netRemoteShot(m) {
   headWorld(NET._h);
   enemyShotSfx(o.distanceTo(NET._h), e && e.w ? e.w.gun : 'smg', o.clone(), false);
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcNet = { NET, netRx, netStart, netTick, netHost, netJoin, netLeave };
+// ---- modes: TOGETHER (co-op: the host runs the AI, the joiner sees copies) and VERSUS (own safe rooms, two rooms between) ----
+NET.mode = (() => { try { return localStorage.getItem('cqc.netmode.v1') === 'vs' ? 'vs' : 'coop'; } catch (e) { return 'coop'; } })();
+NET.pup = new Map(); NET.nidC = 0; NET.tgt = null; NET.remW = new THREE.Vector3(); NET.remOk = false; NET.remDead = false; NET.enAcc = 0;
+const VS = { on: false, B: 0, side: 0, my: 0, lock: false, goAt: 0, ready: false, otherReady: false, placed: false, score: [0, 0], wasDead: false, last: -1 };
+const netCoop = () => netLive() && NET.mode === 'coop';
+const netHostAI = () => !netLive() || (NET.mode === 'coop' && NET.role === 'host');   // who runs the AI men
+function netModeLabel() { return `Multiplayer mode: ${NET.mode === 'vs' ? 'VERSUS' : 'TOGETHER'}`; }
+function netModeToggle() {
+  if (NET.st !== 'off' && NET.role !== 'host') { netSay('Only the host picks the mode'); return; }
+  if (NET.st === 'on') { netSay('Leave the game to change the mode'); return; }
+  NET.mode = NET.mode === 'vs' ? 'coop' : 'vs';
+  try { localStorage.setItem('cqc.netmode.v1', NET.mode); } catch (e) { /* storage off */ }
+  netSay(NET.mode === 'vs' ? 'Versus: your own safe rooms, two random rooms between you' : 'Together: same safe room, same game');
+}
+function netCurSafe() { let s = null; for (const r of stream.rooms.values()) if (r.kind === 'safe' && r.active && (!s || r.slot > s.slot)) s = r; return s; }
+// Put you in a room: on its floor, standing, facing its exit (back = facing its entry), at the start spot (mirrored when back).
+function netPlaceIn(room, back) {
+  for (const h of [deskHand, ...vrHands]) if (h && h.prop && !gunOf(h)) release(h, new THREE.Vector3());
+  stance.crouchOn = false; xrState.crouchOn = false; xrState.crouchCur = 0;
+  level.floor = room.origin.y; level.flat = true; applyHeight(); rig.updateMatrixWorld(true);
+  const yw = rYaw(room) + (back ? Math.PI : 0);
+  if (renderer.xr.isPresenting) rotateRigAroundHead(yw - yawOf(camera)); else { look.yaw = yw; look.pitch = 0; applyLook(); }
+  rig.updateMatrixWorld(true); headWorld(_pr.h);
+  const s = CONFIG.player.start, sx = back ? -s.x : s.x, sz = back ? -s.z : s.z;
+  rig.position.x += rWX(room, sx) - _pr.h.x; rig.position.z += rWZ(room, sz) - _pr.h.z; rig.updateMatrixWorld(true);
+  _vel.set(0, 0, 0); playerState.hasPrev = false; deathFade = 1;
+  try { safeRestock(room); } catch (e) { /* not a safe room */ }
+}
+// --- co-op: the host's men copied to the joiner -------------------------------------------------------------------
+const _nm = { v: new THREE.Vector3(), w: new THREE.Vector3() };
+function netEnTx(dt) {                                            // host, 15 Hz
+  NET.enAcc += dt; if (NET.enAcc < 1 / 15 || !NET.fast || !NET.fast.open) return; NET.enAcc = 0;
+  const L = [];
+  for (const e of ENEMY.list) {
+    if (e.net || e.puppet || !e.room || !e.room.active) continue;
+    if (!e.nid) e.nid = ++NET.nidC;
+    if (!e.lk) e.lk = Object.keys(ENEMY_LOADOUTS).find((k) => ENEMY_LOADOUTS[k] === e.w) || 'smg';
+    let w = null;
+    if (!e.dead && (e.engaged || e.watch)) { threatLocal(e, _nm.v); w = [+_nm.v.x.toFixed(2), +_nm.v.y.toFixed(2), +_nm.v.z.toFixed(2)]; }
+    L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w]);
+  }
+  try { NET.fast.send({ t: 'en', L }); } catch (er) { /* dropped */ }
+}
+function netEnRx(m) {                                             // joiner
+  const now = performance.now(), seen = new Set();
+  for (const a of m.L) {
+    const [id, slot, x, z, yw, cr, aim, dead, lk, w] = a; seen.add(id);
+    const room = stream.rooms.get(slot);
+    let e = NET.pup.get(id);
+    if (e && (!ENEMY.list.includes(e) || e.room !== room)) { if (ENEMY.list.includes(e) && !e.dead) removeEnemy(e); NET.pup.delete(id); e = null; }
+    if (!room || !room.active) continue;
+    if (!e) {
+      if (dead) continue;
+      e = spawnEnemy(room, { gun: lk || 'smg', skill: 0, aggr: 0 }, 0, []); if (!e) continue;
+      e.puppet = id; e.ammo = 1e9; e.pos.set(x, z); e.yaw = yw;
+      if (room.enemies) { const i = room.enemies.indexOf(e); if (i >= 0) room.enemies.splice(i, 1); }
+      NET.pup.set(id, e);
+    }
+    e.pupT = now; e.pupX = x; e.pupZ = z; e.pupYw = yw; e.crouchT = cr; e.aimT = aim;
+    if (w) { e.watch = e.watch || new THREE.Vector3(); e.watch.set(w[0], w[1], w[2]); } else e.watch = null;
+    if (dead && !e.dead) { try { enemyDie(e, 'torso', _nm.w.set(Math.sin(yw), 0, Math.cos(yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } }
+  }
+  for (const [id, e] of NET.pup) if (!seen.has(id) && now - (e.pupT || 0) > 1500) { if (ENEMY.list.includes(e) && !e.dead) removeEnemy(e); NET.pup.delete(id); }
+}
+function netPupPose(e, dt, now) {                                 // joiner: ease toward the host's copy, then pose
+  if (e.dead) return;
+  const k = 1 - Math.exp(-dt * 12), px = e.pos.x, pz = e.pos.y;
+  if (e.pupX !== undefined) { e.pos.x += (e.pupX - e.pos.x) * k; e.pos.y += (e.pupZ - e.pos.y) * k; e.yaw += Math.atan2(Math.sin(e.pupYw - e.yaw), Math.cos(e.pupYw - e.yaw)) * k; }
+  e.speed = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
+  e.engaged = false; e.los = false; e.state = 'idle';
+  e.poseAcc = 0; enemyPose(e, dt, now);
+}
+// Host: which player a man fights (the nearer one, with a margin so he does not flip).
+function netTargetFor(e) {
+  if (!netCoop() || NET.role !== 'host' || !NET.remOk || NET.remDead) return null;
+  if (!e.room || !NET.remRoom || Math.abs(NET.remRoom.slot - e.room.slot) > 1) { e.tgtR = false; return null; }
+  if (playerState.dead) { e.tgtR = true; return NET.remW; }
+  headWorld(_nm.v);
+  const ex = rWX(e.room, e.pos.x), ez = rWZ(e.room, e.pos.y);
+  const dl = Math.hypot(_nm.v.x - ex, _nm.v.z - ez), dr = Math.hypot(NET.remW.x - ex, NET.remW.z - ez);
+  e.tgtR = e.tgtR ? dr < dl * 1.2 : dr < dl * 0.8;
+  return e.tgtR ? NET.remW : null;
+}
+// Host, while a man targets the other player: rays and hits go to him.
+function netTgtRayHit(o, dir) {
+  const h = NET.tgt; let best = null;
+  const th = capIntersect(o, dir, h, h, 0.11); if (th > 0) best = { t: th, part: 'head' };
+  _pr.a.copy(h); _pr.a.y -= 0.24; _pr.b.set(h.x, h.y - 1.3, h.z);
+  const tb = capIntersect(o, dir, _pr.a, _pr.b, 0.19); if (tb > 0 && (!best || tb < best.t)) best = { t: tb, part: 'body' };
+  return best;
+}
+function netTgtHit(part, dir, E, k) {
+  const r = NET.remRoom, f = r ? rF(r) : 1;
+  netSendRel({ t: 'hit', part: part === 'head' ? 'head' : 'body', d: [dir.x * f, dir.y, dir.z * f], E, k });
+}
+// Joiner: your round on a copied man asks the host to apply it.
+function netPupHit(hit, dir, d, E) {
+  const f = rF(hit.e.room);
+  netSendRel({ t: 'eh', i: hit.e.puppet, part: hit.h.part, d: [dir.x * f, dir.y, dir.z * f], E, g: d && d.type ? d.type : (Object.keys(WEAPON_DEFS).find((k) => WEAPON_DEFS[k] === d) || 'smg') });
+  try { impactFx('flesh', NET._p.copy(hit.e.root.position).setY(hit.e.root.position.y + 1.2), dir); } catch (er) { /* no fx */ }
+}
+function netEhRx(m) {                                             // host: the joiner hit one of your men
+  const e = ENEMY.list.find((x) => x.nid === m.i); if (!e || (e.dead && !e.downed)) return;
+  const h = (e.hit || HITBOX).find((q) => q.part === m.part) || (e.hit || HITBOX)[0];
+  const f = rF(e.room);
+  try { enemyShot({ e, h, t: 0 }, NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), WEAPON_DEFS[m.g] || WEAPON_DEFS.smg, clamp(m.E || 1, 0.2, 5)); } catch (er) { /* missed */ }
+}
+// Host: a man fired: the joiner plays it from his copy.
+function netEnShot(e, o, d) {
+  if (!netCoop() || NET.role !== 'host' || !e.nid) return;
+  const r = e.room, f = rF(r);
+  netSendRel({ t: 'es', i: e.nid, o: [rLX(r, o.x), o.y - r.origin.y, rLZ(r, o.z)], d: [d.x * f, d.y, d.z * f] });
+}
+function netEsRx(m) {
+  const e = NET.pup.get(m.i); if (!e || e.dead || !e.room || !e.room.active) return;
+  const r = e.room, f = rF(r), o = NET._p.set(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2])), d = NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize();
+  if (e.gun) { flashBurst(e.gun, e.gun.def); if (e.gun.def.flashLight > 0) { pool.muzzle.position.copy(o).addScaledVector(d, 0.5); pool.muzzleI = e.gun.def.flashLight; pool.muzzle.intensity = pool.muzzleI; pool.muzzleT = pool.muzzleT0 = 0.045; } e.recoilV += (e.w && e.w.recoil) || 0.6; }
+  try { traceBullet(o, d, e.gun ? e.gun.def : WEAPON_DEFS.smg, e.w ? e.w.gun : 'smg', { enemy: true, range: CONFIG.weapons.rayRange }); } catch (er) { /* no trace */ }
+  headWorld(NET._h); enemyShotSfx(o.distanceTo(NET._h), e.w ? e.w.gun : 'smg', o.clone(), false);
+}
+// --- versus ----------------------------------------------------------------------------------------------------
+function netVsBegin() {
+  if (NET.role !== 'host' || !netLive() || NET.mode !== 'vs') return;
+  let top = _plans.length; for (const r of stream.rooms.values()) top = Math.max(top, r.slot + 1);
+  const B = top + 30 + Math.floor(Math.random() * 400), k = [Math.random() < 0.35 ? 'stair' : 'room', Math.random() < 0.35 ? 'stair' : 'room'];
+  const m = { t: 'vs', B, k, r: Math.floor(Math.random() * 1e9) };
+  netSendRel(m); netVsApply(m, 0);
+}
+function netVsApply(m, side) {
+  RANGE.armed = false;
+  roomPlan(m.B + 4);
+  const R = mulberry32(m.r >>> 0);
+  for (let j = 1; j <= 3; j++) {                                   // B+1, B+2 the rooms between you (random kind or a stairwell), B+3 his safe room
+    const s = m.B + j, p = _plans[s], prev = _plans[s - 1], lv = prev.level;
+    const want = j < 3 ? m.k[j - 1] : 'room';
+    if (want === 'stair') {
+      const SC = CONFIG.stairs; let dir = R() < 0.5 ? 1 : -1; if (lv + dir > SC.levels[1]) dir = -1; if (lv + dir < SC.levels[0]) dir = 1;
+      _plans[s] = { slot: s, wing: p.wing, k: p.k, type: 'stair', dir, entryLevel: lv, level: lv + dir, number: `${p.wing.letter}-${floorDigit(lv)}00` };
+    } else {
+      let type = p.type;
+      if (type === 'stair' || !ROOM_TYPES[type]) { const opts = Object.keys(p.wing.theme.types).filter((t) => t !== 'stair' && ROOM_TYPES[t]); type = opts[Math.floor(R() * opts.length)] || 'storage'; }
+      _plans[s] = Object.assign({}, p, { type, level: lv, entryLevel: undefined, dir: undefined, number: `${p.wing.letter}-${floorDigit(lv)}${String(j).padStart(2, '0')}` });
+    }
+  }
+  for (const k of [..._paramCache.keys()]) if (k >= m.B) _paramCache.delete(k);
+  _facing.length = Math.min(_facing.length, m.B);
+  anchors.length = Math.min(anchors.length, m.B); anchorY.length = Math.min(anchorY.length, m.B);
+  Object.assign(VS, { on: true, B: m.B, side, my: side ? m.B + 3 : m.B, lock: true, goAt: 0, ready: false, otherReady: false, placed: false, score: [0, 0], wasDead: false, last: -1 });
+  netSay(`Versus: building the map (${m.k.map((x) => x === 'stair' ? 'stairwell' : 'room').join(' + ')} between you)`, 4);
+}
+// The streaming plan in a versus match: your safe room, the two between, his safe room. Nothing else.
+function netVsWant(want) { want.clear(); want.set(VS.B, 'safe'); for (const j of [1, 2]) want.set(VS.B + j, roomPlan(VS.B + j).type === 'stair' ? 'stair' : 'normal'); want.set(VS.B + 3, 'safe'); }
+function netVsTick() {
+  if (!VS.on) return;
+  const all = [0, 1, 2, 3].every((j) => { const r = stream.rooms.get(VS.B + j); return r && r.active; });
+  const mine = stream.rooms.get(VS.my);
+  if (!VS.placed && all && mine && mine.kind === 'safe') { netPlaceIn(mine, VS.side === 1); VS.placed = true; VS.ready = true; netSendRel({ t: 'vsready' }); netSay('Versus: in your safe room. Waiting for the other player', 4); }
+  if (NET.role === 'host' && VS.ready && VS.otherReady && !VS.goAt) { netSendRel({ t: 'vsgo' }); VS.goAt = performance.now() + 15000; }
+  if (VS.goAt && VS.lock) {
+    const left = Math.ceil((VS.goAt - performance.now()) / 1000);
+    if (left !== VS.last) { VS.last = left; if (left > 0) netSay(left === 15 ? 'Versus: 15 s to gear up. Doors open at 0' : `${left}`, 1); }
+    if (left <= 0) { VS.lock = false; netSay('GO', 2); }
+  }
+  if (playerState.dead && !VS.wasDead) { VS.score[1]++; netSendRel({ t: 'vsdead' }); netSay(`Down. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
+  VS.wasDead = playerState.dead;
+}
+function netVsRespawn() {
+  const r = stream.rooms.get(VS.my); if (!r || !r.active) return false;
+  netPlaceIn(r, VS.side === 1);
+  refillInventory(); playerState.dead = false; playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0; xrState.crouchOn = false; hpUi();
+  return true;
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcNet = { NET, VS, netRx, netStart, netTick, netHost, netJoin, netLeave, netVsBegin, netVsApply, netEnRx, netPlaceIn };
 (function netAutoJoin() {                                        // ?join=1234: join as soon as the game is running
   const m = /[?&]join=(\d{4})\b/.exec(location.search); if (!m || !NET.on) return;
   const t = setInterval(() => { try { if (gameStarted) { clearInterval(t); netJoin(m[1]); } } catch (e) { /* not yet */ } }, 500);
@@ -11019,8 +11209,13 @@ function netTick(dt, now) {
   if (!netLive()) return;
   if (performance.now() - NET.lastRx > 6000) { netSay('Multiplayer: lost the other player'); netLeave(true); return; }
   if (NET.off == null) return;
-  const s = netSample(performance.now() - NET.off - NET.delay); if (!s) return;
+  if (NET.mode === 'coop' && NET.role === 'host') netEnTx(dt);
+  netVsTick();
+  if (NET.warp != null) { const wr = stream.rooms.get(NET.warp); if (wr && wr.active && wr.kind === 'safe') { netPlaceIn(wr, false); NET.warp = null; } }
+  const s = netSample(performance.now() - NET.off - NET.delay); if (!s) { NET.remOk = false; return; }
   const r = stream.rooms.get(s.s);
+  NET.remRoom = r && r.active ? r : null; NET.remOk = !!NET.remRoom; NET.remDead = !!s.d;
+  if (NET.remRoom) NET.remW.set(rWX(r, s.x), r.origin.y + s.y, rWZ(r, s.z));
   let e = NET.av;
   if (e && (!ENEMY.list.includes(e) || e.room !== r || (!s.d && e.dead) || NET.avGun !== (s.g || 'smg'))) { if (ENEMY.list.includes(e)) removeEnemy(e); e = NET.av = null; }
   if (!r || !r.active) return;
@@ -11106,7 +11301,7 @@ const _head = new THREE.Vector3(), _vel = new THREE.Vector3(), _target = new THR
 const _q = new THREE.Quaternion(), _euler = new THREE.Euler();
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const yawOf = (obj) => { obj.getWorldQuaternion(_q); return _euler.setFromQuaternion(_q, 'YXZ').y; };
-const headWorld = (out) => out.setFromMatrixPosition(camera.matrixWorld);
+const headWorld = (out) => (NET.tgt ? out.copy(NET.tgt) : out.setFromMatrixPosition(camera.matrixWorld));   // multiplayer: inside a man's update, the player he fights
 
 // Step 86: bumping into things is felt (self sound, not positional; the men do not hear it). ?bump=off
 const BUMP_ON = !/[?&]bump=off/.test(QS);
@@ -25850,7 +26045,7 @@ function stairMenActivated(room) {
 function enemiesRoomActivated(room) {
   if (room.kind === 'stair') { try { stairMenActivated(room); } catch (e) { console.warn('stairwell men not placed', e); } return; }
   if (room.kind !== 'normal') return;
-  if (netLive()) { room.enemies = []; return; }                // multiplayer: no AI men while two play
+  if (!netHostAI()) { room.enemies = []; return; }                // multiplayer: no AI men while two play
   const plan = loopPlan(room);                // step 9: the director's plan, made once per room
   room.enemies = [];
   const taken = [];
@@ -26618,6 +26813,7 @@ function enemyShoot(e, now) {
   muzzleSmoke(_es.m, _es.b, W.gun);                             // step 10
   headWorld(_ev.h);
   enemyShotSfx(_es.m.distanceTo(_ev.h), W.gun, _es.m, !!W.sup);
+  netEnShot(e, _es.m, _es.b);                                   // multiplayer (together): the joiner sees it
 }
 function enemyShotSfx(dist, type = 'smg', at = null, sup = false) {
   if (!audio.ctx || audio.ctx.state !== 'running') return;
@@ -26650,6 +26846,7 @@ function enemyShotSfx(dist, type = 'smg', at = null, sup = false) {
  * ------------------------------------------------------------------------- */
 const _pr = { h: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3() };
 function playerRayHit(o, dir) {
+  if (NET.tgt) return netTgtRayHit(o, dir);                     // multiplayer: he is shooting at the other player
   if (playerState.dead) return null;
   headWorld(_pr.h);
   let best = null;
@@ -26662,6 +26859,7 @@ function playerRayHit(o, dir) {
   return best;
 }
 function nearMiss(o, dir) {
+  if (NET.tgt) return;
   headWorld(_pr.h);
   _pr.a.subVectors(_pr.h, o);
   const t = _pr.a.dot(dir);
@@ -26678,6 +26876,7 @@ function nearMiss(o, dir) {
 // Step 9: k scales the hit (a buckshot pellet is a share of a 9 mm round). Nine pellets
 // arriving together give one jolt, one thump and one haptic pulse, not nine.
 function playerHit(part, dir, E = 1, k = 1) {
+  if (NET.tgt) { netTgtHit(part, dir, E, k); return; }        // multiplayer: the other player takes it
   if (playerState.dead || MOD.god) return;                      // step 57: god mode
   const C = CONFIG.enemy, now = performance.now() / 1000;
   const dmg = (part === 'head' ? C.playerDmg.head : C.playerDmg.body) * clamp(E, 0.2, 1) * k * MENU_FX.dmgK;   // step 11: terminal difficulty / mode
@@ -26725,6 +26924,7 @@ function updatePlayerVitals(dt, now) {
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
 function respawnPlayer() {
+  if (VS.on && netVsRespawn()) return;                          // multiplayer versus: back in your own safe room
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
   // pulled back to it so it stays the safe room.
   const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
@@ -26797,7 +26997,8 @@ function enemyRayTest(o, dir, maxT) {
   return best;
 }
 function enemyShot(hit, dir, d, E) {
-  if (hit.e.net) { netHit(hit, dir, d, E); return; }          // multiplayer: the shooter decides; the other player takes it
+  if (hit.e.net) { netHit(hit, dir, d, E); return; }
+  if (hit.e.puppet) { netPupHit(hit, dir, d, E); return; }   // multiplayer (together): the host applies it          // multiplayer: the shooter decides; the other player takes it
   const e = hit.e, h = hit.h, C = CONFIG.enemy, now = wnow();   // step 45: world time
   loopShotHit();                                                // step 9: accuracy (once per trigger pull)
   _hc.l.copy(dir).negate();
@@ -28071,7 +28272,9 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if (e.dead || !e.room.active) continue;
     if (!(e.room.visible || e.room === stream.current) || !e.room.group.visible || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
     if (e.net) { e.poseAcc = 0; enemyPose(e, dt, now); continue; }   // multiplayer: the other player (posed from his packets, no AI)
+    if (e.puppet) { netPupPose(e, dt, now); continue; }          // multiplayer (together): a copy of one of the host's men
     if (e.surr) { surrTick(e, dt, now); continue; }             // step 117: he has given up (his own brain, move and pose)
+    NET.tgt = netTargetFor(e);                                  // multiplayer (together, host): he may be fighting the other player
     enemyThink(e, dt, now);
     if (EFB.on) efbTick(e, dt, now);                            // fall back under fire (CONFIG.enemy.fallback)
     enadeTick(e, dt, now);                                      // enemy grenades (CONFIG.enemy.nades, ?enade=off)
@@ -28084,6 +28287,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if (!eHz || e.poseAcc >= 1 / eHz) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
     enemyFire(e, dt, now);
   }
+  NET.tgt = null;
 }
 
 /* ---------------------------------------------------------------------------
@@ -48597,6 +48801,8 @@ function stealthMeter(dt) {
  * ------------------------------------------------------------------------- */
 var YARD_CELLS = [
   ['ynet', () => netLabel(), () => { if (NET.st === 'off') netHost(); else netLeave(); }],
+  ['ymode', () => netModeLabel(), () => netModeToggle()],
+  ['yvs', () => VS.on ? `Versus: you ${VS.score[0]} : ${VS.score[1]} them · rematch` : 'Versus: START MATCH (host)', () => { if (NET.role === 'host' && netLive() && NET.mode === 'vs') netVsBegin(); else netSay(NET.mode !== 'vs' ? 'Pick VERSUS mode first' : 'The host starts it, once connected'); }],
   ['yjoin', () => NET.st === 'on' ? `Joined game ${NET.code}` : 'Multiplayer: JOIN a game', () => { if (NET.st !== 'on') netJoin(); }],
   ['ystealth', () => `Stealth: ${stealthState().on ? stealthState().diff.toUpperCase() : 'OFF'}`, () => { const S = stealthState(), o = ['off', 'easy', 'normal', 'hard'], c = S.on ? S.diff : 'off', n = o[(o.indexOf(c) + 1) % 4]; S.on = n !== 'off'; if (S.on) S.diff = n; stealthSave(); yardUiSync(); }],
   ['ymeter', () => `Detection meter: ${({ on: 'ON', min: 'MINIMAL', off: 'OFF' })[stealthState().meter]}`, () => { const S = stealthState(), o = ['on', 'min', 'off']; S.meter = o[(o.indexOf(S.meter) + 1) % 3]; stealthSave(); yardUiSync(); }]
