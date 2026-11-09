@@ -1196,7 +1196,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109t · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109v · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -11052,6 +11052,15 @@ function padPoll(dt) {
   PAD.lx = lx; PAD.ly = ly;
   if (B[10] && B[10].pressed && !PAD.prev[10]) PAD.run = !PAD.run;
   if (Math.hypot(lx, ly) < 0.2) { PAD.idleT += dt; if (PAD.idleT > 0.4) PAD.run = false; } else PAD.idleT = 0;
+  // the bench cursor on demand: Y at the vise (a gun clamped, within reach) shows / hides it, B hides it
+  if (BZ.on) {
+    const yE = B[3] && B[3].pressed && !PAD.prev[3], bE = B[1] && B[1].pressed && !PAD.prev[1];
+    if (yE && (BZ.padOn || bzCan())) { BZ.padOn = !BZ.padOn; BZ.dismissed = false; PAD.eat = PAD.eat || {}; PAD.eat[3] = true; toast(BZ.padOn ? 'Cursor: right stick moves, A / RT picks, Y or B closes' : 'Cursor off', 2200); }
+    else if (bE && BZ.padOn) { BZ.padOn = false; PAD.eat = PAD.eat || {}; PAD.eat[1] = true; }
+    if (BZ.padOn && !bzCan()) BZ.padOn = false;
+    if (!BZ.padOn && bzCan() && !BZ.hintT) { BZ.hintT = 1; toast('Press Y for a cursor to fit or take off parts', 3000); }
+    if (!bzCan()) BZ.hintT = 0;
+  }
   // bench zoom (a gun in the vise): the right stick moves the cursor over the parts instead of the look; A / RT picks
   if (BZ.on && BZ.want && BZ.applied) {
     if (rx || ry) { BZ.nx = clamp(BZ.nx + rx * 1.1 * dt, -1, 1); BZ.ny = clamp(BZ.ny - ry * 1.1 * dt, -1, 1); bzCursor(); bzPick(); bzLabel(); }
@@ -11078,8 +11087,10 @@ function padPoll(dt) {
     const b = +k, m = PAD.map[k], p = !!(B[b] && B[b].pressed), was = !!PAD.prev[b];
     if (Array.isArray(m)) {                          // tap / hold
       if (p && !was) { PAD.downAt[b] = now; PAD.held[b] = false; }
-      if (p && !PAD.held[b] && now - PAD.downAt[b] >= m[2]) { PAD.held[b] = true; padKey(m[1], true); padKey(m[1], false); }
-      if (!p && was && !PAD.held[b]) { padKey(m[0], true); padKey(m[0], false); }
+      const eat = PAD.eat && PAD.eat[b];             // consumed by the bench cursor toggle
+      if (p && !eat && !PAD.held[b] && now - PAD.downAt[b] >= m[2]) { PAD.held[b] = true; padKey(m[1], true); padKey(m[1], false); }
+      if (!p && was && !PAD.held[b] && !eat) { padKey(m[0], true); padKey(m[0], false); }
+      if (!p && eat) PAD.eat[b] = false;
       if (!p) PAD.held[b] = false;
     } else if (p !== was) { if (m === 'kick') padKey(m, p); else { padKey(m, p); PAD.held[b] = p; } }
     PAD.prev[b] = p;
@@ -42100,6 +42111,20 @@ async function xboxWarm(say) {
       scene.add(sp); xbTmp.push(sp);
     }
   } catch (e) { /* compiles when it shows */ }
+  // the first man spawned built his model, gun template, magazine and LODs on the spot (~0.6 s + a long follow-up task
+  // when the next room came in): one of each loadout and rifle kit is spawned here, drawn by the compile pass, removed after
+  const xbMen = [];
+  try {
+    const R0 = stream.current;
+    if (R0 && ENEMY.models[0]) {
+      say('Preparing the enemies…'); await wait();
+      for (const sp of [{ gun: 'smg', kit: 0 }, { gun: 'pistol', kit: 1 }, { gun: 'shotgun', kit: 1 }, { gun: 'smg', kit: 1 }]) {
+        try { const e = spawnEnemy(R0, Object.assign({ skill: 0.4, aggr: 0.4 }, sp), xbMen.length, []); if (e) { e.state = 'idle'; xbMen.push(e); } } catch (er) { /* spawns normally later */ }
+        await wait();
+      }
+      await new Promise((r) => setTimeout(r, 1500));               // idle work they queue (LODs) done before the game starts
+    }
+  } catch (e) { console.warn('[xbox] enemy warm-up', e); }
   const objs = [], seen = new Set();
   scene.traverseVisible((o) => {
     if (!o.material || !(o.isMesh || o.isPoints || o.isLine || o.isSprite)) return;
@@ -42160,6 +42185,7 @@ async function xboxWarm(say) {
   } catch (e) { console.warn('[xbox] gun warm-up', e); }
   for (const f of XB_PRE) { try { f(false); } catch (e) { /* back out of view */ } }
   for (const sp of xbTmp) scene.remove(sp);
+  for (const e of xbMen) { try { removeEnemy(e); } catch (er) { /* gone with the room */ } }
   say('Preparing graphics 100%'); await wait();
 }
 function startGame(mode) {
@@ -44694,7 +44720,9 @@ function bzMeasure(g) {
 }
 // Your horizontal distance to the vise (camera = your own pose when called).
 function bzDist() { const R = WB.room; headWorld(BZ.v); return Math.hypot(BZ.v.x - rWX(R, WB.vise.x), BZ.v.z - rWZ(R, WB.vise.z)); }
-function bzWanted() {
+// Controller: the bench cursor on demand (Y at the vise turns it on and off, B leaves); no pointer lock needed.
+function bzWanted() { return bzCan() && (!PAD.active || BZ.padOn); }
+function bzCan() {
   if (!BZ.on || comfort.benchZoom === false || renderer.xr.isPresenting || IS_TOUCH || !ready) return false;
   const g = WB.open ? WB.gun : null, R = WB.room;
   if (!g || !g.prop || g.prop.removing || g.primary || !R || !R.active || stream.current !== R) return false;
@@ -44873,7 +44901,7 @@ if (BZ.on) {
     bzPick();
     if (BZ.hk) { e.stopImmediatePropagation(); bzAct(); }
   }, true);
-  document.addEventListener('pointerlockchange', () => { if (BZ.want && document.pointerLockElement !== canvas) BZ.dismissed = true; });   // Esc leaves
+  document.addEventListener('pointerlockchange', () => { if (BZ.want && !BZ.padOn && document.pointerLockElement !== canvas) BZ.dismissed = true; });   // Esc leaves
 }
 // COMFORT (computer): the height row's right side carries the switch. False = draw the row as before.
 function bzComfortRow(y, rh) {
