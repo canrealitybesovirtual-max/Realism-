@@ -25354,6 +25354,12 @@ function enemyCurl(e, k) {
 }
 // Driver -> skin. Arms take their twist from the driver's real elbow bend.
 const _skW = { d1: new THREE.Vector3(), d2: new THREE.Vector3(), n1: new THREE.Vector3(), n2: new THREE.Vector3(), h: new THREE.Vector3(), F: new THREE.Quaternion() };
+// PERF (raids): the driver was refreshed once at the top of enemySkinSync, so its bones' world matrices are current: read them
+// directly instead of getWorldPosition / getWorldQuaternion, which climbed to the scene root and recomputed every ancestor per call.
+const _mwP = new THREE.Vector3(), _mwS = new THREE.Vector3();
+function mwPos(o, v) { return v.setFromMatrixPosition(o.matrixWorld); }
+function mwQuat(o, q) { o.matrixWorld.decompose(_mwP, q, _mwS); return q; }
+function mwChain(o, stop) { const p = o.parent; if (p && p !== stop) mwChain(p, stop); if (o.matrixAutoUpdate) o.updateMatrix(); o.matrixWorld.multiplyMatrices(p.matrixWorld, o.matrix); }
 function enemySkinSync(e) {
   const S = e.skin;
   if (!S) return;
@@ -25366,17 +25372,17 @@ function enemySkinSync(e) {
     let F;
     if (k.startsWith('upperArm') || k.startsWith('foreArm')) {
       const s = k.slice(-1);
-      const a = wpos(B['upperArm' + s], _sk.a), b = wpos(B['foreArm' + s], _sk.b), c = wpos(B['hand' + s], _sk.c);
+      const a = mwPos(B['upperArm' + s], _sk.a), b = mwPos(B['foreArm' + s], _sk.b), c = mwPos(B['hand' + s], _sk.c);
       // PERF: scratch vectors (this ran per arm bone per man per frame with 6 allocations each)
       const W = _skW, d1 = W.d1.subVectors(b, a), d2 = W.d2.subVectors(c, b);
       const h = W.h.crossVectors(W.n1.copy(d1).normalize(), W.n2.copy(d2).normalize());
-      if (h.length() < 0.15) h.set(1, 0, 0).applyQuaternion(wquat(B['upperArm' + s], _sk.q));
+      if (h.length() < 0.15) h.set(1, 0, 0).applyQuaternion(mwQuat(B['upperArm' + s], _sk.q));
       F = frameQ(h, (k.startsWith('upperArm') ? d1 : d2).negate(), W.F);
-    } else F = wquat(B[k], _skW.F);
+    } else F = mwQuat(B[k], _skW.F);
     const tw = F.multiply(S.O[k]);                                // world frame x the offset measured on the model
-    t.parent.updateWorldMatrix(true, false);
-    t.quaternion.copy(wquat(t.parent, _sk.q).invert().multiply(tw));
-    if (k === 'pelvis') { wpos(B.pelvis, _sk.s); t.position.copy(t.parent.worldToLocal(_sk.s)); }
+    if (t.parent !== S.holder) mwChain(t.parent, S.holder);    // PERF: refresh only up to the skin's holder (was a climb to the scene root per bone)
+    t.quaternion.copy(mwQuat(t.parent, _sk.q).invert().multiply(tw));
+    if (k === 'pelvis') { mwPos(B.pelvis, _sk.s); t.position.copy(t.parent.worldToLocal(_sk.s)); }
     t.updateWorldMatrix(false, false);   // PERF: own matrix only (was its whole subtree per driven bone: O(n^2)); every later bone refreshes its parents above, one subtree pass after the loop
   }
   S.holder.updateWorldMatrix(false, true);                        // PERF: the whole skin once, as the per-bone subtree updates left it
@@ -26902,6 +26908,9 @@ function enemiesPostPhysics(dt = 1 / 72) {
     // sleeps when still for 0.6 s, or at 6 s whatever. A man still up (neck high) is pushed over, up to 3 times.
     {
       const R = e.limp ? RAG_SETTLE_LIMP : RAG_SETTLE;             // step 91: limp (head shot, or a man down) settles quicker
+      // PERF: put to sleep once, then woken by a touch (a body falling on him, a prop, you): he used to stay awake for good
+      // (stillT stuck at -999), so every body in a raid kept the physics busy. Now he settles again within 1.5 s.
+      if (e.stillT <= -1) { e.stillT = 0; e.ragT = Math.max(e.ragT || 0, R.forceAt - 1.5); }
       e.ragT = (e.ragT || 0) + dt;
       let vmax = 0;
       for (const r of e.rag) { const v = r.body.linvel(); vmax = Math.max(vmax, Math.hypot(v.x, v.y, v.z)); }
@@ -27777,11 +27786,11 @@ function limpStart(e, down) {
  * ------------------------------------------------------------------------- */
 const _eoS = new THREE.Sphere(), _eoH = new THREE.Vector3();
 function enemyOffscreen(e) {
-  if (_vfStale || !CONFIG.enemy.offscreenPoseHz) return false;
-  const o = e.room.origin;
+  if (_vfStale || !CONFIG.enemy.offscreenPoseHz) { e.camD = 0; return false; }
   _eoS.center.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 0.9, rWZ(e.room, e.pos.y)); _eoS.radius = 1.3;
   headWorld(_eoH);
-  if (_eoS.center.distanceTo(_eoH) < 3) return false;          // close: always full rate (a gun can point where you don't look)
+  e.camD = _eoS.center.distanceTo(_eoH);
+  if (e.camD < 3) return false;          // close: always full rate (a gun can point where you don't look)
   return !_vf.intersectsSphere(_eoS);
 }
 function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt / time for the men, real for you
@@ -27800,7 +27809,9 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
     // Step 25.2: a man you can't see is posed at CONFIG.enemy.offscreenPoseHz (time adds up, nothing is skipped).
     e.poseAcc = (e.poseAcc || 0) + dt;
-    if (!enemyOffscreen(e) || e.poseAcc >= 1 / CONFIG.enemy.offscreenPoseHz) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
+    // PERF (raids): a man you can see but 10 m or more away is posed at 36 Hz (half a frame's work at 72 Hz; the pose itself is time-based)
+    const eOff = enemyOffscreen(e), eHz = eOff ? CONFIG.enemy.offscreenPoseHz : (e.camD > 10 && !e.dying && !e.rag ? 36 : 0);
+    if (!eHz || e.poseAcc >= 1 / eHz) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
     enemyFire(e, dt, now);
   }
 }
