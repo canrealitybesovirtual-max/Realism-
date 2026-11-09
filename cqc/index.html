@@ -2164,7 +2164,10 @@ const LITE = (() => {
   return { on, auto: !m && o !== 'on' && o !== 'off', weak: weak || xbox, xbox, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
 })();
 const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('')
-  + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '');   // PERF: lite = the cheap programs
+  + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '')   // PERF: lite = the cheap programs
+  // Xbox: fewer shader programs (each one compiles slowly on the console) and lighter effects; an OPTIONS switch turned ON wins.
+  + (LITE.xbox ? ['bounce', 'tfill', 'pdmg', 'handshadow', 'dazzle', 'beam', 'shelflight', 'trickle', 'mblast', 'wisp', 'laserbeam', 'splash', 'wetstep', 'glass', 'fixtures', 'buildview', 'canheat', 'mv', 'amb', 'ambbed']
+    .filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') + (OPT.gore ? '' : '&gore=mild') : '');
 
 /* ============================================================================
  *  CONFIG — every tunable number for step 1 lives here.
@@ -44829,6 +44832,8 @@ function freeItemHand(h, it, p, P, Q) {
     updateVisibility();
     setLoad('Compiling shaders', 0.96);
     await yieldFrame();
+    const XWARM = !LITE.xbox || /[?&]xboxwarm\b/.test(QS);   // Xbox: no all-at-once warm-up (it took minutes on the console); things compile when they first show
+    if (XWARM) {
     weaponsPrecompile(true);                     // flashes, hole decals, particles in view so they compile now
     enemyPrecompile(true);                       // step 7: his one shader + shadow
     genPrecompile(true);                         // step 8: every furniture/fixture material and finish
@@ -44842,6 +44847,7 @@ function freeItemHand(h, it, p, P, Q) {
     scene.updateMatrixWorld(true);
     flushShadows();
     await precompile();
+    }
     setLoad('Baking room lighting', 0.98);
     await yieldFrame();
     if (REAL_LIGHT) bakeEnvironment();           // step 58: Real lighting off = no baked bounce light
@@ -44851,9 +44857,10 @@ function freeItemHand(h, it, p, P, Q) {
     // the post chain's (no tone mapping, desktop) and the screen/VR one (tone mapped).
     // Before, the first desktop frame and the first VR frame each froze to compile.
     setLoad('Compiling shaders for desktop and VR', 0.99);
-    if (composer) { renderer.setRenderTarget(composer.readBuffer); await precompile(); renderer.setRenderTarget(null); }
-    await precompile();
+    if (XWARM && composer) { renderer.setRenderTarget(composer.readBuffer); await precompile(); renderer.setRenderTarget(null); }
+    if (XWARM) await precompile();
     renderer.render(scene, camera);              // step 7: one hidden frame so shadow-pass programs exist too
+    if (XWARM) {
     weaponsPrecompile(false);
     enemyPrecompile(false);
     genPrecompile(false);
@@ -44864,6 +44871,7 @@ function freeItemHand(h, it, p, P, Q) {
     nightPrecompile(false);
     handsPrecompile(false);
     bodyPrecompile(false);
+    }
     dirtyShadows();                              // the warm-up man must not stay in the shadow maps
     initPerf();
     applyBoost();                                // step 12: performance boost (saved with the settings)
