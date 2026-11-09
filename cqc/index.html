@@ -1166,7 +1166,7 @@
   // Diagnostics (shown on step 2): browser, WebGL 2, has the game script started, the last error, a clock (if it stops, the page is frozen).
   const diagLine = document.getElementById('diagLine');
   let gl2 = 'unknown';
-  try { const cv = document.createElement('canvas'), g = cv.getContext('webgl2'); gl2 = g ? 'yes' : 'NO'; if (g) { const lc = g.getExtension('WEBGL_lose_context'); if (lc) lc.loseContext(); } } catch (e) { gl2 = 'error'; }
+  gl2 = window.WebGL2RenderingContext ? 'yes' : 'NO';   // no test context: the Xbox allows few, and a lost one blocked the game's own
   const uaShort = (navigator.userAgent.match(/(Edg|Edge|Chrome|Firefox|Safari)\/[\d.]+/g) || []).join(' ') + (/Xbox/i.test(navigator.userAgent) ? ' Xbox' : '');
   const diagT0 = Date.now();
   let diagErr = '';
@@ -1175,7 +1175,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109d · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109f · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -2200,8 +2200,9 @@ const OPT = (() => { try { const o = JSON.parse(localStorage.getItem(OPT_KEY) ||
 const LITE = (() => {
   const m = /[?&]lite=(on|off)\b/.exec(location.search), o = OPT.lite, ua = navigator.userAgent;
   const headset = /OculusBrowser|Quest|Pico|Wolvic/i.test(ua);
+  const xbox = (/Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })());   // Edge on Xbox (its gamepadInputEmulation API gives it away even with a desktop user agent), ?xbox, or Play on Xbox chosen   // Xbox (or Play on Xbox chosen): Lite by default
   let gpu = '';
-  if (!headset) try {
+  if (!headset && !xbox) try {   // never on the Xbox: a probe context made and lost there blocked the game's own ("Error creating WebGL context")
     const c = document.createElement('canvas'), gl = c.getContext('webgl2') || c.getContext('webgl');
     if (gl) {
       const x = gl.getExtension('WEBGL_debug_renderer_info');
@@ -2210,7 +2211,6 @@ const LITE = (() => {
     }
   } catch (e) { /* unknown GPU: not lite by itself */ }
   const weak = /Intel|Apple M[1-4](?!\s*(Pro|Max|Ultra))|Apple GPU|SwiftShader|llvmpipe|Mali|Adreno|PowerVR|AMD Radeon(\(TM\))? Graphics|Radeon Vega/i.test(gpu);
-  const xbox = (/Xbox/i.test(navigator.userAgent) || ('gamepadInputEmulation' in navigator) || /[?&]xbox\b/.test(location.search) || (() => { try { return localStorage.getItem('cqc.device.v1') === 'xbox'; } catch (e) { return false; } })());   // Edge on Xbox (its gamepadInputEmulation API gives it away even with a desktop user agent), ?xbox, or Play on Xbox chosen   // Xbox (or Play on Xbox chosen): Lite by default
   const on = headset ? false : m ? m[1] === 'on' : o === 'on' ? true : o === 'off' ? false : weak || xbox;
   return { on, auto: !m && o !== 'on' && o !== 'off', weak: weak || xbox, xbox, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
 })();
@@ -4762,7 +4762,16 @@ function realLightMsg(v) { return `Real lighting: ${v ? 'on' : 'off'}${v === REA
 /* ============================================================================
  *  RENDERER, SCENE, CAMERA RIG
  * ========================================================================== */
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+// Xbox: "Error creating WebGL context". Try lighter context options before giving up (the console refused antialias /
+// high-performance contexts, or a context the title had just made and lost).
+const renderer = (() => {
+  const tries = LITE.xbox
+    ? [{ antialias: false }, { antialias: false, depth: true, stencil: false, failIfMajorPerformanceCaveat: false }, { antialias: false, powerPreference: 'low-power' }]
+    : [{ antialias: true, powerPreference: 'high-performance' }, { antialias: false }, { antialias: false, powerPreference: 'low-power' }];
+  let last = null;
+  for (const o of tries) { try { return new THREE.WebGLRenderer(o); } catch (e) { last = e; console.warn('[start] WebGL context refused with', o, e); } }
+  throw last;
+})();
 renderer.debug.checkShaderErrors = /[?&](dev|shadercheck)\b/.test(location.search) && !/[?&]noshadercheck\b/.test(location.search);   // PERF: the error check reads every program's info logs after linking, a sync wait per new shader (hitches mid-fight); on with ?dev
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.perf.desktop.maxPixelRatio));   // adaptive quality takes over at boot
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -9907,7 +9916,7 @@ function probeRoomUnloaded(room) {
  *  Performance pass: MSAA on the chain, GTAO at half resolution, and the
  *  pixel ratio is chosen by ADAPTIVE QUALITY below.
  * ========================================================================== */
-let composer = null, filmPass = null, gtaoPass = null, postEnabled = true, bloomPass = null;   // step 123: bloomPass kept for Sharpness
+let composer = null, filmPass = null, gtaoPass = null, postEnabled = !(LITE.xbox && !/[?&]xboxpost\b/.test(QS)), bloomPass = null;   // step 123: bloomPass kept for Sharpness
 /* ----------------------------------------------------------------------------
  *  STEP 23.3 — BODY CAM REALISM, LIVE (MENU.bodyCamRealism, terminal GRAPHICS)
  *  A live first-person camera feel: on, your own view looks like a real
@@ -10615,7 +10624,8 @@ function mobApplyGfx(announce) {
     if (i < 0) i = perf.levels.length - 1; perf.mode = i; }
   applyLevel(perf.mode === 'auto' ? perfStart(perf.levels.length) : perf.mode);
   perf.good = perf.bad = 0; perf.failed = []; perf.holdUntil = performance.now() / 1000 + 2; savePerf();
-  postEnabled = !!S.effects; if (ui.post) ui.post.textContent = BOOST.on ? `off (${EXTREME.on ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off';
+  postEnabled = !!S.effects && !(LITE.xbox && !/[?&]xboxpost\b/.test(QS));   // Xbox: straight to the screen (half-float post targets drew nothing on the console)
+  if (ui.post) ui.post.textContent = BOOST.on ? `off (${EXTREME.on ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off';
   if (GFX.shadows !== S.shadows) gfxSet(S.shadows, false);
   syncButtons();
   if (announce) toast(GFX.active !== S.shadows ? `Saved. Shadows change on the next load` : 'Saved', 1600);
@@ -42367,7 +42377,7 @@ function tickSafe(timeMs, frame) {
     }
     // Entry blackout fix: the headset clears its framebuffer every frame, so a frame that threw before its draw was shown
     // black (a blink, often on the frame a room is entered or built). Draw what there is instead.
-    if (renderer.xr.isPresenting && !FRAME_ERR.drawn) {
+    if (!FRAME_ERR.drawn) {   // headset and computer: a frame that threw before its draw still shows the room (was black on a computer)
       try { renderer.render(scene, camera); } catch (e2) { /* nothing more to show */ }
       try { nvgPost(); eyeAdaptPost(); bodyCamLivePost(); } catch (e3) { /* flags only */ }
     }
