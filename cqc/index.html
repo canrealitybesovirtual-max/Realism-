@@ -2662,7 +2662,7 @@ const CONFIG = {
     floorUp: 0.06, floorTime: 20,    // standing this much taller than calibrated for this long (s): the headset floor sank; follow it
     floorDown: 0.1, floorWarn: 60    // reading this much shorter for this long without a break (s): suggest CALIBRATE once
   },
-  player: { eyeHeight: 1.7, walk: 1.4, fast: 2.6, radius: 0.22, start: new THREE.Vector3(-0.6, 0, 2.1) },
+  player: { eyeHeight: 1.7, walk: 1.4, fast: 2.6, crouchK: 0.5, radius: 0.22, start: new THREE.Vector3(-0.6, 0, 2.1) },
   // --- STEP 57: the watch mod menu ---
   mods: {
     speed: 1.6,                // fast move: walk and run x this
@@ -2704,7 +2704,7 @@ const CONFIG = {
 
   // --- STEP 2: VR locomotion ---
   locomotion: {
-    walk: 1.5, run: 2.7,       // m/s. Real walking pace is ~1.4; faster than ~3 gets sick-making
+    walk: 1.4, run: 2.6,       // m/s, the same as CONFIG.player (walk / fast): every platform moves at one speed (was 1.5 / 2.7 in the headset)
     accel: 14,                 // 1/s. High = speed follows the stick almost instantly (no floaty slide)
     deadzone: 0.18,
     direction: 'head',         // default; 'head' or 'hand' (right stick click toggles in VR)
@@ -3743,6 +3743,7 @@ const modAny = () => MOD_LIST.some(([k]) => MOD[k]);
 function saveMenu() {
   try { const o = { ...MENU }; delete o.modeNext; localStorage.setItem(MENU_KEY, JSON.stringify(o)); } catch (e) { /* private mode: settings last this visit */ }
 }
+var MP_SAME = false;                                               // multiplayer: one speed for both players (no carry factor, no fast-move mod)
 function applyMenu() {
   const T = MENU_TABLE, hard = MENU.mode === 'hardcore', prac = MENU.mode === 'practice';
   // Director (step 9)
@@ -3764,9 +3765,10 @@ function applyMenu() {
   // Loadout: spares and the weight you carry
   const c = T.carry[MENU.carry], I = CONFIG.weapons.inventory;
   I.pistol = c.pistol; I.smg = c.smg; I.rifle = c.smg; I.ppk = c.pistol; I.fn509 = c.pistol; I.akm = c.smg + 2; I.shells = c.shells;
-  CONFIG.locomotion.walk = MENU_BASE.walk * c.speed; CONFIG.locomotion.run = MENU_BASE.run * c.speed;
-  CONFIG.player.walk = MENU_BASE.pWalk * c.speed; CONFIG.player.fast = MENU_BASE.pFast * c.speed;
-  if (MOD.speed) { const k = CONFIG.mods.speed; CONFIG.locomotion.walk *= k; CONFIG.locomotion.run *= k; CONFIG.player.walk *= k; CONFIG.player.fast *= k; }   // step 57
+  const ck = MP_SAME ? 1 : c.speed;
+  CONFIG.locomotion.walk = MENU_BASE.walk * ck; CONFIG.locomotion.run = MENU_BASE.run * ck;
+  CONFIG.player.walk = MENU_BASE.pWalk * ck; CONFIG.player.fast = MENU_BASE.pFast * ck;
+  if (MOD.speed && !MP_SAME) { const k = CONFIG.mods.speed; CONFIG.locomotion.walk *= k; CONFIG.locomotion.run *= k; CONFIG.player.walk *= k; CONFIG.player.fast *= k; }   // step 57
   // System (step 10 switches; none of them compiles anything)
   CONFIG.polish.blood.on = MENU.blood; CONFIG.polish.contact.on = MENU.contact;
   CONFIG.polish.motes.on = MENU.motes && !MENU.boost; CONFIG.polish.haze.on = MENU.haze; CONFIG.polish.audio.ears = MENU.ears;
@@ -9497,7 +9499,7 @@ function doorPace(door, now) {
   let cap = m === 'drive' ? ((door.drive && door.drive.cap) || P.drive) : m === 'kick' ? P.kick : m === 'hand' ? P.hand : 0;
   if (!cap) return;
   const next = door.sec ? null : stream.rooms.get(door.room.slot + 1);   // outdoor start: side doors reveal no room
-  if (next && !next.seen) cap *= P.reveal;                       // the first look into a fresh room: slower still
+  if (next && !next.seen && !(m === 'drive' && door.drive && door.drive.dg)) cap *= P.reveal;   // DOORGHOST: his body opening it keeps his pace                       // the first look into a fresh room: slower still
   const w = door.body.angvel(), dir = door.angle > 0.01 ? 1 : door.angle < -0.01 ? -1 : Math.sign(w.y);   // step 53: opening, either way
   if (dir && w.y * dir > cap) door.body.setAngvel({ x: w.x, y: cap * dir, z: w.z }, true);
 }
@@ -9509,7 +9511,8 @@ function updateDoorsPre(now) {
     if (door.free) { target = door.angle; k = 0; c = 3; }               // apartment doors: no closer, a leaf stays where you leave it
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
     const next = door.sec ? null : stream.rooms.get(door.room.slot + 1);
-    if ((door.sec ? door.sec.locked : (!next || !next.active)) || VS.lock) {   // multiplayer versus: shut until the countdown ends     // outdoor start: a side door is locked only when it leads nowhere
+    const netOpen = DG.on && ((door.netT && now - door.netT < 0.5) || (door.dgUntil || 0) > now);   // DOORGHOST: the other player opened it / walks through it: not held shut here
+    if (((door.sec ? door.sec.locked : (!next || !next.active)) && !netOpen) || VS.lock) {   // multiplayer versus: shut until the countdown ends     // outdoor start: a side door is locked only when it leads nowhere
       if (door.holder) { const hl = door.holder; releaseDoor(hl); if (now - (door.rattleAt || 0) > 0.4) { door.rattleAt = now; doorSfx(door, 'rattle'); pulse(hl, 0.45, 35); } }   // step 86: it won't give
       door.drive = null; k = 60; c = 15; mode = 'locked';
     }
@@ -11204,6 +11207,7 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'KeyF' && !e.repeat) deskLightToggle();   // step 118: held = IR mode (nvgKeys), so key repeat no longer flickers it
   if (e.code === 'KeyT' && !e.repeat) deskLaserToggle();     // step 16: laser master switch
+  if (e.code === 'KeyY' && !e.repeat) voxKey(true);           // VOX: hold Y to talk (push-to-talk mode; the first press asks for the microphone)
   if (e.code === 'KeyP') { postEnabled = !postEnabled; ui.post.textContent = BOOST.on ? `off (${EXTREME.on ? 'max fps' : 'sharp'})` : postEnabled ? 'on' : 'off'; }
   if (e.code === 'KeyL') flicker.enabled = !flicker.enabled;
   if (e.code === 'KeyK' && !e.repeat) gfxCycle();            // step 17: shadow quality (next load)
@@ -11236,10 +11240,11 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => {
   keys.delete(e.code); if ((e.code === 'Digit3' || e.code === 'Digit4') && DNADE.active) DNADE.release = true;
+  if (e.code === 'KeyY') voxKey(false);
   if (e.code === 'Space') { DESK_ADS.key = false; deskAdsSync(); }   // step 89
   if (e.code === 'CapsLock' && IS_MAC_KB && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn;   // step 89: macOS sends Caps Lock off as a keyup only
 });
-window.addEventListener('blur', () => { DESK_ADS.key = DESK_ADS.mouse = false; deskAdsSync(); });   // step 89: a missed keyup never leaves you stuck aiming
+window.addEventListener('blur', () => { DESK_ADS.key = DESK_ADS.mouse = false; deskAdsSync(); voxKey(false); });   // step 89: a missed keyup never leaves you stuck aiming
 /* ============================================================================
  *  XBOX / GAMEPAD (computer play; Edge on Xbox, or any pad on a PC; ?pad=off)
  *  Edge on Xbox drives a mouse cursor with the pad unless the page asks for raw input:
@@ -11251,7 +11256,7 @@ const PAD = { on: !/[?&]pad=off\b/.test(QS), active: false, idx: -1, lx: 0, ly: 
   prev: [], downAt: [], held: [], fire: false, ads: false, emu: '', lastSeen: 0, swapT: 0, swap: (() => { try { return localStorage.getItem('cqc.padswap.v1') === '1'; } catch (e) { return false; } })(),
   // tap / hold buttons: [code on tap, code on hold, hold s]; plain buttons: code (keydown on press, keyup on release)
   map: { 0: 'KeyE', 2: ['KeyR', 'KeyV', 0.45], 1: ['KeyM', 'crouch', 0.35], 3: ['padSwap', 'nvg', 0.5], 4: 'Digit4', 5: 'Digit3',
-    8: ['KeyG', 'KeyH', 0.5], 9: 'KeyM', 11: 'kick', 12: 'KeyF', 13: 'KeyT', 14: 'KeyX', 15: 'KeyI' },
+    8: ['KeyG', 'KeyH', 0.5], 9: 'KeyM', 11: 'kick', 12: 'KeyF', 13: 'KeyT', 14: ['KeyX', 'talk', 0.35], 15: 'KeyI' },   // VOX: D-pad left held = push to talk
   lookYaw: 3.3, lookPitch: 2.3, dead: 0.14 };
 function padKey(code, down, shift = false) {
   if (code === 'padSwap') { if (down) padSwap(); return; }
@@ -11347,7 +11352,8 @@ function padPoll(dt) {
     if (Array.isArray(m)) {                          // tap / hold
       if (p && !was) { PAD.downAt[b] = now; PAD.held[b] = false; }
       const eat = PAD.eat && PAD.eat[b];             // consumed by the bench cursor toggle
-      if (p && !eat && !PAD.held[b] && now - PAD.downAt[b] >= m[2]) { PAD.held[b] = true; padKey(m[1], true); padKey(m[1], false); }
+      if (p && !eat && !PAD.held[b] && now - PAD.downAt[b] >= m[2]) { PAD.held[b] = true; if (m[1] === 'talk') { MIC.pad = true; if (MIC.mode !== 'off' && MIC.st !== 'on' && MIC.st !== 'asking') netVoiceMic(false); voxApply(false); } else { padKey(m[1], true); padKey(m[1], false); } }
+      if (!p && m[1] === 'talk' && MIC.pad) { MIC.pad = false; voxApply(false); }
       if (!p && was && !PAD.held[b] && !eat) { padKey(m[0], true); padKey(m[0], false); }
       if (!p && eat) PAD.eat[b] = false;
       if (!p) PAD.held[b] = false;
@@ -11697,7 +11703,7 @@ function netStart() {
   NET.jn = 0; NET.ji = 0; NET.rxN = 0; NET.rxGot = 0; NET.rxMiss = 0; NET.delay = 90;
   if (NET.dial) NET.dial.fin('ok');
   NET.call = null; setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
-  NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
+  NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.pbT = null; NET.lastRx = performance.now();
   if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
   if (NET.mode === 'vs' && NET.role === 'host' && !VS.on) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
   netSay(re ? 'Multiplayer: reconnected' : `Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
@@ -11736,7 +11742,7 @@ function netFail(kind) {                                           // could not 
 function netSoftDrop(why) {
   if (!NET.role || NET.st === 'off') return;
   netKillChans();
-  NET.buf.length = 0; NET.off = null; NET.remOk = false; NET.tgt = null; NET.remPeer = null; NET.relQ.length = 0; NET.link.discAt = 0;
+  NET.buf.length = 0; NET.off = null; NET.pbT = null; NET.remOk = false; NET.tgt = null; NET.remPeer = null; NET.relQ.length = 0; NET.link.discAt = 0;
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
   for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } } NET.pup.clear();
   if (NET_SPOT) NET_SPOT.intensity = 0;
@@ -11879,12 +11885,89 @@ function netCoopWant(want) {
 // suppression). His voice comes from his body (a panner at his head, through the game's audio); with no microphone
 // (or one refused) you still hear him. ?voice=off.
 NET.voice = !/[?&]voice=off\b/.test(QS);
-async function netVoiceMic() {
+// MIC: the microphone. Asked inside a press (title Start with Host / Join, the menu's Mic row, the push-to-talk key) so
+// every browser shows its prompt; the call goes out at once with a silent track if there is no microphone yet, and the
+// real one replaces it (RTCRtpSender.replaceTrack) the moment it is allowed: both players send and hear each other.
+// Modes (cqc.mic.v1): open (default), push (hold Y on a keyboard, hold D-pad left on a pad; the headset stays open), off.
+// st: idle | asking | on | denied | nodevice | insecure | unsupported | error. Needs https or localhost (secure context).
+const MIC = { mode: (() => { try { const v = localStorage.getItem('cqc.mic.v1'); return ['open', 'push', 'off'].includes(v) ? v : 'open'; } catch (e) { return 'open'; } })(),
+  st: 'idle', why: '', key: false, pad: false, track: null, perm: null, asking: null, sendOn: null };
+function voxHelp() {
+  if (MIC.st === 'denied') return 'Microphone blocked. Click the lock (or tune) icon left of the address, set Microphone to Allow, then press Mic in the menu (Multiplayer)';
+  if (MIC.st === 'nodevice') return 'No microphone found. Plug one in (or pick it in the browser / Windows sound settings), then press Mic';
+  if (MIC.st === 'insecure') return 'The microphone needs the game on https:// (or localhost). This page is plain http, so voice only plays the other player';
+  if (MIC.st === 'unsupported') return 'This browser has no microphone access (no getUserMedia). You can still hear the other player';
+  if (MIC.st === 'error') return 'Microphone error: ' + MIC.why + '. Press Mic to try again';
+  return '';
+}
+function voxLabel() {
+  const m = MIC.mode === 'off' ? 'OFF' : MIC.st === 'on' ? (MIC.mode === 'push' ? 'PUSH TO TALK (Y / D-pad left)' : 'ON') : MIC.st === 'asking' ? 'ASKING…'
+    : ({ denied: 'BLOCKED', nodevice: 'NO MIC', insecure: 'NEEDS HTTPS', unsupported: 'NOT SUPPORTED', error: 'ERROR' })[MIC.st] || (MIC.mode === 'push' ? 'PUSH TO TALK' : 'ON (asks when used)');
+  return `Mic: ${m}`;
+}
+function voxSave() { try { localStorage.setItem('cqc.mic.v1', MIC.mode); } catch (e) { /* this visit */ } }
+function voxSync() { try { yardUiSync(); } catch (e) { /* menu not built */ } }
+// Ask for the microphone (inside a press when possible). Resolves the stream or null; sets MIC.st and says why.
+function netVoiceMic(fromPress) {
+  if (MIC.track && MIC.track.readyState === 'live' && NET.mic && !NET.micSilent) return Promise.resolve(NET.mic);
+  if (MIC.asking) return MIC.asking;
+  const md = navigator.mediaDevices;
+  if (!window.isSecureContext) { MIC.st = 'insecure'; voxSync(); return Promise.resolve(null); }
+  if (!md || !md.getUserMedia) { MIC.st = 'unsupported'; voxSync(); return Promise.resolve(null); }
+  MIC.st = 'asking'; voxSync();
+  MIC.asking = md.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then((st) => {
+    MIC.asking = null;
+    const tr = st.getAudioTracks()[0]; if (!tr) { MIC.st = 'nodevice'; voxSync(); return null; }
+    if (NET.mic && NET.mic !== st) { try { NET.mic.getTracks().forEach((t) => t.stop()); } catch (e) { /* stopped */ } }
+    NET.mic = st; NET.micSilent = false; MIC.track = tr; MIC.st = 'on'; MIC.why = '';
+    tr.onended = () => { if (MIC.track === tr) { MIC.track = null; MIC.st = 'idle'; voxSync(); } };
+    voxApply(true); netVoiceReplace(); voxSync();
+    if (NET.st !== 'off') netSay(MIC.mode === 'push' ? 'Voice: hold Y (pad: D-pad left) to talk' : 'Voice chat on', 2);
+    return st;
+  }).catch((e) => {
+    MIC.asking = null;
+    const n = e && e.name;
+    MIC.st = n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError' ? 'denied' : n === 'NotFoundError' || n === 'DevicesNotFoundError' || n === 'OverconstrainedError' || n === 'NotReadableError' ? 'nodevice' : n === 'NotSupportedError' ? 'unsupported' : 'error';
+    MIC.why = (e && (e.message || n)) || 'unknown';
+    voxSync(); if (NET.st !== 'off' || fromPress) toast(voxHelp(), 7000);
+    return null;
+  });
+  voxWatchPerm();
+  return MIC.asking;
+}
+// Allowed later in the browser's site settings: try again by itself.
+function voxWatchPerm() {
+  if (MIC.perm || !navigator.permissions || !navigator.permissions.query) return;
+  MIC.perm = 1;
+  navigator.permissions.query({ name: 'microphone' }).then((p) => { MIC.perm = p; p.onchange = () => { if (p.state === 'granted' && MIC.st !== 'on' && MIC.mode !== 'off') netVoiceMic(false); }; }).catch(() => { MIC.perm = 2; });
+}
+// The stream a call carries: the microphone, else a silent track (so the call is made and he is heard both ways).
+function voxStream() {
   if (NET.mic) return NET.mic;
-  try { NET.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); netSay('Voice chat on', 2); }
-  catch (e) { NET.mic = null; }
-  if (!NET.mic) { try { const d = audio.ctx.createMediaStreamDestination(); NET.mic = d.stream; NET.micSilent = true; netSay('Voice: no microphone here, you can still hear him', 3); } catch (e) { /* no audio yet */ } }
-  return NET.mic;
+  try { const d = audio.ctx.createMediaStreamDestination(); NET.mic = d.stream; NET.micSilent = true; return NET.mic; } catch (e) { return null; }
+}
+function netVoiceReplace() {                                       // the microphone arrived after the call: swap it in
+  const c = NET.call, pc = c && c.peerConnection; if (!pc || !MIC.track) return;
+  try { for (const snd of pc.getSenders()) if (!snd.track || snd.track.kind === 'audio') { const p = snd.replaceTrack(MIC.track); if (p && p.catch) p.catch(() => {}); } } catch (e) { /* old browser */ }
+}
+// Is your microphone sending now (mode, push-to-talk held, headset = open)? Sets track.enabled on a change only.
+function voxApply(force) {
+  const vr = renderer.xr.isPresenting;
+  const on = MIC.mode === 'open' || (MIC.mode === 'push' && (vr || MIC.key || MIC.pad));
+  if (MIC.track && (force || on !== MIC.sendOn)) { MIC.track.enabled = on; MIC.sendOn = on; }
+}
+function voxPress() {                                              // the menu's Mic row: ask (again), else cycle open / push / off
+  if (MIC.st !== 'on' && MIC.mode !== 'off') { netVoiceMic(true); return; }
+  MIC.mode = MIC.mode === 'open' ? 'push' : MIC.mode === 'push' ? 'off' : 'open'; voxSave();
+  if (MIC.mode !== 'off' && MIC.st !== 'on') netVoiceMic(true);
+  voxApply(true); voxSync();
+  toast(MIC.mode === 'off' ? 'Mic off (you still hear him)' : MIC.mode === 'push' ? 'Push to talk: hold Y (pad: hold D-pad left)' : 'Mic open', 2400);
+}
+function voxKey(down) {                                            // Y held (keyboard), D-pad left held (pad)
+  if (MIC.key === down) return;
+  MIC.key = down;
+  if (down && MIC.mode !== 'off' && MIC.st !== 'on' && MIC.st !== 'asking') netVoiceMic(true);   // in the press: the prompt shows
+  voxApply(false);
 }
 function netVoicePlay(stream) {
   let el = NET.vel;
@@ -11900,24 +11983,30 @@ function netVoicePlay(stream) {
     }
   } catch (e) { el.muted = false; }
   el.play().catch(() => {});
+  NET.vRx = (NET.vRx || 0) + 1;
 }
 function netVoiceTick() {                                          // his voice follows his head
+  voxApply(false);
+  if (NET.voice && NET.role === 'join' && !NET.call && netLive() && performance.now() - (NET.vRetryAt || 0) > 5000) { NET.vRetryAt = performance.now(); netVoiceStart(); }   // a call that dropped: again
   if (!NET.vpan || !NET.av || !NET.av.root) return;
   try { enemyEye(NET.av, NET._p); const p = NET.vpan; if (p.positionX) { p.positionX.value = NET._p.x; p.positionY.value = NET._p.y; p.positionZ.value = NET._p.z; } else p.setPosition(NET._p.x, NET._p.y, NET._p.z); } catch (e) { /* no head yet */ }
 }
-async function netVoiceStart() {
+function netVoiceStart() {
   if (!NET.voice || NET.role !== 'join' || !NET.peer || NET.call) return;
-  const st = await netVoiceMic(); if (!st || !NET.peer) return;
-  try { const c = NET.peer.call('cqc-loop-' + NET.code, st); if (!c) return; NET.call = c; c.on('stream', netVoicePlay); c.on('close', () => { if (NET.call === c) NET.call = null; }); } catch (e) { /* no voice */ }
+  if (MIC.mode !== 'off' && MIC.st === 'idle') netVoiceMic(false);   // may prompt (no press here); the call does not wait for it
+  const st = voxStream(); if (!st || !NET.peer) return;
+  try { const c = NET.peer.call('cqc-loop-' + NET.code, st); if (!c) return; NET.call = c; NET.vRetryAt = performance.now(); c.on('stream', netVoicePlay); c.on('close', () => { if (NET.call === c) NET.call = null; }); c.on('error', () => { if (NET.call === c) NET.call = null; }); if (MIC.track) setTimeout(netVoiceReplace, 0); } catch (e) { /* no voice */ }
 }
-async function netVoiceAnswer(c) {
+function netVoiceAnswer(c) {
   if (!NET.voice) { try { c.close(); } catch (e) { /* closed */ } return; }
-  const st = await netVoiceMic();
-  try { c.answer(st || undefined); NET.call = c; c.on('stream', netVoicePlay); c.on('close', () => { if (NET.call === c) NET.call = null; }); } catch (e) { /* no voice */ }
+  if (MIC.mode !== 'off' && MIC.st === 'idle') netVoiceMic(false);
+  const st = voxStream();
+  try { if (NET.call && NET.call !== c) try { NET.call.close(); } catch (e) { /* closed */ } c.answer(st || undefined); NET.call = c; c.on('stream', netVoicePlay); c.on('close', () => { if (NET.call === c) NET.call = null; }); if (MIC.track) setTimeout(netVoiceReplace, 0); } catch (e) { /* no voice */ }
 }
 function netVoiceStop() {
   try { NET.call && NET.call.close(); } catch (e) { /* closed */ } NET.call = null;
   if (NET.mic) { try { NET.mic.getTracks().forEach((t) => t.stop()); } catch (e) { /* stopped */ } NET.mic = null; }
+  MIC.track = null; MIC.sendOn = null; if (MIC.st === 'on') MIC.st = 'idle';
   if (NET.vsrc) { try { NET.vsrc.disconnect(); } catch (e) { /* gone */ } NET.vsrc = null; }
 }
 const netLive = () => NET.st === 'on';
@@ -12353,6 +12442,7 @@ function netSample(rt) {
 const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
 function netTick(dt, now) {
   netAvLight();                                                    // his weapon light (off when he is gone)
+  if ((NET.st !== 'off') !== MP_SAME) { MP_SAME = NET.st !== 'off'; applyMenu(); if (MP_SAME && (MOD.speed || MENU.carry !== 'standard')) netSay('Multiplayer: both players move at the same speed (fast move and carry weight off)', 4); }
   if (NET.st === 'off') return;
   if (NET.st === 'host' && NET.code && performance.now() - (NET.codeAt || 0) > 20000) { NET.codeAt = performance.now(); netSay(`Multiplayer code: ${NET.code} (waiting for the other player)`, 8); }   // the code again while you wait
   netTx(dt);
@@ -12369,7 +12459,13 @@ function netTick(dt, now) {
   netVoiceTick();
   netVsTick();
   if (NET.warp != null) { const wr = stream.rooms.get(NET.warp); if (wr && wr.active && wr.kind === 'safe') { netPlaceIn(wr, false); NET.warp = null; } }
-  const s = netSample(performance.now() - NET.off - NET.delay); if (!s) { NET.remOk = false; return; }
+  // Playback clock: follows (now - offset - delay) but never faster or slower than real time +-8 %, so a smaller buffer or
+  // a new fastest packet never plays his walk back sped up (it used to jump by the change). More than 1 s off: snaps.
+  const pbW = performance.now() - NET.off - NET.delay, pbN = performance.now();
+  if (NET.pbT == null || !NET.pbAt || Math.abs(pbW - NET.pbT) > 1000) NET.pbT = pbW;
+  else { const step = Math.min(250, pbN - NET.pbAt); const er = pbW - (NET.pbT + step); NET.pbT += step + clamp(er, -0.08 * step, 0.08 * step); }
+  NET.pbAt = pbN;
+  const s = netSample(NET.pbT); if (!s) { NET.remOk = false; return; }
   const r = stream.rooms.get(s.s);
   NET.remRoom = r && r.active ? r : null; NET.remOk = !!NET.remRoom; NET.remDead = !!s.d;
   if (NET.remRoom) NET.remW.set(rWX(r, s.x), r.origin.y + s.y, rWZ(r, s.z));
@@ -12414,6 +12510,7 @@ function netTick(dt, now) {
   e.reloadT = s.r ? 0.5 : 0;                                      // the reload pose (support hand at the magwell, gun canted)
   netAvGunTick(e, s);                                             // the real gun he holds, its lights and lasers
   if (e.gun && e.gun.root) e.gun.root.visible = !!s.g;
+  netDoorGhost(e, dt);                                            // DOORGHOST: never through a leaf shut on this side
 }
 // --- the other player's real gun, its lights and lasers; guns and magazines you drop ---------------------------------
 // His gun is the real one (createGun of his type), not a loadout look. Its build travels as { ty, a, v, h }: a = his
@@ -13038,6 +13135,11 @@ function headPenetration(head) {
   return depth;
 }
 
+// DOORGHOST (?doorghost=off): nobody passes through a door leaf. Your own long frames are walked in short steps
+// (locomote); in the headset your body pushes a leaf it walks into, and a step through a still leaf between two frames
+// puts you back (headGuard); the other player's body opens a leaf that is shut here as he walks into it, and is drawn
+// against it (never through it) until it gives (netDoorGhost); a leaf he or his body opens is never held locked here.
+const DG = { on: !/[?&]doorghost=off\b/.test(QS), step: 0.1, R: 0.24, ahead: 0.45, n: 0, push: 0, maxIn: 0, ox: 0, oz: 0 };
 // NBODY (?netbody=off): the other player's body blocks you (multiplayer). A circle round his head (his interpolated pose,
 // NET.remW), like a wall: what YOUR move (walking, the stick, a real step in the headset) pushes into it is taken back at
 // once, so you stop at him and slide round; an overlap HE made (his lag, a respawn on top of you) eases out at NBODY.k.
@@ -13090,6 +13192,54 @@ function netBodyBump(k) {                                           // shoulder 
   if (renderer.xr.isPresenting && B.haptic) for (const vh of vrHands) if (vh.ctrl && vh.ctrl.userData.handedness) pulseSoft(vh, B.haptic * (0.2 + 0.3 * k), 30);
 }
 
+// DOORGHOST: his body against the leaves here. e.pos (room-local body) and NET.remW (his head) come from his side, where
+// the leaf may be open while it is shut here (a lost 'dr', a room built later, his own stale leaf). Per leaf: his body
+// circle (DG.R) in the leaf's frame; walking at it (within DG.ahead, inside its width) or into it = his body pushes it
+// open away from him (a drive, sent to him by netDoorTx: netMine); in it = drawn against the face he came from, so the
+// leaf never shows through him while it swings. Side kept per leaf (dgS) while he is clear of it. No allocation.
+function netDoorGhost(e, dt) {
+  if (!DG.on || !e || !e.room || e.dead || !e.room.active) return;
+  DG.calls = (DG.calls || 0) + 1;
+  const r = e.room, now = performance.now() / 1000, R = DG.R, hy = NET.remW.y;
+  let wx = rWX(r, e.pos.x), wz = rWZ(r, e.pos.y), moved = false, tx = 0, tz = 0;
+  for (const door of doors) {
+    const w = door.walk;
+    if (!door.room.active || !door.body || hy < w.bot + 0.6 || hy > w.top + 0.5) continue;      // his head over that leaf's floor
+    const dx = wx - w.x, dz = wz - w.z, lx = dx * w.c - dz * w.s, lz = dx * w.s + dz * w.c;
+    const ex = w.hx + R, ez = w.hz + R, prev = door.dgLz;
+    door.dgLz = lz;
+    if (Math.abs(lx) > ex + 0.5 || Math.abs(lz) > ez + 1.2) { door.dgS = 0; continue; }       // nowhere near it
+    const jumped = door.dgS && (lz >= 0 ? 1 : -1) !== door.dgS && prev !== undefined && Math.abs(lx) < w.hx && Math.abs(door.angle) < 0.6;   // a long frame (or a late packet) put him on the far face in one go
+    if (!jumped && (Math.abs(lx) >= ex || Math.abs(lz) >= ez)) {                                  // beside it: which face he is on
+      door.dgS = lz >= 0 ? 1 : -1;
+      const closing = prev !== undefined && dt > 0 && (Math.abs(prev) - Math.abs(lz)) / dt > 0.15;
+      if (closing && Math.abs(lx) < w.hx && Math.abs(lz) < ez + DG.ahead) dgOpen(door, door.dgS, now);   // about to walk into it
+      continue;
+    }
+    const side = door.dgS || (lz >= 0 ? 1 : -1);
+    dgOpen(door, side, now);
+    const mv = side * ez - lz;                                     // out of it on his own face (lz's world axis is (s, c))
+    if (side * lz < ez) { tx += mv * w.s; tz += mv * w.c; moved = true; DG.push++; DG.maxIn = Math.max(DG.maxIn, Math.abs(mv)); }
+    door.dgS = side; door.dgLz = side * ez;
+  }
+  // the correction eases off (never snaps): a leaf that gives lets him walk on smoothly, not jump ahead
+  const k = dt > 0 ? Math.exp(-dt * 7) : 1;
+  DG.ox *= k; DG.oz *= k;
+  if (moved && tx * tx + tz * tz > DG.ox * DG.ox + DG.oz * DG.oz) { DG.ox = tx; DG.oz = tz; }
+  if (DG.ox * DG.ox + DG.oz * DG.oz > 1e-8) {
+    wx += DG.ox; wz += DG.oz; NET.remW.x += DG.ox; NET.remW.z += DG.oz;
+    e.pos.set(rLX(r, wx), rLZ(r, wz));
+  }
+}
+function dgOpen(door, side, now) {
+  door.dgUntil = now + 1.2;
+  if (door.holder || door.mode === 'kick') return;
+  if (door.netT && now - door.netT < 0.5 && door.netA * side > 0.9) return;   // his own 'dr' is already swinging it open his way
+  const P = CONFIG.doorPhys, tgt = side > 0 ? P.maxOpen * 0.88 : -P.maxBack * 0.88;
+  if (door.drive && door.drive.dg === side) door.drive.until = now + 2.5;
+  else { door.drive = { target: tgt, k: 14, c: 7, until: now + 2.5, cap: 2.4, dg: side }; DG.n++; }
+  door.netMine = now; door.body.wakeUp();
+}
 const _head = new THREE.Vector3(), _vel = new THREE.Vector3(), _target = new THREE.Vector3();
 const _q = new THREE.Quaternion(), _euler = new THREE.Euler();
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
@@ -13140,20 +13290,29 @@ function locomote(dt, fwd, side, yaw, speed) {
   if (sp < 0.01) { _vel.set(0, 0, 0); return 0; }
   rig.updateMatrixWorld(true);
   headWorld(_head);
-  _probe.copy(_head).addScaledVector(_vel, dt);
+  _probe.copy(_head);
   // Walking into a door leaf pushes it open (or shut, from the other side).
   let bDoor = false, bBreach = false;                           // step 86
-  for (const door of doors) {
-    if (door.walk.top <= level.floor + 0.02 || level.floor + 1.2 < door.walk.top - CONFIG.door.height) continue;   // step 89: a leaf on another floor
-    _probe2.copy(_probe);
-    if (pushOutOf(door.walk, _probe2, CONFIG.player.radius) > 0.004) {
-      if (doorBreachTry(door, sp, _vel)) bBreach = true;           // step 54: running in breaches it
-      else { nudgeDoor(door, _probe.x, _probe.z); bDoor = true; }
+  // DOORGHOST: a long frame (up to 0.1 s at a run, a fast-move mod) is walked in steps of at most DG.step, so the probe
+  // never jumps over a 6.6 cm leaf (or a thin wall) between two checks.
+  const nSub = DG.on ? Math.min(8, Math.max(1, Math.ceil(sp * dt / DG.step))) : 1;
+  let cx = 0, cz = 0;
+  for (let si = 0; si < nSub; si++) {
+    _probe.addScaledVector(_vel, dt / nSub);
+    for (const door of doors) {
+      if (door.walk.top <= level.floor + 0.02 || level.floor + 1.2 < door.walk.top - CONFIG.door.height) continue;   // step 89: a leaf on another floor
+      _probe2.copy(_probe);
+      if (pushOutOf(door.walk, _probe2, CONFIG.player.radius) > 0.004) {
+        if (bBreach || bDoor) continue;                          // once a frame
+        if (doorBreachTry(door, sp, _vel)) bBreach = true;           // step 54: running in breaches it
+        else { nudgeDoor(door, _probe.x, _probe.z); bDoor = true; }
+      }
     }
+    const bx = _probe.x, bz = _probe.z;                            // step 86: what resolveBody pushes back is the contact
+    resolveBody(_probe);
+    cx += _probe.x - bx; cz += _probe.z - bz;
   }
-  const bx = _probe.x, bz = _probe.z;                            // step 86: what resolveBody pushes back is the contact
-  resolveBody(_probe);
-  if (BUMP_ON && !bBreach && !BREACH.on && !KICK.on && !playerState.dead) bodyBump(_probe.x - bx, _probe.z - bz, bDoor);
+  if (BUMP_ON && !bBreach && !BREACH.on && !KICK.on && !playerState.dead) bodyBump(cx, cz, bDoor);
   rig.position.x += _probe.x - _head.x;
   rig.position.z += _probe.z - _head.z;
   rig.updateMatrixWorld(true);
@@ -13167,7 +13326,7 @@ function updateDesktopMove(dt) {
   f -= PAD.ly; s += PAD.lx;                   // Xbox / gamepad left stick (padPoll)
   if (Math.hypot(f, s) < 0.12) f = s = 0;     // small dead zone for the thumb stick
   let speed = keys.has('ShiftLeft') || keys.has('ShiftRight') || PAD.run ? CONFIG.player.fast : CONFIG.player.walk;
-  speed *= 1 - 0.55 * stance.crouch;                 // step 6: crouched walking is slow
+  speed *= 1 - (1 - CONFIG.player.crouchK) * stance.crouch;   // step 6: crouched walking is slow (the headset's factor too)
   locomote(dt, f, s, look.yaw, speed);
 }
 
@@ -35632,8 +35791,8 @@ function mwBuild(grid) {
   mwNote('game', 'Difficulty, run mode and records are on the terminal in the safe room.');
   // Multiplayer and gameplay: the shared cells (YARD_CELLS), ids mw_<id> as yardDomBuild makes them
   const YD = { ynet: 'Host a game and give your code to the other player', yjoin: 'Type the 4-digit code from the host', ymode: 'Together (co-op) or Versus. The host picks',
-    yvs: 'The host starts and restarts the match', ystealth: 'How well the men see you in the dark', ymeter: 'The ring that shows who is noticing you' };
-  const YL = { ynet: 'Host a game', yjoin: 'Join a game', ymode: 'Mode', yvs: 'Versus match', ystealth: 'Stealth', ymeter: 'Detection meter' };
+    yvs: 'The host starts and restarts the match', ystealth: 'How well the men see you in the dark', ymeter: 'The ring that shows who is noticing you', ymic: 'Voice chat. Press to allow the microphone, then open / push to talk (hold Y or D-pad left) / off' };
+  const YL = { ymic: 'Microphone', ynet: 'Host a game', yjoin: 'Join a game', ymode: 'Mode', yvs: 'Versus match', ystealth: 'Stealth', ymeter: 'Detection meter' };
   for (const [id, lab, fn] of YARD_CELLS) {
     const b = mwButton(id === 'ystealth' || id === 'ymeter' ? 'play' : 'mp', 'mw_' + id, lab(), YD[id], () => fn());
     b.dataset.yard = id; b.dataset.lab = YL[id] || ''; if (!YL[id]) delete b.dataset.lab;
@@ -44469,6 +44628,23 @@ function hgCrosses(a, b) {                                         // does the l
   const y = Math.min(a.y, b.y);
   for (const col of colliders) {
     if (y >= col.top || !colOnFloor(col, level.floor)) continue;
+    if (hgSeg(col, a, b)) return true;
+  }
+  return false;
+}
+// DOORGHOST: a real step (headset) through a leaf between two frames, from a good spot to a good spot (the head never
+// counted as in it). Only leaves that did not move this frame: a leaf swinging past you is the leaf's doing.
+function hgDoorCross(a, b) {
+  let hit = false;
+  for (const door of doors) {
+    const w = door.walk, still = door.hgA !== undefined && Math.abs(door.angle - door.hgA) < 0.004;
+    door.hgA = door.angle;
+    if (!hit && still && Math.min(a.y, b.y) < w.top && colOnFloor(w, level.floor) && hgSeg(w, a, b)) hit = true;
+  }
+  return hit;
+}
+function hgSeg(col, a, b) {
+  {
     let dx = a.x - col.x, dz = a.z - col.z;
     const x0 = dx * col.c - dz * col.s, z0 = dx * col.s + dz * col.c;
     dx = b.x - col.x; dz = b.z - col.z;
@@ -44476,9 +44652,8 @@ function hgCrosses(a, b) {                                         // does the l
     let t0 = 0, t1 = 1;
     const clip = (p, q) => { if (Math.abs(p) < 1e-9) return q >= 0; const t = q / p; if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; } return true; };
     const hx = col.hx - 0.003, hz = col.hz - 0.003;                 // through it, not along its face
-    if (hx > 0 && hz > 0 && clip(-ux, x0 + hx) && clip(ux, hx - x0) && clip(-uz, z0 + hz) && clip(uz, hz - z0) && t0 <= t1) return true;
+    return hx > 0 && hz > 0 && clip(-ux, x0 + hx) && clip(ux, hx - x0) && clip(-uz, z0 + hz) && clip(uz, hz - z0) && t0 <= t1;
   }
-  return false;
 }
 // Put the head back: at `at` (world, in the current floor) when given, else the last good spot (its floor), else the
 // nearest point well inside the room you are in. dYaw first turns the rig about the head.
@@ -44534,11 +44709,18 @@ function headGuard(dt) {
   }
   // 2. the safety net: where is the head now
   headWorld(HG.h);
+  if (vr && DG.on) for (const door of doors) {                     // DOORGHOST: in the headset your body (a real step) pushes a leaf it walks into
+    if (!colOnFloor(door.walk, level.floor) || HG.h.y > door.walk.top + 0.3) continue;
+    HG.p.copy(HG.h); if (pushOutOf(door.walk, HG.p, r) > 0.01) nudgeDoor(door, HG.h.x, HG.h.z);
+  }
   const room = hgRoom(HG.h), dep = hgDepth(HG.h);
   const good = room && dep <= r + 1e-4;
   const crossed = (good ? HG.bad : !room) && dep <= r + 1e-4 && HG.has && HG.room && HG.room.active   // clear again (or out of the rooms) on the far side of a box
     && hgCrosses(HG.t.set(rWX(HG.room, HG.lx), HG.h.y, rWZ(HG.room, HG.lz)), HG.h);
+  const dCross = DG.on && !crossed && good && HG.has && HG.room && HG.room.active && !HG.bad
+    && hgDoorCross(HG.t.set(rWX(HG.room, HG.lx), HG.h.y, rWZ(HG.room, HG.lz)), HG.h);
   if (crossed) hgRestore(good ? 'through a wall' : 'out through a wall');
+  else if (dCross) hgRestore('through a door leaf');
   else if (good) {
     HG.room = room; HG.lx = rLX(room, HG.h.x); HG.lz = rLZ(room, HG.h.z); HG.fl = level.floor - room.origin.y; HG.has = true;
     HG.bad = false; HG.out = HG.deep = 0;
@@ -44882,7 +45064,7 @@ function updateXRInput(dt) {
     const g = xrHeadOk() ? handsLocomotion(dt, now) : (handsLocoReset(), null);   // step 32: never walk on a tracking glitch
     if (g) { fwd = g.fwd; side = 0; yaw = g.yaw; gestSpeed = g.speed; }
   } else handsLocoReset();
-  const speed = locomote(dt, fwd, side, yaw, (gestSpeed || (run ? L.run : L.walk)) * (xrState.crouchOn ? 0.5 : 1));   // crouched walking is slow
+  const speed = locomote(dt, fwd, side, yaw, (gestSpeed || (run ? L.run : L.walk)) * (xrState.crouchOn ? CONFIG.player.crouchK : 1));   // crouched walking is slow
 
   // --- Comfort: vignette while moving/turning, blink on snap, fade if head is in a wall ---
   const inner = CONFIG.comfort.vignette[comfort.vignette];
@@ -45150,6 +45332,7 @@ function startGame(mode) {
     return;
   }
   gameStarted = true;
+  try { const mp = window.CQC_MP ? window.CQC_MP() : null; if (mp && (mp.sel === 'host' || mp.sel === 'join') && NET.on && NET.voice && MIC.mode !== 'off') netVoiceMic(true); } catch (e) { /* no mic */ }   // MIC: asked inside the Start press
   if (mode !== 'vr') setTimeout(pcWarm, 3000);                   // PERF pass 3: the arms view's shaders in the background
   setTimeout(netTitleBegin, 1200);                   // multiplayer chosen on the title (Host / Join)
   const title = window.CQC_TITLE;
@@ -48277,6 +48460,7 @@ if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, medModel, syrSet, SYR, syrT
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { flashBlast, fragBlast, NADE });   // grenade effect tests
+if (window.__cqcDev) Object.assign(window.__cqcDev, { DG, locomote, stepPhysics, updateDoorsPost, headGuard, HG, netDoorGhost, rWX, rWZ, rLX, rLZ, netDoorRx, nudgeDoor, pushOutOf, doorSide, rebuildWalk, MIC, netVoiceMic, voxPress, voxKey, voxApply, applyMenu, MENU, MOD, MENU_BASE });   // DOORGHOST / VOX / one speed tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain, flashBurst, fireGun, BHEAD, bodyHeadYaw, rigNadeAt, enemyShoot, muzSync, muzChain, getMUZ: () => MUZ });   // muzzle flash by device, VR body heading
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
@@ -52289,7 +52473,8 @@ var YARD_CELLS = [
   ['ymode', () => netModeLabel(), () => netModeToggle()],
   ['yvs', () => VS.on ? `Versus: you ${VS.score[0]} : ${VS.score[1]} them · rematch` : 'Versus: START MATCH (host)', () => { if (NET.role === 'host' && netLive() && NET.mode === 'vs') netVsBegin(); else netSay(NET.mode !== 'vs' ? 'Pick VERSUS mode first' : 'The host starts it, once connected'); }],
   ['yjoin', () => NET.st === 'on' ? `Joined game ${NET.code}` : 'Multiplayer: JOIN a game', () => { if (NET.st !== 'on') netJoin(); }],
-  ['ynetst', () => netStatusLabel(), () => netStatusPress()],   // connection: state, RTT, direct / relayed, relay service, reason; press = retry / details
+  ['ynetst', () => netStatusLabel(), () => netStatusPress()],
+  ['ymic', () => voxLabel(), () => voxPress()],                  // VOX: ask for the microphone / open, push to talk, off   // connection: state, RTT, direct / relayed, relay service, reason; press = retry / details
   ['ystealth', () => `Stealth: ${stealthState().on ? stealthState().diff.toUpperCase() : 'OFF'}`, () => { const S = stealthState(), o = ['off', 'easy', 'normal', 'hard'], c = S.on ? S.diff : 'off', n = o[(o.indexOf(c) + 1) % 4]; S.on = n !== 'off'; if (S.on) S.diff = n; stealthSave(); yardUiSync(); }],
   ['ymeter', () => `Detection meter: ${({ on: 'ON', min: 'MINIMAL', off: 'OFF' })[stealthState().meter]}`, () => { const S = stealthState(), o = ['on', 'min', 'off']; S.meter = o[(o.indexOf(S.meter) + 1) % 3]; stealthSave(); yardUiSync(); }]
 ];
@@ -52297,7 +52482,7 @@ function yardCellPress(id) { if (!YARD_CELLS) return false; const c = YARD_CELLS
 function yardUiSync() {
   try { WATCH.dirty = true; } catch (e) { /* not made yet */ }
   try { TERM.dirty = true; } catch (e) { /* not made yet */ }
-  for (const [id, lab] of YARD_CELLS) { const b = document.getElementById('mw_' + id); if (b) mwCellText(b, lab()); }
+  for (const [id, lab] of YARD_CELLS) { const b = document.getElementById('mw_' + id); if (b) { if (id === 'ymic') b.dataset.desc = voxHelp() || 'Voice chat. Press to allow the microphone, then open / push to talk (hold Y or D-pad left) / off'; mwCellText(b, lab()); } }
 }
 function yardDomBuild(grid) {
   for (const [id, lab, fn] of YARD_CELLS) {
