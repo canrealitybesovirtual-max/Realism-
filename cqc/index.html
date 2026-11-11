@@ -27503,6 +27503,568 @@ function capIntersect(ro, rd, pa, pb, r) {
  *  SPAWN / REMOVE
  * ------------------------------------------------------------------------- */
 // Step 9: spec = { gun, skill, aggr } from the room's plan; idx = his place in it; taken = spots already used.
+/* ===========================================================================
+ *  MEN WITH A BRAIN IN THEIR BODY (TB, ?tbody=off), BUSY BEFORE CONTACT (IDLE, ?idlelife=off),
+ *  REINFORCEMENTS (RF, CONFIG.enemy.reinforce, ?reinf=off), CLEAR SPAWN SPOTS (?spawnchk=off), UNSTICK (TB.stuck).
+ *  TB    enemyPose: the eyes lead (a smoothed look point, fast, with small saccades while he scans), the chest
+ *        follows slower (enemyFace twist rate by aim), the muzzle follows the eyes with lag (tb.ga, by skill);
+ *        a low / high ready by how close the threat is; creeping = shorter, softer heel-toe steps, knees bent,
+ *        weight over the stance foot; turning on the spot = small shuffle steps; feet step the way he moves
+ *        (sidesteps, backing off); breathing (faster after running), idle weight shift, a gun check now and then.
+ *        tbBrain (after enemyThink): short sidesteps while he fights in the open; a man who makes no progress on
+ *        a path for 0.7 s re-paths (open door leaves are in the path search), then gives up / re-decides.
+ *  IDLE  Unengaged men in a combat room have a habit (tb.role): patrol (short legs on his nav, back home), look
+ *        (wide turns, a step), chat (faces a teammate, low voice), gun (checks his gun). Sight and hearing as before.
+ *  RF    A man killed in the room you fight in rolls the director (rfOnKill, from loopEnemyDied): chance from kills
+ *        in the room, threat and difficulty, cooldown, a cap alive and a cap per room. The plan grows (plan.list /
+ *        plan.dead in room memory), so the room clear waits for them and a rebuilt room does not roll again
+ *        (an entry that never came in spawns with the room). rfTick brings each one in when due through a doorway
+ *        you are not standing in (exit door from the next room, else the entry door from behind if you are deep),
+ *        spawned out of sight beyond the leaf: FAST (you were firing: run up, kick the door, button-hook along the
+ *        wall, gun up) or CREEP (quiet: crouched up to the frame, eases the door open, listens, slices the pie in
+ *        steps, leaning the gun out, then in). They know roughly where you are (lastKnown with error) and hand over
+ *        to the normal brain (cover, squad, radio) once in. While still outside, rfMove owns his feet.
+ * ========================================================================= */
+if (!CONFIG.enemy.reinforce) CONFIG.enemy.reinforce = {
+  on: true,
+  base: 0.06, threat: 0.42, perKill: 0.13,       // chance per kill: base + threat x T + perKill x (kills in the room - 1), x difficulty
+  two: 0.45,                                     // chance of a pair, x (0.4 + T)
+  total: [1, 2, 3],                              // per room: threat < 0.3 / < 0.65 / above (hardcore +1)
+  alive: 2,                                      // never more alive in the room than max(this, men per room setting)
+  delay: [4, 10], pair: [1.0, 2.4], cool: [9, 18],   // s roll -> at the door; s between a pair; s before the next roll
+  loud: 2.5,                                     // s since your last shot that counts as a loud fight (fast entry)
+  err: 1.6,                                      // m error on where they think you are
+  give: 25,                                      // s waiting for a usable door before the entry is dropped
+  pMax: 0.92                                     // most a roll can be
+};
+const RF = { on: !/[?&]reinf=off\b/.test(QS) && CONFIG.enemy.reinforce.on !== false, C: CONFIG.enemy.reinforce,
+  stat: { rolls: 0, hit: 0, men: 0, fast: 0, creep: 0, exit: 0, entry: 0, dropped: 0, spawnMs: 0 }, log: [], warm: ['smg', 'pistol', 'shotgun', 'man:smg', 'man:pistol', 'man:shotgun'], warmAt: 0 };
+const TB = { on: !/[?&]tbody=off\b/.test(QS), stuck: !/[?&]unstick=off\b/.test(QS), stat: { repath: 0, giveup: 0, side: 0 } };
+const IDLE = { on: !/[?&]idlelife=off\b/.test(QS), roles: ['patrol', 'patrol', 'look', 'look', 'chat', 'gun'], stat: { legs: 0, chat: 0, gun: 0, looks: 0 } };
+const SPAWNCHK = { on: !/[?&]spawnchk=off\b/.test(QS), stat: { bad: 0, tried: 0 } };
+const _tb = { t: new THREE.Vector3(), w: new THREE.Vector3(), md: new THREE.Vector3(), g: new THREE.Vector3(), q: new THREE.Quaternion() };
+const RF_HOLD = new Set(['fight', 'peek', 'cover', 'ambush', 'suppress', 'flashed', 'react']);
+
+function tbInit(e) {
+  const r = Math.random;
+  e.tb = { hl: new THREE.Vector3(), ga: new THREE.Vector3(), init: false, gaInit: false, sacT: 0, sacA: 0, sacP: 0, sx: 0, sy: 0,
+    ready: 0, creep: 0, shuf: 0, puff: 0, br: r() * 6.28, wph: r() * 6.28, lean: 0, leanT: 0, gc: 0, gck: 0, gckAt: 4 + r() * 10,
+    role: null, it: 1 + r() * 4, stk: 0, stkN: 0, ss: 1 + r() * 2, talkAt: 0 };
+  return e.tb;
+}
+// Once a pose: the smoothed parameters (no allocation).
+function tbPre(e, tb, dt, now) {
+  const R = e.rf, hasT = (e.engaged && (e.los || e.hasKnown)) || !!e.watch;
+  let ready = 0;
+  if (e.state === 'alert' || e.state === 'search' || e.state === 'hunt') ready = 1;
+  else if (e.engaged && hasT) { threatLocal(e, _tb.t); ready = Math.hypot(_tb.t.x - e.pos.x, _tb.t.z - e.pos.y) < 9 || e.state === 'move' || e.state === 'rfIn' ? 1 : 0.6; }
+  else if (e.idleWalk) ready = 0.15;
+  else if (e.puppet && e.watch) ready = 1;
+  tb.ready += (ready - tb.ready) * (1 - Math.exp(-dt * 3));
+  const creepW = (R && R.how === 'creep' && R.out) || e.state === 'search' ? 1 : (e.state === 'hunt' || (e.state === 'move' && e.intent === 'push' && e.speed < 1.4)) ? 0.5 : (e.puppet && e.crouchT > 0.25 && e.speed > 0.15 && e.speed < 1.1) ? 0.8 : 0;
+  tb.creep += (creepW - tb.creep) * (1 - Math.exp(-dt * 2.5));
+  tb.shuf += ((e.turning && e.speed < 0.3 ? 1 : 0) - tb.shuf) * (1 - Math.exp(-dt * 8));
+  tb.puff = clamp(tb.puff + (e.speed > 2 ? dt * 0.25 : -dt * 0.04));
+  tb.br += dt * (1.6 + 2.6 * tb.puff + (e.engaged ? 0.6 : 0));          // breaths: ~15 / min calm, ~40 after a run
+  tb.wph += dt * 0.42;
+  tb.lean += (tb.leanT - tb.lean) * (1 - Math.exp(-dt * 5));
+  // gun check (idle 'gun' habit): ~1.8 s raise, tilt and look at it
+  if (tb.gck > 0) tb.gck -= dt;
+  tb.gc += ((tb.gck > 0.25 && e.state === 'idle' && !e.idleWalk ? 1 : 0) - tb.gc) * (1 - Math.exp(-dt * 4));
+  // saccades: small jumps of where the eyes rest; wide while he scans, tiny on a target he sees
+  tb.sacT -= dt;
+  if (tb.sacT <= 0) {
+    const lock = e.visible && e.aim > 0.5, scan = !e.engaged || !e.visible;
+    tb.sacT = lock ? rnd2(0.4, 1.1) : rnd2(0.25, 0.9);
+    const A = lock ? 0.025 : e.rf && e.rf.phase === 'listen' ? 0.6 : scan ? (e.engaged ? 0.22 : 0.35) : 0.08;
+    tb.sacA = rnd2(-A, A); tb.sacP = rnd2(-A, A) * 0.35;
+  }
+  const ks = 1 - Math.exp(-dt * 28);
+  tb.sx += (tb.sacA - tb.sx) * ks; tb.sy += (tb.sacP - tb.sy) * ks;
+}
+
+/* --- after enemyThink: habits, sidesteps, unsticking ---------------------------------------- */
+function tbBrain(e, dt, now) {
+  const tb = e.tb || tbInit(e);
+  if (e.rf && !e.rf.out) rfManTick(e, dt, now);
+  if (TB.stuck) tbStuck(e, tb, dt, now);
+  if (e.state === 'idle') { if (IDLE.on && !e.stairHold && e.room.kind === 'normal') idleTick(e, tb, dt, now); }
+  else if (e.idleWalk) e.idleWalk = false;
+  if (TB.on && e.state === 'fight' && !e.cover && e.reloadT <= 0 && !e.rf) {
+    tb.ss -= dt;
+    if (tb.ss <= 0) {
+      tb.ss = rnd2(1.6, 3.4);
+      if (Math.random() < 0.5) {
+        threatLocal(e, _tb.t);
+        let px = -(_tb.t.z - e.pos.y), pz = _tb.t.x - e.pos.x; const l = Math.hypot(px, pz) || 1, s = (Math.random() < 0.5 ? -1 : 1) * rnd2(0.35, 0.7);
+        px = e.pos.x + px / l * s; pz = e.pos.y + pz / l * s;
+        const G = navGrid(e.room);
+        if (navFree(G, px, pz) && navLine(G, e.pos.x, e.pos.y, px, pz)) { e.anchor.set(px, pz); TB.stat.side++; }
+      }
+    }
+  }
+}
+// A man on a path who makes no headway (an open leaf, a prop, a teammate in a doorway) re-paths, then gives up.
+function tbStuck(e, tb, dt, now) {
+  const P = e.path, moving = P && e.pathI < P.length && (e.state === 'move' || e.state === 'hunt' || e.state === 'search' || e.idleWalk) && !(e.rf && e.rf.out);
+  if (!moving) { tb.stk = 0; tb.sw = 0; if (!P) tb.stkN = 0; return; }
+  // progress over a 0.7 s window (his velocity can read high while a wall or a leaf holds him in place)
+  if (!tb.sw) { tb.sw = 0.7; tb.sx0 = e.pos.x; tb.sz0 = e.pos.y; }
+  tb.sw -= dt;
+  if (tb.sw > 0) return;
+  tb.sw = 0;
+  if (Math.hypot(e.pos.x - tb.sx0, e.pos.y - tb.sz0) > 0.15) { tb.stkN = 0; return; }
+  tb.stkN++;
+  const end = P[P.length - 1], np = tb.stkN < 3 ? findPath(e.room, e.pos.x, e.pos.y, end.x, end.y) : null;
+  if (np && np.length) { e.path = np; e.pathI = 0; TB.stat.repath++; return; }
+  TB.stat.giveup++; tb.stkN = 0; e.path = null;
+  if (e.idleWalk) { e.idleWalk = false; tb.it = rnd2(1, 3); return; }
+  e.anchor.copy(e.pos);
+  if (e.engaged && !e.dead) enemyDecide(e);
+}
+
+/* --- IDLE: alive before contact ------------------------------------------------------------- */
+function idleTick(e, tb, dt, now) {
+  if (!tb.role) {
+    tb.role = IDLE.roles[(Math.random() * IDLE.roles.length) | 0];
+    if (tb.role === 'chat' && !idleMate(e)) tb.role = 'look';
+  }
+  if (e.idleWalk) {                                              // on a leg: anchor follows him (an alarm starts from here)
+    e.anchor.copy(e.pos); e.idleT = 9;
+    if (!e.path || e.pathI >= e.path.length) { e.idleWalk = false; e.path = null; tb.it = rnd2(3, 8); e.idleYaw = e.yaw + rnd2(-0.9, 0.9); }
+    return;
+  }
+  tb.it -= dt;
+  const role = tb.role;
+  if (role === 'patrol' || (role === 'look' && Math.random() < dt * 0.02)) {
+    if (tb.it > 0) return;
+    const back = Math.hypot(e.pos.x - e.home.x, e.pos.y - e.home.y) > 0.8 && Math.random() < 0.55;
+    const pt = back ? { x: e.home.x, z: e.home.y } : idlePoint(e, role === 'patrol' ? 4.5 : 1.4);
+    const path = pt && findPath(e.room, e.pos.x, e.pos.y, pt.x, pt.z);
+    if (path && path.length) { e.path = path; e.pathI = 0; e.idleWalk = true; e.idleT = 9; IDLE.stat.legs++; }
+    else tb.it = rnd2(1.5, 3);
+    return;
+  }
+  if (role === 'look') {
+    if (tb.it <= 0) { tb.it = rnd2(1.8, 4.5); e.idleT = 9; e.idleYaw = e.homeYaw + rnd2(-1.4, 1.4); IDLE.stat.looks++; if (Math.random() < 0.08) aiRadio(e, 'listen'); }
+    return;
+  }
+  if (role === 'chat') {
+    const m = idleMate(e);
+    if (!m) { tb.role = 'look'; return; }
+    e.idleT = 9; e.idleYaw = Math.atan2(-(m.pos.x - e.pos.x), -(m.pos.y - e.pos.y)) + Math.sin(now * 0.3 + tb.wph) * 0.25;
+    if (now > tb.talkAt) { tb.talkAt = now + rnd2(2.5, 7); if (!m.tb || now > m.tb.talkAt - 1) { idleMurmur(e); IDLE.stat.chat++; } }
+    return;
+  }
+  if (role === 'gun') {
+    if (tb.it <= 0) { tb.it = rnd2(3, 6); e.idleT = 9; e.idleYaw = e.homeYaw + rnd2(-0.8, 0.8); }
+    if (now > tb.gckAt) { tb.gckAt = now + rnd2(7, 15); tb.gck = 1.9; IDLE.stat.gun++; }
+  }
+}
+function idleMate(e) {
+  let best = null, bd = 4.2;
+  for (const m of e.room.enemies || []) {
+    if (m === e || m.dead || m.surr || m.engaged || m.state !== 'idle') continue;
+    const d = Math.hypot(m.pos.x - e.pos.x, m.pos.y - e.pos.y);
+    if (d < bd) { bd = d; best = m; }
+  }
+  return best;
+}
+// A free spot on his nav within reach of his post, never at a doorway (that is where you come from).
+function idlePoint(e, reach) {
+  const room = e.room, G = navGrid(room);
+  for (let i = 0; i < 18; i++) {
+    const a = Math.random() * 6.283, d = rnd2(1.2, reach);
+    const x = e.home.x + Math.sin(a) * d, z = e.home.y + Math.cos(a) * d;
+    if (Math.abs(x) > room.w / 2 - 0.6 || Math.abs(z) > room.d / 2 - 0.6) continue;
+    if (room.entryX !== null && Math.hypot(x - room.entryX, z - room.d / 2) < 2.4) continue;
+    if (Math.hypot(x - room.exitX, z + room.d / 2) < 1.6) continue;
+    if (!spotClear(G, x, z)) continue;
+    return { x, z };
+  }
+  return null;
+}
+// Two men talking: a low, muffled voice (synth syllables), heard by you, not by anyone else.
+function idleMurmur(e) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  e.B.head.getWorldPosition(_tb.w);
+  soundAt(_tb.w, () => {
+    let t = audio.ctx.currentTime + 0.02;
+    const n = 3 + (Math.random() * 6 | 0);
+    for (let i = 0; i < n; i++) {
+      const d = rnd2(0.08, 0.2);
+      nBurst(t, d + 0.04, 'bandpass', rnd2(260, 620), 2.2, rnd2(0.025, 0.05), d, 0.25);
+      t += d + rnd2(0.03, 0.11) + (Math.random() < 0.15 ? 0.25 : 0);
+    }
+  });
+}
+
+/* --- spawn spots: clear ground, not pinned in a corner behind a box --------------------------- */
+// Free here, free on at least 5 of 8 sides at 0.32 m and 4 of 8 at 0.6 m.
+function spotClear(G, x, z) {
+  if (!navFree(G, x, z)) return false;
+  let a = 0, b = 0;
+  for (let k = 0; k < 8; k++) {
+    const c = Math.cos(k * 0.785), s = Math.sin(k * 0.785);
+    if (navFree(G, x + c * 0.32, z + s * 0.32)) a++;
+    if (navFree(G, x + c * 0.6, z + s * 0.6)) b++;
+  }
+  return a >= 5 && b >= 4;
+}
+// The room's open floor: the middle of the door-to-door walk (snapped to a free cell).
+function spotOpen(room, G) {
+  const ex = room.entryX !== null ? room.entryX : 0, x0 = (ex + (room.exitX || 0)) / 2;
+  for (let r = 0; r < 12; r++) for (let k = 0; k < 8; k++) {
+    const x = x0 + Math.cos(k * 0.785) * r * 0.3, z = Math.sin(k * 0.785) * r * 0.3;
+    if (navFree(G, x, z)) return [x, z];
+    if (!r) break;
+  }
+  return [x0, 0];
+}
+// One score for any spot (tests use it for the old picks too): 0 = good; bits: 1 blocked, 2 pinned, 4 boxed in, 8 no short way out.
+function spotBad(room, x, z, G = navGrid(room)) {
+  let bad = 0;
+  if (!navFree(G, x, z)) bad |= 1;
+  else if (!spotClear(G, x, z)) bad |= 2;
+  let free = 0, all = 0;
+  for (let dx = -1; dx <= 1.001; dx += 0.25) for (let dz = -1; dz <= 1.001; dz += 0.25) { if (dx * dx + dz * dz > 1) continue; all++; if (navFree(G, x + dx, z + dz)) free++; }
+  if (free / all < 0.4) bad |= 4;
+  if (!(bad & 1)) {
+    const [ox, oz] = spotOpen(room, G), st = Math.hypot(ox - x, oz - z);
+    const p = st > 0.6 ? findPath(room, x, z, ox, oz) : [];
+    if (!p) bad |= 8;
+    else { let L = 0, px = x, pz = z; for (const w of p) { L += Math.hypot(w.x - px, w.y - pz); px = w.x; pz = w.y; } if (L > st * 1.8 + 2.5) bad |= 8; }
+  }
+  return bad;
+}
+
+/* --- REINFORCEMENTS --------------------------------------------------------------------------- */
+const rfMaxTotal = (T) => (T < 0.3 ? RF.C.total[0] : T < 0.65 ? RF.C.total[1] : RF.C.total[2]) + (MENU.mode === 'hardcore' ? 1 : 0);
+function rfAlive(room, plan) {
+  let n = 0;
+  for (const m of room.enemies || []) if (!m.dead && !m.surr && !m.puppet) n++;
+  plan.list.forEach((s, i) => { if (s.rf && !s.rf.in && !plan.dead[i]) n++; });
+  return n;
+}
+// loopEnemyDied (before the room-clear check): the director may send more.
+function rfOnKill(e) {
+  if (!RF.on || e.puppet || e.net || !netHostAI()) return;
+  const room = e.room;
+  if (!room || room.kind !== 'normal' || room !== stream.current || !room.active) return;
+  const plan = roomMem(room).plan;
+  if (!plan || plan.cleared) return;
+  const C = RF.C, now = wnow(), R = plan.rf || (plan.rf = { n: 0, next: 0, rolls: 0 });
+  const T = threatNow(), max = rfMaxTotal(T);
+  if (now < R.next || R.n >= max) return;
+  const kills = plan.dead.filter(Boolean).length;
+  const diff = (MENU.mode === 'hardcore' ? 1.3 : MENU.mode === 'practice' ? 0.6 : 1) * (1 + (CONFIG.ai.aggrOffset || 0));
+  const p = clamp((C.base + C.threat * T + C.perKill * Math.max(0, kills - 1)) * diff, 0, C.pMax ?? 0.92);
+  R.rolls++; RF.stat.rolls++;
+  if (Math.random() >= p) { R.next = now + 1.5; return; }
+  const cap = Math.max(C.alive, CONFIG.loop.maxEnemies || 2);
+  let n = 1 + (Math.random() < C.two * (0.4 + T) ? 1 : 0);
+  n = Math.min(n, max - R.n, cap - rfAlive(room, plan));
+  if (n <= 0) { R.next = now + 4; return; }
+  const loud = now - (NIGHT.shotT || -99) < C.loud;
+  const how = RF.force || (Math.random() < (loud ? 0.75 : 0.25) ? 'fast' : 'creep');   // RF.force: tests only
+  let due = now + rnd2(C.delay[0], C.delay[1]), shotguns = 0;
+  for (let k = 0; k < n; k++) {
+    const [wS, wP, wM] = aiGunWeights(T, shotguns);
+    let r = Math.random() * (wS * (how === 'fast' ? 1.6 : 0.6) + wP + wM);
+    const gun = (r -= wS * (how === 'fast' ? 1.6 : 0.6)) < 0 ? 'shotgun' : (r -= wP) < 0 ? 'pistol' : 'smg';
+    if (gun === 'shotgun') shotguns++;
+    const spec = { gun, skill: clamp(T + rnd2(-0.1, 0.15)), aggr: clamp(T * 0.8 + rnd2(-0.1, 0.25) + (how === 'fast' ? 0.15 : -0.05)), role: how === 'fast' ? 'point' : 'flank',
+      torch: Math.random() < mix(CONFIG.night.torchChance[0], CONFIG.night.torchChance[1], T), rf: { due, how, k, in: false, t0: now } };
+    plan.list.push(spec); plan.dead.push(false);
+    due += rnd2(C.pair[0], C.pair[1]);
+  }
+  R.n += n; R.next = now + rnd2(C.cool[0], C.cool[1]); RF.stat.hit++;
+  RF.log.push({ t: +now.toFixed(1), kills, p: +p.toFixed(2), n, how });
+}
+// Every frame (enemiesUpdate): bring in what is due in the room you are in.
+function rfTick(dt, now) {
+  if (!RF.on || !netHostAI()) return;
+  if (RF.warm.length && now > RF.warmAt) rfWarm(now);
+  const room = stream.current;
+  if (!room || room.kind !== 'normal' || !room.active) return;
+  const plan = roomMem(room).plan;
+  if (!plan || !plan.rf || plan.cleared) return;
+  rfDue(room, plan, now);
+}
+function rfWarm(now) {                                             // the first rooms built: pay the first-time costs before any fight
+  RF.warmAt = now + 1.5;
+  if (!ENEMY.models || !ENEMY.models[0]) return;
+  let room = null;
+  for (const r of stream.rooms.values()) if (r.active && r.kind === 'normal' && !(r.enemies || []).some((m) => m.engaged && !m.dead)) { room = r; break; }
+  if (!room) return;
+  {                         // the gun templates a reinforcement may carry, built one at a time while it is quiet (not on his spawn frame)
+    const g = RF.warm.shift();
+    if (g.startsWith('man:')) {                                             // one man spawned and removed out of sight: his first-time costs (skin copies, LODs) are paid now, not when a reinforcement walks in
+      { try { const t0 = performance.now(), m = spawnEnemy(room, { gun: g.slice(4), skill: 0, aggr: 0, rf: { warm: true } }, -1, []); if (m) removeEnemy(m); RF.stat.warmMs = Math.max(RF.stat.warmMs || 0, +(performance.now() - t0).toFixed(1)); } catch (er) { /* later */ } }
+    } else if (typeof EGUN_TPL !== 'undefined' && GUN_BUILD[g] && !EGUN_TPL[g]) { try { EGUN_TPL[g] = GUN_BUILD[g](); } catch (er) { /* built on demand */ } }
+  }
+}
+function rfDue(room, plan, now) {
+  for (let i = 0; i < plan.list.length; i++) {
+    const s = plan.list[i], R = s.rf;
+    if (!R || R.in || plan.dead[i]) continue;
+    if ((room.enemies || []).some((m) => m.idx === i && !m.puppet)) { R.in = true; continue; }   // came with a rebuilt room
+    if (now < R.due) continue;
+    if (now - R.due > RF.C.give) {                                // no way in for too long: he never came
+      plan.dead[i] = true; R.in = true; R.gone = true; RF.stat.dropped++;
+      if (plan.dead.every(Boolean)) loopRoomCleared(room, plan);
+      continue;
+    }
+    if (!rfSpawn(room, plan, i, now)) R.due = now + 1.2;            // no door right now: try again soon
+    break;                                                         // one a frame
+  }
+}
+// Which doorway, where he starts (hidden), how he comes in.
+function rfDoor(room) {
+  headWorld(_tb.w);
+  const px = rLX(room, _tb.w.x), pz = rLZ(room, _tb.w.z), hd = room.d / 2;
+  const next = stream.rooms.get(room.slot + 1), prev = stream.rooms.get(room.slot - 1);
+  const exitOk = !!(next && next.active && room.door && !room.noDoor) && Math.hypot(px - room.exitX, pz + hd) > 3;
+  const deep = room.entryX !== null && Math.hypot(px - room.entryX, pz - hd) > 4.5;
+  const entryOk = !!(prev && prev.active && prev.door && (prev.kind === 'normal' || prev.kind === 'stair') && deep);
+  if (exitOk) return { door: room.door, x: room.exitX, z: -hd, nz: 1, beyond: next, which: 'exit' };
+  if (entryOk) return { door: prev.door, x: room.entryX, z: hd, nz: -1, beyond: prev, which: 'entry' };
+  return null;
+}
+function rfSpawn(room, plan, i, now) {
+  const D = rfDoor(room);
+  if (!D) return false;
+  const spec = plan.list[i], how = spec.rf.how, t0 = performance.now();
+  // Hinge side (local x): the leaf swings in there; he stacks and hooks on the other side.
+  doorHinge(D.door, _tb.w);
+  const hx = rLX(room, _tb.w.x), away = Math.sign(D.x - hx) || 1;
+  // Start out of sight: behind the wall beside the doorway, else straight back from it.
+  headWorld(_tb.t);
+  const G2 = D.beyond && D.beyond.kind === 'normal' ? navGrid(D.beyond) : null;
+  let sx = D.x, sz = D.z - D.nz * 2.2, best = -1;
+  for (const [lat, dep] of [[away * 1.5, 1.7], [-away * 1.5, 1.7], [away * 0.9, 2.4], [0, 2.6], [0, 1.6]]) {
+    const x = D.x + lat, z = D.z - D.nz * dep;
+    _tb.g.set(rWX(room, x), room.origin.y + 1.5, rWZ(room, z));
+    let s = clearLine(_tb.t, _tb.g, 0.05) ? 0 : 2;
+    if (G2 && navFree(G2, rLX(D.beyond, _tb.g.x), rLZ(D.beyond, _tb.g.z))) s += 1;
+    if (s > best) { best = s; sx = x; sz = z; }
+  }
+  const t1 = performance.now(), e = spawnEnemy(room, spec, i, []), t2 = performance.now();
+  if (!e) return false;
+  spec.rf.in = true;
+  // A pair stacks up: the second man starts and waits behind the first (one doorway, one at a time).
+  const k = rfOrder(room, e);
+  if (k) { sx = D.x + away * (how === 'fast' ? 0.45 : 0.55); sz = D.z - D.nz * (1.5 + 0.6 * k); }
+  const C = RF.C;
+  e.pos.set(sx, sz); e.home.set(D.x + away * 1.2, D.z + D.nz * 1.2); e.anchor.copy(e.pos); e.vel.set(0, 0);
+  e.yaw = e.homeYaw = Math.atan2(-(D.x - sx), -(D.z - sz));
+  e.root.position.set(sx, enemyFloorY(e), sz); e.root.rotation.y = e.yaw;
+  // He knows roughly where you are from the noise.
+  headWorld(_tb.t);
+  e.lastKnown.set(clamp(rLX(room, _tb.t.x) + rnd2(-C.err, C.err), -room.w / 2 + 0.4, room.w / 2 - 0.4), _tb.t.y - 0.35, clamp(rLZ(room, _tb.t.z) + rnd2(-C.err, C.err), -room.d / 2 + 0.4, room.d / 2 - 0.4));
+  e.hasKnown = true; e.engaged = true; e.heard = false; e.alert = 1; e.watch = null;
+  e.state = 'rfIn'; e.stateT = 0; e.acquire = now + rnd2(0.3, 0.6) * e.reactK; e.fbCool = now + 60;
+  // the stack point beside the frame, the arc he slices, the hook point inside
+  const stackLat = how === 'fast' ? away * 0.45 : away * 0.55;
+  e.rf = { how, which: D.which, door: D.door, phase: 'go', t: 0, out: true, kicked: false, pushed: false, wait: 0,
+    Dx: D.x, Dz: D.z, nz: D.nz, away,
+    sx: D.x + stackLat, sz: D.z - D.nz * (how === 'fast' ? 0.85 : 0.7),
+    hx: D.x + away * rnd2(1.2, 1.9), hz: D.z + D.nz * rnd2(0.7, 1.0), born: now, sl: 0, k };
+  if (k) { e.rf.sz -= D.nz * 0.75 * k; e.rf.lead = rfLeader(room, e); if (how === 'fast' && k % 2) e.rf.hx = D.x - away * rnd2(1.2, 1.9); }   // the second man hooks the other way (his corner), if it is free
+  { const G = navGrid(room); if (!navFree(G, e.rf.hx, e.rf.hz)) { const ax = D.x - away * rnd2(1.2, 1.9); if (navFree(G, ax, e.rf.hz)) e.rf.hx = ax; else { e.rf.hx = D.x; e.rf.hz = D.z + D.nz * 1.4; } } }
+  e.crouchT = how === 'fast' ? 0.15 : 0.45; e.aimT = how === 'fast' ? 0.7 : 0.9;
+  enemyPose(e, 0.016, now);
+  RF.stat.men++; RF.stat[how]++; RF.stat[D.which]++;
+  RF.stat.spawnMs = Math.max(RF.stat.spawnMs, performance.now() - t0);
+  RF.log.push({ t: +now.toFixed(1), spawn: i, how, which: D.which, k, ms: +(performance.now() - t0).toFixed(1), msSpawn: +(t2 - t1).toFixed(1) });
+  // A teammate still alive calls it in.
+  for (const m of room.enemies || []) if (m !== e && !m.dead && !m.surr) { aiRadio(m, 'moving'); break; }
+  return true;
+}
+// How many men of this wave are already on their way in (0 = he leads).
+function rfOrder(room, e) { let k = 0; for (const m of room.enemies || []) if (m !== e && !m.dead && m.rf && m.rf.out) k++; return k; }
+function rfLeader(room, e) { let L = null; for (const m of room.enemies || []) if (m !== e && !m.dead && m.rf && m.rf.out && (!L || m.rf.k > L.rf.k)) L = m; return L; }
+// enemyMove while he is still beyond the doorway: his own feet (no room clamp), the door, the entry.
+function rfMove(e, dt) {
+  const R = e.rf, now = wnow(), C = CONFIG.enemy, fast = R.how === 'fast', door = R.door;
+  R.t += dt;
+  let tx = e.pos.x, tz = e.pos.y, v = 0;
+  if (e.dead) return true;
+  if (e.state !== 'rfIn') {                                        // the brain has taken over (he saw you, decided, was flashed)
+    if (RF_HOLD.has(e.state) && R.phase !== 'go' && (R.hold = (R.hold || 0) + dt) < 4) { tx = e.pos.x; tz = e.pos.y; R.leanT = R.phase === 'slice' ? R.away * -0.6 : 0; }
+    else { R.phase = 'in'; }
+  } else if (e.visible && now > e.acquire && R.phase !== 'kick') {   // contact: he fights from where he is (the frame is his cover)
+    e.state = 'fight'; e.stateT = rnd2(1.2, 2.6); e.anchor.copy(e.pos); R.hold = 0;
+  }
+  const doorA = door && door.body ? Math.abs(door.angle) : 1.6;
+  if (R.lead && e.state === 'rfIn' && R.phase !== 'go') {         // stacked behind the first man: wait until he is through, then follow him in
+    const Lm = R.lead;
+    if (!Lm.dead && Lm.rf && Lm.rf.out && R.t < 12) { R.t = Math.min(R.t, 0.2); tx = R.sx; tz = R.sz; e.aimT = 0.9; e.crouchT = R.how === 'fast' ? 0.25 : 0.45; R.wait = 0; }
+    else { R.lead = null; R.phase = R.how === 'fast' || doorA > 1.0 ? 'set' : 'open'; R.t = 0; R.wait = rnd2(0.2, 0.5); R.sx = R.Dx + R.away * 0.45; R.sz = R.Dz - R.nz * 0.8; }
+  } else if (e.state === 'rfIn' || R.phase === 'in') {
+    switch (R.phase) {
+      case 'go':
+        tx = R.sx; tz = R.sz; v = fast ? C.run * 0.95 : C.walk * 0.75;
+        e.aimT = fast ? 0.55 : 0.9; e.crouchT = fast ? 0.15 : 0.45;
+        if (Math.hypot(tx - e.pos.x, tz - e.pos.y) < 0.12) { R.t = 0; R.phase = doorA > 1.0 ? (fast ? 'set' : 'listen') : fast ? 'kick' : 'open'; R.wait = fast ? rnd2(0.15, 0.35) : rnd2(0.8, 1.8); }
+        break;
+      case 'kick':                                                  // a beat, then the boot (fast)
+        e.aimT = 0.7; e.crouchT = 0.2;
+        if (!R.kicked && R.t > 0.3) { R.kicked = true; rfKick(e, door, now); }
+        if (R.kicked && ((doorA > 1.1 && R.t > 0.6) || R.t > 2.2)) { R.phase = 'set'; R.t = 0; R.wait = rnd2(0.1, 0.25); }
+        break;
+      case 'set':                                                    // the hesitation before committing: weight back, gun up
+        e.aimT = 1; e.crouchT = 0.3;
+        if (R.t > R.wait) { R.phase = 'in'; R.t = 0; }
+        break;
+      case 'open':                                                   // eases the leaf open from the side (creep)
+        e.aimT = 0.9; e.crouchT = 0.5;
+        if (!R.pushed && R.t > 0.35) { R.pushed = true; rfPush(e, door, now); }
+        if (R.pushed && (doorA > 1.1 || R.t > 5)) { R.phase = 'listen'; R.t = 0; R.wait = rnd2(0.8, 1.8); }
+        break;
+      case 'listen':                                                 // still, head turning, listening
+        e.aimT = 0.9; e.crouchT = 0.5;
+        if (R.t > R.wait) { R.phase = 'slice'; R.t = 0; R.sl = 0; R.wait = rnd2(0.5, 1.0); }
+        break;
+      case 'slice': {                                                // slicing the pie: an arc outside the frame, a stop on each step
+        e.aimT = 1; e.crouchT = 0.45;
+        const steps = 3, a = (R.sl / steps) * 1.2, r = 0.95;      // from the stack side across the opening
+        tx = R.Dx + R.away * Math.cos(a) * 0.55 - R.away * Math.sin(a) * r * 0.9; tz = R.Dz - R.nz * (0.7 + 0.25 * Math.sin(a));
+        v = C.walk * 0.4;
+        R.leanT = -R.away * 0.5;
+        if (Math.hypot(tx - e.pos.x, tz - e.pos.y) < 0.08 && R.t > R.wait) { R.sl++; R.t = 0; R.wait = rnd2(0.4, 0.9); if (R.sl > steps) { R.phase = 'in'; R.leanT = 0; } }
+        break;
+      }
+      case 'in':                                                     // through the doorway, straight down its middle
+        tx = R.Dx; tz = R.Dz + R.nz * 0.6; v = fast ? C.run * 0.9 : C.walk * 0.6; R.leanT = 0;
+        if (e.state === 'rfIn') { e.aimT = fast ? 0.85 : 1; e.crouchT = fast ? 0.2 : 0.45; }
+        if (doorA < 1.1 && R.nz * (e.pos.y - R.Dz) > -0.95) {          // never through a leaf: wait at the frame until it is well open (a kick if it won't)
+          v = 0; R.inWait = (R.inWait || 0) + dt;
+          if (!R.pushed && !R.kicked) { R.pushed = true; rfPush(e, door, now); }
+          if (R.inWait > 3 && !R.kicked) { R.kicked = true; rfKick(e, door, now); }
+        }
+        if (R.nz * (e.pos.y - R.Dz) > 0.35) rfInside(e, now);
+        break;
+    }
+  }
+  if (e.tb) e.tb.leanT = R.leanT || 0;
+  if (R.phase !== 'go' && R.phase !== 'kick' && !R.lead) rfHoldDoor(door);   // he keeps the leaf open while he works the doorway
+  if (R.lead && e.state === 'rfIn' && R.phase !== 'go' && R.phase !== 'set') v = Math.max(v, CONFIG.enemy.walk * 0.6);   // closing up behind him
+  // Walk there (no walls: he is beyond his room's walls; the leaf is out of his way by the time he goes through).
+  _mv.set(tx - e.pos.x, tz - e.pos.y);
+  const L = _mv.length();
+  if (L > 1e-4 && v > 0) _mv.multiplyScalar(Math.min(v, L * 5 + 0.15) / L); else _mv.set(0, 0);
+  e.vel.lerp(_mv, 1 - Math.exp(-dt * 7));
+  e.pos.addScaledVector(e.vel, dt);
+  for (const m of e.room.enemies || []) {                         // two men out there never stand in each other
+    if (m === e || m.dead || !m.rf || !m.rf.out) continue;
+    const dx = e.pos.x - m.pos.x, dz = e.pos.y - m.pos.y, d = Math.hypot(dx, dz), R2 = 2 * C.radius + 0.05;
+    if (d < R2 && d > 1e-4) { e.pos.x += dx / d * (R2 - d) * 0.5; e.pos.y += dz / d * (R2 - d) * 0.5; }
+  }
+  e.speed = e.vel.length();
+  R.face = e.state === 'rfIn' && fast && e.speed > 1.2 && R.phase === 'go' ? Math.atan2(-e.vel.x, -e.vel.y) : null;
+  enemyFace(e, dt);
+  return true;
+}
+// Through: he is inside. Fast: button-hook along the wall to his corner, gun up; creep: the brain takes him to cover.
+function rfInside(e, now) {
+  const R = e.rf;
+  R.out = false; R.face = null;
+  if (e.tb) e.tb.leanT = 0;
+  if (e.state !== 'rfIn') {
+    if (e.path && e.path.length) { const end = e.path[e.path.length - 1]; e.path = findPath(e.room, e.pos.x, e.pos.y, end.x, end.y); e.pathI = 0; }
+    if (RF_HOLD.has(e.state)) e.anchor.copy(e.pos);
+    e.rf = null; return;
+  }
+  if (R.how === 'fast') { e.anchor.set(R.hx, R.hz); R.phase = 'hook'; R.t = 0; }
+  else { e.rf = null; e.state = 'react'; e.stateT = rnd2(0.15, 0.35); e.anchor.copy(e.pos); }
+}
+// Inside, fast entry: the hook (enemyMove walks him to the anchor, walls and all), then the brain.
+function rfHookTick(e, dt, now) {
+  const R = e.rf;
+  R.t += dt;
+  e.aimT = 1; e.crouchT = 0.2;
+  if (e.visible && now > e.acquire) { e.rf = null; e.state = 'fight'; e.stateT = rnd2(1.2, 2.5); e.anchor.copy(e.pos); return; }
+  if (Math.hypot(R.hx - e.pos.x, R.hz - e.pos.y) < 0.3 || R.t > 1.6) { e.rf = null; e.state = 'react'; e.stateT = rnd2(0.1, 0.25); e.anchor.copy(e.pos); }
+}
+function rfKick(e, door, now) {
+  if (!door || !door.body) return;
+  _tb.w.set(rWX(e.room, e.pos.x), 0, rWZ(e.room, e.pos.y));
+  const side = doorSide(door, _tb.w.x, _tb.w.z);
+  if (door.holder) releaseDoor(door.holder);
+  door.drive = null; door.pullUntil = 0;
+  const t = door.body.translation();
+  _tb.g.set(t.x - _tb.w.x, 0, t.z - _tb.w.z).normalize();
+  door.body.applyImpulseAtPoint({ x: _tb.g.x * 55, y: 0, z: _tb.g.z * 55 }, { x: t.x, y: t.y, z: t.z }, true);
+  door.kickUntil = performance.now() / 1000 + CONFIG.kick.doorFree; door.kickDir = side; door.rfSide = side;
+  _tb.t.set(t.x, t.y, t.z);
+  try { kickSfx('door', _tb.t, 0.75); } catch (er) { /* sound off */ }
+}
+function rfHoldDoor(door) {
+  if (!door || !door.body || door.holder || Math.abs(door.angle) > 1.25 || !door.rfSide) return;
+  const t = performance.now() / 1000;
+  if (door.drive && t < door.drive.until - 0.5) return;
+  const P = CONFIG.doorPhys;
+  door.drive = { target: door.rfSide > 0 ? P.maxOpen * 0.85 : -P.maxBack * 0.85, k: 6, c: 6.5, from: t, until: t + 2.5, cap: CONFIG.doorUse.pace * 1.3 };
+}
+function rfPush(e, door, now) {
+  if (!door || !door.body) return;
+  const P = CONFIG.doorPhys, s = doorSide(door, rWX(e.room, e.pos.x), rWZ(e.room, e.pos.y)), t = performance.now() / 1000;
+  door.rfSide = s;
+  door.drive = { target: s > 0 ? P.maxOpen * 0.85 : -P.maxBack * 0.85, k: 6, c: 6.5, from: t + 0.25, until: t + 6, cap: CONFIG.doorUse.pace * 1.3 };
+  leverHold(door, t + 0.6);
+}
+// enemiesUpdate, per man before enemyThink: the hook after the door.
+function rfManTick(e, dt, now) {
+  if (e.rf && !e.rf.out && e.rf.phase === 'hook' && e.state === 'rfIn') rfHookTick(e, dt, now);
+  else if (e.rf && !e.rf.out && e.state !== 'rfIn') e.rf = null;
+}
+// Heavy props in a room (boxes, crates, cans), room-local AABBs, for the nav grid and his feet.
+function propBoxes(room, out) {
+  for (const p of props) {
+    if (!p.inWorld || p.table || p.item || p.kinematic || p.mass < 3 || (p.holders && p.holders.length) || !p.root) continue;
+    const P = p.root.position;
+    if (!insideRoom(room, P.x, P.z, 0.3, P.y)) continue;
+    const h = p.half, m = p.root.matrixWorld.elements;
+    const hy = Math.abs(m[1]) * h.x + Math.abs(m[5]) * h.y + Math.abs(m[9]) * h.z;
+    if (P.y + hy - room.origin.y < 0.3) continue;                   // flat on the floor: he steps over it
+    const ax = Math.abs(m[0]) * h.x + Math.abs(m[4]) * h.y + Math.abs(m[8]) * h.z, az = Math.abs(m[2]) * h.x + Math.abs(m[6]) * h.y + Math.abs(m[10]) * h.z;
+    out.push({ x: rLX(room, P.x), z: rLZ(room, P.z), a: 0, hx: ax, hz: az, top: P.y + hy - room.origin.y });
+  }
+  return out;
+}
+const _pbx = [];
+function enemyPropPush(e, mp, r) {
+  const room = e.room;
+  for (const p of props) {
+    if (!p.inWorld || p.table || p.item || p.kinematic || p.mass < 3 || !p.root) continue;
+    const P = p.root.position;
+    if (Math.abs(P.x - mp.x) > 1.3 || Math.abs(P.z - mp.z) > 1.3 || Math.abs(P.y - (room.origin.y + 0.5)) > 1.2) continue;
+    const h = p.half, m = p.root.matrixWorld.elements;
+    if (P.y + Math.abs(m[1]) * h.x + Math.abs(m[5]) * h.y + Math.abs(m[9]) * h.z - room.origin.y < 0.3) continue;
+    _pbc.x = P.x; _pbc.z = P.z; _pbc.hx = Math.abs(m[0]) * h.x + Math.abs(m[4]) * h.y + Math.abs(m[8]) * h.z; _pbc.hz = Math.abs(m[2]) * h.x + Math.abs(m[6]) * h.y + Math.abs(m[10]) * h.z;
+    pushOutOf(_pbc, mp, r);
+  }
+}
+const _pbc = { x: 0, z: 0, c: 1, s: 0, hx: 0, hz: 0 };
+// Open door leaves of this room's two doorways, stamped into the grid for one path search.
+function navDoorStamp(room, G) {
+  const N = G.nx * G.nz;
+  G.dyn = new Uint8Array(N);
+  G.dynN = 0;
+  const r = CONFIG.enemy.radius;
+  for (const door of [room.door, (stream.rooms.get(room.slot - 1) || {}).door]) {
+    if (!door || !door.walk || Math.abs(door.angle) < 0.06) continue;
+    const w = door.walk, cx = rLX(room, w.x), cz = rLZ(room, w.z), a = Math.atan2(w.s, w.c) + (rF(room) < 0 ? Math.PI : 0);
+    const b = { x: cx, z: cz, a, hx: w.hx, hz: w.hz }, R = Math.hypot(w.hx, w.hz) + r;
+    const [i0, j0] = navCell(G, cx - R, cz - R), [i1, j1] = navCell(G, cx + R, cz + R);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const [x, z] = navCenter(G, i, j);
+      if (boxDist(x, z, b) < r) { G.dyn[j * G.nx + i] = 1; G.dynN++; }
+    }
+  }
+}
+
 function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   hitchNote('man spawned');   // step 34
   spec = spec || { gun: 'smg', skill: 0.4, aggr: 0.4 };
@@ -27525,7 +28087,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   root.add(gb.root);
   room.group.add(root);
   const gun = { root: gb.root, model: gb.model, parts: gb.parts, flashT: 0, def: gd, wr: WR[W.gun], prop: { root: gb.root }, primary: null };
-  const sp = enemySpawnSpot(room, taken);   // apartment: the far end   // outdoor start: door squad, yard, tower
+  const sp = spec.rf ? { x: 0, z: 0, yaw: 0 } : enemySpawnSpot(room, taken);   // reinforcements: rfSpawn places him   // apartment: the far end   // outdoor start: door squad, yard, tower
   taken.push(sp);
   const e = {
     room, root, B, gun, hp: CONFIG.enemy.health,
@@ -27560,19 +28122,22 @@ function enemySpawnSpot(room, taken = []) {
   const faceDoor = (x, z) => Math.atan2(-(entry.x - x), -(entry.y - z));
   const range = room.plan && room.plan.type === 'range', farZ = -room.d / 2 + 16;   // step 75: on the range they hold the far end
   const pts = coverPoints(room).filter((c) => c.useable && (!range || rLZ(room, c.z) < farZ));
-  let best = null, bestS = -Infinity;
+  const grid = navGrid(room), cand = [];                          // clear spawn spots: every candidate scored, the best one that is not pinned / boxed in
   for (const c of pts) {
     const lx = rLX(room, c.x), lz = rLZ(room, c.z);
     if (!far(lx, lz)) continue;
     const tx = entry.x - lx, tz = entry.y - lz, l = Math.hypot(tx, tz) || 1;
     const s = -(c.nx * tx + c.nz * tz) / l - (lz > 0 ? 1.5 : 0) + Math.random() * 0.3;
-    if (s > bestS) { bestS = s; best = { x: lx, z: lz }; }
+    if (s > 0.2) cand.push({ x: lx, z: lz, s });
   }
-  if (best && bestS > 0.2) return { x: best.x, z: best.z, yaw: faceDoor(best.x, best.z) };
-  const grid = navGrid(room);
+  cand.sort((a, b) => b.s - a.s);
+  for (const c of cand) {
+    if (SPAWNCHK.on) { SPAWNCHK.stat.tried++; if (spotBad(room, c.x, c.z, grid)) { SPAWNCHK.stat.bad++; continue; } }
+    return { x: c.x, z: c.z, yaw: faceDoor(c.x, c.z) };
+  }
   for (let tries = 0; tries < 60; tries++) {
     const x = rnd2(-room.w / 2 + 0.6, room.w / 2 - 0.6), z = range ? rnd2(-room.d / 2 + 0.9, farZ) : rnd2(-room.d / 2 + 0.7, -0.3);
-    if (navFree(grid, x, z) && Math.hypot(x - room.exitX, z + room.d / 2) > 1.0 && (far(x, z) || tries > 45)) return { x, z, yaw: faceDoor(x, z) };
+    if (navFree(grid, x, z) && Math.hypot(x - room.exitX, z + room.d / 2) > 1.0 && (far(x, z) || tries > 45) && (!SPAWNCHK.on || tries > 50 || !spotBad(room, x, z, grid))) return { x, z, yaw: faceDoor(x, z) };
   }
   return { x: 0, z: range ? farZ - 2 : -room.d / 4, yaw: 0 };
 }
@@ -27692,7 +28257,7 @@ function navGrid(room) {
   if (room.navCache) return room.navCache;
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
-  const boxes = (room.walkLocal || []).concat(tableBoxes(room), room.facNav || []);   // facility section: the stair (AI only)
+  const boxes = (room.walkLocal || []).concat(tableBoxes(room), room.facNav || [], TB.stuck ? propBoxes(room, []) : []);   // facility section: the stair (AI only)   // boxes, crates and cans on the floor block him too (he used to path and spawn through them)
   for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
     const x = -room.w / 2 + (i + 0.5) * cs, z = -room.d / 2 + (j + 0.5) * cs;
     let blocked = Math.abs(x) > room.w / 2 - r || Math.abs(z) > room.d / 2 - r;
@@ -27703,7 +28268,7 @@ function navGrid(room) {
 }
 const navCell = (G, x, z) => [clamp(Math.floor((x + G.w / 2) / G.cs), 0, G.nx - 1), clamp(Math.floor((z + G.d / 2) / G.cs), 0, G.nz - 1)];
 const navCenter = (G, i, j) => [-G.w / 2 + (i + 0.5) * G.cs, -G.d / 2 + (j + 0.5) * G.cs];
-function navFree(G, x, z) { const [i, j] = navCell(G, x, z); return G.g[j * G.nx + i] === 0; }
+function navFree(G, x, z) { const [i, j] = navCell(G, x, z), k = j * G.nx + i; return G.g[k] === 0 && !(G.dyn && G.dyn[k]); }   // dyn: open door leaves, during a path search
 function navSnap(G, x, z) {
   const [i0, j0] = navCell(G, x, z);
   if (!G.g[j0 * G.nx + i0]) return [i0, j0];
@@ -27729,6 +28294,8 @@ function findPath(room, sx, sz, tx, tz) {
   // Buffers kept per grid and reused (the outdoor yard's grid is 56k cells: fresh arrays per search were GC stalls).
   // A cell's cost / parent are valid only when its stamp equals this search's generation; the heap is typed.
   const N = G.nx * G.nz, si = s[1] * G.nx + s[0], ti = t[1] * G.nx + t[0];
+  if (TB.stuck) navDoorStamp(room, G);                              // an open leaf in the room is in the way (men walked into it and stuck there)
+  const DY = G.dyn;
   let B = G._pf;
   if (!B || B.N !== N) B = G._pf = { N, gS: new Float32Array(N), from: new Int32Array(N), seen: new Uint32Array(N), shut: new Uint32Array(N), gen: 0, hf: new Float32Array(1024), hi: new Int32Array(1024) };
   if (++B.gen >= 0xFFFFFFF0) { B.gen = 1; B.seen.fill(0); B.shut.fill(0); }
@@ -27765,7 +28332,7 @@ function findPath(room, sx, sz, tx, tz) {
       const nx = ix + dx, nz = iz + dz;
       if (nx < 0 || nz < 0 || nx >= G.nx || nz >= G.nz) continue;
       const ni = nz * G.nx + nx;
-      if (G.g[ni] || shut[ni] === gen) continue;
+      if (G.g[ni] || shut[ni] === gen || (DY && DY[ni] && ni !== ti)) continue;
       if (dx && dz && (G.g[iz * G.nx + nx] || G.g[nz * G.nx + ix])) continue;   // no cutting corners
       const ng = gS[i] + (dx && dz ? 1.414 : 1);
       if (seen[ni] !== gen || ng < gS[ni]) { seen[ni] = gen; gS[ni] = ng; from[ni] = i; push(ng + hfn(ni), ni); }
@@ -27805,9 +28372,9 @@ function enemySees(e) {
   headWorld(_ev.b);
   if (_ev.a.distanceTo(_ev.b) > CONFIG.enemy.sight && !(AWMA.ready && awmGlint(e, _ev.a, nightDark(e.room)))) return false;   // step 113: a scope's glint carries farther
   if (nightDark(e.room) && !nightCanSee(e)) { enemyEye(e, _ev.a); return false; }   // step 11: in the dark he needs light to see you
-  if (clearLine(_ev.a, _ev.b)) return true;
+  if (clearLine(_ev.a, _ev.b, 0.03)) return true;              // slack 3 cm (was 15): your head 10 cm behind a wall edge or a door frame was seen through it
   _ev.b.y -= 0.35;                                              // a shoulder showing is enough
-  return clearLine(_ev.a, _ev.b);
+  return clearLine(_ev.a, _ev.b, 0.03);
 }
 /* Step 22.3: a closed door is a hard wall for knowing. The men in a room get nothing from you (sight,
  * footsteps, shots, rounds cracking past) until you are inside it, right in front of one of its two
@@ -28048,10 +28615,11 @@ function enemyHunt(e) {
  * ------------------------------------------------------------------------- */
 const _mv = new THREE.Vector2(), _mp = { x: 0, z: 0 };
 function enemyMove(e, dt) {
+  if (e.rf && e.rf.out && rfMove(e, dt)) return;                  // reinforcements: still beyond the doorway
   if (e.stairHold) { e.pos.copy(e.home); e.vel.set(0, 0); e.speed = 0; e.path = null; enemyFace(e, dt); return; }   // he still turns (the tower sniper's sweep, turning to you)   // stairwell man: holds his spot on the top half, turns and shoots
   const C = CONFIG.enemy;
   let tx, tz, maxV;
-  if ((e.state === 'move' || e.state === 'hunt' || e.state === 'search' || (e.state === 'idle' && e.yardRole)) && e.path && e.pathI < e.path.length) {
+  if ((e.state === 'move' || e.state === 'hunt' || e.state === 'search' || (e.state === 'idle' && (e.yardRole || e.idleWalk))) && e.path && e.pathI < e.path.length) {
     const wp = e.path[e.pathI];
     if (Math.hypot(wp.x - e.pos.x, wp.y - e.pos.y) < 0.18) e.pathI++;
     const w2 = e.path[Math.min(e.pathI, e.path.length - 1)];
@@ -28079,6 +28647,7 @@ function enemyMove(e, dt) {
   for (let pass = 0; pass < 2; pass++) {
     for (const col of colliders) if (!colOffLevel(col, fy)) pushOutOf(col, _mp, r);   // invisible enemy fix: the walls and furniture of a room on another floor (stacked wings) shoved him out through his own walls
     for (const b of tableBoxes(e.room)) pushOutOf({ x: rWX(er, b.x), z: rWZ(er, b.z), c: 1, s: 0, hx: b.hx, hz: b.hz }, _mp, r);
+    if (TB.stuck) enemyPropPush(e, _mp, r);                       // boxes, crates: he no longer walks through them
   }
   // Step 9: teammates don't walk through each other.
   for (const m of e.room.enemies || []) {
@@ -28105,15 +28674,16 @@ function enemyFace(e, dt) {   // facing (shared with the stair / tower men, who 
   const C = CONFIG.enemy;
   // Facing: where he walks when running, otherwise toward the threat (or his post when idle).
   let want = e.yaw;
-  if (e.state === 'idle') want = e.yardRole && e.path && e.speed > 0.25 ? Math.atan2(-e.vel.x, -e.vel.y) : e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;   // a patrol faces where he walks
+  if (e.state === 'idle') want = (e.yardRole || e.idleWalk) && e.path && e.speed > 0.25 ? Math.atan2(-e.vel.x, -e.vel.y) : e.idleYaw !== undefined ? e.idleYaw : e.homeYaw;   // a patrol faces where he walks
   else if ((e.state === 'move' || e.state === 'hunt') && e.speed > 0.6 && !e.visible && !e.fbOn) want = Math.atan2(-e.vel.x, -e.vel.y);   // falling back: facing you
   else if (e.hasKnown || e.los || e.watch) { threatLocal(e, _ev.c); want = Math.atan2(-(_ev.c.x - e.pos.x), -(_ev.c.z - e.pos.y)); }
   if (e.state === 'flashed') want = (e.flashYaw ?? e.yaw) + Math.sin(wnow() * 1000 / 650 + (e.idx || 0)) * 0.45;   // step 23: turned away from it
+  if (e.rf && e.rf.face != null) want = e.rf.face;               // reinforcements: running up to the door
   let dy = want - e.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
   const turn = Math.abs(dy) > 0.55 ? Math.sign(dy) * Math.min(Math.abs(dy) - 0.55, C.turn * dt) : 0;   // torso twists first, feet follow
   e.yaw += turn;
   let tw = want - e.yaw; tw = Math.atan2(Math.sin(tw), Math.cos(tw));
-  e.twist += (clamp(tw, -0.6, 0.6) - e.twist) * (1 - Math.exp(-dt * 10));
+  e.twist += (clamp(tw, -0.6, 0.6) - e.twist) * (1 - Math.exp(-dt * (TB.on ? mix(4.5, 10, e.aim) : 10)));   // TB: the chest follows the eyes (slower unless he is aiming)
   e.turning = Math.abs(turn) > 1e-3;
 }
 
@@ -28215,21 +28785,27 @@ function enemyPose(e, dt, now) {
     e.recoilV += (-220 * e.recoil - 18 * e.recoilV) * sh; e.recoil += e.recoilV * sh;
   }
   const cr = smoothstep(0, 1, e.crouch);
+  const tb = TB.on && !e.net ? (e.tb || tbInit(e)) : null;     // TB: eyes first, gun with lag, ready, creep, shuffle, breath
+  if (tb) tbPre(e, tb, dt, now);
+  const creep = tb ? tb.creep : 0, shuf = tb ? tb.shuf : 0;
   // --- root ---
   e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y);
   e.root.rotation.y = e.yaw;
   // --- walk cycle ---
   const sp = e.speed;
-  e.phase += dt * sp / 0.36 * Math.PI * 0.5;
-  const gait = clamp(sp / 1.2), stride = Math.min(0.62, 0.18 + sp * 0.2);
+  e.phase += dt * sp / (0.36 * (1 - 0.3 * creep)) * Math.PI * 0.5 + dt * shuf * 6;   // creep: shorter, quicker steps; turning on the spot: a shuffle
+  const gait = Math.max(clamp(sp / 1.2), shuf * 0.5), stride = Math.max(shuf * 0.16, Math.min(0.62, 0.18 + sp * 0.2) * (1 - 0.4 * creep));
+  if (tb) { if (sp > 0.08 && e.vel.lengthSq() > 0.004) _tb.md.set(e.vel.x * rF(e.room), 0, e.vel.y * rF(e.room)).normalize(); else _tb.md.set(-Math.sin(e.yaw + rYaw(e.room)), 0, -Math.cos(e.yaw + rYaw(e.room))); }   // feet step the way he moves (sidesteps, backing off)
   // --- pelvis + spine ---
   const sk = e.sk;
   const hipY = mix(sk.hipY, sk.crouchHip, cr) - gait * 0.035 * (1 - Math.cos(e.phase * 2)) * 0.5;
-  B.pelvis.position.set(0, hipY, 0.04 * cr);
-  B.pelvis.rotation.set(-0.12 * cr - gait * 0.08, 0, Math.sin(e.phase) * 0.04 * gait);
+  const wsh = tb ? Math.sin(e.phase) * 0.022 * gait * (0.6 + creep) + Math.sin(tb.wph) * 0.014 * (1 - gait) : 0;   // weight over the stance foot; standing, a slow shift
+  B.pelvis.position.set(wsh, hipY, 0.04 * cr);
+  B.pelvis.rotation.set(-0.12 * cr - gait * 0.08, 0, Math.sin(e.phase) * 0.04 * gait * (1 - 0.5 * creep) + (tb ? Math.sin(tb.wph) * 0.025 * (1 - gait) : 0));
   // lean toward the side he steps out to (room x, turned into his own right/left)
   const lpv = e.cover && e.cover.source && e.cover.source.aptPv, leanSide = e.cover && e.cover.peek ? (lpv ? Math.sign(lpv[0] * Math.cos(e.yaw) - lpv[1] * Math.sin(e.yaw)) : e.cover.peek * Math.sign(Math.cos(e.yaw) || 1)) * Math.abs(e.peek) : 0;   // apartment cover: lean toward its step-out side
-  B.spine.rotation.set(-0.42 * cr - gait * 0.06 + f.p, e.twist * 0.5 + f.y, -leanSide * 0.18 + f.r, 'YXZ');
+  const lean2 = leanSide + (tb ? tb.lean * (Math.sign(Math.cos(e.yaw)) || 1) : 0);   // TB: slicing the pie, the gun leans out first
+  B.spine.rotation.set(-0.42 * cr - gait * 0.06 - 0.1 * creep + f.p, e.twist * 0.5 + f.y, -lean2 * 0.18 + f.r, 'YXZ');
   // aim pitch: what he's looking at, relative to the chest
   threatLocal(e, _ev.c);
   const hasT = (e.engaged && (e.los || e.hasKnown)) || !!e.watch;   // step 11: or a noise / a corner he is watching
@@ -28237,17 +28813,23 @@ function enemyPose(e, dt, now) {
   const flatD = hasT ? Math.hypot(_ev.c.x - e.pos.x, _ev.c.z - e.pos.y) : 4;
   const pitch = Math.atan2(lookH - (hipY + 0.55), Math.max(0.5, flatD));
   const blade = e.gun.def.cls === 'pistol' ? 0 : 0.24 * e.aim;   // step 66: a long gun turns the chest a little, support shoulder forward
-  B.chest.rotation.set(0.25 * cr + clamp(pitch, -0.6, 0.6) * 0.45 * e.aim, e.twist * 0.5 - blade, 0, 'YXZ');
+  B.chest.rotation.set(0.25 * cr + clamp(pitch, -0.6, 0.6) * 0.45 * e.aim + (tb ? Math.sin(tb.br) * (0.01 + 0.02 * tb.puff) : 0), e.twist * 0.5 - blade, 0, 'YXZ');   // TB: breathing
   e.root.updateWorldMatrix(true, true);
 
   // --- head: look at the threat (or around the room when idle) ---
-  if (hasT) _ev.p.set(rWX(e.room, _ev.c.x), _ev.c.y + 0.3, rWZ(e.room, _ev.c.z));
-  else { const ly = (e.idleYaw !== undefined ? e.idleYaw : e.yaw) + Math.sin(now * 0.4) * 0.3; _ev.p.set(rWX(e.room, e.pos.x - Math.sin(ly) * 4), 1.45, rWZ(e.room, e.pos.y - Math.cos(ly) * 4)); }
+  if (hasT) _ev.p.set(_ev.c.x, _ev.c.y + 0.3, _ev.c.z);
+  else { const ly = (e.idleYaw !== undefined ? e.idleYaw : e.yaw) + Math.sin(now * 0.4) * 0.3; _ev.p.set(e.pos.x - Math.sin(ly) * 4, 1.45, e.pos.y - Math.cos(ly) * 4); }
+  if (tb) {                                                       // TB: the eyes get there first (fast, but not instant), a gun check looks at the gun
+    if (tb.gc > 0.02) _ev.p.lerp(_tb.g.set(rLX(e.room, e.gunP.x), e.gunP.y, rLZ(e.room, e.gunP.z)), tb.gc);
+    if (!tb.init) { tb.hl.copy(_ev.p); tb.init = true; } else tb.hl.lerp(_ev.p, 1 - Math.exp(-dt * 14));
+    _ev.p.copy(tb.hl);
+  }
+  _ev.p.x = rWX(e.room, _ev.p.x); _ev.p.z = rWZ(e.room, _ev.p.z);
   B.neck.getWorldPosition(_hv);
   _ev.d.subVectors(_ev.p, _hv).normalize();
   B.chest.getWorldQuaternion(_ecq);
   _ev.d.applyQuaternion(_hq.copy(_ecq).invert());               // into chest space
-  const hy = clamp(Math.atan2(-_ev.d.x, -_ev.d.z), -1.0, 1.0), hp = clamp(Math.asin(clamp(_ev.d.y, -1, 1)), -0.7, 0.7);
+  const hy = clamp(Math.atan2(-_ev.d.x, -_ev.d.z) + (tb ? tb.sx : 0), -1.0, 1.0), hp = clamp(Math.asin(clamp(_ev.d.y, -1, 1)) + (tb ? tb.sy : 0), -0.7, 0.7);   // TB: saccades
   B.neck.rotation.set(hp * 0.4, hy * 0.4, 0, 'YXZ');
   const weld = e.gun.def.cls === 'pistol' ? 0 : e.aim;           // step 66: cheek down onto the stock, head tipped to the gun
   B.head.rotation.set(hp * 0.6 - 0.14 * weld, hy * 0.6, -0.12 * weld, 'YXZ');
@@ -28258,12 +28840,14 @@ function enemyPose(e, dt, now) {
   const ox = rWX(e.room, e.pos.x), oz = rWZ(e.room, e.pos.y);
   for (const [s, side] of [[-1, 'L'], [1, 'R']]) {
     const ph = e.phase + (s < 0 ? 0 : Math.PI);
-    let fwd = Math.sin(ph) * stride * 0.5 * gait, lift = Math.max(0, Math.cos(ph)) * 0.09 * gait;
-    // crouch: left foot forward, right knee back (a kneeling stance)
-    fwd += cr * (s < 0 ? 0.26 : -0.22) + (1 - gait) * (s < 0 ? 0.06 : -0.04);
+    const gfwd = Math.sin(ph) * stride * 0.5 * gait, lift = Math.max(0, Math.cos(ph)) * 0.09 * gait * (1 - 0.45 * creep);   // TB: a creep is heel-toe, feet kept low
+    // crouch: left foot forward, right knee back (a kneeling stance); TB: not while he walks crouched (it was a fixed stagger mid-stride)
+    let fwd = cr * (s < 0 ? 0.26 : -0.22) * (tb ? 1 - 0.8 * gait : 1) + (1 - gait) * (s < 0 ? 0.06 : -0.04);
+    if (!tb) fwd += gfwd;
     const wide = s * (0.11 + 0.04 * cr);
     const footY = sk.ankle + lift + (s > 0 ? cr * 0.03 : 0);
     _ev.t.set(ox, footY, oz).addScaledVector(_fw, fwd + 0.03 * cr).addScaledVector(_rt, wide);
+    if (tb) _ev.t.addScaledVector(_tb.md, gfwd);
     _ev.q.copy(_yawQ);
     if (s > 0 && cr > 0.5) _ev.q.multiply(_ev.q2.setFromAxisAngle(_ev.x.set(1, 0, 0), -0.6 * (cr - 0.5) * 2));   // up on the toes when kneeling
     _ev.a.copy(_fw).add(_ev.b.copy(_up).multiplyScalar(0.05));
@@ -28275,8 +28859,13 @@ function enemyPose(e, dt, now) {
   B.chest.getWorldQuaternion(_ecq);
   const aimW = e.aim;
   // shouldered: palm in front of the right chest; low ready: lower and angled down
-  _egp.set(0.07, 0.02, -0.25);                                  // low ready: in front of the right chest
+  const rdy = tb ? tb.ready : 0, gc = tb ? tb.gc : 0;          // TB: low ready -> high (compressed) ready as the threat gets close; gun check
+  _egp.set(0.07 - 0.03 * gc, 0.02 + 0.07 * rdy + 0.1 * gc, -0.25 - 0.04 * rdy - 0.05 * gc);   // low ready: in front of the right chest
   B.chest.localToWorld(_egp);
+  if (tb && hasT) {                                              // TB: the muzzle follows the eyes with a lag (skill)
+    if (!tb.gaInit) { tb.ga.copy(_ev.c); tb.gaInit = true; } else tb.ga.lerp(_ev.c, 1 - Math.exp(-dt * mix(6, 12, e.skill || 0.4) * (e.visible ? 1.2 : 0.8)));
+    _ev.c.copy(tb.ga);
+  } else if (tb) tb.gaInit = false;
   if (aimW > 0.001) {                                             // step 66: aimed from the eye (sights under it, stock in the shoulder)
     if (hasT) _ag.tgt.set(rWX(e.room, _ev.c.x), _ev.c.y, rWZ(e.room, _ev.c.z));
     else enemyEyeW(e, _ag.tgt).addScaledVector(_fw, 5);
@@ -28297,7 +28886,7 @@ function enemyPose(e, dt, now) {
   // low ready: chest yaw, muzzle down 0.7 rad
   // (step 66: from the chest's heading only, so leaning into a crouch doesn't point the muzzle at his feet)
   _ev.d.set(0, 0, -1).applyQuaternion(_ecq);
-  _ev.q.setFromAxisAngle(_up, Math.atan2(-_ev.d.x, -_ev.d.z)).multiply(_ev.q2.setFromEuler(_ev.e.set(-0.72 - 0.4 * (e.reloadT > 0 ? 1 : 0), 0.35, 0)));
+  _ev.q.setFromAxisAngle(_up, Math.atan2(-_ev.d.x, -_ev.d.z)).multiply(_ev.q2.setFromEuler(_ev.e.set(-mix(0.72, 0.32, rdy) + 0.55 * gc - 0.4 * (e.reloadT > 0 ? 1 : 0), mix(0.35, 0.14, rdy) + 0.5 * gc, 0.9 * gc)));
   _ev.q.slerp(_egq, aimW);
   // recoil: muzzle climbs and the gun comes back into the shoulder
   _ev.q.multiply(_ev.q2.setFromAxisAngle(_ev.x.set(1, 0, 0), e.recoil * 0.12));
@@ -29870,6 +30459,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
   enemiesDyingUpdate(dt);                                       // step 19: death motion, drips and bleeding
   if (AI_ON()) aiDoors();                                       // step 11: a door opening into a room is heard
   if (SURR.on) surrFrame();                                     // step 117: your bore lines, once a frame
+  rfTick(dt, now);                                              // reinforcements (CONFIG.enemy.reinforce, ?reinf=off)
   for (const e of ENEMY.list) {
     if (e.dead || !e.room.active) continue;
     const nearRem = !e.net && !e.puppet && NET.remRoom && netCoop() && NET.role === 'host' && Math.abs(NET.remRoom.slot - e.room.slot) <= 1;   // co-op host: the joiner may be fighting him in a room you can't see
@@ -29880,8 +30470,9 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     NET.tgt = netTargetFor(e);                                  // multiplayer (together, host): he may be fighting the other player
     enemyThink(e, dt, now);
     if (EFB.on) efbTick(e, dt, now);                            // fall back under fire (CONFIG.enemy.fallback)
+    tbBrain(e, dt, now);                                        // habits before contact, sidesteps, unsticking, the reinforcement's hook
     enadeTick(e, dt, now);                                      // enemy grenades (CONFIG.enemy.nades, ?enade=off)
-    if (SURR.on && surrCheck(e, dt, now)) { surrTick(e, dt, now); continue; }   // step 117: he gives up now
+    if (SURR.on && !(e.rf && e.rf.out) && surrCheck(e, dt, now)) { surrTick(e, dt, now); continue; }   // step 117: he gives up now
     enemyMove(e, dt); enemyBodyFoley(e, now);   // step 86
     // Step 25.2: a man you can't see is posed at CONFIG.enemy.offscreenPoseHz (time adds up, nothing is skipped).
     e.poseAcc = (e.poseAcc || 0) + dt;
@@ -30557,11 +31148,12 @@ function loopCallout(e, now) {                    // "contact": the others react
   aiRadio(e, 'contact');                          // step 11: you can hear it
 }
 function loopShareContact(e, now) {               // whoever sees you tells the others where
-  if (now - (e.sharedT || 0) < 0.5) return;
+  if (now - (e.sharedT || 0) < (TB.stuck ? 1.4 : 0.5)) return;   // LOS fix: a call-out every 1.4 s, not a live feed (mates behind walls tracked you with their guns)
   e.sharedT = now;
   for (const m of e.room.enemies || []) {
     if (m === e || m.dead || m.surr || m.los) continue;
     m.lastKnown.copy(e.lastKnown); m.hasKnown = true;
+    if (TB.stuck) { const f = Math.min(1.2, 0.25 + 0.12 * Math.hypot(m.pos.x - e.pos.x, m.pos.y - e.pos.y)); m.lastKnown.x += rnd2(-f, f); m.lastKnown.z += rnd2(-f, f); }   // "he's over by the crates": roughly, worse the farther the mate
   }
 }
 function loopCoverClaimed(e, lx, lz) {            // never two men behind the same piece of cover
@@ -30620,6 +31212,7 @@ function loopEnemyDied(e) {
     m.suppress = Math.min(3, m.suppress + 1);
     if (!m.engaged && (!e.room.yard || Math.hypot(m.pos.x - e.pos.x, m.pos.y - e.pos.y) < 10)) m.heard = true;   // outdoors only the men close by hear him drop; the rest find him (yardBodyCheck) or hear the shot
   }
+  rfOnKill(e);                                                  // reinforcements: the director may send more (before the clear check: the room waits for them)
   if (!e.room.yard || (e.room.enemies || []).some((m) => m !== e && !m.dead && m.engaged)) aiManDown(e);   // outdoors no 'man down' call from a quiet kill                                   // step 11: "man down" on the radio
   const plan = roomMem(e.room).plan;
   if (plan && !plan.cleared && plan.dead.every(Boolean)) loopRoomCleared(e.room, plan);
@@ -31771,7 +32364,8 @@ const OPT_GROUPS = [
   ['physics', 'PHYSICS', [['pen', 'Penetration + real bullet push'], ['downed', 'Wounded men fall and crawl'], ['surrender', 'Enemies surrender'], ['stealth', 'Stealth (light, noise)'],
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
-    ['facility', 'Facility rooms'], ['enade', 'Enemies throw grenades'], ['fallback', 'Men fall back under fire']]],
+    ['facility', 'Facility rooms'], ['enade', 'Enemies throw grenades'], ['fallback', 'Men fall back under fire'],
+    ['reinf', 'Reinforcements'], ['tbody', 'Tactical body motion'], ['idlelife', 'Men busy before contact'], ['unstick', 'Men unstick, avoid boxes / leaves'], ['spawnchk', 'Clear spawn spots']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['mv', 'Multiview stereo (VR, experimental)', 'on'], ['bounce', 'Bounce light in rooms'], ['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
@@ -51127,6 +51721,7 @@ function efbTick(e, dt, now) {
 }
 if (/[?&]dev\b/.test(QS)) window.__cqcFallback = { EFB, efbPass, efbTick, efbSpot, efbBlind, efbEnd };
 if (window.__cqcDev) Object.assign(window.__cqcDev, { NBODY, netBodyTick, netBodyAt, HCOL, hcolMen, hcolPush, hcolFree, hcolPushOne, hcolPushPred, handClipWorld, CLIP, PUSH, propByCollider, getRapier: () => RAPIER });   // player and hand collisions
+if (/[?&]dev\b/.test(QS)) window.__cqcReinf = { RF, TB, IDLE, SPAWNCHK, rfOnKill, rfTick, rfSpawn, rfDoor, rfMove, tbBrain, tbStuck, idleTick, spotBad, spotClear, enemySpawnSpot, enemiesUpdate, enemyThink, enemyMove, enemyPose, enemySees, clearLine, findPath, navGrid, navFree, coverPoints, loopPlan, roomMem, loop, threatNow, headWorld, rig, stream, ENEMY, loopEnemyDied, enemyShot, wnow, propBoxes, navDoorStamp, doors, updateStreaming, playerState, NIGHT, MENU, enemyDie, aiNoise, enemiesHear, roomCanSense, colliders, insideRoom, props, MOD, renderer, scene, camera, updateDoorsPre, updateDoorsPost, stepPhysics, rebuildWalk, threatLocal, enemyFace, started: () => gameStarted, startGame };   // reinforcements / tactical body / spawn / unstick tests
 
 </script>
 </body>
