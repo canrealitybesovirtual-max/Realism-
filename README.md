@@ -1,13 +1,5 @@
-# Fogline
+# Flat 3B · Hilly Plains
 
-Mobile-first first-person horror game (Vite + TypeScript + three.js).
+Standalone first-person game in one file (`index.html`, three.js r128 via CDN).
 
-Find three fuse parts, restore the power at the fuse box, escape north through the gate.
-
-```
-npm install
-npm run dev      # play at the printed URL (phone on the same Wi-Fi: use the Network URL)
-npm run build    # static build in dist/
-```
-
-Controls: WASD move, Shift run, mouse look (click to lock), E take/use, F flashlight, I bag, C craft, Esc pause. Touch: joystick, RUN, TAKE, LIGHT.
+Play: open `index.html` in a browser, or serve the folder (`npx serve .`).
