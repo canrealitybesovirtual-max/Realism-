@@ -1613,6 +1613,11 @@ let streamWorld = () => {};
   poolLog.userData.kind = poolLogB.userData.kind = 'log'; poolStick.userData.kind = poolStickB.userData.kind = 'stick';
   terrainAPI = {
     terrM, groundCol, surfH, isDug: () => false,
+    /* ground colour exactly as the heightmap draws it: per-vertex on the 2 m grid, blended between */
+    groundColGrid: (() => { const cache = new Map(), q = [new THREE.Color(), new THREE.Color(), new THREE.Color(), new THREE.Color()];
+      const node = (i, j, o) => { const k = i + ',' + j; let c = cache.get(k); if (!c) { c = groundCol(OX + i * 2, OZ + j * 2, new THREE.Color()); cache.set(k, c); } return o.copy(c); };
+      return (x, z, out) => { const fx = (x - OX) / 2, fz = (z - OZ) / 2, i = Math.floor(fx), j = Math.floor(fz), tx = fx - i, tz = fz - j;
+        node(i, j, q[0]).lerp(node(i + 1, j, q[1]), tx); node(i, j + 1, q[2]).lerp(node(i + 1, j + 1, q[3]), tx); return out.copy(q[0]).lerp(q[2], tz); }; })(),
     pickables: [poolLog, poolLogB, poolStick, poolStickB],
     hole(rx, rz) {
       holeRegions.add(rx + ',' + rz);
@@ -2823,7 +2828,7 @@ const mine = (() => {
       if (v[1] <= a || v[0] >= b) { out.push(v); continue; }
       typ = Math.max(typ, v[2]);
       if (v[0] < a) out.push([v[0], a, v[2]]);
-      if (v[1] > b) out.push([b, v[1], v[2]]);
+      if (v[1] > b && !(v === c.iv[c.iv.length - 1] && v[1] - b < S * .5)) out.push([b, v[1], v[2]]);   // a sliver of topsoil left over the cut comes away with it
     }
     c.iv = out; return typ;
   }
@@ -2883,7 +2888,7 @@ const mine = (() => {
     const ix0 = OXc + rx * 16, iz0 = OZc + rz * 16, gc = new THREE.Color();
     const corner = (ix, iz) => surfH(ix * S, iz * S);
     const pushTop = (pts) => {                                  // natural ground: terrain colours, smooth corners
-      for (const k of [0, 1, 2, 0, 2, 3]) { const p = pts[k]; tp.push(p[0], p[1], p[2]); TA.groundCol(p[0], p[2], gc); tc.push(gc.r, gc.g, gc.b); tu.push(p[0] / 40, p[2] / 40); }
+      for (const k of [0, 1, 2, 0, 2, 3]) { const p = pts[k]; tp.push(p[0], p[1], p[2]); TA.groundColGrid(p[0], p[2], gc); tc.push(gc.r, gc.g, gc.b); tu.push(p[0] / 40, p[2] / 40); }
     };
     const pushCut = (pts, h, loose, axis) => {                  // cut soil: strata by depth below the original surface
       for (const k of [0, 1, 2, 0, 2, 3]) {
@@ -3000,7 +3005,10 @@ act(shovelProp, 'Take the shovel', () => { world.remove(shovelProp); inv.shovel 
 /* first-person viewmodel */
 const vm = makeShovel(); vm.visible = false; camera.add(vm);
 vm.scale.setScalar(.9);
-const vmRest = { x: .25, y: -.36, z: -.42, rx: 1.12, ry: -.32, rz: .25 };
+/* held low on the right: shaft rising from the bottom corner, blade ahead with its dish facing up */
+const vmDir = new THREE.Vector3(-.31, .21, -.93).normalize(), vmPos = new THREE.Vector3(.22, -.34, -.7);
+const vmQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), vmDir).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), PI));
+const vmTilt = new THREE.Quaternion(), vmX = new THREE.Vector3(1, 0, 0);
 let vmAnim = null;                                        // { kind, t, dur }
 
 /* ---- flying dirt clods: ballistic, bounce off walls, settle into the ground (or a cart) ---- */
@@ -3127,7 +3135,7 @@ function useTool() {
     else throwClod(bx, by, bz, dirV3.x * 5.5, dirV3.y * 5.5 + 2.4, dirV3.z * 5.5);                       // fling it
     burst(.12, 'bandpass', 700, 1, .2, .005); hud(); return;
   }
-  const h = mine.pick(eyeV, dirV3, 2.4);
+  const h = mine.pick(eyeV, dirV3, 2.9);
   vmAnim = { kind: 'dig', t: 0, dur: .38 };
   if (!h) return;
   const why = mine.canDig(h.ix, h.iz); if (why) { say(why); burst(.08, 'bandpass', 2600, 5, .2); return; }
@@ -3163,14 +3171,15 @@ function hud() {
 function updateViewmodel(dt) {
   if (!vm.visible) return;
   const b = Math.sin(player.bob) * .012, s = Math.sin(player.bob * .5) * .01;
-  let ox = 0, oy = 0, oz = 0, orx = 0;
+  let push = 0, oy = 0, tilt = 0;
   if (vmAnim) {
     vmAnim.t += dt; const t = Math.min(1, vmAnim.t / vmAnim.dur), e = Math.sin(t * PI);
-    if (vmAnim.kind === 'dig') { oz = -.32 * e; oy = -.1 * e; orx = .25 * e; }        // thrust down and in
-    else { oy = .14 * e; oz = -.18 * e; orx = -.9 * e; }                                 // flick up and out
+    if (vmAnim.kind === 'dig') { push = .3 * e; oy = -.12 * e; tilt = -.3 * e; }          // drive the blade down and in
+    else { push = .12 * e; oy = .1 * e; tilt = .75 * e; }                                // flick up and out
     if (t >= 1) vmAnim = null;
   }
-  vm.position.set(vmRest.x + s, vmRest.y + b + oy, vmRest.z + oz); vm.rotation.set(vmRest.rx + orx, vmRest.ry, vmRest.rz);
+  vm.position.copy(vmPos).addScaledVector(vmDir, push); vm.position.x += s; vm.position.y += b + oy;
+  vm.quaternion.copy(vmTilt.setFromAxisAngle(vmX, tilt)).multiply(vmQ);
 }
 function primary() { if (cine.on) { if (cine.t > 1) endCine(); return; } if (focus) focus.fn(); else useTool(); }
 
