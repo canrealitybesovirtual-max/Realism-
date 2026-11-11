@@ -12162,6 +12162,58 @@ function headPenetration(head) {
   return depth;
 }
 
+// NBODY (?netbody=off): the other player's body blocks you (multiplayer). A circle round his head (his interpolated pose,
+// NET.remW), like a wall: what YOUR move (walking, the stick, a real step in the headset) pushes into it is taken back at
+// once, so you stop at him and slide round; an overlap HE made (his lag, a respawn on top of you) eases out at NBODY.k.
+// Each side moves only its own body, so the two never fight. Walls win (resolveBody after the push). No fade in VR.
+const NBODY = { on: !/[?&]netbody=off\b/.test(QS), R: 0.42, k: 12, d: 0, has: false, at: -9, minV: 0.3,
+  c: new THREE.Vector3(), h: new THREE.Vector3(), last: new THREE.Vector3(), p: new THREE.Vector3(), min: 9 };
+function netBodyAt(out) {                       // his head (world), or false when there is no body of his to meet here
+  if (!NET.on || !netLive() || !NET.remOk || NET.remDead || !NET.remRoom || !NET.remRoom.active) return false;
+  const e = NET.av;
+  if (!e || !e.root || !e.root.visible || e.dead) return false;
+  out.copy(NET.remW);
+  const dy = out.y - level.floor;
+  return dy > 0.5 && dy < 2.4;                  // his head over your floor (not a wing above or below)
+}
+function netBodyTick(dt) {
+  if (!NBODY.on || dt <= 0 || playerState.dead || !netBodyAt(NBODY.c)) { NBODY.has = false; NBODY.d = 0; return; }
+  rig.updateMatrixWorld(true);
+  const h = NBODY.h.setFromMatrixPosition(camera.matrixWorld), c = NBODY.c, R = NBODY.R;
+  let dx = h.x - c.x, dz = h.z - c.z, dist = Math.hypot(dx, dz);
+  const depth = R - dist;
+  let d0 = depth;                                                   // the depth your last spot has with him where he is now
+  if (NBODY.has && NBODY.last.distanceToSquared(h) < 0.25) d0 = R - Math.hypot(NBODY.last.x - c.x, NBODY.last.z - c.z);
+  const allowed = Math.max(0, Math.min(d0, depth)) * Math.exp(-NBODY.k * dt);
+  if (depth > allowed) {
+    if (dist < 1e-4) { const y = yawOf(camera); dx = Math.sin(y); dz = Math.cos(y); dist = 1; }   // on top of him: step back
+    const mv = depth - allowed;
+    const p = NBODY.p.set(h.x + dx / dist * mv, h.y, h.z + dz / dist * mv);
+    resolveBody(p);                                                 // never into a wall
+    rig.position.x += p.x - h.x; rig.position.z += p.z - h.z;
+    rig.updateMatrixWorld(true);
+    h.x = p.x; h.z = p.z;
+    const vin = (depth - Math.max(0, d0)) / dt;                     // your own speed into him
+    const now = performance.now() / 1000;
+    if (NBODY.d <= 0.002 && vin > NBODY.minV && now - NBODY.at > 0.6) { NBODY.at = now; netBodyBump(clamp(vin / 1.6, 0.3, 1)); }
+  }
+  NBODY.last.copy(h); NBODY.has = true;
+  const dn = Math.hypot(h.x - c.x, h.z - c.z);
+  NBODY.d = Math.max(0, R - dn);
+  NBODY.min = Math.min(NBODY.min, dn);                              // test probe: closest approach
+}
+function netBodyBump(k) {                                           // shoulder into his kit: a soft thump, both hands buzz
+  const B = CONFIG.polish.audio.bump;
+  if (!B || !B.gain) return;
+  if (audio.ctx && audio.ctx.state === 'running' && audio.noise) {
+    const t = audio.ctx.currentTime + 0.002, j = 0.9 + Math.random() * 0.2, g = B.gain * k;
+    nBurst(t, 0.12, 'lowpass', 260 * j, 0.9, 0.22 * g, 0.09, 0.3);
+    if (!clothRec(0.32 * g, { dur: 0.2, hp: 400 })) nBurst(t, 0.12, 'bandpass', 1300 * j, 0.8, 0.05 * g, 0.12, 0.2);
+    nBurst(t + 0.01, 0.06, 'bandpass', 3600 * j, 4, 0.03 * g, 0.05, 0.15);
+  }
+  if (renderer.xr.isPresenting && B.haptic) for (const vh of vrHands) if (vh.ctrl && vh.ctrl.userData.handedness) pulseSoft(vh, B.haptic * (0.2 + 0.3 * k), 30);
+}
+
 const _head = new THREE.Vector3(), _vel = new THREE.Vector3(), _target = new THREE.Vector3();
 const _q = new THREE.Quaternion(), _euler = new THREE.Euler();
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
@@ -39526,21 +39578,26 @@ function handClipWorld(vh, P, dt) {
   rig.updateWorldMatrix(true, false);
   CL_inv.copy(rig.matrixWorld).invert();
   let out = null;
-  if (clipFree(P, CL_I, CL_ball)) out = CL_t.copy(P);
-  else if (st.has) {
+  const free = HCOL.on ? hcolBegin(vh) : clipBall;                         // HCOL: also loose props, door leaves (not while reaching to grab)
+  if (free(P)) {
+    out = CL_t.copy(P);
+    if (HCOL.on && st.has) hcolSwept(st, P, free);                         // HCOL: not through a thin leaf or panel between frames
+  } else if (st.has) {
     CL_a.copy(st.last).applyMatrix4(rig.matrixWorld);                       // last free point, carried with the rig
-    if (CL_a.distanceToSquared(P) < 0.36 && clipFree(CL_a, CL_I, CL_ball)) {
+    if (CL_a.distanceToSquared(P) < 0.36 && free(CL_a)) {
       let lo = 0, hi = 1;
-      for (let i = 0; i < CLIP.iters; i++) { const m = (lo + hi) / 2; CL_m.lerpVectors(CL_a, P, m); if (clipFree(CL_m, CL_I, CL_ball)) lo = m; else hi = m; }
+      for (let i = 0; i < CLIP.iters; i++) { const m = (lo + hi) / 2; CL_m.lerpVectors(CL_a, P, m); if (free(CL_m)) lo = m; else hi = m; }
       out = CL_t.lerpVectors(CL_a, P, lo);
     }
   }
+  if (HCOL.on) { if (out) hcolMen(out, st.has ? CL_a.copy(st.last).applyMatrix4(rig.matrixWorld) : null); hcolPush(vh, P, dt); }           // HCOL: men, bodies and the other player stop it; it shoves what it meets
   if (out) { st.last.copy(out).applyMatrix4(CL_inv); st.has = true; CL_d.subVectors(out, P); }
   else CL_d.set(0, 0, 0);                                                  // started inside: don't fight it
   if (GT_ON) handTouch(vh, P, dt, out);                                    // step 88: a pat on the wall
   if (CL_d.lengthSq() >= st.off.lengthSq()) st.off.copy(CL_d); else st.off.lerp(CL_d, 1 - Math.exp(-CLIP.ease * dt));
   P.add(st.off);
 }
+const clipBall = (x) => clipFree(x, CL_I, CL_ball);
 function gunClipShape(g) {
   let e = CL_shapes.get(g.type);
   if (!e) {
@@ -39692,7 +39749,7 @@ function handTouch(vh, P, dt, out) {
       s.at = now;
       const k = clamp((v - B.min) / 1.2);
       if (audio.ctx && audio.ctx.state === 'running' && audio.noise) {
-        GT.snd = GT_SND[gtKind(gtHit(P, CL_I, CL_ball, undefined))] || 'plaster';
+        GT.snd = HCOL.on && HCOL.man ? 'card' : GT_SND[gtKind(HCOL.on ? hcolHit(P) : gtHit(P, CL_I, CL_ball, undefined))] || 'plaster';   // HCOL: a man's kit, or the prop / leaf it met
         GT.g = 0.12 * (0.35 + 0.65 * k) * B.hand * B.gain; GT.tick = 0;
         GT.j = 0.8 * (0.94 + Math.random() * 0.12);
         soundAt(GT_P.copy(out), gtPlay, GT.noOcc);
@@ -39701,6 +39758,135 @@ function handTouch(vh, P, dt, out) {
     }
   }
   s.t = now; s.p.copy(P);
+}
+
+/* ---------------------------------------------------------------------------
+ *  HCOL (?handcoll=off): VR empty hands meet more of the world. handClipWorld
+ *  already stopped the drawn hand on walls, cover and heavy props; now also on
+ *  light loose props and door leaves (Rapier query, HCOL.groups / hcolPred) and
+ *  on men, alive, down or dead, and the other player (their hit capsules on the
+ *  bones, a little inside the skin: hcolMen). The real hand shoves loose props
+ *  it is in (hcolPush): momentum exchange of a 2.5 kg arm at restitution 0.25
+ *  (the PUSH rule), so a can flies, a crate slides, a table barely moves.
+ *  Reaching to grab (grip squeezing, its first HCOL.fist s) or holding nothing
+ *  of these: the old clip only, so the hand still gets to what it grabs. Items
+ *  (guns, magazines) and held things are never met or shoved. Doors keep their
+ *  own push (the hand sphere); the drawn hand now rests on a leaf at its stop.
+ * ------------------------------------------------------------------------- */
+const HCOL = { on: !/[?&]handcoll=off\b/.test(QS), grip: 0.25, fist: 0.35, men: true, menIn: 0.015, near2: 1.6 * 1.6, M: 2.5, e: 0.25, vmax: 6,
+  pushR: 0.04, groups: 0, hits: [], soft: true, man: false, ball: null, P: null, cur: null,
+  t: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3(), q: new THREE.Vector3(), v: new THREE.Vector3(), w: new THREE.Vector3(),
+  stat: { men: 0, push: 0 } };
+function hcolPred(c) {
+  if (CL_skip.has(c.handle)) return false;
+  if (doorByCollider.has(c.handle)) return HCOL.soft;               // a leaf (not while reaching for its lever)
+  const p = propByCollider.get(c.handle);
+  if (!p) return true;                                              // room shell, cover, fixed furniture
+  if (p.holders.length || p.item || p.kinematic || p.removing) return false;
+  return p.mass >= CLIP.heavyKg || HCOL.soft;                       // heavy ones always (the old clip), light ones unless grabbing
+}
+function hcolFree(x) {
+  if (CL_failed || !CL_ball || !HCOL.groups) return true;
+  try { return world.intersectionWithShape(x, CL_I, CL_ball, undefined, HCOL.groups, undefined, undefined, hcolPred) === null; }
+  catch (e) { console.warn('HCOL: hand queries off', e); CL_failed = true; return true; }
+}
+function hcolHit(x) {                                               // what the hand ball is in (for the pat's sound)
+  if (!CL_ball || !HCOL.groups) return null;
+  try { return world.intersectionWithShape(x, CL_I, CL_ball, undefined, HCOL.groups, undefined, undefined, hcolPred); } catch (e) { return null; }
+}
+function hcolIntent(vh, now) {                                      // closing the hand to grab something
+  const s = vh.hcol || (vh.hcol = { gOn: -1, p: new THREE.Vector3(), has: false });
+  const gp = vh.ctrl && vh.ctrl.userData.gamepad, b = gp && gp.buttons ? gp.buttons[1] : null;
+  const g = b ? b.value || (b.pressed ? 1 : 0) : 0;
+  if (g <= HCOL.grip) { s.gOn = -1; return false; }
+  if (s.gOn < 0) s.gOn = now;
+  return now - s.gOn < HCOL.fist;                                   // a fist kept closed on nothing: it meets things again (a punch)
+}
+function hcolBegin(vh) {
+  if (!HCOL.groups) HCOL.groups = groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR);
+  HCOL.soft = !hcolIntent(vh, performance.now() / 1000);
+  HCOL.man = false;
+  return hcolFree;
+}
+// A hand that went right through something thin since last frame (a door leaf is 4.5 cm): stop it at the first blocked
+// sample of the path from the last free point (CL_t holds the answer, as handClipWorld's binary search does).
+function hcolSwept(st, P, free) {
+  CL_a.copy(st.last).applyMatrix4(rig.matrixWorld);
+  const L = CL_a.distanceTo(P);
+  if (L <= CLIP.hand || L >= 0.6) return;
+  const n = Math.ceil(L / CLIP.hand);
+  for (let i = 1; i < n; i++) {
+    CL_m.lerpVectors(CL_a, P, i / n);
+    if (free(CL_m)) continue;
+    let lo = (i - 1) / n, hi = i / n;
+    for (let k = 0; k < CLIP.iters; k++) { const m = (lo + hi) / 2; CL_m.lerpVectors(CL_a, P, m); if (free(CL_m)) lo = m; else hi = m; }
+    CL_t.lerpVectors(CL_a, P, lo);
+    return;
+  }
+}
+// The drawn hand point p pushed out of every nearby man's hit capsules (and the other player's: his body is one of them).
+function hcolMen(p, prev) {                                        // prev: the hand's last free point (it came from that side)
+  if (!HCOL.men || !HCOL.soft) return;
+  const t = HCOL.t.copy(p), A = HCOL.a, B = HCOL.b, Q = HCOL.q, V = HCOL.v;
+  let moved = false;
+  for (const e of ENEMY.list) {
+    if (!e.room || !e.room.active || !e.root || !e.root.visible || !e.room.group.visible || !e.B || !e.B.pelvis) continue;
+    A.setFromMatrixPosition(e.B.pelvis.matrixWorld);
+    if (A.distanceToSquared(t) > HCOL.near2) continue;
+    const L = e.hit || HITBOX;
+    for (let it = 0; it < 2; it++) for (let i = 0; i < L.length; i++) {
+      const h = L[i], bn = e.B[h.b];
+      if (!bn) continue;
+      A.set(h.a[0], h.a[1], h.a[2]).applyMatrix4(bn.matrixWorld);
+      B.set(h.c[0], h.c[1], h.c[2]).applyMatrix4(bn.matrixWorld);
+      const R = Math.max(0.02, h.r - HCOL.menIn) + CLIP.hand;
+      Q.subVectors(B, A);
+      const L2 = Q.lengthSq(), u = L2 > 1e-9 ? clamp(V.subVectors(t, A).dot(Q) / L2) : 0;
+      Q.multiplyScalar(u).add(A);                                   // the closest point on the bone's axis
+      V.subVectors(t, Q);
+      const d = V.length();
+      if (d >= R) continue;
+      if (prev && d < 0.6 * R) { V.subVectors(prev, Q); const lp = V.length(); if (lp > 1e-5) V.multiplyScalar(1 / lp); else V.set(0, 1, 0); }   // deep in: back out the way it came
+      else if (d < 1e-5) V.set(0, 1, 0); else V.multiplyScalar(1 / d);
+      t.copy(Q).addScaledVector(V, R); moved = true;
+    }
+  }
+  if (moved && hcolFree(t)) { p.copy(t); HCOL.man = true; HCOL.stat.men++; }
+}
+// Your real hand (P, before the clip) moving into loose props shoves them: what a 2.5 kg arm gives at restitution 0.25.
+function hcolPush(vh, P, dt) {
+  const s = vh.hcol;
+  if (!s) return;
+  if (HCOL.soft && dt > 1e-4 && s.has && s.p.distanceToSquared(P) < 0.25) {
+    HCOL.w.subVectors(P, s.p).multiplyScalar(1 / dt);               // the hand's speed (walking with it counts)
+    const v2 = HCOL.w.lengthSq();
+    if (v2 > 0.0004 && v2 < HCOL.vmax * HCOL.vmax) {
+      if (!HCOL.ball) HCOL.ball = new RAPIER.Ball(HCOL.pushR);
+      HCOL.P = P; HCOL.cur = vh; HCOL.hits.length = 0;
+      try { world.intersectionsWithShape(P, CL_I, HCOL.ball, hcolCollect, undefined, HCOL.groups, undefined, undefined, hcolPushPred); } catch (e) { /* no shove this frame */ }
+      for (let i = 0; i < HCOL.hits.length; i++) hcolPushOne(HCOL.hits[i]);   // after the query: Rapier's sets are borrowed inside its callback
+    }
+  }
+  s.p.copy(P); s.has = true;
+}
+function hcolPushPred(c) {
+  const p = propByCollider.get(c.handle);
+  return !!p && !p.holders.length && !p.item && !p.kinematic && !p.removing && p.mass > 0;
+}
+function hcolCollect(c) { HCOL.hits.push(c); return HCOL.hits.length < 8; }
+function hcolPushOne(c) {
+  const p = propByCollider.get(c.handle);
+  if (!p) return true;
+  let sc = null;
+  try { sc = c.contactShape(HCOL.ball, HCOL.P, CL_I, 0); } catch (e) { return true; }
+  if (!sc) return true;
+  const n = sc.normal1, lv = p.body.linvel();                       // n: off the prop, toward the hand
+  const vn = -((HCOL.w.x - lv.x) * n.x + (HCOL.w.y - lv.y) * n.y + (HCOL.w.z - lv.z) * n.z);   // the hand closing on it
+  if (vn <= 0.02) return true;
+  const J = vn * HCOL.M * (1 + HCOL.e) * p.mass / (HCOL.M + p.mass);
+  p.body.applyImpulseAtPoint({ x: -n.x * J, y: -n.y * J, z: -n.z * J }, sc.point1, true);
+  HCOL.stat.push++;
+  return true;
 }
 
 /* ---------------------------------------------------------------------------
@@ -43654,6 +43840,7 @@ function tick(timeMs) {
   updateKick(dt);        // step 24: the kick, its strike
   updateBreach(dt);      // step 54: the run-in gun / object shove
   updateDoorUse(dt);     // step 54: levers, push or pull
+  netBodyTick(dt);       // NBODY: the other player's body blocks you (multiplayer)
   profMark('input');
   updateStreaming();     // step 4: which room you're in, build/unload rooms, visibility, light pool
   disposeDrain();        // step 25.3: a few GPU frees per frame from unloaded rooms
@@ -50587,6 +50774,7 @@ function efbTick(e, dt, now) {
   EFB.stat.n++;
 }
 if (/[?&]dev\b/.test(QS)) window.__cqcFallback = { EFB, efbPass, efbTick, efbSpot, efbBlind, efbEnd };
+if (window.__cqcDev) Object.assign(window.__cqcDev, { NBODY, netBodyTick, netBodyAt, HCOL, hcolMen, hcolPush, hcolFree, hcolPushOne, hcolPushPred, handClipWorld, CLIP, PUSH, propByCollider, getRapier: () => RAPIER });   // player and hand collisions
 
 </script>
 </body>
