@@ -11204,7 +11204,7 @@ function netAttach(c) {
   c.on('error', () => {});
 }
 function netStart() {
-  NET.retry = 0;
+  NET.retry = 0; NET.sentB.clear(); NET.mine = null;              // his side may have lost your gun builds: send them again
   setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
   if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
@@ -11222,6 +11222,7 @@ function netLeave(quiet = false) {
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
   for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } }
   NET.pup.clear(); NET.tgt = null; NET.remOk = false; NET.warp = null; VS.on = false; VS.lock = false;
+  if (NET_SPOT) NET_SPOT.intensity = 0;
   netVoiceStop();
   if (!quiet && was !== 'off') netSay('Multiplayer: off');
   else { try { yardUiSync(); } catch (e) { /* no menu */ } }
@@ -11324,7 +11325,7 @@ function netTx(dt) {
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: stream.frontier,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
-      ...netHandsTx(r, f, g) });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
+      ...netHandsTx(r, f, g), ...netGunTx(g) });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
   } catch (e) { /* dropped */ }
 }
 // VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
@@ -11342,6 +11343,7 @@ function netHandsTx(r, f, g) {
     g.prop.root.getWorldQuaternion(_nhq);
     if (f < 0) _nhq.premultiply(_nhY);
     o.gq = [rd(_nhq.x), rd(_nhq.y), rd(_nhq.z), rd(_nhq.w)];
+    g.prop.root.getWorldPosition(NET._p); o.gp = [rd(rLX(r, NET._p.x)), rd(NET._p.y - r.origin.y), rd(rLZ(r, NET._p.z))];   // where the gun itself is (the hand point is not the gun's origin)
     const gh = gunOf(vrHands[0]) === g ? vrHands[0] : vrHands[1];
     o.gh = gh && gh.ctrl && gh.ctrl.userData.handedness === 'left' ? 'L' : 'R';
   }
@@ -11352,7 +11354,7 @@ function netShot(g, o, d) {
   if (!netLive()) return;
   const r = stream.current; if (!r) return;
   const f = rF(r);
-  netSendRel({ t: 'shot', s: r.slot, o: [rLX(r, o.x), o.y - r.origin.y, rLZ(r, o.z)], d: [d.x * f, d.y, d.z * f], g: g.type });
+  netSendRel({ t: 'shot', s: r.slot, o: [rLX(r, o.x), o.y - r.origin.y, rLZ(r, o.z)], d: [d.x * f, d.y, d.z * f], g: g.type, sup: gunSuppressed(g.type, g) ? 1 : 0 });
 }
 // Your round on his body (enemyShot): he takes the hit.
 function netHit(hit, dir, d, E) {
@@ -11374,6 +11376,11 @@ function netRx(m) {
     const f = rF(r);
     playerHit(m.part === 'head' ? 'head' : 'body', NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), clamp(m.E || 1, 0.2, 1), m.k || 1);
   } else if (m.t === 'shot') netRemoteShot(m);
+  else if (m.t === 'gb') { if (m.id && m.b) { NET.builds.set(m.id, m.b); if (NET.builds.size > 16) NET.builds.delete(NET.builds.keys().next().value); } }   // his gun's build
+  else if (m.t === 'gbreq') { const B = NET.myBuilds.get(m.id); if (B) netSendRel({ t: 'gb', id: m.id, b: B }); }
+  else if (m.t === 'drop') netDropRx(m);
+  else if (m.t === 'take') netTakeRx(m);
+  else if (m.t === 'drest') netRestRx(m);
   else if (m.t === 'en') { if (NET.role === 'join') netEnRx(m); }
   else if (m.t === 'eh') { if (NET.role === 'host') netEhRx(m); }
   else if (m.t === 'es') { if (NET.role === 'join') netEsRx(m); }
@@ -11395,14 +11402,16 @@ function netRemoteShot(m) {
   const f = rF(r), o = NET._p.set(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2])), d = NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize();
   const def = WEAPON_DEFS[m.g] || WEAPON_DEFS.smg;
   const e = NET.av;
-  if (e && !e.dead && e.gun) {
+  NET.avShotAt = performance.now();
+  if (e && !e.dead && e.gun && !m.sup) {
     flashBurst(e.gun, e.gun.def);
     if (e.gun.def.flashLight > 0) { pool.muzzle.position.copy(o).addScaledVector(d, 0.5); pool.muzzleI = e.gun.def.flashLight; pool.muzzle.intensity = pool.muzzleI; pool.muzzleT = pool.muzzleT0 = 0.045; }
     e.recoilV += 0.6;
   }
   try { traceBullet(o, d, def, m.g, { enemy: true, range: CONFIG.weapons.rayRange }); } catch (e2) { /* no trace */ }   // holes and dust where it went (his hit decides your damage)
   headWorld(NET._h);
-  enemyShotSfx(o.distanceTo(NET._h), e && e.w ? e.w.gun : 'smg', o.clone(), false);
+  const snd = WEAPON_DEFS[m.g] && WEAPON_DEFS[m.g].sound && shotBufs(WEAPON_DEFS[m.g].sound) ? WEAPON_DEFS[m.g].sound : (e && e.w ? e.w.gun : 'smg');   // his own gun's report
+  enemyShotSfx(o.distanceTo(NET._h), snd, o.clone(), !!m.sup);
 }
 // ---- modes: TOGETHER (co-op: the host runs the AI, the joiner sees copies) and VERSUS (own safe rooms, two rooms between) ----
 NET.mode = (() => { try { return localStorage.getItem('cqc.netmode.v1') === 'vs' ? 'vs' : 'coop'; } catch (e) { return 'coop'; } })();
@@ -11597,9 +11606,16 @@ function netSample(rt) {
   if (!b || a === b || b.s !== a.s) return a;
   const k = clamp((rt - a.c) / Math.max(1, b.c - a.c));
   const ang = (x, y) => x + Math.atan2(Math.sin(y - x), Math.cos(y - x)) * k;
-  return { s: a.s, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a, hL: b.hL, hR: b.hR, gq: b.gq, gh: b.gh };
+  const l3 = (u, w) => (u && w ? [u[0] + (w[0] - u[0]) * k, u[1] + (w[1] - u[1]) * k, u[2] + (w[2] - u[2]) * k] : w || u);   // his hands and gun between packets too (they stepped at 30 Hz)
+  let gq = b.gq;
+  if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); gq = [_nsQa.x, _nsQa.y, _nsQa.z, _nsQa.w]; }
+  const same = a.gh === b.gh && a.gt === b.gt;
+  return { s: a.s, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a,
+    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir };
 }
+const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
 function netTick(dt, now) {
+  netAvLight();                                                    // his weapon light (off when he is gone)
   if (NET.st === 'off') return;
   if (NET.st === 'host' && NET.code && performance.now() - (NET.codeAt || 0) > 20000) { NET.codeAt = performance.now(); netSay(`Multiplayer code: ${NET.code} (waiting for the other player)`, 8); }   // the code again while you wait
   netTx(dt);
@@ -11607,6 +11623,7 @@ function netTick(dt, now) {
   const quiet = performance.now() - NET.lastRx;
   if (quiet > NET.lost) { netDropped('lost the other player'); return; }
   if (quiet > 4000 && !NET.waitSaid) { NET.waitSaid = true; netSay('Multiplayer: waiting for the other player (loading?)', 3); } else if (quiet < 1000) NET.waitSaid = false;
+  netRestTick();                                                   // dropped items: his not built yet, where yours came to rest
   if (NET.off == null) return;
   if (NET.mode === 'coop' && NET.role === 'host') netEnTx(dt);
   netVoiceTick();
@@ -11620,39 +11637,382 @@ function netTick(dt, now) {
   if (e && ENEMY.list.includes(e) && e.room !== r && r && r.active && !e.dead) {   // he went into another room: carry the body over (rebuilding it each door was slow and flickered)
     r.group.add(e.root); e.room = r; e.root.visible = true; NET.avMoved = (NET.avMoved || 0) + 1;
   }
-  if (e && (!ENEMY.list.includes(e) || (!s.d && e.dead) || NET.avGun !== (s.g || 'smg'))) { if (ENEMY.list.includes(e)) removeEnemy(e); e = NET.av = null; }
+  const look = s.gt != null ? 'smg' : (s.g || 'smg');              // his real gun goes in its hands (netAvGunTick); an older build on the other side: the loadout look
+  if (e && (!ENEMY.list.includes(e) || (!s.d && e.dead) || NET.avGun !== look)) { if (ENEMY.list.includes(e)) removeEnemy(e); e = NET.av = null; }
   if (!r || !r.active) { if (e && e.root) e.root.visible = false; return; }   // in a room not built here: hidden until it is
   if (e && e.root) e.root.visible = true;
   if (!e) {
     if (s.d) return;
-    e = spawnEnemy(r, { gun: s.g || 'smg', skill: 0, aggr: 0 }, 0, []);
+    e = spawnEnemy(r, { gun: look, skill: 0, aggr: 0 }, 0, []);
     if (!e) return;
-    e.net = true; NET.av = e; NET.avGun = s.g || 'smg'; e.ammo = 1e9;
+    e.net = true; NET.av = e; NET.avGun = look; e.ammo = 1e9;
     if (r.enemies) { const i = r.enemies.indexOf(e); if (i >= 0) r.enemies.splice(i, 1); }
     e.pos.set(s.x, s.z); NET.rem = { x: s.x, z: s.z };
   }
   if (s.d) { if (!e.dead) try { enemyDie(e, 'torso', NET._d.set(Math.sin(s.yw), 0, Math.cos(s.yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } return; }
   const px = e.pos.x, pz = e.pos.y;
   e.pos.set(s.x + Math.sin(s.yw) * 0.06, s.z + Math.cos(s.yw) * 0.06);   // the body sits a little behind the eyes
-  e.speed = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
+  const sp = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
+  e.speed += (sp - e.speed) * (1 - Math.exp(-dt * 8));            // eased: a step pattern from frame timing would make the legs stutter
+  e.err = 0; e.errVec.set(0, 0);                                   // his aim does not wander (that is the AI's aim error)
   e.yaw = s.yw;
   e.crouchT = clamp((1.62 - s.e) / 0.75, 0, 1);
   e.engaged = false; e.los = false; e.state = 'idle';
   e.watch = e.watch || new THREE.Vector3();
   const cp = Math.cos(s.p);
   e.watch.set(s.x - Math.sin(s.yw) * cp * 4, s.y + Math.sin(s.p) * 4, s.z - Math.cos(s.yw) * cp * 4);
-  e.aimT = s.g ? (s.a ? 1 : 0.55) : 0;                           // aimed up, else a low ready
+  e.aimT = s.g ? (s.a || performance.now() - NET.avShotAt < 1500 ? 1 : 0) : 0;   // aimed (or firing: the gun points where his rounds go), else the normal low ready
   if (s.hR || s.hL) {                                              // VR player: his real hands and gun
-    const H = e.netH || (e.netH = { R: new THREE.Vector3(), L: new THREE.Vector3(), q: new THREE.Quaternion(), hasR: false, hasL: false, hasQ: false, gh: 'R' });
+    const H = e.netH || (e.netH = { R: new THREE.Vector3(), L: new THREE.Vector3(), P: new THREE.Vector3(), q: new THREE.Quaternion(), hasR: false, hasL: false, hasQ: false, hasP: false, gh: 'R' });
     const fr = rF(r);
     H.hasR = !!s.hR; if (s.hR) H.R.set(rWX(r, s.hR[0]), r.origin.y + s.hR[1], rWZ(r, s.hR[2]));
     H.hasL = !!s.hL; if (s.hL) H.L.set(rWX(r, s.hL[0]), r.origin.y + s.hL[1], rWZ(r, s.hL[2]));
     H.hasQ = !!s.gq; if (s.gq) { H.q.set(s.gq[0], s.gq[1], s.gq[2], s.gq[3]).normalize(); if (fr < 0) H.q.premultiply(_nhY); }
+    H.hasP = !!s.gp; if (s.gp) H.P.set(rWX(r, s.gp[0]), r.origin.y + s.gp[1], rWZ(r, s.gp[2]));
     H.gh = s.gh || 'R';
-  } else e.netH = null;
+  } else e.netH = null;                                            // a computer / pad player: the normal gun pose from his head
   e.reloadT = s.r ? 0.5 : 0;                                      // the reload pose (support hand at the magwell, gun canted)
+  netAvGunTick(e, s);                                             // the real gun he holds, its lights and lasers
   if (e.gun && e.gun.root) e.gun.root.visible = !!s.g;
 }
+// --- the other player's real gun, its lights and lasers; guns and magazines you drop ---------------------------------
+// His gun is the real one (createGun of his type), not a loadout look. Its build travels as { ty, a, v, h }: a = his
+// attachments (wbMakeAtt's sub / big / variant + the pose in the gun root's frame), v / h = keys of the gun's own meshes
+// shown / hidden (rails, plates, threaded barrels, cut parts: depth + vertex / index count, so the order of building does
+// not matter). Sent once per build on the reliable channel ('gb'); the pose packet names it (gb) and says which of its
+// lights and lasers are on (ls: bit i = attachment i, bit 30 the gun's own light, bit 29 the non-rail laser; ir: IR modes).
+// The copy in his hands is built once per build (no physics: bodies removed), factory finish; only what he holds changes it.
+// His light: one spot (NET_SPOT) always in the scene at intensity 0, so switching it never changes the light count.
+// Drops: a gun or magazine you let go of is sent with its build, room-local pose, speed and rounds; the other side makes a
+// real item there. Whoever picks it up first sends 'take' and the other copy goes (both at once: the host keeps it).
+const _nb = { I: new THREE.Matrix4(), M: new THREE.Matrix4(), P: new THREE.Vector3(), Q: new THREE.Quaternion(), S: new THREE.Vector3(),
+  o: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion(), c: new THREE.Vector3() };
+NET.builds = new Map(); NET.myBuilds = new Map(); NET.sentB = new Set(); NET.disp = new Map(); NET.askB = new Map();
+NET.items = new Map(); NET.itemSeq = 0; NET.pend = []; NET.rest = []; NET.mine = null; NET.avLs = 0; NET.avIr = 0; NET.avShotAt = -99;
+function netHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+// Every mesh of the gun itself (not its attachments, magazine or flash): fn(mesh, key, shown on this side).
+function netHwWalk(g, fn) {
+  const skip = new Set();
+  for (const p of g.atts || []) if (p && p.root) skip.add(p.root);
+  if (g.mag && g.mag.root) skip.add(g.mag.root);
+  if (g.netMagRoot) skip.add(g.netMagRoot);
+  const P = g.parts || {};
+  for (const k of ['flash', 'flashStar', 'flashPlume', 'round']) if (P[k] && P[k].isObject3D) skip.add(P[k]);
+  const occ = new Map();
+  const rec = (o, dpt, vis) => {
+    for (const c of o.children) {
+      if (skip.has(c) || c.userData.att || c.isLight || c.isSprite || c.userData.netSkip || c.material === WM.flash) continue;
+      const v = vis && c.visible;
+      if (c.isMesh && c.geometry) {
+        const G = c.geometry, pa = G.attributes.position, base = dpt + ':' + (pa ? pa.count : 0) + ':' + (G.index ? G.index.count : 0);
+        const n = (occ.get(base) || 0) + 1; occ.set(base, n);
+        fn(c, netHash(base + '#' + n), v);
+      }
+      rec(c, dpt + 1, v);
+    }
+  };
+  rec(g.model, 0, true);
+}
+// Sender: what his copy of your gun needs.
+function netGunBuild(g) {
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  _nb.I.copy(root.matrixWorld).invert();
+  const a = [], atts = [], r4 = (x) => +x.toFixed(4);
+  for (const p of g.atts || []) {
+    if (!p || !p.item || !p.root) continue;
+    const it = p.item;
+    p.root.updateMatrixWorld(true);
+    _nb.M.multiplyMatrices(_nb.I, p.root.matrixWorld).decompose(_nb.P, _nb.Q, _nb.S);
+    a.push([it.sub || it.type || '', it.big ? 1 : 0, wbVar(it) || 0, r4(_nb.P.x), r4(_nb.P.y), r4(_nb.P.z), r4(_nb.Q.x), r4(_nb.Q.y), r4(_nb.Q.z), r4(_nb.Q.w)]);
+    atts.push(it);
+  }
+  const v = [], h = [];
+  netHwWalk(g, (o, k, vis) => (vis ? v : h).push(k));
+  const B = { ty: g.type, a, v, h };
+  return { B, atts, id: netHash(JSON.stringify(B)).toString(36) };
+}
+// Lights / lasers on, over the build's attachment list (bits as above) and the IR modes.
+function netGunBits(g, atts) {
+  let ls = 0;
+  for (let i = 0; i < atts.length && i < 28; i++) if (atts[i].on && (atts[i].sub === 'light' || atts[i].sub === 'laser')) ls |= 1 << i;
+  if (g.light && g.light.on && !atts.includes(g.light)) ls |= 1 << 30;
+  if (g.laserOn && !(RAIL.on && g.lasers && g.lasers.length)) ls |= 1 << 29;
+  return ls;
+}
+// netTx: the held gun's fields (gt type, gb build, ls on bits, ir).
+function netGunTx(g) {
+  if (!g || !g.prop || !g.prop.root) { NET.mine = null; return { gt: '' }; }
+  const now = performance.now();
+  let M = NET.mine;
+  if (!M || M.g !== g || now - M.at > 500) {
+    const b = netGunBuild(g);
+    M = NET.mine = { g, at: now, id: b.id, atts: b.atts };
+    NET.myBuilds.set(b.id, b.B); if (NET.myBuilds.size > 8) NET.myBuilds.delete(NET.myBuilds.keys().next().value);
+    if (!NET.sentB.has(b.id)) { NET.sentB.add(b.id); netSendRel({ t: 'gb', id: b.id, b: b.B }); }
+  }
+  const ir = NVG && NVG.owned ? (NVG.irLight ? 1 : 0) | (NVG.irLaser ? 2 : 0) : 0;
+  return { gt: g.type, gb: M.id, ls: netGunBits(g, M.atts), ir };
+}
+// Receiver: a real gun of that build (local workshop parts taken off, his put on, his own meshes shown / hidden as his).
+function netStripAtts(g) {
+  for (const p of [...(g.atts || [])]) {
+    const it = p.item;
+    if (it.sub === 'sup' && g.sup === it) g.sup = null;
+    if (RAIL.on && (it.sub === 'light' || it.sub === 'laser')) railUnwire(g, it);
+    else if (it.sub === 'light' && g.light === it) { it.on = false; g.light = g.stockLight || null; it.free = false; }
+    else if (it.sub === 'laser' && g.laserAtt === it) { g.laserOn = false; g.wr = WR[g.type]; g.laserLamp = null; g.laserAtt = null; }
+    if (p.root.parent) p.root.parent.remove(p.root);
+    it.gun = null; p.removing = true;
+    try { world.removeRigidBody(p.body); } catch (e) { /* gone */ }
+    if (WB.atts) WB.atts = WB.atts.filter((q) => q !== p);
+  }
+  g.atts = [];
+  try { attRefresh(g); muzRefresh(g); } catch (e) { /* a gun without its kit */ }
+}
+function netApplyHw(g, B) {
+  const vs = new Set(B.v || []), hs = new Set(B.h || []);
+  netHwWalk(g, (o, k) => {
+    if (vs.has(k)) { o.visible = true; for (let q = o.parent; q && q !== g.model; q = q.parent) q.visible = true; }
+    else if (hs.has(k)) o.visible = false;
+  });
+}
+function netBuildGun(type, B) {
+  if (!WEAPON_DEFS[type] || !GUN_BUILD[type]) return null;
+  const p = createGun(type), g = p.item;
+  try { paintGun(g, false); } catch (e) { /* no finish system */ }   // his finish is not sent: the factory one, the same on both sides
+  netStripAtts(g);
+  const map = [];
+  if (B) {
+    const root = p.root; root.position.set(0, 0, 0); root.quaternion.identity(); root.scale.set(1, 1, 1); root.updateMatrixWorld(true);
+    for (const a of B.a || []) {
+      let q = null;
+      try { q = wbMakeAtt(a[0], !!a[1], a[2] || null); } catch (e) { q = null; }
+      if (!q) { map.push(null); continue; }
+      q.root.position.set(a[3], a[4], a[5]); q.root.quaternion.set(a[6], a[7], a[8], a[9]).normalize(); q.root.updateMatrixWorld(true);   // the root is at the origin: root space = world
+      try { wbFreeze(g, q); map.push(q.item); } catch (e) { try { world.removeRigidBody(q.body); } catch (er) { /* gone */ } map.push(null); }
+    }
+    try { netApplyHw(g, B); } catch (e) { /* keep the local look */ }
+  }
+  g.netMap = map;
+  return p;
+}
+// The copy in his hands: the same, with no physics.
+function netDisp(key, type, B) {
+  let D = NET.disp.get(key);
+  if (D) { D.used = performance.now(); return D; }
+  let p = null;
+  try { p = netBuildGun(type, B); } catch (e) { console.warn('multiplayer: his gun not built', e); p = null; }
+  if (!p) return null;
+  const g = p.item;
+  for (const q of g.atts || []) { try { world.removeRigidBody(q.body); } catch (e) { /* gone */ } q.removing = true; }
+  if (g.mag) { try { world.removeRigidBody(g.mag.body); } catch (e) { /* gone */ } g.netMagRoot = g.mag.root; }
+  removeGunProbe(g);
+  try { world.removeRigidBody(p.body); } catch (e) { /* gone */ }
+  p.removing = true;
+  try { AWMA.guns.delete(g); } catch (e) { /* no AWM kit */ }
+  setCast(p.root, false);
+  p.root.traverse((o) => { o.raycast = () => {}; });
+  D = { key, g, p, used: performance.now(), eg: { root: p.root, model: g.model, parts: g.parts, flashT: 0, def: g.def, wr: g.wr, prop: { root: p.root }, primary: null, disp: null } };
+  D.eg.disp = D;
+  NET.disp.set(key, D);
+  if (NET.disp.size > 4) {                                          // keep the last few he swapped between
+    let old = null; for (const x of NET.disp.values()) if (x !== D && (!NET.av || NET.av.gun !== x.eg) && (!old || x.used < old.used)) old = x;
+    if (old) { if (old.p.root.parent) old.p.root.parent.remove(old.p.root); NET.disp.delete(old.key); }
+  }
+  return D;
+}
+function netAvSwap(e, D) {
+  const old = e.gun;
+  if (old && old.root && old.root.parent) old.root.parent.remove(old.root);
+  if (D.p.root.parent) D.p.root.parent.remove(D.p.root);
+  e.root.add(D.p.root);
+  D.eg.wr = D.g.wr; D.eg.flashT = 0; D.g.parts.flash.visible = false;
+  e.gun = D.eg;
+}
+function netGbAsk(id) {
+  const t = performance.now(), at = NET.askB.get(id) || 0;
+  if (t - at < 1500) return;
+  NET.askB.set(id, t); netSendRel({ t: 'gbreq', id });
+}
+// netTick: his gun matches what he holds; its lights and lasers as his.
+function netAvGunTick(e, s) {
+  if (s.gt == null) return;                                         // an older build on the other side: the loadout look
+  NET.avLs = s.ls | 0; NET.avIr = s.ir | 0;
+  if (!s.gt) return;
+  let key = s.gb ? s.gb : 'ty:' + s.gt, B = s.gb ? NET.builds.get(s.gb) : null;
+  if (s.gb && !B) { key = 'ty:' + s.gt; netGbAsk(s.gb); }           // not here yet: his gun as it comes from the factory meanwhile
+  const D = netDisp(key, s.gt, B); if (!D) return;
+  if (e.gun !== D.eg) netAvSwap(e, D);
+  const g = D.g, ls = NET.avLs, map = g.netMap || [];
+  for (let i = 0; i < map.length; i++) {
+    const it = map[i]; if (!it || (it.sub !== 'light' && it.sub !== 'laser')) continue;
+    const on = !!(ls & (1 << i));
+    if (it.on !== on) { it.on = on; if (it.sub === 'light' && it.lens) setLens(it); }
+  }
+  if (g.light && !map.includes(g.light)) { const on = !!(ls & (1 << 30)); if (g.light.on !== on) { g.light.on = on; if (g.light.lens) setLens(g.light); } }
+  g.laserOn = !!(ls & (1 << 29));
+}
+// His light: the brightest lit one (the lead), from its lens along its beam.
+const NET_SPOT = (() => {
+  if (!NET.on) return null;
+  const s = new THREE.SpotLight(0xfff1dc, 0, 0, FLASH_BEAM.hot, 0.6, 2);   // no shadow, no map: switching never changes a program
+  s.castShadow = false; s.position.set(0, -50, 0); s.target.position.set(0, -51, 0);
+  scene.add(s, s.target);
+  return s;
+})();
+function netAvLight() {
+  const S = NET_SPOT; if (!S) return;
+  const e = NET.av, D = e && e.gun && e.gun.disp;
+  let lead = null;
+  if (D && netLive() && !e.dead && e.root.visible && e.gun.root.visible && e.room && e.room.group.visible) {
+    const g = D.g;
+    for (const it of g.netMap || []) if (it && it.sub === 'light' && it.on && (!lead || (it.lum || 1) > (lead.lum || 1))) lead = it;
+    if (!lead && g.light && g.light.on) lead = g.light;
+  }
+  const irOff = (NET.avIr & 1) && !(NVG && NVG.view);
+  if (!lead || irOff) { if (S.intensity) S.intensity = 0; return; }
+  const g = D.g;
+  g.model.updateWorldMatrix(true, true);
+  if (lead.free && lead.prop && lead.prop.root) {
+    const r = lead.prop.root;
+    _nb.o.copy(LIGHT_LENS).applyMatrix4(r.matrixWorld);
+    r.getWorldQuaternion(_nb.q); _nb.d.set(0, 0, -1).applyQuaternion(_nb.q);
+  } else {
+    const L = g.def.light || [0, 0, -0.1];
+    _nb.o.set(L[0] + LIGHT_LENS.x, L[1] + LIGHT_LENS.y, L[2] + LIGHT_LENS.z - 0.004).applyMatrix4(g.model.matrixWorld);
+    g.model.getWorldQuaternion(_nb.q); _nb.d.set(0, 0, -1).applyQuaternion(_nb.q);
+  }
+  S.position.copy(_nb.o).addScaledVector(_nb.d, 0.004);
+  S.target.position.copy(_nb.o).addScaledVector(_nb.d, 5);
+  S.intensity = CONFIG.light.flashlight * (lead.lum || 1) * ((NET.avIr & 1) ? 0.25 : 1);
+}
+// updateLasers: his lit lasers take the next free slots.
+function netAvLasers(n) {
+  const e = NET.av, D = e && e.gun && e.gun.disp;
+  if (!D || !netLive() || e.dead || !e.root.visible || !e.gun.root.visible || !e.room || !e.room.group.visible) return n;
+  if ((NET.avIr & 2) && !(NVG && NVG.view)) return n;              // an IR laser: only through night vision
+  const g = D.g;
+  if (RAIL.on && g.lasers && g.lasers.length) { for (const L of g.lasers) if (L.it.on && n < LASER.slots.length) netLaserCast(e, g, LASER.slots[n++], L); }
+  else if (g.laserOn && g.wr.laser && n < LASER.slots.length) netLaserCast(e, g, LASER.slots[n++], g.wr.laser);
+  return n;
+}
+function netLaserCast(e, g, S, L) {
+  const root = g.prop.root;
+  root.updateMatrixWorld(true);
+  _nb.o.copy(L.emit).applyMatrix4(root.matrixWorld);
+  root.getWorldQuaternion(_nb.q);
+  _nb.d.copy(L.dir).applyQuaternion(_nb.q).normalize();
+  const hit = p10Ray(_nb.o, _nb.d, LASER.range, RAY_GROUPS);
+  let t = hit ? p10Toi(hit) : LASER.range;
+  const v = e.root.visible; e.root.visible = false;                // not his own capsules
+  const eh = enemyRayTest(_nb.o, _nb.d, t);
+  e.root.visible = v;
+  if (eh) t = eh.t;
+  const ph = playerRayHit(_nb.o, _nb.d);                           // on you: the dot on your body
+  const onYou = ph && ph.part === 'body' && ph.t < t;
+  if (onYou) t = ph.t;
+  if (LAIR.on) {
+    S.beam.visible = true;
+    const U = S.beam.material.uniforms;
+    U.uA.value.copy(_nb.o); U.uB.value.copy(_nb.o).addScaledVector(_nb.d, Math.max(0.01, t));
+    laserAirPick(S, _nb.o, _nb.d, t);
+  } else S.beam.visible = (CONFIG.weapons.laserBeam ?? 0.07) > 0;
+  S.beam.position.copy(_nb.o);
+  S.beam.quaternion.setFromUnitVectors(_lzZ, _nb.d);
+  S.beam.scale.set(1, 1, Math.max(0.01, t));
+  if (!hit && !eh && !onYou) { S.dot.visible = false; return; }
+  S.dot.visible = true;
+  S.dot.position.copy(_nb.o).addScaledVector(_nb.d, t);
+  camera.getWorldPosition(_nb.c);
+  const cd = _nb.c.distanceTo(S.dot.position);
+  S.dot.position.addScaledVector(_nb.c.sub(S.dot.position).normalize(), 0.006);
+  S.dot.scale.setScalar(Math.max(0.009, cd * 0.0042));
+}
+// --- drops ---
+const netRoomQ = (r, q) => { if (rF(r) < 0) q.premultiply(_nhY); return q; };   // world <-> room-local turn (a turned room is half a turn)
+function netDropTx(p, vel) {
+  if (!netLive() || !p || !p.item || p.removing) return;
+  const it = p.item; if (it.kind !== 'gun' && it.kind !== 'mag') return;
+  const r = stream.current; if (!r) return;
+  const f = rF(r), rd = (x) => +x.toFixed(4);
+  p.root.updateMatrixWorld(true);
+  const P = p.root.position, Q = netRoomQ(r, _nb.q.copy(p.root.quaternion)), w = p.body.angvel();
+  if (!p.netId) p.netId = (NET.role === 'host' ? 'h' : 'j') + (++NET.itemSeq) + '-' + (Math.random() * 1e6 | 0).toString(36);
+  const m = { t: 'drop', id: p.netId, k: it.kind, ty: it.type, s: r.slot, o: [rd(rLX(r, P.x)), rd(P.y - r.origin.y), rd(rLZ(r, P.z))], q: [rd(Q.x), rd(Q.y), rd(Q.z), rd(Q.w)],
+    v: [rd(vel.x * f), rd(vel.y), rd(vel.z * f)], w: [rd(w.x * f), rd(w.y), rd(w.z * f)] };
+  if (it.kind === 'gun') { m.b = netGunBuild(it).B; m.rd = it.mag && it.mag.item ? it.mag.item.rounds : -1; m.ch = it.chambered ? 1 : 0; }
+  else { m.mr = it.rounds | 0; }
+  netSendRel(m);
+  p.netShared = true; NET.items.set(p.netId, p);
+  NET.rest.push({ p, at: performance.now() + 2500 });
+}
+function netDropRx(m) {
+  const r = stream.rooms.get(m.s);
+  if (!r || !r.active) { if (NET.pend.length < 24) NET.pend.push({ m, at: performance.now() }); return; }   // his room is not built here yet
+  const old = NET.items.get(m.id); if (old && !old.removing) { if (old.holders.length) return; removeProp(old); }
+  let p = null;
+  try {
+    if (m.k === 'gun') {
+      p = netBuildGun(m.ty, m.b); if (!p) return;
+      const g = p.item;
+      if (m.rd < 0 && g.mag) { try { world.removeRigidBody(g.mag.body); } catch (e) { /* gone */ } if (g.mag.root.parent) g.mag.root.parent.remove(g.mag.root); g.mag = null; }
+      else if (g.mag && g.mag.item) { g.mag.item.rounds = clamp(m.rd | 0, 0, MAG_DEFS[g.def.magType] ? MAG_DEFS[g.def.magType].capacity : 99); updateMagVisual(g.mag.item); }
+      g.chambered = !!m.ch;
+    } else if (m.k === 'mag' && MAG_DEFS[m.ty]) p = createMag(m.ty, clamp(m.mr | 0, 0, MAG_DEFS[m.ty].capacity));
+  } catch (e) { console.warn('multiplayer: dropped item not made', e); return; }
+  if (!p) return;
+  const f = rF(r);
+  _nb.o.set(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2]));
+  netRoomQ(r, _nb.q.set(m.q[0], m.q[1], m.q[2], m.q[3]).normalize());
+  itemToWorld(p, _nb.o, _nb.q, r);
+  p.body.setLinvel({ x: m.v[0] * f, y: m.v[1], z: m.v[2] * f }, true);
+  p.body.setAngvel({ x: m.w[0] * f, y: m.w[1], z: m.w[2] * f }, true);
+  p.root.visible = !!r.visible || r === stream.current;
+  p.netId = m.id; p.netShared = true; NET.items.set(m.id, p);
+}
+// You took one the other side also has: his copy goes.
+function netTakeTx(p) {
+  if (!p.netShared || !p.netId) return;
+  p.netShared = false;
+  if (netLive()) netSendRel({ t: 'take', id: p.netId });
+}
+function netTakeRx(m) {
+  const p = NET.items.get(m.id);
+  if (!p || p.removing) { NET.items.delete(m.id); return; }
+  if (p.holders.length || (p.item && p.item.slot)) {                // both took it at once: the host keeps it
+    if (NET.role === 'host') { netSendRel({ t: 'take', id: m.id }); return; }
+  }
+  NET.items.delete(m.id);
+  try { removeProp(p); } catch (e) { /* gone */ }
+  try { updateLightMount(); syncButtons(); } catch (e) { /* no ui */ }
+}
+// Where it came to rest on the side that dropped it (the two physics runs drift apart a little).
+function netRestTick() {
+  const now = performance.now();
+  for (let i = NET.pend.length - 1; i >= 0; i--) {
+    const q = NET.pend[i], r = stream.rooms.get(q.m.s);
+    if (r && r.active) { NET.pend.splice(i, 1); netDropRx(q.m); } else if (now - q.at > 30000) NET.pend.splice(i, 1);
+  }
+  for (let i = NET.rest.length - 1; i >= 0; i--) {
+    const q = NET.rest[i], p = q.p;
+    if (now < q.at) continue;
+    NET.rest.splice(i, 1);
+    if (!p.netShared || p.removing || !p.inWorld || p.holders.length) continue;
+    const r = p.spawnRoom || stream.current; if (!r || !r.active) continue;
+    const P = p.root.position, Q = netRoomQ(r, _nb.q.copy(p.root.quaternion)), rd = (x) => +x.toFixed(4);
+    netSendRel({ t: 'drest', id: p.netId, s: r.slot, o: [rd(rLX(r, P.x)), rd(P.y - r.origin.y), rd(rLZ(r, P.z))], q: [rd(Q.x), rd(Q.y), rd(Q.z), rd(Q.w)] });
+  }
+}
+function netRestRx(m) {
+  const p = NET.items.get(m.id), r = stream.rooms.get(m.s);
+  if (!p || p.removing || !p.inWorld || p.holders.length || !r || !r.active) return;
+  _nb.o.set(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2]));
+  netRoomQ(r, _nb.q.set(m.q[0], m.q[1], m.q[2], m.q[3]).normalize());
+  p.body.setTranslation(_nb.o, true); p.body.setRotation(_nb.q, true);
+  p.body.setLinvel({ x: 0, y: 0, z: 0 }, true); p.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  p.root.position.copy(_nb.o); p.root.quaternion.copy(_nb.q);
+}
+if (/[?&]dev\b/.test(QS)) Object.assign(window.__cqcNet, { netGunBuild, netGunTx, netBuildGun, netDisp, netDropTx, netDropRx, netTakeTx, netTakeRx, netAvLasers, netAvLight, netSample, spot: () => NET_SPOT });
 function setExposure(v) { renderer.toneMappingExposure = clamp(v, 0.3, 2.5); ui.exp.textContent = renderer.toneMappingExposure.toFixed(2); }
 
 /* ============================================================================
@@ -17286,6 +17646,7 @@ function handLocalZ(g, hand) {
 function itemGrab(hand, p) {
   const it = p.item;
   if (HEAT.on && heatBurnGrab(hand, p)) return;                   // step 107: a hot can is not taken
+  if (p.netShared) netTakeTx(p);                                   // multiplayer: the other player's copy of it goes
   if (it.kind === 'wear') clothRec(0.3); else if (it.kind !== 'gun') pickSfx();   // step 99: a hand taking it (dressing: the coat)
   if (it.kind === 'att') { if (!hand.ctrl) { wbDeskAtt(p); return; } wbGrabbed(it); }   // step 73
   if (it.kind === 'wear') { wearTake(p); if (hand.ctrl) pulse(hand, 0.4, 30); return; }   // step 77: put it on, it stays in the locker
@@ -17541,6 +17902,7 @@ function itemRelease(hand, vel) {
     if (!p.removing && wbTryVise(g)) { updateLightMount(); return; }   // step 80: into the gunsmith's vise
     if (!vel) throwVel(hand, p.mass, _tv); else _tv.copy(vel);
     dropItem(p, _tv);
+    netDropTx(p, _tv);                                             // multiplayer: the other player sees it fall and can take it
     updateLightMount();
     return;
   }
@@ -17552,6 +17914,7 @@ function itemRelease(hand, vel) {
   if (it.kind === 'nade' && !p.removing && !it.pin && it.spoon) nadeSpoon(it);   // step 23: the spoon flies as it leaves your hand
   if (!vel) throwVel(hand, it.kind === 'nade' ? 0.3 : p.mass, _tv); else _tv.copy(vel);
   dropItem(p, _tv);
+  netDropTx(p, _tv);                                               // multiplayer: a magazine (guns above)
   if (it.kind === 'nade') nadeSwingSfx(hand.source.getWorldPosition(_wv), _tv.length());   // step 115
 }
 // Desktop: 1 / 2 holster or draw. Entering VR stows whatever the desktop hand held.
@@ -20277,6 +20640,7 @@ function updateLasers() {
     if (!laserLive(g) || n >= LASER.slots.length) continue;
     laserCast(g, LASER.slots[n++]);
   }
+  n = netAvLasers(n);                                             // multiplayer: the other player's lit lasers
   for (; n < LASER.slots.length; n++) LASER.slots[n].dot.visible = LASER.slots[n].beam.visible = false;
 }
 function laserCast(g, S, L = g.wr.laser) {   // step 112: L = one laser module of the gun
@@ -27132,7 +27496,7 @@ function enemyPose(e, dt, now) {
   e.gunQ.copy(_ev.q);
   e.gunP.copy(_egp).addScaledVector(_ev.z.set(0, 0, 1).applyQuaternion(e.gunQ), e.recoil * 0.025);
   const NH = e.net && e.netH;                                     // multiplayer: the VR player's own gun hand and gun turn
-  if (NH && NH.hasQ) { const hp = NH.gh === 'L' ? (NH.hasL ? NH.L : null) : (NH.hasR ? NH.R : null); if (hp) { e.gunP.copy(hp); e.gunQ.copy(NH.q); } }
+  if (NH && NH.hasQ) { const hp = NH.hasP ? NH.P : NH.gh === 'L' ? (NH.hasL ? NH.L : null) : (NH.hasR ? NH.R : null); if (hp) { e.gunP.copy(hp); e.gunQ.copy(NH.q); } }
   // into enemy-root space
   e.root.getWorldQuaternion(_ev.q3);
   e.gun.root.quaternion.copy(_ev.q3).invert().multiply(e.gunQ);
@@ -27627,6 +27991,7 @@ function enemyDropType(e) {
   return GUN_BUILD[t] && WEAPON_DEFS[t] ? t : null;
 }
 function enemyDropGun(e, dir) {
+  if (e.net) { try { e.root.remove(e.gun.root); } catch (err) { /* gone */ } return; }   // multiplayer: the other player's copy drops nothing (his gun is his)
   if (e.unarmed) return;                                          // step 117: he dropped it when he gave up
   const old = e.gun && e.gun.root;
   let wp = null, wq = null;
