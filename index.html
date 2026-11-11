@@ -60,7 +60,10 @@ body{height:100%;margin:0;overflow:hidden;background:var(--stage);
 #go:focus-visible{outline:2px dashed var(--ink);outline-offset:4px}
 #stick{position:fixed;width:100px;height:100px;margin:-50px 0 0 -50px;border-radius:50%;border:1px solid var(--hud-dim);background:var(--hud-bg);display:none;pointer-events:none}
 #knob{position:absolute;left:50%;top:50%;width:40px;height:40px;margin:-20px 0 0 -20px;border-radius:50%;background:var(--hud-dim)}
-#tbtns{position:fixed;right:calc(12px + env(safe-area-inset-right,0px));bottom:calc(14px + env(safe-area-inset-bottom,0px));display:none;flex-direction:column;gap:10px}
+#tbtns{position:fixed;right:calc(12px + env(safe-area-inset-right,0px));bottom:calc(14px + env(safe-area-inset-bottom,0px));display:none;grid-template-columns:repeat(2,58px);gap:10px}
+#inv{position:absolute;left:calc(12px + env(safe-area-inset-left,0px));top:calc(10px + env(safe-area-inset-top,0px));color:var(--hud);font-size:13px;text-shadow:0 1px 3px #000;opacity:.85}
+.lb{position:fixed;left:0;right:0;height:0;background:#000;pointer-events:none;transition:height .8s ease;z-index:4}
+#lbT{top:0}#lbB{bottom:0}
 #tbtns button{font:inherit;font-size:13px;color:var(--hud);background:var(--hud-bg);border:1px solid var(--hud-dim);border-radius:50%;width:58px;height:58px;padding:0;line-height:1.1}
 #tbtns button.on{background:var(--hud);color:#1a1814;border-color:var(--hud)}
 #pause{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:var(--veil);
@@ -79,12 +82,16 @@ body{height:100%;margin:0;overflow:hidden;background:var(--stage);
 </style>
 </head>
 <body>
-<div id="hud"><div id="cross"></div><div id="prompt"></div><div id="say"></div></div>
+<div id="hud"><div id="cross"></div><div id="prompt"></div><div id="say"></div><div id="inv"></div></div>
+<div id="lbT" class="lb"></div><div id="lbB" class="lb"></div>
 <div id="stick"><div id="knob"></div></div>
 <div id="tbtns">
   <button id="bCrouch" type="button">Crouch</button>
   <button id="bTorch" type="button">Light</button>
   <button id="bUse" type="button">Use</button>
+  <button id="bTool" type="button">Tool</button>
+  <button id="bTip" type="button">Tip</button>
+  <button id="bBuild" type="button">Cart</button>
 </div>
 <button id="bPause" type="button" aria-label="Pause">II</button>
 <div id="pause">
@@ -1259,7 +1266,7 @@ picture(7.9, 1.3, 4.275, 0, .5, .38, T.city);
 }
 
 /* ================= global light ================= */
-scene.add(new THREE.HemisphereLight(C('#c9d3dc'), C('#8a8c8e'), 0.95));   // overcast: snow bounces light back up
+const hemi = new THREE.HemisphereLight(C('#c9d3dc'), C('#8a8c8e'), 0.95); scene.add(hemi);   // overcast: snow bounces light back up
 const sun = new THREE.DirectionalLight(0xdde4ea, 0.55);                  // sun hidden behind cloud, soft shadows only
 sun.position.set(-15, 25, -10);
 sun.target.position.set(4.5, 0, 3.5);
@@ -1327,7 +1334,7 @@ function groundY(x, z) {
   
   return getTerrainHeight(x, z);
 }
-let cloudG, cozy = null;
+let cloudG, cozy = null, terrainAPI = null;
 const WCH = 40, WOX = 4.5, WOZ = 3.5, worldChunks = new Map();   // chunk size, grid origin (matches the old terrain grid), loaded chunks
 let streamWorld = () => {};
 
@@ -1348,6 +1355,31 @@ let streamWorld = () => {};
   gT.repeat.set(CH / 2.5, CH / 2.5);
   const terrM = snap(new THREE.MeshStandardMaterial({ map: gT, vertexColors: true, roughness: 1, flatShading: true }));
   const cS = C('#d9dde0'), cY = C('#7b7358'), cD = C('#5b5045'), cT = new THREE.Color();
+  /* ground colour at a point: thin snow with dead grass showing through, trodden mud on the path */
+  function groundCol(x, z, out) {
+    const f = fbm(x * .03 + 7, z * .03 + 3), n = smoothNoise(x * .5, z * .5), n2 = smoothNoise(x * .9 + 31, z * .9 + 17);
+    const snow = Math.min(1, Math.max(0, (f - .36) * 4 + (n2 - .5) * 1.4));
+    out.copy(cY).lerp(cS, snow).multiplyScalar(.9 + n * .15);
+    const bld = Math.max(0, 1 - Math.hypot(Math.max(0, Math.abs(x - 4.5) - 4.6), Math.max(0, Math.abs(z - 3.5) - 3.6)) / 4);
+    return out.lerp(cD, Math.max(pathMask(x, z) * (n2 > .62 ? .45 : .95), bld * .8));
+  }
+  /* the heightmap as drawn: bilinear over the 2 m grid, so dug regions meet the terrain without seams */
+  const nodeH = new Map();
+  const nH = (i, j) => { const k = i + ',' + j; let h = nodeH.get(k); if (h === undefined) { h = getTerrainHeight(OX + i * 2, OZ + j * 2); nodeH.set(k, h); } return h; };
+  const surfH = (x, z) => { const fx = (x - OX) / 2, fz = (z - OZ) / 2, i = Math.floor(fx), j = Math.floor(fz), tx = fx - i, tz = fz - j;
+    return (nH(i, j) * (1 - tx) + nH(i + 1, j) * tx) * (1 - tz) + (nH(i, j + 1) * (1 - tx) + nH(i + 1, j + 1) * tx) * tz; };
+  /* 8 m regions that have been dug: the heightmap leaves them out and the mine draws them */
+  const holeRegions = new Set();
+  function applyHoles(c) {
+    const g = c.mesh.geometry; if (!c.idx0) c.idx0 = g.index.array.slice();
+    const out = [], src = c.idx0, bx = OX + c.cx * CH, bz = OZ + c.cz * CH;
+    for (let q = 0; q < SEG * SEG; q++) {
+      const x = bx + (q % SEG) * 2 + 1, z = bz + ((q / SEG) | 0) * 2 + 1;
+      if (holeRegions.has(Math.floor((x - OX) / 8) + ',' + Math.floor((z - OZ) / 8))) continue;
+      for (let k = 0; k < 6; k++) out.push(src[q * 6 + k]);
+    }
+    g.setIndex(out);
+  }
 
   /* per-chunk seeded random */
   const rngFor = (cx, cz, salt) => {
@@ -1450,18 +1482,15 @@ let streamWorld = () => {};
     const tp = g.attributes.position, vc = new Float32Array(tp.count * 3), hs = new Float32Array(tp.count);
     for (let i = 0; i < tp.count; i++) {
       const x = tp.getX(i) + x0, z = tp.getZ(i) + z0, h = getTerrainHeight(x, z); tp.setY(i, h); hs[i] = h;
-      const f = fbm(x * .03 + 7, z * .03 + 3), n = smoothNoise(x * .5, z * .5), n2 = smoothNoise(x * .9 + 31, z * .9 + 17);
-      const snow = Math.min(1, Math.max(0, (f - .36) * 4 + (n2 - .5) * 1.4));         // thin cover: dead grass shows through in patches
-      cT.copy(cY).lerp(cS, snow).multiplyScalar(.9 + n * .15);
-      const bld = Math.max(0, 1 - Math.hypot(Math.max(0, Math.abs(x - 4.5) - 4.6), Math.max(0, Math.abs(z - 3.5) - 3.6)) / 4);
-      cT.lerp(cD, Math.max(pathMask(x, z) * (n2 > .62 ? .45 : .95), bld * .8));     // trodden mud, slush left in the hollows
+      groundCol(x, z, cT);
       vc[i * 3] = cT.r; vc[i * 3 + 1] = cT.g; vc[i * 3 + 2] = cT.b;
       if (i % 36 === 35) yield;                                       // hand the frame back every few dozen vertices
     }
     if (Math.max(Math.abs(cx - lastCx), Math.abs(cz - lastCz)) > TR + 1) { g.dispose(); return; }   // player moved on while it was building
     g.setAttribute('color', new THREE.BufferAttribute(vc, 3)); g.computeVertexNormals();
     const mesh = new THREE.Mesh(g, terrM); mesh.position.set(x0, 0, z0); mesh.receiveShadow = true; mesh.matrixAutoUpdate = false; mesh.updateMatrix(); O.add(mesh);
-    worldChunks.set(cx + ',' + cz, { cx, cz, mesh, hs, obj: false, gr: null, tr: null, cols: [] });
+    const ch = { cx, cz, mesh, hs, obj: false, gr: null, tr: null, cols: [] }; worldChunks.set(cx + ',' + cz, ch);
+    if (holeRegions.size) applyHoles(ch);
   }
   /* terrain height from a chunk's own vertex grid (matches the drawn ground); falls back to the exact function outside the chunk */
   const hAt = (c, x, z) => {
@@ -1523,18 +1552,19 @@ let streamWorld = () => {};
     for (let i = 0; i < GN; i++) {
       const x = x0 + r() * CH, z = z0 + r() * CH, ry = r() * PI, sc = rr(.8, 1.5), k = r() < .7;
       const cr = k ? rr(.8, .95) : rr(.6, .75), cg = k ? rr(.78, .9) : rr(.6, .72), cb = k ? rr(.58, .7) : rr(.5, .6);
-      if ((x > -1.5 && x < 10.5 && z > -3 && z < 9.5) || pathMask(x, z) > .2) continue;
+      if ((x > -1.5 && x < 10.5 && z > -3 && z < 9.5) || pathMask(x, z) > .2 || (terrainAPI && terrainAPI.isDug(x, z))) continue;
       dm.position.set(x, hAt(c, x, z) - .03, z); dm.rotation.set(0, ry, 0); dm.scale.setScalar(sc); put(L, dm, tmpC.setRGB(cr, cg, cb));
     }
     c.gr = fin(L);
   }
 
   function fillPool(pool, get, pcx, pcz, d2max) {
-    const cap = pool.instanceMatrix.count; let n = 0;
+    const cap = pool.instanceMatrix.count, src = pool.userData.kind ? (pool.userData.src = []) : null; let n = 0;
     worldChunks.forEach(c => {
       const L = get(c); if (!L || !L.n) return;
       const dx = c.cx - pcx, dz = c.cz - pcz; if (dx * dx + dz * dz > d2max || n + L.n > cap) return;
       pool.instanceMatrix.array.set(L.m, n * 16); if (pool.instanceColor && L.c.length) pool.instanceColor.array.set(L.c, n * 3); n += L.n;
+      if (src) for (let k = 0; k < L.n; k++) src.push(L, k);
     });
     pool.count = n; pool.instanceMatrix.needsUpdate = true; if (pool.instanceColor) pool.instanceColor.needsUpdate = true;
   }
@@ -1577,6 +1607,29 @@ let streamWorld = () => {};
       if (!all && performance.now() - t0 > BUDGET) break;
     }
     if (dirty) { rebuildPools(pcx, pcz); dirty = false; }
+  };
+  poolLog.userData.kind = poolLogB.userData.kind = 'log'; poolStick.userData.kind = poolStickB.userData.kind = 'stick';
+  terrainAPI = {
+    terrM, groundCol, surfH, isDug: () => false,
+    pickables: [poolLog, poolLogB, poolStick, poolStickB],
+    hole(rx, rz) {
+      holeRegions.add(rx + ',' + rz);
+      const x = OX + rx * 8 + 4, z = OZ + rz * 8 + 4, c = worldChunks.get(Math.floor((x - OX) / CH) + ',' + Math.floor((z - OZ) / CH));
+      if (c) applyHoles(c);
+    },
+    regrass(x, z) { const c = worldChunks.get(Math.floor((x - OX) / CH) + ',' + Math.floor((z - OZ) / CH)); if (c && c.gr) { c.gr = null; busy = true; } },
+    take(pool, id) {                       // remove one lying log/stick from its chunk for good
+      const s = pool.userData.src; if (!s || id * 2 >= s.length) return;
+      const L = s[id * 2], k = s[id * 2 + 1], m = new Float32Array(L.m.length - 16);
+      m.set(L.m.subarray(0, k * 16)); m.set(L.m.subarray((k + 1) * 16), k * 16); L.m = m;
+      if (L.c.length) { const c = new Float32Array(L.c.length - 3); c.set(L.c.subarray(0, k * 3)); c.set(L.c.subarray((k + 1) * 3), k * 3); L.c = c; }
+      L.n--; dirty = busy = true;
+    },
+    treeNear(x, z, r) {
+      const cx = Math.floor((x - OX) / CH), cz = Math.floor((z - OZ) / CH);
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const c = worldChunks.get((cx + a) + ',' + (cz + b)); if (c) for (const q of c.cols) if (x > q.x1 - r && x < q.x2 + r && z > q.z1 - r && z < q.z2 + r) return true; }
+      return false;
+    }
   };
   streamWorld(OX, OZ, true);
 
@@ -2085,7 +2138,7 @@ document.addEventListener('pointerlockchange', () => {
 document.addEventListener('pointerlockerror', () => { noLock = true; say('Drag with the mouse to look around.'); });
 cvs.addEventListener('mousedown', e => {
   if (!started || paused || isTouch) return;
-  if (locked) { interact(); return; }
+  if (locked) { primary(); return; }
   if (!noLock) lockPointer();
   dragLook = true;
 });
@@ -2134,13 +2187,13 @@ const tEnd = e => {
     if (touch.move && t.identifier === touch.move.id) {
       touch.move = null; touch.mx = touch.my = 0; stick.style.display = 'none';
     } else if (touch.look && t.identifier === touch.look.id) {
-      if (!paused && Math.hypot(t.clientX - touch.look.sx, t.clientY - touch.look.sy) < 10 && performance.now() - touch.look.t0 < 300) interact();
+      if (!paused && Math.hypot(t.clientX - touch.look.sx, t.clientY - touch.look.sy) < 10 && performance.now() - touch.look.t0 < 300) primary();
       touch.look = null;
     }
   }
 };
 cvs.addEventListener('touchend', tEnd); cvs.addEventListener('touchcancel', tEnd);
-$('bUse').addEventListener('click', () => { if (!paused) interact(); });
+$('bUse').addEventListener('click', () => { if (!paused) primary(); });
 $('bTorch').addEventListener('click', () => { if (!paused) toggleTorch(); });
 $('bCrouch').addEventListener('click', () => { if (!paused) setCrouch(!player.crouch); });
 $('bPause').addEventListener('click', () => setPaused(true));
@@ -2209,15 +2262,15 @@ bindSeg('detSeg', v => {
 });
 
 $('ctrl').textContent = isTouch
-  ? 'Left thumb walk · right thumb look · Crouch / Light / Use · Pause (II). The front door opens now.'
-  : 'WASD walk · Shift hurry · C/Ctrl crouch · E use · F light · Esc pause · 1–4 res · −/= brightness · [ ] walk speed.';
+  ? 'Left thumb walk · right thumb look · Use digs / takes · Tool · Tip cart · Cart builds one · Pause (II).'
+  : 'WASD walk · Shift hurry · C crouch · Click dig / use · E take · Q shovel · B build cart · R tip cart · F light · Esc pause.';
 $('go').addEventListener('click', () => {
   if (soundOn) initAudio();
   started = true; paused = false;
   $('ov').classList.add('hide');
   $('pause').classList.remove('show');
   if (isTouch) {
-    $('tbtns').style.display = 'flex';
+    $('tbtns').style.display = 'grid';
     $('bPause').style.display = 'block';
   } else {
     lockPointer();
@@ -2235,6 +2288,16 @@ function scan() {
   const hits = ray.intersectObjects(world.children, true);
   let a = null;
   for (const h of hits) { const f = findAct(h.object); if (h.object.material === glassMat && !f) continue; a = f; break; }
+  if (terrainAPI) {
+    const ph = ray.intersectObjects(terrainAPI.pickables, false)[0];
+    if (ph && (!hits.length || ph.distance < hits[0].distance)) {
+      const isLog = ph.object.userData.kind === 'log', pool = ph.object, id = ph.instanceId;
+      a = { label: () => isLog ? 'Pick up the log' : 'Pick up the stick', fn: () => {
+        if (isLog && inv.logs >= 4) { say('Four logs is all you can carry.'); return; }
+        if (!isLog && inv.sticks >= 20) { say('Your arms are full of sticks.'); return; }
+        terrainAPI.take(pool, id); if (isLog) inv.logs++; else inv.sticks++; burst(.12, 'lowpass', 500, 1, .3, .01); hud(); } };
+    }
+  }
   focus = a;
   const p = $('prompt'), cr = $('cross');
   if (a) { p.textContent = (isTouch ? 'Tap: ' : 'E: ') + a.label(); p.style.opacity = 1; cr.classList.add('on'); }
@@ -2693,6 +2756,464 @@ const wildlife = createCritterWorld(scene, {
     rainAmount: 0
 });
 
+/* =====================================================================
+   MINING — the ground is a field of 0.5 m columns. Each column is a list
+   of solid intervals [y0, y1, type] (0 = natural soil, 1 = loose dirt).
+   Untouched columns are implicit (bedrock → terrain surface). Edited 8 m
+   regions are drawn by their own meshes (smooth natural tops, cut faces,
+   tunnel ceilings) and the heightmap is holed beneath them. The player,
+   carts and flying dirt all collide with the same column data, so you can
+   dig down, sideways or up, haul spoil in carts and tip it out — loose
+   dirt settles at its angle of repose.
+   ===================================================================== */
+const mine = (() => {
+  const S = .5, BOT = -60, TA = terrainAPI, surfH = TA.surfH;
+  const OXc = WOX / S, OZc = WOZ / S;                       // terrain grid origin in columns (regions align to it)
+  const cols = new Map(), regions = new Map();              // "ix,iz" → { h, iv }, "rx,rz" → { top, cut }
+  const K = (a, b) => a + ',' + b;
+  const ci = v => Math.floor(v / S);
+  const natH = (ix, iz) => surfH((ix + .5) * S, (iz + .5) * S);
+  const col = (ix, iz) => cols.get(K(ix, iz));
+  const ivsOf = (ix, iz) => { const c = col(ix, iz); return c ? c.iv : [[BOT, natH(ix, iz), 0]]; };
+  const isNatTop = (c, iv) => iv[2] === 0 && (!c || iv[1] === c.h);
+  const regionOf = (ix, iz) => [Math.floor((ix - OXc) / 16), Math.floor((iz - OZc) / 16)];
+  const inHouse = (x, z) => x > -.7 && x < 9.7 && z > -.7 && z < 7.7;
+  let edits = 0;
+
+  function editCol(ix, iz) {
+    let c = col(ix, iz);
+    if (!c) { const h = natH(ix, iz); c = { h, iv: [[BOT, h, 0]] }; cols.set(K(ix, iz), c); }
+    return c;
+  }
+  /* top of the solid under/at height y (exact smooth surface for untouched natural tops); -Infinity if none */
+  function floorAt(x, z, y) {
+    const ix = ci(x), iz = ci(z), c = col(ix, iz), iv = c ? c.iv : null;
+    if (!iv) return surfH(x, z);
+    let best = -Infinity;
+    for (const v of iv) {
+      const top = isNatTop(c, v) ? surfH(x, z) : v[1];
+      if (v[0] < y - 1e-4 && top > y - 1e-4) return top;          // y is inside this solid: its top is the floor
+      if (top <= y + 1e-4 && top > best) best = top;
+    }
+    return best;
+  }
+  function ceilAt(x, z, y) {
+    const c = col(ci(x), ci(z)); if (!c) return Infinity;
+    let best = Infinity; for (const v of c.iv) if (v[0] >= y - 1e-4 && v[0] < best) best = v[0];
+    return best;
+  }
+  function solidAt(x, y, z) {
+    const ix = ci(x), iz = ci(z), c = col(ix, iz);
+    if (!c) return y < surfH(x, z) && y > BOT;
+    for (const v of c.iv) if (y > v[0] && y < (isNatTop(c, v) ? surfH(x, z) : v[1])) return true;
+    return false;
+  }
+  const active = (x, z) => regions.has(K(...regionOf(ci(x), ci(z))));
+
+  /* remove the cell [iy*S, iy*S+S] from a column */
+  function carve(ix, iz, iy) {
+    const c = editCol(ix, iz), a = iy * S, b = a + S, out = [];
+    let typ = 0;
+    for (const v of c.iv) {
+      if (v[1] <= a || v[0] >= b) { out.push(v); continue; }
+      typ = Math.max(typ, v[2]);
+      if (v[0] < a) out.push([v[0], a, v[2]]);
+      if (v[1] > b) out.push([b, v[1], v[2]]);
+    }
+    c.iv = out; return typ;
+  }
+  /* loose dirt sitting on nothing drops until it rests */
+  function dropLoose(c) {
+    c.iv.sort((p, q) => p[0] - q[0]);
+    for (let i = 1; i < c.iv.length; i++) {
+      const v = c.iv[i], under = c.iv[i - 1];
+      if (v[2] === 1 && v[0] > under[1] + 1e-3) { const t = v[1] - v[0]; v[0] = under[1]; v[1] = under[1] + t; }
+    }
+    const m = [];                                            // merge touching loose layers
+    for (const v of c.iv) { const p = m[m.length - 1]; if (p && p[2] === 1 && v[2] === 1 && Math.abs(p[1] - v[0]) < 1e-3) p[1] = v[1]; else m.push(v); }
+    c.iv = m;
+  }
+  /* add one unit of loose dirt on the column at or below height y */
+  function deposit(ix, iz, y, depth) {
+    const c = editCol(ix, iz);
+    let t = -Infinity; for (const v of c.iv) { const top = v[1]; if (v[0] < y - 1e-3 && top > y - 1e-3) { t = top; break; } if (top <= y + 1e-3 && top > t) t = top; }
+    if (t === -Infinity) t = BOT;
+    c.iv.push([t, t + S, 1]); dropLoose(c); touch(ix, iz);
+    settle(ix, iz, depth || 0);
+  }
+  /* angle of repose: a loose top more than ~1.2 cells above a neighbour's floor slides down to it */
+  function settle(ix, iz, depth) {
+    if (depth > 24) return;
+    const c = col(ix, iz); if (!c) return;
+    const top = c.iv[c.iv.length - 1]; if (!top || top[2] !== 1 || top[1] - top[0] < S - 1e-3) return;
+    const y = top[1], cx = (ix + .5) * S, cz = (iz + .5) * S;
+    let best = null, bd = 1.2 * S;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cx + dx * S, nz = cz + dz * S;
+      if (inHouse(nx, nz) || solidAt(nx, y - S * .5, nz)) continue;       // wall at this height
+      const f = floorAt(nx, nz, y - 1e-3), d = y - f;
+      if (d > bd) { bd = d; best = [ix + dx, iz + dz]; }
+    }
+    if (!best) return;
+    top[1] -= S; if (top[1] - top[0] < 1e-3) c.iv.pop();
+    touch(ix, iz);
+    deposit(best[0], best[1], y, depth + 1);
+    settle(ix, iz, depth + 1);
+  }
+
+  /* ---------------- meshes ---------------- */
+  const dirtT = (() => { const c = cv(32, 32), g = ctx(c);
+    for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) { const v = 150 + R() * 90 | 0; g.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')'; g.fillRect(x, y, 1, 1); }
+    for (let i = 0; i < 30; i++) { const v = R() < .5 ? 90 : 235, s = 1 + (R() * 2 | 0); g.fillStyle = 'rgb(' + v + ',' + v + ',' + (v - 10) + ')'; g.fillRect(R() * 32 | 0, R() * 32 | 0, s, s); }   // pebbles
+    for (let i = 0; i < 6; i++) { g.strokeStyle = 'rgba(60,40,25,.7)'; g.beginPath(); let x = R() * 32, y = R() * 32; g.moveTo(x, y); for (let k = 0; k < 4; k++) { x += RR(-5, 5); y += RR(1, 6); g.lineTo(x, y); } g.stroke(); }   // roots
+    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.encoding = THREE.sRGBEncoding; return t; })();
+  const dirtM = snap(new THREE.MeshStandardMaterial({ map: dirtT, vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 1 }));
+  const STRATA = [[.35, C('#3e3024')], [2.4, C('#6e5034')], [7, C('#7d7062')], [1e9, C('#5e5c5a')]], LOOSE = C('#54412f');
+  const tmp = new THREE.Color();
+  const soilCol = (depth, loose) => { if (loose) return tmp.copy(LOOSE); for (const s of STRATA) if (depth < s[0]) return tmp.copy(s[1]); return tmp; };
+
+  function buildRegion(rx, rz) {
+    const R0 = regions.get(K(rx, rz)); if (!R0) return;
+    const tp = [], tc = [], tu = [], dp = [], dc = [], du = [];
+    const ix0 = OXc + rx * 16, iz0 = OZc + rz * 16, gc = new THREE.Color();
+    const corner = (ix, iz) => surfH(ix * S, iz * S);
+    const pushTop = (pts) => {                                  // natural ground: terrain colours, smooth corners
+      for (const k of [0, 1, 2, 0, 2, 3]) { const p = pts[k]; tp.push(p[0], p[1], p[2]); TA.groundCol(p[0], p[2], gc); tc.push(gc.r, gc.g, gc.b); tu.push(p[0] / 40, p[2] / 40); }
+    };
+    const pushCut = (pts, h, loose, axis) => {                  // cut soil: strata by depth below the original surface
+      for (const k of [0, 1, 2, 0, 2, 3]) {
+        const p = pts[k], d = h - p[1], c = soilCol(d, loose), dark = Math.max(.45, 1 - Math.max(0, d) * .03);
+        dp.push(p[0], p[1], p[2]); dc.push(c.r * dark, c.g * dark, c.b * dark);
+        du.push(axis === 0 ? p[2] / 1.5 : p[0] / 1.5, axis === 1 ? p[2] / 1.5 : p[1] / 1.5);
+      }
+    };
+    /* exposed parts of [a, b] once the neighbour's solids are taken away */
+    const expose = (a, b, nb) => { let segs = [[a, b]]; for (const v of nb) { const n = []; for (const s of segs) { if (v[1] <= s[0] || v[0] >= s[1]) { n.push(s); continue; } if (v[0] > s[0]) n.push([s[0], v[0]]); if (v[1] < s[1]) n.push([v[1], s[1]]); } segs = n; } return segs.filter(s => s[1] - s[0] > 1e-3); };
+    const edgeTops = (ix, iz) => { const c = col(ix, iz); return ivsOf(ix, iz).map(v => [v[0], v[1], v[2], isNatTop(c, v)]); };
+    const SIDES = [[1, 0, 1, 0, 1, 1], [-1, 0, 0, 0, 0, 1], [0, 1, 0, 1, 1, 1], [0, -1, 0, 0, 1, 0]];   // dx, dz, corner A (x,z), corner B (x,z) offsets
+    for (let iz = iz0; iz < iz0 + 16; iz++) for (let ix = ix0; ix < ix0 + 16; ix++) {
+      const c = col(ix, iz), iv = ivsOf(ix, iz), x0 = ix * S, z0 = iz * S, x1 = x0 + S, z1 = z0 + S, h = c ? c.h : natH(ix, iz);
+      for (const v of iv) {
+        const nat = isNatTop(c, v);
+        if (nat) pushTop([[x0, corner(ix, iz), z0], [x0, corner(ix, iz + 1), z1], [x1, corner(ix + 1, iz + 1), z1], [x1, corner(ix + 1, iz), z0]]);
+        else pushCut([[x0, v[1], z0], [x0, v[1], z1], [x1, v[1], z1], [x1, v[1], z0]], h, v[2] === 1, 1);
+        if (v[0] > BOT + 1e-3) pushCut([[x0, v[0], z0], [x1, v[0], z0], [x1, v[0], z1], [x0, v[0], z1]], h, v[2] === 1, 1);   // tunnel ceiling
+        for (const [dx, dz, ax, az, bx, bz] of SIDES) {
+          const ca = corner(ix + ax, iz + az), cb = corner(ix + bx, iz + bz), top = nat ? (ca + cb) / 2 : v[1];
+          const nb = edgeTops(ix + dx, iz + dz).map(n => [n[0], n[3] ? (ca + cb) / 2 : n[1]]);
+          const px = x0 + ax * S, pz = z0 + az * S, qx = x0 + bx * S, qz = z0 + bz * S;
+          for (const [s0, s1] of expose(v[0], top, nb)) {
+            const ta = s1 === top && nat ? ca : s1, tb = s1 === top && nat ? cb : s1;
+            pushCut([[px, s0, pz], [qx, s0, qz], [qx, tb, qz], [px, ta, pz]], h, v[2] === 1, dx ? 0 : 2);
+          }
+        }
+      }
+    }
+    const mk = (p, c, u, mat, old) => {
+      if (old) { O.remove(old); old.geometry.dispose(); }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(c, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(u, 2));
+      g.computeVertexNormals();
+      const m = new THREE.Mesh(g, mat); m.receiveShadow = true; m.matrixAutoUpdate = false; O.add(m); return m;
+    };
+    R0.top = mk(tp, tc, tu, TA.terrM, R0.top); R0.cut = mk(dp, dc, du, dirtM, R0.cut);
+  }
+  const dirty = new Set();
+  function touch(ix, iz) {
+    const [rx, rz] = regionOf(ix, iz);
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {           // a cell on a region edge changes its neighbour's walls too
+      const [qx, qz] = regionOf(ix + a, iz + b), k = K(qx, qz);
+      if (!regions.has(k)) { regions.set(k, { top: null, cut: null }); TA.hole(qx, qz); }
+      dirty.add(k);
+    }
+    edits++; TA.regrass((ix + .5) * S, (iz + .5) * S);
+  }
+  function flush() { for (const k of dirty) { const [a, b] = k.split(',').map(Number); buildRegion(a, b); } dirty.clear(); }
+
+  /* ray march from the eye: first solid cell within reach, and the last empty point before it */
+  function pick(o, d, reach) {
+    let px = o.x, py = o.y, pz = o.z;
+    for (let t = 0; t < reach; t += .04) {
+      const x = o.x + d.x * t, y = o.y + d.y * t, z = o.z + d.z * t;
+      if (solidAt(x, y, z)) return { ix: ci(x), iy: Math.floor(y / S), iz: ci(z), x, y, z, px, py, pz, t };
+      px = x; py = y; pz = z;
+    }
+    return null;
+  }
+  const hardness = (ix, iy, iz) => {
+    const c = col(ix, iz), y = (iy + .5) * S, d = (c ? c.h : natH(ix, iz)) - y;
+    if (c) for (const v of c.iv) if (y > v[0] && y < v[1] && v[2] === 1) return 1;
+    return d < .35 ? 2 : d < 2.4 ? 3 : d < 7 ? 4 : 6;
+  };
+  function canDig(ix, iz) {
+    const x = (ix + .5) * S, z = (iz + .5) * S;
+    if (inHouse(x, z)) return 'Too close to the foundations.';
+    if (TA.treeNear(x, z, .35)) return 'Roots and stone. The shovel just rings off it.';
+    return null;
+  }
+
+  return {
+    S, floorAt, ceilAt, solidAt, active, pick, carve, deposit, settle, dropLoose, editCol, touch, flush, hardness, canDig, inHouse, col, ci,
+    get edits() { return edits; },
+    isDug: (x, z) => { const c = col(ci(x), ci(z)); return !!c && !c.iv.some(v => isNatTop(c, v)); },
+    /* ground for walkers: smooth terrain where nothing is dug, otherwise the column floor under the feet */
+    ground(x, z, feet) { return active(x, z) && !inHouse(x, z) ? floorAt(x, z, feet + .45) : groundY(x, z); },
+    /* how buried a point is (0 open sky … 1 deep in a tunnel) */
+    cover(p) { if (!active(p.x, p.z)) return 0; const c = col(ci(p.x), ci(p.z)); if (!c) return 0; const roof = ceilAt(p.x, p.z, p.y); if (roof === Infinity) return 0; return Math.min(1, Math.max(0, (c.h - p.y) / 2.5)); }
+  };
+})();
+terrainAPI.isDug = mine.isDug;
+
+/* ================= tools: shovel, logs, carts, flying dirt ================= */
+const inv = { logs: 0, sticks: 0, shovel: false, tool: 'hands', load: 0 };
+const pcol = (h, k) => { const c = C(h); return k ? c.multiplyScalar(k) : c; };
+const woodShM = snap(MS({ map: T.woodL, color: C('#b8956a'), roughness: .8 }));
+const steelM = snap(MS({ color: C('#6d7276'), metalness: .6, roughness: .45 }));
+const ironM = snap(MS({ color: C('#2b2a29'), metalness: .5, roughness: .6 }));
+const clodM = snap(new THREE.MeshStandardMaterial({ color: C('#54412f'), roughness: 1, flatShading: true }));
+const clodG = new THREE.DodecahedronGeometry(.13, 0);
+
+/* a round-point shovel: ash shaft, D-grip, steel collar and dished blade (shaft along +Y, blade at the bottom) */
+function makeShovel() {
+  const g = new THREE.Group();
+  cyl(.017, .019, 1.0, woodShM, 0, -.05, 0, { p: g, seg: 6 });
+  cyl(.026, .02, .14, steelM, 0, -.17, 0, { p: g, seg: 6 });                  // socket collar
+  for (const s of [-1, 1]) box(.014, .13, .022, woodShM, s * .055, .95, 0, { p: g });
+  box(.13, .026, .03, woodShM, 0, 1.08, 0, { p: g, cast: false });            // D-grip bar
+  const sh = new THREE.Shape(); sh.moveTo(-.11, 0); sh.lineTo(.11, 0); sh.lineTo(.115, -.17); sh.quadraticCurveTo(.09, -.27, 0, -.3); sh.quadraticCurveTo(-.09, -.27, -.115, -.17); sh.closePath();
+  const bg = new THREE.ShapeGeometry(sh, 3), bp = bg.attributes.position;
+  for (let i = 0; i < bp.count; i++) bp.setZ(i, (bp.getX(i) / .11) ** 2 * .035);   // dished
+  bg.computeVertexNormals();
+  const blade = new THREE.Mesh(bg, snap(MS({ color: C('#7a7f84'), metalness: .55, roughness: .5, side: THREE.DoubleSide }))); blade.position.y = -.18; g.add(blade);
+  const heap = new THREE.Mesh(new THREE.DodecahedronGeometry(.1, 0), clodM); heap.scale.set(1.05, .55, .9); heap.position.set(0, -.3, .05); heap.visible = false; g.add(heap);
+  g.userData.heap = heap;
+  return g;
+}
+/* the shovel waits, leaning on the wall left of the front door */
+const shovelProp = makeShovel(); shovelProp.position.set(2.62, .62, 7.24); shovelProp.rotation.set(-.32, .4, .05); world.add(shovelProp);
+act(shovelProp, 'Take the shovel', () => { world.remove(shovelProp); inv.shovel = true; inv.tool = 'shovel'; vm.visible = true; sfx.click(); say('A good round-point shovel. Click / Use to dig, again to throw or place the dirt. Q puts it away.'); hud(); });
+/* first-person viewmodel */
+const vm = makeShovel(); vm.visible = false; camera.add(vm);
+vm.scale.setScalar(.9);
+const vmRest = { x: .25, y: -.36, z: -.42, rx: 1.12, ry: -.32, rz: .25 };
+let vmAnim = null;                                        // { kind, t, dur }
+
+/* ---- flying dirt clods: ballistic, bounce off walls, settle into the ground (or a cart) ---- */
+const clods = [];
+function throwClod(x, y, z, vx, vy, vz) { const m = new THREE.Mesh(clodG, clodM); m.position.set(x, y, z); O.add(m); clods.push({ m, vx, vy, vz, age: 0 }); }
+const ground2 = (x, z, y) => mine.active(x, z) && !mine.inHouse(x, z) ? mine.floorAt(x, z, y) : groundY(x, z);
+function updateClods(dt) {
+  for (let i = clods.length - 1; i >= 0; i--) {
+    const c = clods[i], p = c.m.position; c.age += dt;
+    c.vy -= 9.81 * dt; const k = Math.max(0, 1 - .15 * dt); c.vx *= k; c.vz *= k;      // gravity, light air drag
+    const nx = p.x + c.vx * dt, ny = p.y + c.vy * dt, nz = p.z + c.vz * dt;
+    if (mine.solidAt(nx, p.y, p.z) || mine.inHouse(nx, nz)) c.vx *= -.25; else p.x = nx;
+    if (mine.solidAt(p.x, p.y, nz) || mine.inHouse(p.x, nz)) c.vz *= -.25; else p.z = nz;
+    c.m.rotation.x += dt * 6; c.m.rotation.z += dt * 4;
+    if (c.fx) { if (c.age > .9) { O.remove(c.m); clods.splice(i, 1); continue; } p.y += c.vy * dt; continue; }
+    const cart = carts.find(k => k.catches(p.x, ny, p.z));
+    if (cart) { cart.add(1); O.remove(c.m); clods.splice(i, 1); continue; }
+    const f = ground2(p.x, p.z, p.y);
+    if (ny <= f || c.age > 6) {
+      if (!mine.inHouse(p.x, p.z) && mine.canDig(mine.ci(p.x), mine.ci(p.z)) === null) { mine.deposit(mine.ci(p.x), mine.ci(p.z), p.y + .05); mine.flush(); burst(.22, 'lowpass', 300, 1, .35, .005); }
+      O.remove(c.m); clods.splice(i, 1); continue;
+    }
+    if (mine.ceilAt(p.x, p.z, p.y) < ny + .1) c.vy = -Math.abs(c.vy) * .3; else p.y = ny;
+  }
+}
+
+/* ---- mine carts: oak tub on iron wheels, rolls with gravity, pushed by hand, tips its load ---- */
+const carts = [];
+const plankT = (() => { const c = cv(32, 32), g = ctx(c); for (let y = 0; y < 32; y++) { const b = (y >> 3), base = 120 + b * 9; for (let x = 0; x < 32; x++) { const v = base + Math.sin(x * .6 + b * 2) * 10 + R() * 18 - (y % 8 === 7 ? 50 : 0) | 0; g.fillStyle = 'rgb(' + v + ',' + (v * .78 | 0) + ',' + (v * .55 | 0) + ')'; g.fillRect(x, y, 1, 1); } } const t = new THREE.CanvasTexture(c); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.encoding = THREE.sRGBEncoding; return t; })();
+const plankM = snap(MS({ map: plankT, roughness: .9 }));
+const CAP = 6, CART_L = 1.1, CART_W = .72;
+function makeCart(x, z, yaw) {
+  const g = new THREE.Group(); g.rotation.order = 'YXZ'; world.add(g);
+  const tub = new THREE.Group(); tub.position.set(0, .26, .5); g.add(tub);            // pivots on the front axle when tipping
+  const T0 = new THREE.Group(); T0.position.z = -.5; tub.add(T0);
+  box(CART_W - .08, .05, CART_L - .1, plankM, 0, 0, 0, { p: T0 });                    // floor
+  for (const s of [-1, 1]) { box(.05, .5, CART_L, plankM, s * CART_W / 2, 0, 0, { p: T0, rz: -s * .12 }); box(CART_W + .02, .5, .05, plankM, 0, 0, s * CART_L / 2, { p: T0, rx: s * .12 }); }
+  for (const y of [.08, .42]) { box(CART_W + .1, .035, .02, ironM, 0, y, CART_L / 2 + .03, { p: T0 }); box(CART_W + .1, .035, .02, ironM, 0, y, -CART_L / 2 - .03, { p: T0 }); for (const s of [-1, 1]) box(.02, .035, CART_L + .06, ironM, s * (CART_W / 2 + .05 + y * .12), y, 0, { p: T0 }); }
+  const fill = new THREE.Mesh(new THREE.BoxGeometry(CART_W - .1, 1, CART_L - .12, 3, 1, 3), clodM);
+  { const p = fill.geometry.attributes.position; for (let i = 0; i < p.count; i++) if (p.getY(i) > .4) p.setY(i, .5 + (noise2D(p.getX(i) * 9, p.getZ(i) * 9) - .5) * .5); fill.geometry.translate(0, .5, 0); fill.geometry.computeVertexNormals(); }
+  fill.position.y = .05; fill.visible = false; T0.add(fill);
+  const wheels = [];
+  for (const [wx, wz] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
+    const w = cyl(.15, .15, .06, ironM, wx * (CART_W / 2 + .04), .15, wz * .36, { p: g, c: true, rz: PI / 2, seg: 8 });
+    cyl(.05, .05, .07, steelM, wx * (CART_W / 2 + .045), .15, wz * .36, { p: g, c: true, rz: PI / 2, seg: 6 });
+    wheels.push(w);
+  }
+  for (const wz of [-.36, .36]) cyl(.022, .022, CART_W + .1, ironM, 0, .15, wz, { p: g, c: true, rz: PI / 2, seg: 5 });
+  box(.05, .05, .5, ironM, -.28, .55, -.75, { p: g, c: true, rx: -.5 }); box(.05, .05, .5, ironM, .28, .55, -.75, { p: g, c: true, rx: -.5 });
+  cyl(.025, .025, .62, woodShM, 0, .66, -.97, { p: g, c: true, rz: PI / 2, seg: 6 });  // push handle
+  const k = { g, tub, fill, wheels, x, z, y: mine.ground(x, z, 50), yaw, v: 0, vy: 0, load: 0, held: false, tip: 0, tipping: false, spin: 0 };
+  k.add = n => { k.load = Math.min(CAP, k.load + n); k.fill.visible = k.load > 0; k.fill.scale.y = .08 * k.load; burst(.18, 'lowpass', 380, 1, .3, .004); hud(); };
+  k.catches = (px, py, pz) => {                       // is a point inside the open tub?
+    const dx = px - k.x, dz = pz - k.z, s = Math.sin(k.yaw), c = Math.cos(k.yaw), lx = dx * c - dz * s, lz = dx * s + dz * c;
+    return !k.tipping && Math.abs(lx) < CART_W / 2 - .03 && Math.abs(lz) < CART_L / 2 - .03 && py > k.y + .25 && py < k.y + .9;
+  };
+  act(g, () => k.held ? 'Let go of the cart' : 'Grab the cart (' + k.load + '/' + CAP + ')', () => { k.held = !k.held; if (k.held) carts.forEach(o => { if (o !== k) o.held = false; }); sfx.click(); });
+  g.position.set(x, k.y, z); g.rotation.y = yaw;
+  carts.push(k); return k;
+}
+function tipCart(k) {
+  if (!k || k.tipping) return;
+  if (!k.load) { say('The cart is empty.'); return; }
+  k.tipping = true; k.tip = 0; k.held = false; sfx.creak();
+}
+function updateCarts(dt) {
+  for (const k of carts) {
+    /* mass: oak tub ~90 kg + 0.125 m³ of soil per unit at ~1500 kg/m³ */
+    const mass = 90 + k.load * 190, fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
+    const hf = mine.ground(k.x + fx * .4, k.z + fz * .4, k.y + .3), hb = mine.ground(k.x - fx * .4, k.z - fz * .4, k.y + .3);
+    const slope = Math.atan2(hf - hb, .8);
+    let a = -9.81 * Math.sin(slope);                          // rolls downhill
+    if (k.held) {
+      const tx = player.x + Math.sin(player.yaw) * -1.15, tz = player.z + Math.cos(player.yaw) * -1.15;   // in front of you (camera looks down -Z)
+      const dx = tx - k.x, dz = tz - k.z, dist = Math.hypot(dx, dz);
+      if (dist > .05) { const want = Math.atan2(dx, dz), along = dx * fx + dz * fz; k.yaw += angWrap(want - k.yaw + (along < 0 ? PI : 0)) * Math.min(1, dt * 3); a += Math.max(-1, Math.min(1, along * 3)) * 520 / mass * 1.0 - k.v * 2.2; }   // ~520 N of push, damped
+      if (dist > 2) { k.held = false; say('The cart got away from you.'); }
+    }
+    const roll = .035 * 9.81, stat = .07;                     // rolling resistance; static friction holds it on gentle grades
+    if (Math.abs(k.v) < .05 && Math.abs(a) < stat * 9.81 && !k.held) { k.v = 0; a = 0; }
+    k.v += (a - Math.sign(k.v) * roll) * dt; k.v *= Math.max(0, 1 - .1 * dt);
+    if (k.tipping) k.v = 0;
+    const nx = k.x + fx * k.v * dt, nz = k.z + fz * k.v * dt;
+    /* wheels climb at most a few cm; walls, trees and the house stop it dead */
+    let ok = !mine.inHouse(nx, nz);
+    if (ok) for (const [ox, oz] of [[.45, .3], [-.45, .3], [.45, -.3], [-.45, -.3]]) {
+      const px = nx + fx * oz * 1.6 + fz * ox, pz = nz + fz * oz * 1.6 - fx * ox, f = mine.ground(px, pz, k.y + .25);
+      if (f > k.y + .2 || mine.ceilAt(px, pz, f + .05) - f < .95) { ok = false; break; }
+    }
+    if (ok) { const [cx, cz] = collide(nx, nz, .5); if (Math.hypot(cx - nx, cz - nz) > .01) ok = false; }
+    if (ok) { k.x = nx; k.z = nz; } else { if (Math.abs(k.v) > 1.5) burst(.15, 'lowpass', 160, 1, .4, .004); k.v = 0; }
+    const f = mine.ground(k.x, k.z, k.y + .25);
+    if (k.y > f + .02) { k.vy -= 9.81 * dt; k.y = Math.max(f, k.y + k.vy * dt); } else { k.y = f; k.vy = 0; }
+    k.spin += k.v * dt / .15; for (const w of k.wheels) w.rotation.x = k.spin;
+    k.g.position.set(k.x, k.y, k.z); k.g.rotation.y = k.yaw; k.g.rotation.x = -slope * .9;
+    if (k.tipping) {                                            // tip forward over the front axle, pour the soil out, settle back
+      k.tip += dt;
+      const t = k.tip, ang = t < .7 ? t / .7 * 1.75 : t < 1.6 ? 1.75 : Math.max(0, 1.75 - (t - 1.6) / .6 * 1.75);
+      k.tub.rotation.x = ang;
+      if (t > .5 && t < 1.5 && k.load > 0 && (t * 10 | 0) !== ((t - dt) * 10 | 0)) {
+        const lip = .62, px = k.x + fx * lip, pz = k.z + fz * lip;
+        throwClod(px + RR(-.2, .2) * fz, k.y + .45, pz - RR(-.2, .2) * fx, fx * RR(.6, 1.4), RR(.2, 1), fz * RR(.6, 1.4));
+        k.load--; k.fill.scale.y = .08 * Math.max(.01, k.load); if (!k.load) k.fill.visible = false; hud();
+      }
+      if (t > 2.2) { k.tipping = false; k.tub.rotation.x = 0; }
+    }
+  }
+}
+const angWrap = a => { while (a > PI) a -= 2 * PI; while (a < -PI) a += 2 * PI; return a; };
+
+/* ---- actions ---- */
+const eyeV = new THREE.Vector3(), dirV3 = new THREE.Vector3();
+const hits = {};
+function useTool() {
+  if (inv.tool !== 'shovel' || vmAnim) return;
+  camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3);
+  if (inv.load) {
+    /* loaded: tip it into a cart you're looking at, place it on the face you aim at, or throw it */
+    const cart = carts.find(k => { for (let t = .3; t < 2.6; t += .1) if (k.catches(eyeV.x + dirV3.x * t, eyeV.y + dirV3.y * t, eyeV.z + dirV3.z * t) || Math.hypot(eyeV.x + dirV3.x * t - k.x, eyeV.z + dirV3.z * t - k.z) < .45 && eyeV.y + dirV3.y * t < k.y + 1) return true; return false; });
+    inv.load = 0; vm.userData.heap.visible = false; vmAnim = { kind: 'throw', t: 0, dur: .45 };
+    if (cart) { if (cart.load >= CAP) { say('The cart is full.'); inv.load = 1; vm.userData.heap.visible = true; return; } cart.add(1); hud(); return; }
+    const h = mine.pick(eyeV, dirV3, 2.6), bx = eyeV.x + dirV3.x * .7, by = eyeV.y - .25 + dirV3.y * .7, bz = eyeV.z + dirV3.z * .7;
+    if (h) throwClod(bx, by, bz, (h.px - bx) * 2.2, (h.py - by) * 2.2 + 2.2, (h.pz - bz) * 2.2);       // lob it onto the spot
+    else throwClod(bx, by, bz, dirV3.x * 5.5, dirV3.y * 5.5 + 2.4, dirV3.z * 5.5);                       // fling it
+    burst(.12, 'bandpass', 700, 1, .2, .005); hud(); return;
+  }
+  const h = mine.pick(eyeV, dirV3, 2.4);
+  vmAnim = { kind: 'dig', t: 0, dur: .38 };
+  if (!h) return;
+  const why = mine.canDig(h.ix, h.iz); if (why) { say(why); burst(.08, 'bandpass', 2600, 5, .2); return; }
+  const k = h.ix + ',' + h.iy + ',' + h.iz, need = mine.hardness(h.ix, h.iy, h.iz);
+  hits[k] = (hits[k] || 0) + 1;
+  burst(.16, 'lowpass', 260 + need * 40, 1.2, .45, .004);
+  for (let i = 0; i < 3; i++) { const m = new THREE.Mesh(clodG, clodM); m.scale.setScalar(.25); m.position.set(h.x, h.y, h.z); O.add(m); clods.push({ m, vx: RR(-1, 1) - dirV3.x, vy: RR(1, 2.2), vz: RR(-1, 1) - dirV3.z, age: 0, fx: true }); }  // spray (vanishes)
+  if (hits[k] < need) return;
+  delete hits[k];
+  mine.carve(h.ix, h.iz, h.iy); mine.dropLoose(mine.editCol(h.ix, h.iz)); mine.touch(h.ix, h.iz);
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) mine.settle(h.ix + dx, h.iz + dz, 0);   // loose spoil beside the hole slides in
+  mine.flush();
+  inv.load = 1; vm.userData.heap.visible = true; hud();
+}
+function buildCart() {
+  if (inv.logs < 3 || inv.sticks < 4) { say('A cart needs 3 logs and 4 sticks. You have ' + inv.logs + ' and ' + inv.sticks + '.'); return; }
+  const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw), x = player.x + fx * 1.7, z = player.z + fz * 1.7;
+  if (mine.inHouse(x, z)) { say('Not indoors.'); return; }
+  inv.logs -= 3; inv.sticks -= 4; makeCart(x, z, player.yaw + PI); sfx.creak(); say('You lash the logs into a tub and peg the wheels on. A mine cart.'); hud();
+}
+function toolSwitch() {
+  if (!inv.shovel) { say('You have nothing to hold.'); return; }
+  inv.tool = inv.tool === 'shovel' ? 'hands' : 'shovel'; vm.visible = inv.tool === 'shovel'; sfx.click(); hud();
+}
+function tipNearest() {
+  let best = null, bd = 2.8; for (const k of carts) { const d = Math.hypot(k.x - player.x, k.z - player.z); if (d < bd) { bd = d; best = k; } }
+  if (best) tipCart(best); else say('No cart within reach.');
+}
+function hud() {
+  const e = $('inv'); if (!e) return;
+  e.textContent = 'Logs ' + inv.logs + '/4 · Sticks ' + inv.sticks + (inv.shovel ? ' · ' + (inv.tool === 'shovel' ? 'Shovel' + (inv.load ? ' (full)' : '') : 'Hands') : '');
+}
+function updateViewmodel(dt) {
+  if (!vm.visible) return;
+  const b = Math.sin(player.bob) * .012, s = Math.sin(player.bob * .5) * .01;
+  let ox = 0, oy = 0, oz = 0, orx = 0;
+  if (vmAnim) {
+    vmAnim.t += dt; const t = Math.min(1, vmAnim.t / vmAnim.dur), e = Math.sin(t * PI);
+    if (vmAnim.kind === 'dig') { oz = -.32 * e; oy = -.1 * e; orx = .25 * e; }        // thrust down and in
+    else { oy = .14 * e; oz = -.18 * e; orx = -.9 * e; }                                 // flick up and out
+    if (t >= 1) vmAnim = null;
+  }
+  vm.position.set(vmRest.x + s, vmRest.y + b + oy, vmRest.z + oz); vm.rotation.set(vmRest.rx + orx, vmRest.ry, vmRest.rz);
+}
+function primary() { if (cine.on) { if (cine.t > 1) endCine(); return; } if (focus) focus.fn(); else useTool(); }
+
+/* ---- underground light: daylight fades as rock closes over you ---- */
+let under = 0;
+const fogDay = scene.fog.color.clone(), fogDeep = C('#0a0908');
+function updateUnder(dt) {
+  camera.getWorldPosition(eyeV);
+  under += (mine.cover(eyeV) - under) * Math.min(1, dt * 2);
+  hemi.intensity = .95 * (1 - .93 * under); sun.intensity = .55 * (1 - under);
+  scene.fog.color.copy(fogDay).lerp(fogDeep, under); if (!cine.on) scene.fog.density = .032 + under * .05;
+  snowfall.mat.visible = under < .5;
+}
+
+/* ================= opening shot: first time out of the front door ================= */
+const cine = { on: false, t: 0, done: false, from: new THREE.Vector3(), look: new THREE.Vector3() };
+function startCine() {
+  if (cine.done) return; cine.done = cine.on = true; cine.t = 0;
+  camera.getWorldPosition(cine.from); $('lbT').style.height = $('lbB').style.height = '11%';
+}
+function endCine() { cine.on = false; $('lbT').style.height = $('lbB').style.height = '0'; scene.fog.density = .032; }
+const ease = t => t * t * (3 - 2 * t);
+function cineCam(dt) {
+  cine.t += dt;
+  const H = new THREE.Vector3(4.5, 1.2, 3.5), t = cine.t, eye = new THREE.Vector3(player.x, player.fy + player.eye, player.z);
+  const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const a0 = Math.atan2(eye.z - H.z, eye.x - H.x);
+  const orbit = k => { const a = a0 + .35 + ease(k) * 3.9, r = 18 + 10 * Math.sin(k * PI), y = 16 - 5 * k; return new THREE.Vector3(H.x + Math.cos(a) * r, H.y + y, H.z + Math.sin(a) * r); };
+  let pos, look;
+  if (t < 3) { const k = ease(t / 3), A = orbit(0); pos = eye.clone().lerp(A, k); pos.y += Math.sin(k * PI) * 2; look = eye.clone().add(fwd.clone().multiplyScalar(6)).lerp(H, k); }
+  else if (t < 9) { const k = (t - 3) / 6; pos = orbit(k); look = H.clone().add(new THREE.Vector3(Math.sin(k * 5) * 3, 0, Math.cos(k * 4) * 3)); }
+  else { const k = ease(Math.min(1, (t - 9) / 2.6)), B = orbit(1); pos = B.lerp(eye, k); look = H.clone().lerp(eye.clone().add(new THREE.Vector3(-Math.sin(player.yaw) * Math.cos(player.pitch), Math.sin(player.pitch), -Math.cos(player.yaw) * Math.cos(player.pitch)).multiplyScalar(6)), k); }
+  scene.fog.density = .032 - .014 * Math.sin(Math.min(1, t / 11.6) * PI);   // the haze thins a little up high
+  camera.position.copy(pos); camera.lookAt(look);
+  if (t > 11.6) endCine();
+}
+addEventListener('keydown', e => {
+  if (!started || paused) return;
+  if (cine.on && cine.t > 1) { endCine(); return; }
+  if (e.code === 'KeyQ') toolSwitch();
+  if (e.code === 'KeyB') buildCart();
+  if (e.code === 'KeyR') tipNearest();
+});
+$('bTool').addEventListener('click', () => { if (!paused) toolSwitch(); });
+$('bTip').addEventListener('click', () => { if (!paused) tipNearest(); });
+$('bBuild').addEventListener('click', () => { if (!paused) buildCart(); });
+hud();
+
 /* ================= loop ================= */
 scene.updateMatrixWorld(true);
 doors.forEach(updDoorBox);
@@ -2707,7 +3228,7 @@ function update(dt) {
   if (keys.KeyD || keys.ArrowRight) s += 1; if (keys.KeyA || keys.ArrowLeft) s -= 1;
   f -= touch.my; s += touch.mx;
   const len = Math.hypot(f, s); if (len > 1) { f /= len; s /= len; }
-  const base = (player.crouch ? 1.1 : 2.2) * paceMul;
+  const base = (player.crouch ? 1.1 : 2.2) * paceMul * (1 - inv.logs * .07);   // logs are heavy
   const sp = (keys.ShiftLeft || keys.ShiftRight) && !player.crouch ? 3.8 * paceMul : base;
   const sy = Math.sin(player.yaw), cy = Math.cos(player.yaw);
   const tx = (-sy * f + cy * s) * sp, tz = (-cy * f - sy * s) * sp;
@@ -2715,12 +3236,20 @@ function update(dt) {
   let nx = player.x + player.vx * dt, nz = player.z + player.vz * dt;
   const rad = player.crouch ? .2 : .24;
   [nx, nz] = collide(nx, nz, rad); [nx, nz] = collide(nx, nz, rad);
+  /* dug ground: soil higher than a step is a wall, and you need headroom to stand (or crouch) */
+  const hgt = player.crouch ? 1.15 : 1.75;
+  const blocked = (x, z) => { for (const [ox, oz] of [[rad, rad], [-rad, rad], [rad, -rad], [-rad, -rad]]) { const px = x + ox, pz = z + oz; if (!mine.active(px, pz) || mine.inHouse(px, pz)) continue;
+    const f = mine.ground(px, pz, player.fy); if (f > player.fy + .45 || mine.ceilAt(px, pz, f + .05) - Math.max(f, player.fy) < hgt) return true; } return false; };
+  if (mine.edits && blocked(nx, nz)) { if (!blocked(nx, player.z)) nz = player.z; else if (!blocked(player.x, nz)) nx = player.x; else { nx = player.x; nz = player.z; } }
   const moved = Math.hypot(nx - player.x, nz - player.z);
   player.x = nx; player.z = nz;
-  player.gy = groundY(nx, nz);
+  player.gy = mine.ground(nx, nz, player.fy);
   streamWorld(nx, nz, false);
-  player.fy += (player.gy - player.fy) * Math.min(1, dt * 14);
-  if ((player.z > 7.6 || player.x < -.6 || player.x > 9.6 || player.z < -.6) && !window.__out) { window.__out = 1; say('Outside. Snow squeaks underfoot. The flat sits very still behind you.'); }
+  if (player.gy < player.fy - .3 || player.vy) {             // dropping into a hole: real gravity
+    player.vy = (player.vy || 0) - 9.81 * dt; player.fy += player.vy * dt;
+    if (player.fy <= player.gy) { if (player.vy < -6.5) { say('You land hard. Your knees ring.'); sfx.step(); } player.fy = player.gy; player.vy = 0; }
+  } else player.fy += (player.gy - player.fy) * Math.min(1, dt * 14);
+  if ((player.z > 7.6 || player.x < -.6 || player.x > 9.6 || player.z < -.6) && !window.__out) { window.__out = 1; startCine(); setTimeout(() => say('Outside. Snow squeaks underfoot. The flat sits very still behind you.'), 12000); }
   const before = Math.floor(player.bob / PI); player.bob += moved * (player.crouch ? 3.8 : 5.2);
   if (Math.floor(player.bob / PI) !== before) sfx.step();
   const targetEye = player.crouch ? 1.05 : 1.6;
@@ -2730,7 +3259,7 @@ function update(dt) {
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(.05, (now - last) / 1000); last = now; time += dt; frameN++;
-  if (started && !paused) { update(dt); wildlife.update(dt, time); }
+  if (started && !paused) { if (!cine.on) update(dt); wildlife.update(dt, time); updateCarts(dt); updateClods(dt); }
   const bobAmp = player.crouch ? .014 : .028;
   camera.position.set(player.x, player.fy + player.eye + Math.sin(player.bob) * bobAmp, player.z);
   camera.rotation.set(player.pitch, player.yaw, Math.sin(player.bob * .5) * (player.crouch ? .002 : .004));
@@ -2767,6 +3296,8 @@ function frame(now) {
   if (sayT > 0) { sayT -= dt; if (sayT <= 0) $('say').style.opacity = 0; }
   if (started && !paused && frameN % 4 === 0) scan();
 
+  if (cine.on) cineCam(dt);
+  updateViewmodel(dt); updateUnder(dt);
   sky.position.copy(camera.position);
   if (!paused) snowfall(dt, time, camera);
   if (started && !paused) snowAcc.value = Math.min(.9, snowAcc.value + dt / 540);   // ground whitens over ~8 minutes
