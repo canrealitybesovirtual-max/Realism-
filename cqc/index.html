@@ -9279,6 +9279,7 @@ function updateDoorsPre(now) {
       if (now < door.drive.until) { if (now >= (door.drive.from || 0)) { target = door.drive.target; k = door.drive.k; c = door.drive.c; mode = 'drive'; } }   // step 54: from = the lever is down
       else door.drive = null;
     }
+    if (mode === 'closer' && door.netT && now - door.netT < 0.5) { target = door.netA; k = 40; c = 10; mode = 'net'; }   // multiplayer: the other player moves this leaf (netDoorTx)
     // Step 24: a kicked leaf swings free (light damping) before the closer takes it back.
     if (mode === 'closer' && door.kickUntil > now) { target = (door.kickDir || 1) > 0 ? P.maxOpen : -P.maxBack; k = 0; c = CONFIG.kick.doorDamping; mode = 'kick'; }
     // Step 8.1: the closer's last stretch ignores spent brass, so a casing on the
@@ -9471,7 +9472,7 @@ function breachStrike() {
   if (door.holder) releaseDoor(door.holder);
   door.drive = null; door.pullUntil = 0;
   door.body.applyImpulseAtPoint({ x: D.x * imp, y: 0, z: D.z * imp }, { x: P.x, y: P.y, z: P.z }, true);
-  door.kickUntil = now + K.doorFree; door.kickDir = doorSide(door, _du.h.x, _du.h.z);
+  door.kickUntil = now + K.doorFree; door.kickDir = doorSide(door, _du.h.x, _du.h.z); door.netMine = now;
   const at = P.clone();
   P10.pending.push({ at: P10.time + 0.2, fn: () => enemiesHear(at) });
   kickSfx('door', P, BREACH.kind === 'gun' ? 0.8 : 0.65);
@@ -11209,7 +11210,7 @@ function netAttach(c) {
   c.on('error', () => {});
 }
 function netStart() {
-  NET.retry = 0; NET.sentB.clear(); NET.mine = null;              // his side may have lost your gun builds: send them again
+  NET.retry = 0; NET.sentB.clear(); NET.mine = null; NET.drRx = 0; NET.remSt = null; NET.ebAsk.clear();              // his side may have lost your gun builds: send them again
   setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
   if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
@@ -11330,7 +11331,7 @@ function netTx(dt) {
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: stream.frontier,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
-      ...netHandsTx(r, f, g), ...netGunTx(g) });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
+      ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
   } catch (e) { /* dropped */ }
 }
 // VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
@@ -11386,6 +11387,14 @@ function netRx(m) {
   else if (m.t === 'drop') netDropRx(m);
   else if (m.t === 'take') netTakeRx(m);
   else if (m.t === 'drest') netRestRx(m);
+  else if (m.t === 'nade') netNadeRx(m);
+  else if (m.t === 'nb') netNadeBoomRx(m);
+  else if (m.t === 'dr') netDoorRx(m);
+  else if (m.t === 'lt') netLootRx(m);
+  else if (m.t === 'edet') { if (NET.role === 'host') netDetainRx(m); }
+  else if (m.t === 'ebq') { if (NET.role === 'host') netBodyReqRx(m); }
+  else if (m.t === 'ebd') { if (NET.role === 'join') netBodyRx(m); }
+  else if (m.t === 'vsend') { if (NET.role === 'join') netVsEndRx(m); }
   else if (m.t === 'en') { if (NET.role === 'join') netEnRx(m); }
   else if (m.t === 'eh') { if (NET.role === 'host') netEhRx(m); }
   else if (m.t === 'es') { if (NET.role === 'join') netEsRx(m); }
@@ -11402,7 +11411,7 @@ function netRx(m) {
   else if (m.t === 'vs') { if (NET.role === 'join') netVsApply(m, 1); }
   else if (m.t === 'vsready') VS.otherReady = true;
   else if (m.t === 'vsgo') { if (NET.role === 'join') VS.goAt = performance.now() + 15000; }
-  else if (m.t === 'vsdead') { VS.score[0]++; netSay(`Got him. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
+  else if (m.t === 'vsdead') { if (VS.on && !VS.over) { VS.score[0]++; netSay(`Got him. You ${VS.score[0]} : ${VS.score[1]} them`, 3); } }
 }
 function netRemoteShot(m) {
   const r = stream.rooms.get(m.s); if (!r || !r.active) return;
@@ -11483,36 +11492,37 @@ function netEnTx(dt) {                                            // host, 15 Hz
     if (!e.lk) e.lk = Object.keys(ENEMY_LOADOUTS).find((k) => ENEMY_LOADOUTS[k] === e.w) || 'smg';
     let w = null;
     if (!e.dead && (e.engaged || e.watch)) { threatLocal(e, _nm.v); w = [+_nm.v.x.toFixed(2), +_nm.v.y.toFixed(2), +_nm.v.z.toFixed(2)]; }
-    L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w, +enemyFloorY(e).toFixed(3)]);   // last: the floor he stands on (a stairwell landing)
+    const st = e.downed ? 1 : e.surr ? (e.surr.det ? 3 : 2) : 0;    // 1 down alive, 2 hands up, 3 tied: his pose travels as bones
+    L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w, +enemyFloorY(e).toFixed(3),   // [10] the floor he stands on (a stairwell landing)
+      st, e.spec ? e.spec.kit | 0 : 0, st && !(e.dead && !e.downed) ? netPoseOf(e) : null, e.unarmed ? 1 : 0]);
   }
   try { NET.fast.send({ t: 'en', L }); } catch (er) { /* dropped */ }
 }
 function netEnRx(m) {                                             // joiner
   const now = performance.now(), seen = new Set();
   for (const a of m.L) {
-    const [id, slot, x, z, yw, cr, aim, dead, lk, w, fy] = a; seen.add(id);
+    const [id, slot, x, z, yw, cr, aim, dead, lk, w, fy, st = 0, kit = 0, pose = null, un = 0] = a; seen.add(id);
     const room = stream.rooms.get(slot);
     let e = NET.pup.get(id);
     if (e && (!ENEMY.list.includes(e) || e.room !== room)) { if (ENEMY.list.includes(e) && !e.dead) removeEnemy(e); NET.pup.delete(id); e = null; }
     if (!room || !room.active) continue;
     if (!e) {
-      if (dead) continue;
-      e = spawnEnemy(room, { gun: lk || 'smg', skill: 0, aggr: 0 }, 0, []); if (!e) continue;
-      e.puppet = id; e.ammo = 1e9; e.pos.set(x, z); e.yaw = yw;
-      if (room.enemies) { const i = room.enemies.indexOf(e); if (i >= 0) room.enemies.splice(i, 1); }
-      NET.pup.set(id, e);
+      if (dead && st !== 1) { netBodyAsk(id, a, room); continue; }   // dead before this room was built here: his body, where it lies on the host
+      e = netPupMake(room, id, lk, kit, x, z, yw); if (!e) continue;
     }
+    netPupState(e, st, pose, un, now);
     e.pupT = now; e.pupX = x; e.pupZ = z; e.pupYw = yw; e.crouchT = cr; e.aimT = aim;
     if (fy != null) e.stairY = fy;                                  // a man on a landing is drawn (and hit) there, not on the floor below
     if (w) { e.watch = e.watch || new THREE.Vector3(); e.watch.set(w[0], w[1], w[2]); } else e.watch = null;
     if (!dead) e.pupDead = 0; else if (!e.pupDead) e.pupDead = now;
     // Dead on the host: the 'ed' message (reliable) brings how he fell; this is only the fallback if it got lost.
-    if (dead && !e.dead && now - e.pupDead > 600) { try { enemyDie(e, 'spine', _nm.w.set(Math.sin(yw), 0, Math.cos(yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } }
+    if (dead && !e.dead && st !== 1 && now - e.pupDead > 600) { try { enemyDie(e, 'spine', _nm.w.set(Math.sin(yw), 0, Math.cos(yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } }
   }
   for (const [id, e] of NET.pup) if (!seen.has(id) && now - (e.pupT || 0) > 1500) { if (ENEMY.list.includes(e) && !e.dead) removeEnemy(e); NET.pup.delete(id); }
 }
 function netPupPose(e, dt, now) {                                 // joiner: ease toward the host's copy, then pose
   if (e.dead) return;
+  if (e.pupSt && netPupBones(e, dt)) return;                      // down, hands up, tied: the host's bones
   const k = 1 - Math.exp(-dt * 12), px = e.pos.x, pz = e.pos.y;
   if (e.pupX !== undefined) { e.pos.x += (e.pupX - e.pos.x) * k; e.pos.y += (e.pupZ - e.pos.y) * k; e.yaw += Math.atan2(Math.sin(e.pupYw - e.yaw), Math.cos(e.pupYw - e.yaw)) * k; }
   e.speed = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
@@ -11605,18 +11615,29 @@ function netExRx(m) {                                             // joiner: the
   netPupWound(e, h, P, NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), m.E || 1);
 }
 // Host: a man died (or went down): the joiner's copy falls the same way (part, direction, point, push). by = who scored it.
-function netEnDieTx(e, seg, dir, P, imp) {
-  if (!netCoop() || NET.role !== 'host' || !e.nid || e.netDieSent) return;
-  e.netDieSent = true; e.netKill = !!NET.ehFrom;
+function netEnDieTx(e, seg, dir, P, imp, down = false) {
+  if (!netCoop() || NET.role !== 'host' || !e.nid || e.netDieSent || (down && e.netDownSent)) return;
+  if (down) e.netDownSent = true; else e.netDieSent = true;
+  if (down || !e.netDownSent) e.netKill = !!NET.ehFrom;            // the kill was scored when he went down
   const r = e.room, f = rF(r), pp = P || e.root.position;
-  netSendRel({ t: 'ed', i: e.nid, seg: seg || 'spine', d: dir ? [dir.x * f, dir.y, dir.z * f] : [0, 0, 0], p: [rLX(r, pp.x), pp.y - r.origin.y, rLZ(r, pp.z)], k: +(imp || 1).toFixed(3), by: NET.ehFrom ? 'join' : 'host', kp: e.killPart || '' });
+  netSendRel({ t: 'ed', i: e.nid, seg: seg || 'spine', d: dir ? [dir.x * f, dir.y, dir.z * f] : [0, 0, 0], p: [rLX(r, pp.x), pp.y - r.origin.y, rLZ(r, pp.z)], k: +(imp || 1).toFixed(3), by: NET.ehFrom ? 'join' : 'host', kp: e.killPart || '', dn: down ? 1 : 0, ex: e.downed ? 1 : 0 });
 }
 function netEdRx(m) {
   const e = NET.pup.get(m.i); if (!e || e.dead || !e.room || !e.room.active) return;
   const r = e.room, f = rF(r), d = new THREE.Vector3(m.d[0] * f, m.d[1], m.d[2] * f);
   if (d.lengthSq() < 1e-6) d.set(Math.sin(e.yaw), 0, Math.cos(e.yaw)); d.normalize();
-  e.pupMine = m.by === 'join'; e.killPart = m.kp || null;
-  try { enemyDie(e, e.B[m.seg] ? m.seg : 'spine', d, new THREE.Vector3(rWX(r, m.p[0]), r.origin.y + m.p[1], rWZ(r, m.p[2])), m.k || 1); } catch (er) { /* fall */ }
+  (r.netBodies || (r.netBodies = new Set())).add(m.i);
+  if (m.dn) {                                                       // down alive on the host: the copy goes down with him (his bones, 'en'), shootable
+    if (e.pupDnRx) return;
+    e.pupDnRx = true; e.pupMine = m.by === 'join'; e.killPart = m.kp || null; e.pupSt = 1;
+    enemyDropGun(e, d);
+    try { voxGrunt(e, 0.85, true); loopEnemyDied(e); } catch (er) { /* score */ }   // the kill counts now (his), as it does on the host
+    return;
+  }
+  if (e.pupSt === 1 || m.ex) e.downed = { t: 0, dur: 1 };           // finished on the floor: limp where he lies, no second score
+  else { e.pupMine = m.by === 'join'; e.killPart = m.kp || null; }
+  e.pupSt = 0;
+  try { enemyDie(e, e.B[m.seg] ? m.seg : 'spine', d, new THREE.Vector3(rWX(r, m.p[0]), r.origin.y + m.p[1], rWZ(r, m.p[2])), m.k || 1); } catch (er) { e.downed = null; /* fall */ }
 }
 // Host: a man fired: the joiner plays it from his copy.
 function netEnShot(e, o, d) {
@@ -11661,7 +11682,7 @@ function netVsApply(m, side) {
   _facing.length = Math.min(_facing.length, m.B);
   anchors.length = Math.min(anchors.length, m.B); anchorY.length = Math.min(anchorY.length, m.B);
   stream.revSafe = m.B + 3;                                        // the joiner's safe room opens back into B+2 (makeRoom)
-  Object.assign(VS, { on: true, B: m.B, side, my: side ? m.B + 3 : m.B, lock: true, goAt: 0, ready: false, otherReady: false, placed: false, score: [0, 0], wasDead: false, last: -1 });
+  Object.assign(VS, { on: true, B: m.B, side, my: side ? m.B + 3 : m.B, lock: true, goAt: 0, ready: false, otherReady: false, placed: false, score: [0, 0], wasDead: false, last: -1, over: false, endAt: 0, minSaid: -1, again: 0 });
   netSay(`Versus: building the map (${m.k.map((x) => x === 'stair' ? 'stairwell' : 'room').join(' + ')} between you)`, 4);
 }
 // The streaming plan in a versus match: your safe room, the two between, his safe room. Nothing else.
@@ -11677,8 +11698,9 @@ function netVsTick() {
     if (left !== VS.last) { VS.last = left; if (left > 0) netSay(left === 15 ? 'Versus: 15 s to gear up. Doors open at 0' : `${left}`, 1); }
     if (left <= 0) { VS.lock = false; netSay('GO', 2); }
   }
-  if (playerState.dead && !VS.wasDead) { VS.score[1]++; netSendRel({ t: 'vsdead' }); netSay(`Down. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
+  if (playerState.dead && !VS.wasDead && !VS.over) { VS.score[1]++; netSendRel({ t: 'vsdead' }); netSay(`Down. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
   VS.wasDead = playerState.dead;
+  netVsClock();                                                    // the round clock, the match end, the rematch
 }
 function netVsRespawn() {
   const r = stream.rooms.get(VS.my); if (!r || !r.active || r.kind !== 'safe') return false;
@@ -11717,6 +11739,8 @@ function netTick(dt, now) {
   if (quiet > NET.lost) { netDropped('lost the other player'); return; }
   if (quiet > 4000 && !NET.waitSaid) { NET.waitSaid = true; netSay('Multiplayer: waiting for the other player (loading?)', 3); } else if (quiet < 1000) NET.waitSaid = false;
   netRestTick();                                                   // dropped items: his not built yet, where yours came to rest
+  netDoorTx(dt);                                                   // doors you move: his leaf follows
+  { const L = NET.buf[NET.buf.length - 1]; if (L && L.st) { const R = NET.remSt || (NET.remSt = { L: 1, sp: 0, crouch: false }); R.L = L.st[0]; R.sp = L.st[1]; R.crouch = !!L.st[2]; } }   // his stealth state
   if (NET.off == null) return;
   if (NET.mode === 'coop' && NET.role === 'host') netEnTx(dt);
   netVoiceTick();
@@ -12023,10 +12047,11 @@ function netLaserCast(e, g, S, L) {
 }
 // --- drops ---
 const netRoomQ = (r, q) => { if (rF(r) < 0) q.premultiply(_nhY); return q; };   // world <-> room-local turn (a turned room is half a turn)
-function netDropTx(p, vel) {
+function netDropTx(p, vel, room = null) {
   if (!netLive() || !p || !p.item || p.removing) return;
-  const it = p.item; if (it.kind !== 'gun' && it.kind !== 'mag') return;
-  const r = stream.current; if (!r) return;
+  const it = p.item; if (it.kind === 'nade') { netNadeTx(p, vel, room); return; }   // a live grenade: its own message (fuse, the blast)
+  if (it.kind !== 'gun' && it.kind !== 'mag') return;
+  const r = room || stream.current; if (!r) return;
   const f = rF(r), rd = (x) => +x.toFixed(4);
   p.root.updateMatrixWorld(true);
   const P = p.root.position, Q = netRoomQ(r, _nb.q.copy(p.root.quaternion)), w = p.body.angvel();
@@ -12106,6 +12131,231 @@ function netRestRx(m) {
   p.root.position.copy(_nb.o); p.root.quaternion.copy(_nb.q);
 }
 if (/[?&]dev\b/.test(QS)) Object.assign(window.__cqcNet, { netGunBuild, netGunTx, netBuildGun, netDisp, netDropTx, netDropRx, netTakeTx, netTakeRx, netAvLasers, netAvLight, netSample, spot: () => NET_SPOT });
+// --- multiplayer 2: grenades, men down / surrendered / dead, doors, loot, stealth, versus rounds ------------------------
+// Grenades: a live grenade you let go of (thrown, dropped, a man's throw on the host) goes to the other side as 'nade'
+// (room-local pose, speed, spin, fuse left). His copy flies with its own physics and waits: when yours goes off you send
+// 'nb' (where it went off) and his copy goes off there (its own fuse + 0.6 s only if 'nb' never comes). Each side's blast
+// hurts only what that side owns: you (both sides), the host's men (the host); the other player's body and copies of the
+// host's men are skipped (fragBlast, flashBlast, enemyShot with FRAG_D). Picked up (itemGrab: 'take'), the copy is yours.
+// Men: a man down alive, with his hands up or tied is posed on the host and his DRIVER bones travel ('en': 19 turns, the
+// pelvis, the root), so the copy lies, crawls and kneels as he does and its capsules are where his are. A man dead before
+// the joiner built his room: 'ebq' asks for the body, 'ebd' gives every ragdoll part (room-local) and the loot left.
+// Doors: the side moving a leaf (hand, lever, kick, breach) sends its angle 15 times a second ('dr'); the host also sends any
+// leaf that moves on its own (closer, blasts); the other side drives its leaf there with the motor.
+const _npb = { q: new THREE.Quaternion(), v: new THREE.Vector3() };
+NET.ebAsk = new Map(); NET.drN = 0; NET.drRx = 0; NET.drAcc = 0; NET.remSt = null;
+function netStTx() {
+  if (NET.mode !== 'coop' || NET.role !== 'join') return {};
+  const S = stealthState();
+  return { st: [+(S.L || 0).toFixed(2), +(S.sp || 0).toFixed(1), S.crouch ? 1 : 0] };
+}
+function netPoseOf(e) {
+  const B = e.B, r = e.root, f3 = (x) => +x.toFixed(3);
+  const a = [f3(r.position.y), f3(r.rotation.y), f3(B.pelvis.position.x), f3(B.pelvis.position.y), f3(B.pelvis.position.z), e.skin ? +(e.skin.curl || 0).toFixed(2) : 0];
+  for (const k of DRIVE_ORDER) { const q = B[k].quaternion, sg = q.w < 0 ? -1 : 1; a.push(f3(q.x * sg), f3(q.y * sg), f3(q.z * sg)); }
+  return a;
+}
+function netPupMake(room, id, lk, kit, x, z, yw) {
+  const e = spawnEnemy(room, { gun: lk || 'smg', skill: 0, aggr: 0, kit: kit | 0 }, 0, []); if (!e) return null;
+  e.puppet = id; e.ammo = 1e9; e.pos.set(x, z); e.yaw = yw;
+  if (room.enemies) { const i = room.enemies.indexOf(e); if (i >= 0) room.enemies.splice(i, 1); }
+  NET.pup.set(id, e);
+  return e;
+}
+// The copy's state from 'en': down / hands up / tied, his pose, his gun gone or back.
+function netPupState(e, st, pose, un, now) {
+  if (pose) { e.pupPose = pose; e.pupPoseAt = now; }
+  const was = e.pupSt || 0;
+  if (st === 1) e.pupSt = 1;                                        // ('ed' dn scores it; this is the state if that is still on its way)
+  else if (st >= 2) e.pupSt = st;
+  else if (was >= 2) { e.pupSt = 0; e.pupPose = null; e.pupPosed = false; }   // he went for his gun: back in the fight
+  if ((un || st >= 1) && !e.unarmed) enemyDropGun(e, _npb.v.set(0, 0, 0));
+  else if (!un && !st && e.unarmed && e.gun && e.gun.root) { e.root.add(e.gun.root); e.unarmed = false; }
+}
+function netPupBones(e, dt) {
+  const P = e.pupPose; if (!P || P.length < 6 + DRIVE_ORDER.length * 3) return false;
+  const snap = !e.pupPosed; e.pupPosed = true;
+  const k = snap ? 1 : 1 - Math.exp(-dt * 14), B = e.B, r = e.root;
+  if (e.pupX !== undefined) { e.pos.x += (e.pupX - e.pos.x) * k; e.pos.y += (e.pupZ - e.pos.y) * k; }
+  e.speed = 0; e.engaged = false; e.los = false; e.state = 'idle';
+  r.position.set(e.pos.x, r.position.y + (P[0] - r.position.y) * k, e.pos.y);
+  r.rotation.set(0, r.rotation.y + Math.atan2(Math.sin(P[1] - r.rotation.y), Math.cos(P[1] - r.rotation.y)) * k, 0);
+  const pv = B.pelvis.position; pv.x += (P[2] - pv.x) * k; pv.y += (P[3] - pv.y) * k; pv.z += (P[4] - pv.z) * k;
+  for (let i = 0; i < DRIVE_ORDER.length; i++) {
+    const x = P[6 + i * 3], y = P[7 + i * 3], z = P[8 + i * 3];
+    _npb.q.set(x, y, z, Math.sqrt(Math.max(0, 1 - x * x - y * y - z * z)));
+    const b = B[DRIVE_ORDER[i]]; if (snap) b.quaternion.copy(_npb.q); else b.quaternion.slerp(_npb.q, k);
+  }
+  if (e.skin && Math.abs((e.skin.curl || 0) - P[5]) > 0.02) enemyCurl(e, P[5]);
+  enemySkinSync(e);
+  return true;
+}
+// --- bodies from before you came ---
+function netBodyAsk(id, a, room) {
+  if (room.netBodies && room.netBodies.has(id)) return;
+  const t = performance.now(), A = NET.ebAsk.get(id);
+  if (A && (t - A.at < 4000 || A.n >= 3)) return;
+  NET.ebAsk.set(id, { at: t, n: (A ? A.n : 0) + 1 });
+  if (NET.ebAsk.size > 64) NET.ebAsk.delete(NET.ebAsk.keys().next().value);
+  netSendRel({ t: 'ebq', i: id });
+}
+function netBodyReqRx(m) {
+  const e = ENEMY.list.find((x) => x.nid === m.i);
+  if (!e || !e.dead || e.downed || !e.rag || !e.room || !e.room.active) return;
+  const r = e.room, rd = (x) => +x.toFixed(3), P = [];
+  for (const q of e.rag) {
+    const t = q.body.translation(), o = q.body.rotation();
+    netRoomQ(r, _npb.q.set(o.x, o.y, o.z, o.w));
+    P.push([q.seg, rd(rLX(r, t.x)), rd(t.y - r.origin.y), rd(rLZ(r, t.z)), rd(_npb.q.x), rd(_npb.q.y), rd(_npb.q.z), rd(_npb.q.w)]);
+  }
+  netSendRel({ t: 'ebd', i: e.nid, s: r.slot, P, l: e.loot | 0, dt: e.dropType || null, lk: e.lk || 'smg', kit: e.spec ? e.spec.kit | 0 : 0, x: e.pos.x, z: e.pos.y, yw: e.yaw });
+  for (const p of DROP.list) if (p.inWorld && !p.removing && p.spawnRoom === r && !p.holders.length) netDropTx(p, _npb.v.set(0, 0, 0), r);   // his gun on the floor too
+}
+function netBodyRx(m) {
+  const r = stream.rooms.get(m.s); if (!r || !r.active || (r.netBodies && r.netBodies.has(m.i))) return;
+  const old = NET.pup.get(m.i); if (old && ENEMY.list.includes(old)) return;
+  const e = netPupMake(r, m.i, m.lk, m.kit, m.x, m.z, m.yw); if (!e) return;
+  (r.netBodies || (r.netBodies = new Set())).add(m.i);
+  enemyDropGun(e, _npb.v.set(0, 0, 0));
+  e.root.position.set(m.x, enemyFloorY(e), m.z); e.root.rotation.set(0, m.yw, 0);
+  enemyPose(e, 0.016, wnow());
+  e.downed = { t: 0, dur: 1 }; e.killPart = null;                 // limp, silent, no score (enemyDie's down path)
+  try { enemyDie(e, 'spine', _npb.v.set(0, -1, 0), e.B.spine.getWorldPosition(new THREE.Vector3()), 0); } catch (er) { e.downed = null; return; }
+  for (const a of m.P || []) {
+    const q = e.rag && e.rag.find((x) => x.seg === a[0]); if (!q) continue;
+    netRoomQ(r, _npb.q.set(a[4], a[5], a[6], a[7]).normalize());
+    q.body.setTranslation({ x: rWX(r, a[1]), y: r.origin.y + a[2], z: rWZ(r, a[3]) }, true);
+    q.body.setRotation({ x: _npb.q.x, y: _npb.q.y, z: _npb.q.z, w: _npb.q.w }, true);
+    q.body.setLinvel({ x: 0, y: 0, z: 0 }, true); q.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    try { q.body.sleep(); } catch (er) { /* awake */ }
+  }
+  e.loot = m.l | 0; if (m.dt && WEAPON_DEFS[m.dt]) e.dropType = m.dt;
+}
+// --- loot, detain ---
+function netLootTx(e) { if (!netCoop() || !e) return; const id = e.puppet || e.nid; if (id) netSendRel({ t: 'lt', i: id, n: e.loot | 0 }); }
+function netLootRx(m) {
+  const e = NET.role === 'host' ? ENEMY.list.find((x) => x.nid === m.i) : NET.pup.get(m.i);
+  if (e && e.dead) e.loot = Math.min(e.loot | 0, m.n | 0);
+}
+function netDetainRx(m) {                                           // host: the joiner tied one of your men
+  const e = ENEMY.list.find((x) => x.nid === m.i);
+  if (!e || e.puppet || !surrDetainable(e)) return;
+  const S = e.surr; S.det = true; S.kneel = true; S.detK = 0; SURR.stat.det++;
+  try { surrZip(e); surrCall(e, 'det'); } catch (er) { /* no sound */ }
+}
+// Host: the joiner's bore line, so a man may give up to him too (surrFrame).
+function netSurrBore() {
+  if (!netCoop() || NET.role !== 'host' || !NET.remOk || NET.remDead || SURR.n >= SURR.guns.length || !NET.remRoom) return;
+  const L = NET.buf[NET.buf.length - 1]; if (!L || !L.g) return;
+  const s = SURR.guns[SURR.n], H = NET.av && NET.av.netH, f = rF(NET.remRoom);
+  if (H && H.hasP && H.hasQ) { s.o.copy(H.P); s.d.set(0, 0, -1).applyQuaternion(H.q); }
+  else { const cp = Math.cos(L.p); s.o.copy(NET.remW); s.o.y -= 0.12; s.d.set(-Math.sin(L.yw) * cp * f, Math.sin(L.p), -Math.cos(L.yw) * cp * f); }
+  s.h = NET.remW; SURR.n++;
+}
+// --- grenades ---
+function netNadeTx(p, vel, room = null) {
+  if (!netLive() || !p || !p.item || p.item.kind !== 'nade' || p.removing || p.item.gone) return;
+  const it = p.item; if (!it.armed && it.pin) return;              // a spare, pin in: not shared
+  if (p.netShared && p.netId) { netSendRel({ t: 'take', id: p.netId }); NET.items.delete(p.netId); }   // his copy you threw back: his goes, a new one flies
+  p.root.updateMatrixWorld(true);
+  const P = p.root.position, r = room || roomContaining(P.x, P.z, 0.3, P.y) || p.spawnRoom || stream.current; if (!r) return;
+  const f = rF(r), rd = (x) => +x.toFixed(4), Q = netRoomQ(r, _npb.q.copy(p.root.quaternion)), w = p.body.angvel();
+  p.netId = (NET.role === 'host' ? 'hn' : 'jn') + (++NET.itemSeq) + '-' + (Math.random() * 1e6 | 0).toString(36);
+  p.netShared = true; it.netWait = false; it.netRem = false; NET.items.set(p.netId, p);
+  netSendRel({ t: 'nade', id: p.netId, ty: it.type, s: r.slot, o: [rd(rLX(r, P.x)), rd(P.y - r.origin.y), rd(rLZ(r, P.z))], q: [rd(Q.x), rd(Q.y), rd(Q.z), rd(Q.w)],
+    v: [rd(vel.x * f), rd(vel.y), rd(vel.z * f)], w: [rd(w.x * f), rd(w.y), rd(w.z * f)], fz: it.armed ? +it.fuseT.toFixed(3) : -1, en: it.byEnemy ? 1 : 0 });
+}
+function netNadeRx(m) {
+  const r = stream.rooms.get(m.s);
+  if (!r || !r.active || !NADE.ready || !NADE_DEFS[m.ty] || NET.items.has(m.id)) return;   // his room not built here: the blast ('nb') still comes
+  let p = null; try { p = createNade(m.ty); } catch (e) { return; }
+  const it = p.item, f = rF(r);
+  it.pin = false; if (it.pinG.parent) it.pinG.parent.remove(it.pinG);
+  it.spoon = false; if (it.spoonG.parent) it.spoonG.parent.remove(it.spoonG);
+  it.armed = true; it.fuseT = m.fz >= 0 ? m.fz : NADE_DEFS[m.ty].fuse;
+  it.netWait = true; it.netRem = true; it.byEnemy = !!m.en;
+  _nb.o.set(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2]));
+  netRoomQ(r, _nb.q.set(m.q[0], m.q[1], m.q[2], m.q[3]).normalize());
+  itemToWorld(p, _nb.o, _nb.q, r);
+  p.body.setLinvel({ x: m.v[0] * f, y: m.v[1], z: m.v[2] * f }, true);
+  p.body.setAngvel({ x: m.w[0] * f, y: m.w[1], z: m.w[2] * f }, true);
+  p.root.visible = !!r.visible || r === stream.current;
+  p.netId = m.id; p.netShared = true; NET.items.set(m.id, p);
+  if (m.en) { headWorld(NET._h); if (NET._h.distanceTo(_nb.o) < 20) netSay(m.ty === 'frag' ? 'Grenade!' : 'Flashbang!', 1.5); }   // he shouted it on the host
+}
+// Your grenade goes off (nadeDetonate): the other side's copy goes off at the same point.
+function netNadeBoomTx(p, P) {
+  const it = p.item, id = p.netId;
+  if (!id) return;
+  NET.items.delete(id); p.netId = null;
+  if (!netLive() || (it.netWait && p.netShared)) return;          // a copy going off on its own fuse (his 'nb' never came): nothing to send
+  p.netShared = false;
+  const r = roomContaining(P.x, P.z, 0.3, P.y) || p.spawnRoom || stream.current; if (!r) return;
+  netSendRel({ t: 'nb', id, ty: it.type, s: r.slot, o: [+rLX(r, P.x).toFixed(4), +(P.y - r.origin.y).toFixed(4), +rLZ(r, P.z).toFixed(4)] });
+}
+function netNadeBoomRx(m) {
+  const r = stream.rooms.get(m.s), p = NET.items.get(m.id);
+  NET.items.delete(m.id);
+  if (!r || !r.active) { if (p && !p.removing) removeProp(p); return; }
+  const P = new THREE.Vector3(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2]));
+  if (p && p.item && !p.removing) {
+    if (p.item.gone) return;                                        // it went off here already
+    p.netId = null; p.netShared = false;
+    if (!p.holders.length) { p.body.setTranslation(P, true); p.root.position.copy(P); }   // in your hand: it goes off there
+    nadeDetonate(p);
+    return;
+  }
+  if (!NADE_DEFS[m.ty]) return;                                     // no copy here (his throw came before this room was built): the blast alone
+  dynresHint(40); bodyCamFxBlast(P);
+  const ehF = NET.ehFrom; if (netCoop() && NET.role === 'host') NET.ehFrom = true;
+  try { if (m.ty === 'frag') fragBlast(P, false); else flashBlast(P, false); } finally { NET.ehFrom = ehF; }
+}
+// --- doors ---
+function netDoorTx(dt) {
+  NET.drAcc += dt; if (NET.drAcc < 1 / 15 || !NET.fast || !NET.fast.open) return; NET.drAcc = 0;
+  const now = performance.now() / 1000, host = NET.role === 'host'; let L = null;
+  for (const door of doors) {
+    if (door.sec || !door.room || !door.room.active || !door.body) continue;
+    if (door.holder || door.mode === 'drive' || door.mode === 'kick' || now - (door.netMine || -9) < 1.5) door.netTxUntil = now + 0.6;   // you moved it
+    const remote = door.netT && now - door.netT < 0.5;
+    const moving = host && !remote && door.netLastA !== undefined && Math.abs(door.angle - door.netLastA) > 0.002;   // host: a leaf moving on its own (closer, a blast)
+    door.netLastA = door.angle;
+    if (now < (door.netTxUntil || 0) || moving) (L || (L = [])).push(door.room.slot, +door.angle.toFixed(3));
+  }
+  if (L) try { NET.fast.send({ t: 'dr', n: ++NET.drN, L }); } catch (e) { /* dropped */ }
+}
+function netDoorRx(m) {
+  if (!m.L || m.n <= NET.drRx) return;                              // unordered channel: an older one
+  NET.drRx = m.n;
+  const now = performance.now() / 1000;
+  for (let i = 0; i + 1 < m.L.length; i += 2) {
+    const r = stream.rooms.get(m.L[i]), door = r && r.active && r.door; if (!door || !door.body || door.sec) continue;
+    if (door.holder || now < (door.netTxUntil || 0)) continue;     // you have it: yours wins
+    door.netA = clamp(+m.L[i + 1] || 0, -CONFIG.doorPhys.maxBack, CONFIG.doorPhys.maxOpen); door.netT = now; door.body.wakeUp();
+  }
+}
+// --- versus: first to VS_RULES.kills, or the most kills when the clock runs out; the host's count settles it ---
+const VS_RULES = { kills: 5, time: 300, rematch: 15, says: [240, 180, 120, 60, 30, 10] };
+function netVsClock() {
+  if (!VS.on || VS.lock || !VS.goAt) return;
+  const now = performance.now();
+  if (!VS.endAt) VS.endAt = VS.goAt + VS_RULES.time * 1000;
+  if (VS.over) { if (NET.role === 'host' && VS.again && now >= VS.again) { VS.again = 0; netVsBegin(); } return; }
+  const left = Math.ceil((VS.endAt - now) / 1000);
+  for (const t of VS_RULES.says) if (left <= t && VS.minSaid !== t && (VS.minSaid < 0 || t < VS.minSaid)) { VS.minSaid = t; netSay(`${t >= 60 ? (t / 60) + ' min' : t + ' s'} left · you ${VS.score[0]} : ${VS.score[1]} them`, 2); break; }
+  if (NET.role !== 'host') return;
+  if (VS.score[0] >= VS_RULES.kills || VS.score[1] >= VS_RULES.kills || left <= 0) { const m = { t: 'vsend', h: VS.score[0], j: VS.score[1] }; netSendRel(m); netVsEndRx(m); }
+}
+function netVsEndRx(m) {
+  if (!VS.on || VS.over) return;
+  VS.over = true;
+  const me = NET.role === 'host' ? m.h | 0 : m.j | 0, him = NET.role === 'host' ? m.j | 0 : m.h | 0;
+  VS.score = [me, him];
+  netSay(`Match over: ${me > him ? 'you win' : me < him ? 'he wins' : 'a draw'}, ${me} : ${him}. Rematch in ${VS_RULES.rematch} s`, 8);
+  if (NET.role === 'host') VS.again = performance.now() + VS_RULES.rematch * 1000;
+}
+if (/[?&]dev\b/.test(QS)) Object.assign(window.__cqcNet, { netNadeTx, netNadeRx, netNadeBoomRx, netDoorTx, netDoorRx, netPoseOf, netPupBones, netBodyRx, netBodyReqRx, netVsEndRx, netVsClock, VS_RULES, ENEMY: () => ENEMY, stream: () => stream, doors: () => doors, props: () => props,
+  createNade, nadeDetonate, nadeSpoon, dropItem, surrStart, surrDetain, surrDetainDesk, enemyDown, enemyShot, lootDesk, ejectMag, enadeSpawn, netLootTx, operateDoor, rWX, rWZ, rLX, rLZ, nade: () => NADE, drop: () => DROP, hitbox: () => HITBOX, wnow: () => wnow() });
 function setExposure(v) { renderer.toneMappingExposure = clamp(v, 0.3, 2.5); ui.exp.textContent = renderer.toneMappingExposure.toFixed(2); }
 
 /* ============================================================================
@@ -15802,6 +16052,7 @@ function nadeThrowBack(p) {
   p.root.position.copy(_nd.o).addScaledVector(_nd.d, 0.45); p.root.position.y -= 0.12;
   _nv.copy(_nd.d).multiplyScalar(11); _nv.y += 2;
   dropItem(p, _nv);
+  netDropTx(p, _nv);                                    // multiplayer: his copy of it goes, a new one flies on his side
   toast('Threw it back');
 }
 
@@ -16114,9 +16365,11 @@ function nadeDetonate(p) {
   p.root.updateMatrixWorld(true);
   const P = new THREE.Vector3().setFromMatrixPosition(p.root.matrixWorld);
   const inHand = p.holders.length > 0;
+  netNadeBoomTx(p, P);                     // multiplayer: your grenade went off here: his copy goes off at the same point
   removeProp(p);
   bodyCamFxBlast(P);                       // step 23.5: the body cam's exposure takes the blast
-  if (it.type === 'frag') fragBlast(P, inHand); else flashBlast(P, inHand);
+  const ehF = NET.ehFrom; if (it.netRem && netCoop() && NET.role === 'host') NET.ehFrom = true;   // co-op host: the joiner's grenade: the men it kills are his
+  try { if (it.type === 'frag') fragBlast(P, inHand); else flashBlast(P, inHand); } finally { NET.ehFrom = ehF; }
 }
 const _fragDir = new THREE.Vector3(), _fragO = new THREE.Vector3();
 // Blast push (frag): the positive-phase impulse per m2 of an M67's ~185 g of Comp B (~0.2 kg TNT), reflected on the
@@ -16168,7 +16421,7 @@ function fragBlast(P, inHand) {
   } finally { P10.muteImpact = false; }
   // Overpressure: falls off fast and needs a clear line (or the same small room).
   for (const e of ENEMY.list) {
-    if ((e.dead && !e.downed) || !e.room.active) continue;         // step 91: a blast finishes a man down
+    if ((e.dead && !e.downed) || !e.room.active || e.net || e.puppet) continue;   // step 91: a blast finishes a man down; multiplayer: each side hurts only its own (his body takes it on his side, the host's men on the host)
     if (e.downed && e.downAt >= now) continue;                     // step 115: not one this blast just put down
     e.B.chest.getWorldPosition(_nd.c);
     const r = _nd.c.distanceTo(P);
@@ -16259,7 +16512,7 @@ function flashBlast(P, inHand) {
   NADE.shake = Math.max(NADE.shake, clamp(0.7 - r / 10));
   // Them: same rule from their eyes. Out of sight but in the room and close: stunned by the blast alone.
   for (const e of ENEMY.list) {
-    if (e.dead || !e.room.active) continue;
+    if (e.dead || !e.room.active || e.net || e.puppet) continue;   // multiplayer: the host flashes its men
     enemyEye(e, _nd.c);
     const d = _nd.c.distanceTo(P); if (d > 16) continue;
     const seen = clearLine(P, _nd.c, 0.08), inRoom = insideRoom(e.room, P.x, P.z, 0.2, P.y);
@@ -16432,7 +16685,7 @@ function nadeGoreScan(P) {
   if (!G || !G.on || !K) return null;
   let out = null;
   for (const e of ENEMY.list) {
-    if ((e.dead && !e.downed) || !e.room.active || !e.B) continue;
+    if ((e.dead && !e.downed) || !e.room.active || !e.B || e.net) continue;
     e.B.chest.getWorldPosition(_ng.c);
     const r = _ng.c.distanceTo(P);
     if (r > G.r || !clearLine(P, _ng.c, 0.1)) continue;
@@ -16574,7 +16827,7 @@ function nadesUpdate(dt, now) {
       const h = p.holders[0], gp = h.ctrl && h.ctrl.userData.gamepad, b = gp && gp.buttons[0];
       if (b && (b.value || (b.pressed ? 1 : 0)) > 0.7) { nadeSpoon(it); pulse(h, 0.6, 30); }
     }
-    if (it.armed) { it.fuseT -= dt; if (it.fuseT <= 0) nadeDetonate(p); }
+    if (it.armed) { it.fuseT -= dt; if (it.fuseT <= (it.netWait && p.netShared ? -0.6 : 0)) nadeDetonate(p); }   // multiplayer: his grenade's copy waits for his blast ('nb'), its own fuse only as a fallback
   }
   nadeEvade(now);
   nadeFlyUpdate(dt);
@@ -16631,6 +16884,7 @@ function dnadeRelease() {
   dropItem(p, _nd.d);
   nadeSwingSfx(_nd.o, D.lob ? CONFIG.nade.lob : CONFIG.nade.throw);   // step 115
   nadeSpoon(it);
+  netDropTx(p, _nd.d);                                  // multiplayer: the other player sees it fly and go off
 }
 function dnadeAbort() {
   const D = DNADE;
@@ -16641,7 +16895,7 @@ function dnadeAbort() {
       D.model[D.type].root.matrixWorld.decompose(_nd.o, _nd.q, _nd.s);
       const p = createNade(D.type);
       p.item.pin = false; if (p.item.pinG.parent) p.item.pinG.parent.remove(p.item.pinG);
-      itemToWorld(p, _nd.o, _nd.q, stream.current); dropItem(p, _nv.set(0, 0, 0)); nadeSpoon(p.item);
+      itemToWorld(p, _nd.o, _nd.q, stream.current); dropItem(p, _nv.set(0, 0, 0)); nadeSpoon(p.item); netDropTx(p, _nv);
     } else { inv[D.type]++; panel.dirty = true; }
   }
   D.active = false;
@@ -17837,6 +18091,7 @@ function ejectMag(g, speed) {
   m.body.setLinvel(_wv2, true);
   m.collider.setCollisionGroups(COLL.held);
   m.restoreAt = performance.now() / 1000 + 0.4;
+  netDropTx(m, _wv2);                                             // multiplayer: the other player sees it fall and can take it
   gunSfx(g, 'magOut', g.def.cls === 'pistol' ? 'pMagOut' : 'magOut');   // step 99
 }
 
@@ -28318,7 +28573,7 @@ function enemyRayTest(o, dir, maxT) {
   for (const e of ENEMY.list) {
     if ((e.dead && !e.downed) || !e.room.active || !e.root.visible || !e.room.group.visible) continue;   // step 91: a man down is still there to hit
     // quick reject: ray far from his centre (step 91: a man on the floor, his pelvis)
-    if (e.downed) _hc.p.setFromMatrixPosition(e.B.pelvis.matrixWorld).sub(o);
+    if (e.downed || e.pupSt) _hc.p.setFromMatrixPosition(e.B.pelvis.matrixWorld).sub(o);   // co-op: a copy of a man down or kneeling too
     else _hc.p.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 1.0, rWZ(e.room, e.pos.y)).sub(o);   // his own floor (the tower cab, a stair landing, a wing above): the reject used y 1.0, so a man up there could never be hit
     const tc = _hc.p.dot(dir);
     if (tc < -1.2 || tc > maxT + 1.2) continue;
@@ -28335,6 +28590,7 @@ function enemyRayTest(o, dir, maxT) {
   return best;
 }
 function enemyShot(hit, dir, d, E) {
+  if ((hit.e.net || hit.e.puppet) && d === FRAG_D) return;      // multiplayer: a shared grenade's fragments: his side (and the host, for its men) applies its own copy's
   if (hit.e.net) { netHit(hit, dir, d, E); return; }
   if (hit.e.puppet) { netPupHit(hit, dir, d, E); return; }   // multiplayer (together): the host applies it          // multiplayer: the shooter decides; the other player takes it
   const e = hit.e, h = hit.h, C = CONFIG.enemy, now = wnow();   // step 45: world time
@@ -28549,6 +28805,7 @@ function enemyDropType(e) {
   return GUN_BUILD[t] && WEAPON_DEFS[t] ? t : null;
 }
 function enemyDropGun(e, dir) {
+  if (e.puppet) { try { e.root.remove(e.gun.root); } catch (err) { /* gone */ } e.unarmed = true; e.dropType = enemyDropType(e); return; }   // co-op joiner: the host's man drops the real one (shared, 'drop')
   if (e.net) { try { e.root.remove(e.gun.root); } catch (err) { /* gone */ } return; }   // multiplayer: the other player's copy drops nothing (his gun is his)
   if (e.unarmed) return;                                          // step 117: he dropped it when he gave up
   const old = e.gun && e.gun.root;
@@ -28559,7 +28816,7 @@ function enemyDropGun(e, dir) {
   if (!t || !wp) return;
   try {
     DROP.list = DROP.list.filter((q) => q.inWorld && !q.removing);
-    while (DROP.list.length >= DROP.max) { const i = DROP.list.findIndex((q) => !q.holders.length && !q.item.primary); if (i < 0) break; removeProp(DROP.list[i]); DROP.list.splice(i, 1); }
+    while (DROP.list.length >= DROP.max) { const i = DROP.list.findIndex((q) => !q.holders.length && !q.item.primary); if (i < 0) break; netTakeTx(DROP.list[i]); removeProp(DROP.list[i]); DROP.list.splice(i, 1); }
     const p = createGun(t), g = p.item, cap = MAG_DEFS[g.def.magType] ? MAG_DEFS[g.def.magType].capacity : 0;
     if (g.mag && g.mag.item) { g.mag.item.rounds = clamp(Math.round(cap * (e.ammo || 0) / Math.max(1, e.w.ammo)), 0, cap); updateMagVisual(g.mag.item); }
     itemToWorld(p, wp, wq, e.room);
@@ -28571,6 +28828,7 @@ function enemyDropGun(e, dir) {
     if (!PAINT.drops) paintGun(g, false);                           // step 106: his gun, his finish
     DROP.list.push(p);
     e.dropType = t;
+    if (netCoop() && NET.role === 'host') netDropTx(p, p.body.linvel(), e.room);   // co-op: the joiner gets the same gun on the floor
   } catch (err) { console.warn('step 72: gun not dropped', err); }
 }
 // Step 72: search a body. VR: grip with an empty hand on his vest or belt and you pull a real magazine
@@ -28590,7 +28848,7 @@ function lootGrab(hand) {
   const e = lootBodyAt(_cur);
   if (!e) return false;
   const mt = lootMagType(e);
-  e.loot--;
+  e.loot--; netLootTx(e);
   const p = createMag(mt, MAG_DEFS[mt].capacity);
   handPose(hand, _palm, _palmQ);
   itemToWorld(p, _palm, _palmQ, e.room);
@@ -28614,7 +28872,7 @@ function lootDesk() {
   if (!best) return false;
   const mt = lootMagType(best), n = best.loot;
   for (let i = 0; i < n; i++) inv[mt].push(MAG_DEFS[mt].capacity);
-  best.loot = 0; panel.dirty = true; sfx('pouch'); pickSfx();   // step 99
+  best.loot = 0; netLootTx(best); panel.dirty = true; sfx('pouch'); pickSfx();   // step 99
   toast(`Took ${n} ${MAG_DEFS[mt].label}${n > 1 ? 's' : ''} off him`);
   return true;
 }
@@ -28990,7 +29248,7 @@ const downArm = (B, s) => ({ mode: 'hang', up: B['upperArm' + s], fore: B['foreA
 // He goes down: out of the fight now, dying on the floor until shot again or bled out.
 function enemyDown(e, h, dir, P) {
   const now = wnow(), B = e.B, f = e.room.f || 1;
-  netEnDieTx(e, h.seg, dir, P, 1);                               // co-op host: out of the fight; the joiner's copy falls
+  netEnDieTx(e, h.seg, dir, P, 1, true);                         // co-op host: down alive: the joiner's copy goes down and crawls with him
   e.dead = true; e.state = 'dead'; e.downAt = now;
   e.vel.set(0, 0); e.speed = 0; e.aim = 0; e.reloadT = 0;
   enemyOut(e);
@@ -29540,7 +29798,8 @@ function downedRestore(room, spec, i, R) {
 // Per frame, for a man down in the active room (from enemiesDyingUpdate).
 function downedUpdate(e, dt) {
   const D = e.downed;
-  if (!(e.room.visible || e.room === stream.current)) {           // behind a shut door: frozen (step 111: he carries on, unposed)
+  const nearRem = netCoop() && NET.role === 'host' && NET.remRoom && Math.abs(NET.remRoom.slot - e.room.slot) <= 1;   // co-op host: the joiner may be looking at him
+  if (!(e.room.visible || e.room === stream.current || nearRem)) {           // behind a shut door: frozen (step 111: he carries on, unposed)
     if (D.phase === 'floor' && DOWNED.away) downedAway(e, D, dt);
     return;
   }
@@ -29670,6 +29929,8 @@ function surrFrame() {
   headWorld(SURR.h); camera.getWorldDirection(SURR.f);
   if (!renderer.xr.isPresenting) surrGun(gunOf(deskHand));
   else for (const h of vrHands) surrGun(gunOf(h));
+  for (let i = 0; i < SURR.n; i++) SURR.guns[i].h = SURR.h;
+  netSurrBore();                                                 // co-op host: the joiner's bore too
 }
 function surrGun(g) {
   if (!g || !g.prop || !g.prop.root || !g.wr || SURR.n >= SURR.guns.length) return;
@@ -29678,12 +29939,12 @@ function surrGun(g) {
 }
 // Distance from P to the nearest bore line, in front of the muzzle only (99 = none).
 function surrBoreDist(P) {
-  let best = 99;
+  let best = 99; SURR.bi = -1;
   for (let i = 0; i < SURR.n; i++) {
     const s = SURR.guns[i], v = _sr.t.subVectors(P, s.o), t = v.dot(s.d);
     if (t < 0.05) continue;
     const d = Math.sqrt(Math.max(0, v.lengthSq() - t * t));
-    if (d < best) best = d;
+    if (d < best) { best = d; SURR.bi = i; }
   }
   return best;
 }
@@ -29691,7 +29952,7 @@ function surrHead(e, out) { return e.B.head.getWorldPosition(out).add(_sr.y.set(
 function surrAim(e) {
   const A = _sr.aim;
   A.head = surrBoreDist(surrHead(e, _sr.a));
-  A.dist = _sr.a.distanceTo(SURR.h);
+  A.dist = _sr.a.distanceTo(SURR.bi >= 0 && SURR.guns[SURR.bi].h ? SURR.guns[SURR.bi].h : SURR.h);   // co-op: from the player whose bore it is
   A.body = Math.min(A.head, surrBoreDist(e.B.chest.getWorldPosition(_sr.b)));
   return A;
 }
@@ -29723,7 +29984,7 @@ function surrCheck(e, dt, now) {
   if (e.visible && !R.vis) R.seen = now;                         // the moment he picked you up (surprise)
   R.vis = e.visible;
   if (e.state === 'flashed') { R.fl = now; R.a = 0; return false; }
-  if (playerState.dead) { R.a = 0; return false; }
+  if (netTgtDead()) { R.a = 0; return false; }
   // Your bore on his head, close, while he sees you.
   let on = false;
   if (SURR.n && e.visible && now >= R.cd) { const A = surrAim(e); on = A.dist <= Q.near && A.head <= Q.headR; }
@@ -29891,6 +30152,7 @@ function surrRearm(e, S) {
   const rounds = g && g.mag && g.mag.item ? g.mag.item.rounds : 0, now = wnow();
   e.ammo = cap ? clamp(Math.round(e.w.ammo * rounds / cap), 0, e.w.ammo) : 0;
   const i = DROP.list.indexOf(P); if (i >= 0) DROP.list.splice(i, 1);
+  netTakeTx(P);                                                 // co-op: the joiner's copy of his gun goes too
   removeProp(P);
   e.root.add(e.gun.root); e.unarmed = false;
   e.surr = null;
@@ -29905,7 +30167,7 @@ function surrRearm(e, S) {
   loopUi();
 }
 // Detain: an empty VR hand gripping either wrist, or E with the dot on him (computer).
-function surrDetainable(e) { return !!e.surr && !e.dead && !e.surr.det && !e.surr.rearm && e.surr.t > 0.4 && e.room.active; }
+function surrDetainable(e) { if (e.puppet) return e.pupSt === 2 && !e.dead && e.room.active; return !!e.surr && !e.dead && !e.surr.det && !e.surr.rearm && e.surr.t > 0.4 && e.room.active; }   // co-op joiner: a copy of a man with his hands up
 function surrDetainGrab(hand) {
   if (hand.prop || (hand.hover && hand.hover.holders && hand.hover.holders.length)) return false;   // not when reaching for your own gun
   hand.source.getWorldPosition(_sr.w);
@@ -29933,7 +30195,8 @@ function surrDetainDesk() {
 }
 function surrDetain(e, hand) {
   const S = e.surr, Q = SURR.C.detain, r = loop.run;
-  S.det = true; S.kneel = true; S.detK = 0; SURR.stat.det++;
+  if (e.puppet) { e.pupSt = 3; netSendRel({ t: 'edet', i: e.puppet }); } else { S.det = true; S.kneel = true; S.detK = 0; }   // co-op joiner: the host ties him (his pose comes back); the points are yours
+  SURR.stat.det++;
   const pts = Math.round(Q.pts * r.mult * MENU_FX.scoreK);
   r.pending += pts;
   walletEarn(Q.pay);
@@ -30592,11 +30855,11 @@ function aiNoise(e, lx, lz, amount) {
 function aiListen(e, dt, now) {
   const A = CONFIG.ai, F = A.footstep;
   e.alert = Math.max(0, e.alert - A.alertDecay * dt);
-  if (!A.hearing || playerState.dead) return;
+  if (!A.hearing || netTgtDead()) return;
   e.hearT -= dt;
   if (e.hearT > 0) return;
   e.hearT = 0.25;
-  const sp = Math.hypot(playerState.vel.x, playerState.vel.z);
+  const sp = NET.tgt && NET.remSt ? NET.remSt.sp : Math.hypot(playerState.vel.x, playerState.vel.z);   // co-op host: the joiner's footsteps
   if (sp < F.walkSpeed) return;
   if (!roomCanSense(e.room)) return;                             // step 22.3: no footsteps through a shut door
   headWorld(_ai.a);
@@ -50469,9 +50732,9 @@ function stealthTick(dt) {
 function stealthK(e, pd, dotF) {
   const S = stealthState();
   if (!S.on || e.engaged) return 1;
-  const Dd = STEALTH_DIFF[S.diff];
-  const kL = mix(0.05, 1.0, smoothstep(0.02, 0.6, S.L));
-  const kM = (S.crouch ? 0.55 : 1) * (S.sp < 0.4 ? 0.6 : S.sp < 2.4 ? 1 : 1.45);
+  const Dd = STEALTH_DIFF[S.diff], R = NET.tgt && NET.remSt ? NET.remSt : S;   // co-op host: a man judging the joiner uses his light, crouch and speed
+  const kL = mix(0.05, 1.0, smoothstep(0.02, 0.6, R.L));
+  const kM = (R.crouch ? 0.55 : 1) * (R.sp < 0.4 ? 0.6 : R.sp < 2.4 ? 1 : 1.45);
   const off = 1 - clamp(dotF);                                      // 0 straight ahead .. 1 at the edge of his view
   const kA = mix(1, 0.35, clamp(off * 2.2));
   const kD = clamp(1.25 - pd / (22 * Dd.range), 0.12, 1.25);
@@ -50482,12 +50745,13 @@ function stealthSees(e, pd) {
   const S = stealthState();
   if (!S.on || e.engaged) return true;
   const Dd = STEALTH_DIFF[S.diff], base = e.sniper ? CONFIG.enemy.sight * 1.4 : CONFIG.enemy.sight;   // the sniper's 75 m is for a man he already knows about
-  return pd < base * Dd.range * (0.22 + 0.78 * Math.sqrt(S.L)) + 2;
+  return pd < base * Dd.range * (0.22 + 0.78 * Math.sqrt(NET.tgt && NET.remSt ? NET.remSt.L : S.L)) + 2;
 }
 function stealthPost(e, visible, now, adv) {
   const S = stealthState();
   if (!S.on || e.engaged || e.dead) return;
   if (visible && e.seen > 0.12 && adv && (!e.stSearchT || now > e.stSearchT)) { e.stSearchT = now + 0.6; aiNoise(e, e.lastKnown.x, e.lastKnown.z, 0.05 + e.seen * 0.2); }
+  if (NET.tgt) return;                                              // co-op host: your meter is about you, not the joiner
   if (e.seen > S.topK || S.top === e) { S.top = e.seen > 0.01 ? e : null; S.topK = e.seen; }
 }
 const stealthHearK = () => { const S = stealthState(); return S.on ? STEALTH_DIFF[S.diff].hear : 1; };
@@ -50738,6 +51002,7 @@ function enadeSpawn(e, type, P, vel, swing) {
   if (swing) nadeSwingSfx(P, vel.length());
   nadeSpoon(it);
   it.byEnemy = true;
+  netNadeTx(p, vel, e.room);                                      // co-op host: the joiner sees it fly and go off
   return p;
 }
 function enadeRelease(e, now) {
