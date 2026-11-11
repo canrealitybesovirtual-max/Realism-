@@ -13107,11 +13107,18 @@ function addFlash(model, d, parts) {
   f.scale.setScalar(d.flash);
   const star = new THREE.Mesh(WEAPON.flashGeo.star, WM.flash);
   const plume = new THREE.Mesh(WEAPON.flashGeo.plume, WM.flash);
-  for (const m of [star, plume]) { m.castShadow = false; m.receiveShadow = false; m.renderOrder = 3; m.frustumCulled = false; f.add(m); }
+  const ms = [star, plume];
+  let prong = null, jetU = null, jetS = null;
+  if (MFL.on && WEAPON.flashGeo.prong) {                // muzzle flash by device: the flash hider's star, a comp's / brake's jets
+    prong = new THREE.Mesh(WEAPON.flashGeo.prong, WM.flash); jetU = new THREE.Mesh(WEAPON.flashGeo.jetU, WM.flash); jetS = new THREE.Mesh(WEAPON.flashGeo.jetS, WM.flash);
+    for (const m of [prong, jetU, jetS]) { m.visible = false; m.userData.k = 0; ms.push(m); }
+  }
+  for (const m of ms) { m.castShadow = false; m.receiveShadow = false; m.renderOrder = 3; m.frustumCulled = false; f.add(m); }
   star.userData.k = 1; plume.userData.w = 1; plume.userData.l = 1;
   f.visible = false;
   model.add(f);
   parts.flash = f; parts.flashStar = star; parts.flashPlume = plume;
+  if (prong) { parts.flashProng = prong; parts.flashJetU = jetU; parts.flashJetS = jetS; }
 }
 const FLASH_TIME = 0.03;
 // k runs 1 -> 0 over FLASH_TIME: the star collapses fast, the plume thins and the gas pushes forward.
@@ -13120,8 +13127,93 @@ function setFlashFrame(g, k) {
   s.scale.setScalar(s.userData.k * (0.35 + 0.65 * k));
   const w = p.userData.w * (0.55 + 0.45 * k);
   p.scale.set(w, w, p.userData.l * (1.25 - 0.25 * k));
+  const P = g.parts.flashProng;
+  if (P) {                                              // the prongs' star shrinks, the jets reach out and thin
+    if (P.visible) P.scale.setScalar(P.userData.k * (0.45 + 0.55 * k));
+    const U = g.parts.flashJetU, S = g.parts.flashJetS, jw = 0.6 + 0.4 * k, jl = 1.25 - 0.25 * k;
+    if (U.visible) { const a = U.userData.k; U.scale.set(a * jw, a * jl, a * jw); }
+    if (S.visible) { const a = S.userData.k; S.scale.set(a * jl, a * jw, a * jw); }
+  }
 }
+// The flash's own frame draws it whole; then it fades over g.flT0 (its gun's / device's time).
+function flashTick(g, dt) {
+  if (g.flNew) { g.flNew = false; return; }
+  g.flashT -= dt;
+  if (g.flashT <= 0) { g.parts.flash.visible = false; if (g.mflMat) mflMatReset(g); } else setFlashFrame(g, g.flashT / (g.flT0 || FLASH_TIME));
+}
+// Back to WM.flash between shots: other code skips flash meshes by that material (bounds, shadows, rails).
+function mflMatReset(g) {
+  g.mflMat = false;
+  for (const m of g.parts.flash.children) m.material = WM.flash;
+}
+/* ---------------------------------------------------------------------------
+ *  MUZZLE FLASH BY CARTRIDGE AND DEVICE (MFL, ?mflash=off = the old flash)
+ *  Size, muzzle light and time by cartridge and barrel (MFL.cal: unburnt powder at the muzzle: a 9 mm pistol is
+ *  small, the .45 a bit more, a short 5.56 / 7.62x39 barrel big, the .338 Lapua biggest). Then the last device on
+ *  the muzzle (step 103 chain, an extension does not count) or the gun's own: bare = star + plume; flash hider =
+ *  a small dim star of prongs and almost no plume; compensator = up jets (rifle comps also to the sides), a brake =
+ *  side jets, both brighter; suppressor = nothing but a faint first-round pop after a pause (air in the can). A can
+ *  further back cools whatever is in front of it. Meshes and materials exist from the gun's build (no light, no
+ *  program at the shot); the profile is cached per gun and remade when its chain changes (muzState).
+ * ------------------------------------------------------------------------- */
+const MFL = {
+  on: !/[?&]mflash=off/.test(QS),
+  // s: size (flash units in m), L: muzzle light (game cd at the hot spot), t: s the flame shows
+  cal: {
+    pistol: { s: 0.064, L: 22, t: 0.014 }, g17: { s: 0.06, L: 20, t: 0.013 }, ppk: { s: 0.05, L: 14, t: 0.012 },
+    m1911: { s: 0.075, L: 25, t: 0.016 }, smg: { s: 0.07, L: 19, t: 0.014 },
+    rifle: { s: 0.115, L: 28, t: 0.02 }, m4a1s: { s: 0.13, L: 32, t: 0.022 },
+    akm: { s: 0.14, L: 34, t: 0.024 }, akmn: { s: 0.14, L: 34, t: 0.024 },
+    awp: { s: 0.2, L: 46, t: 0.032 }, shotgun: { s: 0.15, L: 36, t: 0.024 }
+  },
+  factory: { rifle: 'fh', akm: 'slant', akmn: 'slant', awp: 'brake' },   // the muzzle the model carries with no device on
+  dev: { rifle: 'can', pcan: 'can', md3: 'can', sb100: 'can', m4can: 'can', ats5: 'can', can45: 'can', k338: 'can',
+    comp: 'comp', comp45: 'comp', akcomp: 'comp', rcomp: 'comp', a2: 'fh', akfh: 'fh' },
+  // per device: size, light, time, star, plume (w, l), prongs, up jets, side jets, material (0 full, 1 dim, 2 faint)
+  kind: {
+    bare:  { s: 1, L: 1, t: 1, star: 1, pw: 1, pl: 1, pr: 0, ju: 0, js: 0, m: 0 },
+    fh:    { s: 0.72, L: 0.3, t: 0.6, star: 0.42, pw: 0.35, pl: 0.22, pr: 1, ju: 0, js: 0, m: 1 },
+    comp:  { s: 1.05, L: 1.3, t: 1.1, star: 0.75, pw: 0.7, pl: 0.55, pr: 0, ju: 1, js: 0.7, m: 0 },
+    brake: { s: 1.05, L: 1.2, t: 1.05, star: 0.6, pw: 0.6, pl: 0.45, pr: 0, ju: 0.25, js: 1.1, m: 0 },
+    slant: { s: 1.0, L: 1.15, t: 1.0, star: 0.7, pw: 0.65, pl: 0.55, pr: 0, ju: 0.8, js: 0.5, m: 0 },   // the AK's slant brake: up and right
+    can:   { s: 0.35, L: 0.035, t: 0.6, star: 0.55, pw: 0.25, pl: 0.15, pr: 0, ju: 0, js: 0, m: 2 }
+  },
+  cool: { s: 0.6, L: 0.25 },     // a can behind the last device
+  pop: 3,                        // s without a shot before a can's first round pops
+  byDef: null, P: {}
+};
+// Called from muzState: the chain's last device (an extension is only a tube) and whether a can sits behind it.
+function mflChain(g, chain) {
+  g.mfl = null;
+  if (!MFL.on || !g) return;
+  let dev = null, cool = false;
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const it = chain[i].item, k = muzKind(it);
+    if (k === 'ext' || it.sub === 'ext') continue;
+    if (!dev) dev = MFL.dev[k] || (it.sub === 'sup' ? 'can' : it.sub === 'comp' ? 'comp' : it.sub === 'fh' ? 'fh' : 'bare');
+    else if (MFL.dev[k] === 'can' || it.sub === 'sup') { cool = true; break; }
+  }
+  g.mflDev = dev; g.mflCool = cool && dev !== 'can';
+}
+function mflProfile(g, d) {
+  if (g.mfl && g.mfl.d === d) return g.mfl;
+  if (!MFL.byDef) { MFL.byDef = new Map(); for (const [k, v] of Object.entries(WEAPON_DEFS)) MFL.byDef.set(v, k); }
+  const key = (g.type && MFL.cal[g.type]) ? g.type : MFL.byDef.get(d) || g.type;
+  const cal = MFL.cal[key] || { s: d.flash || 0.08, L: d.flashLight || 0, t: 0.018 };
+  let dev = g.mflDev || null;
+  if (!dev && g.sup) dev = 'can';                                  // a can drawn into the model (no chain)
+  if (!dev) dev = MFL.factory[key] || 'bare';
+  const K = MFL.kind[dev] || MFL.kind.bare, pist = d.cls === 'pistol', c = g.mflCool ? MFL.cool : null;
+  const P = { d, dev, s: cal.s * K.s * (c ? c.s : 1), L: (d.flashLight > 0 ? cal.L : 0) * K.L * (c ? c.L : 1), t: cal.t * K.t,
+    star: K.star, pw: K.pw, pl: K.pl, pr: K.pr, ju: K.ju, js: pist && dev === 'comp' ? 0 : K.js, m: c ? Math.max(1, K.m) : K.m,
+    fs: d.flashShape || { star: 1, width: 1, length: 1 } };
+  P.lt = 0.025 + 1.2 * P.t;                                        // the muzzle light's fade (it was 0.045 for every gun)
+  g.mfl = P;
+  return P;
+}
+const MFL_MAT = () => [WM.flash, WM.flashDim || WM.flash, WM.flashFaint || WM.flash];
 function flashBurst(g, d) {
+  if (MFL.on && g.parts.flashProng) { mflBurst(g, d); return; }
   const f = g.parts.flash, s = g.parts.flashStar, p = g.parts.flashPlume, fs = d.flashShape;
   f.visible = true;
   f.rotation.z = Math.random() * Math.PI * 2;
@@ -13132,6 +13224,41 @@ function flashBurst(g, d) {
   p.userData.l = fs.length * (0.7 + Math.random() * 0.6);
   setFlashFrame(g, 1);
   g.flashT = FLASH_TIME;
+  g.mflL = d.flashLight; g.mflLT = 0.045;
+}
+function mflBurst(g, d) {
+  const P = mflProfile(g, d), f = g.parts.flash, s = g.parts.flashStar, p = g.parts.flashPlume, fs = P.fs, R = Math.random;
+  const pr = g.parts.flashProng, ju = g.parts.flashJetU, js = g.parts.flashJetS;
+  const now = performance.now() / 1000, gap = now - (g.mflLast ?? -99);
+  g.mflLast = now;
+  if (P.dev === 'can' && gap < MFL.pop) { g.mflL = 0; g.flashT = 0; f.visible = false; return; }   // a warm can: no flash at all
+  const M = MFL_MAT(), mat = M[P.m], big = R() < 0.12 ? 1.25 : 1;  // now and then a fatter burst
+  f.visible = true;
+  f.rotation.z = P.ju || P.js ? 0 : R() * Math.PI * 2;            // jets keep their ports' direction
+  f.scale.setScalar(P.s * big * (0.88 + R() * 0.24));
+  if (mat !== WM.flash || g.mflMat) { for (const m of f.children) { m.material = mat; m.castShadow = false; } g.mflMat = mat !== WM.flash; }
+  s.rotation.z = R() * Math.PI * 2;
+  s.userData.k = fs.star * P.star * (0.75 + R() * 0.5);
+  p.visible = P.pw > 0; p.rotation.z = R() * Math.PI * 2;
+  p.userData.w = fs.width * P.pw * (0.8 + R() * 0.4);
+  p.userData.l = fs.length * P.pl * (0.7 + R() * 0.6);
+  pr.visible = P.pr > 0; if (pr.visible) { pr.rotation.z = R() * Math.PI * 2; pr.userData.k = P.pr * (0.8 + R() * 0.4); }
+  ju.visible = P.ju > 0; if (ju.visible) ju.userData.k = P.ju * (0.8 + R() * 0.4);
+  js.visible = P.js > 0; if (js.visible) js.userData.k = P.js * (0.8 + R() * 0.4);
+  setFlashFrame(g, 1);
+  g.flT0 = g.flashT = P.t; g.flNew = true;
+  g.mflL = P.L * big; g.mflLT = P.lt;
+}
+// Warm-up: every flash mesh and material in view once (they share WM.flash's program).
+function mflPrecompile(on) {
+  if (!MFL.on) return;
+  const M = MFL_MAT();
+  for (const q of props) {
+    const g = q.item; if (!g || g.kind !== 'gun' || !g.parts.flashProng) continue;
+    const a = [g.parts.flashProng, g.parts.flashJetU, g.parts.flashJetS];
+    a.forEach((m, i) => { m.visible = on; m.material = on ? M[i] : WM.flash; });
+    if (!on) g.parts.flashStar.material = g.parts.flashPlume.material = WM.flash;
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -14732,6 +14859,19 @@ function buildWeaponKit() {
   for (let k = 0; k < 3; k++) plumeParts.push(atlas(new THREE.PlaneGeometry(0.9, 2.2), 0.5, 1, 0, 1).rotateX(-Math.PI / 2).translate(0, 0, -1.05).rotateZ(k * Math.PI / 3));
   plumeParts.push(atlas(new THREE.PlaneGeometry(0.62, 0.62), 0, 0.5, 0.25, 0.75).rotateZ(0.7).translate(0, 0, -0.62));   // fireball ahead of the muzzle
   WEAPON.flashGeo = { star, plume: mergeGeometries(plumeParts) };
+  if (MFL.on) {   // muzzle flash by device: dimmer copies of the flash material (same program) and the prong / jet shapes
+    WM.flashDim = WM.flash.clone(); WM.flashDim.color.setScalar(0.42);
+    WM.flashFaint = WM.flash.clone(); WM.flashFaint.color.setScalar(0.17);
+    const prongs = [];                                // flash hider: short tongues out between the prongs, tilted forward (a cone)
+    for (let k = 0; k < 6; k++) { const L = k % 2 ? 0.5 : 0.8; prongs.push(atlas(new THREE.PlaneGeometry(0.15, L), 0.5, 1, 0, 1).translate(0, L / 2 + 0.05, 0).rotateX(-0.6).rotateZ(k * Math.PI / 3).translate(0, 0, -0.04)); }
+    const jet = () => {                               // one port's jet: two crossed tongues along +y, a little forward, from behind the tip
+      const a = atlas(new THREE.PlaneGeometry(0.5, 0.85), 0.5, 1, 0, 1).translate(0, 0.45, 0);
+      return mergeGeometries([a, a.clone().rotateY(Math.PI / 2)]).rotateX(-0.3).translate(0, 0.04, 0.24);
+    };
+    WEAPON.flashGeo.prong = mergeGeometries(prongs);
+    WEAPON.flashGeo.jetU = jet();
+    WEAPON.flashGeo.jetS = mergeGeometries([jet().rotateZ(Math.PI / 2), jet().rotateZ(-Math.PI / 2)]);
+  }
   buildLaserKit();                                 // step 16
 
   // Root-space data (design point minus palm).
@@ -17789,15 +17929,17 @@ function fireGun(g, now) {
     applyLook();
   }
   // Flash, light, sound, haptics (step 78: a suppressor eats the flash and most of the report)
-  if (!g.sup || g.muzCompLast) { flashBurst(g, d); if (AF.flash !== 1) g.parts.flash.scale.multiplyScalar(AF.flash); }   // step 100: a comp's blast shows more
+  const MF = MFL.on && !!g.parts.flashProng;                       // muzzle flash by cartridge and device (MFL): the device picks the shape
+  if (MF) flashBurst(g, d);
+  else if (!g.sup || g.muzCompLast) { flashBurst(g, d); if (AF.flash !== 1) g.parts.flash.scale.multiplyScalar(AF.flash); }   // step 100: a comp's blast shows more
   if (g.primary === deskHand) vmShot(g);   // step 82: the viewmodel fires with it
-  if (d.flashLight > 0 && (!g.sup || g.muzCompLast)) {   // step 103: a comp last in the chain still flashes
+  if (MF ? g.mflL > 0 : d.flashLight > 0 && (!g.sup || g.muzCompLast)) {   // step 103: a comp last in the chain still flashes
     _fp.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
     pool.muzzle.position.copy(_fp).addScaledVector(_fd, 0.06);
     pool.muzzle.color.setRGB(1, 0.4 + Math.random() * 0.1, 0.11 + Math.random() * 0.06);   // linear; a little hotter or cooler each shot
-    pool.muzzleI = d.flashLight * AF.light * (0.85 + Math.random() * 0.3);
+    pool.muzzleI = (MF ? g.mflL : d.flashLight * AF.light) * (0.85 + Math.random() * 0.3);
     pool.muzzle.intensity = pool.muzzleI;
-    pool.muzzleT = pool.muzzleT0 = 0.045;
+    pool.muzzleT = pool.muzzleT0 = MF ? g.mflLT : 0.045;
   }
   if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.39 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
@@ -19135,7 +19277,7 @@ function updateGun(g, dt, now) {
     }
   }
   // --- Flash ---
-  if (g.flashT > 0) { g.flashT -= dt; if (g.flashT <= 0) g.parts.flash.visible = false; else setFlashFrame(g, g.flashT / FLASH_TIME); }
+  if (g.flashT > 0) flashTick(g, dt);
   if (g.batAt && now >= g.batAt) { g.batAt = 0; mechPulse(g.primary, g.batK * CONFIG.polish.haptics.cycle, 14); } else if (g.batAt > now + 1) g.batAt = 0;   // step 87: the back-in-battery tick (a clock jump drops it)
   if (g.lh) lhTick(g, dt);                      // step 16: the support hand's reload / rack motion
   if (g.parts.dot) opticDot(g);                  // step 23: red dot
@@ -22379,7 +22521,7 @@ function rigTick(dt) {
 // pouches: grenades
 function rigNadeAt(point) {
   if (!RIG.ready) return null;
-  let best = null, bd = 0.09;
+  let best = null, bd = BHEAD.on ? BHEAD.nadeReach : 0.09;           // VR comfort: a little more forgiving (was 0.09 m)
   for (const s of RIG.slots) {
     if (s.kind !== 'nade' || !s.g.visible) continue;
     const d = RIG.v.set(0, 0.03, -0.03).applyMatrix4(s.g.matrix).distanceTo(point);
@@ -22390,7 +22532,7 @@ function rigNadeAt(point) {
 function rigMedGrab(hand) {
   if (!RIG.ready || !RIG.med || !RIG.med.g.visible) return false;
   hand.source.getWorldPosition(_wv);
-  if (RIG.v.set(0, 0.03, -0.015).applyMatrix4(RIG.med.g.matrix).distanceTo(_wv) > 0.09) return false;
+  if (RIG.v.set(0, 0.03, -0.015).applyMatrix4(RIG.med.g.matrix).distanceTo(_wv) > (BHEAD.on ? BHEAD.medReach : 0.09)) return false;
   if ((inv.med || 0) <= 0) { pulse(hand, 0.6, 60); return true; }
   inv.med--; panel.dirty = true;
   const p = createMed();
@@ -22858,7 +23000,7 @@ function vmTick(dt) {
   // flash (step 89: your own gun's flash shows on the mirror; this light still lights the hands, from its muzzle)
   VM.flashT = Math.max(0, VM.flashT - dt);
   VM.flash.visible = false;
-  VM.light.intensity = VM.flashT > 0 ? 3.5 * VM.flashT / 0.05 : 0;
+  VM.light.intensity = VM.flashT > 0 ? 3.5 * (VM.flashK || 1) * VM.flashT / 0.05 : 0;
   if (VM.flashT > 0) VM.light.position.copy(g.wr.muzzle).applyMatrix4(VM.holder.matrix);
   VM.lamp.intensity = flashlightOn ? 1.6 : 0;
   VM.vis = true;
@@ -22868,7 +23010,8 @@ function vmShot(g) {
   if (!VM.vis || VM.gun !== g || !VM.cur) return;
   const V = VM.cur, d = vmPlay(V, 'fire', 0.03);
   if (g.def.manual) VM.boltAt = performance.now() / 1000 + (V.R.bolt ? d * V.R.bolt : 0.6);   // a bolt gun on a rifle rig still works its bolt after the shot
-  VM.flashT = g.sup && !g.muzCompLast ? 0 : 0.05;
+  VM.flashT = MFL.on && g.parts.flashProng ? (g.mflL > 0 ? 0.05 : 0) : g.sup && !g.muzCompLast ? 0 : 0.05;
+  VM.flashK = MFL.on && g.parts.flashProng ? clamp(g.mflL / 24, 0.1, 2) : 1;   // MFL: the arms view's light follows the flash
   if (VM.flash) { VM.flash.scale.setScalar((g.def.cls === 'pistol' ? 0.09 : 0.14) * (0.8 + Math.random() * 0.4)); VM.flash.rotation.z = Math.random() * Math.PI * 2; }
 }
 // R with a viewmodel: its own reload clip drives the real magazine change
@@ -27138,7 +27281,7 @@ function enemyPose(e, dt, now) {
   e.gun.root.quaternion.copy(_ev.q3).invert().multiply(e.gunQ);
   e.gun.root.position.copy(e.gunP); e.root.worldToLocal(e.gun.root.position);
   e.gun.root.updateWorldMatrix(false, true);
-  if (e.gun.flashT > 0) { e.gun.flashT -= dt; setFlashFrame(e.gun, Math.max(0, e.gun.flashT / FLASH_TIME)); if (e.gun.flashT <= 0) e.gun.parts.flash.visible = false; }
+  if (e.gun.flashT > 0) flashTick(e.gun, dt);
 
   // --- arms: right hand on the grip, left hand on the handguard ---
   const W = e.gun.wr;
@@ -27217,13 +27360,15 @@ function enemyShoot(e, now) {
   _es.d.copy(_es.b);
   e.ammo--;
   // flash, light, brass, sound
+  if (W.sup && !g.mflDev) g.mflDev = 'can';                    // MFL: his can (none of his loadouts carries one today)
   flashBurst(g, d);
-  if (d.flashLight > 0) {
+  const MF = MFL.on && !!g.parts.flashProng;
+  if (MF ? g.mflL > 0 : d.flashLight > 0) {
     pool.muzzle.position.copy(_es.m).addScaledVector(_es.d, 0.06);
     pool.muzzle.color.setRGB(1, 0.4 + Math.random() * 0.1, 0.11 + Math.random() * 0.06);
-    pool.muzzleI = d.flashLight * (0.85 + Math.random() * 0.3);
+    pool.muzzleI = (MF ? g.mflL : d.flashLight) * (0.85 + Math.random() * 0.3);
     pool.muzzle.intensity = pool.muzzleI;
-    pool.muzzleT = pool.muzzleT0 = 0.045;
+    pool.muzzleT = pool.muzzleT0 = MF ? g.mflLT : 0.045;
   }
   if (d.action === 'pump') e.pumpAt = now + 0.35;              // step 9: the hull comes out when he pumps
   else if (W.bolt) { e.boltAt = now + W.bolt[0]; e.boltPh = 0; }   // outdoor start: a bolt gun ejects when he works the bolt
@@ -29205,6 +29350,7 @@ function weaponsShift(dx, dz, dy = 0) {
 }
 function weaponsPrecompile(on) {
   for (const p of props) if (p.item && p.item.kind === 'gun') p.item.parts.flash.visible = on;
+  mflPrecompile(on);                                // muzzle flash by device: prongs, jets, the dim materials
   for (const L of LASER.slots) {                    // step 16: dot + beam compile now, in view of the camera
     L.dot.visible = L.beam.visible = on;
     if (on) { camera.updateMatrixWorld(true); L.dot.position.set(0, 0, -1).applyMatrix4(camera.matrixWorld); L.beam.position.copy(L.dot.position); }
@@ -34464,7 +34610,7 @@ function nvgUntoned(on) {
     const c0 = m.userData.nvg0 || (m.userData.nvg0 = m.color.clone());
     if (on) m.color.copy(NVG.pl).multiplyScalar(0.2126 * c0.r + 0.7152 * c0.g + 0.0722 * c0.b); else m.color.copy(c0);
   };
-  one(WM.flash); for (const g of NIGHT.glow) one(g.material); one(NADE.fireMat); one(NADE.flashMat);
+  one(WM.flash); one(WM.flashDim); one(WM.flashFaint); for (const g of NIGHT.glow) one(g.material); one(NADE.fireMat); one(NADE.flashMat);
 }
 function nvgPre() {
   if (!NVG.on) return;
@@ -40819,6 +40965,45 @@ function footFloor(v, snap) {
   v.x = rWX(r, S.xp - S.side * qc);
   return r.origin.y + y;
 }
+// VR comfort (looking down at the pouches): the head's yaw from Euler YXZ is the forward vector's heading, which
+// degenerates near a vertical look: at 80 deg down a 30 deg turn of the neck read as 73 deg (and a look past
+// straight down flipped it 180 deg), so the hips swung toward the pouch and the pouch ran from the hand. BHEAD:
+// the heading is forward + up vector, both flattened (the head's top points where you face when you look down,
+// so it holds still while the neck turns); past BHEAD.p0..p1 of pitch down the hips freeze (dead zone + rate),
+// no hand votes, the catch-up past the dead zone is rate-limited, and a snap / smooth turn of the rig turns the
+// body with it at once. ?bodyhead=off = the old maths.
+const BHEAD = {
+  on: !/[?&]bodyhead=off/.test(QS),
+  p0: 0.68, p1: 0.9,          // rad of pitch down: freeze from 39 deg, full at 52 deg
+  up: 1.0,                    // weight of the flattened up vector against the flattened forward vector
+  deadAdd: 1.3,               // rad added to CONFIG.body.turnDead when frozen (0.75 -> 2.05)
+  rateK: 0.04,                // follow / settle rate x this when frozen
+  catchup: 5, catchupF: 1.2,  // rad/s the hips may catch up past the dead zone (looking up / frozen)
+  nadeReach: 0.13, medReach: 0.12,   // m from a grenade pouch's lid / the medical pouch a grip takes it (were 0.09)
+  walkK: 0.6,                 // walking eases the freeze by up to this
+  tau: 0.045, tauF: 0.16,     // s: heading smoothing (looking ahead / down)
+  freeze: 0, hh: 0, rig: null, f: new THREE.Vector3(), u: new THREE.Vector3()
+};
+function bodyHeadYaw(hq, dt, vr) {
+  const B = BHEAD, f = B.f.set(0, 0, -1).applyQuaternion(hq), u = B.u.set(0, 1, 0).applyQuaternion(hq);
+  const sp = clamp(-f.y, -1, 1), pd = Math.asin(sp);              // pitch down (rad)
+  const k = B.up * Math.sign(sp);                                 // looking down the head's top leads, looking up its back
+  const vx = f.x + u.x * k, vz = f.z + u.z * k;
+  const raw = Math.hypot(vx, vz) > 1e-6 ? Math.atan2(-vx, -vz) : B.hh;
+  let fz = vr ? bsmooth(B.p0, B.p1, pd) : 0;                     // the computer turns with the mouse: no freeze there
+  fz *= 1 - B.walkK * bclamp(BODY.speed / 0.8, 0, 1);
+  B.freeze = fz;
+  // a turn of the rig (snap / smooth turn, recentre) turns the body, the heading and the hand vote with it
+  if (vr) {
+    const ry = rig.rotation.y;
+    if (B.rig !== null && BODY.init) { const d = bwrap(ry - B.rig); if (d) { BODY.yaw = bwrap(BODY.yaw + d); BODY.ha = bwrap(BODY.ha + d); B.hh = bwrap(B.hh + d); } }
+    B.rig = ry;
+  } else B.rig = null;
+  if (!BODY.init) B.hh = raw;
+  const tau = B.tau + (B.tauF - B.tau) * fz;
+  B.hh = bwrap(B.hh + bwrap(raw - B.hh) * (1 - Math.exp(-Math.max(0, dt) / tau)));
+  return B.hh;
+}
 // Headset: raised hands say where your chest faces. Returns the yaw offset from your head, times confidence.
 function bodyHandsFacing(eye, hYaw, s, dt) {
   let sx = 0, cx = 0, wt = 0;
@@ -40828,6 +41013,7 @@ function bodyHandsFacing(eye, hYaw, s, dt) {
     const p = src.getWorldPosition(_bf.p);                       // rig matrices are fresh (bodyPre updates them)
     const dx = p.x - eye.x, dz = p.z - eye.z, d = bwrap(Math.atan2(-dx, -dz) - hYaw);
     let w = bsmooth(0.62 * s, 0.38 * s, eye.y - p.y) * bsmooth(0.16 * s, 0.3 * s, Math.hypot(dx, dz)) * bsmooth(1.7, 1.2, Math.abs(d));
+    if (BHEAD.on) w *= (1 - BHEAD.freeze) * bsmooth(0.56 * s, 0.44 * s, eye.y - p.y);   // looking down / a hand at the belt or thigh: no vote (it turned the hips away from the pouch)
     if (w <= 0) continue;                                        // hanging, tucked in or behind you: no vote
     if (gunOf(h)) w = Math.min(1, w * 1.25);
     sx += w * Math.sin(d); cx += w * Math.cos(d); wt += w;
@@ -40909,7 +41095,7 @@ function bodyPre(dt) {
     BODY.init = false; BODY.feet = null; BODY.yaw = 0; BODY.hasLast = false; BODY.vel.set(0, 0, 0); BODY.drop = 0; BODY.ha = 0; BODY.hConf = 0;
   }
   _be.setFromQuaternion(hq, 'YXZ');
-  const hYaw = _be.y, hPitch = _be.x, hRoll = _be.z;
+  const hPitch = _be.x, hRoll = _be.z, hYaw = BHEAD.on ? bodyHeadYaw(hq, dt, vr) : _be.y;   // VR comfort: a heading that holds when you look down
   const floor = level.floor, eyeH = eye.y - floor;
   // Standing eye height: the body is scaled to you (learned in the headset, fixed on desktop).
   if (vr) { if (!BODY.cal && eyeH > BODY.standEye && !JUMP.air && JUMP.vy < 0.35 && xrHeadOk()) BODY.standEye += (eyeH - BODY.standEye) * Math.min(1, dt * 0.8); }   // step 21: calibrated = fixed
@@ -40923,8 +41109,15 @@ function bodyPre(dt) {
   const fYaw = hYaw + hOff * (smart ? FT.hands : 0), chT = hYaw + hOff * (smart ? Math.min(1, FT.hands + FT.chest) : 0);
   if (!BODY.init) BODY.yaw = fYaw;
   let dYaw = bwrap(fYaw - BODY.yaw);
-  if (Math.abs(dYaw) > C.turnDead) { BODY.yaw += dYaw - Math.sign(dYaw) * C.turnDead; dYaw = Math.sign(dYaw) * C.turnDead; }
-  BODY.yaw = bwrap(BODY.yaw + dYaw * (1 - Math.exp(-dt * (C.turnRate + BODY.speed * 3))));
+  if (BHEAD.on) {                                                // VR comfort: frozen looking down, a smooth catch-up past the dead zone
+    const fz = BHEAD.freeze, dead = C.turnDead + BHEAD.deadAdd * fz, ex = Math.abs(dYaw) - dead;
+    if (ex > 0) { const st = Math.min(ex, (BHEAD.catchup + (BHEAD.catchupF - BHEAD.catchup) * fz) * Math.max(0, dt)) * Math.sign(dYaw); BODY.yaw += st; dYaw -= st; }
+    dYaw = bclamp(dYaw, -dead, dead);
+    BODY.yaw = bwrap(BODY.yaw + dYaw * (1 - Math.exp(-dt * (C.turnRate + BODY.speed * 3) * (1 - (1 - BHEAD.rateK) * fz))));
+  } else {
+    if (Math.abs(dYaw) > C.turnDead) { BODY.yaw += dYaw - Math.sign(dYaw) * C.turnDead; dYaw = Math.sign(dYaw) * C.turnDead; }
+    BODY.yaw = bwrap(BODY.yaw + dYaw * (1 - Math.exp(-dt * (C.turnRate + BODY.speed * 3))));
+  }
   const yaw = BODY.yaw, cYaw = yaw + bclamp(bwrap(chT - yaw), -0.8, 0.8) * (0.4 + (smart ? FT.chest * BODY.hConf : 0));
   // Neck: from the eyes back to the atlas, then down the neck (it takes half the nod).
   const atlas = _bx[1].set(0, -0.07 * s, 0.085 * s).applyQuaternion(hq).add(eye);
@@ -45337,6 +45530,7 @@ if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, LOWMEM, normalParams, ancho
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { flashBlast, fragBlast, NADE });   // grenade effect tests
+if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain, flashBurst, fireGun, BHEAD, bodyHeadYaw, rigNadeAt, enemyShoot, muzSync, muzChain, getMUZ: () => MUZ });   // muzzle flash by device, VR body heading
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
 if (window.__cqcDev) Object.assign(window.__cqcDev, { locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
@@ -45501,6 +45695,7 @@ function muzState(g) {
   g.sup = can ? can.item : null;
   g.muzCompLast = !!last && last.sub === 'comp' && !!g.sup;
   g.muzN = chain.length;
+  mflChain(g, chain);                                               // muzzle flash: the last device picks the flash
   return chain;
 }
 // Effects of the chain on out (g.afx). On the Glock the first device is GLOCK_FX already (g17GunIds).
