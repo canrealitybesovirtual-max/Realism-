@@ -44303,6 +44303,12 @@ const ARM_STOCK = { foreR: 0.041, upR: 0.05, zCut: 0.045, slices: 6, skipWrist: 
 const _asInv = new THREE.Matrix4(), _asP = new THREE.Vector3(), _asAx = new THREE.Vector3(), _asE = new THREE.Vector3(), _asM = new THREE.Matrix4();
 const _asGuns = [], _asInvs = [new THREE.Matrix4(), new THREE.Matrix4()];
 const _armStockRot = [0, 0];
+// Elbow fix (smooth elbow at every view pitch; ?elbowfix=off = the old switches): follow fade band (m / body scale) for the
+// forearm-line elbow's height over the shoulder [full follow at or under, none at or over] and its distance out from the
+// midline [none at or under, full at or over]; stock clearance keeps its side past keep[0] rad unless the other side
+// clears keep[1] rad sooner; the pole blend fades to the body's own pole over the last fade rad before opposite sides; the body's own pole stays
+// minPole (m / body scale) off the shoulder-hand line.
+const ELB = { on: !/[?&]elbowfix=off/.test(QS), up: [-0.01, 0.05], lat: [0.0, 0.05], stockKeep: [0.05, 0.6], fade: 1.5, minPole: 0.12 };
 let _asArm = 0;                                  // step 29: the arm armClearStock is working on (1 = left)
 function gunStockBoxes(g) {
   const d = g.def;
@@ -44378,18 +44384,28 @@ function armClearStock(k, S, W, E, s, dt) {
     _asAx.subVectors(W, S);
     if (_asAx.lengthSq() > 1e-6) {
       _asAx.normalize();
-      let bestA = 0, bestPen = Infinity, found = false;
+      let bestA = 0, bestPen = Infinity, found = false, firstMag = 0;
+      const cur = _armStockRot[k], keep = ELB.on && Math.abs(cur) > ELB.stockKeep[0] ? Math.sign(cur) : 0;
       for (let i = 1; i <= A.steps && !found; i++) {
         const mag = A.maxRot * i / A.steps;
-        let pick = null, pickY = Infinity;
+        if (firstMag && mag > firstMag + ELB.stockKeep[1]) break;
+        let pick = null, pickY = Infinity, pickKeep = null;
         for (const sg of [-1, 1]) {
+          if (firstMag && sg !== keep) continue;                      // elbow fix: only searching on for the side it is already on
           _asE.subVectors(E, S).applyAxisAngle(_asAx, sg * mag).add(S);
           const pen = armPen(S, _asE, W, s), high = _asE.y > S.y + 0.03 * s;
-          if (pen < 1e-4 && !high && _asE.y < pickY) { pick = sg * mag; pickY = _asE.y; }
-          if (pen < bestPen) { bestPen = pen; bestA = sg * mag; }
+          if (pen < 1e-4 && !high) { if (sg === keep) pickKeep = sg * mag; if (_asE.y < pickY) { pick = sg * mag; pickY = _asE.y; } }
+          if (!firstMag && pen < bestPen) { bestPen = pen; bestA = sg * mag; }
         }
-        if (pick !== null) { bestA = pick; found = true; }
+        // Elbow fix: the side the elbow is already on wins while it clears within stockKeep[1] rad of the other side
+        // (the lower of two clearing sides flipped back and forth as the view pitched: the elbow swung round the gun).
+        if (pickKeep !== null) { bestA = pickKeep; found = true; }
+        else if (pick !== null) {
+          if (!firstMag && keep) { firstMag = mag; bestA = pick; continue; }
+          bestA = pick; found = true;
+        }
       }
+      if (firstMag) found = true;
       target = bestA;
     }
   }
@@ -44407,6 +44423,23 @@ const _armAln = new THREE.Vector3(), _armAlnD = new THREE.Vector3();
 const ARM_LOW = { from: 0.55, to: 0.85, back: 0.22, out: 0.1 }, _armLow = new THREE.Vector3(), _armLowD = new THREE.Vector3();   // step 29
 // After the hands: shoulders and arms reach the hands (or hang, with the hand relaxed).
 const _bhp = new THREE.Vector3(), _bhq = new THREE.Quaternion();
+// Elbow fix: a pole between hint A and hint B for the arm S -> W. Each is taken square to the shoulder-hand line; the
+// result turns from A's side toward B's by the same angle the old point blend (A + t (B - A)) gave, so the arm looks the
+// same while the two sides are within ~94 deg (ELB.fade) of each other. Toward opposite sides the turn fades to A's (the point
+// blend there crossed the line itself and the elbow flipped over). Continuous in S, W, A, B and t.
+const _elbAnat = new THREE.Vector3(), _epD = new THREE.Vector3(), _epA = new THREE.Vector3(), _epB = new THREE.Vector3(), _epC = new THREE.Vector3();
+function armPoleBlend(S, W, HA, HB, t, out) {
+  const d = _epD.subVectors(W, S); let dl = d.length();
+  if (dl < 1e-6) { d.set(0, -1, 0); dl = 1; } else d.divideScalar(dl);
+  const A = _epA.subVectors(HA, S); A.addScaledVector(d, -A.dot(d));
+  const B = _epB.subVectors(HB, S); B.addScaledVector(d, -B.dot(d));
+  const la = A.length(), lb = B.length();
+  if (la < 1e-6 || lb < 1e-6 || t <= 0) { if (la < 1e-6) return out.copy(HA).lerp(HB, t); return out.copy(S).add(A); }
+  A.divideScalar(la); B.divideScalar(lb);
+  const phi = Math.atan2(_epC.crossVectors(A, B).dot(d), bclamp(A.dot(B), -1, 1));
+  const th = Math.atan2(t * lb * Math.sin(phi), (1 - t) * la + t * lb * Math.cos(phi)) * smoothstep(Math.PI - 0.05, Math.PI - ELB.fade, Math.abs(phi));
+  return out.copy(S).add(A.applyAxisAngle(d, th).multiplyScalar(la));
+}
 function bodyArms(dt) {
   if (!BODY.ready || !CONFIG.body.on || !BODY.init || !HANDS.ready) return;
   const s = BODY.s, Wr = HAND_DATA.rig.wrist, cq = BODY.chestQ;
@@ -44464,28 +44497,45 @@ function bodyArms(dt) {
       hint = _bx[19].addVectors(S, W).multiplyScalar(0.5)
         .addScaledVector(cup, -P.down * s).addScaledVector(cx, side * P.out * s).addScaledVector(cfw, -P.back * s);
       _armAln.copy(W).addScaledVector(hZ, l2);
+      if (ELB.on) _elbAnat.copy(hint);
       // Step 26.2: a straight wrist. Solved desktop holds put the elbow on the forearm line; a gun in a VR
       // hand goes most of the way. Only when that elbow is anatomically sane (below the shoulder, outside
       // the midline); otherwise the step 16.1 pull.
-      let fl = P.follow;
+      let fl = P.follow, flK = 0;
       if (ARMFIT.on) {
         if (!renderer.xr.isPresenting && h.armFrame === CONTACT.frame) fl = ARMFIT.followDesk;
         else if (renderer.xr.isPresenting && /^(primary|support)/.test(h.mode || '')) fl = ARMFIT.followVR;
         if (fl > P.follow) {
-          const upA = _armAlnD.subVectors(_armAln, S).dot(cup), latA = _armAlnD.subVectors(_armAln, chestP).dot(cx) * side;
-          if (upA > 0.02 * s || latA < 0.02 * s) fl = P.follow;
+          // Elbow fix: was a hard switch (follow -> 0.3 once the forearm-line elbow rose 2 cm over the shoulder or came
+          // within 2 cm of the midline): pitching the view moved that line across the threshold and the elbow popped up
+          // to 57 cm in one frame. Now a smooth fade over a band, so the elbow slides between the two places.
+          const upA = _armAlnD.subVectors(_armAln, S).dot(cup) / s, latA = _armAlnD.subVectors(_armAln, chestP).dot(cx) * side / s;
+          flK = ELB.on ? smoothstep(ELB.up[1], ELB.up[0], upA) * smoothstep(ELB.lat[0], ELB.lat[1], latA) : (upA > 0.02 || latA < 0.02 ? 0 : 1);
+          fl = P.follow + (fl - P.follow) * flK;
         }
       }
-      hint.lerp(_armAln, fl);
       // Raised hand (aiming high, racking at the face): the elbow drops further, it does not rise.
-      if (W.y > S.y && fl <= P.follow) hint.addScaledVector(cup, -Math.min(0.12, W.y - S.y) * s);
+      if (ELB.on) {
+        // Elbow fix: the two places are blended as directions round the shoulder-hand line (armPoleBlend), not as points:
+        // a point between an elbow-below and an elbow-above place could land on that line and the IK flipped the elbow.
+        if (W.y > S.y) _elbAnat.addScaledVector(cup, -Math.min(0.12, W.y - S.y) * s * (1 - flK));
+        // Aiming steeply up the arm runs along the down-and-back pull, the pull lies on the shoulder-hand line and its side
+        // swings with every small move: kept at least ELB.minPole off the line by pushing out to the side.
+        { const dl = _epD.subVectors(W, S).normalize(), q = _epA.subVectors(_elbAnat, S); q.addScaledVector(dl, -q.dot(dl));
+          const la = q.length(), m0 = ELB.minPole * s; if (la < m0) _elbAnat.addScaledVector(cx, side * (m0 - la)); }
+        armPoleBlend(S, W, _elbAnat, _armAln, fl, hint);
+      } else {
+        hint.lerp(_armAln, fl);
+        if (W.y > S.y && fl <= P.follow) hint.addScaledVector(cup, -Math.min(0.12, W.y - S.y) * s);
+      }
       // Step 29: a hand reaching low (thigh pouch, shell caddy) points the arm almost straight down,
       // where the down-and-out pole lies nearly along the arm and the bend plane spins from frame to
       // frame. There the elbow goes back and out, the way an arm really reaches for a pouch.
       const dn = -_armLowD.subVectors(W, S).normalize().dot(cup);
       if (dn > ARM_LOW.from) {
         _armLow.addVectors(S, W).multiplyScalar(0.5).addScaledVector(cfw, -ARM_LOW.back * s).addScaledVector(cx, side * ARM_LOW.out * s);
-        hint.lerp(_armLow, smoothstep(ARM_LOW.from, ARM_LOW.to, dn));
+        if (ELB.on) armPoleBlend(S, W, _elbAnat.copy(hint), _armLow, smoothstep(ARM_LOW.from, ARM_LOW.to, dn), hint);
+        else hint.lerp(_armLow, smoothstep(ARM_LOW.from, ARM_LOW.to, dn));
       }
     }
     const E = bodyIK(S, W, a1, a2, hint, _bx[22]);
@@ -48550,7 +48600,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { BLAMP, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
