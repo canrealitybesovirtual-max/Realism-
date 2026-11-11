@@ -1196,7 +1196,7 @@
   const diagTick = () => {
     if (!diagLine || step2.hidden) return;
     const lt = document.getElementById('loadText'), pc = document.getElementById('loadPct');
-    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109x · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
+    diagLine.textContent = `${uaShort || 'browser ?'} · WebGL 2: ${gl2} · game script: ${window.__cqcStarted ? 'started' : 'not started'} · ${(lt && lt.textContent) || ''} ${(pc && pc.textContent) || ''} · ${Math.round((Date.now() - diagT0) / 1000)} s · build 1109y · ${api ? 'ready' : 'loading'}${xbPending ? ' · start queued' : ''}${diagErr ? ' · ERROR: ' + diagErr : ''}`;
   };
   setInterval(diagTick, 1000);
   // The loading line, mirrored onto the Start / Play on Xbox buttons until the game is ready (on a TV the line at the bottom is easy to miss).
@@ -23089,28 +23089,110 @@ function rigBuild() {
   }
   RIG.ready = true;
 }
-// auto-injector: yellow body, orange tip, blue safety cap
+// Healing syringe: clear barrel with dark red fluid and printed scale, black rubber stopper on a plunger rod with a
+// thumb press, finger flange, hub and a steel needle (orange cap while it sits in the pouch). Materials made once.
+const SYR = { mats: null, geo: null, stab: 0.7, reach: 0.075, push: 0.55 };
+function syrMats() {
+  if (SYR.mats) return SYR.mats;
+  const scale = canvasTex(64, (c, S) => { c.clearRect(0, 0, S, S); c.fillStyle = 'rgba(30,30,30,0.9)'; for (let i = 0; i < 10; i++) { const y = S * (0.08 + i * 0.085); c.fillRect(0, y, i % 5 === 0 ? S * 0.5 : S * 0.28, S * 0.018); } });
+  SYR.mats = {
+    barrel: new THREE.MeshStandardMaterial({ color: 0xe8eef2, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.28, depthWrite: false }),
+    scale: new THREE.MeshStandardMaterial({ map: scale, transparent: true, roughness: 0.4, depthWrite: false }),
+    fluid: new THREE.MeshStandardMaterial({ color: 0x8a0d12, roughness: 0.15, transparent: true, opacity: 0.85 }),
+    rubber: new THREE.MeshStandardMaterial({ color: 0x111112, roughness: 0.7 }),
+    plastic: new THREE.MeshStandardMaterial({ color: 0xf2f2ee, roughness: 0.35 }),
+    steel: new THREE.MeshStandardMaterial({ color: 0xd8dadc, roughness: 0.18, metalness: 1 }),
+    cap: new THREE.MeshStandardMaterial({ color: 0xe86a12, roughness: 0.5 })
+  };
+  return SYR.mats;
+}
 function medModel() {
-  const g = new THREE.Group();
-  g.add(merged([placed(new THREE.CylinderGeometry(0.0085, 0.0085, 0.1, 16), 0, 0, 0)], new THREE.MeshStandardMaterial({ color: 0xd6b21e, roughness: 0.5 })));
-  g.add(merged([placed(new THREE.CylinderGeometry(0.0085, 0.008, 0.018, 16), 0, -0.059, 0)], new THREE.MeshStandardMaterial({ color: 0xe0601a, roughness: 0.5 })));
-  g.add(merged([placed(new THREE.CylinderGeometry(0.0065, 0.0065, 0.012, 14), 0, 0.056, 0)], new THREE.MeshStandardMaterial({ color: 0x2f62c8, roughness: 0.45 })));
+  const M = syrMats(), g = new THREE.Group(), C = (r1, r2, h, y, seg = 18) => placed(new THREE.CylinderGeometry(r1, r2, h, seg), 0, y, 0);
+  // barrel y -0.04 .. 0.035 (needle toward -y)
+  g.add(mesh(C(0.0078, 0.0078, 0.075, -0.0025, 20), M.barrel));
+  const sc = mesh(placed(new THREE.CylinderGeometry(0.0080, 0.0080, 0.06, 20, 1, true, -0.5, 1.0), 0, -0.004, 0), M.scale); g.add(sc);
+  const fl = mesh(C(0.0068, 0.0068, 1, 0, 18), M.fluid); fl.userData.syrFluid = true; g.add(fl);
+  g.add(merged([C(0.0084, 0.0084, 0.003, 0.0345), placed(new THREE.BoxGeometry(0.03, 0.0025, 0.012), 0, 0.0345, 0)], M.plastic));   // finger flange
+  g.add(merged([C(0.0078, 0.0045, 0.006, -0.043), C(0.0028, 0.0028, 0.006, -0.049)], M.plastic));   // tip and hub
+  g.add(mesh(C(0.00045, 0.00045, 0.026, -0.065, 6), M.steel));   // needle
+  const cap = mesh(C(0.0034, 0.0026, 0.03, -0.064, 12), M.cap); g.add(cap);
+  // plunger: stopper + rod + thumb press; userData.syrPlunger moves down as it is pushed (0 = full, 1 = empty)
+  const pl = new THREE.Group();
+  pl.add(mesh(C(0.0069, 0.0069, 0.006, 0), M.rubber));
+  pl.add(merged([placed(new THREE.BoxGeometry(0.0072, 0.068, 0.0018), 0, 0.037, 0), placed(new THREE.BoxGeometry(0.0018, 0.068, 0.0072), 0, 0.037, 0), C(0.0095, 0.0095, 0.0025, 0.072)], M.plastic));
+  g.add(pl);
+  g.userData.syr = { pl, fl, cap, k: 0 };
+  syrSet(g, 0);
   return g;
+}
+// k 0 = full (stopper at y 0.022), 1 = pushed home (y -0.036); the fluid fills from the tip to the stopper
+function syrSet(g, k) {
+  const S = g.userData.syr; if (!S) return;
+  S.k = k;
+  const y = 0.022 - 0.058 * k, top = y - 0.003, bot = -0.0385, h = Math.max(0.0005, top - bot);
+  S.pl.position.y = y; S.fl.scale.set(1, h, 1); S.fl.position.y = bot + h / 2; S.fl.visible = h > 0.001;
 }
 function createMed() {
   const root = medModel();
-  return makeItem(root, { kind: 'med', type: 'med', label: 'auto-injector' }, { mass: 0.05, half: [0.009, 0.066, 0.009], center: new THREE.Vector3(), restitution: 0.2 });
+  return makeItem(root, { kind: 'med', type: 'med', label: 'healing syringe' }, { mass: 0.05, half: [0.009, 0.066, 0.009], center: new THREE.Vector3(), restitution: 0.2 });
 }
 function medUse(hand, p) {
   const C = CONFIG.enemy, was = playerState.hp;
   playerState.hp = Math.min(C.playerHealth, playerState.hp + 50); playerState.hurt = Math.max(0, (playerState.hurt || 0) - 0.5);
   hpUi(); sfx('pouch'); if (hand) pulse(hand, 0.8, 60);
-  toast(`Auto-injector: ${Math.round(was)} -> ${Math.round(playerState.hp)} health`);
+  toast(`Syringe: ${Math.round(was)} -> ${Math.round(playerState.hp)} health`);
   if (p) removeProp(p);
 }
 function deskMed() {
   if ((inv.med || 0) <= 0) { toast('No auto-injectors left. Restock in the safe room'); return; }
   inv.med--; panel.dirty = true; medUse(null, null);
+}
+// VR: grab the syringe from the arm pouch (the orange cap stays in the pouch), stab the needle into your thigh, belly /
+// chest or the other arm (tip within SYR.reach of the body, moving in faster than SYR.stab m/s), the plunger goes home
+// over SYR.push s and heals; pulling it out early injects what went in. ?medtrig=on = the old trigger press.
+const SYR_STAB = !/[?&]medtrig=on\b/.test(QS);
+const _syT = new THREE.Vector3(), _syP = new THREE.Vector3(), _syA = new THREE.Vector3(), _syB = new THREE.Vector3();
+function syrTargets(h, out) {   // closest body point (thigh / torso / the other upper arm) to the tip, in world space
+  let best = 1e9;
+  const segs = [[BB.thighL, BB.kneeHL], [BB.thighR, BB.kneeHR], [BB.pelvis, BB.chest], h.left ? [BB.upR, BB.elbHR] : [BB.upL, BB.elbHL]];
+  for (const [a, b] of segs) {
+    _syA.setFromMatrixPosition(BODY.M[a]); _syB.setFromMatrixPosition(BODY.M[b]);
+    const ab = _syB.sub(_syA), L2 = ab.lengthSq(), t = L2 > 1e-8 ? clamp(_syT.copy(_syP).sub(_syA).dot(ab) / L2, 0, 1) : 0;
+    const q = _syA.addScaledVector(ab, t), r = a === BB.pelvis ? 0.13 : a === BB.thighL || a === BB.thighR ? 0.075 : 0.05;
+    const d = q.distanceTo(_syP) - r;
+    if (d < best) { best = d; out.copy(q); }
+  }
+  return best;
+}
+function syrTick(dt) {
+  if (!SYR_STAB || !renderer.xr.isPresenting || !BODY.ready || !BODY.M.length || playerState.dead) return;
+  for (const h of vrHands) {
+    const p = h.prop, it = p && p.item;
+    if (!it || it.kind !== 'med' || p.removing) { if (h.syr) h.syr = null; continue; }
+    const g = p.root, S = (g.userData.syr) || null;
+    if (!S) continue;
+    if (S.cap && S.cap.visible) S.cap.visible = false;               // the cap stays in the pouch
+    g.updateWorldMatrix(true, false);
+    _syP.set(0, -0.078, 0).applyMatrix4(g.matrixWorld);              // needle tip
+    const st = h.syr || (h.syr = { last: _syP.clone(), inK: -1, given: 0 });
+    const v = dt > 0 ? _syT.copy(_syP).sub(st.last).length() / dt : 0; st.last.copy(_syP);
+    const d = syrTargets(h, _syB);
+    if (st.inK < 0) {
+      if (d < SYR.reach && v > SYR.stab) { st.inK = 0; pulse(h, 0.9, 40); sfx('pouch', 0.6); }
+      continue;
+    }
+    // in: pushed home over SYR.push s; pulled out (> 6 cm from the body) = stop and give what went in
+    st.inK = Math.min(1, st.inK + dt / SYR.push); syrSet(g, st.inK);
+    if (Math.random() < 0.25) pulseSoft(h, 0.2, 16);
+    if (st.inK >= 1 || d > 0.06) {
+      const k = st.inK; h.syr = null;
+      const C = CONFIG.enemy, was = playerState.hp;
+      playerState.hp = Math.min(C.playerHealth, playerState.hp + 50 * k); playerState.hurt = Math.max(0, (playerState.hurt || 0) - 0.5 * k);
+      hpUi(); pulse(h, 0.6, 50);
+      vrNote ? vrNote(`Syringe: ${Math.round(was)} -> ${Math.round(playerState.hp)} health`) : toast(`Syringe: ${Math.round(playerState.hp)} health`);
+      removeProp(p);
+    }
+  }
 }
 // every frame after bodyPre: kit follows the bones, the capsules follow torso and thighs, the anchor the chest
 function rigTick(dt) {
@@ -24777,7 +24859,7 @@ function updateLightSwitches() {
     const edge = pressed && !h.trigWas; h.trigWas = pressed;
     handPose(h, _lb, _lbq);
     _lb.add(_lb2.set(0, -0.01, -0.075).applyQuaternion(_lbq));     // about where your index fingertip is
-    if (edge && h.prop && h.prop.item && h.prop.item.kind === 'med') { medUse(h, h.prop); continue; }   // step 79: inject
+    if (edge && h.prop && h.prop.item && h.prop.item.kind === 'med' && !SYR_STAB) { medUse(h, h.prop); continue; }   // step 79: inject
     if (edge && !gunOf(h)) {
       const g = nearLightSwitch(_lb, h.prop ? 0.075 : 0.065); if (g) { toggleGunLight(g, RAIL.nearLt); pulse(h, 0.3, 20); continue; }
       const gl = nearLaserSwitch(_lb, h.prop ? 0.065 : 0.06); if (gl) { toggleGunLaser(gl, RAIL.nearL); pulse(h, 0.3, 20); continue; }   // step 16 (step 80: easy to hit)
@@ -24799,7 +24881,7 @@ function medTrigger() {
     if (!gp) continue;
     const b = gp.buttons[0], pressed = !!b && (b.pressed || b.value > 0.7);
     const edge = pressed && !h.trigWas; h.trigWas = pressed;
-    if (edge && h.prop && h.prop.item && h.prop.item.kind === 'med') medUse(h, h.prop);   // step 79
+    if (edge && h.prop && h.prop.item && h.prop.item.kind === 'med' && !SYR_STAB) medUse(h, h.prop);   // step 79 (stab mode: the needle goes in by moving it into you)
   }
 }
 
@@ -43579,6 +43661,7 @@ function tick(timeMs) {
   bodyPre(dt);           // step 14: torso, hips, legs, feet; the holster and pouch sockets (before the weapons use them)
   clothFoley(dt);        // step 86: your clothes and kit (crouch settle, getting up, a hard pivot, a fast arm)
   benchLampTick();       // the bench lamp's light follows its head; the rocker under a fingertip
+  try { syrTick(dt); } catch (e) { /* no syringe this frame */ }   // syringe stab (VR)
   rigTick(dt);           // step 79: pouches, leg holster, arm pouch, the sling anchor and the torso capsules follow the bones
   termUpdate(dt);        // step 11: the safe room terminal (touch / aim, redraw only on change)
   wsUpdate(dt);          // the gunsmith workshop computer (the store; same touch / aim, redraw only on change)
@@ -46162,7 +46245,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
