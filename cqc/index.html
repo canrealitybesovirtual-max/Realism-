@@ -8942,8 +8942,16 @@ function updateVisibility() {
     if (r.backer) r.backer.visible = !(next && next.active);
   }
   // Props in hidden rooms don't draw either.
+  let rk = 0;                                                     // PERF pass 3: the set of active rooms; a prop's home is worked out again only when it moved or this changed
+  for (const r of stream.rooms.values()) rk = (rk * 31 + r.slot * 2 + (r.active ? 1 : 0)) | 0;
+  rk = (rk * 31 + stream.rooms.size) | 0;
   for (const p of props) {
-    const home = roomContaining(p.root.position.x, p.root.position.z, 0.3, p.root.position.y);
+    const pp = p.root.position;
+    let home = p._vH;
+    if (p._vK !== rk || p._vX !== pp.x || p._vY !== pp.y || p._vZ !== pp.z || (home && !home.active)) {
+      home = roomContaining(pp.x, pp.z, 0.3, pp.y);
+      p._vH = home; p._vK = rk; p._vX = pp.x; p._vY = pp.y; p._vZ = pp.z;
+    }
     const v = p.holders.length > 0 || (p.item && p.item.slot) || !home || home.visible;
     if (p.root.visible !== v) {
       p.root.visible = v; dirtyShadows();
@@ -12369,9 +12377,11 @@ const colliders = [];
 // Pushes point p (x, z) out of a rotated footprint by radius. Returns how deep it was.
 function pushOutOf(col, p, radius) {
   const dx = p.x - col.x, dz = p.z - col.z;
+  const br = col.hx + col.hz + radius;                       // PERF pass 3: far from the box (outside its bounding circle): no push, nothing to work out
+  if (dx * dx + dz * dz > br * br) return 0;
   let lx = dx * col.c - dz * col.s, lz = dx * col.s + dz * col.c;
   const ex = lx - clamp(lx, -col.hx, col.hx), ez = lz - clamp(lz, -col.hz, col.hz);
-  const dist = Math.hypot(ex, ez);
+  const dist = Math.sqrt(ex * ex + ez * ez);
   let depth;
   if (dist > 1e-6) {
     depth = radius - dist;
@@ -15736,6 +15746,14 @@ function enemyGunBuild(t) {
     for (const k in T.parts) { const v = T.parts[k]; parts[k] = Array.isArray(v) ? v.map(m) : m(v); }
     return { root, model: map.get(T.model), parts };
   } catch (e) { return GUN_BUILD[t](); }
+}
+// PERF pass 3: his magazine (only drawn on his gun; his dropped gun is a new real one) was built from its specs for every
+// man (rounded boxes and merges: half of a spawn's time, a hitch as reinforcements came in). One per type, cloned.
+const EMAG_TPL = {};
+function enemyMagBuild(type) {
+  if (EGUN_OFF) return buildMagModel(type);
+  const T = EMAG_TPL[type] || (EMAG_TPL[type] = buildMagModel(type));
+  return { root: T.root.clone(true) };
 }
 function d_buildFactories() {
   GUN_BUILD.pistol = () => buildSpecGun('pistol');
@@ -25097,7 +25115,7 @@ function deskGunHint(g) {
 const _lmo = new THREE.Vector3(), _lmd = new THREE.Vector3();
 // The gun whose light shines: the one in your hand first, then any other (slung, holstered, on the bench).
 function emittingGun() {
-  for (const h of [...vrHands, deskHand]) { const g = gunOf(h); if (g && g.light && g.light.on && !g.prop.removing) return g; }
+  for (let i = 0; i <= vrHands.length; i++) { const g = gunOf(i < vrHands.length ? vrHands[i] : deskHand); if (g && g.light && g.light.on && !g.prop.removing) return g; }   // PERF pass 3: no array per call
   for (const q of props) { const g = q.item; if (g && g.kind === 'gun' && g.light && g.light.on && !q.removing) return g; }
   return null;
 }
@@ -26873,6 +26891,7 @@ const ENEMY_MODELS = [
 ];
 // Driver bones in parent-first order, with the joint their bone points at (its frame's primary axis).
 const DRIVE_ORDER = ['pelvis', 'spine', 'chest', 'neck', 'head', 'thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR', 'clavL', 'upperArmL', 'foreArmL', 'handL', 'clavR', 'upperArmR', 'foreArmR', 'handR'];
+const DRIVE_ARM = DRIVE_ORDER.map((k) => (k.startsWith('upperArm') || k.startsWith('foreArm')) ? { u: 'upperArm' + k.slice(-1), f: 'foreArm' + k.slice(-1), h: 'hand' + k.slice(-1), up: k.startsWith('upperArm') } : null);
 const DRIVE_PARENT = { pelvis: null, spine: 'pelvis', chest: 'spine', neck: 'chest', head: 'neck', thighL: 'pelvis', shinL: 'thighL', footL: 'shinL', thighR: 'pelvis', shinR: 'thighR', footR: 'shinR',
   clavL: 'chest', upperArmL: 'clavL', foreArmL: 'upperArmL', handL: 'foreArmL', clavR: 'chest', upperArmR: 'clavR', foreArmR: 'upperArmR', handR: 'foreArmR' };
 // Finger curl on the gun (rad per joint 1..3). R: trigger finger lies along the guard, the rest wrap the grip. L: wraps the handguard.
@@ -27413,24 +27432,33 @@ const _mwP = new THREE.Vector3(), _mwS = new THREE.Vector3();
 function mwPos(o, v) { return v.setFromMatrixPosition(o.matrixWorld); }
 function mwQuat(o, q) { o.matrixWorld.decompose(_mwP, q, _mwS); return q; }
 function mwChain(o, stop) { const p = o.parent; if (p && p !== stop) mwChain(p, stop); if (o.matrixAutoUpdate) o.updateMatrix(); o.matrixWorld.multiplyMatrices(p.matrixWorld, o.matrix); }
+// PERF pass 3: his root and everything on it but the skinned model (driver bones, gun, capsules). The skin (~180 nodes)
+// was refreshed 4-5 times a frame by the pose's whole-root updates; enemySkinSync writes it from the driver and refreshes
+// it once at the end, and nothing reads the skin's matrices before that. No skin = the whole root, as before.
+function eRootUpd(e, parents) {
+  const S = e.skin, R = e.root;
+  if (!S || !S.holder || S.holder.parent !== R) { R.updateWorldMatrix(parents, true); return; }
+  R.updateWorldMatrix(parents, false);
+  const ch = R.children;
+  for (let i = 0; i < ch.length; i++) if (ch[i] !== S.holder) ch[i].updateWorldMatrix(false, true);
+}
 function enemySkinSync(e) {
   const S = e.skin;
   if (!S) return;
   enemyLodTick(e);                                                 // enemy LODs: geometry by distance
   const B = e.B, T = S.T;
-  e.root.updateWorldMatrix(true, true);
+  eRootUpd(e, true);
   S.holder.updateWorldMatrix(false, false);
-  for (const k of DRIVE_ORDER) {
-    const t = T[k];
+  for (let di = 0; di < DRIVE_ORDER.length; di++) {
+    const k = DRIVE_ORDER[di], t = T[k], arm = DRIVE_ARM[di];        // PERF pass 3: the arm names worked out once (were new strings per bone per man per frame)
     let F;
-    if (k.startsWith('upperArm') || k.startsWith('foreArm')) {
-      const s = k.slice(-1);
-      const a = mwPos(B['upperArm' + s], _sk.a), b = mwPos(B['foreArm' + s], _sk.b), c = mwPos(B['hand' + s], _sk.c);
+    if (arm) {
+      const a = mwPos(B[arm.u], _sk.a), b = mwPos(B[arm.f], _sk.b), c = mwPos(B[arm.h], _sk.c);
       // PERF: scratch vectors (this ran per arm bone per man per frame with 6 allocations each)
       const W = _skW, d1 = W.d1.subVectors(b, a), d2 = W.d2.subVectors(c, b);
       const h = W.h.crossVectors(W.n1.copy(d1).normalize(), W.n2.copy(d2).normalize());
-      if (h.length() < 0.15) h.set(1, 0, 0).applyQuaternion(mwQuat(B['upperArm' + s], _sk.q));
-      F = frameQ(h, (k.startsWith('upperArm') ? d1 : d2).negate(), W.F);
+      if (h.length() < 0.15) h.set(1, 0, 0).applyQuaternion(mwQuat(B[arm.u], _sk.q));
+      F = frameQ(h, (arm.up ? d1 : d2).negate(), W.F);
     } else F = mwQuat(B[k], _skW.F);
     const tw = F.multiply(S.O[k]);                                // world frame x the offset measured on the model
     if (t.parent !== S.holder) mwChain(t.parent, S.holder);    // PERF: refresh only up to the skin's holder (was a climb to the scene root per bone)
@@ -28047,6 +28075,7 @@ function enemyPropPush(e, mp, r) {
   }
 }
 const _pbc = { x: 0, z: 0, c: 1, s: 0, hx: 0, hz: 0 };
+const _tbc = { x: 0, z: 0, c: 1, s: 0, hx: 0, hz: 0 };            // PERF pass 3: enemyMove's table box (was a new object per table per pass per man)
 // Open door leaves of this room's two doorways, stamped into the grid for one path search.
 function navDoorStamp(room, G) {
   const N = G.nx * G.nz;
@@ -28078,7 +28107,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   root.traverse((o) => { if (o.userData.bone) B[o.userData.bone] = o; });
   const gb = enemyGunBuild(W.gun), gd = WEAPON_DEFS[W.gun];
   if (gd.magType) {
-    const mag = buildMagModel(gd.magType);
+    const mag = enemyMagBuild(gd.magType);
     mag.root.position.set(gd.magSeat.pos[0], gd.magSeat.pos[1], gd.magSeat.pos[2]);
     mag.root.rotation.x = gd.magSeat.rotX;
     gb.model.add(mag.root);
@@ -28240,7 +28269,9 @@ function boxDist(x, z, b) {
 }
 // World AABB footprint of a table (upright or on its side), in room-local coordinates.
 function tableBoxes(room) {
+  if (room._tbAt === TICK_AT && room._tbN === props.length && room._tb) return room._tb;   // PERF pass 3: once a frame per room (every man asked twice a frame; tables only move in the physics step)
   const out = [];
+  room._tbAt = TICK_AT; room._tbN = props.length; room._tb = out;
   for (const p of props) {
     if (!p.table || !p.inWorld || !insideRoom(room, p.root.position.x, p.root.position.z, 0.3, p.root.position.y)) continue;
     p.root.updateMatrixWorld(true);
@@ -28257,14 +28288,30 @@ function navGrid(room) {
   if (room.navCache) return room.navCache;
   const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
   const g = new Uint8Array(nx * nz);
-  const boxes = (room.walkLocal || []).concat(tableBoxes(room), room.facNav || [], TB.stuck ? propBoxes(room, []) : []);   // facility section: the stair (AI only)   // boxes, crates and cans on the floor block him too (he used to path and spawn through them)
+  const boxes = (room.walkLocal || []).concat(tableBoxes(room), room.facNav || [], TB.stuck ? propBoxes(room, []) : []);   // facility section: the stair (AI only)
+  // PERF pass 3: the grid was rebuilt on every call (each path search, each man's tactical brain every frame: ~2000 cells x
+  // every box). It depends only on these boxes, so the last one is kept and reused while every box is exactly where it was.
+  const C0 = room._navG;
+  if (C0 && navSameBoxes(C0.sig, boxes)) { C0.dyn = null; return C0; }   // boxes, crates and cans on the floor block him too (he used to path and spawn through them)
   for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
     const x = -room.w / 2 + (i + 0.5) * cs, z = -room.d / 2 + (j + 0.5) * cs;
     let blocked = Math.abs(x) > room.w / 2 - r || Math.abs(z) > room.d / 2 - r;
     if (!blocked) for (const b of boxes) if (boxDist(x, z, b) < r) { blocked = true; break; }
     g[j * nx + i] = blocked ? 1 : 0;
   }
-  return { g, nx, nz, cs, w: room.w, d: room.d };
+  const G = { g, nx, nz, cs, w: room.w, d: room.d, sig: navSig(boxes) };
+  room._navG = G;
+  return G;
+}
+function navSig(boxes) {                                           // what navGrid reads of each box
+  const a = new Float64Array(boxes.length * 5);
+  for (let i = 0; i < boxes.length; i++) { const b = boxes[i]; a[5 * i] = b.x; a[5 * i + 1] = b.z; a[5 * i + 2] = b.a || 0; a[5 * i + 3] = b.hx; a[5 * i + 4] = b.hz; }
+  return a;
+}
+function navSameBoxes(sig, boxes) {
+  if (!sig || sig.length !== boxes.length * 5) return false;
+  for (let i = 0; i < boxes.length; i++) { const b = boxes[i]; if (sig[5 * i] !== b.x || sig[5 * i + 1] !== b.z || sig[5 * i + 2] !== (b.a || 0) || sig[5 * i + 3] !== b.hx || sig[5 * i + 4] !== b.hz) return false; }
+  return true;
 }
 const navCell = (G, x, z) => [clamp(Math.floor((x + G.w / 2) / G.cs), 0, G.nx - 1), clamp(Math.floor((z + G.d / 2) / G.cs), 0, G.nz - 1)];
 const navCenter = (G, i, j) => [-G.w / 2 + (i + 0.5) * G.cs, -G.d / 2 + (j + 0.5) * G.cs];
@@ -28288,7 +28335,10 @@ function navLine(G, ax, az, bx, bz) {
   for (let k = 1; k < n; k++) if (!navFree(G, ax + (bx - ax) * k / n, az + (bz - az) * k / n)) return false;
   return true;
 }
-function findPath(room, sx, sz, tx, tz) {
+function findPath(room, sx, sz, tx, tz) {                        // PERF pass 3: the grid is shared now; a search's door stamps go with it (they never outlived one before)
+  try { return findPath0(room, sx, sz, tx, tz); } finally { if (room._navG) room._navG.dyn = null; }
+}
+function findPath0(room, sx, sz, tx, tz) {
   const G = navGrid(room), s = navSnap(G, sx, sz), t = navSnap(G, tx, tz);
   if (!s || !t) return null;
   // Buffers kept per grid and reused (the outdoor yard's grid is 56k cells: fresh arrays per search were GC stalls).
@@ -28646,7 +28696,7 @@ function enemyMove(e, dt) {
   _mp.x = rWX(er, e.pos.x); _mp.z = rWZ(er, e.pos.y);
   for (let pass = 0; pass < 2; pass++) {
     for (const col of colliders) if (!colOffLevel(col, fy)) pushOutOf(col, _mp, r);   // invisible enemy fix: the walls and furniture of a room on another floor (stacked wings) shoved him out through his own walls
-    for (const b of tableBoxes(e.room)) pushOutOf({ x: rWX(er, b.x), z: rWZ(er, b.z), c: 1, s: 0, hx: b.hx, hz: b.hz }, _mp, r);
+    for (const b of tableBoxes(e.room)) { _tbc.x = rWX(er, b.x); _tbc.z = rWZ(er, b.z); _tbc.hx = b.hx; _tbc.hz = b.hz; pushOutOf(_tbc, _mp, r); }
     if (TB.stuck) enemyPropPush(e, _mp, r);                       // boxes, crates: he no longer walks through them
   }
   // Step 9: teammates don't walk through each other.
@@ -28716,10 +28766,13 @@ function enemyAimGrip(e, tgt, out) {
 }
 // Reaching out, the shoulder blade slides forward (and the shoulder rises a little): the clavicle swings
 // about the vertical toward the hand target, up to ~25°, only for what the arm itself can't cover.
+const POSE_L = { thigh: 'thighL', shin: 'shinL', foot: 'footL', upperArm: 'upperArmL', foreArm: 'foreArmL', hand: 'handL', clav: 'clavL' };
+const POSE_R = { thigh: 'thighR', shin: 'shinR', foot: 'footR', upperArm: 'upperArmR', foreArm: 'foreArmR', hand: 'handR', clav: 'clavR' };
 function enemyProtract(e, side, s, t) {
-  const c = e.B['clav' + side], reach = e.sk.upper + e.sk.fore - 0.01;
-  c.rotation.set(0, 0, 0); c.updateWorldMatrix(true, true);
-  const over = t.distanceTo(e.B['upperArm' + side].getWorldPosition(_ag.sh)) - reach * 0.92;
+  const SN = side === 'L' ? POSE_L : POSE_R;
+  const c = e.B[SN.clav], reach = e.sk.upper + e.sk.fore - 0.01;
+  c.rotation.set(0, 0, 0); c.updateWorldMatrix(false, true);      // PERF pass 3: the chest is current here (the pose just refreshed his root): no climb to the scene root
+  const over = t.distanceTo(_ag.sh.setFromMatrixPosition(e.B[SN.upperArm].matrixWorld)) - reach * 0.92;
   if (over <= 0) return;
   const a = Math.min(0.45, over * 3.2);
   c.rotation.set(0, s * a, s * a * 0.35, 'YXZ');
@@ -28744,11 +28797,12 @@ function boneBasis(dir, front, out) {
   return out.setFromRotationMatrix(_ev.m.makeBasis(_ev.x, _ev.y, _ev.z));
 }
 const _ik = { s: new THREE.Vector3(), t: new THREE.Vector3(), mid: new THREE.Vector3(), dir: new THREE.Vector3(), pole: new THREE.Vector3(),
-  q1: new THREE.Quaternion(), q2: new THREE.Quaternion(), pq: new THREE.Quaternion(), d1: new THREE.Vector3(), d2: new THREE.Vector3() };
+  q1: new THREE.Quaternion(), q2: new THREE.Quaternion(), pq: new THREE.Quaternion(), d1: new THREE.Vector3(), d2: new THREE.Vector3(),
+  dp: new THREE.Vector3(), ds: new THREE.Vector3() };
 // Two-bone IK: bone a (upper) and its child bone b reach target T, bending toward 'pole' (a direction).
 function solveIK(a, b, la, lb, T, pole, front, endBone = null, endQ = null) {
   a.parent.updateWorldMatrix(true, false);
-  a.getWorldPosition(_ik.s);
+  a.updateWorldMatrix(false, false); _ik.s.setFromMatrixPosition(a.matrixWorld);   // PERF pass 3: the parents were just refreshed (getWorldPosition climbed to the scene root again)
   _ik.dir.subVectors(T, _ik.s);
   let dist = _ik.dir.length();
   _ik.dir.multiplyScalar(1 / Math.max(dist, 1e-5));
@@ -28761,7 +28815,7 @@ function solveIK(a, b, la, lb, T, pole, front, endBone = null, endQ = null) {
   boneBasis(_ik.d1, front, _ik.q1);
   _ik.d2.subVectors(_ik.t, _ik.mid);
   boneBasis(_ik.d2, front, _ik.q2);
-  a.parent.getWorldQuaternion(_ik.pq);
+  a.parent.matrixWorld.decompose(_ik.dp, _ik.pq, _ik.ds);          // PERF pass 3: same as getWorldQuaternion, without its second climb
   a.quaternion.copy(_ik.pq).invert().multiply(_ik.q1);
   b.quaternion.copy(_ik.q1).invert().multiply(_ik.q2);
   if (endBone && endQ) endBone.quaternion.copy(_ik.q2).invert().multiply(endQ);
@@ -28814,7 +28868,7 @@ function enemyPose(e, dt, now) {
   const pitch = Math.atan2(lookH - (hipY + 0.55), Math.max(0.5, flatD));
   const blade = e.gun.def.cls === 'pistol' ? 0 : 0.24 * e.aim;   // step 66: a long gun turns the chest a little, support shoulder forward
   B.chest.rotation.set(0.25 * cr + clamp(pitch, -0.6, 0.6) * 0.45 * e.aim + (tb ? Math.sin(tb.br) * (0.01 + 0.02 * tb.puff) : 0), e.twist * 0.5 - blade, 0, 'YXZ');   // TB: breathing
-  e.root.updateWorldMatrix(true, true);
+  eRootUpd(e, true);
 
   // --- head: look at the threat (or around the room when idle) ---
   if (hasT) _ev.p.set(_ev.c.x, _ev.c.y + 0.3, _ev.c.z);
@@ -28838,7 +28892,8 @@ function enemyPose(e, dt, now) {
   _yawQ.setFromAxisAngle(_up, e.yaw + rYaw(e.room));   // step 83: world yaw (the feet are placed in the world)
   _fw.set(0, 0, -1).applyQuaternion(_yawQ); _rt.set(1, 0, 0).applyQuaternion(_yawQ);
   const ox = rWX(e.room, e.pos.x), oz = rWZ(e.room, e.pos.y);
-  for (const [s, side] of [[-1, 'L'], [1, 'R']]) {
+  for (let si = 0; si < 2; si++) {
+    const s = si ? 1 : -1, SN = si ? POSE_R : POSE_L;               // PERF pass 3: no arrays or name strings per call
     const ph = e.phase + (s < 0 ? 0 : Math.PI);
     const gfwd = Math.sin(ph) * stride * 0.5 * gait, lift = Math.max(0, Math.cos(ph)) * 0.09 * gait * (1 - 0.45 * creep);   // TB: a creep is heel-toe, feet kept low
     // crouch: left foot forward, right knee back (a kneeling stance); TB: not while he walks crouched (it was a fixed stagger mid-stride)
@@ -28851,11 +28906,11 @@ function enemyPose(e, dt, now) {
     _ev.q.copy(_yawQ);
     if (s > 0 && cr > 0.5) _ev.q.multiply(_ev.q2.setFromAxisAngle(_ev.x.set(1, 0, 0), -0.6 * (cr - 0.5) * 2));   // up on the toes when kneeling
     _ev.a.copy(_fw).add(_ev.b.copy(_up).multiplyScalar(0.05));
-    solveIK(B['thigh' + side], B['shin' + side], sk.thigh, sk.shin, _ev.t, _ev.a, _fw, B['foot' + side], _ev.q);
+    solveIK(B[SN.thigh], B[SN.shin], sk.thigh, sk.shin, _ev.t, _ev.a, _fw, B[SN.foot], _ev.q);
   }
 
   // --- the gun: shouldered and aimed, or low ready ---
-  e.root.updateWorldMatrix(true, true);
+  eRootUpd(e, true);
   B.chest.getWorldQuaternion(_ecq);
   const aimW = e.aim;
   // shouldered: palm in front of the right chest; low ready: lower and angled down
@@ -28903,7 +28958,8 @@ function enemyPose(e, dt, now) {
 
   // --- arms: right hand on the grip, left hand on the handguard ---
   const W = e.gun.wr;
-  for (const [s, side] of [[1, 'R'], [-1, 'L']]) {
+  for (let si = 0; si < 2; si++) {
+    const s = si ? -1 : 1, side = si ? 'L' : 'R', SN = si ? POSE_L : POSE_R;
     if (s > 0) _ev.t.set(0, 0.035, 0.07);                         // wrist sits behind and above the palm
     else _ev.t.copy(W.support).add(_ev.a.set(-0.02, -0.03, 0.06));
     _ev.t.applyQuaternion(e.gunQ).add(e.gunP);
@@ -28920,10 +28976,10 @@ function enemyPose(e, dt, now) {
     _ev.q.copy(e.gunQ).multiply(_hq);
     _ev.p.set(s * 0.7, -0.75, 0.15).applyQuaternion(_ecq);       // elbows down and out
     _ev.c.set(0, 0, -1).applyQuaternion(_ecq);
-    solveIK(B['upperArm' + side], B['foreArm' + side], sk.upper, sk.fore, _ev.t, _ev.p, _ev.c, B['hand' + side], _ev.q);
+    solveIK(B[SN.upperArm], B[SN.foreArm], sk.upper, sk.fore, _ev.t, _ev.p, _ev.c, B[SN.hand], _ev.q);
   }
   if (e.enade) enadeArm(e, _ecq);                                 // enemy grenades: the throwing arm
-  e.root.updateWorldMatrix(false, true);
+  eRootUpd(e, false);
   enemySkinSync(e);                                               // step 66
   if (CONFIG.enemy.castShadow && (e.speed > 0.15 || e.turning)) motionShadows();
 }
@@ -36730,6 +36786,7 @@ function brassLayers(f0, at, g, bright) {
       f: [f0, f0 * 1.53, f0 * 2.76, f0 * 3.9, f0 * 5.4], a: [0.45, 0.28, 0.2 * bright, 0.08 * bright, 0.03 * bright], d: [0.045, 0.03, 0.018, 0.011, 0.007] }
   ];
 }
+const BAKE_T = [];                                                  // PERF pass 3: how long each sound bake job took (ms)
 function bakeSounds(ctx) {
   const jobs = [];
   let seed = 31337;
@@ -36742,27 +36799,27 @@ function bakeSounds(ctx) {
   for (const type of ['pistol', 'smg', 'shotgun', 'akm', 'fn509', 'frag', 'bang', 'awp']) for (let v = 0; v < ((type === 'frag' || type === 'bang') ? 2 : 3); v++) {   // step 23
     const sd = seed++;
     if (type === 'smg' && smgRecorded) continue;
-    jobs.push(() => baked[type].push(bakeShot(ctx, SHOT_DEFS[type], sd)));
+    jobs.push({ f: 'shot', a: () => [SHOT_DEFS[type], sd], put: (b) => baked[type].push(b) });
   }
   // 9 mm brass on a hard floor. Single hit (later bounces) and a full first landing:
   // hit, a few quickening skips (each one softer and duller), then a short roll.
   const RB = mulberry32(seed++);
   for (let v = 0; v < 6; v++) {
     const f0 = 2400 + RB() * 500, sd = seed++;
-    jobs.push(() => baked.tink.push(bakeFoley(ctx, 0.35, brassLayers(f0, 0.002, 1, 0.6 + RB() * 0.5), sd)));
+    jobs.push({ f: 'foley', a: () => [0.35, brassLayers(f0, 0.002, 1, 0.6 + RB() * 0.5), sd], put: (b) => baked.tink.push(b) });   // a() runs in job order (RB as before)
   }
   for (let v = 0; v < 6; v++) {
     const f0 = 2400 + RB() * 500, sd = seed++, L = brassLayers(f0, 0.002, 1, 0.8 + RB() * 0.4);
     let t = 0.002, gap = 0.07 + RB() * 0.05, g = 1;
     for (let b = 0; b < 3 + (RB() * 3 | 0); b++) { t += gap; gap *= 0.55 + RB() * 0.15; g *= 0.5 + RB() * 0.2; L.push(...brassLayers(f0 * (0.99 + RB() * 0.02), t, g, 0.4 + RB() * 0.5)); }
     L.push({ type: 'scrape', at: t + 0.01, dur: 0.12 + RB() * 0.12, f0: 1600, f1: 1300, q: 2.5, grain: 0.01, g: 0.06 });
-    jobs.push(() => baked.tinkBounce.push(bakeFoley(ctx, 0.75, L, sd)));
+    jobs.push({ f: 'foley', a: () => [0.75, L, sd], put: (b) => baked.tinkBounce.push(b) });
   }
   // plastic 12 gauge hull with a brass head: a hollow tock
-  for (let v = 0; v < 4; v++) { const sd = seed++; jobs.push(() => baked.thud.push(bakeFoley(ctx, 0.14, [
+  for (let v = 0; v < 4; v++) { const sd = seed++; jobs.push({ f: 'foley', put: (b) => baked.thud.push(b), a: () => [0.14, [
     { type: 'click', at: 0.002, g: 0.4, fc: 2200, d: 0.0008 }, { type: 'knock', at: 0.002, g: 0.6, fc: 500, d: 0.006 },
     { type: 'modes', at: 0.002, f: [640, 1180, 1950], a: [0.6, 0.35, 0.2], d: [0.022, 0.015, 0.01] },
-    { type: 'modes', at: 0.002, g: 0.2, f: [3100, 4700], a: [0.5, 0.25], d: [0.014, 0.009] }], sd, 5000))); }
+    { type: 'modes', at: 0.002, g: 0.2, f: [3100, 4700], a: [0.5, 0.25], d: [0.014, 0.009] }], sd, 5000] }); }
 
   // --- Gun handling foley, every gun. Heavy steel parts: the energy is low (150-1500 Hz),
   // slides are a dark gritty drag with a body under it, impacts are a chunk, not a ring.
@@ -36805,7 +36862,7 @@ function bakeSounds(ctx) {
   audio.foleyLevel = LVL;
   for (const [k, [len, layers, lp]] of Object.entries(FOLEY)) {
     baked[k] = [];
-    for (let v = 0; v < 3; v++) { const sd = seed++; jobs.push(() => baked[k].push(bakeFoley(ctx, len, layers, sd, lp))); }
+    for (let v = 0; v < 3; v++) { const sd = seed++; jobs.push({ f: 'foley', a: () => [len, layers, sd, lp], put: (b) => baked[k].push(b) }); }
   }
   // Step 88: hinge creak (doorSfx 'creak'), 4 variants of 0.45 s, baked last so every earlier seed is unchanged. A dry pin's
   // stick-slip ringing the leaf's bands (2 groans, 2 squeals), the friction hiss in the same bands, kickSfx's leaf partials knocked as it breaks away.
@@ -36819,11 +36876,60 @@ function bakeSounds(ctx) {
         { type: 'scrape', at: 0.004, dur, f0: 480, f1: 640, q: 9, grain: 0.004, g: 3 },          // the hiss ~13 dB under the groan
         { type: 'scrape', at: 0.004, dur, f0: 1150, f1: 1380, q: 12, grain: 0.002, g: 1.3 },
         { type: 'modes', at: 0.002, g: 0.12, f: [300, 517], a: [0.6, 0.4], d: [0.08, 0.06] }], lv = sq ? 0.6 : 1;   // a squeal is denser: brought down to the groans
-      jobs.push(() => { const b = bakeFoley(ctx, 0.45, L, sd, 4000), d = b.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] *= lv; baked.creak.push(b); });
+      jobs.push({ f: 'foley', a: () => [0.45, L, sd, 4000], lv, put: (b) => baked.creak.push(b) });
     }
   }
-  const step = () => { const j = jobs.shift(); if (!j) return; try { j(); } catch (e) { jobs.length = 0; return; } setTimeout(step, 0); };
-  setTimeout(step, 0);
+  bakeRun(ctx, jobs);
+}
+// PERF pass 3: the ~90 baked sounds (shots, brass, handling foley, creaks: 0.1-0.6 s of DSP each on the main thread, several
+// seconds in all) were made one job per gap right after Play: a string of long frames as the run started. They are made on a
+// worker now (the same functions, so the same samples), and the main thread only wraps each result in an AudioBuffer.
+// Any worker problem (or ?bakewk=off) runs the rest here as before, one job per gap.
+const BAKE_WK = !/[?&]bakewk=off\b/.test(QS);
+function bakeLocal(ctx, j, args) {
+  const b = j.f === 'shot' ? bakeShot(ctx, ...args) : bakeFoley(ctx, ...args);
+  if (j.lv != null && j.lv !== 1) for (let c = 0; c < b.numberOfChannels; c++) { const d = b.getChannelData(c); for (let i = 0; i < d.length; i++) d[i] *= j.lv; }
+  return b;
+}
+function bakeWorkerSource() {
+  return [mulberry32, bakeShot, bakeFoley].map(String).join('\n') + `
+self.onmessage = (e) => {
+  const { id, f, args, sr, lv } = e.data;
+  try {
+    const ctx = { sampleRate: sr, createBuffer(c, n) { const d = []; for (let k = 0; k < c; k++) d.push(new Float32Array(n)); return { numberOfChannels: c, _d: d, getChannelData: (k) => d[k] }; } };
+    const b = f === 'shot' ? bakeShot(ctx, ...args) : bakeFoley(ctx, ...args);
+    if (lv != null && lv !== 1) for (const d of b._d) for (let i = 0; i < d.length; i++) d[i] *= lv;
+    self.postMessage({ id, ch: b._d }, b._d.map((d) => d.buffer));
+  } catch (err) { self.postMessage({ id, error: String(err) }); }
+};`;
+}
+function bakeRun(ctx, jobs) {
+  const pump = (list) => {                                         // the old way: one job per gap on the main thread
+    const step = () => { const j = list.shift(); if (!j) return; const t0 = performance.now(); try { j.put(bakeLocal(ctx, j, j.args || j.a())); } catch (e) { list.length = 0; return; } BAKE_T.push(performance.now() - t0); setTimeout(step, 0); };
+    setTimeout(step, 0);
+  };
+  let w = null, url = null;
+  if (BAKE_WK) { try { url = URL.createObjectURL(new Blob([bakeWorkerSource()], { type: 'text/javascript' })); w = new Worker(url); } catch (e) { w = null; } }
+  if (!w) { pump(jobs); return; }
+  const left = jobs.slice();                                       // sent, not yet back (in order)
+  let failed = false;
+  const fail = () => { if (failed) return; failed = true; try { w.terminate(); } catch (e) { /* gone */ } if (url) URL.revokeObjectURL(url); pump(left.splice(0)); };
+  w.onerror = (e) => { if (e && e.preventDefault) e.preventDefault(); fail(); };
+  w.onmessage = (e) => {
+    if (failed) return;
+    const m = e.data, j = left[0];
+    if (!j || j.id !== m.id || m.error || !m.ch) { fail(); return; }
+    left.shift();
+    const t0 = performance.now();
+    try { const b = ctx.createBuffer(m.ch.length, m.ch[0].length, ctx.sampleRate); for (let c = 0; c < m.ch.length; c++) b.copyToChannel(m.ch[c], c); j.put(b); }
+    catch (err) { left.unshift(j); fail(); return; }
+    BAKE_T.push(performance.now() - t0);
+    if (!left.length) { w.terminate(); if (url) URL.revokeObjectURL(url); }
+  };
+  setTimeout(() => {                                               // after bakeSounds returns, in job order (the brass brightness draws come after every push, as before)
+    try { jobs.forEach((j, i) => { j.id = i; j.args = j.a(); w.postMessage({ id: i, f: j.f, args: j.args, sr: ctx.sampleRate, lv: j.lv }); }); }
+    catch (e) { fail(); }
+  }, 0);
 }
 
 // Overall gun sound character. Every gun sound (shots, handling, brass) runs through a low shelf
@@ -38619,6 +38725,7 @@ function updateParticleLight(t) {
 /* ---------------------------------------------------------------------------
  *  CONTACT SHADOWS — rebuilt every frame from what is standing right now.
  * ------------------------------------------------------------------------- */
+const _p10v = new Float64Array(6);
 function updateContact() {
   const C = CONFIG.polish.contact, K = P10.contact;
   if (!K) return;
@@ -38650,12 +38757,13 @@ function updateContact() {
     const e = _p10.m2.elements, h = p.half;
     const ey = Math.abs(e[1]) * h.x + Math.abs(e[5]) * h.y + Math.abs(e[9]) * h.z;
     // footprint frame: the longest horizontal axis of the box
-    const v = [[e[0] * h.x, e[2] * h.x], [e[4] * h.y, e[6] * h.y], [e[8] * h.z, e[10] * h.z]];
+    const v = _p10v;                                              // PERF pass 3: [x0, z0, x1, z1, x2, z2] scratch (was 4 arrays per prop per frame)
+    v[0] = e[0] * h.x; v[1] = e[2] * h.x; v[2] = e[4] * h.y; v[3] = e[6] * h.y; v[4] = e[8] * h.z; v[5] = e[10] * h.z;
     let bi = 0, bl = -1;
-    for (let i = 0; i < 3; i++) { const l = v[i][0] * v[i][0] + v[i][1] * v[i][1]; if (l > bl) { bl = l; bi = i; } }
-    const ul = Math.sqrt(bl) || 1, ux = v[bi][0] / ul, uz = v[bi][1] / ul;
+    for (let i = 0; i < 3; i++) { const l = v[2 * i] * v[2 * i] + v[2 * i + 1] * v[2 * i + 1]; if (l > bl) { bl = l; bi = i; } }
+    const ul = Math.sqrt(bl) || 1, ux = v[2 * bi] / ul, uz = v[2 * bi + 1] / ul;
     let eu = 0, ew = 0;
-    for (let i = 0; i < 3; i++) { eu += Math.abs(v[i][0] * ux + v[i][1] * uz); ew += Math.abs(-v[i][0] * uz + v[i][1] * ux); }
+    for (let i = 0; i < 3; i++) { eu += Math.abs(v[2 * i] * ux + v[2 * i + 1] * uz); ew += Math.abs(-v[2 * i] * uz + v[2 * i + 1] * ux); }
     // what it stands on: one ray while it moves, cached while it sleeps
     if (p.p10Support === undefined || !p.body.isSleeping()) {
       _p10.a.set(t.x, t.y, t.z); _p10.b.set(0, -1, 0);
@@ -44248,6 +44356,44 @@ async function xboxWarm(say) {
   for (const e of xbMen) { try { removeEnemy(e); } catch (er) { /* gone with the room */ } }
   say('Preparing graphics 100%'); await wait();
 }
+// PERF pass 3: the computer's arms view (VM) has its own lights, so every gun, part and the arms rigs need their own shader
+// variants there: the first pickup of each gun type (and its first shot) compiled 2-4 programs mid-game, and loaded / fitted
+// the rig on the spot. On a computer the rigs are loaded and those variants compiled in the background a few seconds after
+// the start (parallel compile only: a blocking compile would just move the stall; ?pcwarm=on forces it, ?pcwarm=off = never).
+const PCW = { on: !/[?&]pcwarm=off\b/.test(QS), force: /[?&]pcwarm=on\b/.test(QS), busy: false, done: false, n: 0 };
+async function pcWarm() {
+  if (!PCW.on || PCW.busy || PCW.done || LITE.xbox || IS_TOUCH || !VM.on) return;
+  if (!PCW.force && !renderer.extensions.has('KHR_parallel_shader_compile')) return;
+  PCW.busy = true;
+  const idle = () => new Promise((r) => setTimeout(r, 120));
+  const gone = () => renderer.xr.isPresenting || !gameStarted;
+  const comp = async (root) => { try { const p = renderer.compileAsync(root, VM.cam, VM.scene); await Promise.race([p, new Promise((r) => setTimeout(r, 4000))]); PCW.n++; } catch (e) { /* compiles when it shows */ } };
+  try {
+    vmSetup();
+    for (const k of Array.from(new Set(Object.values(VM.byType)))) {
+      if (gone()) break;
+      if (VM.bad[k]) continue;
+      let V = null; try { V = await vmLoad(k); } catch (e) { V = null; }
+      if (V && V.base && !gone()) { V.base.updateMatrixWorld(true); await comp(V.base); }
+      await idle();
+    }
+    if (VM.flash && !gone()) { VM.flash.visible = true; const p = comp(VM.flash); VM.flash.visible = false; await p; }
+    const seen = new Set();
+    for (const q of props.slice()) {
+      if (gone()) break;
+      if (!q.item || !/^(gun|att|mag)$/.test(q.item.kind) || !q.root || q.removing) continue;
+      const key = q.item.kind === 'gun' ? q.item.type : null;
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      const R = q.root, flip = [];
+      R.traverse((o) => { if (!o.visible) { flip.push(o); o.visible = true; } });
+      const p = comp(R);                                           // the traversal is synchronous: hidden pieces back at once
+      for (const o of flip) o.visible = false;
+      await p; await idle();
+    }
+  } catch (e) { console.warn('[pc warm]', e); }
+  PCW.busy = false; PCW.done = true;
+}
 function startGame(mode) {
   if (gameStarted) return;
   if (LITE.xbox && mode !== 'vr' && !XBW.done) {
@@ -44263,6 +44409,7 @@ function startGame(mode) {
     return;
   }
   gameStarted = true;
+  if (mode !== 'vr') setTimeout(pcWarm, 3000);                   // PERF pass 3: the arms view's shaders in the background
   setTimeout(netTitleBegin, 1200);                   // multiplayer chosen on the title (Host / Join)
   const title = window.CQC_TITLE;
   if (mode === 'vr') {
@@ -51722,6 +51869,7 @@ function efbTick(e, dt, now) {
 if (/[?&]dev\b/.test(QS)) window.__cqcFallback = { EFB, efbPass, efbTick, efbSpot, efbBlind, efbEnd };
 if (window.__cqcDev) Object.assign(window.__cqcDev, { NBODY, netBodyTick, netBodyAt, HCOL, hcolMen, hcolPush, hcolFree, hcolPushOne, hcolPushPred, handClipWorld, CLIP, PUSH, propByCollider, getRapier: () => RAPIER });   // player and hand collisions
 if (/[?&]dev\b/.test(QS)) window.__cqcReinf = { RF, TB, IDLE, SPAWNCHK, rfOnKill, rfTick, rfSpawn, rfDoor, rfMove, tbBrain, tbStuck, idleTick, spotBad, spotClear, enemySpawnSpot, enemiesUpdate, enemyThink, enemyMove, enemyPose, enemySees, clearLine, findPath, navGrid, navFree, coverPoints, loopPlan, roomMem, loop, threatNow, headWorld, rig, stream, ENEMY, loopEnemyDied, enemyShot, wnow, propBoxes, navDoorStamp, doors, updateStreaming, playerState, NIGHT, MENU, enemyDie, aiNoise, enemiesHear, roomCanSense, colliders, insideRoom, props, MOD, renderer, scene, camera, updateDoorsPre, updateDoorsPost, stepPhysics, rebuildWalk, threatLocal, enemyFace, started: () => gameStarted, startGame };   // reinforcements / tactical body / spawn / unstick tests
+if (/[?&]dev\b/.test(QS)) window.__cqcPerf = { PCW, pcWarm, VM, tick, tickSafe, PROF, HITCH, profBegin, profMark, renderer, scene, camera, BAKE_T, bakeShot, bakeFoley, bakeLocal, bakeWorkerSource, SHOT_DEFS, baked, audio };   // optimisation pass 3: measuring
 
 </script>
 </body>
