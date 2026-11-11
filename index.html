@@ -92,6 +92,7 @@ body{height:100%;margin:0;overflow:hidden;background:var(--stage);
   <button id="bTool" type="button">Tool</button>
   <button id="bTip" type="button">Tip</button>
   <button id="bBuild" type="button">Cart</button>
+  <button id="bDrop" type="button">Drop</button>
 </div>
 <button id="bPause" type="button" aria-label="Pause">II</button>
 <div id="pause">
@@ -2198,7 +2199,7 @@ document.addEventListener('pointerlockchange', () => {
 document.addEventListener('pointerlockerror', () => { noLock = true; say('Drag with the mouse to look around.'); });
 cvs.addEventListener('mousedown', e => {
   if (!started || paused || isTouch) return;
-  if (locked) { primary(); return; }
+  if (locked) { if (e.button === 0) primary(); return; }
   if (!noLock) lockPointer();
   dragLook = true;
 });
@@ -2322,8 +2323,8 @@ bindSeg('detSeg', v => {
 });
 
 $('ctrl').textContent = isTouch
-  ? 'Left thumb walk · right thumb look · Use digs / takes · Tool · Tip cart · Cart builds one · Pause (II).'
-  : 'WASD walk · Shift hurry · C crouch · Click dig / use · E take · Q shovel · B build cart · R tip cart · F light · Esc pause.';
+  ? 'Left thumb walk · right thumb look · Use digs / takes · Drop places dirt · Tool · Tip cart · Cart builds one · Pause (II).'
+  : 'WASD walk · Shift hurry · C crouch · Click dig / use · Right-click or G drop dirt · E take · Q shovel · B build cart · R tip cart · F light · Esc pause.';
 $('go').addEventListener('click', () => {
   if (soundOn) initAudio();
   started = true; paused = false;
@@ -2817,27 +2818,28 @@ const wildlife = createCritterWorld(scene, {
 });
 
 /* =====================================================================
-   MINING — the ground is a field of 0.5 m columns. Each column is a list
+   MINING — the ground is a field of 0.25 m columns. Each column is a list
    of solid intervals [y0, y1, type] (0 = natural soil, 1 = loose dirt).
-   Untouched columns are implicit (bedrock → terrain surface). Edited 8 m
-   regions are drawn by their own meshes (smooth natural tops, cut faces,
-   tunnel ceilings) and the heightmap is holed beneath them. The player,
-   carts and flying dirt all collide with the same column data, so you can
-   dig down, sideways or up, haul spoil in carts and tip it out — loose
-   dirt settles at its angle of repose.
+   Untouched columns are implicit (bedrock → terrain surface). A shovel
+   stab carves a rounded scoop out of those intervals in any direction;
+   loose dirt is laid down as smooth mounds that slump to their angle of
+   repose. Edited 8 m regions are drawn by their own meshes: neighbouring
+   surfaces within a hand-span are welded into smooth slopes, bigger steps
+   become cut walls, and the heightmap is holed underneath.
    ===================================================================== */
 const mine = (() => {
-  const S = .5, BOT = -60, TA = terrainAPI, surfH = TA.surfH;
-  const OXc = WOX / S, OZc = WOZ / S;                       // terrain grid origin in columns (regions align to it)
-  const cols = new Map(), regions = new Map();              // "ix,iz" → { h, iv }, "rx,rz" → { top, cut }
+  const S = .25, RS = 8 / S, BOT = -60, TOL = .3, TA = terrainAPI, surfH = TA.surfH;
+  const OXc = WOX / S, OZc = WOZ / S;
+  const cols = new Map(), regions = new Map();
   const K = (a, b) => a + ',' + b;
   const ci = v => Math.floor(v / S);
   const natH = (ix, iz) => surfH((ix + .5) * S, (iz + .5) * S);
   const col = (ix, iz) => cols.get(K(ix, iz));
   const ivsOf = (ix, iz) => { const c = col(ix, iz); return c ? c.iv : [[BOT, natH(ix, iz), 0]]; };
   const isNatTop = (c, iv) => iv[2] === 0 && (!c || iv[1] === c.h);
-  const regionOf = (ix, iz) => [Math.floor((ix - OXc) / 16), Math.floor((iz - OZc) / 16)];
+  const regionOf = (ix, iz) => [Math.floor((ix - OXc) / RS), Math.floor((iz - OZc) / RS)];
   const inHouse = (x, z) => x > -.7 && x < 9.7 && z > -.7 && z < 7.7;
+  const inShed = (x, z) => x > 9 && x < 11.9 && z > .1 && z < 4.8;
   let edits = 0;
 
   function editCol(ix, iz) {
@@ -2845,14 +2847,13 @@ const mine = (() => {
     if (!c) { const h = natH(ix, iz); c = { h, iv: [[BOT, h, 0]] }; cols.set(K(ix, iz), c); }
     return c;
   }
-  /* top of the solid under/at height y (exact smooth surface for untouched natural tops); -Infinity if none */
   function floorAt(x, z, y) {
-    const ix = ci(x), iz = ci(z), c = col(ix, iz), iv = c ? c.iv : null;
-    if (!iv) return surfH(x, z);
+    const c = col(ci(x), ci(z));
+    if (!c) return surfH(x, z);
     let best = -Infinity;
-    for (const v of iv) {
+    for (const v of c.iv) {
       const top = isNatTop(c, v) ? surfH(x, z) : v[1];
-      if (v[0] < y - 1e-4 && top > y - 1e-4) return top;          // y is inside this solid: its top is the floor
+      if (v[0] < y - 1e-4 && top > y - 1e-4) return top;
       if (top <= y + 1e-4 && top > best) best = top;
     }
     return best;
@@ -2863,69 +2864,96 @@ const mine = (() => {
     return best;
   }
   function solidAt(x, y, z) {
-    const ix = ci(x), iz = ci(z), c = col(ix, iz);
+    const c = col(ci(x), ci(z));
     if (!c) return y < surfH(x, z) && y > BOT;
     for (const v of c.iv) if (y > v[0] && y < (isNatTop(c, v) ? surfH(x, z) : v[1])) return true;
     return false;
   }
   const active = (x, z) => regions.has(K(...regionOf(ci(x), ci(z))));
+  function blockedCol(ix, iz) { const x = (ix + .5) * S, z = (iz + .5) * S; return inHouse(x, z) || inShed(x, z) || TA.treeNear(x, z, .3); }
 
-  /* remove the cell [iy*S, iy*S+S] from a column */
-  function carve(ix, iz, iy) {
-    const c = editCol(ix, iz), a = iy * S, b = a + S, out = [];
-    let typ = 0;
-    for (const v of c.iv) {
-      if (v[1] <= a || v[0] >= b) { out.push(v); continue; }
-      typ = Math.max(typ, v[2]);
-      if (v[0] < a) out.push([v[0], a, v[2]]);
-      if (v[1] > b && !(v === c.iv[c.iv.length - 1] && v[1] - b < S * .5)) out.push([b, v[1], v[2]]);   // a sliver of topsoil left over the cut comes away with it
-    }
-    c.iv = out; return typ;
-  }
-  /* loose dirt sitting on nothing drops until it rests */
-  function dropLoose(c) {
-    c.iv.sort((p, q) => p[0] - q[0]);
+  /* merge touching loose layers, drop loose layers that lost their support, discard dust-thin slivers */
+  function tidy(c) {
+    c.iv = c.iv.filter(v => v[1] - v[0] > .012).sort((p, q) => p[0] - q[0]);
     for (let i = 1; i < c.iv.length; i++) {
       const v = c.iv[i], under = c.iv[i - 1];
       if (v[2] === 1 && v[0] > under[1] + 1e-3) { const t = v[1] - v[0]; v[0] = under[1]; v[1] = under[1] + t; }
     }
-    const m = [];                                            // merge touching loose layers
-    for (const v of c.iv) { const p = m[m.length - 1]; if (p && p[2] === 1 && v[2] === 1 && Math.abs(p[1] - v[0]) < 1e-3) p[1] = v[1]; else m.push(v); }
+    const m = [];
+    for (const v of c.iv) { const p = m[m.length - 1]; if (p && v[0] <= p[1] + 1e-3 && (p[2] === v[2] || v[2] === 1 && p[2] === 1)) p[1] = Math.max(p[1], v[1]); else m.push(v); }
     c.iv = m;
   }
-  /* add one unit of loose dirt on the column at or below height y */
-  function deposit(ix, iz, y, depth) {
-    const c = editCol(ix, iz);
-    let t = -Infinity; for (const v of c.iv) { const top = v[1]; if (v[0] < y - 1e-3 && top > y - 1e-3) { t = top; break; } if (top <= y + 1e-3 && top > t) t = top; }
-    if (t === -Infinity) t = BOT;
-    c.iv.push([t, t + S, 1]); dropLoose(c); touch(ix, iz);
-    settle(ix, iz, depth || 0);
-  }
-  /* angle of repose: a loose top more than ~1.2 cells above a neighbour's floor slides down to it */
-  function settle(ix, iz, depth) {
-    if (depth > 24) return;
-    const c = col(ix, iz); if (!c) return;
-    const top = c.iv[c.iv.length - 1]; if (!top || top[2] !== 1 || top[1] - top[0] < S - 1e-3) return;
-    const y = top[1], cx = (ix + .5) * S, cz = (iz + .5) * S;
-    let best = null, bd = 1.2 * S;
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = cx + dx * S, nz = cz + dz * S;
-      if (inHouse(nx, nz) || solidAt(nx, y - S * .5, nz)) continue;       // wall at this height
-      const f = floorAt(nx, nz, y - 1e-3), d = y - f;
-      if (d > bd) { bd = d; best = [ix + dx, iz + dz]; }
+
+  /* carve a ball of radius r centred on (x, y, z); returns the volume of soil actually removed (m³) */
+  function scoop(x, y, z, r) {
+    let vol = 0; const hit = [];
+    for (let iz = ci(z - r); iz <= ci(z + r); iz++) for (let ix = ci(x - r); ix <= ci(x + r); ix++) {
+      const cx = (ix + .5) * S, cz = (iz + .5) * S, d = Math.hypot(cx - x, cz - z); if (d > r) continue;
+      if (blockedCol(ix, iz)) continue;
+      const hh = Math.sqrt(r * r - d * d), a = y - hh, b = y + hh, c = editCol(ix, iz), out = [];
+      let took = 0;
+      c.iv.forEach((v, i) => {
+        if (v[1] <= a || v[0] >= b) { out.push(v); return; }
+        took += Math.min(v[1], b) - Math.max(v[0], a);
+        if (v[0] < a) out.push([v[0], a, v[2]]);
+        if (v[1] > b && !(i === c.iv.length - 1 && v[1] - b < .07)) out.push([b, v[1], v[2]]);   // a crumb of topsoil over the scoop comes away too
+        else if (v[1] > b) took += v[1] - b;
+      });
+      if (took > 0) { c.iv = out; tidy(c); vol += took * S * S; hit.push([ix, iz]); }
     }
-    if (!best) return;
-    top[1] -= S; if (top[1] - top[0] < 1e-3) c.iv.pop();
-    touch(ix, iz);
-    deposit(best[0], best[1], y, depth + 1);
-    settle(ix, iz, depth + 1);
+    for (const [ix, iz] of hit) touch(ix, iz);
+    if (hit.length) relax(ci(x), ci(z), Math.ceil(r / S) + 3);
+    return vol;
+  }
+
+  /* lay a cone-shaped mound of `vol` m³ of loose dirt on whatever surface is under (x, z) below height y */
+  function mound(x, z, y, vol) {
+    const R = Math.max(.22, Math.cbrt(vol) * 1.1), list = []; let wsum = 0;
+    for (let iz = ci(z - R); iz <= ci(z + R); iz++) for (let ix = ci(x - R); ix <= ci(x + R); ix++) {
+      const cx = (ix + .5) * S, cz = (iz + .5) * S, d = Math.hypot(cx - x, cz - z), w = 1 - d / R;
+      if (w <= 0 || blockedCol(ix, iz)) continue;
+      list.push([ix, iz, w]); wsum += w;
+    }
+    if (!wsum) return false;
+    for (const [ix, iz, w] of list) addOn(ix, iz, y, vol * w / (wsum * S * S));
+    relax(ci(x), ci(z), Math.ceil(R / S) + 4);
+    return true;
+  }
+  /* add a loose layer of thickness th on top of the surface found below height y in a column */
+  function addOn(ix, iz, y, th) {
+    const c = editCol(ix, iz), cx = (ix + .5) * S, cz = (iz + .5) * S, at = floorAt(cx, cz, y + .05);
+    for (const v of c.iv) if (v[2] === 0 && Math.abs(v[1] - at) < 1e-4) v[2] = 2;   // natural ground now buried under spoil
+    c.iv.push([at, at + th, 1]); tidy(c); touch(ix, iz);
+  }
+  /* angle of repose (~38°): loose tops steeper than that against a neighbour shed material downhill */
+  function relax(ix0, iz0, rad) {
+    const MAXD = S * .78;
+    for (let pass = 0; pass < 8; pass++) {
+      let moved = false;
+      for (let iz = iz0 - rad; iz <= iz0 + rad; iz++) for (let ix = ix0 - rad; ix <= ix0 + rad; ix++) {
+        const c = col(ix, iz); if (!c) continue;
+        const v = c.iv[c.iv.length - 1]; if (!v || v[2] !== 1) continue;
+        const top = v[1], cx = (ix + .5) * S, cz = (iz + .5) * S;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx * S, nz = cz + dz * S;
+          if (blockedCol(ix + dx, iz + dz) || solidAt(nx, top - .02, nz)) continue;      // a wall at this height
+          const nf = floorAt(nx, nz, top - .02), diff = top - nf;
+          if (diff <= MAXD) continue;
+          const mv = Math.min((diff - MAXD) * .45, v[1] - v[0]); if (mv < .004) continue;
+          v[1] -= mv; addOn(ix + dx, iz + dz, top - .02, mv); moved = true;
+          if (v[1] - v[0] < .005) break;
+        }
+        tidy(c); touch(ix, iz);
+      }
+      if (!moved) break;
+    }
   }
 
   /* ---------------- meshes ---------------- */
   const dirtT = (() => { const c = cv(32, 32), g = ctx(c);
     for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) { const v = 150 + R() * 90 | 0; g.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')'; g.fillRect(x, y, 1, 1); }
-    for (let i = 0; i < 30; i++) { const v = R() < .5 ? 90 : 235, s = 1 + (R() * 2 | 0); g.fillStyle = 'rgb(' + v + ',' + v + ',' + (v - 10) + ')'; g.fillRect(R() * 32 | 0, R() * 32 | 0, s, s); }   // pebbles
-    for (let i = 0; i < 6; i++) { g.strokeStyle = 'rgba(60,40,25,.7)'; g.beginPath(); let x = R() * 32, y = R() * 32; g.moveTo(x, y); for (let k = 0; k < 4; k++) { x += RR(-5, 5); y += RR(1, 6); g.lineTo(x, y); } g.stroke(); }   // roots
+    for (let i = 0; i < 30; i++) { const v = R() < .5 ? 90 : 235, s = 1 + (R() * 2 | 0); g.fillStyle = 'rgb(' + v + ',' + v + ',' + (v - 10) + ')'; g.fillRect(R() * 32 | 0, R() * 32 | 0, s, s); }
+    for (let i = 0; i < 6; i++) { g.strokeStyle = 'rgba(60,40,25,.7)'; g.beginPath(); let x = R() * 32, y = R() * 32; g.moveTo(x, y); for (let k = 0; k < 4; k++) { x += RR(-5, 5); y += RR(1, 6); g.lineTo(x, y); } g.stroke(); }
     const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.encoding = THREE.sRGBEncoding; return t; })();
   const dirtM = snap(new THREE.MeshStandardMaterial({ map: dirtT, vertexColors: true, flatShading: true, side: THREE.DoubleSide, roughness: 1 }));
   const STRATA = [[.35, C('#3e3024')], [2.4, C('#6e5034')], [7, C('#7d7062')], [1e9, C('#5e5c5a')]], LOOSE = C('#54412f');
@@ -2935,36 +2963,48 @@ const mine = (() => {
   function buildRegion(rx, rz) {
     const R0 = regions.get(K(rx, rz)); if (!R0) return;
     const tp = [], tc = [], tu = [], dp = [], dc = [], du = [];
-    const ix0 = OXc + rx * 16, iz0 = OZc + rz * 16, gc = new THREE.Color();
-    const corner = (ix, iz) => surfH(ix * S, iz * S);
-    const pushTop = (pts) => {                                  // natural ground: terrain colours, smooth corners
-      for (const k of [0, 1, 2, 0, 2, 3]) { const p = pts[k]; tp.push(p[0], p[1], p[2]); TA.groundColGrid(p[0], p[2], gc); tc.push(gc.r, gc.g, gc.b); tu.push(p[0] / 40, p[2] / 40); }
+    const ix0 = OXc + rx * RS, iz0 = OZc + rz * RS, gc = new THREE.Color();
+    /* a corner is shared by four columns: weld every surface within TOL of ours into one smooth height */
+    const cornerH = (cx, cz, ref, bottom) => {
+      let sum = 0, n = 0, allNat = true;
+      for (const [ix, iz] of [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]]) {
+        const c = col(ix, iz); let best = null, bd = TOL;
+        for (const v of ivsOf(ix, iz)) { const y = bottom ? v[0] : v[1], d = Math.abs(y - ref); if (d < bd && (!bottom || v[0] > BOT)) { bd = d; best = v; } }
+        if (!best) continue;
+        if (!bottom && isNatTop(c, best)) sum += surfH(cx * S, cz * S); else { sum += bottom ? best[0] : best[1]; allNat = false; }
+        n++;
+      }
+      return n ? (allNat && !bottom ? surfH(cx * S, cz * S) : sum / n) : ref;
     };
-    const pushCut = (pts, h, loose, axis) => {                  // cut soil: strata by depth below the original surface
+    const pushTop = (pts) => { for (const k of [0, 1, 2, 0, 2, 3]) { const p = pts[k]; tp.push(p[0], p[1], p[2]); TA.groundColGrid(p[0], p[2], gc); tc.push(gc.r, gc.g, gc.b); tu.push(p[0] / 40, p[2] / 40); } };
+    const pushCut = (pts, h, loose, axis) => {
       for (const k of [0, 1, 2, 0, 2, 3]) {
         const p = pts[k], d = h - p[1], c = soilCol(d, loose), dark = Math.max(.45, 1 - Math.max(0, d) * .03);
         dp.push(p[0], p[1], p[2]); dc.push(c.r * dark, c.g * dark, c.b * dark);
         du.push(axis === 0 ? p[2] / 1.5 : p[0] / 1.5, axis === 1 ? p[2] / 1.5 : p[1] / 1.5);
       }
     };
-    /* exposed parts of [a, b] once the neighbour's solids are taken away */
     const expose = (a, b, nb) => { let segs = [[a, b]]; for (const v of nb) { const n = []; for (const s of segs) { if (v[1] <= s[0] || v[0] >= s[1]) { n.push(s); continue; } if (v[0] > s[0]) n.push([s[0], v[0]]); if (v[1] < s[1]) n.push([v[1], s[1]]); } segs = n; } return segs.filter(s => s[1] - s[0] > 1e-3); };
-    const edgeTops = (ix, iz) => { const c = col(ix, iz); return ivsOf(ix, iz).map(v => [v[0], v[1], v[2], isNatTop(c, v)]); };
-    const SIDES = [[1, 0, 1, 0, 1, 1], [-1, 0, 0, 0, 0, 1], [0, 1, 0, 1, 1, 1], [0, -1, 0, 0, 1, 0]];   // dx, dz, corner A (x,z), corner B (x,z) offsets
-    for (let iz = iz0; iz < iz0 + 16; iz++) for (let ix = ix0; ix < ix0 + 16; ix++) {
+    const SIDES = [[1, 0, 1, 0, 1, 1], [-1, 0, 0, 0, 0, 1], [0, 1, 0, 1, 1, 1], [0, -1, 0, 0, 1, 0]];
+    for (let iz = iz0; iz < iz0 + RS; iz++) for (let ix = ix0; ix < ix0 + RS; ix++) {
       const c = col(ix, iz), iv = ivsOf(ix, iz), x0 = ix * S, z0 = iz * S, x1 = x0 + S, z1 = z0 + S, h = c ? c.h : natH(ix, iz);
       for (const v of iv) {
-        const nat = isNatTop(c, v);
-        if (nat) pushTop([[x0, corner(ix, iz), z0], [x0, corner(ix, iz + 1), z1], [x1, corner(ix + 1, iz + 1), z1], [x1, corner(ix + 1, iz), z0]]);
-        else pushCut([[x0, v[1], z0], [x0, v[1], z1], [x1, v[1], z1], [x1, v[1], z0]], h, v[2] === 1, 1);
-        if (v[0] > BOT + 1e-3) pushCut([[x0, v[0], z0], [x1, v[0], z0], [x1, v[0], z1], [x0, v[0], z1]], h, v[2] === 1, 1);   // tunnel ceiling
+        const nat = isNatTop(c, v), loose = v[2] === 1;
+        const T = { '0,0': cornerH(ix, iz, v[1]), '0,1': cornerH(ix, iz + 1, v[1]), '1,1': cornerH(ix + 1, iz + 1, v[1]), '1,0': cornerH(ix + 1, iz, v[1]) };
+        const top = [[x0, T['0,0'], z0], [x0, T['0,1'], z1], [x1, T['1,1'], z1], [x1, T['1,0'], z0]];
+        if (nat) pushTop(top); else pushCut(top, h, loose, 1);
+        let B = null;
+        if (v[0] > BOT + 1e-3) {
+          B = { '0,0': cornerH(ix, iz, v[0], 1), '0,1': cornerH(ix, iz + 1, v[0], 1), '1,1': cornerH(ix + 1, iz + 1, v[0], 1), '1,0': cornerH(ix + 1, iz, v[0], 1) };
+          pushCut([[x0, B['0,0'], z0], [x1, B['1,0'], z0], [x1, B['1,1'], z1], [x0, B['0,1'], z1]], h, loose, 1);   // ceiling
+        }
         for (const [dx, dz, ax, az, bx, bz] of SIDES) {
-          const ca = corner(ix + ax, iz + az), cb = corner(ix + bx, iz + bz), top = nat ? (ca + cb) / 2 : v[1];
-          const nb = edgeTops(ix + dx, iz + dz).map(n => [n[0], n[3] ? (ca + cb) / 2 : n[1]]);
-          const px = x0 + ax * S, pz = z0 + az * S, qx = x0 + bx * S, qz = z0 + bz * S;
-          for (const [s0, s1] of expose(v[0], top, nb)) {
-            const ta = s1 === top && nat ? ca : s1, tb = s1 === top && nat ? cb : s1;
-            pushCut([[px, s0, pz], [qx, s0, qz], [qx, tb, qz], [px, ta, pz]], h, v[2] === 1, dx ? 0 : 2);
+          /* neighbours whose top (or underside) is within TOL of ours are welded on by the corners: no wall between */
+          const nb = ivsOf(ix + dx, iz + dz).map(n => [Math.abs(n[0] - v[0]) < TOL && n[0] > BOT ? v[0] : n[0], Math.abs(n[1] - v[1]) < TOL ? v[1] : n[1]]);
+          const px = x0 + ax * S, pz = z0 + az * S, qx = x0 + bx * S, qz = z0 + bz * S, ka = ax + ',' + az, kb = bx + ',' + bz;
+          for (const [s0, s1] of expose(v[0], v[1], nb)) {
+            const ta = s1 === v[1] ? T[ka] : s1, tb = s1 === v[1] ? T[kb] : s1, ba = s0 === v[0] && B ? B[ka] : s0, bb = s0 === v[0] && B ? B[kb] : s0;
+            pushCut([[px, ba, pz], [qx, bb, qz], [qx, tb, qz], [px, ta, pz]], h, loose, dx ? 0 : 2);
           }
         }
       }
@@ -2980,8 +3020,7 @@ const mine = (() => {
   }
   const dirty = new Set();
   function touch(ix, iz) {
-    const [rx, rz] = regionOf(ix, iz);
-    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {           // a cell on a region edge changes its neighbour's walls too
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
       const [qx, qz] = regionOf(ix + a, iz + b), k = K(qx, qz);
       if (!regions.has(k)) { regions.set(k, { top: null, cut: null }); TA.hole(qx, qz); }
       dirty.add(k);
@@ -2990,215 +3029,230 @@ const mine = (() => {
   }
   function flush() { for (const k of dirty) { const [a, b] = k.split(',').map(Number); buildRegion(a, b); } dirty.clear(); }
 
-  /* ray march from the eye: first solid cell within reach, and the last empty point before it */
   function pick(o, d, reach) {
     let px = o.x, py = o.y, pz = o.z;
-    for (let t = 0; t < reach; t += .04) {
+    for (let t = 0; t < reach; t += .03) {
       const x = o.x + d.x * t, y = o.y + d.y * t, z = o.z + d.z * t;
-      if (solidAt(x, y, z)) return { ix: ci(x), iy: Math.floor(y / S), iz: ci(z), x, y, z, px, py, pz, t };
+      if (solidAt(x, y, z)) return { x, y, z, px, py, pz, t };
       px = x; py = y; pz = z;
     }
     return null;
   }
-  const hardness = (ix, iy, iz) => {
-    const c = col(ix, iz), y = (iy + .5) * S, d = (c ? c.h : natH(ix, iz)) - y;
-    if (c) for (const v of c.iv) if (y > v[0] && y < v[1] && v[2] === 1) return 1;
-    return d < .35 ? 2 : d < 2.4 ? 3 : d < 7 ? 4 : 6;
+  const hardness = (x, y, z) => {
+    const c = col(ci(x), ci(z)), d = (c ? c.h : surfH(x, z)) - y;
+    if (c) for (const v of c.iv) if (y > v[0] - .05 && y < v[1] + .05 && v[2] === 1) return 1;
+    return d < .35 ? 1 : d < 2.4 ? 2 : d < 7 ? 3 : 4;
   };
-  function canDig(ix, iz) {
-    const x = (ix + .5) * S, z = (iz + .5) * S;
+  function canDig(x, z) {
     if (inHouse(x, z)) return 'Too close to the foundations.';
-    if (TA.treeNear(x, z, .35)) return 'Roots and stone. The shovel just rings off it.';
+    if (inShed(x, z)) return 'Not under the shed.';
+    if (TA.treeNear(x, z, .3)) return 'Roots and stone. The shovel just rings off it.';
     return null;
   }
 
   return {
-    S, floorAt, ceilAt, solidAt, active, pick, carve, deposit, settle, dropLoose, editCol, touch, flush, hardness, canDig, inHouse, col, ci,
+    S, floorAt, ceilAt, solidAt, active, pick, scoop, mound, flush, hardness, canDig, inHouse,
     get edits() { return edits; },
     isDug: (x, z) => { const c = col(ci(x), ci(z)); return !!c && !c.iv.some(v => isNatTop(c, v)); },
-    /* ground for walkers: smooth terrain where nothing is dug, otherwise the column floor under the feet */
     ground(x, z, feet) { return active(x, z) && !inHouse(x, z) ? floorAt(x, z, feet + .45) : groundY(x, z); },
-    /* how buried a point is (0 open sky … 1 deep in a tunnel) */
     cover(p) { if (!active(p.x, p.z)) return 0; const c = col(ci(p.x), ci(p.z)); if (!c) return 0; const roof = ceilAt(p.x, p.z, p.y); if (roof === Infinity) return 0; return Math.min(1, Math.max(0, (c.h - p.y) / 2.5)); }
   };
 })();
 terrainAPI.isDug = mine.isDug;
 
-/* ================= tools: shovel, logs, carts, flying dirt ================= */
-const inv = { logs: 0, sticks: 0, shovel: false, tool: 'hands', load: 0 };
-const pcol = (h, k) => { const c = C(h); return k ? c.multiplyScalar(k) : c; };
+/* ================= tools: shovel, logs, dirt, carts ================= */
+const DIRT_MAX = 8;                                       // shovelfuls you can carry in the sack
+const inv = { logs: 0, sticks: 0, shovel: false, tool: 'hands', dirt: [] };
 const woodShM = snap(MS({ map: T.woodL, color: C('#b8956a'), roughness: .8 }));
 const steelM = snap(MS({ color: C('#6d7276'), metalness: .6, roughness: .45 }));
 const ironM = snap(MS({ color: C('#2b2a29'), metalness: .5, roughness: .6 }));
 const clodM = snap(new THREE.MeshStandardMaterial({ color: C('#54412f'), roughness: 1, flatShading: true }));
-const clodG = new THREE.DodecahedronGeometry(.13, 0);
+const clodG = new THREE.DodecahedronGeometry(.11, 0);
+const dirtHeld = () => inv.dirt.reduce((a, b) => a + b, 0);
 
-/* a round-point shovel: ash shaft, D-grip, steel collar and dished blade (shaft along +Y, blade at the bottom) */
 function makeShovel() {
   const g = new THREE.Group();
   cyl(.017, .019, 1.0, woodShM, 0, -.05, 0, { p: g, seg: 6 });
-  cyl(.026, .02, .14, steelM, 0, -.17, 0, { p: g, seg: 6 });                  // socket collar
+  cyl(.026, .02, .14, steelM, 0, -.17, 0, { p: g, seg: 6 });
   for (const s of [-1, 1]) box(.014, .13, .022, woodShM, s * .055, .95, 0, { p: g });
-  box(.13, .026, .03, woodShM, 0, 1.08, 0, { p: g, cast: false });            // D-grip bar
+  box(.13, .026, .03, woodShM, 0, 1.08, 0, { p: g, cast: false });
   const sh = new THREE.Shape(); sh.moveTo(-.11, 0); sh.lineTo(.11, 0); sh.lineTo(.115, -.17); sh.quadraticCurveTo(.09, -.27, 0, -.3); sh.quadraticCurveTo(-.09, -.27, -.115, -.17); sh.closePath();
   const bg = new THREE.ShapeGeometry(sh, 3), bp = bg.attributes.position;
-  for (let i = 0; i < bp.count; i++) bp.setZ(i, (bp.getX(i) / .11) ** 2 * .035);   // dished
+  for (let i = 0; i < bp.count; i++) bp.setZ(i, (bp.getX(i) / .11) ** 2 * .035);
   bg.computeVertexNormals();
   const blade = new THREE.Mesh(bg, snap(MS({ color: C('#7a7f84'), metalness: .55, roughness: .5, side: THREE.DoubleSide }))); blade.position.y = -.18; g.add(blade);
   const heap = new THREE.Mesh(new THREE.DodecahedronGeometry(.1, 0), clodM); heap.scale.set(1.05, .55, .9); heap.position.set(0, -.3, .05); heap.visible = false; g.add(heap);
   g.userData.heap = heap;
   return g;
 }
-/* the shovel waits, leaning on the wall left of the front door */
-const shovelProp = makeShovel(); shovelProp.position.set(2.62, .62, 7.24); shovelProp.rotation.set(-.32, .4, .05); world.add(shovelProp);
-act(shovelProp, 'Take the shovel', () => { world.remove(shovelProp); inv.shovel = true; inv.tool = 'shovel'; vm.visible = true; sfx.click(); say('A good round-point shovel. Click / Use to dig, again to throw or place the dirt. Q puts it away.'); hud(); });
-/* first-person viewmodel */
-const vm = makeShovel(); vm.visible = false; camera.add(vm);
-vm.scale.setScalar(.9);
-/* held low on the right: shaft rising from the bottom corner, blade ahead with its dish facing up */
+const shovelProp = makeShovel(); shovelProp.position.set(2.62, .58, 7.24); shovelProp.rotation.set(-.32, .4, .05); world.add(shovelProp);
+act(shovelProp, 'Take the shovel', () => { world.remove(shovelProp); inv.shovel = true; inv.tool = 'shovel'; vm.visible = true; sfx.click(); say('A round-point shovel. Click / Use to dig. Each shovelful goes in your sack: drop it with G (or Drop), or tip it into a cart. Q puts the shovel away.'); hud(); });
+const vm = makeShovel(); vm.visible = false; camera.add(vm); vm.scale.setScalar(.9);
 const vmDir = new THREE.Vector3(-.31, .21, -.93).normalize(), vmPos = new THREE.Vector3(.22, -.34, -.7);
 const vmQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), vmDir).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), PI));
 const vmTilt = new THREE.Quaternion(), vmX = new THREE.Vector3(1, 0, 0);
-let vmAnim = null;                                        // { kind, t, dur }
+/* keyframed swings: [time, push along the shaft, lift, tilt (+ raises the blade)] */
+const SWINGS = {
+  dig:  { dur: .95, hit: .4, keys: [[0, 0, 0, 0], [.26, -.14, .1, .42], [.4, .34, -.17, -.22], [.6, .28, -.12, .5], [.82, .06, .08, .2], [1, 0, 0, 0]] },
+  toss: { dur: .6, hit: .55, keys: [[0, 0, 0, 0], [.35, -.1, .03, -.25], [.55, .2, .12, .7], [1, 0, 0, 0]] },
+  miss: { dur: .5, hit: .4, keys: [[0, 0, 0, 0], [.25, -.1, .06, .3], [.45, .3, -.1, -.1], [1, 0, 0, 0]] }
+};
+let vmAnim = null, camShake = 0;
+const swing = (kind, onHit) => { vmAnim = { kind, t: 0, onHit, fired: false }; };
 
-/* ---- flying dirt clods: ballistic, bounce off walls, settle into the ground (or a cart) ---- */
+/* ---- flying dirt: ballistic clods that land as smooth mounds (or in a cart) ---- */
 const clods = [];
-function throwClod(x, y, z, vx, vy, vz) { const m = new THREE.Mesh(clodG, clodM); m.position.set(x, y, z); O.add(m); clods.push({ m, vx, vy, vz, age: 0 }); }
 const ground2 = (x, z, y) => mine.active(x, z) && !mine.inHouse(x, z) ? mine.floorAt(x, z, y) : groundY(x, z);
+function throwClod(x, y, z, vx, vy, vz, vol) { const m = new THREE.Mesh(clodG, clodM); m.position.set(x, y, z); m.scale.setScalar(Math.max(.5, Math.cbrt(vol / .02))); O.add(m); clods.push({ m, vx, vy, vz, age: 0, vol }); }
 function updateClods(dt) {
+  let changed = false;
   for (let i = clods.length - 1; i >= 0; i--) {
     const c = clods[i], p = c.m.position; c.age += dt;
-    c.vy -= 9.81 * dt; const k = Math.max(0, 1 - .15 * dt); c.vx *= k; c.vz *= k;      // gravity, light air drag
+    if (c.fx) { c.vy -= 9.81 * dt; p.x += c.vx * dt; p.y += c.vy * dt; p.z += c.vz * dt; if (c.age > .7) { O.remove(c.m); clods.splice(i, 1); } continue; }
+    c.vy -= 9.81 * dt; const k = Math.max(0, 1 - .15 * dt); c.vx *= k; c.vz *= k;
     const nx = p.x + c.vx * dt, ny = p.y + c.vy * dt, nz = p.z + c.vz * dt;
-    if (mine.solidAt(nx, p.y, p.z) || mine.inHouse(nx, nz)) c.vx *= -.25; else p.x = nx;
-    if (mine.solidAt(p.x, p.y, nz) || mine.inHouse(p.x, nz)) c.vz *= -.25; else p.z = nz;
+    if (mine.solidAt(nx, p.y, p.z) || mine.inHouse(nx, nz)) c.vx *= -.2; else p.x = nx;
+    if (mine.solidAt(p.x, p.y, nz) || mine.inHouse(p.x, nz)) c.vz *= -.2; else p.z = nz;
     c.m.rotation.x += dt * 6; c.m.rotation.z += dt * 4;
-    if (c.fx) { if (c.age > .9) { O.remove(c.m); clods.splice(i, 1); continue; } p.y += c.vy * dt; continue; }
-    const cart = carts.find(k => k.catches(p.x, ny, p.z));
-    if (cart) { cart.add(1); O.remove(c.m); clods.splice(i, 1); continue; }
+    const cart = carts.find(q => q.catches(p.x, ny, p.z));
+    if (cart) { cart.add(c.vol); O.remove(c.m); clods.splice(i, 1); continue; }
     const f = ground2(p.x, p.z, p.y);
     if (ny <= f || c.age > 6) {
-      if (!mine.inHouse(p.x, p.z) && mine.canDig(mine.ci(p.x), mine.ci(p.z)) === null) { mine.deposit(mine.ci(p.x), mine.ci(p.z), p.y + .05); mine.flush(); burst(.22, 'lowpass', 300, 1, .35, .005); }
+      if (!mine.inHouse(p.x, p.z) && mine.mound(p.x, p.z, p.y + .05, c.vol)) { changed = true; burst(.2, 'lowpass', 300, 1, .3, .005); }
       O.remove(c.m); clods.splice(i, 1); continue;
     }
     if (mine.ceilAt(p.x, p.z, p.y) < ny + .1) c.vy = -Math.abs(c.vy) * .3; else p.y = ny;
   }
+  if (changed) mine.flush();
 }
 
-/* ---- mine carts: oak tub on iron wheels, rolls with gravity, pushed by hand, tips its load ---- */
+/* ---- mine carts ---- */
 const carts = [];
 const plankT = (() => { const c = cv(32, 32), g = ctx(c); for (let y = 0; y < 32; y++) { const b = (y >> 3), base = 120 + b * 9; for (let x = 0; x < 32; x++) { const v = base + Math.sin(x * .6 + b * 2) * 10 + R() * 18 - (y % 8 === 7 ? 50 : 0) | 0; g.fillStyle = 'rgb(' + v + ',' + (v * .78 | 0) + ',' + (v * .55 | 0) + ')'; g.fillRect(x, y, 1, 1); } } const t = new THREE.CanvasTexture(c); t.magFilter = t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.encoding = THREE.sRGBEncoding; return t; })();
 const plankM = snap(MS({ map: plankT, roughness: .9 }));
-const CAP = 6, CART_L = 1.1, CART_W = .72;
+const CAP = .32, CART_L = 1.1, CART_W = .72;            // tub holds about a third of a cubic metre
 function makeCart(x, z, yaw) {
   const g = new THREE.Group(); g.rotation.order = 'YXZ'; world.add(g);
-  const tub = new THREE.Group(); tub.position.set(0, .26, .5); g.add(tub);            // pivots on the front axle when tipping
+  const tub = new THREE.Group(); tub.position.set(0, .26, .5); g.add(tub);
   const T0 = new THREE.Group(); T0.position.z = -.5; tub.add(T0);
-  box(CART_W - .08, .05, CART_L - .1, plankM, 0, 0, 0, { p: T0 });                    // floor
+  box(CART_W - .08, .05, CART_L - .1, plankM, 0, 0, 0, { p: T0 });
   for (const s of [-1, 1]) { box(.05, .5, CART_L, plankM, s * CART_W / 2, 0, 0, { p: T0, rz: -s * .12 }); box(CART_W + .02, .5, .05, plankM, 0, 0, s * CART_L / 2, { p: T0, rx: s * .12 }); }
   for (const y of [.08, .42]) { box(CART_W + .1, .035, .02, ironM, 0, y, CART_L / 2 + .03, { p: T0 }); box(CART_W + .1, .035, .02, ironM, 0, y, -CART_L / 2 - .03, { p: T0 }); for (const s of [-1, 1]) box(.02, .035, CART_L + .06, ironM, s * (CART_W / 2 + .05 + y * .12), y, 0, { p: T0 }); }
-  const fill = new THREE.Mesh(new THREE.BoxGeometry(CART_W - .1, 1, CART_L - .12, 3, 1, 3), clodM);
-  { const p = fill.geometry.attributes.position; for (let i = 0; i < p.count; i++) if (p.getY(i) > .4) p.setY(i, .5 + (noise2D(p.getX(i) * 9, p.getZ(i) * 9) - .5) * .5); fill.geometry.translate(0, .5, 0); fill.geometry.computeVertexNormals(); }
+  const fill = new THREE.Mesh(new THREE.BoxGeometry(CART_W - .1, 1, CART_L - .12, 4, 1, 4), clodM);
+  { const p = fill.geometry.attributes.position; for (let i = 0; i < p.count; i++) if (p.getY(i) > .4) p.setY(i, .5 + (noise2D(p.getX(i) * 9, p.getZ(i) * 9) - .3) * .35 - (Math.abs(p.getX(i)) + Math.abs(p.getZ(i)) * .5) * .25); fill.geometry.translate(0, .5, 0); fill.geometry.computeVertexNormals(); }
   fill.position.y = .05; fill.visible = false; T0.add(fill);
   const wheels = [];
   for (const [wx, wz] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
-    const w = cyl(.15, .15, .06, ironM, wx * (CART_W / 2 + .04), .15, wz * .36, { p: g, c: true, rz: PI / 2, seg: 8 });
+    wheels.push(cyl(.15, .15, .06, ironM, wx * (CART_W / 2 + .04), .15, wz * .36, { p: g, c: true, rz: PI / 2, seg: 8 }));
     cyl(.05, .05, .07, steelM, wx * (CART_W / 2 + .045), .15, wz * .36, { p: g, c: true, rz: PI / 2, seg: 6 });
-    wheels.push(w);
   }
   for (const wz of [-.36, .36]) cyl(.022, .022, CART_W + .1, ironM, 0, .15, wz, { p: g, c: true, rz: PI / 2, seg: 5 });
   box(.05, .05, .5, ironM, -.28, .55, -.75, { p: g, c: true, rx: -.5 }); box(.05, .05, .5, ironM, .28, .55, -.75, { p: g, c: true, rx: -.5 });
-  cyl(.025, .025, .62, woodShM, 0, .66, -.97, { p: g, c: true, rz: PI / 2, seg: 6 });  // push handle
-  const k = { g, tub, fill, wheels, x, z, y: mine.ground(x, z, 50), yaw, v: 0, vy: 0, load: 0, held: false, tip: 0, tipping: false, spin: 0 };
-  k.add = n => { k.load = Math.min(CAP, k.load + n); k.fill.visible = k.load > 0; k.fill.scale.y = .08 * k.load; burst(.18, 'lowpass', 380, 1, .3, .004); hud(); };
-  k.catches = (px, py, pz) => {                       // is a point inside the open tub?
+  cyl(.025, .025, .62, woodShM, 0, .66, -.97, { p: g, c: true, rz: PI / 2, seg: 6 });
+  const k = { g, tub, fill, wheels, x, z, y: ground2(x, z, 50), yaw, v: 0, vy: 0, load: 0, held: false, tip: 0, tipping: false, spin: 0 };
+  k.add = vol => { k.load = Math.min(CAP, k.load + vol); k.fill.visible = k.load > .002; k.fill.scale.y = .02 + .44 * k.load / CAP; burst(.18, 'lowpass', 380, 1, .3, .004); hud(); };
+  k.catches = (px, py, pz) => {
     const dx = px - k.x, dz = pz - k.z, s = Math.sin(k.yaw), c = Math.cos(k.yaw), lx = dx * c - dz * s, lz = dx * s + dz * c;
     return !k.tipping && Math.abs(lx) < CART_W / 2 - .03 && Math.abs(lz) < CART_L / 2 - .03 && py > k.y + .25 && py < k.y + .9;
   };
-  act(g, () => k.held ? 'Let go of the cart' : 'Grab the cart (' + k.load + '/' + CAP + ')', () => { k.held = !k.held; if (k.held) carts.forEach(o => { if (o !== k) o.held = false; }); sfx.click(); });
+  act(g, () => k.held ? 'Let go of the cart' : 'Grab the cart (' + Math.round(k.load / CAP * 100) + '% full)', () => { k.held = !k.held; if (k.held) carts.forEach(o => { if (o !== k) o.held = false; }); sfx.click(); });
+  g.userData.cart = k;
   g.position.set(x, k.y, z); g.rotation.y = yaw;
   carts.push(k); return k;
 }
 function tipCart(k) {
   if (!k || k.tipping) return;
-  if (!k.load) { say('The cart is empty.'); return; }
+  if (k.load < .002) { say('The cart is empty.'); return; }
   k.tipping = true; k.tip = 0; k.held = false; sfx.creak();
 }
+const angWrap = a => { while (a > PI) a -= 2 * PI; while (a < -PI) a += 2 * PI; return a; };
 function updateCarts(dt) {
   for (const k of carts) {
-    /* mass: oak tub ~90 kg + 0.125 m³ of soil per unit at ~1500 kg/m³ */
-    const mass = 90 + k.load * 190, fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
-    const hf = mine.ground(k.x + fx * .4, k.z + fz * .4, k.y + .3), hb = mine.ground(k.x - fx * .4, k.z - fz * .4, k.y + .3);
+    const mass = 90 + k.load * 1500, fx = Math.sin(k.yaw), fz = Math.cos(k.yaw);
+    const hf = ground2(k.x + fx * .4, k.z + fz * .4, k.y + .3), hb = ground2(k.x - fx * .4, k.z - fz * .4, k.y + .3);
     const slope = Math.atan2(hf - hb, .8);
-    let a = -9.81 * Math.sin(slope);                          // rolls downhill
+    let a = -9.81 * Math.sin(slope);
     if (k.held) {
-      const tx = player.x + Math.sin(player.yaw) * -1.15, tz = player.z + Math.cos(player.yaw) * -1.15;   // in front of you (camera looks down -Z)
+      const tx = player.x - Math.sin(player.yaw) * 1.15, tz = player.z - Math.cos(player.yaw) * 1.15;
       const dx = tx - k.x, dz = tz - k.z, dist = Math.hypot(dx, dz);
-      if (dist > .05) { const want = Math.atan2(dx, dz), along = dx * fx + dz * fz; k.yaw += angWrap(want - k.yaw + (along < 0 ? PI : 0)) * Math.min(1, dt * 3); a += Math.max(-1, Math.min(1, along * 3)) * 520 / mass * 1.0 - k.v * 2.2; }   // ~520 N of push, damped
+      if (dist > .05) { const want = Math.atan2(dx, dz), along = dx * fx + dz * fz; k.yaw += angWrap(want - k.yaw + (along < 0 ? PI : 0)) * Math.min(1, dt * 3); a += Math.max(-1, Math.min(1, along * 3)) * 520 / mass - k.v * 2.2; }
       if (dist > 2) { k.held = false; say('The cart got away from you.'); }
     }
-    const roll = .035 * 9.81, stat = .07;                     // rolling resistance; static friction holds it on gentle grades
+    const roll = .035 * 9.81, stat = .07;
     if (Math.abs(k.v) < .05 && Math.abs(a) < stat * 9.81 && !k.held) { k.v = 0; a = 0; }
     k.v += (a - Math.sign(k.v) * roll) * dt; k.v *= Math.max(0, 1 - .1 * dt);
     if (k.tipping) k.v = 0;
     const nx = k.x + fx * k.v * dt, nz = k.z + fz * k.v * dt;
-    /* wheels climb at most a few cm; walls, trees and the house stop it dead */
     let ok = !mine.inHouse(nx, nz);
     if (ok) for (const [ox, oz] of [[.45, .3], [-.45, .3], [.45, -.3], [-.45, -.3]]) {
-      const px = nx + fx * oz * 1.6 + fz * ox, pz = nz + fz * oz * 1.6 - fx * ox, f = mine.ground(px, pz, k.y + .25);
+      const px = nx + fx * oz * 1.6 + fz * ox, pz = nz + fz * oz * 1.6 - fx * ox, f = ground2(px, pz, k.y + .25);
       if (f > k.y + .2 || mine.ceilAt(px, pz, f + .05) - f < .95) { ok = false; break; }
     }
     if (ok) { const [cx, cz] = collide(nx, nz, .5); if (Math.hypot(cx - nx, cz - nz) > .01) ok = false; }
     if (ok) { k.x = nx; k.z = nz; } else { if (Math.abs(k.v) > 1.5) burst(.15, 'lowpass', 160, 1, .4, .004); k.v = 0; }
-    const f = mine.ground(k.x, k.z, k.y + .25);
+    const f = ground2(k.x, k.z, k.y + .25);
     if (k.y > f + .02) { k.vy -= 9.81 * dt; k.y = Math.max(f, k.y + k.vy * dt); } else { k.y = f; k.vy = 0; }
     k.spin += k.v * dt / .15; for (const w of k.wheels) w.rotation.x = k.spin;
     k.g.position.set(k.x, k.y, k.z); k.g.rotation.y = k.yaw; k.g.rotation.x = -slope * .9;
-    if (k.tipping) {                                            // tip forward over the front axle, pour the soil out, settle back
+    if (k.tipping) {
       k.tip += dt;
-      const t = k.tip, ang = t < .7 ? t / .7 * 1.75 : t < 1.6 ? 1.75 : Math.max(0, 1.75 - (t - 1.6) / .6 * 1.75);
+      const t = k.tip, ang = t < .7 ? t / .7 * 1.75 : t < 1.8 ? 1.75 : Math.max(0, 1.75 - (t - 1.8) / .6 * 1.75);
       k.tub.rotation.x = ang;
-      if (t > .5 && t < 1.5 && k.load > 0 && (t * 10 | 0) !== ((t - dt) * 10 | 0)) {
-        const lip = .62, px = k.x + fx * lip, pz = k.z + fz * lip;
-        throwClod(px + RR(-.2, .2) * fz, k.y + .45, pz - RR(-.2, .2) * fx, fx * RR(.6, 1.4), RR(.2, 1), fz * RR(.6, 1.4));
-        k.load--; k.fill.scale.y = .08 * Math.max(.01, k.load); if (!k.load) k.fill.visible = false; hud();
+      if (t > .5 && t < 1.7 && k.load > .002 && (t * 12 | 0) !== ((t - dt) * 12 | 0)) {
+        const v = Math.min(k.load, .03), lip = .62, px = k.x + fx * lip, pz = k.z + fz * lip;
+        throwClod(px + RR(-.2, .2) * fz, k.y + .45, pz - RR(-.2, .2) * fx, fx * RR(.5, 1.3), RR(.1, .8), fz * RR(.5, 1.3), v);
+        k.load -= v; k.fill.scale.y = .02 + .44 * Math.max(0, k.load) / CAP; if (k.load < .002) k.fill.visible = false; hud();
       }
-      if (t > 2.2) { k.tipping = false; k.tub.rotation.x = 0; }
+      if (t > 2.4) { k.tipping = false; k.tub.rotation.x = 0; }
     }
   }
 }
-const angWrap = a => { while (a > PI) a -= 2 * PI; while (a < -PI) a += 2 * PI; return a; };
 
 /* ---- actions ---- */
 const eyeV = new THREE.Vector3(), dirV3 = new THREE.Vector3();
 const hits = {};
+const aimedCart = () => { camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3); for (let t = .3; t < 2.6; t += .08) { const x = eyeV.x + dirV3.x * t, y = eyeV.y + dirV3.y * t, z = eyeV.z + dirV3.z * t; for (const k of carts) if (Math.hypot(x - k.x, z - k.z) < .6 && y < k.y + 1 && y > k.y) return k; } return null; };
 function useTool() {
   if (inv.tool !== 'shovel' || vmAnim) return;
+  const cart = aimedCart();
+  if (cart && inv.dirt.length) { unloadOne(cart); return; }
   camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3);
-  if (inv.load) {
-    /* loaded: tip it into a cart you're looking at, place it on the face you aim at, or throw it */
-    const cart = carts.find(k => { for (let t = .3; t < 2.6; t += .1) if (k.catches(eyeV.x + dirV3.x * t, eyeV.y + dirV3.y * t, eyeV.z + dirV3.z * t) || Math.hypot(eyeV.x + dirV3.x * t - k.x, eyeV.z + dirV3.z * t - k.z) < .45 && eyeV.y + dirV3.y * t < k.y + 1) return true; return false; });
-    inv.load = 0; vm.userData.heap.visible = false; vmAnim = { kind: 'throw', t: 0, dur: .45 };
-    if (cart) { if (cart.load >= CAP) { say('The cart is full.'); inv.load = 1; vm.userData.heap.visible = true; return; } cart.add(1); hud(); return; }
-    const h = mine.pick(eyeV, dirV3, 2.6), bx = eyeV.x + dirV3.x * .7, by = eyeV.y - .25 + dirV3.y * .7, bz = eyeV.z + dirV3.z * .7;
-    if (h) throwClod(bx, by, bz, (h.px - bx) * 2.2, (h.py - by) * 2.2 + 2.2, (h.pz - bz) * 2.2);       // lob it onto the spot
-    else throwClod(bx, by, bz, dirV3.x * 5.5, dirV3.y * 5.5 + 2.4, dirV3.z * 5.5);                       // fling it
-    burst(.12, 'bandpass', 700, 1, .2, .005); hud(); return;
-  }
-  const h = mine.pick(eyeV, dirV3, 2.9);
-  vmAnim = { kind: 'dig', t: 0, dur: .38 };
-  if (!h) return;
-  const why = mine.canDig(h.ix, h.iz); if (why) { say(why); burst(.08, 'bandpass', 2600, 5, .2); return; }
-  const k = h.ix + ',' + h.iy + ',' + h.iz, need = mine.hardness(h.ix, h.iy, h.iz);
-  hits[k] = (hits[k] || 0) + 1;
-  burst(.16, 'lowpass', 260 + need * 40, 1.2, .45, .004);
-  for (let i = 0; i < 3; i++) { const m = new THREE.Mesh(clodG, clodM); m.scale.setScalar(.25); m.position.set(h.x, h.y, h.z); O.add(m); clods.push({ m, vx: RR(-1, 1) - dirV3.x, vy: RR(1, 2.2), vz: RR(-1, 1) - dirV3.z, age: 0, fx: true }); }  // spray (vanishes)
-  if (hits[k] < need) return;
-  delete hits[k];
-  mine.carve(h.ix, h.iz, h.iy); mine.dropLoose(mine.editCol(h.ix, h.iz)); mine.touch(h.ix, h.iz);
-  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) mine.settle(h.ix + dx, h.iz + dz, 0);   // loose spoil beside the hole slides in
-  mine.flush();
-  inv.load = 1; vm.userData.heap.visible = true; hud();
+  const h = mine.pick(eyeV, dirV3, 2.7);
+  if (!h) { swing('miss'); return; }
+  if (inv.dirt.length >= DIRT_MAX) { say('Your sack is full. Drop the dirt (G) or tip it into a cart.'); return; }
+  const why = mine.canDig(h.x, h.z);
+  swing(why ? 'miss' : 'dig', () => {
+    camShake = .03;
+    if (why) { say(why); burst(.08, 'bandpass', 2600, 5, .25); return; }
+    for (let i = 0; i < 5; i++) { const m = new THREE.Mesh(clodG, clodM); m.scale.setScalar(RR(.15, .3)); m.position.set(h.px, h.py, h.pz); O.add(m); clods.push({ m, vx: RR(-1, 1) - dirV3.x * 1.5, vy: RR(1, 2.6), vz: RR(-1, 1) - dirV3.z * 1.5, age: 0, fx: true }); }
+    const key = Math.round(h.x * 4) + ',' + Math.round(h.y * 4) + ',' + Math.round(h.z * 4), need = mine.hardness(h.x, h.y, h.z);
+    hits[key] = (hits[key] || 0) + 1;
+    burst(.16, 'lowpass', 220 + need * 50, 1.2, .5, .004);
+    if (hits[key] < need) { if (need > 2 && hits[key] === 1) say('Hard clay. It takes a few stabs.'); return; }
+    delete hits[key];
+    /* the blade bites in a little beyond where it struck and lifts out a rounded scoop */
+    const vol = mine.scoop(h.x + dirV3.x * .1, h.y + dirV3.y * .1 - .02, h.z + dirV3.z * .1, .19);
+    if (vol > .001) { inv.dirt.push(vol); mine.flush(); hud(); }
+  });
+}
+function unloadOne(cart) {
+  if (cart.load >= CAP - .001) { say('The cart is full.'); return; }
+  const vol = inv.dirt.pop(); hud();
+  swing('toss', () => { const p = new THREE.Vector3(); vm.userData.heap.getWorldPosition(p); throwClod(p.x, p.y, p.z, (cart.x - p.x) * 1.6, 2.2, (cart.z - p.z) * 1.6, vol); });
+}
+/* drop one shovelful where you aim: it lands and settles into the pile already there */
+function dropDirt() {
+  if (inv.tool !== 'shovel' || vmAnim) return;
+  if (!inv.dirt.length) { say('No dirt in the sack.'); return; }
+  const cart = aimedCart(); if (cart) { unloadOne(cart); return; }
+  camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3);
+  const h = mine.pick(eyeV, dirV3, 3.2), vol = inv.dirt.pop(); hud();
+  swing('toss', () => {
+    const p = new THREE.Vector3(); vm.userData.heap.getWorldPosition(p);
+    if (h) { const T = .45, tx = h.px, ty = h.py, tz = h.pz; throwClod(p.x, p.y, p.z, (tx - p.x) / T, (ty - p.y) / T + 4.9 * T, (tz - p.z) / T, vol); }   // lobbed to land on the spot
+    else throwClod(p.x, p.y, p.z, dirV3.x * 4, dirV3.y * 4 + 2, dirV3.z * 4, vol);
+    burst(.12, 'bandpass', 700, 1, .2, .005);
+  });
 }
 function buildCart() {
   if (inv.logs < 3 || inv.sticks < 4) { say('A cart needs 3 logs and 4 sticks. You have ' + inv.logs + ' and ' + inv.sticks + '.'); return; }
@@ -3216,24 +3270,28 @@ function tipNearest() {
 }
 function hud() {
   const e = $('inv'); if (!e) return;
-  e.textContent = 'Logs ' + inv.logs + '/4 · Sticks ' + inv.sticks + (inv.shovel ? ' · ' + (inv.tool === 'shovel' ? 'Shovel' + (inv.load ? ' (full)' : '') : 'Hands') : '');
+  e.textContent = 'Logs ' + inv.logs + '/4 · Sticks ' + inv.sticks + ' · Dirt ' + inv.dirt.length + '/' + DIRT_MAX + (inv.shovel ? ' · ' + (inv.tool === 'shovel' ? 'Shovel' : 'Hands') : '');
 }
 function updateViewmodel(dt) {
+  camShake *= Math.exp(-dt * 10);
   if (!vm.visible) return;
   const b = Math.sin(player.bob) * .012, s = Math.sin(player.bob * .5) * .01;
   let push = 0, oy = 0, tilt = 0;
   if (vmAnim) {
-    vmAnim.t += dt; const t = Math.min(1, vmAnim.t / vmAnim.dur), e = Math.sin(t * PI);
-    if (vmAnim.kind === 'dig') { push = .3 * e; oy = -.12 * e; tilt = -.3 * e; }          // drive the blade down and in
-    else { push = .12 * e; oy = .1 * e; tilt = .75 * e; }                                // flick up and out
+    const S0 = SWINGS[vmAnim.kind]; vmAnim.t += dt; const t = Math.min(1, vmAnim.t / S0.dur), K = S0.keys;
+    let i = 0; while (i < K.length - 2 && t > K[i + 1][0]) i++;
+    const a = K[i], c = K[i + 1], u = (t - a[0]) / (c[0] - a[0]), e = u * u * (3 - 2 * u);
+    push = a[1] + (c[1] - a[1]) * e; oy = a[2] + (c[2] - a[2]) * e; tilt = a[3] + (c[3] - a[3]) * e;
+    if (!vmAnim.fired && t >= S0.hit) { vmAnim.fired = true; if (vmAnim.onHit) vmAnim.onHit(); }
     if (t >= 1) vmAnim = null;
   }
+  vm.userData.heap.visible = inv.dirt.length > 0 || (vmAnim && vmAnim.kind === 'dig' && vmAnim.fired);
   vm.position.copy(vmPos).addScaledVector(vmDir, push); vm.position.x += s; vm.position.y += b + oy;
   vm.quaternion.copy(vmTilt.setFromAxisAngle(vmX, tilt)).multiply(vmQ);
 }
-function primary() { if (cine.on) { if (cine.t > 1) endCine(); return; } if (focus) focus.fn(); else useTool(); }
+function primary() { if (cine.on) { if (cine.t > 1) endCine(); return; } if (focus && !(inv.tool === 'shovel' && inv.dirt.length && aimedCart())) focus.fn(); else useTool(); }
 
-/* ---- underground light: daylight fades as rock closes over you ---- */
+/* ---- underground light ---- */
 let under = 0;
 const fogDay = scene.fog.color.clone(), fogDeep = C('#0a0908');
 function updateUnder(dt) {
@@ -3245,11 +3303,8 @@ function updateUnder(dt) {
 }
 
 /* ================= opening shot: first time out of the front door ================= */
-const cine = { on: false, t: 0, done: false, from: new THREE.Vector3(), look: new THREE.Vector3() };
-function startCine() {
-  if (cine.done) return; cine.done = cine.on = true; cine.t = 0;
-  camera.getWorldPosition(cine.from); $('lbT').style.height = $('lbB').style.height = '11%';
-}
+const cine = { on: false, t: 0, done: false };
+function startCine() { if (cine.done) return; cine.done = cine.on = true; cine.t = 0; $('lbT').style.height = $('lbB').style.height = '11%'; }
 function endCine() { cine.on = false; $('lbT').style.height = $('lbB').style.height = '0'; scene.fog.density = .032; }
 const ease = t => t * t * (3 - 2 * t);
 function cineCam(dt) {
@@ -3262,7 +3317,7 @@ function cineCam(dt) {
   if (t < 3) { const k = ease(t / 3), A = orbit(0); pos = eye.clone().lerp(A, k); pos.y += Math.sin(k * PI) * 2; look = eye.clone().add(fwd.clone().multiplyScalar(6)).lerp(H, k); }
   else if (t < 9) { const k = (t - 3) / 6; pos = orbit(k); look = H.clone().add(new THREE.Vector3(Math.sin(k * 5) * 3, 0, Math.cos(k * 4) * 3)); }
   else { const k = ease(Math.min(1, (t - 9) / 2.6)), B = orbit(1); pos = B.lerp(eye, k); look = H.clone().lerp(eye.clone().add(new THREE.Vector3(-Math.sin(player.yaw) * Math.cos(player.pitch), Math.sin(player.pitch), -Math.cos(player.yaw) * Math.cos(player.pitch)).multiplyScalar(6)), k); }
-  scene.fog.density = .032 - .014 * Math.sin(Math.min(1, t / 11.6) * PI);   // the haze thins a little up high
+  scene.fog.density = .032 - .014 * Math.sin(Math.min(1, t / 11.6) * PI);
   camera.position.copy(pos); camera.lookAt(look);
   if (t > 11.6) endCine();
 }
@@ -3272,10 +3327,14 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyQ') toolSwitch();
   if (e.code === 'KeyB') buildCart();
   if (e.code === 'KeyR') tipNearest();
+  if (e.code === 'KeyG') dropDirt();
 });
+cvs.addEventListener('contextmenu', e => e.preventDefault());
+cvs.addEventListener('mousedown', e => { if (e.button === 2 && started && !paused && locked) dropDirt(); });
 $('bTool').addEventListener('click', () => { if (!paused) toolSwitch(); });
 $('bTip').addEventListener('click', () => { if (!paused) tipNearest(); });
 $('bBuild').addEventListener('click', () => { if (!paused) buildCart(); });
+$('bDrop').addEventListener('click', () => { if (!paused) dropDirt(); });
 hud();
 
 /* ================= loop ================= */
@@ -3292,7 +3351,7 @@ function update(dt) {
   if (keys.KeyD || keys.ArrowRight) s += 1; if (keys.KeyA || keys.ArrowLeft) s -= 1;
   f -= touch.my; s += touch.mx;
   const len = Math.hypot(f, s); if (len > 1) { f /= len; s /= len; }
-  const base = (player.crouch ? 1.1 : 2.2) * paceMul * (1 - inv.logs * .07);   // logs are heavy
+  const base = (player.crouch ? 1.1 : 2.2) * paceMul * (1 - inv.logs * .07 - inv.dirt.length * .03);   // logs are heavy
   const sp = (keys.ShiftLeft || keys.ShiftRight) && !player.crouch ? 3.8 * paceMul : base;
   const sy = Math.sin(player.yaw), cy = Math.cos(player.yaw);
   const tx = (-sy * f + cy * s) * sp, tz = (-cy * f - sy * s) * sp;
@@ -3326,7 +3385,7 @@ function frame(now) {
   if (started && !paused) { if (!cine.on) update(dt); wildlife.update(dt, time); updateCarts(dt); updateClods(dt); }
   const bobAmp = player.crouch ? .014 : .028;
   camera.position.set(player.x, player.fy + player.eye + Math.sin(player.bob) * bobAmp, player.z);
-  camera.rotation.set(player.pitch, player.yaw, Math.sin(player.bob * .5) * (player.crouch ? .002 : .004));
+  camera.rotation.set(player.pitch + Math.sin(time * 70) * camShake, player.yaw, Math.sin(player.bob * .5) * (player.crouch ? .002 : .004));
 
   for (const D of doors) if (D.t !== D.target) {
     D.t = Math.max(0, Math.min(1, D.t + Math.sign(D.target - D.t) * dt * 1.6));
