@@ -12197,7 +12197,8 @@ function netEnTx(dt) {                                            // host, 15 Hz
     if (!e.dead && (e.engaged || e.watch)) { threatLocal(e, _nm.v); w = [+_nm.v.x.toFixed(2), +_nm.v.y.toFixed(2), +_nm.v.z.toFixed(2)]; }
     const st = e.downed ? 1 : e.surr ? (e.surr.det ? 3 : 2) : 0;    // 1 down alive, 2 hands up, 3 tied: his pose travels as bones
     L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w, +enemyFloorY(e).toFixed(3),   // [10] the floor he stands on (a stairwell landing)
-      st, e.spec ? e.spec.kit | 0 : 0, st && !(e.dead && !e.downed) ? netPoseOf(e) : null, e.unarmed ? 1 : 0]);
+      st, e.spec ? e.spec.kit | 0 : 0, st && !(e.dead && !e.downed) ? netPoseOf(e) : null, e.unarmed ? 1 : 0,
+      netNadeOf(e), e.vxN ? e.vxN * 100 + (e.vxB ? 50 : 0) + Math.round(clamp(e.vxL) * 49) : 0]);   // [15] his grenade throw, [16] his last moan / breath
   }
   // Split so each packet stays under one UDP datagram (~1.1 kB): a fragmented unreliable message is lost if any piece is.
   let part = [], sz = 0;
@@ -12207,7 +12208,7 @@ function netEnTx(dt) {                                            // host, 15 Hz
 function netEnRx(m) {                                             // joiner
   const now = performance.now(), seen = new Set();
   for (const a of m.L) {
-    const [id, slot, x, z, yw, cr, aim, dead, lk, w, fy, st = 0, kit = 0, pose = null, un = 0] = a; seen.add(id);
+    const [id, slot, x, z, yw, cr, aim, dead, lk, w, fy, st = 0, kit = 0, pose = null, un = 0, nd = 0, vx = 0] = a; seen.add(id);
     const room = stream.rooms.get(slot);
     let e = NET.pup.get(id);
     if (e && (!ENEMY.list.includes(e) || e.room !== room)) { if (ENEMY.list.includes(e) && !e.dead) removeEnemy(e); NET.pup.delete(id); e = null; }
@@ -12215,7 +12216,10 @@ function netEnRx(m) {                                             // joiner
     if (!e) {
       if (dead && st !== 1) { netBodyAsk(id, a, room); continue; }   // dead before this room was built here: his body, where it lies on the host
       e = netPupMake(room, id, lk, kit, x, z, yw); if (!e) continue;
+      e.vxSeen = (vx / 100) | 0;                                    // a voice from before the copy was made is not played
     }
+    netPupNade(e, dead || st ? 0 : nd);
+    netPupVox(e, vx);
     if (dead && !e.pupDead) e.pupDead = now;                        // dropfix: before netPupState, so a dead copy is never re-armed
     netPupState(e, st, pose, un, now);
     e.pupT = now; e.pupX = x; e.pupZ = z; e.pupYw = yw; e.crouchT = cr; e.aimT = aim;
@@ -12227,8 +12231,29 @@ function netEnRx(m) {                                             // joiner
   }
   for (const [id, e] of NET.pup) if (!seen.has(id) && now - (e.pupT || 0) > 1500) { if (ENEMY.list.includes(e) && !e.dead) removeEnemy(e); NET.pup.delete(id); }
 }
+// His grenade throw in 'en' [15]: 0, or the time into the wind-up (s, 2 decimals), negative for a flashbang.
+function netNadeOf(e) { const N = e.enade; return N && N.t >= 0 ? (N.type === 'flash' ? -1 : 1) * Math.max(0.01, +N.t.toFixed(2)) : 0; }
+// Joiner: the copy's arm runs the same wind-up (enadeArm from enemyPose); the grenade itself comes as 'nade' when the host throws it.
+function netPupNade(e, nd) {
+  if (!nd || !NADE.ready) { if (e.enade) enadeEnd(e); return; }
+  enadeOn();
+  const type = nd < 0 ? 'flash' : 'frag', t = Math.abs(nd);
+  let N = e.enade;
+  if (N && N.type !== type) { enadeEnd(e); N = null; }
+  if (!N) N = e.enade = { type, t, plan: null, gone: false, vis: null, pup: true };
+  else if (Math.abs(N.t - t) > 0.15) N.t = t;                       // in step (it runs on between packets: netPupPose)
+}
+// His last moan / breath in 'en' [16]: count x 100 + 50 for a breath + how much he has left (0..49). A new count plays it here.
+function netPupVox(e, vx) {
+  const n = (vx / 100) | 0;
+  if (!n || n === e.vxSeen) return;
+  e.vxSeen = n; VOX.n.net = (VOX.n.net || 0) + 1;                   // (tests: voices from the host)
+  const r = vx - n * 100, breath = r >= 50;
+  try { voxDyingPlay(e, breath, (r - (breath ? 50 : 0)) / 49); } catch (er) { /* no audio yet */ }
+}
 function netPupPose(e, dt, now) {                                 // joiner: ease toward the host's copy, then pose
   if (e.dead) return;
+  if (e.enade) { const N = e.enade; N.t += dt; if (!N.gone && N.t >= ENADE.C.wind) { N.gone = true; if (N.vis) N.vis.root.visible = false; } if (N.t > ENADE.C.wind + 0.6) enadeEnd(e); }   // the host's 'nade' brings the real one
   if (e.pupSt && netPupBones(e, dt)) return;                      // down, hands up, tied: the host's bones
   const k = 1 - Math.exp(-dt * 12), px = e.pos.x, pz = e.pos.y;
   if (e.pupX !== undefined) { e.pos.x += (e.pupX - e.pos.x) * k; e.pos.y += (e.pupZ - e.pos.y) * k; e.yaw += Math.atan2(Math.sin(e.pupYw - e.yaw), Math.cos(e.pupYw - e.yaw)) * k; }
@@ -12567,6 +12592,8 @@ function netGunBuild(g) {
   const v = [], h = [];
   netHwWalk(g, (o, k, vis) => (vis ? v : h).push(k));
   const B = { ty: g.type, a, v, h };
+  const F = PAINT.on && !g.paintOff && PAINT.fin[g.type];            // his finish per group (cqc.paint.v1 ids), only when he has one
+  if (F && Object.keys(F).length) B.f = Object.assign({}, F);
   return { B, atts, id: netHash(JSON.stringify(B)).toString(36) };
 }
 // Lights / lasers on, over the build's attachment list (bits as above) and the IR modes.
@@ -12607,6 +12634,12 @@ function netStripAtts(g) {
   g.atts = [];
   try { attRefresh(g); muzRefresh(g); } catch (e) { /* a gun without its kit */ }
 }
+// His finish ids, checked against this side's groups and finishes (an unknown one = factory).
+function netFinOf(type, f) {
+  const o = {};
+  if (f && typeof f === 'object') for (const gid of Object.keys(f).slice(0, 12)) { const G = paintGroup(type, gid), fid = f[gid]; if (G && typeof fid === 'string' && paintAllowed(G, fid) && fid !== 'orig') o[gid] = fid; }
+  return o;
+}
 function netApplyHw(g, B) {
   const vs = new Set(B.v || []), hs = new Set(B.h || []);
   netHwWalk(g, (o, k) => {
@@ -12617,7 +12650,8 @@ function netApplyHw(g, B) {
 function netBuildGun(type, B) {
   if (!WEAPON_DEFS[type] || !GUN_BUILD[type]) return null;
   const p = createGun(type), g = p.item;
-  try { paintGun(g, false); } catch (e) { /* no finish system */ }   // his finish is not sent: the factory one, the same on both sides
+  g.netFin = netFinOf(type, B && B.f);                               // his finish per group (factory where he has none), never yours
+  try { paintGun(g, true); } catch (e) { /* no finish system */ }
   netStripAtts(g);
   const map = [];
   if (B) {
@@ -29174,6 +29208,7 @@ function enemySpawnSpot(room, taken = []) {
   return { x: 0, z: range ? farZ - 2 : -room.d / 4, yaw: 0 };
 }
 function removeEnemy(e) {
+  if (e.enade && e.puppet) enadeEnd(e);                           // multiplayer: a copy's grenade in hand goes with it
   if (e.rag) for (const r of e.rag) { ragByCollider.delete(r.col.handle); world.removeRigidBody(r.body); }
   e.rag = null; e.dying = null; e.wounds = null; e.bleedT = undefined; e.downed = null;   // step 19 (step 91)
   if (e.root.parent) e.root.parent.remove(e.root);
@@ -30326,7 +30361,7 @@ function voxGrunt(e, k = 1, dying = false) {
 // Step 80: a man who goes down not dead outright (not a head shot) moans and breathes raggedly on the floor,
 // weaker and further apart as he bleeds out, until he is shot again or it ends (9-18 s).
 function voxDyingStart(e) {
-  if (e.killPart === 'head' || e.killPart === 'neck') return;
+  if (e.killPart === 'head' || e.killPart === 'neck' || e.puppet) return;   // co-op copy: the host's clock ('en' [16], netPupVox)
   const now = wnow(), dur = 9 + Math.random() * 9;
   e.moan = { t0: now, until: now + dur, next: now + 1.0 + Math.random() * 1.2 }; VOX.n.moan++;
 }
@@ -30343,6 +30378,18 @@ function voxDyingTick(e, now) {
   // step 87: louder, and more often with you standing over him
   headWorld(_vxH); const near = clamp(1 - (_vxH.distanceTo(at) - VOX_DYING.nearFrom) / (VOX_DYING.nearTo - VOX_DYING.nearFrom));
   M.next = now + ((breath ? 2.2 : 1.4) + Math.random() * 1.6 + (1 - left) * 2.5) * (1 - 0.45 * near);
+  e.vxN = (e.vxN || 0) + 1; e.vxB = breath; e.vxL = left;          // co-op host: the joiner's copy plays it too ('en' [16])
+  voxDyingPlay(e, breath, left, names, at, near);
+}
+// One moan or breath from his neck (names / at / near: from voxDyingTick; else found here, for a co-op copy).
+function voxDyingPlay(e, breath, left, names = null, at = null, near = -1) {
+  if (!names) names = VOX_FILES.filter((n) => (breath ? n.startsWith('dbreath') : n.startsWith('moan')) && VOX.bufs[n]);
+  if (!at) {
+    const nk = e.rag ? e.rag.find((r) => r.seg === 'neck') : null, t = nk && nk.body.translation();
+    at = nk ? new THREE.Vector3(t.x, t.y, t.z) : e.B && e.B.neck ? e.B.neck.getWorldPosition(new THREE.Vector3()) : null;
+    if (!at) return;
+  }
+  if (near < 0) { headWorld(_vxH); near = clamp(1 - (_vxH.distanceTo(at) - VOX_DYING.nearFrom) / (VOX_DYING.nearTo - VOX_DYING.nearFrom)); }
   if (!names.length || !audio.ctx) return;
   const buf = VOX.bufs[names[(Math.random() * names.length) | 0]]; VOX.n.dying++;
   soundAt(at, () => {
@@ -35431,14 +35478,15 @@ function paintSet(c, src, f) {
 }
 // One clone per gun type, group and factory material, shared by every gun of the type. Same type and hooks as src plus
 // the camo injection: one program variant per source program, compiled when a finish first shows; never per camo.
-function paintSetOf(t, gid) {
-  const key = t + '|' + gid;
+// fid: a fixed finish (multiplayer: the other player's gun wears his, in its own set, so yours never change it).
+function paintSetOf(t, gid, fid = null) {
+  const key = t + '|' + gid + (fid ? '@' + fid : '');
   let S = PAINT.sets.get(key);
-  if (!S) PAINT.sets.set(key, S = { t, gid, U: paintUniforms(t), by: new Map() });
+  if (!S) PAINT.sets.set(key, S = { t, gid, fid, U: paintUniforms(t), by: new Map() });
   return S;
 }
-function paintFor(t, gid, src) {
-  const S = paintSetOf(t, gid);
+function paintFor(t, gid, src, fid = null) {
+  const S = paintSetOf(t, gid, fid);
   let c = S.by.get(src);
   if (!c) {
     c = src.clone();
@@ -35453,18 +35501,18 @@ function paintFor(t, gid, src) {
 }
 // What the set shows now (paintShown) onto its uniforms and one clone, or all of them.
 function paintShow(S, c = null, src = null) {
-  const f = PAINT.byId.get(paintShown(S.t, S.gid));
+  const f = PAINT.byId.get(S.fid || paintShown(S.t, S.gid));
   paintCamoSet(S.U, f);
   if (f.orig) return;
   if (c) paintSet(c, src, f); else for (const [s0, c0] of S.by) paintSet(c0, s0, f);
 }
 // A mesh on its group's finish for gun type t (null = factory). A material the game swapped in itself (a lamp) is left alone.
-function paintMesh(o, t, gid) {
+function paintMesh(o, t, gid, fix = null) {   // fix: a fixed finish id for this mesh (multiplayer copies), 'orig' = factory
   let src = PAINT.orig.get(o);
   if (!src) PAINT.orig.set(o, src = o.material.heatBase || o.material);   // polish 2: a hot can's glow clone is not its factory material
   // release QA: only lit (standard / physical) materials take a finish; an unlit one (a sight insert, a lens glow) has no
   // objectNormal or metalness chunk, so the camo injection failed to compile there (MeshBasicMaterial shader error)
-  const fid = t && src && src.isMeshStandardMaterial ? paintShown(t, gid) : 'orig', want = fid === 'orig' ? src : paintFor(t, gid, src);
+  const fid = t && src && src.isMeshStandardMaterial ? fix || paintShown(t, gid) : 'orig', want = fid === 'orig' ? src : paintFor(t, gid, src, fix);
   const cur = o.material.heatBase || o.material;                     // polish 2: a hot can's glow follows the finish
   if (cur !== want && (cur === src || PAINT.isClone.has(cur))) { if (o.material.heatIt) heatGlowDrop(o.material.heatIt); o.material = want; }
 }
@@ -35527,14 +35575,16 @@ function paintGunInit(g) {
 // on false: the factory finish for good (his drops).
 function paintGun(g, on = !g.paintOff) {
   g.paintOff = !on;
-  for (const [o, gid] of g.paintMeshes || []) paintMesh(o, on ? g.type : null, gid);
+  const nf = g.netFin;                                            // multiplayer: his gun keeps his finish ({ group: id })
+  for (const [o, gid] of g.paintMeshes || []) paintMesh(o, on ? g.type : null, gid, nf ? nf[gid] || 'orig' : null);
   for (const p of g.atts || []) paintAtt(p, g);
 }
 // wbFreeze (g: on it) / wbUnfreeze (null: off it): the part's paintable materials.
 function paintAtt(p, g) {
   if (!PAINT.on || !p || !p.root) return;
   const t = g && !g.paintOff && paintGroups(g.type) ? g.type : null;
-  p.root.traverse((o) => { if (o.isMesh && paintAttOk(PAINT.orig.get(o) || o.material.heatBase || o.material)) paintMesh(o, t, 'att'); });
+  const fix = t && g.netFin ? g.netFin.att || 'orig' : null;
+  p.root.traverse((o) => { if (o.isMesh && paintAttOk(PAINT.orig.get(o) || o.material.heatBase || o.material)) paintMesh(o, t, 'att', fix); });
 }
 // Every clone of type t to what it shows now, every gun of the type onto it.
 function paintRefresh(t) {
@@ -53056,6 +53106,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { NBODY, netBodyTick, netBod
 if (/[?&]dev\b/.test(QS)) window.__cqcReinf = { RF, TB, IDLE, SPAWNCHK, rfOnKill, rfTick, rfSpawn, rfDoor, rfMove, tbBrain, tbStuck, idleTick, spotBad, spotClear, enemySpawnSpot, enemiesUpdate, enemyThink, enemyMove, enemyPose, enemySees, clearLine, findPath, navGrid, navFree, coverPoints, loopPlan, roomMem, loop, threatNow, headWorld, rig, stream, ENEMY, loopEnemyDied, enemyShot, wnow, propBoxes, navDoorStamp, doors, updateStreaming, playerState, NIGHT, MENU, enemyDie, aiNoise, enemiesHear, roomCanSense, colliders, insideRoom, props, MOD, renderer, scene, camera, updateDoorsPre, updateDoorsPost, stepPhysics, rebuildWalk, threatLocal, enemyFace, started: () => gameStarted, startGame };   // reinforcements / tactical body / spawn / unstick tests
 if (/[?&]dev\b/.test(QS)) window.__cqcPerf = { PCW, pcWarm, VM, tick, tickSafe, PROF, HITCH, profBegin, profMark, renderer, scene, camera, BAKE_T, bakeShot, bakeFoley, bakeLocal, bakeWorkerSource, SHOT_DEFS, baked, audio };   // optimisation pass 3: measuring
 
+if (window.__cqcDev) Object.assign(window.__cqcDev, { netNadeOf, netPupNade, netPupVox, netFinOf, voxDyingPlay, VOX, paintGroups, paintRefresh, netEnTx });   // multiplayer: finishes, throw arm, voices
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHit, deskToggleGrab, deskThrow, createNade, respawnPlayer, surrStart, surrDetain, NADE, dnadeStart, dnadeRelease, wnow, SNDQ });   // tests
 </script>
 </body>
