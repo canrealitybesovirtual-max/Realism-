@@ -12100,6 +12100,8 @@ function netRx(m) {
   else if (m.t === 'eh') { if (NET.role === 'host') netEhRx(m); }
   else if (m.t === 'es') { if (NET.role === 'join') netEsRx(m); }
   else if (m.t === 'ex') { if (NET.role === 'join') netExRx(m); }
+  else if (m.t === 'et') { if (NET.role === 'join') netEtRx(m); }
+  else if (m.t === 'eb') { if (NET.role === 'join') netEbRx(m); }
   else if (m.t === 'ed') { if (NET.role === 'join') netEdRx(m); }
   else if (m.t === 'hi') {
     if (NET.role === 'join') {
@@ -12319,7 +12321,7 @@ function netPupHit(hit, dir, d, E) {
   netSendRel({ t: 'eh', i: e.puppet, hi, part: hit.h.part, lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [dir.x * f, dir.y, dir.z * f], E: +(+E || 1).toFixed(3), g: netDefKey(d),
     pn: PEN.live ? PEN.n | 0 : 0, tu: PEN.live ? +(PEN.tumble || 0).toFixed(3) : 0 });   // coop fix: the gun's real key (copied defs: M4A1-S, AKM with a grip), and what the round went through (tumble)
   if (netPlateAt(e, hit.h, P, d)) { try { impactFx('metal', P, NET._h.copy(dir).negate()); } catch (er) { /* no fx */ } }   // his plate stops it on the host too: sparks, not blood
-  else netPupWound(e, hit.h, P, dir, E);                            // you see it land at once (the host decides what it does)
+  else { const w = netPupWound(e, hit.h, P, dir, E); if (w) { const Q = e.pupOwn || (e.pupOwn = []); Q.push(w); if (Q.length > 8) Q.shift(); } }   // you see it land at once (the host decides what it does); gore: the host's 'ex' own
 }
 // Coop fix: which WEAPON_DEFS key a round came from. g.def is often a copy (each M4A1-S, an AKM with a grip, a snapped
 // foregrip), so the identity lookup failed and the host applied every such round as an SMG's (the AWM's one-shot rule lost).
@@ -12355,10 +12357,79 @@ function netEhRx(m) {                                             // host: the j
   finally { NET.ehFrom = false; NET.ehRx = false; NET.tgt = prevT; if (PEN_ON && !wasLive) PEN.live = false; }
 }
 // Host: your round on one of your men, so the joiner sees it land on his copy.
-function netEnHitTx(e, h, P, dir, E, hr = 0) {
-  if (!netCoop() || NET.role !== 'host' || NET.ehRx || !e.nid || !P) return;   // coop fix: only the joiner's own rounds ('eh': he drew it already) are skipped; his grenade's fragments (ehFrom set) go to his copy
+function netEnHitTx(e, h, P, dir, E, hr = 0, x = null) {
+  if (!netCoop() || NET.role !== 'host' || (NET.ehRx && !x) || !e.nid || !P) return;   // coop fix: only the joiner's own rounds ('eh': he drew it already) are skipped (but their gore, x.own); his grenade's fragments (ehFrom set) go to his copy
   const f = rF(e.room), L = e.hit || HITBOX, b = e.B[h.b] || e.B.spine, lp = b.worldToLocal(NET._h.copy(P));
-  netSendRel({ t: 'ex', i: e.nid, hi: Math.max(0, L.indexOf(h)), lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [dir.x * f, dir.y, dir.z * f], E: +(+E || 1).toFixed(3), hr: hr ? +hr.toFixed(4) : 0, pl: NET.plateHit ? 1 : 0 });
+  const m = { t: 'ex', i: e.nid, hi: Math.max(0, L.indexOf(h)), lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [+(dir.x * f).toFixed(4), +dir.y.toFixed(4), +(dir.z * f).toFixed(4)], E: +(+E || 1).toFixed(3), hr: hr ? +hr.toFixed(4) : 0, pl: NET.plateHit ? 1 : 0 };
+  if (x) Object.assign(m, x);
+  netSendRel(m);
+}
+// --- co-op gore: the host's tears, exits and after-blast effects on the joiner's copies --------------------------------
+// Host (enemyShot, flesh): the round's whole wound: entry hole, exit wound (bone-local, hole), gun (how heavy), the
+// tumble scale and the AWM face, so the copy runs g90HitFx (pour, far-side mist, bits, sprays) the same way.
+// A round of the joiner's own ('eh', NET.ehRx) sends own: his side drew the entry already.
+function netEnGoreTx(e, h, P, dir, E, d, wIn, wOut, awmHead) {
+  if (!netCoop() || NET.role !== 'host' || !e.nid || !P) return;
+  const x = { g: d === FRAG_D ? 'frag' : netDefKey(d) };
+  if (NET.g90K) x.wk = +NET.g90K.toFixed(3);
+  if (wOut && wOut.bone === (e.B[h.b] || e.B.spine)) x.xo = [+wOut.lp.x.toFixed(4), +wOut.lp.y.toFixed(4), +wOut.lp.z.toFixed(4), +(wOut.hole || 0).toFixed(4)];
+  if (awmHead) x.ah = 1;
+  if (NET.ehRx) x.own = 1;
+  netEnHitTx(e, h, P, dir, E, wIn && wIn.hole ? wIn.hole : 0, x);
+}
+function netHoleSet(w, d, h) {                                     // the host's hole size on a copy's wound (a merged one keeps the larger)
+  if (!w || !(h > 0)) return;
+  if (!w.hole) g90Hole(w, d, h, h); else w.hole = Math.max(w.hole, h);
+}
+// Joiner: the wound of his own round the host now describes (netPupHit drew it), else a fresh one.
+function netPupOwnW(e, b) {
+  const Q = e.pupOwn; if (!Q) return null;
+  for (let i = 0; i < Q.length; i++) if (Q[i].bone === b) { const w = Q[i]; Q.splice(i, 1); return e.wounds && e.wounds.indexOf(w) >= 0 ? w : null; }
+  return null;
+}
+// Host (nadeTear): the two craters on his nearest limbs, one message per man.
+function netEnTearTx(e, list) {
+  if (!netCoop() || NET.role !== 'host' || !e.nid || !list || !list.length) return;
+  netSendRel({ t: 'et', i: e.nid, w: list.slice(0, 2) });
+}
+function netEtRx(m) {
+  const e = NET.pup.get(m.i); if (!e || !e.room || !e.room.active || !e.B || !Array.isArray(m.w)) return;
+  const f = rF(e.room), K = g90K();
+  e.root.updateWorldMatrix(true, true);
+  for (const q of m.w.slice(0, 2)) {
+    const b = e.B[NG_LIMBS[q[0] | 0]]; if (!b) continue;
+    const P = b.localToWorld(NET._p.set(q[1], q[2], q[3])), d = NET._d.set(q[4] * f, q[5], q[6] * f).normalize();
+    const w = addWound(e, b, P, 'limb'); if (!w) continue;
+    NET.etN = (NET.etN || 0) + 1;
+    if (!K) continue;
+    netHoleSet(w, d, +q[7] || 0);
+    try { g90StreamOn(e, w, CONFIG.gore.x.spurtTorso, 1.4); g90Chunks(e.room, P, d, Math.min(24, q[8] | 0), 1); } catch (er) { /* no gore */ }
+  }
+}
+// Host (nadeGoreAfter): one message per blast: each man it hurt (id, distance, severe, the blast's line through him).
+function netEnBlastTx(hurt) {
+  if (!netCoop() || NET.role !== 'host' || !hurt) return;
+  const s = [];
+  for (const [e, H] of hurt) {
+    if (!e.nid || !e.room || !H.dir) continue;
+    const f = rF(e.room);
+    s.push([e.nid, +H.r.toFixed(2), H.severe ? 1 : 0, +(H.dir.x * f).toFixed(3), +H.dir.y.toFixed(3), +(H.dir.z * f).toFixed(3)]);
+    if (s.length >= 8) break;
+  }
+  if (s.length) netSendRel({ t: 'eb', s });
+}
+const _netEb = new Map();
+function netEbRx(m) {
+  if (!Array.isArray(m.s) || !g90K()) return;
+  _netEb.clear();
+  for (const q of m.s.slice(0, 8)) {
+    const e = NET.pup.get(q[0]); if (!e || !e.room || !e.room.active || !e.B || !e.B.chest) continue;
+    const f = rF(e.room);
+    _netEb.set(e, { r: +q[1] || 0, severe: !!q[2], dir: new THREE.Vector3(q[3] * f, q[4], q[5] * f).normalize(), hit: null });
+  }
+  NET.ebN = (NET.ebN || 0) + 1;
+  if (_netEb.size) { try { nadeGoreAfter(_netEb); } catch (er) { /* no gore */ } }
+  _netEb.clear();
 }
 function netExRx(m) {                                             // joiner: the host hit a man: the wound on your copy
   const e = NET.pup.get(m.i); if (!e || !e.room || !e.room.active) return;
@@ -12366,8 +12437,25 @@ function netExRx(m) {                                             // joiner: the
   const P = b.localToWorld(new THREE.Vector3(m.lp[0], m.lp[1], m.lp[2])), d = NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize();
   NET.exN = (NET.exN || 0) + 1;
   if (m.pl) { try { impactFx('metal', P, NET._h.copy(d).negate()); } catch (er) { /* no fx */ } return; }   // his plate took it
-  const w = netPupWound(e, h, P, d, m.E || 1);
-  if (w && m.hr) { try { g90Hole(w, d, m.hr, 0.04 * g90K()); } catch (er) { /* no gore */ } }   // a grenade fragment: the host's hole size
+  let w = m.own ? netPupOwnW(e, b) : netPupWound(e, h, P, d, m.E || 1);
+  if (!w && m.own && !e.dead) w = addWound(e, b, P, h.part);       // his entry was not drawn here (missed on this side): the host's
+  if (!w) return;
+  const K = g90K();
+  try {
+    if (m.hr && K) netHoleSet(w, d, m.hr);                         // the host's hole size (bullet or grenade fragment)
+    let wOut = null;
+    if (Array.isArray(m.xo)) {                                     // the exit wound, where the host's went out
+      wOut = addWound(e, b, NET._p.set(m.xo[0], m.xo[1], m.xo[2]).applyMatrix4(b.matrixWorld), h.part, true);
+      if (wOut && K) netHoleSet(wOut, d, +m.xo[3] || 0);
+      NET.xoN = (NET.xoN || 0) + 1;
+    }
+    if (m.sp && K) g90StreamOn(e, w, +m.sp[0] || 0, +m.sp[1] || 0.7);   // a grenade fragment that pours
+    if (m.g && GORE_X && K) {
+      const gd = m.g === 'frag' ? FRAG_D : WEAPON_DEFS[m.g] || WEAPON_DEFS.smg;
+      g90HitFx(e, h.part, w, wOut, P, d, gd, K * clamp(+m.wk || 1, 0.5, 3));
+      if (m.ah) awmHeadGore(e, P, d);
+    }
+  } catch (er) { if (/[?&]dev\b/.test(QS)) console.warn('co-op gore not applied', er); }
 }
 // Host: a man died (or went down): the joiner's copy falls the same way (part, direction, point, push). by = who scored it.
 function netEnDieTx(e, seg, dir, P, imp, down = false) {
@@ -17575,6 +17663,8 @@ const NG_BONES = ['chest', 'chest', 'spine', 'pelvis', 'thighL', 'thighR', 'shin
 const NG_LIMBS = ['thighL', 'thighR', 'shinL', 'shinR', 'upperArmL', 'upperArmR', 'foreArmL', 'foreArmR'];
 const NG_MIST = { n: 2, c: [0.2, 0.025, 0.02], a: 0.28, sp: [0.3, 1.1], life: [3, 7], size: [0.06, 0.12], grow: 0.22, drag: 2.2, buoy: -0.008, force: false };   // blood in the smoke
 const _ng = { a: new THREE.Vector3(), c: new THREE.Vector3(), d: new THREE.Vector3(), o: new THREE.Vector3() };
+const NG_LIMB_OF = new WeakMap();                                    // bone -> its NG_LIMBS name (co-op 'et')
+const NG_SP = [0, 0.7], NG_SPX = { sp: NG_SP };                     // co-op: a fragment hole that pours ('ex' sp)
 // Before the fragments fly (they may kill him): who is near, and the wounds facing it. Map man -> { r, severe, dir, hit } or null.
 function nadeGoreScan(P) {
   const G = CONFIG.polish.nade.gore, K = g90K();
@@ -17608,8 +17698,9 @@ function nadeFragWounds(e, P, H, G, K) {
     const part = hit.h.part, w = addWound(e, e.B[hit.h.b] || e.B.spine, hit.p, part);
     if (!w) continue;
     const hr = rnd2(0.006, 0.012) * K; g90Hole(w, _ng.d, hr, 0.04 * K);
-    netEnHitTx(e, hit.h, hit.p, _ng.d, 1, hr);                     // coop fix: the joiner's copy gets the same hole
-    if (got < G.pour) g90StreamOn(e, w, part === 'neck' ? X.spurtNeck * 0.6 : part === 'torso' ? X.spurtTorso * 0.5 : 0, 0.7);
+    const spt = got < G.pour ? (part === 'neck' ? X.spurtNeck * 0.6 : part === 'torso' ? X.spurtTorso * 0.5 : 0) : -1;
+    if (spt >= 0) { NG_SP[0] = +spt.toFixed(2); g90StreamOn(e, w, spt, 0.7); }
+    netEnHitTx(e, hit.h, hit.p, _ng.d, 1, w.hole || hr, spt >= 0 ? NG_SPX : null);   // coop fix: the joiner's copy gets the same hole (and it pours there too)
     fxEmit(hit.p, _ng.a.copy(_ng.d).negate(), 0.5, Math.round(4 * K), G90_MIST);   // blowback toward the blast
     if (!H.hit) H.hit = hit;
     got++;
@@ -17617,9 +17708,11 @@ function nadeFragWounds(e, P, H, G, K) {
 }
 // Severe: the two limbs nearest the blast torn open: a crater on the facing side, pouring hard, bits out the far side.
 function nadeTear(e, P, G, K) {
+  let tx = null;                                                     // co-op: the craters for the joiner's copy ('et')
   let b0 = null, b1 = null, d0 = Infinity, d1 = Infinity;
   for (const k of NG_LIMBS) {
     const b = e.B[k]; if (!b) continue;
+    NG_LIMB_OF.set(b, k);
     const d = b.getWorldPosition(_ng.a).distanceToSquared(P);
     if (d < d0) { b1 = b0; d1 = d0; b0 = b; d0 = d; } else if (d < d1) { b1 = b; d1 = d; }
   }
@@ -17635,11 +17728,18 @@ function nadeTear(e, P, G, K) {
     if (w.hole) w.hole = Math.max(w.hole, h0); else g90Hole(w, _ng.d, h0, 0.085 * K);
     g90StreamOn(e, w, CONFIG.gore.x.spurtTorso, 1.4);
     g90Chunks(e.room, at, _ng.d, Math.round(4 * K), 1);
+    if (e.nid && NET.role === 'host') {
+      const f = rF(e.room);
+      (tx || (tx = [])).push([NG_LIMBS.indexOf(NG_LIMB_OF.get(b)), +w.lp.x.toFixed(4), +w.lp.y.toFixed(4), +w.lp.z.toFixed(4),
+        +(_ng.d.x * f).toFixed(3), +_ng.d.y.toFixed(3), +(_ng.d.z * f).toFixed(3), +(w.hole || 0).toFixed(4), Math.round(4 * K)]);
+    }
   }
+  if (tx) netEnTearTx(e, tx);
 }
 // After the blast has done its work (deaths, the ragdolls, the shove).
 function nadeGoreAfter(hurt) {
   if (!hurt) return;
+  netEnBlastTx(hurt);                                                // co-op host: the same after-effects on the joiner's copies ('eb')
   const G = CONFIG.polish.nade.gore, S = CONFIG.polish.nade.smoke, K = g90K();
   NG_MIST.force = !CONFIG.polish.haze.on && IS_HEADSET && !!S && S.headset > 0;
   for (const [e, H] of hurt) {
@@ -30317,15 +30417,17 @@ function enemyShot(hit, dir, d, E) {
     _hc.p.copy(hit.p); e.B.chest.worldToLocal(_hc.p);
     if (Math.abs(_hc.p.z) > 0.075 && _hc.p.y > -0.09 && _hc.p.y < 0.24 && Math.abs(_hc.p.x) < 0.14) { plate = true; dmg = C.dmg.plate; }
   }
-  NET.plateHit = plate; netEnHitTx(e, h, hit.p, dir, E); NET.plateHit = false;   // co-op host: the wound (or the plate's sparks) on the joiner's copy
+  if (plate) { NET.plateHit = true; netEnHitTx(e, h, hit.p, dir, E); NET.plateHit = false; }   // co-op host: the plate's sparks on the joiner's copy (flesh: netEnGoreTx below)
   // Step 10: a plate sparks and thumps; flesh bleeds (bloodFx: mist, droplets, spatter behind him).
   P10.muteImpact = true;
   if (plate) impactFx('metal', hit.p, _hc.l);
   else {
     bloodFx(hit.p, dir, h.part, clamp(E, 0.4, 1.2));
     const wIn = addWound(e, e.B[h.b] || e.B.spine, hit.p, h.part), wOut = addExitWound(e, h, hit.p, dir, E, GORE_X && g90Through(d, h.part, E));
+    NET.g90K = 0;
     if (GORE_X) g90Hit(e, h.part, wIn, wOut, hit.p, dir, d, E);   // step 90: the hole, it pours, the far side
     if (GORE_X && awmHead) awmHeadGore(e, hit.p, dir);
+    netEnGoreTx(e, h, hit.p, dir, E, d, wIn, wOut, GORE_X && awmHead);   // co-op host: entry, exit, the far side on the joiner's copy
   }
   P10.muteImpact = false;
   impactBody(hit.p, plate);                                     // recorded: the round going in (impactRec.body; ?fleshhit=off)
@@ -39677,12 +39779,21 @@ function awmHeadGore(e, P, dir) {
 function g90Hit(e, part, wIn, wOut, P, dir, d, E) {
   const K = g90K() * penWoundK();                                          // step 119: a round tumbling after a wall tears a bigger hole
   if (!K || !wIn || !e.room || !e.room.active) return;
-  const X = CONFIG.gore.x, pel = d.pellets || 1, head = part === 'head', now = wnow();
+  const pel = d.pellets || 1, head = part === 'head';
   const heavy = pel > 1 ? 0.5 : clamp(((d.impulse || 2.2) - 1.6) / 4.4);   // 9 mm 0.14, 5.56 0.32, 7.62 0.55, AWP 1; buckshot (a blast) 0.5
-  const per = pel > 1 ? 1.8 / pel : 1;                                     // a pellet's share of a blast's spray
   const cap = (head ? 0.085 : 0.07) * K;
   g90Hole(wIn, dir, (0.0105 + 0.006 * heavy) * (pel > 1 ? 0.8 : 1) * K, cap);
   if (wOut) g90Hole(wOut, dir, (0.022 + 0.034 * heavy) * (head ? 1.4 : 1) * (pel > 1 ? 0.7 : 1) * K, cap);
+  NET.g90K = K / (g90K() || 1);                                            // co-op host: the tumble scale, sent with the hit ('ex' wk)
+  g90HitFx(e, part, wIn, wOut, P, dir, d, K);
+}
+// The rest of g90Hit once the holes are cut: it pours, the far side (mist, drops, bits, spray), a head pool. Co-op: the
+// joiner's copy runs this after the host's hole sizes (netExRx).
+function g90HitFx(e, part, wIn, wOut, P, dir, d, K) {
+  if (!K || !wIn || !e.room || !e.room.active) return;
+  const X = CONFIG.gore.x, pel = d.pellets || 1, head = part === 'head', now = wnow();
+  const heavy = pel > 1 ? 0.5 : clamp(((d.impulse || 2.2) - 1.6) / 4.4);
+  const per = pel > 1 ? 1.8 / pel : 1;
   // It pours; a torso / neck hit spurts with his heartbeat for the first seconds.
   const spurt = part === 'neck' ? X.spurtNeck : part === 'torso' || part === 'pelvis' ? X.spurtTorso : 0;
   const pk = (head ? 1.25 : part === 'limb' ? 0.6 : 1) * (0.8 + 0.5 * heavy);
