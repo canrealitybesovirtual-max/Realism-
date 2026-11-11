@@ -22275,27 +22275,52 @@ function wbMakeAtt(sub, big = true, variant = null) {
 // Called when the safe room is built.
 function wbSpawn(room) {
   const K = wbKit(), o = room.origin;
-  WB.room = room;
   if (!room.wbBuilt) {
     room.wbBuilt = true;
     const v = K.vise.clone(); v.position.set(WB.vise.x, WB.vise.y, WB.vise.z); room.group.add(v);
-    WB.jaws = [-1, 1].map((sd) => { const j = K.jaw.clone(); j.userData.sd = sd; j.position.set(WB.vise.x, WB.vise.y - 0.04, WB.vise.z + sd * WB.jawOpen); room.group.add(j); return j; });
-    WB.jawW = WB.jawOpen;
+    room.wbJaws = [-1, 1].map((sd) => { const j = K.jaw.clone(); j.userData.sd = sd; j.position.set(WB.vise.x, WB.vise.y - 0.04, WB.vise.z + sd * WB.jawOpen); room.group.add(j); return j; });
     const s = K.sign.clone(); s.position.set(WB.benchX + 0.2, 1.45, 2.985); s.rotation.y = Math.PI; room.group.add(s);
     // bench fix: a matte mid-grey work mat over both bench tops (dark parts stand out on it; the light grey trays sit on it)
     if (!WB.matMat) WB.matMat = new THREE.MeshStandardMaterial({ color: 0x5c5f63, roughness: 0.93, metalness: 0 });
     for (const bx of [WB.benchX, 1.3]) { const mm = mesh(rbox(1.585, 0.0028, 0.585, 0.0012), WB.matMat, false, true); mm.position.set(bx, 0.9036, 2.67); room.group.add(mm); }
   }
-  // step 88: the VISE button (a new one with each safe room)
-  WB.btnAt = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
-  WB.btn = K.btnBase.clone(); WB.btn.position.copy(WB.btnAt); room.group.add(WB.btn);
-  WB.cap = K.btnCap.clone(); WB.cap.material = K.btnCap.material.clone(); WB.cap.position.copy(WB.btnAt); room.group.add(WB.cap);
-  WB.lbl = mesh(new THREE.PlaneGeometry(0.11, 0.055), K.btnLbl[WB.open ? 1 : 0], false, true);
-  WB.lbl.rotation.x = -Math.PI / 2; WB.lbl.rotation.z = Math.PI; WB.lbl.position.set(WB.btnAt.x, WB.btnAt.y + 0.001, WB.btnAt.z - 0.085); room.group.add(WB.lbl);
-  wbButtonLook();
+  // step 88: the VISE button (one per safe room)
+  if (!room.wbBtn) {
+    const at = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
+    const btn = K.btnBase.clone(); btn.position.copy(at); room.group.add(btn);
+    const cap = K.btnCap.clone(); cap.material = K.btnCap.material.clone(); cap.position.copy(at); room.group.add(cap);
+    const lbl = mesh(new THREE.PlaneGeometry(0.11, 0.055), K.btnLbl[0], false, true);
+    lbl.rotation.x = -Math.PI / 2; lbl.rotation.z = Math.PI; lbl.position.set(at.x, at.y + 0.001, at.z - 0.085); room.group.add(lbl);
+    room.wbBtn = { at, btn, cap, lbl };
+  }
   // step 88: no rack. The parts lie on the table.
   WB.rack = null; WB.hooks = [];
+  if (safeKeep(room)) return;                                       // versus room fix: you stand in another safe room; its bench keeps the parts
+  wbBind(room);
   wbRestock(room);
+}
+// Versus room fix: the vise's moving parts and the VISE button the code drives are this room's (every safe room has its own).
+function wbBind(room) {
+  if (!room || !room.wbBtn) return;
+  if (WB.room === room && WB.btn === room.wbBtn.btn) return;
+  if (WB.open && WB.room && WB.room !== room) wbClose('moved');     // a gun left clamped in the other safe room's vise
+  WB.room = room;
+  WB.jaws = room.wbJaws || null; WB.jawW = WB.jawOpen;
+  if (WB.jaws) for (const j of WB.jaws) { j.position.z = WB.vise.z + j.userData.sd * WB.jawW; }
+  WB.btnAt = room.wbBtn.at; WB.btn = room.wbBtn.btn; WB.cap = room.wbBtn.cap; WB.lbl = room.wbBtn.lbl;
+  wbButtonLook();
+}
+// Versus room fix: two safe rooms can be live at once (multiplayer versus: the host's and the joiner's). The interactive
+// sets (bench parts, vise, gun locker guns, workshop computer, terminal screen, bench lamp, coat rack, kit cards) follow
+// the safe room you stand in; a safe room activated while you stand in another one keeps its fixed parts but takes none.
+function safeKeep(room) { const c = stream.current; return !!c && c !== room && c.kind === 'safe' && c.active && !c.removing; }
+function safeAdopt(room) {
+  if (!room || room.kind !== 'safe' || !room.active) return;
+  try { wbBind(room); } catch (e) { console.warn('versus room fix: bench not moved', e); }
+  if (room.glGrp) GL.room = room;
+  try { if (TERM.room !== room) termMove(room); } catch (e) { console.warn('versus room fix: terminal not moved', e); }
+  try { if (WORKSHOP.room !== room) wsMove(room); } catch (e) { console.warn('versus room fix: workshop not moved', e); }
+  try { if (BLAMP.room !== room) benchLampRoom(room, true); } catch (e) { console.warn('versus room fix: bench lamp not moved', e); }
 }
 /* Step 98: the table restocks on every safe-room visit (built, entered, new run, terminal restock, respawn), like
    the pouches. A part keeps its spot while it is in a hand, on the clamped gun or locked on a gun you carry (a hand,
@@ -22473,7 +22498,10 @@ function wbTrays(room) {
 }
 function wbTrays0(room) {
   if (!TRAY.mat) TRAY.mat = new THREE.MeshStandardMaterial({ color: 0xa9acaf, roughness: 0.8, metalness: 0 });   // bench fix: light grey polymer bins (dark parts stand out)
-  if (TRAY.room !== room) { TRAY.items = new Map(); TRAY.heads = []; TRAY.room = room; }   // the last safe room's trays went with its group
+  if (TRAY.room !== room) {                                         // versus room fix: each safe room keeps its own trays (no second set on top when the bench comes back)
+    if (TRAY.room) { TRAY.room.trayItems = TRAY.items; TRAY.room.trayHeads = TRAY.heads; TRAY.room.trayHeadKey = TRAY.headKey; }
+    TRAY.items = room.trayItems || new Map(); TRAY.heads = room.trayHeads || []; TRAY.headKey = room.trayHeadKey; TRAY.room = room;
+  }
   const { rects, heads } = wbLayout(room);
   for (const p of WB.atts) if (p.item.tableSpot && trayAtHome(p)) { wbHomePose(p, room, _wbP, _wbQ); if (p.root.position.distanceTo(_wbP) > 0.0005 || p.root.quaternion.angleTo(_wbQ) > 0.002) wbHome(p, room); }   // parts follow their spots
   for (const [t, e] of TRAY.items) if (!rects.has(t)) { trayDrop(e); TRAY.items.delete(t); }
@@ -23496,7 +23524,8 @@ function glKit(F) {
 }
 // Called when the safe room is built: the cabinet, its colliders and walk box (once per room), then a restock.
 function gunLockerSpawn(room) {
-  GL.room = room;
+  const keep = safeKeep(room);                                       // versus room fix: the guns stay in the safe room you stand in
+  if (!keep) GL.room = room;
   const F = glFit();
   if (!F.long.length && !F.pist.length) return;
   if (!room.glGrp) {
@@ -23519,7 +23548,7 @@ function gunLockerSpawn(room) {
     if (room.walkLocal) room.walkLocal.push({ x: X - D / 2, z: Z, a: 0, hx: D / 2, hz: W / 2, top: H });   // activateRoom rebuilds the walk boxes after this
     dirtyShadows();
   }
-  gunLockerRestock(room);
+  if (!keep) gunLockerRestock(room);
 }
 function glCarried(g) { return !!g && !!g.prop && !g.prop.removing && (g.prop.holders.length > 0 || !!g.slot || !!g.cradle || (WB.open && WB.gun === g)); }
 function glWorld(room, pos, quat) { return GL.M.compose(pos, quat, GL.one).premultiply(room.glGrp.matrixWorld).decompose(GL.v, GL.q, GL.s); }
@@ -23554,6 +23583,7 @@ function gunLockerRestock(room = GL.room) {
 // Step 98: everything the safe room restocks besides the pouches.
 function safeRestock(room) {
   let n = 0;
+  safeAdopt(room);                                                  // versus room fix: the sets come to this safe room
   try { n += wbRestock(room); } catch (e) { console.warn('step 98: bench not restocked', e); }
   try { n += gunLockerRestock(room); } catch (e) { console.warn('step 98: gun locker not restocked', e); }
   try { wearSpawn(room, true); extKitSpawn(room, true); } catch (e) { console.warn('restart coat rack fix: locker / kit cards not placed', e); }   // the set comes to the safe room you are in
@@ -24062,8 +24092,9 @@ function benchLampLook() {
 }
 // Activation hook (activateRoom, beside the workshop computer): the lamp moves to this safe room (bracket on the
 // front wall; the arm keeps the pose you gave it).
-function benchLampRoom(room) {
+function benchLampRoom(room, move = false) {
   if (!BLAMP.on || room.kind !== 'safe' || !BLAMP.light) return;
+  if (!move && safeKeep(room)) return;                              // versus room fix: it stays in the safe room you stand in
   if (!BLAMP.grp) benchLampBuild();
   BLAMP.grp.position.set(0, 0, room.d / 2);
   if (BLAMP.held !== undefined) BLAMP.held = undefined;
@@ -32737,12 +32768,8 @@ function termPrecompile(on) { if (TERM.cursor) TERM.cursor.visible = on; }
 // Activation hook (activateRoom): the screen moves to this safe room, plus a collider and a walk box.
 function termRoomActivated(room) {
   if (room.kind !== 'safe' || !room.layout.terminal || !TERM.screen) return;
-  const L = room.layout.terminal, C = CONFIG.terminal, s = TERM.screen, sn = Math.sin(L.ry), cs = Math.cos(L.ry);
-  s.position.set(L.x + sn * C.depth, C.y, L.z + cs * C.depth);
-  s.rotation.set(0, L.ry, 0);
-  room.group.add(s);
-  s.updateMatrix(); s.matrixAutoUpdate = false; s.updateMatrixWorld(true);
-  TERM.room = room; TERM.dirty = true;
+  const L = room.layout.terminal, C = CONFIG.terminal, sn = Math.sin(L.ry), cs = Math.cos(L.ry);
+  if (!safeKeep(room)) termMove(room);                              // versus room fix: the screen stays in the safe room you stand in
   const hx = C.w / 2 + 0.08, hz = 0.04, hy = (C.h + 0.14) / 2, cx = L.x + sn * hz, cz = L.z + cs * hz;
   const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setTranslation(cx, C.y, cz)
     .setRotation({ x: 0, y: Math.sin(L.ry / 2), z: 0, w: Math.cos(L.ry / 2) })
@@ -32750,6 +32777,15 @@ function termRoomActivated(room) {
   colliderInfo.set(col.handle, { room, kind: 'metal' });
   room.colliderHandles.push(col.handle);
   room.walkLocal.push({ x: cx, z: cz, a: L.ry, hx, hz, top: C.y + hy });
+}
+function termMove(room) {                                          // the one screen onto this safe room's wall
+  if (!room || room.kind !== 'safe' || !room.layout.terminal || !TERM.screen) return;
+  const L = room.layout.terminal, C = CONFIG.terminal, s = TERM.screen, sn = Math.sin(L.ry), cs = Math.cos(L.ry);
+  s.position.set(L.x + sn * C.depth, C.y, L.z + cs * C.depth);
+  s.rotation.set(0, L.ry, 0);
+  room.group.add(s);
+  s.updateMatrix(); s.matrixAutoUpdate = false; s.updateMatrixWorld(true);
+  TERM.room = room; TERM.dirty = true;
 }
 function termRoomUnloaded(room) { if (TERM.room === room) { TERM.room = null; TERM.awake = false; } }
 
@@ -33737,8 +33773,21 @@ function wsGunList(room) {
 }
 // Activation hook (activateRoom): the computer moves to this safe room, with a collider on its head.
 function wsRoomActivated(room) {
-  const W = WORKSHOP, C = CONFIG.workshop;
+  const W = WORKSHOP;
   if (!W.on || room.kind !== 'safe' || !W.base) return;
+  if (!safeKeep(room)) wsMove(room);                                // versus room fix: it stays in the safe room you stand in
+}
+function wsMove(room) {
+  const W = WORKSHOP, C = CONFIG.workshop;
+  if (!W.on || !room || room.kind !== 'safe' || !room.active || !W.base) return;
+  const old = W.room;                                               // its housing collider leaves the room it was in
+  if (old && old !== room && old.wsCol !== undefined) {
+    const col = world.getCollider(old.wsCol);
+    if (col) { try { world.removeCollider(col, false); } catch (e) { /* gone with its room */ } }
+    colliderInfo.delete(old.wsCol);
+    if (old.colliderHandles) { const i = old.colliderHandles.indexOf(old.wsCol); if (i >= 0) old.colliderHandles.splice(i, 1); }
+    old.wsCol = undefined;
+  }
   wsGunList(room);
   const b = W.base;
   b.position.set(C.x, 0, room.d / 2); b.rotation.set(0, Math.PI, 0);   // front wall, facing into the room
@@ -33747,6 +33796,7 @@ function wsRoomActivated(room) {
   b.updateMatrixWorld(true);
   W.room = room; W.dirty = true;
   // collider: the housing (room space = the base's frame times the head's)
+  if (room.wsCol !== undefined) { dirtyShadows(); return; }         // versus room fix: its collider is already here
   _wsv.m.multiplyMatrices(b.matrix, W.head.matrix);
   _wsv.m.decompose(_wsv.p, _wsv.q, _wsv.s);
   _wsv.l.set(0, 0, -0.03).applyMatrix4(_wsv.m);
@@ -33754,7 +33804,7 @@ function wsRoomActivated(room) {
     .setRotation({ x: _wsv.q.x, y: _wsv.q.y, z: _wsv.q.z, w: _wsv.q.w })
     .setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.static), room.body);
   colliderInfo.set(col.handle, { room, kind: 'metal' });
-  room.colliderHandles.push(col.handle);
+  room.colliderHandles.push(col.handle); room.wsCol = col.handle;
   dirtyShadows();
 }
 function wsRoomUnloaded(room) { if (WORKSHOP.room === room) { WORKSHOP.room = null; WORKSHOP.awake = false; paintLive(); } }   // step 106: a live finish ends
@@ -48500,7 +48550,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { BLAMP, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
