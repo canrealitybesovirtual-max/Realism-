@@ -11150,24 +11150,62 @@ function padMenu(gp) {
 }
 /* ============================================================================
  *  MULTIPLAYER (two players, peer to peer; ?net=off)
- *  WebRTC data channels through PeerJS (vendor/peerjs, MIT; loaded only when you host or join). The broker
- *  (0.peerjs.com) is used once to introduce the two browsers; after that they talk directly, over the home
- *  WiFi when both are on it (no server in the game loop). Host: watch / M panel "Multiplayer: HOST" shows a
- *  4-digit code. Join: "Join a game" (types the code) or the address ?join=1234.
+ *  WebRTC data channels through PeerJS (vendor/peerjs, MIT; loaded only when you host or join). A broker (PeerJS
+ *  server, default 0.peerjs.com) only introduces the two browsers; after that they talk directly (or through a TURN
+ *  relay when the networks block a direct link). Host: watch / M panel "Multiplayer: HOST" shows a 4-digit code.
+ *  Join: "Join a game" (types the code) or the address ?join=1234.
  *  Channels: 'fast' (unordered, no resends) carries your pose 30 times a second; 'rel' (reliable) carries
  *  shots and hits. The other player is drawn as a soldier (spawnEnemy, e.net: no AI, posed from his packets,
- *  shown ~90 ms behind his clock so movement is smooth). Rooms are the same on both (fixed world seed); poses
- *  travel room-local (slot + room coordinates), so world shifts never matter.
+ *  shown a jitter-sized buffer behind his clock so movement is smooth). Rooms are the same on both (fixed world seed);
+ *  poses travel room-local (slot + room coordinates), so world shifts never matter.
  *  Hits are decided by the shooter (what you see is what you hit): your round on his body sends a hit, he
- *  takes it with playerHit. While connected no AI men are spawned (game modes come later).
+ *  takes it with playerHit.
+ *
+ *  Internet setup (the owner, once; players never type keys): cqc/net-config.json, see docs/MULTIPLAYER_SETUP.md.
+ *    stun        STUN servers (finds your public address; several, so one being down does not matter).
+ *    turn        static TURN entries [{ urls: ['turn:h:3478?transport=udp', 'turn:h:3478?transport=tcp',
+ *                'turns:h:443?transport=tcp'], username, credential }] (relays the traffic when no direct link works).
+ *    metered     { app: '<subdomain>', apiKey: '<frontend key>' }: fresh TURN credentials from
+ *                https://<app>.metered.live/api/v1/turn/credentials?apiKey=KEY at host / join time (cached 1 h).
+ *    cloudflare  { url: '<your worker>' }: a URL returning { iceServers } (Cloudflare TURN keys must be minted on a
+ *                server: cqc/tools/cf-turn-worker.js is an example worker).
+ *    brokers     [{ host, port, path, secure, key }] tried in order (a self-hosted `npx peer --port 9000` works).
+ *    relay       true = TURN only (iceTransportPolicy 'relay', for tests).
+ *  Also window.CQC_NET_CONFIG (same keys) and, for tests, ?turn=url[,url]&tu=user&tp=pass, ?relay=1,
+ *  ?broker=host:port/path (&brokerkey=, &brokeronly), ?dev&netsim=latency,jitter,loss% (ms, ms, % on 'fast').
+ *  No free public TURN relay is listed: none could be verified from the build machine (the old free
+ *  openrelay.metered.ca service is closed), so the default is STUN only.
  * ========================================================================== */
 const NET = { on: !/[?&]net=off\b/.test(QS), st: 'off', role: null, code: '', peer: null, rel: null, fast: null, av: null, avGun: '', avSlot: -1,
   buf: [], off: null, seq: 0, acc: 0, lastRx: 0, rem: null, hz: 30, delay: 90, msg: '', lost: 60000,   // 60 s: a console can stall (a room built, an effect compiled); only a closed channel ends it sooner
-  _h: new THREE.Vector3(), _f: new THREE.Vector3(), _p: new THREE.Vector3(), _d: new THREE.Vector3() };
+  _h: new THREE.Vector3(), _f: new THREE.Vector3(), _p: new THREE.Vector3(), _d: new THREE.Vector3(),
+  gen: 0, sess: null, cfg: null, broker: null, reason: '', lastAct: null, dial: null, remPeer: null, relQ: [], rtimer: 0,
+  jw: new Float32Array(90), ji: 0, jn: 0, rxN: 0, rxGot: 0, rxMiss: 0,
+  link: { rtt: 0, jit: 0, loss: 0, ice: '', local: '', remote: '', proto: '', relayed: false, discAt: 0, txB: 0, rxB: 0, up: 0, down: 0, at: 0, pingAt: 0, statAt: 0, cand: {}, iceRtt: 0, said: false } };
+const NET_CFG_DEF = {
+  stun: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478', 'stun:global.stun.twilio.com:3478'],
+  turn: [], metered: { app: '', apiKey: '' }, cloudflare: { url: '' }, relay: false,
+  brokers: [{ host: '0.peerjs.com', port: 443, path: '/', secure: true, key: 'peerjs' }],
+  prefix: 'cqc-loop-', openTimeout: 10000, connectTimeout: 25000
+};
+const NET_WHY = {
+  lib: 'could not load the network code', webrtc: 'this browser has no WebRTC data channels',
+  broker: 'cannot reach the matchmaking server (check the internet connection)',
+  notfound: 'no game with that code (is the host still waiting?)', timeout: 'the other side did not answer in time',
+  full: 'that game already has two players', key: 'the matchmaking server refused its key', drop: 'the connection dropped',
+  ice: () => (NET.cfg && NET.cfg.hasTurn ? 'could not link the two devices, even through the relay' : 'could not link the two devices directly (strict NAT or mobile network): a TURN relay is needed (net-config.json)')
+};
+const netWhy = (k) => { const w = NET_WHY[k]; return typeof w === 'function' ? w() : (w || k); };
+const NET_SIM = (() => {                                           // ?dev&netsim=150,40,5: latency ms, jitter ms, loss % ('fast' only), on what you receive
+  const m = /[?&]dev\b/.test(QS) && /[?&]netsim=([\d.]+),([\d.]+),([\d.]+)/.exec(location.search);
+  return m ? { lat: +m[1], jit: +m[2], loss: +m[3] / 100, relT: 0 } : null;
+})();
+function netQ(k) { const m = new RegExp('[?&]' + k + '=([^&#]*)').exec(location.search); return m ? decodeURIComponent(m[1]) : null; }
 function netLabel() {
   if (NET.st === 'on') return 'Multiplayer: CONNECTED · leave';
   if (NET.st === 'host') return `Multiplayer: code ${NET.code} · waiting`;
   if (NET.st === 'join') return 'Multiplayer: joining…';
+  if (NET.st === 're') return 'Multiplayer: reconnecting · leave';
   return 'Multiplayer: HOST';
 }
 function netSay(t, s = 3) { NET.msg = t; try { toast(t, s * 1000); } catch (e) { /* no toast */ } try { vrNote(t, s); } catch (e) { /* no headset */ } try { yardUiSync(); } catch (e) { /* no menu yet */ } }
@@ -11175,56 +11213,255 @@ function netLib() {
   if (window.Peer) return Promise.resolve();
   return new Promise((ok, bad) => { const s = document.createElement('script'); s.src = 'vendor/peerjs/peerjs.min.js'; s.onload = () => ok(); s.onerror = () => bad(new Error('peerjs')); document.head.appendChild(s); });
 }
-const NET_ICE = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } };
-async function netHost() {
-  if (!NET.on || NET.st !== 'off') return netLeave();
-  try { await netLib(); } catch (e) { netSay('Multiplayer: could not load the network code'); return; }
-  NET.code = String(1000 + Math.floor(Math.random() * 9000)); NET.role = 'host'; NET.st = 'host';
-  NET.peer = new window.Peer('cqc-loop-' + NET.code, NET_ICE);
-  NET.peer.on('open', () => netSay(`Multiplayer code: ${NET.code}. Your brother picks Join and types it.`, 8));
-  NET.peer.on('connection', (c) => netAttach(c));
-  NET.peer.on('call', (c) => netVoiceAnswer(c));   // the other player's voice
-  NET.peer.on('error', (e) => { if (e && e.type === 'unavailable-id') { netLeave(true); netHost(); return; } netSay('Multiplayer: ' + (e && e.type || 'error')); netLeave(true); });
+// --- config: net-config.json < window.CQC_NET_CONFIG < address; TURN from the static list, Metered, Cloudflare ---
+async function netFetchJson(url, ms) {
+  const ac = typeof AbortController !== 'undefined' ? new AbortController() : null, t = setTimeout(() => { try { ac && ac.abort(); } catch (e) { /* gone */ } }, ms);
+  try { const r = await fetch(url, { cache: 'no-store', signal: ac ? ac.signal : undefined }); if (!r.ok) throw new Error('http ' + r.status); return await r.json(); }
+  finally { clearTimeout(t); }
 }
-async function netJoin(code) {
-  if (!NET.on) return;
-  if (NET.st !== 'off') netLeave(true);
-  if (code == null) { try { code = window.prompt('Multiplayer: the 4-digit code on the host\'s screen', ''); } catch (e) { code = null; } }
-  code = String(code || '').replace(/\D/g, '');
-  if (code.length !== 4) { netSay('Multiplayer: the code is 4 digits'); return; }
-  try { await netLib(); } catch (e) { netSay('Multiplayer: could not load the network code'); return; }
-  NET.code = code; NET.role = 'join'; NET.st = 'join';
-  NET.peer = new window.Peer(undefined, NET_ICE);
-  NET.peer.on('open', () => {
-    netAttach(NET.peer.connect('cqc-loop-' + code, { label: 'rel', reliable: true, serialization: 'json' }));
-    netAttach(NET.peer.connect('cqc-loop-' + code, { label: 'fast', reliable: false, serialization: 'json' }));
+function netIceList(x) {                                           // anything iceServers-shaped -> [{ urls, username?, credential? }]
+  if (!x) return [];
+  if (!Array.isArray(x)) x = x.iceServers !== undefined ? x.iceServers : x;
+  if (!Array.isArray(x)) x = [x];
+  const out = [];
+  for (const s of x) {
+    if (!s) continue;
+    if (typeof s === 'string') { out.push({ urls: s }); continue; }
+    const urls = s.urls || s.url; if (!urls || (Array.isArray(urls) && !urls.length)) continue;
+    const o = { urls }; if (s.username) o.username = s.username; if (s.credential != null) o.credential = s.credential; out.push(o);
+  }
+  return out;
+}
+async function netTurnFetch(tag, url) {                            // fresh relay credentials, cached an hour; any failure = none (STUN only)
+  const key = 'cqc.turn.' + tag + '.v1';
+  try { const c = JSON.parse(localStorage.getItem(key) || 'null'); if (c && c.u === url && Date.now() - c.t < 3600e3 && c.L && c.L.length) return c.L; } catch (e) { /* storage off */ }
+  try {
+    const L = netIceList(await netFetchJson(url, 5000));
+    if (L.length) try { localStorage.setItem(key, JSON.stringify({ u: url, t: Date.now(), L })); } catch (e) { /* storage off */ }
+    return L;
+  } catch (e) { NET.turnErr = tag + ': ' + (e && e.message || 'failed'); return []; }
+}
+async function netCfgLoad() {
+  const c = JSON.parse(JSON.stringify(NET_CFG_DEF));
+  const merge = (s) => {
+    if (!s || typeof s !== 'object') return;
+    for (const k of Object.keys(c)) if (s[k] !== undefined && s[k] !== null) c[k] = (k === 'metered' || k === 'cloudflare') ? Object.assign({}, c[k], s[k]) : s[k];
+  };
+  try { merge(await netFetchJson('net-config.json', 3000)); } catch (e) { /* no file: the defaults */ }
+  merge(window.CQC_NET_CONFIG);
+  const t = netQ('turn');
+  if (t) c.turn = netIceList(c.turn).concat(t.split(',').filter(Boolean).map((u) => ({ urls: u, username: netQ('tu') || undefined, credential: netQ('tp') || undefined })));
+  if (/[?&]relay=(1|on)\b/.test(location.search)) c.relay = true;
+  const b = netQ('broker');
+  if (b) {
+    const m = /^(?:(https?|wss?):\/\/)?([^:/]+)(?::(\d+))?(\/.*)?$/.exec(b);
+    if (m) { const sec = m[1] ? /s$/.test(m[1]) : m[3] === '443'; const B = { host: m[2], port: +(m[3] || (sec ? 443 : 80)), path: m[4] || '/', secure: sec, key: netQ('brokerkey') || 'peerjs' }; c.brokers = /[?&]brokeronly\b/.test(location.search) ? [B] : [B].concat(c.brokers || []); }
+  }
+  if (!Array.isArray(c.brokers) || !c.brokers.length) c.brokers = NET_CFG_DEF.brokers;
+  const ice = [{ urls: Array.isArray(c.stun) ? c.stun : [c.stun] }], src = [];
+  NET.turnErr = '';
+  const stat = netIceList(c.turn); if (stat.length) { ice.push(...stat); src.push('TURN'); }
+  const ma = c.metered && String(c.metered.app || '').replace(/^https?:\/\//, '').replace(/\.metered\.live.*$/, '').trim();
+  if (ma && c.metered.apiKey) { const L = await netTurnFetch('metered', `https://${ma}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(c.metered.apiKey)}`); if (L.length) { ice.push(...L); src.push('Metered'); } }
+  if (c.cloudflare && c.cloudflare.url) { const L = await netTurnFetch('cf', c.cloudflare.url); if (L.length) { ice.push(...L); src.push('Cloudflare'); } }
+  c.ice = ice; c.relays = src;
+  c.hasTurn = ice.some((s) => [].concat(s.urls).some((u) => /^turns?:/i.test(u)));
+  return (NET.cfg = c);
+}
+const netRelayName = () => (NET.cfg ? (NET.cfg.relays.length ? NET.cfg.relays.join(' + ') : 'none') : '?');
+function netPeerOpts(b) {
+  return Object.assign({ host: b.host, port: b.port, path: b.path || '/', secure: !!b.secure, key: b.key || 'peerjs' },
+    { debug: 0, config: { iceServers: NET.cfg.ice, iceTransportPolicy: NET.cfg.relay ? 'relay' : 'all' } });
+}
+function netPeerOpen(id, b) {                                       // a Peer on broker b, resolved when the broker gave it its id
+  return new Promise((ok, bad) => {
+    let done = false, p;
+    try { p = new window.Peer(id, netPeerOpts(b)); } catch (e) { bad(Object.assign(new Error('webrtc'), { type: 'browser-incompatible' })); return; }
+    const fin = (err) => {
+      if (done) return; done = true; clearTimeout(t); p.off('open', onO); p.off('error', onE);
+      if (err) { try { p.destroy(); } catch (e) { /* gone */ } bad(err); } else ok(p);
+    };
+    const onO = () => fin(null), onE = (e) => fin(Object.assign(new Error(e && e.type || 'error'), { type: e && e.type }));
+    const t = setTimeout(() => fin(Object.assign(new Error('broker'), { type: 'timeout' })), NET.cfg.openTimeout);
+    p.on('open', onO); p.on('error', onE);
   });
-  NET.peer.on('error', (e) => { netSay('Multiplayer: ' + (e && e.type === 'peer-unavailable' ? 'no game with that code' : (e && e.type || 'error'))); netLeave(true); });
+}
+const netSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const netErrKind = (e) => (e && e.type === 'browser-incompatible' ? 'webrtc' : e && e.type === 'invalid-key' ? 'key' : 'broker');
+// The broker link can drop while a game runs (the data channels keep going); the host must stay findable for a rejoin.
+function netPeerKeep(p) {
+  p.on('disconnected', () => {
+    let n = 0;
+    const again = () => { if (p.destroyed || NET.peer !== p || p.open) return; n++; try { p.reconnect(); } catch (e) { /* retry */ } setTimeout(again, Math.min(30000, 1000 * 2 ** n)); };
+    setTimeout(again, 1000);
+  });
+}
+async function netHost() {
+  if (!NET.on) return;
+  if (NET.st !== 'off') return netLeave();
+  const gen = ++NET.gen; NET.lastAct = { a: 'host' }; NET.reason = ''; NET.link.cand = {};
+  NET.role = 'host'; NET.st = 'host'; NET.sess = Math.random().toString(36).slice(2, 10); NET.everOn = false;
+  NET.code = String(1000 + Math.floor(Math.random() * 9000));
+  try { yardUiSync(); } catch (e) { /* no menu */ }
+  try { await netLib(); } catch (e) { return netFail('lib'); }
+  await netCfgLoad(); if (gen !== NET.gen) return;
+  let last = 'broker';
+  for (let round = 0; round < 3; round++) {
+    for (const b of NET.cfg.brokers) {
+      for (let tries = 0; tries < 4; tries++) {
+        try {
+          const p = await netPeerOpen(NET.cfg.prefix + NET.code, b);
+          if (gen !== NET.gen) { try { p.destroy(); } catch (e) { /* gone */ } return; }
+          NET.peer = p; NET.broker = b; netPeerKeep(p);
+          p.on('connection', (c) => netIncoming(c));
+          p.on('call', (c) => netVoiceAnswer(c));                    // the other player's voice
+          p.on('error', (e) => { NET.brokerErr = e && e.type; });   // after open: broker trouble only (the reconnect handles it)
+          NET.codeAt = performance.now();
+          netSay(`Multiplayer code: ${NET.code}. The other player picks Join and types it. Relay: ${netRelayName()}`, 8);
+          return;
+        } catch (e) {
+          if (gen !== NET.gen) return;
+          if (e.type === 'unavailable-id') { NET.code = String(1000 + Math.floor(Math.random() * 9000)); continue; }   // code in use: another
+          last = netErrKind(e); break;
+        }
+      }
+      if (last === 'webrtc') return netFail(last);
+    }
+    netSay(`Multiplayer: ${netWhy(last)}. Trying again…`, 3);
+    await netSleep([2000, 5000, 9000][round]); if (gen !== NET.gen) return;
+  }
+  netFail(last);
+}
+// Host: a joiner dials in. A second player while you are linked is turned away; a new link from him (a rejoin) replaces a dead one.
+function netIncoming(c) {
+  if (NET.role !== 'host') { try { c.close(); } catch (e) { /* closed */ } return; }
+  const live = NET.st === 'on' && performance.now() - NET.lastRx < 6000;
+  const mine = c.metadata && NET.sess && c.metadata.sess === NET.sess;   // the same session redialling (maybe from a new peer id)
+  if (NET.remPeer && c.peer !== NET.remPeer && live && !mine) {
+    c.on('open', () => { try { c.send({ t: 'full' }); } catch (e) { /* closed */ } setTimeout(() => { try { c.close(); } catch (e) { /* closed */ } }, 500); });
+    return;
+  }
+  if (NET.st === 'on') netSoftDrop('he came back on a new link');   // his old link is dead (or he redialled before you noticed): start clean, then resync
+  if ((c.label === 'fast' ? NET.fast : NET.rel) && NET.st !== 'on') { const o = c.label === 'fast' ? NET.fast : NET.rel; o.__old = true; try { o.close(); } catch (e) { /* closed */ } }   // a half-open earlier try
+  NET.remPeer = c.peer; netAttach(c);
+}
+async function netJoin(code, resume = false) {
+  if (!NET.on) return;
+  if (!resume) {
+    if (NET.st !== 'off') netLeave(true);
+    if (code == null) { try { code = window.prompt('Multiplayer: the 4-digit code on the host\'s screen', ''); } catch (e) { code = null; } }
+    code = String(code || '').replace(/\D/g, '');
+    if (code.length !== 4) { netSay('Multiplayer: the code is 4 digits'); return; }
+    NET.sess = null; NET.everOn = false; NET.retry = 0; NET.link.cand = {};
+  }
+  const gen = ++NET.gen; NET.lastAct = { a: 'join', code }; NET.reason = '';
+  NET.code = code; NET.role = 'join'; NET.st = resume ? 're' : 'join';
+  try { yardUiSync(); } catch (e) { /* no menu */ }
+  try { await netLib(); } catch (e) { return netFail('lib'); }
+  await netCfgLoad(); if (gen !== NET.gen) return;
+  let last = 'broker';
+  for (const b of NET.cfg.brokers) {                               // the host is on one of them: try each until one knows the code
+    let p = NET.peer && !NET.peer.destroyed && NET.peer.open && NET.broker === b ? NET.peer : null;
+    if (!p) {
+      try { p = await netPeerOpen(undefined, b); } catch (e) { if (gen !== NET.gen) return; last = last === 'notfound' ? last : netErrKind(e); if (last === 'webrtc') break; continue; }
+      if (gen !== NET.gen) { try { p.destroy(); } catch (e) { /* gone */ } return; }
+      if (NET.peer && NET.peer !== p) try { NET.peer.destroy(); } catch (e) { /* gone */ }
+      NET.peer = p; NET.broker = b; netPeerKeep(p);
+    }
+    const r = await netDial(p, code, gen);
+    if (gen !== NET.gen) return;
+    if (r === 'ok') return;
+    last = r;
+    if (r !== 'notfound') break;                                   // found him but could not link: another broker will not help
+  }
+  if (gen !== NET.gen) return;
+  if (resume) { netReconnect(last); return; }                    // a rejoin keeps trying (a 'full' may be the host not having noticed the drop yet)
+  netFail(last);
+}
+// Open both channels to the host; 'ok', or why not: notfound / ice / timeout / full.
+function netDial(p, code, gen) {
+  return new Promise((ok) => {
+    const D = NET.dial = { done: false, at: performance.now() };
+    const fin = (r) => { if (D.done) return; D.done = true; clearTimeout(t); p.off('error', onE); if (NET.dial === D) NET.dial = null; if (r !== 'ok') netKillChans(); ok(r); };
+    D.fin = fin;
+    const onE = (e) => { if (e && e.type === 'peer-unavailable') fin('notfound'); else if (e && (e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error' || e.type === 'socket-closed')) { /* broker blip: the channels may still open */ } };
+    p.on('error', onE);
+    const t = setTimeout(() => fin(netIceStuck() ? 'ice' : 'timeout'), NET.cfg.connectTimeout);
+    if (gen !== NET.gen) { fin('timeout'); return; }
+    NET.remPeer = NET.cfg.prefix + code;
+    netAttach(p.connect(NET.cfg.prefix + code, { label: 'rel', reliable: true, serialization: 'json', metadata: { sess: NET.sess } }));
+    netAttach(p.connect(NET.cfg.prefix + code, { label: 'fast', reliable: false, serialization: 'json', metadata: { sess: NET.sess } }));
+  });
+}
+function netIceStuck() {                                           // the channels never linked: ICE checking / failed (no TURN, strict NAT)
+  for (const c of [NET.rel, NET.fast]) { const pc = c && c.peerConnection; if (pc && /^(new|checking|failed|disconnected)$/.test(pc.iceConnectionState)) return true; }
+  return !!(NET.rel || NET.fast);
+}
+function netIceWatch(c) {
+  const pc = c.peerConnection; if (!pc || pc.__cqcW) return; pc.__cqcW = true;
+  const L = NET.link;
+  pc.addEventListener('icecandidate', (ev) => { const k = ev.candidate && (ev.candidate.type || (/ typ (\w+)/.exec(ev.candidate.candidate || '') || [])[1]); if (k) L.cand[k] = (L.cand[k] || 0) + 1; });
+  pc.addEventListener('iceconnectionstatechange', () => {
+    const s = pc.iceConnectionState; if (c.__old) return;
+    if (c === NET.fast || c === NET.rel) L.ice = s;
+    if (s === 'disconnected') { if (!L.discAt) L.discAt = performance.now(); }
+    else if (s === 'connected' || s === 'completed') L.discAt = 0;
+    else if (s === 'failed') { if (NET.st === 'on' && (c === NET.fast || c === NET.rel)) netSoftDrop('the link failed'); else if (NET.dial) NET.dial.fin('ice'); }
+  });
 }
 function netAttach(c) {
   if (!c) return;
   if (c.label === 'fast') NET.fast = c; else NET.rel = c;
-  c.on('open', () => { if (NET.rel && NET.rel.open && NET.fast && NET.fast.open && NET.st !== 'on') netStart(); });
-  c.on('data', (m) => netRx(m));
-  c.on('close', () => { if (NET.st === 'on') netDropped('the other player left'); });
+  netIceWatch(c);
+  c.on('open', () => { if (c.__old) return; netIceWatch(c); if (NET.rel && NET.rel.open && NET.fast && NET.fast.open && NET.st !== 'on') netStart(); });
+  c.on('data', (m) => { if (c.__old) return; NET.link.rxB += netSize(m); if (!NET_SIM) netRx(m); else netSimRx(c.label, m); });
+  c.on('close', () => {
+    if (c.__old) return; c.__old = true;
+    if (NET.st === 'on' && (c === NET.rel || c === NET.fast)) { if (NET.byeAt && performance.now() - NET.byeAt < 5000) netByeDrop(); else netSoftDrop(NET.role === 'host' ? 'the other player\'s link closed' : 'the host\'s link closed'); }
+    else if (NET.dial && (c === NET.rel || c === NET.fast)) NET.dial.fin(netIceStuck() ? 'ice' : 'timeout');
+  });
   c.on('error', () => {});
 }
+function netSimRx(lbl, m) {                                        // ?dev&netsim: latency, jitter and loss on what arrives (both sides: round trip x2)
+  const S = NET_SIM, now = performance.now();
+  if (lbl === 'fast' && Math.random() < S.loss) return;
+  let d = S.lat + (Math.random() * 2 - 1) * S.jit;
+  if (lbl !== 'fast') { d = Math.max(d, S.relT - now); S.relT = now + d; }   // the reliable channel stays in order
+  setTimeout(() => netRx(m), Math.max(0, d));
+}
+const netSize = (m) => { try { return JSON.stringify(m).length; } catch (e) { return 0; } };
+function netKillChans() {
+  for (const c of [NET.rel, NET.fast]) if (c) { c.__old = true; try { c.close(); } catch (e) { /* closed */ } }
+  NET.rel = NET.fast = null;
+}
 function netStart() {
+  const re = !!NET.everOn;
   NET.retry = 0; NET.sentB.clear(); NET.mine = null; NET.drRx = 0; NET.remSt = null; NET.ebAsk.clear();              // his side may have lost your gun builds: send them again
-  setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
+  NET.everOn = true; NET.reason = ''; NET.relQ.length = 0; NET.byeAt = 0;
+  Object.assign(NET.link, { rtt: 0, jit: 0, loss: 0, discAt: 0, local: '', remote: '', proto: '', relayed: false, txB: 0, rxB: 0, at: performance.now(), pingAt: 0, statAt: performance.now() - 500, said: false });
+  NET.jn = 0; NET.ji = 0; NET.rxN = 0; NET.rxGot = 0; NET.rxMiss = 0; NET.delay = 90;
+  if (NET.dial) NET.dial.fin('ok');
+  NET.call = null; setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.lastRx = performance.now();
   if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
-  if (NET.mode === 'vs' && NET.role === 'host') { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
-  netSay(`Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
-  if (NET.role === 'host') { const sr = netCurSafe(); netSendRel({ t: 'hi', v: 2, mode: NET.mode, slot: sr ? sr.slot : null }); }
+  if (NET.mode === 'vs' && NET.role === 'host' && !VS.on) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
+  netSay(re ? 'Multiplayer: reconnected' : `Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
+  if (NET.role === 'host') {
+    const sr = netCurSafe(); netSendRel({ t: 'hi', v: 3, mode: NET.mode, slot: sr ? sr.slot : null, sess: NET.sess });
+    netResyncTx();                                                 // doors, the versus match: what he missed (or never had)
+  }
   if (NET.role === 'host' && NET.mode === 'vs') setTimeout(() => { if (netLive() && !VS.on) netVsBegin(); }, 2500);   // versus: the first match starts on its own
 }
+// You leave on purpose ('bye' first, so his side does not try to reconnect).
 function netLeave(quiet = false) {
   const was = NET.st;
-  try { NET.rel && NET.rel.close(); } catch (e) { /* closed */ }
-  try { NET.fast && NET.fast.close(); } catch (e) { /* closed */ }
-  try { NET.peer && NET.peer.destroy(); } catch (e) { /* gone */ }
-  NET.peer = NET.rel = NET.fast = null; NET.st = 'off'; NET.role = null; NET.rem = null; NET.buf.length = 0;
+  ++NET.gen; clearTimeout(NET.rtimer);
+  if (NET.rel && NET.rel.open) try { NET.rel.send({ t: 'bye' }); } catch (e) { /* closed */ }
+  const R = NET.rel, F = NET.fast, P = NET.peer;
+  for (const c of [R, F]) if (c) c.__old = true;
+  setTimeout(() => { for (const c of [R, F]) try { c && c.close(); } catch (e) { /* closed */ } try { P && P.destroy(); } catch (e) { /* gone */ } }, R && R.open ? 150 : 0);
+  if (NET.dial) NET.dial.fin('timeout');
+  NET.peer = NET.rel = NET.fast = null; NET.st = 'off'; NET.role = null; NET.rem = null; NET.buf.length = 0; NET.remPeer = null; NET.sess = null; NET.everOn = false; NET.relQ.length = 0;
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
   for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } }
   NET.pup.clear(); NET.tgt = null; NET.remOk = false; NET.warp = null; VS.on = false; VS.lock = false; stream.revSafe = null;
@@ -11233,25 +11470,137 @@ function netLeave(quiet = false) {
   if (!quiet && was !== 'off') netSay('Multiplayer: off');
   else { try { yardUiSync(); } catch (e) { /* no menu */ } }
 }
-// A drop mid-game: the host keeps its code open and waits for him to come back; the joiner tries the same code again
-// (6 times, 3 s apart). Either way the game goes on.
-function netDropped(why) {
-  const role = NET.role, code = NET.code;
-  if (role === 'host' && NET.peer && !NET.peer.destroyed) {
-    try { NET.rel && NET.rel.close(); } catch (e) { /* closed */ } try { NET.fast && NET.fast.close(); } catch (e) { /* closed */ }
-    NET.rel = NET.fast = null; NET.st = 'host'; NET.buf.length = 0; NET.off = null; NET.remOk = false; NET.tgt = null;
-    if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
-    for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } } NET.pup.clear();
-    VS.on = false; VS.lock = false; NET.codeAt = 0;
-    netSay(`Multiplayer: ${why}. Waiting for him to rejoin with ${code}`, 5);
-    return;
+function netFail(kind) {                                           // could not connect: the reason stays on the status cell (press = retry)
+  const act = NET.lastAct;
+  netLeave(true); NET.lastAct = act; NET.reason = kind;
+  netSay('Multiplayer: ' + netWhy(kind) + '. Status cell: retry', 8);
+}
+// The link dropped (the session goes on): the host keeps its code and waits; the joiner dials the same code again with
+// backoff. Room plan, versus match and doors are kept and re-sent on the new link (netResyncTx); his body and the copies of
+// the host's men are made again from the next packets.
+function netSoftDrop(why) {
+  if (!NET.role || NET.st === 'off') return;
+  netKillChans();
+  NET.buf.length = 0; NET.off = null; NET.remOk = false; NET.tgt = null; NET.remPeer = null; NET.relQ.length = 0; NET.link.discAt = 0;
+  if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
+  for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } } NET.pup.clear();
+  if (NET_SPOT) NET_SPOT.intensity = 0;
+  netVoiceStop();
+  if (NET.role === 'host') { NET.st = 'host'; NET.codeAt = performance.now(); netSay(`Multiplayer: ${why}. Waiting for him to rejoin with ${NET.code}`, 5); return; }
+  NET.st = 're'; NET.retry = 0; netReconnect(why);
+}
+function netByeDrop() {                                            // he left on purpose
+  if (NET.role === 'host') netSoftDrop('the other player left');
+  else { netLeave(true); netSay('Multiplayer: the host ended the game', 5); }
+}
+const NET_BACKOFF = [1, 2, 3, 5, 8, 12, 20, 30, 30, 30, 30, 30];  // s: about 3.5 min in all
+function netReconnect(why) {
+  if (NET.role !== 'join') return;
+  clearTimeout(NET.rtimer);
+  NET.retry = (NET.retry || 0) + 1;
+  if (NET.retry > NET_BACKOFF.length) { netFail(why && NET_WHY[why] ? why : 'drop'); return; }
+  const s = NET_BACKOFF[NET.retry - 1];
+  NET.reAt = performance.now() + s * 1000;
+  netSay(`Multiplayer: ${NET_WHY[why] ? netWhy(why) : why}. Reconnecting in ${s} s (${NET.retry} of ${NET_BACKOFF.length})`, Math.min(4, s + 1));
+  NET.st = 're';
+  NET.rtimer = setTimeout(() => { if (NET.st === 're' && NET.role === 'join') netJoin(NET.code, true); }, s * 1000);
+}
+// --- what a rejoin needs from the host: doors, the versus match --------------------------------------------------
+function netResyncTx() {
+  const L = [];
+  for (const door of doors) if (!door.sec && door.room && door.room.active && door.body) L.push(door.room.slot, +door.angle.toFixed(3));
+  if (L.length) netSendRel({ t: 'drs', L });
+  if (VS.on && VS.m) {
+    const now = performance.now();
+    netSendRel({ t: 'vsr', m: VS.m, h: VS.score[0], j: VS.score[1], over: VS.over ? 1 : 0, go: VS.goAt ? VS.goAt - now : null, end: VS.endAt ? VS.endAt - now : (VS.goAt ? VS.goAt + VS_RULES.time * 1000 - now : null) });
   }
-  netLeave(true);
-  if (role === 'join' && code) {
-    NET.retry = (NET.retry || 0) + 1;
-    if (NET.retry <= 6) { netSay(`Multiplayer: ${why}. Reconnecting (${NET.retry} of 6)…`, 3); setTimeout(() => { if (NET.st === 'off') netJoin(code); }, 3000); }
-    else { NET.retry = 0; netSay('Multiplayer: could not reconnect'); }
-  } else netSay('Multiplayer: ' + why);
+}
+function netDoorSnapRx(m) {
+  if (!m.L) return;
+  const now = performance.now() / 1000;
+  for (let i = 0; i + 1 < m.L.length; i += 2) {
+    const r = stream.rooms.get(m.L[i]), door = r && r.active && r.door; if (!door || !door.body || door.sec || door.holder) continue;
+    door.netA = clamp(+m.L[i + 1] || 0, -CONFIG.doorPhys.maxBack, CONFIG.doorPhys.maxOpen); door.netT = now + 2.5; door.body.wakeUp();   // held for 3 s: long enough to swing there
+  }
+}
+function netVsResumeRx(m) {
+  if (NET.role !== 'join' || !m.m) return;
+  const now = performance.now();
+  if (!VS.on || VS.B !== m.m.B) netVsApply(m.m, 1);
+  VS.score = [m.j | 0, m.h | 0]; VS.over = !!m.over;
+  if (m.go != null) { VS.goAt = now + m.go; VS.lock = m.go > 0; VS.ready = true; if (m.end != null) VS.endAt = now + m.end; }
+}
+// --- sending: the fast channel skips a packet when its buffer is backed up (a newer pose comes in 33 ms); the reliable
+// one queues past 1 MB in flight (shots, hits, builds keep their order) and drains as it empties.
+function netSendFast(m) {
+  const c = NET.fast; if (!c || !c.open) return false;
+  const dc = c.dataChannel; if (dc && dc.bufferedAmount > 65536) { NET.link.skip = (NET.link.skip || 0) + 1; return false; }
+  try { NET.link.txB += netSize(m); c.send(m); return true; } catch (e) { return false; }
+}
+function netSendRel(m) {
+  const c = NET.rel; if (!c || !c.open) return;
+  const dc = c.dataChannel;
+  if (NET.relQ.length || (dc && dc.bufferedAmount > 1 << 20) || (c.bufferSize | 0) > 0) { if (NET.relQ.length < 600) NET.relQ.push(m); return; }
+  try { NET.link.txB += netSize(m); c.send(m); } catch (e) { /* dropped */ }
+}
+function netRelDrain() {
+  const c = NET.rel; if (!c || !c.open || !NET.relQ.length) return;
+  const dc = c.dataChannel;
+  while (NET.relQ.length && (!dc || dc.bufferedAmount < 1 << 18)) { const m = NET.relQ.shift(); try { NET.link.txB += netSize(m); c.send(m); } catch (e) { break; } }
+}
+// --- link health: ping (fast channel, answered from the data handler, so a long frame does not count), loss from the pose
+// sequence, the playback delay from the measured jitter, the ICE pair (direct / relayed) from getStats.
+function netLinkTick(now) {
+  const L = NET.link;
+  if (now - L.pingAt > 500) { L.pingAt = now; netSendFast({ t: 'pi', c: Math.round(now) }); }
+  netRelDrain();
+  if (L.discAt && now - L.discAt > 15000) { netSoftDrop('the link went quiet'); return; }
+  if (now - L.at >= 1000) {                                      // once a second: rates, loss, the buffer size
+    const dt = (now - L.at) / 1000; L.up = L.txB / dt / 1024; L.down = L.rxB / dt / 1024; L.txB = L.rxB = 0; L.at = now;
+    const n = NET.rxGot + NET.rxMiss; if (n >= 10) { L.loss += ((NET.rxMiss / n) - L.loss) * 0.5; NET.rxGot = NET.rxMiss = 0; }
+    if (NET.jn >= 15) {
+      const w = Array.from(NET.jw.subarray(0, Math.min(NET.jn, NET.jw.length))).sort((a, b) => a - b);
+      const p95 = w[Math.floor(w.length * 0.95)] - w[0];
+      L.jit = p95;
+      const want = clamp(1000 / NET.hz * (1.5 + 4 * L.loss) + p95 + 12, 55, 450);   // a packet interval and a half (more when packets go missing) + the late tail
+      NET.delay += (want - NET.delay) * (want > NET.delay ? 0.6 : 0.15);
+    }
+  }
+  if (now - L.statAt > 2000) { L.statAt = now; netStats(); }
+}
+async function netStats() {
+  const pc = NET.fast && NET.fast.peerConnection; if (!pc || !pc.getStats) return;
+  try {
+    const st = await pc.getStats(); let pair = null;
+    st.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId && st.get(r.selectedCandidatePairId)) pair = st.get(r.selectedCandidatePairId); });
+    if (!pair) st.forEach((r) => { if (!pair && r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected)) pair = r; });
+    if (!pair) return;
+    const l = st.get(pair.localCandidateId), rm = st.get(pair.remoteCandidateId), L = NET.link;
+    L.local = (l && l.candidateType) || ''; L.remote = (rm && rm.candidateType) || ''; L.proto = (l && (l.relayProtocol || l.protocol)) || '';
+    L.relayed = L.local === 'relay' || L.remote === 'relay';
+    if (pair.currentRoundTripTime) L.iceRtt = pair.currentRoundTripTime * 1000;
+    if (!L.said && L.local) { L.said = true; netSay(`Multiplayer link: ${L.relayed ? 'relayed (TURN ' + L.proto + ')' : 'direct'} · relay: ${netRelayName()}`, 3); }
+  } catch (e) { /* no stats */ }
+}
+function netStatusLabel() {
+  const L = NET.link, rel = netRelayName();
+  if (NET.st === 'on') return `Net: ${Math.round(L.rtt)} ms · ${L.local ? (L.relayed ? 'relayed' : 'direct') : 'linking'} · relay ${rel}`;
+  if (NET.st === 'host') return `Net: waiting · code ${NET.code} · relay ${rel}`;
+  if (NET.st === 'join') return 'Net: connecting…';
+  if (NET.st === 're') return `Net: reconnecting (${NET.retry || 1}) · retry now`;
+  if (NET.reason) { const k = NET.reason, sh = { notfound: 'no such code', broker: 'no server', ice: NET.cfg && NET.cfg.hasTurn ? 'relay failed' : 'needs TURN', full: 'game full', timeout: 'no answer', lib: 'load error', webrtc: 'no WebRTC', key: 'bad key', drop: 'dropped' }[k] || k; return `Net: FAILED · ${sh} · retry`; }
+  return `Net: not connected · relay ${rel}`;
+}
+function netStatusText() {
+  const L = NET.link, c = Object.entries(L.cand).map(([k, v]) => `${k} ${v}`).join(', ') || 'none';
+  if (NET.st !== 'on') return `Multiplayer ${NET.st}${NET.reason ? ': ' + netWhy(NET.reason) : ''}. Relay: ${netRelayName()}${NET.turnErr ? ' (' + NET.turnErr + ')' : ''}. Broker: ${NET.broker ? NET.broker.host : (NET.cfg ? NET.cfg.brokers[0].host : '?')}. Candidates: ${c}`;
+  return `Link: ${L.relayed ? 'relayed via TURN' : 'direct'} (${L.local || '?'} ↔ ${L.remote || '?'}${L.proto ? ', ' + L.proto : ''}) · RTT ${Math.round(L.rtt)} ms` +
+    (L.iceRtt ? ` (ICE ${Math.round(L.iceRtt)})` : '') + ` · jitter ${Math.round(L.jit)} ms · loss ${Math.round(L.loss * 100)} % · buffer ${Math.round(NET.delay)} ms · up ${L.up.toFixed(1)} / down ${L.down.toFixed(1)} kB/s · relay: ${netRelayName()} · broker ${NET.broker ? NET.broker.host : '?'}`;
+}
+function netStatusPress() {
+  if (NET.st === 're') { clearTimeout(NET.rtimer); NET.retry = Math.max(0, (NET.retry || 1) - 1); netJoin(NET.code, true); return; }
+  if (NET.st === 'off' && NET.lastAct) { if (NET.lastAct.a === 'host') netHost(); else netJoin(NET.lastAct.code); return; }
+  netSay(netStatusText(), 8);
 }
 // Together: both play one plan. The furthest either of you has been sets where the safe rooms are (each side worked
 // it out from its own progress, so one saw a safe room where the other had a fight), and the room he is in plus the
@@ -11316,7 +11665,6 @@ function netVoiceStop() {
   if (NET.mic) { try { NET.mic.getTracks().forEach((t) => t.stop()); } catch (e) { /* stopped */ } NET.mic = null; }
   if (NET.vsrc) { try { NET.vsrc.disconnect(); } catch (e) { /* gone */ } NET.vsrc = null; }
 }
-function netSendRel(m) { if (NET.rel && NET.rel.open) try { NET.rel.send(m); } catch (e) { /* dropped */ } }
 const netLive = () => NET.st === 'on';
 // --- out: your pose, room-local, 30 Hz ---------------------------------------------------------
 function netTx(dt) {
@@ -11327,12 +11675,12 @@ function netTx(dt) {
   const g = renderer.xr.isPresenting ? (gunOf(vrHands[1]) || gunOf(vrHands[0])) : gunOf(deskHand);
   const fx = NET._f.x * f, fz = NET._f.z * f;
   try {
-    NET.fast.send({ t: 's', n: ++NET.seq, c: performance.now(), s: r.slot, x: +rLX(r, h.x).toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +rLZ(r, h.z).toFixed(3),
+    netSendFast({ t: 's', n: ++NET.seq, c: Math.round(performance.now()), s: r.slot, x: +rLX(r, h.x).toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +rLZ(r, h.z).toFixed(3),
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: stream.frontier,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
       ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
-  } catch (e) { /* dropped */ }
+  } catch (e) { /* not ready */ }
 }
 // VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
 // really do (a computer player sends none: his copy keeps the aimed pose from the head).
@@ -11373,7 +11721,10 @@ function netRx(m) {
   if (!m || typeof m !== 'object') return;
   const now = performance.now(); NET.lastRx = now;
   if (m.t === 's') {
-    const o = now - m.c; NET.off = NET.off == null || o < NET.off ? o : NET.off + (o - NET.off) * 0.02;   // clock offset (low edge: the fastest packets)
+    const o = now - m.c; NET.off = NET.off == null || o < NET.off ? o : NET.off + (o - NET.off) * 0.002;   // clock offset (low edge: the fastest packets; a slow creep follows clock drift and route changes)
+    NET.jw[NET.ji] = o - NET.off; NET.ji = (NET.ji + 1) % NET.jw.length; NET.jn++;   // how late each packet is: the playback delay covers its 95th percentile
+    if (NET.rxN && m.n > NET.rxN) { NET.rxMiss += Math.min(30, m.n - NET.rxN - 1); NET.rxGot++; } else if (!NET.rxN) NET.rxGot++;   // loss on the fast channel
+    if (m.n > NET.rxN) NET.rxN = m.n;
     if (NET.buf.length && m.n <= NET.buf[NET.buf.length - 1].n) return;   // out of order (unordered channel): drop the stale one
     NET.buf.push(m); if (NET.buf.length > 40) NET.buf.shift();
     NET.remSlot = m.s; if (m.f != null) NET.remF = m.f;
@@ -11382,6 +11733,12 @@ function netRx(m) {
     const f = rF(r);
     playerHit(m.part === 'head' ? 'head' : 'body', NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), clamp(m.E || 1, 0.2, 1), m.k || 1);
   } else if (m.t === 'shot') netRemoteShot(m);
+  else if (m.t === 'pi') netSendFast({ t: 'po', c: m.c });       // ping: answered at once (not on a frame)
+  else if (m.t === 'po') { const r = now - m.c; if (r >= 0 && r < 20000) NET.link.rtt = NET.link.rtt ? NET.link.rtt + (r - NET.link.rtt) * 0.25 : r; }
+  else if (m.t === 'bye') NET.byeAt = now;
+  else if (m.t === 'full') { if (NET.dial) NET.dial.fin('full'); }
+  else if (m.t === 'drs') { if (NET.role === 'join') netDoorSnapRx(m); }
+  else if (m.t === 'vsr') netVsResumeRx(m);
   else if (m.t === 'gb') { if (m.id && m.b) { NET.builds.set(m.id, m.b); if (NET.builds.size > 16) NET.builds.delete(NET.builds.keys().next().value); } }   // his gun's build
   else if (m.t === 'gbreq') { const B = NET.myBuilds.get(m.id); if (B) netSendRel({ t: 'gb', id: m.id, b: B }); }
   else if (m.t === 'drop') netDropRx(m);
@@ -11403,7 +11760,9 @@ function netRx(m) {
   else if (m.t === 'hi') {
     if (NET.role === 'join') {
       NET.mode = m.mode === 'vs' ? 'vs' : 'coop';
-      if (NET.mode === 'coop' && m.slot != null) { NET.warp = m.slot; stream.frontier = m.slot + CONFIG.stream.safeBehind; netSay('Together: joining the host\'s safe room', 3); }
+      const back = m.sess && m.sess === NET.sess; NET.sess = m.sess || null;   // a rejoin of the same session: stay where you are
+      if (back) { /* resync comes as 'drs' / 'vsr' and the next packets */ }
+      else if (NET.mode === 'coop' && m.slot != null) { NET.warp = m.slot; stream.frontier = m.slot + CONFIG.stream.safeBehind; netSay('Together: joining the host\'s safe room', 3); }
       else if (NET.mode === 'vs') netSay('Versus: the host starts the match from the watch menu', 5);
       for (const e of [...ENEMY.list]) if (!e.net && !e.puppet) removeEnemy(e);
     }
@@ -11496,7 +11855,10 @@ function netEnTx(dt) {                                            // host, 15 Hz
     L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w, +enemyFloorY(e).toFixed(3),   // [10] the floor he stands on (a stairwell landing)
       st, e.spec ? e.spec.kit | 0 : 0, st && !(e.dead && !e.downed) ? netPoseOf(e) : null, e.unarmed ? 1 : 0]);
   }
-  try { NET.fast.send({ t: 'en', L }); } catch (er) { /* dropped */ }
+  // Split so each packet stays under one UDP datagram (~1.1 kB): a fragmented unreliable message is lost if any piece is.
+  let part = [], sz = 0;
+  for (const a of L) { const n = netSize(a) + 1; if (part.length && sz + n > 1050) { netSendFast({ t: 'en', L: part }); part = []; sz = 0; } part.push(a); sz += n; }
+  netSendFast({ t: 'en', L: part });
 }
 function netEnRx(m) {                                             // joiner
   const now = performance.now(), seen = new Set();
@@ -11683,6 +12045,7 @@ function netVsApply(m, side) {
   anchors.length = Math.min(anchors.length, m.B); anchorY.length = Math.min(anchorY.length, m.B);
   stream.revSafe = m.B + 3;                                        // the joiner's safe room opens back into B+2 (makeRoom)
   Object.assign(VS, { on: true, B: m.B, side, my: side ? m.B + 3 : m.B, lock: true, goAt: 0, ready: false, otherReady: false, placed: false, score: [0, 0], wasDead: false, last: -1, over: false, endAt: 0, minSaid: -1, again: 0 });
+  VS.m = m;                                                        // a rejoin gets the same match again (netResyncTx)
   netSay(`Versus: building the map (${m.k.map((x) => x === 'stair' ? 'stairwell' : 'room').join(' + ')} between you)`, 4);
 }
 // The streaming plan in a versus match: your safe room, the two between, his safe room. Nothing else.
@@ -11708,7 +12071,7 @@ function netVsRespawn() {
   refillInventory(); playerState.dead = false; playerState.hp = CONFIG.enemy.playerHealth; playerState.hurt = 0; xrState.crouchOn = false; hpUi();
   return true;
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcNet = { NET, VS, netRx, netStart, netTick, netHost, netJoin, netLeave, netVsBegin, netVsApply, netEnRx, netPlaceIn, netTargetFor, netEhRx, playerState: () => playerState, playerHit: (...a) => playerHit(...a), loopRun: () => loop.run };
+if (/[?&]dev\b/.test(QS)) window.__cqcNet = { NET, VS, netRx, netStart, netTick, netHost, netJoin, netLeave, netVsBegin, netVsApply, netEnRx, netPlaceIn, netTargetFor, netEhRx, netSendRel, netSendFast, netLinkTick, netStats, netSoftDrop, netStatusText, netStatusLabel, netStatusPress, netCfgLoad, netKillChans, netSample, NET_SIM, playerState: () => playerState, playerHit: (...a) => playerHit(...a), loopRun: () => loop.run };
 (function netAutoJoin() {                                        // ?join=1234: join as soon as the game is running
   const m = /[?&]join=(\d{4})\b/.exec(location.search); if (!m || !NET.on) return;
   const t = setInterval(() => { try { if (gameStarted) { clearInterval(t); netJoin(m[1]); } } catch (e) { /* not yet */ } }, 500);
@@ -11718,6 +12081,10 @@ function netSample(rt) {
   const B = NET.buf; if (!B.length) return null;
   let a = B[0], b = null;
   for (let i = 0; i < B.length; i++) { if (B[i].c <= rt) a = B[i]; else { b = B[i]; break; } }
+  if (!b && a === B[B.length - 1] && B.length > 1 && rt > a.c) {   // playback ran past the newest packet (one lost or late): carry on for up to 120 ms
+    const z = B[B.length - 2], dtp = a.c - z.c, k = Math.min(rt - a.c, 120) / Math.max(1, dtp);
+    if (z.s === a.s && dtp > 0 && dtp < 200) return Object.assign({}, a, { x: a.x + (a.x - z.x) * k, z: a.z + (a.z - z.z) * k, y: a.y + (a.y - z.y) * k });
+  }
   if (!b || a === b || b.s !== a.s) return a;
   const k = clamp((rt - a.c) / Math.max(1, b.c - a.c));
   const ang = (x, y) => x + Math.atan2(Math.sin(y - x), Math.cos(y - x)) * k;
@@ -11735,8 +12102,9 @@ function netTick(dt, now) {
   if (NET.st === 'host' && NET.code && performance.now() - (NET.codeAt || 0) > 20000) { NET.codeAt = performance.now(); netSay(`Multiplayer code: ${NET.code} (waiting for the other player)`, 8); }   // the code again while you wait
   netTx(dt);
   if (!netLive()) return;
+  netLinkTick(performance.now()); if (!netLive()) return;         // ping, loss, jitter buffer, direct / relayed, reliable queue
   const quiet = performance.now() - NET.lastRx;
-  if (quiet > NET.lost) { netDropped('lost the other player'); return; }
+  if (quiet > NET.lost) { netSoftDrop('nothing heard for a minute'); return; }
   if (quiet > 4000 && !NET.waitSaid) { NET.waitSaid = true; netSay('Multiplayer: waiting for the other player (loading?)', 3); } else if (quiet < 1000) NET.waitSaid = false;
   netRestTick();                                                   // dropped items: his not built yet, where yours came to rest
   netDoorTx(dt);                                                   // doors you move: his leaf follows
@@ -12322,7 +12690,7 @@ function netDoorTx(dt) {
     door.netLastA = door.angle;
     if (now < (door.netTxUntil || 0) || moving) (L || (L = [])).push(door.room.slot, +door.angle.toFixed(3));
   }
-  if (L) try { NET.fast.send({ t: 'dr', n: ++NET.drN, L }); } catch (e) { /* dropped */ }
+  if (L) netSendFast({ t: 'dr', n: ++NET.drN, L });
 }
 function netDoorRx(m) {
   if (!m.L || m.n <= NET.drRx) return;                              // unordered channel: an older one
@@ -51401,6 +51769,7 @@ var YARD_CELLS = [
   ['ymode', () => netModeLabel(), () => netModeToggle()],
   ['yvs', () => VS.on ? `Versus: you ${VS.score[0]} : ${VS.score[1]} them · rematch` : 'Versus: START MATCH (host)', () => { if (NET.role === 'host' && netLive() && NET.mode === 'vs') netVsBegin(); else netSay(NET.mode !== 'vs' ? 'Pick VERSUS mode first' : 'The host starts it, once connected'); }],
   ['yjoin', () => NET.st === 'on' ? `Joined game ${NET.code}` : 'Multiplayer: JOIN a game', () => { if (NET.st !== 'on') netJoin(); }],
+  ['ynetst', () => netStatusLabel(), () => netStatusPress()],   // connection: state, RTT, direct / relayed, relay service, reason; press = retry / details
   ['ystealth', () => `Stealth: ${stealthState().on ? stealthState().diff.toUpperCase() : 'OFF'}`, () => { const S = stealthState(), o = ['off', 'easy', 'normal', 'hard'], c = S.on ? S.diff : 'off', n = o[(o.indexOf(c) + 1) % 4]; S.on = n !== 'off'; if (S.on) S.diff = n; stealthSave(); yardUiSync(); }],
   ['ymeter', () => `Detection meter: ${({ on: 'ON', min: 'MINIMAL', off: 'OFF' })[stealthState().meter]}`, () => { const S = stealthState(), o = ['on', 'min', 'off']; S.meter = o[(o.indexOf(S.meter) + 1) % 3]; stealthSave(); yardUiSync(); }]
 ];
