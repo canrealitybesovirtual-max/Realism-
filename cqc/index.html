@@ -2236,6 +2236,22 @@ const LITE = (() => {
   return { on, auto: !m && o !== 'on' && o !== 'off', weak: weak || xbox, xbox, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
 })();
 const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('')
+// Sound files: a queue, 6 requests at a time, each retried twice. 150+ recordings fetched at once made the browser
+// refuse part of them (net::ERR_INSUFFICIENT_RESOURCES): those sounds fell back to the synth for the whole visit.
+const SNDQ = { q: [], n: 0, max: 6 };
+function sndFetch(url, tries = 3) {
+  return new Promise((res, rej) => { SNDQ.q.push({ url, tries, res, rej }); sndPump(); });
+}
+function sndPump() {
+  while (SNDQ.n < SNDQ.max && SNDQ.q.length) {
+    const j = SNDQ.q.shift(); SNDQ.n++;
+    fetch(j.url).then((r) => { SNDQ.n--; j.res(r); sndPump(); }, (e) => {
+      SNDQ.n--;
+      if (--j.tries > 0) setTimeout(() => { SNDQ.q.push(j); sndPump(); }, 400); else j.rej(e);
+      sndPump();
+    });
+  }
+}
   + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '')   // PERF: lite = the cheap programs
   // Xbox: fewer shader programs (each one compiles slowly on the console) and lighter effects; an OPTIONS switch turned ON wins.
   + (LITE.xbox ? window.CQCXbox.flags(OPT) : '');   // Xbox mode: the profile's load-time switches (fewer, cheaper shader programs)
@@ -4868,7 +4884,7 @@ document.body.appendChild(renderer.domElement);
 // textures + a ~230 MB script heap). Every texture a rendered scene uses is shrunk to at most LOWMEM.cap px (aspect kept)
 // before it is first uploaded (renderer.render is wrapped: one scan per scene a second, new textures only), and the full
 // image is let go. Data / compressed / render-target textures are left alone.
-const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: LITE.xbox ? window.CQCXbox.profile().texCap : 512, seen: new WeakSet(), scan: new WeakMap(), n: 0, saved: 0 };
+const LOWMEM = { on: /[?&]lowmem=on\b/.test(QS) || ((LITE.xbox) && !/[?&]lowmem=off\b/.test(QS)), cap: LITE.xbox ? window.CQCXbox.profile().texCap : 512, seen: new WeakSet(), scan: new WeakMap(), mat: new WeakMap(), now: 0, n: 0, saved: 0 };
 function lowmemTex(t) {
   if (!t || LOWMEM.seen.has(t)) return; LOWMEM.seen.add(t);
   if (t.isDataTexture || t.isCompressedTexture || t.isDepthTexture || t.isVideoTexture || t.isCubeTexture || t.isData3DTexture || t.isDataArrayTexture || t.isRenderTargetTexture || t.isFramebufferTexture) return;
@@ -4888,17 +4904,29 @@ function lowmemTex(t) {
 function lowmemScene(sc) {
   const now = performance.now(), last = LOWMEM.scan.get(sc) || 0;
   if (now - last < 1000 && last) return; LOWMEM.scan.set(sc, now);
-  sc.traverse((o) => {
-    const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : null; if (!ms) return;
-    for (const m of ms) { if (!m) continue; for (const key in m) { const v = m[key]; if (v && v.isTexture) lowmemTex(v); } if (m.uniforms) for (const u in m.uniforms) { const v = m.uniforms[u] && m.uniforms[u].value; if (v && v.isTexture) lowmemTex(v); } }
-  });
+  LOWMEM.now = now;
+  sc.traverse(lowmemObj);
+}
+// Every lit object once a second: each material is read again at most every 8 s (a for..in over every material of the scene
+// each second, plus an array per object, was a steady cost and garbage on the console).
+function lowmemObj(o) {
+  const m = o.material; if (!m) return;
+  if (Array.isArray(m)) { for (let i = 0; i < m.length; i++) lowmemMat(m[i]); } else lowmemMat(m);
+}
+function lowmemMat(m) {
+  if (!m) return;
+  const t = LOWMEM.mat.get(m);
+  if (t !== undefined && LOWMEM.now - t < 8000 && !LOWMEM.force) return;   // a compile reads them all (new maps go in before the upload)
+  LOWMEM.mat.set(m, LOWMEM.now);
+  for (const key in m) { const v = m[key]; if (v && v.isTexture) lowmemTex(v); }
+  if (m.uniforms) for (const u in m.uniforms) { const v = m.uniforms[u] && m.uniforms[u].value; if (v && v.isTexture) lowmemTex(v); }
 }
 if (LOWMEM.on) {
   const _lmRender = renderer.render.bind(renderer);
   renderer.render = (sc, cam) => { if (sc && sc.isObject3D) try { lowmemScene(sc); } catch (e) { /* scan only */ } return _lmRender(sc, cam); };
   const _lmCompile = renderer.compile.bind(renderer);
-  renderer.compile = (sc, ...a) => { if (sc && sc.isObject3D) try { lowmemScene(sc); } catch (e) { /* scan only */ } return _lmCompile(sc, ...a); };
-  if (renderer.compileAsync) { const _lmCA = renderer.compileAsync.bind(renderer); renderer.compileAsync = (sc, ...a) => { if (sc && sc.isObject3D) try { LOWMEM.scan.delete(sc); lowmemScene(sc); } catch (e) { /* scan only */ } return _lmCA(sc, ...a); }; }
+  renderer.compile = (sc, ...a) => { if (sc && sc.isObject3D) try { LOWMEM.scan.delete(sc); LOWMEM.force = true; lowmemScene(sc); } catch (e) { /* scan only */ } finally { LOWMEM.force = false; } return _lmCompile(sc, ...a); };
+  if (renderer.compileAsync) { const _lmCA = renderer.compileAsync.bind(renderer); renderer.compileAsync = (sc, ...a) => { if (sc && sc.isObject3D) try { LOWMEM.scan.delete(sc); LOWMEM.force = true; lowmemScene(sc); } catch (e) { /* scan only */ } finally { LOWMEM.force = false; } return _lmCA(sc, ...a); }; }
   console.info('[start] low memory: textures at most ' + LOWMEM.cap + ' px');
 }
 // The console can drop the graphics (out of video memory). preventDefault lets the browser give it back; three.js rebuilds
@@ -16205,7 +16233,7 @@ const NREC_SURF = {
 const nrecOn = () => NREC.on && CONFIG.polish.nade.rec.on !== false;
 function nadeRecLoad(ctx) {
   if (!NREC.on || NREC.loading) return; NREC.loading = true;
-  for (const n of NREC_FILES) fetch('./sounds/' + n + '.mp3').then((r) => (r.ok ? r.arrayBuffer() : null))
+  for (const n of NREC_FILES) sndFetch('./sounds/' + n + '.mp3').then((r) => (r.ok ? r.arrayBuffer() : null))
     .then((b) => b && ctx.decodeAudioData(b)).then((buf) => { if (buf) { NREC.norm[n] = hrecNorm(buf); NREC.bufs[n] = buf; } }).catch(() => { /* synth stays */ });
 }
 // One loaded entry of a list (a file name, or a variant [file, ...]), never the one played last under that key.
@@ -28050,7 +28078,7 @@ const _pbc = { x: 0, z: 0, c: 1, s: 0, hx: 0, hz: 0 };
 // Open door leaves of this room's two doorways, stamped into the grid for one path search.
 function navDoorStamp(room, G) {
   const N = G.nx * G.nz;
-  G.dyn = new Uint8Array(N);
+  if (G.dyn && G.dyn.length === N) G.dyn.fill(0); else G.dyn = new Uint8Array(N);   // the grid is kept now: its layer too
   G.dynN = 0;
   const r = CONFIG.enemy.radius;
   for (const door of [room.door, (stream.rooms.get(room.slot - 1) || {}).door]) {
@@ -28253,22 +28281,47 @@ function tableBoxes(room) {
   }
   return out;
 }
+// The grid is kept per room (it was built again on every path search, spawn check and decision: every cell against every
+// box, a fresh grid and fresh search buffers each time). The fixed part (walls, walk boxes) is built once per room
+// layout; tables and loose heavy props move, so they are stamped again on top when the grid is over NAV_DYN s old.
+const NAV_DYN = 0.5;
 function navGrid(room) {
   if (room.navCache) return room.navCache;
-  const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
-  const g = new Uint8Array(nx * nz);
-  const boxes = (room.walkLocal || []).concat(tableBoxes(room), room.facNav || [], TB.stuck ? propBoxes(room, []) : []);   // facility section: the stair (AI only)   // boxes, crates and cans on the floor block him too (he used to path and spawn through them)
-  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
-    const x = -room.w / 2 + (i + 0.5) * cs, z = -room.d / 2 + (j + 0.5) * cs;
-    let blocked = Math.abs(x) > room.w / 2 - r || Math.abs(z) > room.d / 2 - r;
-    if (!blocked) for (const b of boxes) if (boxDist(x, z, b) < r) { blocked = true; break; }
-    g[j * nx + i] = blocked ? 1 : 0;
+  const now = performance.now() / 1000, wl = room.walkLocal || [], fn = room.facNav || [];
+  let G = room._nav;
+  if (G && G.w === room.w && G.d === room.d && G.wl === wl && G.wn === wl.length && G.fn === fn.length) {
+    if (now - G.at < NAV_DYN) return G;
+  } else {
+    const cs = 0.2, nx = Math.max(1, Math.floor(room.w / cs)), nz = Math.max(1, Math.floor(room.d / cs)), r = CONFIG.enemy.radius;
+    const base = new Uint8Array(nx * nz), boxes = wl.concat(fn);   // facility section: the stair (AI only)
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+      const x = -room.w / 2 + (i + 0.5) * cs, z = -room.d / 2 + (j + 0.5) * cs;
+      let blocked = Math.abs(x) > room.w / 2 - r || Math.abs(z) > room.d / 2 - r;
+      if (!blocked) for (const b of boxes) if (boxDist(x, z, b) < r) { blocked = true; break; }
+      base[j * nx + i] = blocked ? 1 : 0;
+    }
+    G = room._nav = { g: new Uint8Array(nx * nz), base, nx, nz, cs, w: room.w, d: room.d, wl, wn: wl.length, fn: fn.length, at: 0 };
   }
-  return { g, nx, nz, cs, w: room.w, d: room.d };
+  G.at = now;
+  const g = G.g, nx = G.nx, nz = G.nz, cs = G.cs, r = CONFIG.enemy.radius;
+  g.set(G.base);
+  const dyn = tableBoxes(room);
+  if (TB.stuck) propBoxes(room, dyn);                              // boxes, crates and cans on the floor block him too (he used to walk into them)
+  for (const b of dyn) {                                           // only the cells round each box
+    const R = Math.hypot(b.hx, b.hz) + r;
+    const i0 = Math.max(0, Math.floor((b.x - R + room.w / 2) / cs)), i1 = Math.min(nx - 1, Math.floor((b.x + R + room.w / 2) / cs));
+    const j0 = Math.max(0, Math.floor((b.z - R + room.d / 2) / cs)), j1 = Math.min(nz - 1, Math.floor((b.z + R + room.d / 2) / cs));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const k = j * nx + i;
+      if (g[k]) continue;
+      if (boxDist(-room.w / 2 + (i + 0.5) * cs, -room.d / 2 + (j + 0.5) * cs, b) < r) g[k] = 1;
+    }
+  }
+  return G;
 }
 const navCell = (G, x, z) => [clamp(Math.floor((x + G.w / 2) / G.cs), 0, G.nx - 1), clamp(Math.floor((z + G.d / 2) / G.cs), 0, G.nz - 1)];
 const navCenter = (G, i, j) => [-G.w / 2 + (i + 0.5) * G.cs, -G.d / 2 + (j + 0.5) * G.cs];
-function navFree(G, x, z) { const [i, j] = navCell(G, x, z), k = j * G.nx + i; return G.g[k] === 0 && !(G.dyn && G.dyn[k]); }   // dyn: open door leaves, during a path search
+function navFree(G, x, z) { const i = clamp(Math.floor((x + G.w / 2) / G.cs), 0, G.nx - 1), j = clamp(Math.floor((z + G.d / 2) / G.cs), 0, G.nz - 1), k = j * G.nx + i; return G.g[k] === 0 && !(G.dyn && G.dyn[k]); }   // no array per test (navLine calls it every 8 cm)   // dyn: open door leaves, during a path search
 function navSnap(G, x, z) {
   const [i0, j0] = navCell(G, x, z);
   if (!G.g[j0 * G.nx + i0]) return [i0, j0];
@@ -29245,7 +29298,7 @@ const VOX_FILES = ['grunt1', 'grunt2', 'grunt3', 'grunt4', 'grunt5', 'grunt6', '
   'moan1', 'moan2', 'moan3', 'moan4', 'moan5', 'dbreath1', 'dbreath2', 'dbreath3', 'dbreath4'];   // step 80: a man dying on the floor
 function voxLoad(ctx) {
   if (VOX.loading) return; VOX.loading = true;
-  for (const n of VOX_FILES) fetch('./sounds/' + n + '.mp3').then((r) => r.ok ? r.arrayBuffer() : null)
+  for (const n of VOX_FILES) sndFetch('./sounds/' + n + '.mp3').then((r) => r.ok ? r.arrayBuffer() : null)
     .then((b) => b && ctx.decodeAudioData(b)).then((buf) => { if (buf) VOX.bufs[n] = buf; }).catch(() => { /* no file: synth only */ });
 }
 function voxGrunt(e, k = 1, dying = false) {
@@ -36490,7 +36543,7 @@ const baked = { pistol: [], smg: [], shotgun: [], akm: [], fn509: [], frag: [], 
 const SHOT_REC = { akm: [], pistol: [], awp: [], fall: [] };
 const SHOT_REC_MIX = { akm: { gain: 0.95, verb: 0.55, echo: 1.6 }, pistol: { gain: 0.9, verb: 0.6, echo: 1.45 }, awp: { gain: 1.15, verb: 0.65, echo: 2.0 } };
 function loadShotRecordings(ctx) {
-  const get = (n, into) => fetch('./sounds/' + n + '.mp3').then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b)).then((buf) => { if (buf) into.push(buf); }).catch(() => { /* synth stays */ });
+  const get = (n, into) => sndFetch('./sounds/' + n + '.mp3').then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b)).then((buf) => { if (buf) into.push(buf); }).catch(() => { /* synth stays */ });
   for (let i = 1; i <= 5; i++) get('ak' + i, SHOT_REC.akm);
   get('pistol1', SHOT_REC.pistol); get('awp1', SHOT_REC.awp); get('fall', SHOT_REC.fall);
 }
@@ -36976,7 +37029,7 @@ const HREC_LVL = { magOut: 0.5, magIn: 0.65, rackBack: 0.55, rackFwd: 0.8, slide
 const SUP_VAR = [{ r: 1, hs: 0, ls: 0 }, { r: 0.96, hs: -2.5, ls: 1 }, { r: 1.04, hs: 1.5, ls: -1 }];   // three suppressed shots from one take
 function loadHandlingRecordings(ctx) {
   if (!HREC.on || HREC.loading) return; HREC.loading = true;
-  for (const n of HREC_FILES) fetch('./sounds/' + n + '.mp3').then((r) => (r.ok ? r.arrayBuffer() : null))
+  for (const n of HREC_FILES) sndFetch('./sounds/' + n + '.mp3').then((r) => (r.ok ? r.arrayBuffer() : null))
     .then((b) => b && ctx.decodeAudioData(b)).then((buf) => { if (buf) { HREC.norm[n] = hrecNorm(buf); HREC.bufs[n] = buf; } }).catch(() => { /* synth stays */ });
 }
 // Handling takes come from three recordings at three levels: each is brought to the synth bakes' level (loudest 50 ms
@@ -39354,7 +39407,7 @@ const DOOR_REC = { open: [], shut: [], one: [null], g: 0, rate: 1, last: { open:
 function doorRecLoad(ctx) {
   if (/[?&]doorrec=off\b/.test(QS)) return;
   for (const [k, n] of [['open', 3], ['shut', 3]]) for (let i = 1; i <= n; i++)
-    fetch(`./sounds/door${k[0].toUpperCase() + k.slice(1)}${i}.mp3`).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b))
+    sndFetch(`./sounds/door${k[0].toUpperCase() + k.slice(1)}${i}.mp3`).then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b))
       .then((buf) => { if (buf) DOOR_REC[k].push(buf); }).catch(() => { /* synth stays */ });
 }
 function doorRecPick(kind, g, rate) {                              // a variant never twice running
@@ -39367,7 +39420,7 @@ function doorRecPlay() { const R = DOOR_REC; if (R.one[0]) playBaked(R.one, R.g,
 function ambBedLoad(ctx) {
   const B = AMB_BED;
   if (B.off || B.loading) return; B.loading = true;
-  fetch('./sounds/ambServer.mp3').then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b))
+  sndFetch('./sounds/ambServer.mp3').then((r) => (r.ok ? r.arrayBuffer() : null)).then((b) => b && ctx.decodeAudioData(b))
     .then((buf) => { if (buf && buf.duration > B.loop[1] + 0.05) B.buf = buf; }).catch(() => { /* no bed */ });
 }
 function ambBedSlot(c, off) {
@@ -51723,6 +51776,7 @@ if (/[?&]dev\b/.test(QS)) window.__cqcFallback = { EFB, efbPass, efbTick, efbSpo
 if (window.__cqcDev) Object.assign(window.__cqcDev, { NBODY, netBodyTick, netBodyAt, HCOL, hcolMen, hcolPush, hcolFree, hcolPushOne, hcolPushPred, handClipWorld, CLIP, PUSH, propByCollider, getRapier: () => RAPIER });   // player and hand collisions
 if (/[?&]dev\b/.test(QS)) window.__cqcReinf = { RF, TB, IDLE, SPAWNCHK, rfOnKill, rfTick, rfSpawn, rfDoor, rfMove, tbBrain, tbStuck, idleTick, spotBad, spotClear, enemySpawnSpot, enemiesUpdate, enemyThink, enemyMove, enemyPose, enemySees, clearLine, findPath, navGrid, navFree, coverPoints, loopPlan, roomMem, loop, threatNow, headWorld, rig, stream, ENEMY, loopEnemyDied, enemyShot, wnow, propBoxes, navDoorStamp, doors, updateStreaming, playerState, NIGHT, MENU, enemyDie, aiNoise, enemiesHear, roomCanSense, colliders, insideRoom, props, MOD, renderer, scene, camera, updateDoorsPre, updateDoorsPost, stepPhysics, rebuildWalk, threatLocal, enemyFace, started: () => gameStarted, startGame };   // reinforcements / tactical body / spawn / unstick tests
 
+if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHit, deskToggleGrab, deskThrow, createNade, respawnPlayer, surrStart, surrDetain, NADE, dnadeStart, dnadeRelease, wnow, SNDQ });   // tests
 </script>
 </body>
 </html>
