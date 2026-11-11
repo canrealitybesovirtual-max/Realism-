@@ -12127,6 +12127,7 @@ function netEnRx(m) {                                             // joiner
       if (dead && st !== 1) { netBodyAsk(id, a, room); continue; }   // dead before this room was built here: his body, where it lies on the host
       e = netPupMake(room, id, lk, kit, x, z, yw); if (!e) continue;
     }
+    if (dead && !e.pupDead) e.pupDead = now;                        // dropfix: before netPupState, so a dead copy is never re-armed
     netPupState(e, st, pose, un, now);
     e.pupT = now; e.pupX = x; e.pupZ = z; e.pupYw = yw; e.crouchT = cr; e.aimT = aim;
     if (fy != null) e.stairY = fy;                                  // a man on a landing is drawn (and hit) there, not on the floor below
@@ -12793,7 +12794,7 @@ function netPupState(e, st, pose, un, now) {
   else if (st >= 2) e.pupSt = st;
   else if (was >= 2) { e.pupSt = 0; e.pupPose = null; e.pupPosed = false; }   // he went for his gun: back in the fight
   if ((un || st >= 1) && !e.unarmed) enemyDropGun(e, _npb.v.set(0, 0, 0));
-  else if (!un && !st && e.unarmed && e.gun && e.gun.root) { e.root.add(e.gun.root); e.unarmed = false; }
+  else if (!un && !st && e.unarmed && !e.dead && !e.pupDead && e.gun && e.gun.root) { e.root.add(e.gun.root); e.unarmed = false; }   // dropfix: never a dead copy (the host's dead man reads un 0: his gun came back to the copy's empty hand, floating where it was)
 }
 function netPupBones(e, dt) {
   const P = e.pupPose; if (!P || P.length < 6 + DRIVE_ORDER.length * 3) return false;
@@ -14214,8 +14215,10 @@ function stepPhysics(dt) {
   updateDoorsPost(dt);
 
   let awake = false;
+  const dfNow = DROPFIX.t += dt;                                  // dropfix: physics time (frames that step)
   for (let i = props.length - 1; i >= 0; i--) {
     const p = props[i];
+    if (DROPFIX.on && p.item && dfNow >= (p.dfAt || 0) && (p.item.kind === 'gun' || p.item.kind === 'mag')) dropFixCheck(p, dfNow);   // dropfix: a loose gun / magazine never hangs in the air
     if (p.kinematic) continue;                                  // held / holstered items
     if (p.restoreAt && now > p.restoreAt && !p.holders.length) { p.collider.setCollisionGroups(COLL.prop); p.restoreAt = 0; }
     if (p.body.isSleeping()) continue;
@@ -14241,6 +14244,50 @@ function stepPhysics(dt) {
     } else knockTick(p, now);   // step 86
   }
   if (awake) motionShadows();
+}
+
+// dropfix (?dropfix=off): a loose gun or magazine (no hand, slot, vise, sling) that has not moved for 1 s with nothing
+// under it within ~2 cm is woken (a dropped gun asleep on a ragdoll part that was removed, a body put to sleep in the air,
+// an enemy drop left kinematic). Checked twice a second per item, rays down from each of its boxes; a kinematic one only
+// if it is an enemy's or a shared drop. Once checked in place it is not checked again until it moves.
+const DROPFIX = { on: !/[?&]dropfix=off\b/.test(QS), still: 1, gap: 0.02, moved: 0.004, n: 0, t: 0, ray: null, grp: groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | GROUP.ENEMY | GROUP.DEBRIS), p: new THREE.Vector3() };
+function dropFixSupported(p) {
+  if (!DROPFIX.ray) DROPFIX.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
+  const R = DROPFIX.ray, n = 1 + (p.extra ? p.extra.length : 0);
+  if (!p.dfH) {                                                   // each box's half size, once
+    p.dfH = [];
+    for (let i = 0; i < n; i++) { const c = i ? p.extra[i - 1] : p.collider, h = c.halfExtents ? c.halfExtents() : null; p.dfH.push(h ? [h.x, h.y, h.z] : [0.05, 0.05, 0.05]); }
+  }
+  for (let i = 0; i < n; i++) {
+    const c = i ? p.extra[i - 1] : p.collider, t = c.translation(), q = c.rotation(), h = p.dfH[i];
+    // vertical reach of the turned box: |R row y| . half
+    const r10 = 2 * (q.x * q.y + q.w * q.z), r11 = 1 - 2 * (q.x * q.x + q.z * q.z), r12 = 2 * (q.y * q.z - q.w * q.x);
+    const hv = Math.abs(r10) * h[0] + Math.abs(r11) * h[1] + Math.abs(r12) * h[2];
+    const ex = 2 * (q.x * q.z + q.w * q.y) * h[2] * 0.85, ey = 2 * (q.y * q.z - q.w * q.x) * h[2] * 0.85, ez = (1 - 2 * (q.x * q.x + q.y * q.y)) * h[2] * 0.85;   // along the box's own z (a gun's bore): both ends too
+    for (let k = -1; k <= 1; k++) {
+      R.origin.x = t.x + ex * k; R.origin.y = t.y + ey * k; R.origin.z = t.z + ez * k;
+      if (world.castRay(R, hv + DROPFIX.gap + ey * k, true, undefined, DROPFIX.grp, undefined, p.body)) return true;
+    }
+  }
+  return false;
+}
+function dropFixCheck(p, now) {
+  p.dfAt = now + 0.45 + Math.random() * 0.1;
+  const it = p.item;
+  if (p.removing || !p.inWorld || p.holders.length || it.slot || it.cradle || it.slung || it.gun || it.stuck) { p.dfT = 0; return; }
+  if (p.kinematic && !(p.enemyDrop || p.netId)) return;          // locker / bench items rest kinematic on purpose
+  const t = p.body.translation(), P = DROPFIX.p;
+  if (!p.dfP) p.dfP = new THREE.Vector3(t.x, t.y, t.z);
+  if (!p.dfT || Math.abs(t.x - p.dfP.x) + Math.abs(t.y - p.dfP.y) + Math.abs(t.z - p.dfP.z) > DROPFIX.moved) { p.dfP.set(t.x, t.y, t.z); p.dfT = now; p.dfOk = false; return; }
+  if (p.dfOk || now - p.dfT < DROPFIX.still) return;
+  p.dfOk = true;                                                  // checked here: not again until it moves
+  P.set(t.x, t.y, t.z);
+  if (dropFixSupported(p)) return;
+  DROPFIX.n++;
+  if (/[?&]dev\b/.test(QS)) console.log('dropfix: woke a hanging', it.kind, it.type, P.toArray().map((v) => +v.toFixed(2)).join(' '), p.kinematic ? 'kinematic' : p.body.isSleeping() ? 'asleep' : 'awake');
+  if (p.kinematic) { setDynamic(p); p.collider.setCollisionGroups(COLL.prop); setCast(p.root, true); }
+  p.body.setEnabled(true); p.body.setGravityScale(1, true);
+  p.body.setLinvel({ x: 0, y: -0.05, z: 0 }, true); p.body.wakeUp();
 }
 
 /* ============================================================================
@@ -30072,7 +30119,11 @@ function enemyDropGun(e, dir) {
   let wp = null, wq = null;
   if (old) { old.updateWorldMatrix(true, false); wp = old.getWorldPosition(new THREE.Vector3()); wq = old.getWorldQuaternion(new THREE.Quaternion()); }
   try { e.root.remove(e.gun.root); } catch (err) { /* already gone */ }
+  if (e.dead) e.unarmed = true;                                   // dropfix: dead or down: no gun in his hands (co-op 'en' un 1: the joiner's copy never takes it back)
   const t = enemyDropType(e);
+  if (wp && DROPFIX.on && !(Number.isFinite(wp.x) && Number.isFinite(wp.y) && Number.isFinite(wp.z) && Number.isFinite(wq.x + wq.y + wq.z + wq.w))) {   // dropfix: a NaN pose (physNanGuard drops it: the gun hangs at its spawn)
+    wp.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 0.9, rWZ(e.room, e.pos.y)); wq.identity();
+  }
   if (!t || !wp) return;
   try {
     DROP.list = DROP.list.filter((q) => q.inWorld && !q.removing);
@@ -30082,7 +30133,9 @@ function enemyDropGun(e, dir) {
     itemToWorld(p, wp, wq, e.room);
     const hb = e.rag && e.rag.find((r) => r.seg === 'foreArmR');
     const v = hb ? hb.body.linvel() : { x: 0, y: 0, z: 0 };
-    p.body.setLinvel({ x: v.x + dir.x * 0.6, y: v.y + 0.3, z: v.z + dir.z * 0.6 }, true);
+    if (!Number.isFinite(v.x + v.y + v.z) || Math.abs(v.x) + Math.abs(v.y) + Math.abs(v.z) > 60) { v.x = 0; v.y = 0; v.z = 0; }   // dropfix
+    p.body.setLinvel({ x: v.x + (dir.x || 0) * 0.6, y: v.y + 0.3, z: v.z + (dir.z || 0) * 0.6 }, true);
+    p.body.wakeUp(); p.dfT = 0;
     p.body.setAngvel({ x: (Math.random() - 0.5) * 4, y: (Math.random() - 0.5) * 3, z: (Math.random() - 0.5) * 4 }, true);
     p.enemyDrop = true; p.root.visible = !!e.room.visible;
     if (!PAINT.drops) paintGun(g, false);                           // step 106: his gun, his finish
@@ -48277,6 +48330,7 @@ if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, medModel, syrSet, SYR, syrT
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { flashBlast, fragBlast, NADE });   // grenade effect tests
+if (window.__cqcDev) Object.assign(window.__cqcDev, { roomFloorAt, rLX, rLZ, enemyDown, surrStart, enemiesDyingUpdate, enemiesPostPhysics, stepPhysics, DROPFIX, dropFixCheck, dropFixSupported });   // dropped-gun tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain, flashBurst, fireGun, BHEAD, bodyHeadYaw, rigNadeAt, enemyShoot, muzSync, muzChain, getMUZ: () => MUZ });   // muzzle flash by device, VR body heading
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
