@@ -19281,6 +19281,7 @@ function itemRelease(hand, vel) {
     if (!p.removing && wbTryVise(g)) { updateLightMount(); return; }   // step 80: into the gunsmith's vise
     if (!vel) throwVel(hand, p.mass, _tv); else _tv.copy(vel);
     dropItem(p, _tv);
+    if (FLIP.on && hand.ctrl && !p.removing) flipLaunch(p, hand, _tv);   // gun flip: the hand's real spin, the com's speed
     netDropTx(p, _tv);                                             // multiplayer: the other player sees it fall and can take it
     updateLightMount();
     return;
@@ -19295,6 +19296,154 @@ function itemRelease(hand, vel) {
   dropItem(p, _tv);
   netDropTx(p, _tv);                                               // multiplayer: a magazine (guns above)
   if (it.kind === 'nade') nadeSwingSfx(hand.source.getWorldPosition(_wv), _tv.length());   // step 115
+}
+/* ---------------------------------------------------------------------------
+ *  GUN FLIP (?gunflip=off = the old release: hand speed only, a random 1 rad/s spin)
+ *  A gun let go in the headset leaves with the hand's real motion: the grip's turn rate from the
+ *  controller's pose over the last FLIP.win s (each frame's turn, recent frames weigh more, a snap
+ *  turn or tracking jump resets it), capped at FLIP.wMax, and the speed of its centre of mass
+ *  (the compound boxes' own: the grip / magazine boxes pull it back from the box middle) =
+ *  hand speed + w x (com - grip). So a wrist flick spins it end over end.
+ *  Airborne: angular damping FLIP.damp (the gun's own back on the first impact or a catch),
+ *  CCD (makeItem), and for FLIP.noHand s it meets nothing of yours (body, hands, held gun probes).
+ *  Catch: a grip squeeze takes a flying gun within reach + FLIP.extra (more the faster it moves),
+ *  tested along its motion over +-1 frame; a squeeze just before it arrives stays armed FLIP.arm s.
+ *  The grab is the normal one (GRIP_SETTLE: on the grip = the firing grip), plus a short haptic.
+ *  Whoosh: a soft air burst every half turn while it spins past FLIP.whooshW rad/s near you.
+ * ------------------------------------------------------------------------- */
+const FLIP = { on: !/[?&]gunflip=off/.test(QS), win: 0.065, wMax: 25, jump: 0.6, damp: 0.02, noHand: 0.28,
+  extra: 0.04, extraV: 0.012, extraMax: 0.075, arm: 0.2, whooshW: 6, whooshR: 3.5, maxT: 6, list: [], n: 0,
+  qa: new THREE.Quaternion(), qb: new THREE.Quaternion(), w: new THREE.Vector3(), r: new THREE.Vector3(), c: new THREE.Vector3(),
+  lp: new THREE.Vector3(), inv: new THREE.Matrix4(), dv: new THREE.Vector3(), hv: new THREE.Vector3(), wp: new THREE.Vector3(),
+  wf: 0, wg: 0 };
+const COLL_FLIP = groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | GROUP.DEBRIS | GROUP.ENEMY);   // no PLAYER, no HAND
+// Per frame while a hand holds an item (weaponsUpdate): the grip's world turn, timestamped.
+function flipRecord(h, dt) {
+  if (!FLIP.on || !h.ctrl || !(dt > 0)) return;
+  const F = h.fq || (h.fq = { q: [], t: [], n: 0, i: 0, ok: false, last: new THREE.Quaternion(), T: 0, lt: 0 });
+  const now = (F.T += dt);                                         // the frame clock (dt), not the wall clock
+  h.source.getWorldQuaternion(FLIP.qa);
+  if (!h.hasPrev || !F.ok) { F.n = 0; F.ok = true; F.last.copy(FLIP.qa); F.lt = now; return; }   // hasPrev false = hist was just cleared
+  FLIP.qb.copy(F.last).invert().premultiply(FLIP.qa);              // this frame's turn (world)
+  if (FLIP.qb.w < 0) { FLIP.qb.x = -FLIP.qb.x; FLIP.qb.y = -FLIP.qb.y; FLIP.qb.z = -FLIP.qb.z; FLIP.qb.w = -FLIP.qb.w; }
+  const ang = 2 * Math.acos(Math.min(1, FLIP.qb.w));
+  F.last.copy(FLIP.qa); F.lt = now;
+  if (ang > FLIP.jump) { F.n = 0; return; }                         // snap turn / tracking jump: not a wrist
+  const s = Math.sqrt(Math.max(1e-12, 1 - FLIP.qb.w * FLIP.qb.w)), k = ang > 1e-6 ? ang / s / dt : 0;
+  if (!F.q.length) for (let i = 0; i < 16; i++) { F.q.push(new THREE.Vector3()); F.t.push(0); }
+  F.q[F.i].set(FLIP.qb.x * k, FLIP.qb.y * k, FLIP.qb.z * k); F.t[F.i] = now;
+  F.i = (F.i + 1) % 16; F.n = Math.min(16, F.n + 1);
+}
+// The hand's turn rate (rad/s, world) at release: weighted mean over the window, newest weighs most.
+function flipHandW(h, out) {
+  out.set(0, 0, 0);
+  const F = h.fq;
+  if (!F || !F.n) return out;
+  const now = F.T;
+  let ws = 0;
+  for (let j = 0; j < F.n; j++) {
+    const i = (F.i - 1 - j + 32) % 16, age = now - F.t[i];
+    if (age > FLIP.win + 0.02) break;
+    const wt = 1 - age / (FLIP.win + 0.03);
+    out.addScaledVector(F.q[i], wt); ws += wt;
+  }
+  if (ws > 0) out.multiplyScalar(1 / ws);
+  if (out.length() > FLIP.wMax) out.setLength(FLIP.wMax);
+  return out;
+}
+// From itemRelease after dropItem: give a VR-thrown gun the hand's real spin. vel = the grip's speed (in, out: the com's).
+function flipLaunch(p, hand, vel) {
+  if (!FLIP.on || !hand.ctrl || !p.body || p.kinematic) return;
+  const now = wnow(), w = flipHandW(hand, FLIP.w);
+  hand.source.getWorldPosition(FLIP.wp);
+  const lc = p.body.localCom();                                    // body frame = the gun root
+  FLIP.c.set(lc.x, lc.y, lc.z).applyQuaternion(p.root.quaternion).add(p.root.position);
+  FLIP.r.subVectors(FLIP.c, FLIP.wp);
+  vel.add(FLIP.dv.crossVectors(w, FLIP.r));                        // a point on a turning hand
+  const cap = throwCap(p.mass) * 1.25;
+  if (vel.length() > cap) vel.setLength(cap);
+  if (!Number.isFinite(vel.x + vel.y + vel.z + w.x + w.y + w.z)) return;
+  p.body.setLinvel(vel, true);
+  p.body.setAngvel(w, true);
+  p.body.setAngularDamping(FLIP.damp);
+  p.collider.setCollisionGroups(COLL_FLIP);
+  p.restoreAt = performance.now() / 1000 + FLIP.noHand;            // stepPhysics puts COLL.prop back then
+  let f = FLIP.list.find((e) => e.p === p);
+  if (!f) { f = { p, t0: 0, lv: new THREE.Vector3(), ang: 0 }; FLIP.list.push(f); }
+  f.t0 = now; f.lv.copy(vel); f.ang = 0; f.w0 = w.length();
+  FLIP.n++;
+}
+function flipEnd(i) {
+  const f = FLIP.list[i];
+  if (f.p.body) f.p.body.setAngularDamping(GUNPHYS.angDamp);
+  FLIP.list.splice(i, 1);
+}
+// Per frame (weaponsUpdate): airborne state, impacts, armed catches, the whoosh.
+function flipTick(dt, now) {
+  if (!FLIP.on) return;
+  if (FLIP.list.length && dt > 0) for (const h of vrHands) {      // empty hands' own speed (hist is only kept while holding)
+    h.source.getWorldPosition(FLIP.lp);
+    if (!h.fpv) { h.fpv = new THREE.Vector3().copy(FLIP.lp); h.fv = new THREE.Vector3(); continue; }
+    h.fv.subVectors(FLIP.lp, h.fpv).divideScalar(dt); h.fpv.copy(FLIP.lp);
+    if (h.fv.length() > 12) h.fv.set(0, 0, 0);                    // a teleport / snap turn, not a hand
+  }
+  else if (!FLIP.list.length) for (const h of vrHands) h.fpv = null;
+  for (const h of vrHands) if (h.flipArm && !h.prop) { if (now > h.flipArm) h.flipArm = 0; else { h.source.getWorldPosition(FLIP.lp); const fp = flipCatchFind(FLIP.lp, h); if (fp) { h.flipArm = 0; flipCatch(h, fp); } } }
+  if (!FLIP.list.length || !(dt > 0)) return;
+  headWorld(FLIP.hv);
+  for (let i = FLIP.list.length - 1; i >= 0; i--) {
+    const f = FLIP.list[i], p = f.p;
+    if (!p.body || !p.inWorld || p.holders.length || p.kinematic || now - f.t0 > FLIP.maxT) { flipEnd(i); continue; }
+    const v = p.body.linvel(), wv = p.body.angvel();
+    FLIP.dv.set(v.x - f.lv.x, v.y - f.lv.y + 9.81 * dt, v.z - f.lv.z);   // change beyond gravity: it hit something
+    f.lv.set(v.x, v.y, v.z);
+    if (FLIP.dv.length() > 0.8 || p.body.isSleeping()) { flipEnd(i); continue; }
+    const ws = Math.hypot(wv.x, wv.y, wv.z);
+    f.ang += ws * dt;
+    if (f.ang >= Math.PI) {
+      f.ang -= Math.PI;
+      if (ws > FLIP.whooshW && p.root.position.distanceTo(FLIP.hv) < FLIP.whooshR && audio.ctx && audio.ctx.state === 'running') {
+        FLIP.wg = clamp((ws - FLIP.whooshW) / 16, 0.15, 1) * (0.5 + 0.5 * Math.min(1, p.mass / 3)); FLIP.wf = 500 + 55 * ws;
+        soundAt(p.root.position, flipWhooshPlay, { occlude: false });
+      }
+    }
+  }
+}
+function flipWhooshPlay() {
+  const t = audio.ctx.currentTime + 0.002, g = FLIP.wg * GUN_MIX.handling;
+  nBurst(t, 0.13, 'bandpass', FLIP.wf, 1.1, 0.07 * g, 0.12, 0.15);
+  nBurst(t + 0.03, 0.09, 'bandpass', FLIP.wf * 1.9, 1.6, 0.03 * g, 0.08, 0.1);
+}
+// A flying gun this hand can catch at point (null = none): its pick box at its pose now and along its motion over +-1 frame.
+function flipCatchFind(point, hand) {
+  if (!FLIP.on || !FLIP.list.length) return null;
+  const hv = hand.fv || null;
+  let best = null, bestD = Infinity;
+  for (const f of FLIP.list) {
+    const p = f.p;
+    if (!p.inWorld || p.holders.length || p.kinematic) continue;
+    const v = p.body.linvel();
+    FLIP.dv.set(v.x, v.y, v.z); if (hv) FLIP.dv.sub(hv);           // motion relative to the hand
+    const sp = FLIP.dv.length(), reach = CONFIG.physics.reach + Math.min(FLIP.extraMax, FLIP.extra + FLIP.extraV * sp);
+    p.root.updateMatrixWorld(true);
+    FLIP.inv.copy(p.root.matrixWorld).invert();
+    for (let k = -2; k <= 2; k++) {                                // swept: the point against where the gun was / will be (+-1 frame at 72 Hz)
+      FLIP.lp.copy(point).addScaledVector(FLIP.dv, -k * 0.5 / 72).applyMatrix4(FLIP.inv);
+      if (p.center) FLIP.lp.sub(p.center);
+      const dd = Math.hypot(Math.max(Math.abs(FLIP.lp.x) - p.half.x, 0), Math.max(Math.abs(FLIP.lp.y) - p.half.y, 0), Math.max(Math.abs(FLIP.lp.z) - p.half.z, 0));
+      if (dd < reach && dd < bestD) { bestD = dd; best = p; }
+    }
+  }
+  return best;
+}
+function flipCatch(hand, p) {
+  grab(hand, p);
+  if (hand.prop !== p) return false;
+  const i = FLIP.list.findIndex((e) => e.p === p);
+  if (i >= 0) flipEnd(i);
+  pulse(hand, 0.7, 22);                                            // the slap of it landing in the palm
+  FLIP.caught = (FLIP.caught || 0) + 1;
+  return true;
 }
 // Desktop: 1 / 2 holster or draw. Entering VR stows whatever the desktop hand held.
 function deskSlot(slotName) {
@@ -20729,8 +20878,10 @@ function weaponsUpdate(dt, now) {
       const v = h.hist.length >= 6 ? h.hist.shift() : new THREE.Vector3();
       h.hist.push(v.subVectors(h.target, h.prevTarget).divideScalar(dt));
     }
+    flipRecord(h, dt);                             // gun flip: the grip's turn, before hasPrev is set
     h.prevTarget.copy(h.target); h.hasPrev = true;
   }
+  flipTick(dt, wnow());                            // gun flip: guns in the air, armed catches
   if (renderer.xr.isPresenting) { updateRackHover(); updateLightSwitches(); }     // step 8.1; weapon light switches
   // Controller models hide while their hand holds a weapon item.
   for (const h of vrHands) if (h.proxy) h.proxy.visible = !HANDS.ready && !(h.prop && h.prop.item);   // step 13: real hands
@@ -44580,6 +44731,8 @@ for (let i = 0; i < 2; i++) {
     if (!renderer.xr.isPresenting) return;
     if (SURR.on && surrDetainGrab(hand)) return;                     // step 117: grip a surrendered man's wrist: zip-tied
     grip.getWorldPosition(_cur);
+    if (FLIP.on && !hand.prop) { const fp = flipCatchFind(_cur, hand); if (fp && flipCatch(hand, fp)) return; }   // gun flip: a gun in the air
+    if (FLIP.on && FLIP.list.length) hand.flipArm = wnow() + FLIP.arm;   // squeezed just before it arrives: stays armed
     const p = hand.hover || nearestProp(_cur, CONFIG.physics.reach) || slungNear(_cur);   // animated sling: anywhere on the rifle on your chest
     if (p) { grab(hand, p); return; }
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
@@ -44588,7 +44741,7 @@ for (let i = 0; i < 2; i++) {
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { benchLampRelease(hand); release(hand); releaseDoor(hand); };   // the bench lamp let go where you hold it
+  const squeezeEnd = () => { hand.flipArm = 0; benchLampRelease(hand); release(hand); releaseDoor(hand); };   // the bench lamp let go where you hold it
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
@@ -48569,6 +48722,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain,
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
 if (window.__cqcDev) Object.assign(window.__cqcDev, { locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
+if (window.__cqcDev) Object.assign(window.__cqcDev, { FLIP, flipRecord, flipHandW, flipLaunch, flipTick, flipCatchFind, flipCatch, itemRelease, weaponsUpdate, dropItem });   // gun flip tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BV, BVIEW, BV_SLOTS, BV_UI, bvSlotOf, bvRows, bvGunPage, bvPick, bvSync, bvAnchors, bvRender, bvLines, bvTick, bvFinger, bvTurn });   // step 114
