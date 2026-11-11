@@ -12316,11 +12316,30 @@ function netPupHit(hit, dir, d, E) {
   const e = hit.e, f = rF(e.room), L = e.hit || HITBOX, hi = Math.max(0, L.indexOf(hit.h)), b = e.B[hit.h.b] || e.B.spine;
   const P = hit.p || NET._p.copy(e.root.position).setY(e.root.position.y + 1.2);
   const lp = b.worldToLocal(NET._h.copy(P));
-  netSendRel({ t: 'eh', i: e.puppet, hi, part: hit.h.part, lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [dir.x * f, dir.y, dir.z * f], E, g: d && d.type ? d.type : (Object.keys(WEAPON_DEFS).find((k) => WEAPON_DEFS[k] === d) || 'smg') });
-  netPupWound(e, hit.h, P, dir, E);                                 // you see it land at once (the host decides what it does)
+  netSendRel({ t: 'eh', i: e.puppet, hi, part: hit.h.part, lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [dir.x * f, dir.y, dir.z * f], E: +(+E || 1).toFixed(3), g: netDefKey(d),
+    pn: PEN.live ? PEN.n | 0 : 0, tu: PEN.live ? +(PEN.tumble || 0).toFixed(3) : 0 });   // coop fix: the gun's real key (copied defs: M4A1-S, AKM with a grip), and what the round went through (tumble)
+  if (netPlateAt(e, hit.h, P, d)) { try { impactFx('metal', P, NET._h.copy(dir).negate()); } catch (er) { /* no fx */ } }   // his plate stops it on the host too: sparks, not blood
+  else netPupWound(e, hit.h, P, dir, E);                            // you see it land at once (the host decides what it does)
+}
+// Coop fix: which WEAPON_DEFS key a round came from. g.def is often a copy (each M4A1-S, an AKM with a grip, a snapped
+// foregrip), so the identity lookup failed and the host applied every such round as an SMG's (the AWM's one-shot rule lost).
+let NET_TB_TYPE = null;                                             // the type traceBullet is tracing (set round enemyShot's caller)
+function netDefKey(d) {
+  if (NET_TB_TYPE && WEAPON_DEFS[NET_TB_TYPE]) return NET_TB_TYPE;
+  for (let o = d; o && o !== Object.prototype; o = Object.getPrototypeOf(o)) for (const k in WEAPON_DEFS) if (WEAPON_DEFS[k] === o) return k;
+  if (d && d.label) for (const k in WEAPON_DEFS) if (WEAPON_DEFS[k].label === d.label) return k;
+  return 'smg';
+}
+// enemyShot's plate rule (the carrier, chest-local), so the joiner sees sparks where the host stops the round.
+const _npl = new THREE.Vector3();
+function netPlateAt(e, h, P, d) {
+  if (!h || h.part !== 'torso' || h.b !== 'chest' || !e.B.chest || d === WEAPON_DEFS.awp || netDefKey(d) === 'awp') return false;
+  _npl.copy(P); e.B.chest.worldToLocal(_npl);
+  return Math.abs(_npl.z) > 0.075 && _npl.y > -0.09 && _npl.y < 0.24 && Math.abs(_npl.x) < 0.14;
 }
 function netPupWound(e, h, P, dir, E) {
-  try { if (!e.dead) { bloodFx(P, dir, h.part, clamp(E, 0.4, 1.2)); addWound(e, e.B[h.b] || e.B.spine, P, h.part); } else impactFx('flesh', P, dir); } catch (er) { /* no fx */ }
+  try { if (!e.dead) { bloodFx(P, dir, h.part, clamp(E, 0.4, 1.2)); return addWound(e, e.B[h.b] || e.B.spine, P, h.part); } impactFx('flesh', P, dir); } catch (er) { /* no fx */ }
+  return null;
 }
 function netEhRx(m) {                                             // host: the joiner hit one of your men
   const e = ENEMY.list.find((x) => x.nid === m.i); if (!e || (e.dead && !e.downed)) return;
@@ -12328,23 +12347,27 @@ function netEhRx(m) {                                             // host: the j
   const f = rF(e.room), b = e.B[h.b] || e.B.spine;
   e.root.updateWorldMatrix(true, true);
   const p = m.lp ? b.localToWorld(new THREE.Vector3(m.lp[0], m.lp[1], m.lp[2])) : b.getWorldPosition(new THREE.Vector3());   // enemyShot needs the point (plates, wounds): without it every one of his rounds threw
-  const prevT = NET.tgt;
-  NET.ehFrom = true; if (NET.remOk) NET.tgt = NET.remW;            // he knows where it came from: the joiner, not you
-  try { enemyShot({ e, h, t: 0, p }, NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), WEAPON_DEFS[m.g] || WEAPON_DEFS.smg, clamp(m.E || 1, 0.2, 5)); }
+  const prevT = NET.tgt, g = WEAPON_DEFS[m.g] ? m.g : 'smg', yk = PEN.youK, wasLive = PEN.live;
+  NET.ehFrom = true; NET.ehRx = true; if (NET.remOk) NET.tgt = NET.remW;   // he knows where it came from: the joiner, not you
+  if (PEN_ON && !wasLive) { penStart(g, null); PEN.n = m.pn | 0; PEN.tumble = +m.tu || 0; PEN.youK = yk; }   // coop fix: the round's state as it was on the joiner's side (tumble damage, momentum, "hit through a wall")
+  try { enemyShot({ e, h, t: 0, p }, NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), WEAPON_DEFS[g], clamp(+m.E || 1, 0.02, 5)); NET.ehN = (NET.ehN || 0) + 1; }
   catch (er) { if (/[?&]dev\b/.test(QS)) console.warn('co-op hit not applied', er); }
-  finally { NET.ehFrom = false; NET.tgt = prevT; }
+  finally { NET.ehFrom = false; NET.ehRx = false; NET.tgt = prevT; if (PEN_ON && !wasLive) PEN.live = false; }
 }
 // Host: your round on one of your men, so the joiner sees it land on his copy.
-function netEnHitTx(e, h, P, dir, E) {
-  if (!netCoop() || NET.role !== 'host' || NET.ehFrom || !e.nid || !P) return;
+function netEnHitTx(e, h, P, dir, E, hr = 0) {
+  if (!netCoop() || NET.role !== 'host' || NET.ehRx || !e.nid || !P) return;   // coop fix: only the joiner's own rounds ('eh': he drew it already) are skipped; his grenade's fragments (ehFrom set) go to his copy
   const f = rF(e.room), L = e.hit || HITBOX, b = e.B[h.b] || e.B.spine, lp = b.worldToLocal(NET._h.copy(P));
-  netSendRel({ t: 'ex', i: e.nid, hi: Math.max(0, L.indexOf(h)), lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [dir.x * f, dir.y, dir.z * f], E });
+  netSendRel({ t: 'ex', i: e.nid, hi: Math.max(0, L.indexOf(h)), lp: [+lp.x.toFixed(4), +lp.y.toFixed(4), +lp.z.toFixed(4)], d: [dir.x * f, dir.y, dir.z * f], E: +(+E || 1).toFixed(3), hr: hr ? +hr.toFixed(4) : 0, pl: NET.plateHit ? 1 : 0 });
 }
 function netExRx(m) {                                             // joiner: the host hit a man: the wound on your copy
   const e = NET.pup.get(m.i); if (!e || !e.room || !e.room.active) return;
   const L = e.hit || HITBOX, h = L[m.hi] || L[0], b = e.B[h.b] || e.B.spine, f = rF(e.room);
-  const P = b.localToWorld(new THREE.Vector3(m.lp[0], m.lp[1], m.lp[2]));
-  netPupWound(e, h, P, NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), m.E || 1);
+  const P = b.localToWorld(new THREE.Vector3(m.lp[0], m.lp[1], m.lp[2])), d = NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize();
+  NET.exN = (NET.exN || 0) + 1;
+  if (m.pl) { try { impactFx('metal', P, NET._h.copy(d).negate()); } catch (er) { /* no fx */ } return; }   // his plate took it
+  const w = netPupWound(e, h, P, d, m.E || 1);
+  if (w && m.hr) { try { g90Hole(w, d, m.hr, 0.04 * g90K()); } catch (er) { /* no gore */ } }   // a grenade fragment: the host's hole size
 }
 // Host: a man died (or went down): the joiner's copy falls the same way (part, direction, point, push). by = who scored it.
 function netEnDieTx(e, seg, dir, P, imp, down = false) {
@@ -17558,7 +17581,7 @@ function nadeGoreScan(P) {
   if (!G || !G.on || !K) return null;
   let out = null;
   for (const e of ENEMY.list) {
-    if ((e.dead && !e.downed) || !e.room.active || !e.B || e.net) continue;
+    if ((e.dead && !e.downed) || !e.room.active || !e.B || e.net || e.puppet) continue;   // coop fix: a copy's fragment wounds come from the host ('ex'), not a second random set here
     e.B.chest.getWorldPosition(_ng.c);
     const r = _ng.c.distanceTo(P);
     if (r > G.r || !clearLine(P, _ng.c, 0.1)) continue;
@@ -17584,7 +17607,8 @@ function nadeFragWounds(e, P, H, G, K) {
     if (!hit || hit.e !== e || !clearLine(P, hit.p, 0.05)) continue;   // another man, or cover, in the way
     const part = hit.h.part, w = addWound(e, e.B[hit.h.b] || e.B.spine, hit.p, part);
     if (!w) continue;
-    g90Hole(w, _ng.d, rnd2(0.006, 0.012) * K, 0.04 * K);
+    const hr = rnd2(0.006, 0.012) * K; g90Hole(w, _ng.d, hr, 0.04 * K);
+    netEnHitTx(e, hit.h, hit.p, _ng.d, 1, hr);                     // coop fix: the joiner's copy gets the same hole
     if (got < G.pour) g90StreamOn(e, w, part === 'neck' ? X.spurtNeck * 0.6 : part === 'torso' ? X.spurtTorso * 0.5 : 0, 0.7);
     fxEmit(hit.p, _ng.a.copy(_ng.d).negate(), 0.5, Math.round(4 * K), G90_MIST);   // blowback toward the blast
     if (!H.hit) H.hit = hit;
@@ -26767,6 +26791,10 @@ function penRound(type) {
   return R;
 }
 function traceBullet(origin, dir, d, type, opts = null) {
+  const pt = NET_TB_TYPE; NET_TB_TYPE = type;                    // coop fix: netDefKey reads the gun's key while its round flies
+  try { return traceBulletT(origin, dir, d, type, opts); } finally { NET_TB_TYPE = pt; }
+}
+function traceBulletT(origin, dir, d, type, opts) {
   if (TRC_ON && TRC.arm === 1) { trcBegin(); try { return traceBullet1(origin, dir, d, type, opts); } finally { trcEnd(); } }   // step 121: a tracer records its path
   return traceBullet1(origin, dir, d, type, opts);
 }
@@ -30254,7 +30282,8 @@ const _hc = { a: new THREE.Vector3(), c: new THREE.Vector3(), p: new THREE.Vecto
 function enemyRayTest(o, dir, maxT) {
   let best = null;
   for (const e of ENEMY.list) {
-    if ((e.dead && !e.downed) || !e.room.active || !e.root.visible || !e.room.group.visible) continue;   // step 91: a man down is still there to hit
+    if ((e.dead && !e.downed) || !e.room.active || !e.root.visible) continue;   // step 91: a man down is still there to hit
+    if (!e.room.group.visible && !(PEN.live && PEN.n > 0)) continue;   // a room behind a shut door is not drawn: only a round that went through a wall (step 119) can reach him (coop fix: the joiner's rounds into the next room)
     // quick reject: ray far from his centre (step 91: a man on the floor, his pelvis)
     if (e.downed || e.pupSt) _hc.p.setFromMatrixPosition(e.B.pelvis.matrixWorld).sub(o);   // co-op: a copy of a man down or kneeling too
     else _hc.p.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 1.0, rWZ(e.room, e.pos.y)).sub(o);   // his own floor (the tower cab, a stair landing, a wing above): the reject used y 1.0, so a man up there could never be hit
@@ -30278,7 +30307,7 @@ function enemyShot(hit, dir, d, E) {
   if (hit.e.puppet) { netPupHit(hit, dir, d, E); return; }   // multiplayer (together): the host applies it          // multiplayer: the shooter decides; the other player takes it
   const e = hit.e, h = hit.h, C = CONFIG.enemy, now = wnow();   // step 45: world time
   if (!NET.ehFrom) loopShotHit();                               // step 9: accuracy (once per trigger pull); co-op: not the joiner's rounds
-  netAtk(e); netEnHitTx(e, h, hit.p, dir, E);                   // co-op host: who hit him (targeting), the wound on the joiner's copy
+  netAtk(e);                                                    // co-op host: who hit him (targeting)
   _hc.l.copy(dir).negate();
   let dmg = C.dmg[h.part] || C.dmg.limb, plate = false;
   const awm = d === WEAPON_DEFS.awp, awmHead = awm && (h.part === 'head' || h.part === 'neck');   // .338 LM: any body round drops him (down, crawling), a head round destroys the face
@@ -30288,6 +30317,7 @@ function enemyShot(hit, dir, d, E) {
     _hc.p.copy(hit.p); e.B.chest.worldToLocal(_hc.p);
     if (Math.abs(_hc.p.z) > 0.075 && _hc.p.y > -0.09 && _hc.p.y < 0.24 && Math.abs(_hc.p.x) < 0.14) { plate = true; dmg = C.dmg.plate; }
   }
+  NET.plateHit = plate; netEnHitTx(e, h, hit.p, dir, E); NET.plateHit = false;   // co-op host: the wound (or the plate's sparks) on the joiner's copy
   // Step 10: a plate sparks and thumps; flesh bleeds (bloodFx: mist, droplets, spatter behind him).
   P10.muteImpact = true;
   if (plate) impactFx('metal', hit.p, _hc.l);
