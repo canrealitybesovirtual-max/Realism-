@@ -64,6 +64,16 @@ body{height:100%;margin:0;overflow:hidden;background:var(--stage);
 #inv{position:absolute;left:calc(12px + env(safe-area-inset-left,0px));top:calc(10px + env(safe-area-inset-top,0px));color:var(--hud);font-size:13px;text-shadow:0 1px 3px #000;opacity:.85}
 .lb{position:fixed;left:0;right:0;height:0;background:#000;pointer-events:none;transition:height .8s ease;z-index:4}
 #lbT{top:0}#lbB{bottom:0}
+#bag{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:var(--veil);padding:20px;z-index:15}
+#bag.show{display:flex}
+#bag .card{max-width:22em;width:100%}
+#bag h1{font-size:26px;margin-bottom:12px}
+#bagItems{display:flex;flex-direction:column;gap:8px;margin-bottom:12px}
+.bagI{font:inherit;text-align:left;background:transparent;color:var(--ink);border:1px solid var(--rule);padding:9px 12px;cursor:pointer;display:flex;flex-direction:column;gap:3px}
+.bagI b{font-weight:400;font-size:16px}.bagI span{font-size:12px;color:var(--muted)}
+.bagI.on{background:var(--btn);color:var(--btn-ink)}.bagI.on span{color:var(--btn-ink);opacity:.8}
+#bagCount{font-size:13px;color:var(--muted);margin:0 0 12px}
+#bagClose{font:inherit;font-size:15px;background:var(--btn);color:var(--btn-ink);border:0;padding:10px 20px;cursor:pointer;width:100%}
 #tbtns button{font:inherit;font-size:13px;color:var(--hud);background:var(--hud-bg);border:1px solid var(--hud-dim);border-radius:50%;width:58px;height:58px;padding:0;line-height:1.1}
 #tbtns button.on{background:var(--hud);color:#1a1814;border-color:var(--hud)}
 #pause{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:var(--veil);
@@ -83,6 +93,7 @@ body{height:100%;margin:0;overflow:hidden;background:var(--stage);
 </head>
 <body>
 <div id="hud"><div id="cross"></div><div id="prompt"></div><div id="say"></div><div id="inv"></div></div>
+<div id="bag"><div class="card"><h1>Bag</h1><div id="bagItems"></div><p id="bagCount"></p><button id="bagClose" type="button">Close</button></div></div>
 <div id="lbT" class="lb"></div><div id="lbB" class="lb"></div>
 <div id="stick"><div id="knob"></div></div>
 <div id="tbtns">
@@ -93,6 +104,7 @@ body{height:100%;margin:0;overflow:hidden;background:var(--stage);
   <button id="bTip" type="button">Tip</button>
   <button id="bBuild" type="button">Cart</button>
   <button id="bDrop" type="button">Drop</button>
+  <button id="bBag" type="button">Bag</button>
 </div>
 <button id="bPause" type="button" aria-label="Pause">II</button>
 <div id="pause">
@@ -1499,6 +1511,8 @@ let streamWorld = () => {};
     m.count = 0; m.frustumCulled = false; O.add(m); return m;
   };
   const tPools = variants.map(v => [mkPool(v.fg, fMat, 700), mkPool(v.tg, bMat, 700)]);
+  tPools.forEach((p, i) => { p[1].userData.kind = 'tree'; p[1].userData.variant = i; });
+  const felled = new Set(), taken = new Set(), tkey = (x, z) => Math.round(x * 20) + ',' + Math.round(z * 20);   // trees cut and deadfall picked up stay gone
   const poolStick = mkPool(stickGeo, wM, 3000, true), poolStickB = mkPool(stickBGeo, wM, 3000, true);
   const poolLog = mkPool(logGeo, wM, 900, true), poolLogB = mkPool(logBGeo, wM, 900, true);
   const poolRock = mkPool(new THREE.DodecahedronGeometry(1, 0), rockM, 500, false);
@@ -1540,6 +1554,7 @@ let streamWorld = () => {};
     const x0 = OX + c.cx * CH, z0 = OZ + c.cz * CH;
     const tr = variants.map(newL), st = newL(), stB = newL(), lg = newL(), lgB = newL(), rk = newL(), placed = [];
     const addTree = (x, z, s) => {
+      if (felled.has(tkey(x, z))) return;
       dm.position.set(x, hAt(c, x, z), z); dm.rotation.set(0, rr(0, 6.28), 0); dm.scale.setScalar(s * .8);
       put(tr[(r() * 5) | 0], dm);
       c.cols.push({ x1: x - .3, z1: z - .3, x2: x + .3, z2: z + .3 }); placed.push([x, z]);
@@ -1554,6 +1569,7 @@ let streamWorld = () => {};
 
     /* lay a limb on the ground, tilted to follow the slope, rolled at random */
     const lay = (L, x, z, s, rad, yaw, k) => {
+      if (taken.has(tkey(x, z))) return;
       const hx = Math.cos(yaw) * s * .5, hz = Math.sin(yaw) * s * .5, ya = hAt(c, x - hx, z - hz), yb = hAt(c, x + hx, z + hz);
       dirV.set(hx * 2, yb - ya, hz * 2).normalize();
       dm.quaternion.setFromUnitVectors(XV, dirV).multiply(qRoll.setFromAxisAngle(XV, rr(0, 6.28)));
@@ -1658,10 +1674,24 @@ let streamWorld = () => {};
     take(pool, id) {                       // remove one lying log/stick from its chunk for good
       const s = pool.userData.src; if (!s || id * 2 >= s.length) return;
       const L = s[id * 2], k = s[id * 2 + 1], m = new Float32Array(L.m.length - 16);
+      taken.add(tkey(L.m[k * 16 + 12], L.m[k * 16 + 14]));
       m.set(L.m.subarray(0, k * 16)); m.set(L.m.subarray((k + 1) * 16), k * 16); L.m = m;
       if (L.c.length) { const c = new Float32Array(L.c.length - 3); c.set(L.c.subarray(0, k * 3)); c.set(L.c.subarray((k + 1) * 3), k * 3); L.c = c; }
       L.n--; dirty = busy = true;
     },
+    treePools: tPools.map(p => p[1]), leafMat: fMat, barkMat: bMat, variants,
+    /* fell a standing tree: remove its instance and collider for good, return its transform and model */
+    takeTree(pool, id) {
+      const s = pool.userData.src; if (!s || id * 2 >= s.length) return null;
+      const L = s[id * 2], k = s[id * 2 + 1], mtx = new THREE.Matrix4().fromArray(L.m, k * 16), m = new Float32Array(L.m.length - 16);
+      m.set(L.m.subarray(0, k * 16)); m.set(L.m.subarray((k + 1) * 16), k * 16); L.m = m; L.n--;
+      const x = mtx.elements[12], z = mtx.elements[14]; felled.add(tkey(x, z));
+      worldChunks.forEach(c => { c.cols = c.cols.filter(q => Math.abs((q.x1 + q.x2) / 2 - x) > .05 || Math.abs((q.z1 + q.z2) / 2 - z) > .05); });
+      dirty = busy = true;
+      return { mtx, v: variants[pool.userData.variant] };
+    },
+    addCol(q) { const c = worldChunks.get(Math.floor(((q.x1 + q.x2) / 2 - OX) / CH) + ',' + Math.floor(((q.z1 + q.z2) / 2 - OZ) / CH)); if (c) c.cols.push(q); },
+    dropCol(q) { worldChunks.forEach(c => { const i = c.cols.indexOf(q); if (i >= 0) c.cols.splice(i, 1); }); },
     treeNear(x, z, r) {
       const cx = Math.floor((x - OX) / CH), cz = Math.floor((z - OZ) / CH);
       for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) { const c = worldChunks.get((cx + a) + ',' + (cz + b)); if (c) for (const q of c.cols) if (x > q.x1 - r && x < q.x2 + r && z > q.z1 - r && z < q.z2 + r) return true; }
@@ -1871,8 +1901,6 @@ let streamWorld = () => {};
       const gy = getTerrainHeight(7.4, 8.5);
       cyl(.22, .25, .45, M.woodM, 7.4, gy, 8.5, { p: O, seg: 7 }); addLow(7.15, 8.25, 7.65, 8.75);
       cap(lumpy(.4, .4, 3, 3, .8), O, 7.4, gy + .45, 8.5, 0);
-      const ax = new THREE.Group(); ax.position.set(7.38, gy + .47, 8.48); ax.rotation.set(-.55, .4, 0); O.add(ax);
-      box(.035, .03, .62, M.woodL, 0, .02, -.3, { p: ax, c: true }); box(.025, .13, .16, iron, 0, .0, 0, { p: ax, c: true });
     }
 
     /* wind-blown drifts banked against the walls */
@@ -2161,6 +2189,7 @@ function setRes(h) {
 }
 addEventListener('keydown', e => {
   if (e.code === 'Escape') {
+    if (window.__bag) { window.__closeBag(); e.preventDefault(); return; }
     if (paused) setPaused(false);
     else if (started) setPaused(true);
     e.preventDefault();
@@ -2254,7 +2283,7 @@ const tEnd = e => {
   }
 };
 cvs.addEventListener('touchend', tEnd); cvs.addEventListener('touchcancel', tEnd);
-$('bUse').addEventListener('click', () => { if (!paused) primary(); });
+/* Use is handled on pointerdown so it can be held (see hold-to-work) */
 $('bTorch').addEventListener('click', () => { if (!paused) toggleTorch(); });
 $('bCrouch').addEventListener('click', () => { if (!paused) setCrouch(!player.crouch); });
 $('bPause').addEventListener('click', () => setPaused(true));
@@ -2324,7 +2353,7 @@ bindSeg('detSeg', v => {
 
 $('ctrl').textContent = isTouch
   ? 'Left thumb walk · right thumb look · Use digs / takes · Drop places dirt · Tool · Tip cart · Cart builds one · Pause (II).'
-  : 'WASD walk · Shift hurry · C crouch · Click dig / use · Right-click or G drop dirt · E take · Q shovel · B build cart · R tip cart · F light · Esc pause.';
+  : 'WASD walk · Shift hurry · C crouch · Click dig / use · Right-click or G drop dirt · E take · I bag (tools, place dirt) · Q next tool · B build cart · R tip cart · F light · Esc pause.';
 $('go').addEventListener('click', () => {
   if (soundOn) initAudio();
   started = true; paused = false;
@@ -3062,7 +3091,7 @@ terrainAPI.isDug = mine.isDug;
 
 /* ================= tools: shovel, logs, dirt, carts ================= */
 const DIRT_MAX = 8;                                       // shovelfuls you can carry in the sack
-const inv = { logs: 0, sticks: 0, shovel: false, tool: 'hands', dirt: [] };
+const inv = { logs: 0, sticks: 0, shovel: false, axe: false, tool: 'hands', mode: 'dig', dirt: [] };
 const woodShM = snap(MS({ map: T.woodL, color: C('#b8956a'), roughness: .8 }));
 const steelM = snap(MS({ color: C('#6d7276'), metalness: .6, roughness: .45 }));
 const ironM = snap(MS({ color: C('#2b2a29'), metalness: .5, roughness: .6 }));
@@ -3070,23 +3099,29 @@ const clodM = snap(new THREE.MeshStandardMaterial({ color: C('#54412f'), roughne
 const clodG = new THREE.DodecahedronGeometry(.11, 0);
 const dirtHeld = () => inv.dirt.reduce((a, b) => a + b, 0);
 
+/* round-point shovel: ash shaft swelling into a riveted steel socket, split-wood YD grip with a ferrule,
+   dished blade with rolled treads for your boot and a bright worn edge (shaft along +Y, blade at the bottom) */
 function makeShovel() {
-  const g = new THREE.Group();
-  cyl(.017, .019, 1.0, woodShM, 0, -.05, 0, { p: g, seg: 6 });
-  cyl(.026, .02, .14, steelM, 0, -.17, 0, { p: g, seg: 6 });
-  for (const s of [-1, 1]) box(.014, .13, .022, woodShM, s * .055, .95, 0, { p: g });
-  box(.13, .026, .03, woodShM, 0, 1.08, 0, { p: g, cast: false });
+  const g = new THREE.Group(), wornM = snap(MS({ color: C('#a9aeb2'), metalness: .8, roughness: .3, side: THREE.DoubleSide }));
+  const sg = new THREE.CylinderGeometry(.015, .02, 1.0, 7, 4); sg.translate(0, .45, 0); g.add(new THREE.Mesh(sg, woodShM));
+  cyl(.025, .02, .17, steelM, 0, -.21, 0, { p: g, seg: 7 });
+  box(.06, .07, .016, steelM, 0, -.22, .006, { p: g, c: true });
+  for (const y of [-.15, -.09]) sph(.007, steelM, 0, y, .025, { p: g, seg: 4 });
+  cyl(.022, .02, .05, steelM, 0, .93, 0, { p: g, seg: 6 });
+  for (const s of [-1, 1]) box(.016, .15, .024, woodShM, s * .04, .94, 0, { p: g, rz: -s * .3 });
+  cyl(.017, .017, .13, woodShM, 0, 1.085, 0, { p: g, c: true, rz: PI / 2, seg: 6 });
+  const dish = geo => { const bp = geo.attributes.position; for (let i = 0; i < bp.count; i++) bp.setZ(i, (bp.getX(i) / .11) ** 2 * .035 + (geo.userData.off || 0)); geo.computeVertexNormals(); return geo; };
   const sh = new THREE.Shape(); sh.moveTo(-.11, 0); sh.lineTo(.11, 0); sh.lineTo(.115, -.17); sh.quadraticCurveTo(.09, -.27, 0, -.3); sh.quadraticCurveTo(-.09, -.27, -.115, -.17); sh.closePath();
-  const bg = new THREE.ShapeGeometry(sh, 3), bp = bg.attributes.position;
-  for (let i = 0; i < bp.count; i++) bp.setZ(i, (bp.getX(i) / .11) ** 2 * .035);
-  bg.computeVertexNormals();
-  const blade = new THREE.Mesh(bg, snap(MS({ color: C('#7a7f84'), metalness: .55, roughness: .5, side: THREE.DoubleSide }))); blade.position.y = -.18; g.add(blade);
+  const blade = new THREE.Mesh(dish(new THREE.ShapeGeometry(sh, 4)), snap(MS({ color: C('#6f7478'), metalness: .55, roughness: .55, side: THREE.DoubleSide }))); blade.position.y = -.18; g.add(blade);
+  const eb = new THREE.Shape(); eb.moveTo(-.115, -.17); eb.quadraticCurveTo(-.09, -.27, 0, -.3); eb.quadraticCurveTo(.09, -.27, .115, -.17); eb.lineTo(.097, -.17); eb.quadraticCurveTo(.075, -.25, 0, -.276); eb.quadraticCurveTo(-.075, -.25, -.097, -.17); eb.closePath();
+  const eg = new THREE.ShapeGeometry(eb, 4); eg.userData.off = .002; const edge = new THREE.Mesh(dish(eg), wornM); edge.position.y = -.18; g.add(edge);
+  for (const s of [-1, 1]) box(.085, .012, .028, steelM, s * .058, -.186, .012, { p: g, c: true });
   const heap = new THREE.Mesh(new THREE.DodecahedronGeometry(.1, 0), clodM); heap.scale.set(1.05, .55, .9); heap.position.set(0, -.3, .05); heap.visible = false; g.add(heap);
   g.userData.heap = heap;
   return g;
 }
 const shovelProp = makeShovel(); shovelProp.position.set(2.62, .58, 7.24); shovelProp.rotation.set(-.32, .4, .05); world.add(shovelProp);
-act(shovelProp, 'Take the shovel', () => { world.remove(shovelProp); inv.shovel = true; inv.tool = 'shovel'; vm.visible = true; sfx.click(); say('A round-point shovel. Click / Use to dig. Each shovelful goes in your sack: drop it with G (or Drop), or tip it into a cart. Q puts the shovel away.'); hud(); });
+act(shovelProp, 'Take the shovel', () => { world.remove(shovelProp); inv.shovel = true; setTool('shovel', 'dig'); say('A round-point shovel. Hold click / Use to dig; each shovelful goes in your sack. Open the bag (I) to switch to placing dirt.'); });
 const vm = makeShovel(); vm.visible = false; camera.add(vm); vm.scale.setScalar(.9);
 const vmDir = new THREE.Vector3(-.31, .21, -.93).normalize(), vmPos = new THREE.Vector3(.22, -.34, -.7);
 const vmQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), vmDir).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), PI));
@@ -3213,6 +3248,13 @@ const eyeV = new THREE.Vector3(), dirV3 = new THREE.Vector3();
 const hits = {};
 const aimedCart = () => { camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3); for (let t = .3; t < 2.6; t += .08) { const x = eyeV.x + dirV3.x * t, y = eyeV.y + dirV3.y * t, z = eyeV.z + dirV3.z * t; for (const k of carts) if (Math.hypot(x - k.x, z - k.z) < .6 && y < k.y + 1 && y > k.y) return k; } return null; };
 function useTool() {
+  if (bagOpen) return;
+  if (inv.tool === 'axe') return chop();
+  if (inv.tool !== 'shovel') return;
+  if (inv.mode === 'place') return dropDirt();
+  digOnce();
+}
+function digOnce() {
   if (inv.tool !== 'shovel' || vmAnim) return;
   const cart = aimedCart();
   if (cart && inv.dirt.length) { unloadOne(cart); return; }
@@ -3260,8 +3302,6 @@ function buildCart() {
   if (mine.inHouse(x, z)) { say('Not indoors.'); return; }
   inv.logs -= 3; inv.sticks -= 4; makeCart(x, z, player.yaw + PI); sfx.creak(); say('You lash the logs into a tub and peg the wheels on. A mine cart.'); hud();
 }
-function toolSwitch() {
-  if (!inv.shovel) { say('You have nothing to hold.'); return; }
   inv.tool = inv.tool === 'shovel' ? 'hands' : 'shovel'; vm.visible = inv.tool === 'shovel'; sfx.click(); hud();
 }
 function tipNearest() {
@@ -3270,7 +3310,8 @@ function tipNearest() {
 }
 function hud() {
   const e = $('inv'); if (!e) return;
-  e.textContent = 'Logs ' + inv.logs + '/4 · Sticks ' + inv.sticks + ' · Dirt ' + inv.dirt.length + '/' + DIRT_MAX + (inv.shovel ? ' · ' + (inv.tool === 'shovel' ? 'Shovel' : 'Hands') : '');
+  const tool = inv.tool === 'axe' ? 'Axe' : inv.tool === 'shovel' ? (inv.mode === 'place' ? 'Shovel: place dirt' : 'Shovel: dig') : 'Hands';
+  e.textContent = 'Logs ' + inv.logs + '/4 · Sticks ' + inv.sticks + ' · Dirt ' + inv.dirt.length + '/' + DIRT_MAX + ' · ' + tool + '   [I] bag';
 }
 function updateViewmodel(dt) {
   camShake *= Math.exp(-dt * 10);
@@ -3289,7 +3330,7 @@ function updateViewmodel(dt) {
   vm.position.copy(vmPos).addScaledVector(vmDir, push); vm.position.x += s; vm.position.y += b + oy;
   vm.quaternion.copy(vmTilt.setFromAxisAngle(vmX, tilt)).multiply(vmQ);
 }
-function primary() { if (cine.on) { if (cine.t > 1) endCine(); return; } if (focus && !(inv.tool === 'shovel' && inv.dirt.length && aimedCart())) focus.fn(); else useTool(); }
+function primary() { if (bagOpen) return; if (cine.on) { if (cine.t > 1) endCine(); return; } if (focus && !(inv.tool === 'shovel' && inv.dirt.length && aimedCart())) focus.fn(); else useTool(); }
 
 /* ---- underground light ---- */
 let under = 0;
@@ -3301,6 +3342,198 @@ function updateUnder(dt) {
   scene.fog.color.copy(fogDay).lerp(fogDeep, under); if (!cine.on) scene.fog.density = .032 + under * .05;
   snowfall.mat.visible = under < .5;
 }
+
+
+/* ================= axe, felling, bag, hold-to-work ================= */
+const hickM = snap(MS({ map: T.woodL, color: C('#c39b66'), roughness: .7 }));
+const headM = snap(MS({ color: C('#3d3f41'), metalness: .6, roughness: .55 }));
+const edgeM = snap(MS({ color: C('#a7adb2'), metalness: .8, roughness: .3 }));
+/* single-bit felling axe: curved hickory haft with a swelled knob, forged head with poll, cheeks and a honed bevel (haft along +Y, bit toward +Z) */
+function makeAxe() {
+  const g = new THREE.Group(), pts = [];
+  for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(new THREE.Vector3(0, t * .74, Math.sin(t * PI * 1.2) * .022 - t * .012)); }
+  const tube = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 10, .016, 6, false);
+  tube.scale(.8, 1, 1.15); g.add(new THREE.Mesh(tube, hickM));                                       // oval section like a real haft
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(.024, 6, 4), hickM); knob.scale.set(.9, .7, 1.4); knob.position.set(0, .005, .004); g.add(knob);
+  const sh = new THREE.Shape(); sh.moveTo(-.05, .024); sh.lineTo(.02, .03); sh.quadraticCurveTo(.075, .032, .128, .078); sh.lineTo(.142, 0); sh.lineTo(.128, -.078); sh.quadraticCurveTo(.075, -.032, .02, -.03); sh.lineTo(-.05, -.024); sh.closePath();
+  const hg = new THREE.ExtrudeGeometry(sh, { depth: .034, bevelEnabled: true, bevelThickness: .004, bevelSize: .003, bevelSegments: 1 }); hg.translate(0, 0, -.017);
+  const hp = hg.attributes.position; for (let i = 0; i < hp.count; i++) { const x = hp.getX(i); if (x > .06) hp.setZ(i, hp.getZ(i) * Math.max(.15, 1 - (x - .06) / .09)); }   // cheeks taper to the edge
+  hg.rotateY(-PI / 2); hg.computeVertexNormals();
+  const head = new THREE.Mesh(hg, headM); head.position.y = .68; g.add(head);
+  const edge = new THREE.Mesh(new THREE.BoxGeometry(.006, .15, .014), edgeM); edge.position.set(0, .68, .136); g.add(edge);
+  const wedge = new THREE.Mesh(new THREE.BoxGeometry(.012, .012, .05), headM); wedge.position.set(0, .705, .0); g.add(wedge);
+  return g;
+}
+/* the axe is buried in the chopping block by the path */
+const axeProp = makeAxe(); { const gy = getTerrainHeight(7.4, 8.5); axeProp.position.set(7.36, gy + 1.12, 8.44); axeProp.rotation.set(.25, .5, PI - .35); world.add(axeProp); }
+act(axeProp, 'Pull the axe from the block', () => { world.remove(axeProp); inv.axe = true; setTool('axe'); sfx.creak(); say('A felling axe, edge still keen. Click / Use (hold to keep chopping) on a trunk.'); });
+const avm = makeAxe(); avm.visible = false; camera.add(avm);
+const AXE_REST = { p: [.27, -.38, -.5], r: [-.25, -.35, -.1] };
+/* swing: [time, dx, dy, dz, rx, ry, rz] — wind up over the right shoulder, drive down across, bite, wrench free */
+const AXE_SWING = { dur: 1.05, hit: .47, keys: [[0, 0, 0, 0, 0, 0, 0], [.3, .06, .2, .18, 1.0, .25, -.35], [.42, -.06, -.02, -.12, -.6, -.1, .15], [.47, -.08, -.08, -.16, -1.0, -.12, .2], [.62, -.07, -.07, -.14, -.95, -.1, .18], [.75, -.02, -.02, -.06, -.5, -.05, .05], [1, 0, 0, 0, 0, 0, 0]] };
+let axeAnim = null;
+
+/* ---- standing trees: notch them until they go; fallen trees: buck into logs, limb into sticks ---- */
+const treeHits = {}, fallen = [], props = [];
+const chipM = snap(MS({ color: C('#c9a77a'), roughness: 1 })), stumpM = snap(MS({ color: C('#3a2c22'), roughness: 1 }));
+const chipG = new THREE.BoxGeometry(.04, .012, .025);
+function chips(p, n, dir) { for (let i = 0; i < n; i++) { const m = new THREE.Mesh(chipG, chipM); m.position.copy(p); O.add(m); clods.push({ m, vx: RR(-1.2, 1.2) - dir.x * 1.5, vy: RR(.8, 2.6), vz: RR(-1.2, 1.2) - dir.z * 1.5, age: 0, fx: true }); } }
+const logG = (() => { const g = new THREE.CylinderGeometry(.1, .11, 1, 7, 1); g.rotateZ(PI / 2); const p = g.attributes.position, n = g.attributes.normal, c = new Float32Array(p.count * 3), cut = C('#b08a5c'), bark = C('#3a2b20');
+  for (let i = 0; i < p.count; i++) { const q = Math.abs(n.getX(i)) > .9 ? cut : bark; c[i * 3] = q.r; c[i * 3 + 1] = q.g; c[i * 3 + 2] = q.b; } g.setAttribute('color', new THREE.BufferAttribute(c, 3)); return g; })();
+const logPM = snap(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
+function propItem(kind, x, y, z, yaw) {
+  const m = new THREE.Mesh(logG, logPM), log = kind === 'log';
+  m.scale.set(log ? 1.05 : .9, log ? 1.25 : .2, log ? 1.25 : .2); m.position.set(x, y + (log ? .13 : .03), z); m.rotation.y = yaw; m.castShadow = true; world.add(m); props.push(m);
+  act(m, log ? 'Pick up the log' : 'Pick up the stick', () => {
+    if (log && inv.logs >= 4) { say('Four logs is all you can carry.'); return; }
+    if (!log && inv.sticks >= 20) { say('Your arms are full of sticks.'); return; }
+    world.remove(m); props.splice(props.indexOf(m), 1); if (log) inv.logs++; else inv.sticks++; burst(.12, 'lowpass', 500, 1, .3, .01); hud();
+  });
+}
+function fell(t, from) {
+  const pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3(); t.mtx.decompose(pos, q, sc);
+  t.v.tg.computeBoundingBox(); const len = t.v.tg.boundingBox.max.y * sc.y;
+  const dir = new THREE.Vector3(pos.x - from.x, 0, pos.z - from.z).normalize(), axis = new THREE.Vector3(dir.z, 0, -dir.x);
+  const piv = new THREE.Group(); piv.position.copy(pos); world.add(piv);
+  const body = new THREE.Group(); body.quaternion.copy(q); body.scale.copy(sc); piv.add(body);
+  body.add(new THREE.Mesh(t.v.fg, terrainAPI.leafMat)); const trunk = new THREE.Mesh(t.v.tg, terrainAPI.barkMat); trunk.castShadow = true; body.add(trunk);
+  /* the stump: bark ring and a pale, notched top */
+  const r0 = (.2 + len / sc.y * .012) * sc.x;
+  cyl(r0 * .95, r0 * 1.05, .4, stumpM, pos.x, pos.y - .05, pos.z, { p: O, seg: 7 });
+  cyl(r0 * .9, r0 * .9, .02, chipM, pos.x, pos.y + .34, pos.z, { p: O, seg: 7 });
+  terrainAPI.addCol({ x1: pos.x - r0, z1: pos.z - r0, x2: pos.x + r0, z2: pos.z + r0 });
+  const tipG = ground2(pos.x + dir.x * len * .85, pos.z + dir.z * len * .85, pos.y + 5);
+  const end = Math.min(PI / 2 - .06, PI / 2 + Math.atan2(tipG - pos.y, len * .85) - .05);
+  fallen.push({ piv, body, axis, dir, len, th: .015, w: 0, end, state: 'fall', base: pos.clone(), cuts: 0, logs: Math.max(2, Math.round(len / 2.3)), hits: 0, cols: [] });
+  sfx.creak(); setTimeout(() => sfx.creak(), 500);
+}
+function updateFallen(dt) {
+  for (const f of fallen) {
+    if (f.state !== 'fall') continue;
+    f.w += 1.5 * 9.81 / f.len * Math.sin(f.th) * dt;                 // rigid rod pivoting on its stump
+    f.th += f.w * dt;
+    if (f.th >= f.end) {
+      f.th = f.end;
+      if (f.w > .6) { f.w *= -.18; burst(.9, 'lowpass', 120, 1, .9, .01); burst(.5, 'bandpass', 600, 1, .4, .01); if (Math.hypot(player.x - f.base.x, player.z - f.base.z) < 20) camShake = .05; }
+      else {
+        f.state = 'down'; f.w = 0;
+        for (let d = .6; d < f.len * .9; d += .6) { const x = f.base.x + f.dir.x * d, z = f.base.z + f.dir.z * d, q = { x1: x - .18, z1: z - .18, x2: x + .18, z2: z + .18 }; terrainAPI.addCol(q); f.cols.push(q); }
+      }
+    }
+    f.piv.quaternion.setFromAxisAngle(f.axis, f.th);
+  }
+}
+function treeUnderAim() {
+  camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3); ray.set(eyeV, dirV3); ray.far = 2.4;
+  const meshes = []; for (const f of fallen) if (f.state === 'down') f.body.traverse(o => { if (o.isMesh) { o.userData.fallen = f; meshes.push(o); } });
+  const hs = ray.intersectObjects(terrainAPI.treePools.concat(meshes), false); ray.far = 2.3;
+  return hs[0] || null;
+}
+function chop() {
+  if (axeAnim) return;
+  const h = treeUnderAim();
+  axeAnim = { t: 0, fired: false, onHit: () => {
+    camShake = .035;
+    if (!h) { burst(.06, 'bandpass', 300, 2, .15); return; }
+    chips(h.point, 6, dirV3); burst(.07, 'bandpass', 1100, 3, .55, .002); burst(.18, 'lowpass', 160, 1, .5, .003);
+    const f = h.object.userData.fallen;
+    if (f) {                                                          // bucking: three cuts per log section, branches come off as sticks
+      if (++f.hits < 3) return; f.hits = 0;
+      const d = f.len * (1 - (f.cuts + .5) / f.logs) * .9, x = f.base.x + f.dir.x * d, z = f.base.z + f.dir.z * d;
+      propItem('log', x, ground2(x, z, f.base.y + 3), z, Math.atan2(f.dir.x, f.dir.z) + PI / 2);
+      for (let i = 0, n = 1 + (R() * 2 | 0); i < n; i++) { const a = R() * 6.28; propItem('stick', x + Math.cos(a) * .6, ground2(x + Math.cos(a) * .6, z + Math.sin(a) * .6, f.base.y + 3), z + Math.sin(a) * .6, a); }
+      if (++f.cuts >= f.logs) { world.remove(f.piv); f.cols.forEach(q => terrainAPI.dropCol(q)); fallen.splice(fallen.indexOf(f), 1); say('Bucked and limbed. Logs and branches lie where it fell.'); }
+      return;
+    }
+    const id = h.instanceId, pool = h.object, s = pool.userData.src; if (!s || id * 2 >= s.length) return;
+    const L = s[id * 2], i = s[id * 2 + 1], sc = Math.hypot(L.m[i * 16], L.m[i * 16 + 1], L.m[i * 16 + 2]);
+    const k = Math.round(L.m[i * 16 + 12] * 10) + ',' + Math.round(L.m[i * 16 + 14] * 10);         // the tree, wherever on it you strike
+    const need = Math.round(4 + sc * 7);
+    treeHits[k] = (treeHits[k] || 0) + 1;
+    if (treeHits[k] === Math.ceil(need * .7)) say('It creaks.');
+    if (treeHits[k] < need) return;
+    delete treeHits[k];
+    const t = terrainAPI.takeTree(pool, id); if (!t) return;
+    const pp = new THREE.Vector3(); camera.getWorldPosition(pp); fell(t, pp); say('Timber.');
+  } };
+}
+
+/* ---- tools & modes ---- */
+function setTool(t, mode) {
+  inv.tool = t; if (mode) inv.mode = mode;
+  vm.visible = t === 'shovel'; avm.visible = t === 'axe'; sfx.click(); hud(); renderBag();
+}
+const TOOLS = () => [['hands'], inv.shovel && ['shovel', 'dig'], inv.shovel && ['shovel', 'place'], inv.axe && ['axe']].filter(Boolean);
+function toolSwitch() {
+  const list = TOOLS(); if (list.length < 2) { say('You have nothing to hold.'); return; }
+  const i = list.findIndex(t => t[0] === inv.tool && (t[0] !== 'shovel' || t[1] === inv.mode));
+  const n = list[(i + 1) % list.length]; setTool(n[0], n[1]);
+}
+
+/* ---- the bag: pick what's in your hands, and how you use it ---- */
+let bagOpen = false;
+function renderBag() {
+  const el = $('bagItems'); if (!el) return;
+  const items = [['hands', null, 'Bare hands', 'Pick things up, push carts.']];
+  if (inv.shovel) { items.push(['shovel', 'dig', 'Shovel — dig', 'Hold to keep digging. Each shovelful goes in the sack.']); items.push(['shovel', 'place', 'Shovel — place dirt', inv.dirt.length + ' shovelful' + (inv.dirt.length === 1 ? '' : 's') + ' in the sack. Hold to build a pile where you aim.']); }
+  if (inv.axe) items.push(['axe', null, 'Felling axe', 'Hold to chop. Fell a tree, then chop the trunk into logs.']);
+  el.innerHTML = '';
+  for (const [t, m, name, sub] of items) {
+    const b = document.createElement('button'); b.type = 'button';
+    b.className = 'bagI' + (inv.tool === t && (!m || inv.mode === m) ? ' on' : '');
+    b.innerHTML = '<b></b><span></span>'; b.firstChild.textContent = name; b.lastChild.textContent = sub;
+    b.addEventListener('click', () => { setTool(t, m); closeBag(); });
+    el.appendChild(b);
+  }
+  $('bagCount').textContent = 'Logs ' + inv.logs + '/4 · Sticks ' + inv.sticks + '/20 · Dirt ' + inv.dirt.length + '/' + DIRT_MAX + ' · Carts need 3 logs + 4 sticks';
+}
+function openBag() { if (!started || paused) return; bagOpen = window.__bag = true; holdUse = false; renderBag(); $('bag').classList.add('show'); if (document.pointerLockElement) document.exitPointerLock(); }
+function closeBag() { bagOpen = window.__bag = false; $('bag').classList.remove('show'); if (!isTouch && !noLock) lockPointer(); }
+window.__closeBag = closeBag;
+
+/* ---- hold to keep working ---- */
+let holdUse = false;
+addEventListener('mouseup', e => { if (e.button === 0) holdUse = false; });
+cvs.addEventListener('mousedown', e => { if (e.button === 0 && started && !paused && locked && !bagOpen) holdUse = true; });
+{ const b = $('bUse'); const up = () => { holdUse = false; };
+  b.addEventListener('pointerdown', e => { e.preventDefault(); if (!paused && !bagOpen) { holdUse = true; primary(); } });
+  b.addEventListener('pointerup', up); b.addEventListener('pointerleave', up); b.addEventListener('pointercancel', up); }
+function holdTick() {
+  if (!holdUse || !started || paused || bagOpen || cine.on || focus) return;
+  if (inv.tool === 'axe' ? !axeAnim : (inv.tool === 'shovel' && !vmAnim)) useTool();
+}
+
+/* ---- place-dirt aim marker: a dark ring on the ground where the next shovelful will land ---- */
+const ghost = new THREE.Mesh(new THREE.RingGeometry(.16, .26, 10), new THREE.MeshBasicMaterial({ color: C('#2a1f15'), transparent: true, opacity: .55, depthWrite: false, side: THREE.DoubleSide }));
+ghost.rotation.x = -PI / 2; ghost.visible = false; O.add(ghost);
+function updateGhost() {
+  ghost.visible = false;
+  if (inv.tool !== 'shovel' || inv.mode !== 'place' || !inv.dirt.length || bagOpen) return;
+  camera.getWorldPosition(eyeV); camera.getWorldDirection(dirV3);
+  const h = mine.pick(eyeV, dirV3, 3.2); if (!h) return;
+  ghost.position.set(h.px, ground2(h.px, h.pz, h.py + .05) + .03, h.pz); ghost.visible = true;
+}
+function updateAxe(dt) {
+  if (!avm.visible) return;
+  const b = Math.sin(player.bob) * .014, s = Math.sin(player.bob * .5) * .01;
+  let o = [0, 0, 0, 0, 0, 0];
+  if (axeAnim) {
+    axeAnim.t += dt; const t = Math.min(1, axeAnim.t / AXE_SWING.dur), K = AXE_SWING.keys;
+    let i = 0; while (i < K.length - 2 && t > K[i + 1][0]) i++;
+    const a = K[i], c = K[i + 1], u = (t - a[0]) / (c[0] - a[0]), e = i === 1 ? u * u * u : u * u * (3 - 2 * u);   // the downswing accelerates
+    o = [1, 2, 3, 4, 5, 6].map(j => a[j] + (c[j] - a[j]) * e);
+    if (!axeAnim.fired && t >= AXE_SWING.hit) { axeAnim.fired = true; axeAnim.onHit(); }
+    if (t >= 1) axeAnim = null;
+  }
+  avm.position.set(AXE_REST.p[0] + o[0] + s, AXE_REST.p[1] + o[1] + b, AXE_REST.p[2] + o[2]);
+  avm.rotation.set(AXE_REST.r[0] + o[3], AXE_REST.r[1] + o[4], AXE_REST.r[2] + o[5]);
+}
+addEventListener('keydown', e => {
+  if (!started || paused) return;
+  if (e.code === 'KeyI' || e.code === 'Tab') { e.preventDefault(); if (bagOpen) closeBag(); else openBag(); }
+});
+$('bBag').addEventListener('click', () => { if (bagOpen) closeBag(); else openBag(); });
+$('bagClose').addEventListener('click', () => closeBag());
 
 /* ================= opening shot: first time out of the front door ================= */
 const cine = { on: false, t: 0, done: false };
@@ -3420,7 +3653,8 @@ function frame(now) {
   if (started && !paused && frameN % 4 === 0) scan();
 
   if (cine.on) cineCam(dt);
-  updateViewmodel(dt); updateUnder(dt);
+  updateViewmodel(dt); updateAxe(dt); updateGhost(); updateUnder(dt);
+  if (started && !paused) { updateFallen(dt); holdTick(); }
   sky.position.copy(camera.position);
   if (!paused) snowfall(dt, time, camera);
   if (started && !paused) snowAcc.value = Math.min(.9, snowAcc.value + dt / 540);   // ground whitens over ~8 minutes
