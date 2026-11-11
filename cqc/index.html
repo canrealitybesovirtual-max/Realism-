@@ -2818,7 +2818,8 @@ const CONFIG = {
       air: 55,                                // step 85: m, air absorption (lowpass 20 kHz x e^(-d/air) on positional sounds); 0 = off
       doors: { on: true, gain: 0.5, creak: 1, creakShare: 0.45 },   // step 86: door foley (lever, bolt, latch, locked rattle, hinge stop); ?doorsnd=off = silent doors as before. Step 88: creak = hinge creak gain while a leaf swings (0 = off, ?creak=off), creakShare = the share of doors that creak (fixed per door)
       knocks: { on: true, gain: 1, minDv: 0.6 },   // step 86: props landing / bumping / falling over make a sound by material and mass (minDv m/s lost in a frame; on false = silent as before)
-      handlingRec: { on: true, gain: 1, his: 0.8, sup: 1, buy: 1, pick: 1, cloth: 1 },   // step 99: recorded magazine / handle / suppressed shot / purchase / item pick-up / coat rustle sounds (gains; his = his reloads, 0 = silent; on false or ?hrec=off = the step 87 / 86 synth)
+      handlingRec: { on: true, gain: 1, his: 0.8, sup: 1, buy: 1, pick: 1, cloth: 1 },
+      impactRec: { on: true, gain: 1, body: 0.8, pen: 1 },   // recorded bullet impacts (IMPREC; CC0 takes, see sounds/src/LICENSES.md): gain, body = rounds into a man (flesh / his plate; 0 = silent as step 81), pen = through-and-through punch / crack; on false, ?imprec=off or ?hrec=off = the synth; ?fleshhit=off = body 0   // step 99: recorded magazine / handle / suppressed shot / purchase / item pick-up / coat rustle sounds (gains; his = his reloads, 0 = silent; on false or ?hrec=off = the step 87 / 86 synth)
       foley: { brass: 1, mech: 1, drops: 1, kit: 0 },   // step 87: gun sounds besides shots, gain per group (0 = off; all 0 or ?foley=off = shots only, as before): brass / hull landings; reload, rack, selector, dry, pump, bench clicks; dropped mags, guns, nades, shells, parts; holster / pouch / handle (synth only, so off)
       underfoot: { gain: 1, kick: 0, r: 0.11 },   // step 92: your sole on spent brass / hulls (tink and scuff) or a drywall chunk, board, flap (quiet knock); his steps on brass from where he walks. r m round the sole; kick > 0 also sends the casings skittering (0 = sound only, as asked); gain 0 or ?underfoot=off = silent as before
       gunTouch: { gain: 1, min: 0.25, cool: 0.3, scrape: 1, haptic: 1, hand: 1 },   // step 88: a held gun meeting a wall, frame or heavy prop knocks by surface from that point, ticks in the gun hand (haptic, 0 = off), scrapes faintly sliding along (scrape, 0 = off); an empty hand pats it (hand, 0 = off). min m/s into it, cool s between knocks; gain 0 or ?guntouch=off = silent as before
@@ -18518,7 +18519,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   const prop = propByCollider.get(h);
   if (prop) {
     prop.body.applyImpulseAtPoint(imp, _fp, true);
-    impactFx(surfaceOfProp(prop), _fp, _hn);
+    impactFx(surfaceOfProp(prop), _fp, _hn, impSndOfProp(prop));
     if (prop.brk && (prop.brkHp = (prop.brkHp ?? prop.brk.hp) - k) <= 0) propBreak(prop, dir);   // step 71
     return;
   }
@@ -18533,7 +18534,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   const info = colliderInfo.get(h);
   if (info && info.sbox) {                                        // SHELF: a box on a shelf becomes a real one, takes the round
     const p = shelfWake(info.room, info.sbox, imp, _fp);
-    impactFx('wood', _fp, _hn);
+    impactFx('wood', _fp, _hn, 'card');
     if (p && p.brk && (p.brkHp = (p.brkHp ?? p.brk.hp) - k) <= 0) propBreak(p, dir);
     return;
   }
@@ -18800,7 +18801,7 @@ const FX_KIND = {
   glass: { c: [1.6, 1.5, 1.3], n: 16, sp: 2.4, life: 0.9, size: 0.005, grow: 0, drag: 0.8, grav: 9.8, sparks: 0 },   // step 71: glittering shards
   water: { c: [0.52, 0.58, 0.62], n: 14, sp: 2.2, life: 0.7, size: 0.004, grow: 0, drag: 0.6, grav: 9.8, sparks: 0 }   // step 94: a round into a puddle
 };
-function impactFx(kind, p, nrm) {
+function impactFx(kind, p, nrm, snd) {   // snd: the sound's surface when it differs from the dust's (a cardboard box: wood dust, card sound)
   const F = WEAPON.fx, K = FX_KIND[kind] || FX_KIND.metal;
   const emit = (count, spark) => {
     for (let i = 0; i < count; i++) {
@@ -18824,7 +18825,7 @@ function impactFx(kind, p, nrm) {
   F.alive = 1;
   // Step 10: dust that hangs, and the sound of the round landing (from where it landed).
   impactHaze(kind, p, nrm);
-  impactSound(kind, p);
+  impactSound(snd || kind, p);
   P10.lastImpact.copy(p); P10.lastImpactFrame = P10.frame;
 }
 function updateImpactFx(dt) {
@@ -25627,6 +25628,7 @@ function penSound(kind, P, ex, k, entry) {
   if (nearOut) soundAt(ex, penCrackPlay);
 }
 function penPunchPlay() {
+  if (penRecPlay(true)) return;
   const t = audio.ctx.currentTime + 0.003, g = PEN.sg, j = 0.9 + Math.random() * 0.2;
   switch (PEN.sk) {
     case 'wood':                                                   // a hollow punch, splinters cracking
@@ -25652,12 +25654,24 @@ function penPunchPlay() {
   }
 }
 function penCrackPlay() {
+  if (penRecPlay(false)) return;
   const t = audio.ctx.currentTime + 0.003, g = PEN.sg;
   nBurst(t, 0.012, 'bandpass', 2600, 0.5, 0.38 * g, 0.008, 0.3);  // flat and short: the far skin blowing out
   nBurst(t, 0.03, 'highpass', 5200, 0.7, 0.1 * g, 0.02, 0.1);
   if (PEN.sk === 'plaster' || PEN.sk === 'concrete') for (let i = 0; i < 3; i++) nBurst(t + 0.05 + Math.random() * 0.25, 0.02, 'bandpass', 1200 + Math.random() * 1600, 1.4, 0.04 * g, 0.016, 0.2);   // bits landing
 }
 
+// Recorded through-and-through (IMPREC): the way in = the surface's own take pitched down a little, a touch more body; the
+// way out = the same surface high-passed and cut short (the far skin blowing out), grit landing after it for plaster / concrete.
+function penRecPlay(entry) {
+  const R = CONFIG.polish.audio.impactRec;
+  if (!impRecOn() || !R.pen) return false;
+  const kd = IMPREC.sets[PEN.sk] ? PEN.sk : 'plaster', g = PEN.sg * R.pen, crumb = kd === 'plaster' || kd === 'concrete';
+  if (entry ? !impRecSet(kd, g * 1.1, 0.9, 0, 0, 2) : !impRecSet(kd, g * 0.75, 1.15, 700, 0.16)) return false;
+  if (crumb) impRecLayer('debris', g * (entry ? 0.6 : 0.9), entry ? 0.02 : 0.04);
+  impRecPlay();
+  return true;
+}
 // --- exit decals (plasterX, woodX, metalX, concreteX): a colour canvas and a height canvas made into a normal map.
 // The hole materials' features (map + normalMap + transparent): no new program. Called right after the hole materials.
 function penKit() {
@@ -28293,6 +28307,7 @@ function enemyShot(hit, dir, d, E) {
     if (GORE_X && awmHead) awmHeadGore(e, hit.p, dir);
   }
   P10.muteImpact = false;
+  impactBody(hit.p, plate);                                     // recorded: the round going in (impactRec.body; ?fleshhit=off)
   if (e.downed) {                                              // step 91: any further round ends him where he lies (silent)
     if (d === FRAG_D && e.downAt >= NADE.blastT) return;          // step 115: not the blast that put him down (its other fragments)
     enemyDie(e, h.seg, dir, hit.p, bulletP(d, E) / 4); return;
@@ -36010,7 +36025,12 @@ const HREC_FILES = ['brassS1', 'brassS2', 'brassS3', 'brassS4', 'brassS5', 'bras
   // step 101: the Glock 17 reloads (kno-sfx), dry fire (ruben_uitenweerde), an M4 magazine on a table (pjkasinski3), a button (alayan)
   'glkMagOut1', 'glkMagOut2', 'glkMagIn1', 'glkMagIn2', 'glkMagTap', 'glkSlideRel', 'glkRackBack1', 'glkRackBack2', 'glkRackFwd1', 'glkRackFwd2',
   'dry1', 'dry2', 'dry3', 'dry4', 'dry5', 'dry6', 'dry7', 'dry8', 'dryReset1', 'dryReset2', 'dryReset3', 'dryReset4',
-  'magDrop1', 'magDrop2', 'magDrop3', 'btnClick1', 'btnClick2', 'btnClick3', 'btnClick4'];
+  'magDrop1', 'magDrop2', 'magDrop3', 'btnClick1', 'btnClick2', 'btnClick3', 'btnClick4',
+  // bullet impacts (tools/cut_impact_sfx.py: CC0 recordings + the user's table drop; IMPREC)
+  'impCon1', 'impCon2', 'impCon3', 'impCon4', 'impCon5', 'impPla1', 'impPla2', 'impPla3', 'impPla4', 'impPla5',
+  'impMet1', 'impMet2', 'impMet3', 'impMet4', 'impMet5', 'impMet6', 'impWod1', 'impWod2', 'impWod3', 'impWod4', 'impWod5',
+  'impGla1', 'impGla2', 'impGla3', 'impGla4', 'impWat1', 'impWat2', 'impWat3', 'impWat4', 'impCrd1', 'impCrd2', 'impCrd3', 'impCrd4',
+  'impFle1', 'impFle2', 'impFle3', 'impFle4', 'impFle5', 'impDeb1', 'impDeb2', 'impDeb3', 'impDeb4'];
 const PICK_REC = ['pickup1', 'pickup2', 'pickup3', 'pickup4', 'pickup5', 'pickup6', 'pickup7', 'pickup8', 'pickup9'];   // a hand taking something (freesound 762911 ienba)
 const CLOTH_REC = ['cloth1', 'cloth2', 'cloth3', 'cloth4', 'cloth5', 'cloth6', 'cloth7'];   // one stride of a heavy coat each (freesound 369604 evanboyerman)
 // family -> event -> variants [file, rate, gain]
@@ -38549,13 +38569,80 @@ const IMPACT_SND = {
 };
 function impactSound(kind, p) {
   const A = CONFIG.polish.audio;
-  if (!A.impacts || P10.muteImpact || !IMPACT_SND[kind] || !audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  if (!A.impacts || P10.muteImpact || !audio.ctx || audio.ctx.state !== 'running') return;
+  const rec = impRecOn() && IMPREC.sets[kind], syn = IMPACT_SND[kind] || IMPACT_SND[IMPREC.alias[kind]];
+  if (!rec && !(syn && audio.noise)) return;
   const now = audio.ctx.currentTime;
   if (now - P10.impactSfxAt < 0.035) return;                    // nine pellets: one sound
   headWorld(_p10.h);
   if (_p10.h.distanceToSquared(p) > A.impactRange * A.impactRange) return;
   P10.impactSfxAt = now;
-  soundAt(p, () => IMPACT_SND[kind](audio.ctx.currentTime + 0.003, 0.88 + Math.random() * 0.24));
+  if (rec && impRecSet(kind, 1, 1)) { soundAt(p, impRecPlay); return; }   // a real recording of that surface
+  if (syn && audio.noise) soundAt(p, () => syn(audio.ctx.currentTime + 0.003, 0.88 + Math.random() * 0.24));
+}
+/* ---------------------------------------------------------------------------
+ *  RECORDED BULLET IMPACTS (IMPREC; sounds/imp*.mp3 by tools/cut_impact_sfx.py, sources and licences in
+ *  sounds/src/LICENSES.md: CC0 recordings + the user's own magazine-on-a-table take). Per surface 4-6 takes,
+ *  never the same twice running (hrecAny), +-6 % rate, positional through soundAt (distance, occlusion, air,
+ *  speed of sound) in one voice as before. Loaded with the handling takes (HREC); a missing file = the synth.
+ *  impactSound (every surface, a cardboard box = card), penPunchPlay / penCrackPlay (through-and-through: the
+ *  surface pitched down for the punch, high-passed and short for the far skin, real grit landing after),
+ *  impactBody (a round into a man: flesh, or his plate as steel). CONFIG.polish.audio.impactRec; ?imprec=off.
+ * ------------------------------------------------------------------------- */
+const IMPREC = {
+  on: !/[?&]imprec=off\b/.test(QS), body: !/[?&]fleshhit=off\b/.test(QS),
+  sets: {
+    concrete: ['impCon1', 'impCon2', 'impCon3', 'impCon4', 'impCon5'], plaster: ['impPla1', 'impPla2', 'impPla3', 'impPla4', 'impPla5'],
+    metal: ['impMet1', 'impMet2', 'impMet3', 'impMet4', 'impMet5', 'impMet6'], wood: ['impWod1', 'impWod2', 'impWod3', 'impWod4', 'impWod5'],
+    glass: ['impGla1', 'impGla2', 'impGla3', 'impGla4'], water: ['impWat1', 'impWat2', 'impWat3', 'impWat4'],
+    card: ['impCrd1', 'impCrd2', 'impCrd3', 'impCrd4'], flesh: ['impFle1', 'impFle2', 'impFle3', 'impFle4', 'impFle5'],
+    debris: ['impDeb1', 'impDeb2', 'impDeb3', 'impDeb4']
+  },
+  alias: { card: 'wood', flesh: null, debris: null },              // the synth for a surface it never had
+  // level per surface: the takes are mastered to a -3 dBFS peak (impulses: hrecNorm's 50 ms RMS would lift them past the shots),
+  // so these put a take's peak where the synth's sat (~0.3); lowpass (0 = 14 kHz: the takes keep their top); reverb send
+  lvl: { concrete: 0.5, plaster: 0.48, metal: 0.42, wood: 0.48, glass: 0.38, water: 0.42, card: 0.42, flesh: 0.42, debris: 0.28 },
+  lp: { concrete: 0, plaster: 7000, metal: 0, wood: 9000, glass: 0, water: 9000, card: 8000, flesh: 6500, debris: 0 },
+  verb: { concrete: 0.3, plaster: 0.28, metal: 0.34, wood: 0.28, glass: 0.3, water: 0.25, card: 0.22, flesh: 0.18, debris: 0.22 },
+  n: 0, last: ''                                                   // ?dev: takes played, the last one
+};
+const IMPR = { buf: null, g: 0, rate: 1, o: { lp: 0, hp: 0, ls: 0, hs: 0, verb: 0.3, at: 0, dur: 0 }, b2: null, g2: 0, r2: 1, o2: { lp: 0, hp: 0, verb: 0.22, at: 0, dur: 0 } };
+function impRecOn() { const R = CONFIG.polish.audio.impactRec; return IMPREC.on && hrecOn() && !!R && R.on !== false && R.gain > 0; }
+// Pick a take of surface `kind` into IMPR (k = level, rate x +-6 %); false when none has loaded.
+function impRecSet(kind, k, rate, hp = 0, dur = 0, ls = 0) {
+  const set = IMPREC.sets[kind], n = set && hrecAny('imp:' + kind, set);
+  if (!n) return false;
+  const S = IMPR, o = S.o;
+  S.buf = HREC.bufs[n]; S.g = IMPREC.lvl[kind] * k * CONFIG.polish.audio.impactRec.gain;
+  S.rate = rate * (0.94 + Math.random() * 0.12);
+  o.lp = IMPREC.lp[kind] || 14000; o.hp = hp; o.ls = ls; o.hs = 0; o.verb = IMPREC.verb[kind]; o.at = 0; o.dur = dur;
+  S.b2 = null; IMPREC.n++; IMPREC.last = n;
+  return true;
+}
+// A second layer in the same voice (grit landing after a punch, bits after the far skin blew out).
+function impRecLayer(kind, k, at, rate = 1) {
+  const n = hrecAny('imp:' + kind, IMPREC.sets[kind]);
+  if (!n) return;
+  const S = IMPR, o = S.o2;
+  S.b2 = HREC.bufs[n]; S.g2 = IMPREC.lvl[kind] * k * CONFIG.polish.audio.impactRec.gain; S.r2 = rate * (0.92 + Math.random() * 0.16);
+  o.lp = IMPREC.lp[kind] || 14000; o.hp = 0; o.verb = IMPREC.verb[kind]; o.at = at; o.dur = 0;
+}
+function impRecPlay() { const S = IMPR; hrecPlay(S.buf, S.g, S.rate, S.o); if (S.b2) { hrecPlay(S.b2, S.g2, S.r2, S.o2); S.b2 = null; } }
+// The sound's surface of a prop when it is not its dust's (surfaceOfProp: a box makes wood dust).
+function impSndOfProp(p) { return !p.item && (p.name === 'cardboard box' || p.name === 'cardboard flap') ? 'card' : null; }
+// A round into a man (enemyShot, after the blood): a wet slap of flesh, or his plate as steel, from where it went in.
+// Step 81 took the synth hit away (it sounded like a game); the recordings bring it back at impactRec.body (0 = silent).
+let impBodyAt = 0;
+function impactBody(p, plate) {
+  const R = CONFIG.polish.audio.impactRec, A = CONFIG.polish.audio;
+  if (!IMPREC.body || !R || !R.body || !A.impacts || !impRecOn() || !audio.ctx || audio.ctx.state !== 'running') return;
+  const now = audio.ctx.currentTime;
+  if (now - impBodyAt < 0.035) return;                            // buckshot: one
+  if (headWorld(_p10.h).distanceToSquared(p) > A.impactRange * A.impactRange * 1.5) return;
+  impBodyAt = now;
+  if (plate ? !impRecSet('metal', R.body * 0.7, 0.72, 0, 0, 4) : !impRecSet('flesh', R.body, 1)) return;
+  if (plate) { IMPR.o.lp = 4500; impRecLayer('flesh', R.body * 0.6, 0.004); }   // a dull clank in the carrier, the vest's thump
+  soundAt(p, impRecPlay);
 }
 // Step 86: props landing, bumping, knocked over. Speed lost in one frame (floor, wall, bounce) is a knock;
 // friction and gravity never lose 0.6 m/s a frame. Lower and longer the heavier it is. Items stay silent here (step 87: dropKnock).
@@ -46245,7 +46332,7 @@ function freeItemHand(h, it, p, P, Q) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
