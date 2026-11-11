@@ -622,6 +622,10 @@
     color: var(--bone); background: var(--panel); padding: 8px 14px; border-radius: 3px; pointer-events: none;
   }
   #hint.hidden { display: none; }
+  #emoWheel { position: fixed; left: 50%; top: 50%; width: min(72vmin, 540px); height: min(72vmin, 540px); transform: translate(-50%, -50%) scale(0.82); opacity: 0;
+    pointer-events: none; z-index: 60; transition: opacity 0.12s ease-out, transform 0.16s cubic-bezier(.2,.9,.3,1.2); }
+  #emoWheel.open { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #emoWheel canvas { width: 100%; height: 100%; display: block; }
 
   /* Aim point for grabbing on desktop / phone. Grows into a ring over something you can pick up. */
   #reticle {
@@ -702,6 +706,8 @@
   body.touch:not(.mSlots) .tb[data-act="swap"], body.touch:not(.mHold):not(.mSlots) .tb[data-act="throw"], body.touch:not(.mHold):not(.mSlots) .tb[data-act="fireL"] { display: none; }
   body.tedit .tb { display: grid !important; }
   .tb[data-act="more"] { font-size: 20px; }
+  body:not(.emoMp) .tb[data-act="emote"] { display: none !important; }
+  .tb[data-act="emote"].live { background: var(--tube); color: var(--void); border-color: var(--tube); }
   .tb[data-act="nade"].live { background: var(--tube); color: var(--void); border-color: var(--tube); }
   .tb[data-act="nade"] small { display: block; font-size: 11px; opacity: 0.7; }
   #mHud { position: fixed; z-index: 12; left: calc(14px + env(safe-area-inset-left, 0px)); top: calc(10px + env(safe-area-inset-top, 0px));
@@ -1625,6 +1631,7 @@
   <button type="button" class="tb small" data-act="nade" aria-label="Grenade: press, drag to aim, let go to throw" data-def="85,24,56">Frag</button>
   <button type="button" class="tb pill" data-act="swap" aria-label="Swap pistol and rifle" data-def="70,91,70">Swap</button>
   <button type="button" class="tb" data-act="more" aria-pressed="false" aria-controls="actions" aria-label="Menu" data-def="95.5,9,46">&#9776;</button>
+  <button type="button" class="tb small" data-act="emote" aria-label="Emotes: press, drag to a slot, let go" data-def="86,9,46">Emote</button>
   <div id="actions">
     <button type="button" data-act="settings">Settings</button>
     <button type="button" data-act="crouch" aria-pressed="false">Crouch</button>
@@ -10813,7 +10820,7 @@ for (const [el, float] of [[stickEl, false], [stickZone, true]]) {
 
 // On-screen buttons mirror the keyboard shortcuts.
 const actionButtons = {};
-const HOLD_ACTS = { aim: 1, leanL: 1, leanR: 1, fireL: 1, nade: 1 };   // step 49: nade is press-drag-release       // step 47: held, not tapped (step 48: fireL)
+const HOLD_ACTS = { aim: 1, leanL: 1, leanR: 1, fireL: 1, nade: 1, emote: 1 };   // step 49: nade is press-drag-release       // step 47: held, not tapped (step 48: fireL)
 document.querySelectorAll('#touch button[data-act]').forEach((b) => {
   actionButtons[b.dataset.act] = b;
   if (!HOLD_ACTS[b.dataset.act]) b.addEventListener('click', () => { if (!MOB.edit) runAction(b.dataset.act); });
@@ -11325,6 +11332,7 @@ function padPoll(dt) {
     if (!BZ.padOn && bzCan() && !BZ.hintT) { BZ.hintT = 1; toast('Press Y for a cursor to fit or take off parts', 3000); }
     if (!bzCan()) BZ.hintT = 0;
   }
+  const emoStick = EMO.on && emoPadPoll(B, A, sw, now);          // EMOTES: R3 held = the wheel (the right stick aims it); a tap still kicks
   // bench zoom (a gun in the vise): the right stick moves the cursor over the parts instead of the look; A / RT picks
   if (BZ.on && BZ.want && BZ.applied) {
     if (rx || ry) { BZ.nx = clamp(BZ.nx + rx * 1.1 * dt, -1, 1); BZ.ny = clamp(BZ.ny - ry * 1.1 * dt, -1, 1); bzCursor(); bzPick(); bzLabel(); }
@@ -11333,7 +11341,7 @@ function padPoll(dt) {
     PAD.fire = PAD.fire && rtb > 0.2;
   }
   // right stick: look (slower aimed; the desk scope by its magnification)
-  else if (rx || ry) {
+  else if ((rx || ry) && !emoStick) {
     const dg = gunOf(deskHand); let k = dg ? 1 - 0.5 * dg.ads : 1;
     if (SCOPE.desk) k *= 6 / Math.max(1, SCOPE.mag) * 0.5;
     look.yaw -= rx * PAD.lookYaw * k * dt; look.pitch -= ry * PAD.lookPitch * k * dt;
@@ -11349,6 +11357,7 @@ function padPoll(dt) {
   // buttons
   for (const k in PAD.map) {
     const b = +k, m = PAD.map[k], p = !!(B[b] && B[b].pressed), was = !!PAD.prev[b];
+    if (b === 11 && PAD.emoOwn) { PAD.prev[b] = p; continue; }    // EMOTES: R3 is the wheel's (emoPadPoll kicks on a tap)
     if (Array.isArray(m)) {                          // tap / hold
       if (p && !was) { PAD.downAt[b] = now; PAD.held[b] = false; }
       const eat = PAD.eat && PAD.eat[b];             // consumed by the bench cursor toggle
@@ -12077,6 +12086,7 @@ function netRx(m) {
     const f = rF(r);
     playerHit(m.part === 'head' ? 'head' : 'body', NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize(), clamp(m.E || 1, 0.2, 1), m.k || 1);
   } else if (m.t === 'shot') netRemoteShot(m);
+  else if (m.t === 'emo') emoRx(m);                               // EMOTES: his emote on his soldier
   else if (m.t === 'pi') netSendFast({ t: 'po', c: m.c });       // ping: answered at once (not on a frame)
   else if (m.t === 'po') { const r = now - m.c; if (r >= 0 && r < 20000) NET.link.rtt = NET.link.rtt ? NET.link.rtt + (r - NET.link.rtt) * 0.25 : r; }
   else if (m.t === 'bye') NET.byeAt = now;
@@ -31708,7 +31718,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if (e.dead || !e.room.active) continue;
     const nearRem = !e.net && !e.puppet && NET.remRoom && netCoop() && NET.role === 'host' && Math.abs(NET.remRoom.slot - e.room.slot) <= 1;   // co-op host: the joiner may be fighting him in a room you can't see
     if ((!(e.room.visible || e.room === stream.current) || !e.room.group.visible) && !nearRem || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
-    if (e.net) { e.poseAcc = 0; enemyPose(e, dt, now); continue; }   // multiplayer: the other player (posed from his packets, no AI)
+    if (e.net) { e.poseAcc = 0; if (!(EMO.on && emoAvPose(e, dt, now))) enemyPose(e, dt, now); continue; }   // EMOTES: his emote replaces the pose   // multiplayer: the other player (posed from his packets, no AI)
     if (e.puppet) { netPupPose(e, dt, now); continue; }          // multiplayer (together): a copy of one of the host's men
     if (e.surr) { NET.tgt = null; surrTick(e, dt, now); continue; }   // step 117: he has given up (his own brain, move and pose); co-op: not the last man's target
     NET.tgt = netTargetFor(e);                                  // multiplayer (together, host): he may be fighting the other player
@@ -45434,9 +45444,10 @@ function updateXRInput(dt) {
 
   // --- Right hand: turning, exposure, toggles ---
   let turnRate = 0;
+  const emoVr = right && emoVrStick(right);                         // EMOTES: right stick click held = the wheel (no turn, crouch or kick)
   if (right) {
     const [x, y] = stickOf(right);
-    if (comfort.turn === 'smooth') {
+    if (emoVr) { /* the stick aims the wheel */ } else if (comfort.turn === 'smooth') {
       const ax = Math.abs(x);
       if (ax > L.deadzone) {
         const rate = ((ax - L.deadzone) / (1 - L.deadzone)) * THREE.MathUtils.degToRad(L.smoothTurnSpeed);
@@ -45452,12 +45463,12 @@ function updateXRInput(dt) {
     }
     // Step 11 (FPS layout): right stick down toggles crouch (seated players can get behind half walls).
     // Exposure moved to the terminal (COMFORT), so turning never brightens the scene by accident.
-    if (!xrState.crouchLatch && y > 0.75 && Math.abs(x) < 0.45 && !SCOPE.looking) {   // step 74: zooming the scope instead
+    if (!emoVr && !xrState.crouchLatch && y > 0.75 && Math.abs(x) < 0.45 && !SCOPE.looking) {   // step 74: zooming the scope instead
       xrState.crouchLatch = true; xrState.crouchOn = !xrState.crouchOn; panel.dirty = true;
       pulse(right.userData.hand, 0.25, 30);
     } else if (xrState.crouchLatch && y < 0.3) xrState.crouchLatch = false;
     // Step 24: right stick up kicks (your body's right leg, where you look).
-    if (!xrState.kickLatch && y < -CONFIG.kick.stick && Math.abs(x) < 0.45) {
+    if (!emoVr && !xrState.kickLatch && y < -CONFIG.kick.stick && Math.abs(x) < 0.45) {
       xrState.kickLatch = true;
       if (kickStart()) pulse(right.userData.hand, 0.2, 20);
     } else if (xrState.kickLatch && y > -0.3) xrState.kickLatch = false;
@@ -46323,6 +46334,7 @@ function tick(timeMs) {
   nightUpdate(dtW);      // step 11: dark rooms, the men's weapon lights
   stealthTick(dtW);      // stealth (light level, meter)
   netTick(dtW, t);       // multiplayer: your pose out, the other player's body in
+  emoTick(dt);           // EMOTES: the wheel, your emote (walking stops it), the bubble over his head
   profMark('enemies');
   weaponsUpdate(dt, t);  // step 5: gun poses, triggers, mechanisms, magazines (before physics)
   thumbSelectorUpdate(dt);   // step 30: a tracked thumb flicks the fire selector
@@ -53249,6 +53261,732 @@ if (/[?&]dev\b/.test(QS)) window.__cqcPerf = { PCW, pcWarm, VM, tick, tickSafe, 
 
 if (window.__cqcDev) Object.assign(window.__cqcDev, { netNadeOf, netPupNade, netPupVox, netFinOf, voxDyingPlay, VOX, paintGroups, paintRefresh, netEnTx });   // multiplayer: finishes, throw arm, voices
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHit, deskToggleGrab, deskThrow, createNade, respawnPlayer, surrStart, surrDetain, NADE, dnadeStart, dnadeRelease, wnow, SNDQ });   // tests
+/* ============================================================================
+ *  EMOTES (multiplayer; ?emotes=off). A radial wheel (8 slots, EMO_SLOTS) picks one; it plays on YOUR soldier on the
+ *  other player's screen (one reliable 'emo' message: id, sequence, your clock). Your own view stays first person: a
+ *  small banner says what you sent. Data-driven: EMOTES rows (id, key, label, bubble, icon, body, start / pose / out),
+ *  so later emotes are one row and one pose function.
+ *  Wheel: computer hold Tab, move the mouse, let go (1-8 pick while it is open, Esc cancels); pad and headset hold the
+ *  right stick click 0.25 s, tilt the right stick, let go (a quick tap keeps its old job: kick / weapon light); phone the
+ *  Emote button, drag the thumb, let go. The centre cancels. The wheel shows in multiplayer only (pad, headset, phone);
+ *  Tab works solo too (banner only).
+ *  Stop: walking (keys / sticks, or 8 cm of real head travel from where it started) ends it on the sender, who sends
+ *  id 0; turning never does (the avatar turns with you). Picking the playing one again ends it too.
+ *  His side: emoAvPose replaces enemyPose for the avatar while one plays (his VR hands no longer drive the arms),
+ *  blending in and out from the normal pose; his long gun goes onto his back, a pistol into a hip holster.
+ * ========================================================================== */
+const EMO_SLOTS = [1, 0, 3, 0, 2, 0, 4, 0];   // slot (0 = up, clockwise) -> emote id
+const EMOTES = [
+  { id: 1, key: 'surrender', label: 'Surrender', bubble: 'Surrendering', icon: 'surr', body: 'full', start: emoSurrStart, pose: emoSurrPose, outW: emoSurrOut },
+  { id: 2, key: 'dying', label: 'Dying fall', bubble: '', icon: 'fall', body: 'full', start: emoFallStart, pose: emoFallPose, outW: emoFallOut },
+  { id: 3, key: 'backflip', label: 'Backflip', bubble: '', icon: 'flip', body: 'full', dur: () => EMO_FLIP_DUR, start: emoFlipStart, pose: emoFlipPose, outW: emoFlipOut },
+  { id: 4, key: 'nadekick', label: 'Grenade kick', bubble: '', icon: 'nade', body: 'full', dur: () => EMO_KICK_DUR, start: emoKickStart, pose: emoKickPose, outW: emoKickOut,
+    me: emoKickMe, check: () => (NADE.ready && (inv.frag > 0 || MOD.nades)) || (emoBanner('No frags left. Restock in the safe room'), false) }
+];
+const EMO_BY = new Map(EMOTES.map((d) => [d.id, d]));
+const EMO = {
+  on: NET.on && !/[?&]emotes=off\b/.test(QS), solo: /[?&]emotes=solo\b/.test(QS),
+  cfg: (() => { try { return Object.assign({ bubble: true, sound: true }, JSON.parse(localStorage.getItem('cqc.emotes.v1') || '{}')); } catch (e) { return { bubble: true, sound: true }; } })(),
+  hold: 0.25, moveStop: 0.08, seq: 0, mp: null, menu: false, fallDir: 0,
+  me: { id: 0, t: 0, stage: null, nade: null, prev: new THREE.Vector3(), ax: 0, az: 0, has: false },
+  rem: { id: 0, n: 0, at: 0, phase: 'off', t: 0, ot: 0, e: null, def: null, x0: 0, z0: 0, gk: 0, curl0: 0.5, S: null, D: null, w: 0 },
+  W: { open: false, src: '', x: 0, y: 0, sel: -1, k: 0, grow: new Float32Array(8), cv: null, cx: null, dom: null, tex: null, mesh: null, dirty: true, drawnK: -1, lastSel: -2 },
+  pad: { on: false, t0: 0, own: false },
+  vr: { on: false, t0: 0 },
+  touch: { id: null, x0: 0, y0: 0 },
+  bub: { spr: null, cv: null, tex: null, txt: '', k: 0 },
+  snapQ: DRIVE_ORDER.map(() => new THREE.Quaternion()), snapP: new THREE.Vector3(), gP: new THREE.Vector3(), gQ: new THREE.Quaternion()
+};
+const _em = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), m: new THREE.Matrix4(),
+  X: new THREE.Vector3(), Y: new THREE.Vector3(), Z: new THREE.Vector3(), sling: new THREE.Quaternion(), hol: new THREE.Quaternion(), slingP: new THREE.Vector3(0.02, 0.04, 0.2), holP: new THREE.Vector3(0.2, -0.1, 0.0) };
+// the long gun across his back (chest space: muzzle down to his left hip, its top away from his back); a pistol muzzle down
+// in a right hip holster (pelvis space: the grip back and up)
+{ const d = new THREE.Vector3(-0.5, -1, 0.05).normalize(), Z = d.clone().negate(), Y0 = new THREE.Vector3(0, 0, 1), X = new THREE.Vector3().crossVectors(Y0, Z).normalize(), Y = new THREE.Vector3().crossVectors(Z, X);
+  _em.sling.setFromRotationMatrix(_em.m.makeBasis(X, Y, Z)); _em.slingP.addScaledVector(d, -0.18);
+  const d2 = new THREE.Vector3(0, -1, -0.12).normalize(), Z2 = d2.clone().negate(), Y2 = new THREE.Vector3(0, 0, -1), X2 = new THREE.Vector3().crossVectors(Y2, Z2).normalize(), Y3 = new THREE.Vector3().crossVectors(Z2, X2);
+  _em.hol.setFromRotationMatrix(_em.m.makeBasis(X2, Y3, Z2)); }
+const emoAvail = () => EMO.on;   // solo too: the banner, and the grenade kick is real
+function emoSave() { try { localStorage.setItem('cqc.emotes.v1', JSON.stringify(EMO.cfg)); } catch (e) { /* this visit */ } }
+
+// --- sending -----------------------------------------------------------------------------------------------------
+function emoPlay(id) {
+  if (!EMO.on) return;
+  const def = EMO_BY.get(id); if (!def) return;
+  if (EMO.me.id === id) { emoStopMine('again'); return; }
+  if (EMO.me.id) emoStopMine('switch');
+  if (def.check && !def.check()) return;
+  const M = EMO.me; M.id = id; M.has = false; M.ax = M.az = 0; M.t = 0; M.stage = null; M.nade = null;
+  if (netLive()) netSendRel({ t: 'emo', id, n: ++EMO.seq, c: performance.now() });
+  const solo = !netLive() && !def.me ? ' (the other player sees this in multiplayer)' : '';
+  emoBanner(`${def.label}${solo}${def.dur ? '' : '. Move to stop'}`);
+  if (EMO.cfg.sound) try { btnSfx('term'); } catch (e) { /* no sound yet */ }
+  if (EMO.solo && !netLive() && NET.av) emoRx({ id, n: EMO.seq, c: performance.now() });   // dev: your own avatar copy plays it
+}
+function emoStopMine() {
+  const M = EMO.me; if (!M.id) return;
+  const def = EMO_BY.get(M.id);
+  M.id = 0;
+  if (def && def.me) def.me(M, 0, true);
+  if (netLive()) netSendRel({ t: 'emo', id: 0, n: ++EMO.seq, c: performance.now() });
+  if (EMO.solo && !netLive()) emoRx({ id: 0, n: EMO.seq });
+}
+function emoBanner(t) { try { if (renderer.xr.isPresenting) vrNote(t, 2); else toast(t, 1800); } catch (e) { /* no ui */ } }
+// Walking ends it (turning does not): your input, or your head's net travel since it started (a world shift skipped).
+function emoMeTick(dt) {
+  const M = EMO.me; if (!M.id) return;
+  if (playerState.dead) { emoStopMine(); return; }
+  const def = EMO_BY.get(M.id);
+  M.t += dt;
+  if (def.me) def.me(M, dt, false);
+  if (!M.id) return;
+  if (def.dur && M.t > def.dur()) { M.id = 0; return; }           // done by itself (his side ends it on its clock too)
+  headWorld(_em.a);
+  if (M.has) { const dx = _em.a.x - M.prev.x, dz = _em.a.z - M.prev.z; if (dx * dx + dz * dz < 0.25) { M.ax += dx; M.az += dz; } }
+  M.prev.copy(_em.a); M.has = true;
+  let input = false;
+  if (!renderer.xr.isPresenting) input = keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD') || Math.hypot(stick.x, stick.y) > 0.2 || Math.hypot(PAD.lx, PAD.ly) > 0.2;
+  if (input || Math.hypot(M.ax, M.az) > EMO.moveStop) emoStopMine();
+}
+
+// --- receiving (the other player's emote on his soldier) -------------------------------------------------------------
+function emoRx(m) {
+  const R = EMO.rem;
+  if (!m) return;                                                 // (the reliable channel keeps them in order)
+  if (!m.id) { if (R.phase !== 'off' && R.phase !== 'out') { if (R.phase === 'wait') R.phase = 'off'; else { R.phase = 'out'; R.ot = 0; } } return; }
+  const def = EMO_BY.get(m.id); if (!def) return;
+  if (R.phase === 'play' || R.phase === 'in' || R.phase === 'out') emoAvEnd(R.e);   // a new one: from the normal pose again
+  const now = performance.now(), off = NET.off == null ? null : NET.off;
+  const due = off != null && m.c ? m.c + off + (NET.delay || 90) : now;   // with his pose stream (shown NET.delay late)
+  R.id = m.id; R.def = def; R.at = Math.min(now + 600, Math.max(now, due)); R.phase = 'wait'; R.e = null;
+}
+// Called from enemiesUpdate for the avatar: true = posed here (enemyPose not needed).
+function emoAvPose(e, dt, now) {
+  const R = EMO.rem;
+  if (R.phase === 'off') return false;
+  if (R.phase === 'wait') { if (performance.now() < R.at) return false; R.phase = 'in'; R.t = 0; R.e = null; }
+  if (e !== NET.av || e.dead || !e.B || !e.skin) { if (e.dead) R.phase = 'off'; return false; }
+  const def = R.def;
+  if (R.e !== e) {                                                 // first frame on this body (or a rebuilt one)
+    R.e = e; R.t = 0; R.gk = 0; R.x0 = e.pos.x; R.z0 = e.pos.y; R.curl0 = e.skin.curl != null ? e.skin.curl : 0.5; R.S = null; R.D = null;
+    if (R.phase === 'out') { R.phase = 'off'; return false; }
+    def.start(e, R, now);
+  }
+  R.t += dt;
+  if (R.phase !== 'out' && Math.hypot(e.pos.x - R.x0, e.pos.y - R.z0) > 0.4) { R.phase = 'out'; R.ot = 0; }   // he walked off (the stop message is on its way)
+  if (def.dur && R.phase !== 'out' && R.t >= def.dur()) { R.phase = 'out'; R.ot = 0; }
+  if (R.phase === 'out') R.ot += dt;
+  const w = def.outW(e, R, dt);                                   // 0..1 share of the emote pose (in and out)
+  if (w <= 0 && R.phase === 'out') { emoAvEnd(e); return false; }
+  if (R.phase === 'in' && w >= 1) R.phase = 'play';
+  R.w = w;
+  const gTo = R.phase === 'out' ? 0 : 1;
+  R.gk += (gTo - R.gk) * (1 - Math.exp(-dt * 6)); if (Math.abs(gTo - R.gk) < 0.01) R.gk = gTo;
+  const base = w < 1 || R.gk < 1;
+  const B = e.B;
+  if (base) {                                                     // the normal pose first (his hands, his gun), kept to blend from
+    enemyPose(e, dt, now);
+    for (let i = 0; i < DRIVE_ORDER.length; i++) EMO.snapQ[i].copy(B[DRIVE_ORDER[i]].quaternion);
+    EMO.snapP.copy(B.pelvis.position);
+    EMO.gP.copy(e.gun.root.position); EMO.gQ.copy(e.gun.root.quaternion);
+  }
+  const sp = e.speed; e.speed = 0;
+  const c0 = e.skin.curl;
+  def.pose(e, R, dt, now);
+  e.speed = sp;
+  if (w < 1) {
+    for (let i = 0; i < DRIVE_ORDER.length; i++) { const b = B[DRIVE_ORDER[i]]; _em.q.copy(EMO.snapQ[i]).slerp(b.quaternion, w); b.quaternion.copy(_em.q); }
+    B.pelvis.position.lerpVectors(EMO.snapP, B.pelvis.position, w);
+    enemyCurl(e, mix(c0, e.skin.curl, w));
+  }
+  emoGun(e, R, base);
+  eRootUpd(e, true);
+  enemySkinSync(e);
+  return true;
+}
+function emoAvEnd(e) {
+  const R = EMO.rem;
+  if (e && e.skin) enemyCurl(e, R.curl0);
+  R.phase = 'off'; R.e = null; R.S = null; R.D = null; R.w = 0;
+}
+// His gun while it plays: a long gun goes onto his back, a pistol into a hip holster (R.gk eases it there and back).
+function emoGun(e, R, base) {
+  const g = e.gun; if (!g || !g.root) return;
+  const pis = g.def && g.def.cls === 'pistol', bone = pis ? e.B.pelvis : e.B.chest;
+  bone.updateWorldMatrix(true, false);
+  _em.a.copy(pis ? _em.holP : _em.slingP).applyMatrix4(bone.matrixWorld);
+  bone.getWorldQuaternion(_em.q).multiply(pis ? _em.hol : _em.sling);
+  e.root.updateWorldMatrix(true, false);
+  e.root.worldToLocal(_em.a);
+  e.root.getWorldQuaternion(_em.q2).invert().multiply(_em.q);
+  const k = smoothstep(0, 1, R.gk);
+  if (base && k < 1) { g.root.position.lerpVectors(EMO.gP, _em.a, k); g.root.quaternion.copy(EMO.gQ).slerp(_em.q2, k); }
+  else { g.root.position.copy(_em.a); g.root.quaternion.copy(_em.q2); }
+  g.root.updateWorldMatrix(false, true);
+}
+
+// --- surrender: the step 117 pose on him (hands up, open palms; kneels after a moment) ---------------------------------
+function emoSurrStart(e, R, now) {
+  const V = () => new THREE.Vector3(), Qn = () => new THREE.Quaternion();
+  R.S = { t: 1, up: 0, kn: 0, kneel: false, det: false, detK: 0, pick: 0, rearm: true, gw: V(), w0: { L: V(), R: V() }, q0: { L: Qn(), R: Qn() } };
+  if (EMO.cfg.sound) try { surrCall(e, 'give'); } catch (er) { /* no sound */ }
+}
+function emoSurrPose(e, R, dt, now) {
+  const S = R.S, Q = SURR.C || {};
+  const out = R.phase === 'out';
+  S.up = out ? (S.kn > 0.05 ? 1 : Math.max(0, S.up - dt / 0.35)) : Math.min(1, S.up + dt / (Q.upTime || 0.55));
+  if (!out && R.t > 1.4) S.kneel = true;
+  if (out) S.kneel = false;
+  const was = S.kn;
+  S.kn = S.kneel ? Math.min(1, S.kn + dt / (Q.kneelTime || 1.1)) : Math.max(0, S.kn - dt / ((Q.kneelTime || 1.1) * 0.55));
+  if (was < 0.85 && S.kn >= 0.85 && EMO.cfg.sound) try { ebfKneel(e); } catch (er) { /* no sound */ }
+  headWorld(S.gw);                                                // he looks at you (the one watching)
+  const keep = e.surr; e.surr = S;
+  try { surrPose(e, dt, now); } finally { e.surr = keep; }
+}
+function emoSurrOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.35, R.t);
+  const S = R.S; if (!S) return 0;
+  if (S.kn > 0.02) { R.ot = 0; return 1; }                        // up off the knees first, hands still up
+  return 1 - smoothstep(0, 0.45, R.ot);
+}
+
+// --- dying fall: a hit (flinch, the breath knocked out), then the step 91 fall: knees buckle and he pivots onto his
+// front, or sits and falls back; he lies there breathing. Getting up = the fall run backwards (onto the knees / sitting
+// up, a hand pushing off the floor), then the normal pose. ---------------------------------------------------------------
+function emoFallStart(e, R, now) {
+  R.D = null; R.hitT = 0.26;
+  const f = e.fl; f.vp += 7.5; f.vy += (Math.random() < 0.5 ? -1 : 1) * rnd2(2, 4); f.vr += rnd2(-2.5, 2.5);
+  e.stumble = 0.7;
+  if (EMO.cfg.sound) try { voxGrunt(e, 1, true); } catch (er) { /* no sound */ }
+}
+function emoFallMake(e, R) {
+  const B = e.B;
+  e.root.updateWorldMatrix(true, true);
+  const wl = new THREE.Vector3(rnd2(-0.07, 0.07), rnd2(0.0, 0.08), -0.11);   // the wound he clutches: front of the chest
+  const D = downedMake(e, B.chest, wl, 1e9);
+  D.c = wl.x > 0 ? 'R' : 'L'; D.sg = D.c === 'R' ? -1 : 1;
+  for (const s of DOWN_SIDES) {
+    const a = D.arm[s];
+    B['hand' + s].getWorldPosition(a.w); B['hand' + s].getWorldQuaternion(a.q);
+    a.mode = s === D.c ? 'wound' : 'hang';
+    B['foot' + s].getWorldPosition(D.foot[s]); B['foot' + s].getWorldQuaternion(D.footQ[s]);
+  }
+  const fwd = EMO.fallDir ? EMO.fallDir > 0 : Math.random() < 0.55;   // pitched forward (hit from behind) or knocked back (from in front)
+  const y = e.yaw + rYaw(e.room) + rnd2(-0.6, 0.6) + (fwd ? Math.PI : 0), f = e.room.f || 1;   // the way the round goes
+  _em.c.set(Math.sin(y), 0, Math.cos(y));
+  downedFallPick(e, D, _em.c);
+  const hy = e.yaw + D.hOff; D.hdW.set(-Math.sin(hy) * f, 0, -Math.cos(hy) * f);
+  D.slide.copy(D.hdW).multiplyScalar(-0.18); D.legIK = !D.fwd;
+  for (const k of DOWN_KEYS) D.s[k] = 0;
+  D.s.py = D.y0;
+  D.f = f; D.end = D.Tk + D.Tt + 0.3;
+  enemyCurl(e, 0.55);
+  R.D = D;
+}
+function emoFallPose(e, R, dt, now) {
+  if (!R.D) { if (R.t < R.hitT || R.phase === 'out') return; emoFallMake(e, R); }   // the hit: his normal pose with the flinch (emoAvPose ran it)
+  const D = R.D, out = R.phase === 'out';
+  if (out) D.t = Math.max(0, Math.min(D.t, D.Tk + D.Tt) - dt * 0.8);   // up again: the fall backwards, a little slower
+  else D.t = Math.min(D.end + 60, D.t + dt);
+  D.h = e.yaw;                                                    // he turns: the body turns with him (about his feet)
+  const hy = e.yaw + D.hOff; D.hdW.set(-Math.sin(hy) * D.f, 0, -Math.cos(hy) * D.f);
+  const tt = D.t; D.t = Math.min(tt, D.end);
+  downedFallPose(e, D);
+  D.t = tt;
+  if (tt > D.end) {                                               // on the floor: breathing, a last twitch now and then
+    const br = Math.sin(tt * 2.2) * 0.03, tw = Math.max(0, Math.sin(tt * 0.7 + 1.3)) ** 12 * 0.08;
+    D.s.sp += br; D.s.np += tw;
+  }
+  if (!D.wArm) D.arm[D.c === 'R' ? 'L' : 'R'].mode = D.t < D.Tk * 0.7 ? 'hang' : 'catch';
+  if (!out && !D.thud && D.t >= D.Tk + D.Tt - 0.47) { D.thud = true; if (EMO.cfg.sound) try { bodyFallSound(e); } catch (er) { /* no sound */ } }
+  D.dtP = Math.max(dt, 1 / 120);
+  downedApply(e, D);
+}
+function emoFallOut(e, R) {
+  if (R.phase !== 'out') return R.D || R.t >= R.hitT ? 1 : 0;
+  if (!R.D) return 1 - smoothstep(0, 0.3, R.ot);
+  return smoothstep(0.02, 0.32, R.D.t);                           // the last moment of the get-up blends into his normal pose
+}
+
+// --- a keyed full-body pose (emoBody), for the emotes that are not the game's own poses -----------------------------------
+// Keys: [t, { field: number | [x, y, z] }]; every key has the same fields; eased between neighbours (smoothstep).
+function emoKeys(K, t, out) {
+  let i = 0; while (i < K.length - 2 && t > K[i + 1][0]) i++;
+  const t0 = K[i][0], t1 = K[i + 1][0], a = K[i][1], b = K[i + 1][1], u = smoothstep(0, 1, clamp((t - t0) / Math.max(1e-4, t1 - t0)));
+  for (const k in a) {
+    const va = a[k], vb = b[k];
+    if (Array.isArray(va)) { const o = out[k] || (out[k] = [0, 0, 0]); o[0] = va[0] + (vb[0] - va[0]) * u; o[1] = va[1] + (vb[1] - va[1]) * u; o[2] = va[2] + (vb[2] - va[2]) * u; }
+    else out[k] = va + (vb - va) * u;
+  }
+  return out;
+}
+const EMO_POSE0 = { py: 0, pz: 0, prx: 0, pry: 0, sp: 0, sy: 0, cp: 0, np: 0, hp: 0, air: 0, toe: 0, toeL: 0, shin: 0, curl: 0.45,
+  fL: [0.11, 0, 0], fR: [0.11, 0, 0], tL: [0.11, -0.88, 0.04], tR: [0.11, -0.88, 0.04], aL: [0.05, -0.48, 0.02], aR: [0.05, -0.48, 0.02] };
+const emoK0 = (t, o) => [t, Object.assign({}, EMO_POSE0, o.toe != null && o.toeL == null ? { toeL: o.toe } : null, o, { fL: (o.fL || EMO_POSE0.fL).slice(), fR: (o.fR || EMO_POSE0.fR).slice() })];
+const _eb = { a: new THREE.Vector3(), g: new THREE.Vector3(), t: new THREE.Vector3(), sh: new THREE.Vector3(), k: new THREE.Vector3(), pole: new THREE.Vector3(),
+  pF: new THREE.Vector3(), rF: new THREE.Vector3(), cF: new THREE.Vector3(), cU: new THREE.Vector3(), cR: new THREE.Vector3(), d: new THREE.Vector3(), x: new THREE.Vector3(),
+  rq: new THREE.Quaternion(), pq: new THREE.Quaternion(), cq: new THREE.Quaternion(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), X: new THREE.Vector3(1, 0, 0) };
+// P fields (his root frame: x right, y up, z back): py / pz pelvis offset from standing; prx / pry pelvis pitch (+ = back) / yaw;
+// sp, sy, cp, np, hp spine / chest / neck / head; fL / fR feet on the floor (x outward, y lift, z); tL / tR feet in the pelvis'
+// frame (in the air), air 0..1 between the two; toe foot pitch (- = pointed); aL / aR hands from the shoulder in chest axes
+// (x outward, y up, z back); shin 0..1 hands onto the shins; curl fingers.
+function emoBody(e, P) {
+  const B = e.B, sk = e.sk, V = _eb;
+  e.root.position.set(e.pos.x, enemyFloorY(e), e.pos.y); e.root.rotation.set(0, e.yaw, 0);
+  B.pelvis.position.set(0, sk.hipY + P.py, P.pz);
+  B.pelvis.rotation.set(P.prx, P.pry, 0, 'YXZ');
+  B.spine.rotation.set(P.sp, P.sy, 0, 'YXZ'); B.chest.rotation.set(P.cp, P.sy * 0.6, 0, 'YXZ');
+  B.neck.rotation.set(P.np, 0, 0, 'YXZ'); B.head.rotation.set(P.hp, 0, 0, 'YXZ');
+  B.clavL.rotation.set(0, 0, 0); B.clavR.rotation.set(0, 0, 0);
+  eRootUpd(e, true);
+  e.root.getWorldQuaternion(V.rq); B.pelvis.getWorldQuaternion(V.pq);
+  V.rF.set(0, 0, -1).applyQuaternion(V.rq); V.pF.set(0, 0, -1).applyQuaternion(V.pq);
+  for (let si = 0; si < 2; si++) {
+    const s = si ? 1 : -1, S = si ? 'R' : 'L', g = si ? P.fR : P.fL, a = si ? P.tR : P.tL;
+    V.g.set(s * g[0], sk.ankle + g[1], g[2]).applyMatrix4(e.root.matrixWorld);
+    V.q.copy(V.rq).multiply(V.q2.setFromAxisAngle(V.X, si ? P.toe : P.toeL));
+    if (P.air > 0) {
+      V.a.set(s * a[0], a[1], a[2]).applyMatrix4(B.pelvis.matrixWorld); V.g.lerp(V.a, P.air);
+      V.q2.setFromAxisAngle(V.X, -0.55).premultiply(V.pq); V.q.slerp(V.q2, P.air);
+    }
+    V.d.set(0, 1, 0).applyQuaternion(V.pq);                       // the pelvis' up: knees go forward and up in the tuck
+    V.pole.copy(V.rF).lerp(V.pF, P.air).addScaledVector(V.d, 0.05 + 0.55 * P.air);
+    V.k.copy(V.rF).lerp(V.pF, P.air).addScaledVector(V.d, 0.8 * P.air);   // a 'front' never along the thigh (a folded thigh points forward)
+    solveIK(B['thigh' + S], B['shin' + S], sk.thigh, sk.shin, V.g, V.pole, V.k, B['foot' + S], V.q);
+  }
+  B.chest.updateWorldMatrix(true, false); B.chest.getWorldQuaternion(V.cq);
+  V.cF.set(0, 0, -1).applyQuaternion(V.cq); V.cU.set(0, 1, 0).applyQuaternion(V.cq); V.cR.set(1, 0, 0).applyQuaternion(V.cq);
+  for (let si = 0; si < 2; si++) {
+    const s = si ? 1 : -1, S = si ? 'R' : 'L', a = si ? P.aR : P.aL;
+    B['upperArm' + S].getWorldPosition(V.sh);
+    V.t.copy(V.sh).addScaledVector(V.cR, s * a[0]).addScaledVector(V.cU, a[1]).addScaledVector(V.cF, -a[2]);
+    if (P.shin > 0) {                                              // hands on the shins (the tuck): front of the shin, a third down from the knee
+      B['shin' + S].getWorldPosition(V.k); B['foot' + S].getWorldPosition(V.a);
+      V.a.sub(V.k); const L = V.a.length(); V.d.copy(V.a).multiplyScalar(1 / Math.max(L, 1e-4));
+      V.k.addScaledVector(V.a, 0.35);
+      V.x.crossVectors(V.d, V.cR).normalize();                     // the shin's front (away from the calf)
+      V.k.addScaledVector(V.x, -0.06).addScaledVector(V.cR, -s * 0.02);
+      V.t.lerp(V.k, P.shin);
+    }
+    if (P.hand && P.hand[S]) V.t.lerp(P.hand[S], P.hand.w);        // a hand on something in the world (the grenade, its pin)
+    V.d.subVectors(V.t, V.sh).normalize();
+    frameQ(V.x.copy(V.cF).addScaledVector(V.cU, 0.2), V.a.copy(V.d).negate(), V.q);
+    V.pole.copy(V.cR).multiplyScalar(s * 0.7).addScaledVector(V.cU, -0.55).addScaledVector(V.cF, -0.15);
+    solveIK(B['upperArm' + S], B['foreArm' + S], sk.upper, sk.fore, V.t, V.pole, V.cF, B['hand' + S], V.q);
+  }
+  enemyCurl(e, Math.round(P.curl * 20) / 20);
+}
+
+// --- backflip: a standing back tuck. Load (crouch, arms swing back), take off (arms drive up, head back), 0.5 s in the air
+// (hips ~0.3 m over take-off: v = g T / 2 = 2.45 m/s; ~0.6 m over the loaded crouch), tuck (knees to chest, hands on the
+// shins), a full turn back about the hips, open out, land soft (knees absorb, arms out), stand up. ~1.6 s. -------------------
+const EMO_FLIP_T = { load: 0.3, off: 0.44, air: 0.5 };
+const EMO_FLIP = (() => {
+  const T = EMO_FLIP_T, L = T.off + T.air, P2 = Math.PI * 2, K = [];
+  K.push(emoK0(0, {}));
+  K.push(emoK0(T.load, { py: -0.3, pz: 0.04, prx: -0.5, sp: -0.12, cp: -0.08, np: 0.35, hp: 0.15, fL: [0.12, 0, 0], fR: [0.12, 0, 0], aL: [0.12, -0.32, 0.36], aR: [0.12, -0.32, 0.36], curl: 0.55 }));
+  K.push(emoK0(T.off, { py: 0.06, prx: 0.25, sp: 0.12, cp: 0.12, np: 0.3, hp: 0.15, toe: -0.75, fL: [0.11, 0.03, 0.04], fR: [0.11, 0.03, 0.04], aL: [0.1, 0.5, -0.06], aR: [0.1, 0.5, -0.06], curl: 0.3 }));
+  K.push(emoK0(T.off + 0.08, { prx: 0.8, sp: 0.06, cp: 0.06, np: 0.35, air: 1, tL: [0.11, -0.86, 0.04], tR: [0.11, -0.86, 0.04], aL: [0.12, 0.4, -0.2], aR: [0.12, 0.4, -0.2], curl: 0.4 }));
+  K.push(emoK0(T.off + 0.16, { prx: 2.0, sp: -0.25, cp: -0.25, np: -0.05, air: 1, tL: [0.12, -0.34, -0.42], tR: [0.12, -0.34, -0.42], shin: 1, curl: 0.75 }));
+  K.push(emoK0(T.off + 0.32, { prx: 4.3, sp: -0.3, cp: -0.28, np: -0.1, air: 1, tL: [0.12, -0.33, -0.43], tR: [0.12, -0.33, -0.43], shin: 1, curl: 0.75 }));
+  K.push(emoK0(T.off + 0.42, { prx: 5.7, sp: -0.1, cp: -0.08, np: 0.05, air: 1, tL: [0.12, -0.72, -0.12], tR: [0.12, -0.72, -0.12], aL: [0.38, 0.0, -0.2], aR: [0.38, 0.0, -0.2], curl: 0.4 }));
+  K.push(emoK0(L, { prx: P2 - 0.25, sp: -0.1, np: 0.05, air: 0, fL: [0.13, 0, -0.04], fR: [0.13, 0, -0.04], aL: [0.45, 0.02, -0.22], aR: [0.45, 0.02, -0.22], curl: 0.35 }));
+  K.push(emoK0(L + 0.12, { py: -0.32, pz: 0.04, prx: P2 - 0.55, sp: -0.15, cp: -0.1, np: 0.3, fL: [0.13, 0, -0.04], fR: [0.13, 0, -0.04], aL: [0.48, 0.0, -0.24], aR: [0.48, 0.0, -0.24], curl: 0.35 }));
+  K.push(emoK0(L + 0.35, { py: -0.14, prx: P2 - 0.2, sp: -0.05, np: 0.1, fL: [0.13, 0, -0.04], fR: [0.13, 0, -0.04], aL: [0.25, -0.3, -0.12], aR: [0.25, -0.3, -0.12] }));
+  K.push(emoK0(L + 0.65, { prx: P2, fL: [0.11, 0, 0], fR: [0.11, 0, 0] }));
+  return K;
+})();
+const EMO_FLIP_DUR = EMO_FLIP[EMO_FLIP.length - 1][0];
+function emoFlipStart(e, R) { R.P = {}; R.thud = 0; }
+function emoFlipPose(e, R, dt) {
+  const T = EMO_FLIP_T, t = Math.min(R.t, EMO_FLIP_DUR), P = emoKeys(EMO_FLIP, t, R.P);
+  if (t > T.off && t < T.off + T.air) {                           // ballistic: the hips on a parabola (g 9.8, 0.5 s up and down)
+    const u = t - T.off, v = 9.8 * T.air / 2;
+    P.py = 0.06 + v * u - 4.9 * u * u;
+  }
+  emoBody(e, P);
+  if (EMO.cfg.sound && R.thud === 0 && t >= T.off) { R.thud = 1; try { emoThud(e, 0.7); } catch (er) { /* no sound */ } }
+  if (EMO.cfg.sound && R.thud === 1 && t >= T.off + T.air) { R.thud = 2; try { emoThud(e, 1.2); ebfKneel(e); } catch (er) { /* no sound */ } }
+}
+function emoFlipOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.12, R.t);
+  return 1 - smoothstep(0, 0.3, R.ot);
+}
+// A boot on the floor (take-off, landing) at his feet.
+function emoThud(e, k) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  e.B.pelvis.getWorldPosition(_eb.a); _eb.a.y = e.room.origin.y + 0.05;
+  soundAt(_eb.a, () => {
+    const t = audio.ctx.currentTime + 0.003;
+    nBurst(t, 0.12, 'lowpass', 240, 0.9, 0.35 * k, 0.09, 0.3);
+    nBurst(t + 0.01, 0.07, 'bandpass', 1700, 1.5, 0.1 * k, 0.05, 0.25);
+  });
+}
+
+// --- grenade kick: a frag from the belt pouch, the pin pulled (left hand), dropped at his feet, kicked away with the instep.
+// The grenade is real on the side of the one who plays it (createNade / nadeSpoon / dropItem, its own fuse and blast; shared
+// by netDropTx / netNadeTx). His soldier on the other side only holds a look-alike until the drop (the real copy comes then).
+const EMO_NK = { pin: 0.74, drop: 0.98, kick: 1.4, v: 7.6, up: 1.1, reach: 0.95 };
+const EMO_KICK = (() => {
+  const T = EMO_NK, K = [], emoK = (t, o) => emoK0(t, Object.assign({ toeL: 0 }, o));   // only the kicking foot points
+  K.push(emoK(0, {}));
+  K.push(emoK(0.34, { sp: -0.12, cp: -0.06, np: -0.45, aR: [-0.08, -0.5, -0.12], aL: [0.06, -0.48, 0.02], curl: 0.4 }));   // right hand to the pouch on the belt
+  K.push(emoK(0.56, { sp: -0.05, np: -0.4, aR: [-0.12, -0.18, -0.34], aL: [-0.1, -0.16, -0.34], curl: 0.75 }));            // in front of the chest, left hand to the ring
+  K.push(emoK(T.pin, { sp: -0.05, np: -0.35, aR: [-0.12, -0.18, -0.34], aL: [0.3, -0.14, -0.34], curl: 0.75 }));          // the pin out
+  K.push(emoK(0.88, { py: -0.04, sp: -0.25, np: -0.4, aR: [-0.04, -0.4, -0.3], aL: [0.18, -0.36, -0.12], curl: 0.75 }));  // out low over his feet
+  K.push(emoK(T.drop, { py: -0.04, sp: -0.25, np: -0.45, aR: [-0.02, -0.42, -0.3], aL: [0.18, -0.4, -0.08], curl: 0.2 }));   // let go
+  K.push(emoK(1.2, { py: -0.06, pry: 0.12, sp: -0.15, np: -0.35, fL: [0.1, 0, -0.08], fR: [0.12, 0.24, 0.36], toe: -0.6, aL: [0.4, -0.15, -0.24], aR: [0.18, -0.36, 0.2] }));   // wind-up: the kicking leg back
+  K.push(emoK(T.kick, { py: -0.05, pry: -0.05, sp: -0.12, np: -0.45, fL: [0.1, 0, -0.08], fR: [0.02, 0.05, -0.42], toe: -0.9, aL: [0.42, -0.2, 0.1], aR: [0.3, -0.25, -0.2] }));   // the strike
+  K.push(emoK(1.56, { py: -0.02, pry: -0.18, sp: 0.02, np: -0.25, fL: [0.1, 0, -0.08], fR: [-0.02, 0.38, -0.66], toe: -0.7, aL: [0.4, -0.25, 0.22], aR: [0.36, -0.2, -0.25] }));   // follow-through
+  K.push(emoK(1.82, { pry: -0.05, np: -0.1, fL: [0.1, 0, -0.08], fR: [0.12, 0.02, -0.1], aL: [0.15, -0.42, 0.04], aR: [0.12, -0.42, -0.02] }));
+  K.push(emoK(2.1, {}));
+  return K;
+})();
+const EMO_KICK_DUR = EMO_KICK[EMO_KICK.length - 1][0];
+// The look-alike in his hand (made once), its pin flies off at the pull.
+function emoNadeLook() {
+  if (EMO.nadeLook) return EMO.nadeLook;
+  try { const m = buildNadeModel('frag'); m.root.traverse((o) => { if (o.isMesh) o.castShadow = false; }); m.root.visible = false; scene.add(m.root); EMO.nadeLook = m; } catch (e) { EMO.nadeLook = null; }
+  return EMO.nadeLook;
+}
+function emoKickStart(e, R) { R.P = {}; R.stage = 0; R.hand = { R: new THREE.Vector3(), L: new THREE.Vector3(), w: 0 }; const m = emoNadeLook(); if (m) { m.pin.visible = true; m.spoon.visible = true; } }
+function emoKickPose(e, R, dt) {
+  const T = EMO_NK, t = Math.min(R.t, EMO_KICK_DUR), P = emoKeys(EMO_KICK, t, R.P), m = EMO.nadeLook, out = R.phase === 'out';
+  P.hand = null;
+  emoBody(e, P);
+  if (!m) return;
+  const show = !out && t > 0.3 && t < T.drop;
+  m.root.visible = show;
+  if (show) {                                                      // in the right hand: palm-side of the fist
+    const h = e.B.handR; h.updateWorldMatrix(true, false);         // in the fist, its top (fuse, lever, ring) standing out of it
+    h.getWorldPosition(m.root.position).addScaledVector(_eb.cU, 0.035).addScaledVector(_eb.cF, 0.045).addScaledVector(_eb.cR, -0.025);
+    m.root.quaternion.copy(_eb.cq);
+    m.root.updateMatrixWorld(true);
+  }
+  if (R.stage === 0 && t >= T.pin && !out) {
+    R.stage = 1;
+    if (m.pin.parent) { m.root.updateMatrixWorld(true); nadeFly(m.pin, _eb.d.set(0, 0.4, 0).addScaledVector(_eb.cR, 0.9), 9, true); }
+    if (EMO.cfg.sound) try { nadeArmSfx(null, 'pin', m.root.position); } catch (er) { /* no sound */ }
+  }
+  if (R.stage === 1 && t >= T.drop && !out) { R.stage = 2; if (EMO.cfg.sound && !netLive()) try { nadeArmSfx(null, 'spoon', m.root.position); } catch (er) { /* the real copy comes */ } }
+  if (R.stage === 2 && t >= T.kick && !out) {
+    R.stage = 3;
+    e.B.footR.getWorldPosition(_eb.a);
+    if (EMO.cfg.sound) try { kickSfx('prop', _eb.a, 0.45); } catch (er) { /* no sound */ }
+  }
+}
+function emoKickOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.2, R.t);
+  if (EMO.nadeLook) EMO.nadeLook.root.visible = false;
+  return 1 - smoothstep(0, 0.3, R.ot);
+}
+// Your side: the real grenade (EMO.me.t is the emote's clock). Before the pin: walking cancels (nothing used); after it the
+// grenade is dropped live where you stand.
+function emoKickMe(M, dt, stop) {
+  const T = EMO_NK;
+  if (M.stage == null) M.stage = 0;
+  if (stop) {
+    if (M.stage === 1) emoKickDrop(M);                             // pin out, still in your hand: it falls, live
+    return;
+  }
+  if (M.stage === 0 && M.t >= T.pin) {
+    if (inv.frag <= 0 && !MOD.nades) { emoBanner('No frags left'); M.stage = 9; emoStopMine(); return; }
+    if (!MOD.nades) { inv.frag--; panel.dirty = true; }
+    M.stage = 1; emoMeHand(_eb.a); if (EMO.cfg.sound) try { nadeArmSfx(null, 'pin', _eb.a); } catch (er) { /* no sound */ }
+  }
+  if (M.stage === 1 && M.t >= T.drop) emoKickDrop(M);
+  if (M.stage === 2 && M.t >= T.kick) {
+    M.stage = 3;
+    const p = M.nade; if (!p || p.removing || !p.inWorld || !p.item || p.item.gone) return;
+    headWorld(_eb.g); emoMeFwd(_eb.d);
+    _eb.t.copy(_eb.g).addScaledVector(_eb.d, 0.36);
+    const P = p.root.position;
+    if (Math.hypot(P.x - _eb.t.x, P.z - _eb.t.z) > T.reach || P.y > _eb.g.y - 0.5) { emoBanner('Missed the kick'); return; }   // it rolled off (still falling = a half volley)
+    const v = T.v * rnd2(0.92, 1.06);
+    _eb.x.copy(_eb.d).multiplyScalar(v); _eb.x.y = T.up * rnd2(0.8, 1.2);
+    p.body.setLinvel(_eb.x, true);
+    p.body.setAngvel({ x: _eb.d.z * 14 + rnd2(-3, 3), y: rnd2(-6, 6), z: -_eb.d.x * 14 + rnd2(-3, 3) }, true);
+    if (EMO.cfg.sound) try { kickSfx('prop', P, 0.5); } catch (er) { /* no sound */ }
+    netNadeTx(p, _eb.x);                                           // his copy goes, this one flies on his side
+  }
+}
+// Your hand at the drop: in front of your chest, over your feet.
+function emoMeHand(out) { headWorld(out); emoMeFwd(_eb.k); return out.addScaledVector(_eb.k, 0.34).setY(out.y - 0.72); }
+function emoMeFwd(out) { camera.getWorldDirection(out); out.y = 0; if (out.lengthSq() < 1e-6) out.set(0, 0, -1); return out.normalize(); }
+function emoKickDrop(M) {
+  if (M.stage !== 1) return;
+  M.stage = 2;
+  emoMeHand(_eb.a); emoMeFwd(_eb.d);
+  _eb.q.setFromAxisAngle(_eb.d.set(0, 1, 0), Math.atan2(-_eb.k.x, -_eb.k.z));
+  let p = null; try { p = createNade('frag'); } catch (e) { return; }
+  const it = p.item; it.pin = false; if (it.pinG.parent) it.pinG.parent.remove(it.pinG);
+  itemToWorld(p, _eb.a, _eb.q, stream.current);
+  dropItem(p, _eb.x.set(0, -0.2, 0));
+  nadeSpoon(it);
+  netDropTx(p, _eb.x);
+  M.nade = p;
+}
+
+// --- bubble over his head ---------------------------------------------------------------------------------------------
+function emoBubble(dt) {
+  const R = EMO.rem, U = EMO.bub, e = R.e;
+  const txt = R.def && R.def.bubble && EMO.cfg.bubble && (R.phase === 'in' || R.phase === 'play') && e && e === NET.av && e.root.visible ? R.def.bubble : '';
+  U.k += ((txt ? 1 : 0) - U.k) * (1 - Math.exp(-dt * 8));
+  if (!U.spr) { if (!txt) return; emoBubbleMake(); }
+  if (txt && txt !== U.txt) emoBubbleText(txt);
+  const vis = U.k > 0.02 && e && e.B && e.root.visible;
+  U.spr.visible = !!vis;
+  if (!vis) return;
+  e.B.head.getWorldPosition(U.spr.position); U.spr.position.y += 0.42;
+  U.spr.material.opacity = U.k;
+}
+function emoBubbleMake() {
+  const U = EMO.bub;
+  U.cv = document.createElement('canvas'); U.cv.width = 512; U.cv.height = 128;
+  U.tex = new THREE.CanvasTexture(U.cv); U.tex.colorSpace = THREE.SRGBColorSpace;
+  U.spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: U.tex, transparent: true, depthWrite: false, toneMapped: false, fog: false }));
+  U.spr.scale.set(0.62, 0.155, 1); U.spr.renderOrder = 50; U.spr.visible = false;
+  scene.add(U.spr);
+}
+function emoBubbleText(t) {
+  const U = EMO.bub, c = U.cv.getContext('2d'), W = 512, H = 128;
+  U.txt = t; c.clearRect(0, 0, W, H);
+  c.font = '600 54px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
+  const tw = Math.min(W - 40, c.measureText(t).width + 56), x = (W - tw) / 2;
+  c.fillStyle = 'rgba(10,12,12,0.78)'; c.strokeStyle = 'rgba(232,176,74,0.9)'; c.lineWidth = 3;
+  c.beginPath(); c.roundRect(x, 14, tw, 82, 16); c.fill(); c.stroke();
+  c.beginPath(); c.moveTo(W / 2 - 12, 95); c.lineTo(W / 2, 115); c.lineTo(W / 2 + 12, 95); c.closePath(); c.fillStyle = 'rgba(10,12,12,0.78)'; c.fill();
+  c.fillStyle = '#f2ead8'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(t, W / 2, 56);
+  U.tex.needsUpdate = true;
+}
+
+// --- the wheel ----------------------------------------------------------------------------------------------------------
+function emoWheelInit() {
+  const W = EMO.W; if (W.cv) return;
+  W.cv = document.createElement('canvas'); W.cv.width = W.cv.height = 640; W.cx = W.cv.getContext('2d');
+  const d = W.dom = document.createElement('div'); d.id = 'emoWheel'; d.setAttribute('aria-hidden', 'true'); d.appendChild(W.cv);
+  document.body.appendChild(d);
+}
+function emoOpen(src) {
+  if (!EMO.on) return false;
+  emoWheelInit();
+  const W = EMO.W; W.open = true; W.src = src; W.x = W.y = 0; W.sel = -1; W.lastSel = -2; W.dirty = true;
+  if (src !== 'vr') W.dom.classList.add('open');
+  return true;
+}
+function emoClose(pick) {
+  const W = EMO.W; if (!W.open) return;
+  W.open = false; if (W.dom) W.dom.classList.remove('open');
+  const id = pick && W.sel >= 0 ? EMO_SLOTS[W.sel] : 0;
+  if (id) emoPlay(id);
+}
+// Direction (x right, y down; 1 = the ring) -> slot; inside 0.38 = the centre (cancel).
+function emoAim(x, y) {
+  const W = EMO.W, m = Math.hypot(x, y);
+  W.x = x; W.y = y;
+  let s = -1;
+  if (m > 0.38) { const a = Math.atan2(x, -y); s = ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8; if (!EMO_SLOTS[s]) s = -1; }
+  if (s !== W.sel) { W.sel = s; W.dirty = true; }
+  return s;
+}
+const EMO_GOLD = '232,176,74';
+function emoDraw(dt) {
+  const W = EMO.W, c = W.cx; if (!c) return;
+  let moving = false;
+  W.k += ((W.open ? 1 : 0) - W.k) * (1 - Math.exp(-dt * 16));
+  for (let i = 0; i < 8; i++) { const t = i === W.sel ? 1 : 0, g = W.grow[i]; W.grow[i] += (t - g) * (1 - Math.exp(-dt * 18)); if (Math.abs(W.grow[i] - t) > 0.004) moving = true; else W.grow[i] = t; }
+  if (!W.dirty && !moving && Math.abs(W.k - W.drawnK) < 0.004) return false;
+  W.dirty = false; W.drawnK = W.k;
+  const S = 640, C = S / 2, r0 = 118, r1 = 268;
+  c.clearRect(0, 0, S, S);
+  c.save(); c.translate(C, C);
+  for (let i = 0; i < 8; i++) {
+    const id = EMO_SLOTS[i], def = EMO_BY.get(id), g = W.grow[i], a = (i * Math.PI) / 4 - Math.PI / 2, h = Math.PI / 8 - 0.035;
+    const R1 = r1 + 22 * g, R0 = r0 + 6 * g;
+    c.beginPath(); c.arc(0, 0, R1, a - h, a + h); c.arc(0, 0, R0, a + h, a - h, true); c.closePath();
+    if (def) {
+      c.fillStyle = g > 0.01 ? `rgba(${Math.round(36 + 160 * g)},${Math.round(34 + 110 * g)},${Math.round(26 + 30 * g)},${0.8 + 0.15 * g})` : 'rgba(16,18,18,0.82)';
+      c.fill(); c.lineWidth = 2 + 2 * g; c.strokeStyle = `rgba(${EMO_GOLD},${0.45 + 0.55 * g})`; c.stroke();
+      const rm = (R0 + R1) / 2, x = Math.cos(a) * rm, y = Math.sin(a) * rm, sc = 1 + 0.18 * g;
+      emoIcon(c, def.icon, x, y - 18 * sc, 52 * sc, g > 0.5 ? '#181410' : '#efe6d2');
+      c.fillStyle = g > 0.5 ? '#181410' : '#efe6d2'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.font = `700 ${Math.round(29 * sc)}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`;
+      c.fillText(def.label.toUpperCase(), x, y + 42 * sc);
+    } else {
+      c.fillStyle = 'rgba(16,18,18,0.45)'; c.fill(); c.setLineDash([6, 8]); c.lineWidth = 1.5; c.strokeStyle = 'rgba(239,230,210,0.22)'; c.stroke(); c.setLineDash([]);
+    }
+  }
+  // centre: cancel, or the slot's name
+  c.beginPath(); c.arc(0, 0, r0 - 14, 0, Math.PI * 2); c.fillStyle = 'rgba(10,12,12,0.86)'; c.fill();
+  c.lineWidth = 2; c.strokeStyle = W.sel < 0 ? `rgba(${EMO_GOLD},0.9)` : 'rgba(239,230,210,0.3)'; c.stroke();
+  c.fillStyle = W.sel < 0 ? `rgb(${EMO_GOLD})` : '#efe6d2'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.font = '700 30px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
+  c.fillText(W.sel < 0 ? 'CANCEL' : 'LET GO', 0, -10);
+  c.font = '500 19px "Barlow Semi Condensed", "Arial Narrow", sans-serif'; c.fillStyle = 'rgba(239,230,210,0.7)';
+  c.fillText(W.sel < 0 ? 'EMOTES' : 'TO PLAY', 0, 20);
+  // the pointer: where you aim
+  const pm = Math.min(1, Math.hypot(W.x, W.y));
+  if (pm > 0.05) { const pa = Math.atan2(W.y, W.x), pr = r0 - 30; c.beginPath(); c.arc(Math.cos(pa) * pr * pm, Math.sin(pa) * pr * pm, 7, 0, Math.PI * 2); c.fillStyle = `rgb(${EMO_GOLD})`; c.fill(); }
+  c.restore();
+  if (W.tex) W.tex.needsUpdate = true;
+  return true;
+}
+// Simple figures (a soldier, line art): 'surr' hands up, 'fall' going down.
+function emoIcon(c, kind, x, y, s, col) {
+  c.save(); c.translate(x, y); c.scale(s / 100, s / 100);
+  c.strokeStyle = col; c.fillStyle = col; c.lineWidth = 9; c.lineCap = 'round'; c.lineJoin = 'round';
+  if (kind === 'surr') {
+    c.beginPath(); c.arc(0, -30, 11, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(0, -16); c.lineTo(0, 18);                       // body
+    c.moveTo(-26, -50); c.lineTo(-20, -24); c.lineTo(-7, -12);              // arms up, open hands
+    c.moveTo(26, -50); c.lineTo(20, -24); c.lineTo(7, -12);
+    c.moveTo(0, 18); c.lineTo(-14, 34); c.lineTo(-12, 50);                  // kneeling legs
+    c.moveTo(0, 18); c.lineTo(16, 30); c.lineTo(30, 30); c.stroke();
+    c.lineWidth = 4; for (const sx of [-1, 1]) { c.beginPath(); c.moveTo(sx * 26, -50); c.lineTo(sx * 32, -60); c.moveTo(sx * 26, -50); c.lineTo(sx * 24, -62); c.moveTo(sx * 26, -50); c.lineTo(sx * 18, -60); c.stroke(); }
+  } else if (kind === 'flip') {
+    c.lineWidth = 4; c.globalAlpha = 0.7;
+    c.beginPath(); c.arc(0, -4, 44, -2.4, 1.3); c.stroke();                // the turn
+    c.beginPath(); c.moveTo(19, 39); c.lineTo(26, 26); c.lineTo(31, 41); c.stroke();
+    c.globalAlpha = 1; c.lineWidth = 9;
+    c.beginPath(); c.arc(-8, 6, 10, 0, Math.PI * 2); c.fill();               // tucked, upside down
+    c.beginPath(); c.moveTo(-2, -6); c.lineTo(10, -22); c.lineTo(-6, -32); c.lineTo(-14, -18);
+    c.moveTo(2, -4); c.lineTo(-10, -14); c.stroke();
+  } else if (kind === 'nade') {
+    c.beginPath(); c.arc(-14, -36, 10, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(-12, -24); c.lineTo(-8, 10);
+    c.moveTo(-11, -16); c.lineTo(-30, -2); c.moveTo(-11, -16); c.lineTo(8, -8);
+    c.moveTo(-8, 10); c.lineTo(-14, 32); c.lineTo(-16, 52); c.moveTo(-8, 10); c.lineTo(10, 26); c.lineTo(26, 32); c.stroke();
+    c.beginPath(); c.ellipse(40, 34, 9, 11, 0.4, 0, Math.PI * 2); c.fill();   // the frag, off the boot
+    c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.moveTo(54, 24); c.lineTo(66, 18); c.moveTo(56, 34); c.lineTo(70, 34); c.stroke();
+    c.beginPath(); c.moveTo(-40, 60); c.lineTo(66, 60); c.stroke();
+  } else {
+    c.rotate(0.62);
+    c.beginPath(); c.arc(-4, -34, 11, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(-2, -20); c.lineTo(2, 14);
+    c.moveTo(-1, -12); c.lineTo(-22, 2); c.moveTo(-1, -12); c.lineTo(20, -2); c.lineTo(28, 12);
+    c.moveTo(2, 14); c.lineTo(-10, 32); c.lineTo(-6, 52); c.moveTo(2, 14); c.lineTo(18, 30); c.lineTo(14, 50); c.stroke();
+    c.rotate(-0.62); c.lineWidth = 4; c.globalAlpha = 0.7;
+    c.beginPath(); c.moveTo(-46, -34); c.quadraticCurveTo(-52, -6, -40, 20); c.moveTo(-36, -44); c.quadraticCurveTo(-42, -20, -34, 2); c.stroke();
+    c.beginPath(); c.moveTo(-40, 60); c.lineTo(46, 60); c.stroke();          // the floor
+  }
+  c.restore();
+}
+// The headset's wheel: in front of your view, below the middle (head-locked), drawn over everything.
+function emoVrMesh() {
+  const W = EMO.W; if (W.mesh) return W.mesh;
+  emoWheelInit();
+  W.tex = new THREE.CanvasTexture(W.cv); W.tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), new THREE.MeshBasicMaterial({ map: W.tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false }));
+  m.renderOrder = 100020; m.position.set(0, -0.06, -0.55); m.visible = false; m.frustumCulled = false;
+  camera.add(m); W.mesh = m;
+  return m;
+}
+// Headset: from updateXRInput (right controller). true = the right stick belongs to the wheel this frame (no turning,
+// crouch or kick). A tap of the click keeps its old job (weapon light): the wheel marks the press as long, so the
+// light / laser code skips it.
+function emoVrStick(right) {
+  if (!EMO.on || !right || !right.userData.gamepad) return false;
+  const V = EMO.vr, now = performance.now() / 1000, down = isPressed(right, 3);
+  if (!down) {
+    if (V.on && EMO.W.open && EMO.W.src === 'vr') { emoClose(true); if (EMO.W.mesh) EMO.W.mesh.visible = false; }
+    V.on = false; return false;
+  }
+  if (!V.on) { if (!emoAvail()) return false; V.on = true; V.t0 = now; }
+  if (!EMO.W.open && now - V.t0 >= EMO.hold) { emoOpen('vr'); emoVrMesh().visible = true; pulse(right.userData.hand, 0.25, 18); }
+  if (EMO.W.open) {
+    xrState.scLong = true;                                         // the light / laser code: not a tap
+    const [x, y] = stickOf(right), s0 = EMO.W.sel, s = emoAim(x, y);
+    if (s !== s0 && s >= 0) pulse(right.userData.hand, 0.16, 12);   // a tick per slot
+  }
+  return true;
+}
+// Pad: before the buttons loop in padPoll. true = the right stick belongs to the wheel (no look). R3 is handled here
+// while emotes are available (the loop skips it: PAD.emoOwn): a tap kicks on release, a hold opens the wheel.
+function emoPadPoll(B, A, sw, now) {
+  const P = EMO.pad, p = !!(B[11] && B[11].pressed), was = !!PAD.prev[11];
+  if (p && !was) { P.on = EMO.on && emoAvail() && !(BZ.on && BZ.padOn); P.t0 = now; }
+  PAD.emoOwn = P.on;
+  if (!P.on) return false;
+  if (p) {
+    if (!EMO.W.open && now - P.t0 >= EMO.hold) emoOpen('pad');
+    if (EMO.W.open) emoAim(A[2 - sw] || 0, A[3 - sw] || 0);
+    return true;
+  }
+  if (was) {                                                       // let go
+    if (EMO.W.open) emoClose(true); else { padKey('kick', true); padKey('kick', false); }
+    P.on = false;
+  }
+  return false;
+}
+// Computer: hold Tab (any time in play); the mouse aims it, 1-8 pick, Esc cancels, a click picks.
+window.addEventListener('keydown', (e) => {
+  if (!EMO.on) return;
+  if (e.code === 'Tab') {
+    if (!gameStarted || renderer.xr.isPresenting || document.body.classList.contains('modOpen')) return;   // the menu: Tab moves the focus
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (!e.repeat && !EMO.W.open) emoOpen('pc');
+    return;
+  }
+  if (!EMO.W.open || EMO.W.src !== 'pc') return;
+  const m = /^(Digit|Numpad)([1-8])$/.exec(e.code);
+  if (m) { e.preventDefault(); e.stopImmediatePropagation(); const s = +m[2] - 1; if (EMO_SLOTS[s]) { EMO.W.sel = s; emoClose(true); } return; }
+  if (e.code === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); emoClose(false); }
+}, true);
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Tab' && EMO.W.open && EMO.W.src === 'pc') { e.preventDefault(); e.stopImmediatePropagation(); emoClose(true); }
+}, true);
+window.addEventListener('mousemove', (e) => {
+  if (!EMO.W.open || EMO.W.src !== 'pc') return;
+  e.stopImmediatePropagation();                                    // no look while it is open
+  const W = EMO.W;
+  let x, y;
+  if (document.pointerLockElement === canvas) { x = W.x + e.movementX / 140; y = W.y + e.movementY / 140; const m = Math.hypot(x, y); if (m > 1.2) { x *= 1.2 / m; y *= 1.2 / m; } }
+  else { const r = Math.min(innerWidth, innerHeight) * 0.3; x = (e.clientX - innerWidth / 2) / r; y = (e.clientY - innerHeight / 2) / r; }
+  emoAim(x, y);
+}, true);
+window.addEventListener('mousedown', (e) => { if (EMO.W.open && EMO.W.src === 'pc') { e.preventDefault(); e.stopImmediatePropagation(); emoClose(e.button === 0); } }, true);
+window.addEventListener('blur', () => { if (EMO.W.open && EMO.W.src === 'pc') emoClose(false); });
+// Phone: the Emote button (multiplayer only): press opens the wheel, drag the thumb to a slot, let go.
+(() => {
+  const b = actionButtons.emote; if (!b) return;
+  b.addEventListener('pointerdown', (e) => {
+    if (MOB.edit || !EMO.on) return;
+    e.preventDefault(); try { b.setPointerCapture(e.pointerId); } catch (x) { /* fine */ }
+    EMO.touch.id = e.pointerId; EMO.touch.x0 = e.clientX; EMO.touch.y0 = e.clientY;
+    emoOpen('touch'); b.classList.add('live');
+  });
+  b.addEventListener('pointermove', (e) => {
+    const T = EMO.touch; if (T.id !== e.pointerId || !EMO.W.open) return;
+    const r = Math.max(60, Math.min(innerWidth, innerHeight) * 0.16);
+    emoAim((e.clientX - T.x0) / r, (e.clientY - T.y0) / r);
+  });
+  const end = (e) => { const T = EMO.touch; if (T.id !== e.pointerId) return; T.id = null; b.classList.remove('live'); emoClose(e.type === 'pointerup'); };
+  for (const ev of ['pointerup', 'pointercancel']) b.addEventListener(ev, end);
+})();
+// Menu rows (Multiplayer section), once the menu exists.
+function emoMenu() {
+  if (EMO.menu || typeof MW === 'undefined' || !MW.secs || !MW.secs.get('mp')) return;
+  EMO.menu = true;
+  mwValue('mp', 'Emote bubbles', 'The text over the other player\'s head', () => (EMO.cfg.bubble ? 'ON' : 'OFF'), null, () => { EMO.cfg.bubble = !EMO.cfg.bubble; emoSave(); });
+  mwValue('mp', 'Emote sounds', 'His voice and body sounds when he plays one', () => (EMO.cfg.sound ? 'ON' : 'OFF'), null, () => { EMO.cfg.sound = !EMO.cfg.sound; emoSave(); });
+  mwNote('mp', 'Emotes: hold Tab and move the mouse (1-8 pick) · hold the right stick click and tilt it (pad, headset) · the Emote button (phone). Let go to play; walking stops it.');
+  mwSyncRows();
+}
+// Every frame (after netTick).
+function emoTick(dt) {
+  if (!EMO.on) return;
+  if (!EMO.menu) emoMenu();
+  const mp = emoAvail();
+  if (mp !== EMO.mp) { EMO.mp = mp; document.body.classList.toggle('emoMp', mp); }
+  if (!mp && EMO.W.open && EMO.W.src !== 'pc') emoClose(false);
+  if (!netLive() && !EMO.solo) { if (EMO.rem.phase !== 'off') emoAvEnd(EMO.rem.e); }
+  emoMeTick(dt);
+  emoBubble(dt);
+  const W = EMO.W;
+  if (W.cv && (W.open || W.k > 0.004)) emoDraw(dt);
+  if (W.mesh) { W.mesh.visible = W.open && W.src === 'vr' && renderer.xr.isPresenting; if (W.mesh.visible) W.mesh.scale.setScalar(0.6 + 0.4 * W.k); }
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcEmote = { navGrid, navFree, padPoll, inv, EMO_FLIP, EMO_KICK, emoBody, emoKeys, emoKickMe, EMO, EMOTES, EMO_SLOTS, emoPlay, emoStopMine, emoRx, emoAvPose, emoOpen, emoClose, emoAim, emoDraw, emoTick, emoVrMesh, emoVrStick, emoPadPoll, emoFallMake, emoGun, emoBubble };
 </script>
 </body>
 </html>
