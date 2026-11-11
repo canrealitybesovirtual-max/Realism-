@@ -187,6 +187,25 @@ const snap = m => {
   return m;
 };
 
+/* settling snow: one shared uniform grows while it snows; outdoor materials whiten where it lands */
+const snowAcc = { value: .12 };
+function snowy(m, col, mode) {   // mode 0: upward faces, 1: clinging (foliage, no normals), 2: dusting (grass), 3: ground (mud resists)
+  const prev = m.onBeforeCompile, sc = { value: col };
+  m.onBeforeCompile = (s, r) => {
+    prev.call(m, s, r);
+    s.uniforms.uSnowAcc = snowAcc; s.uniforms.uSnowCol = sc;
+    s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vSnW; varying float vSnUp;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\n vec4 snWP = vec4(transformed, 1.0); vec3 snN = ' + (mode === 1 || mode === 2 ? 'vec3(0.0, 1.0, 0.0)' : 'normal') + ';\n#ifdef USE_INSTANCING\n snWP = instanceMatrix * snWP; snN = mat3(instanceMatrix) * snN;\n#endif\n snWP = modelMatrix * snWP; vSnW = snWP.xyz; vSnUp = normalize(mat3(modelMatrix) * snN).y;');
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uSnowAcc; uniform vec3 uSnowCol; varying vec3 vSnW; varying float vSnUp;\n'
+      + 'float snH(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n'
+      + 'float snV(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f); return mix(mix(snH(i), snH(i + vec2(1.0, 0.0)), f.x), mix(snH(i + vec2(0.0, 1.0)), snH(i + vec2(1.0, 1.0)), f.x), f.y); }')
+      .replace('#include <color_fragment>', '#include <color_fragment>\n { vec2 q = floor((vSnW.xz + vSnW.y * .7) * 6.0) / 6.0; float n = snV(q * .55) * .6 + snV(q * 2.1 + 7.0) * .4;\n'
+      + '   float a = uSnowAcc * ' + ['smoothstep(.5, .95, vSnUp)', '.42', '.5', 'smoothstep(.5, .95, vSnUp) * mix(.6, 1.0, smoothstep(.06, .2, dot(diffuseColor.rgb, vec3(.333))))'][mode] + ';\n'
+      + '   diffuseColor.rgb = mix(diffuseColor.rgb, uSnowCol, smoothstep(n - .12, n + .12, a)); }');
+  };
+  return m;
+}
+
 /* ================= procedural textures ================= */
 function cv(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
 const ctx = c => c.getContext('2d');
@@ -1388,6 +1407,8 @@ let streamWorld = () => {};
   const logGeo = limb(.08, .095, 7, BARK, CUT);
   const logBGeo = merge([limb(.08, .095, 7, BARK, CUT), attach(limb(.022, .034, 5, BARK, CUT), .16, .17, 1.15, .3)], MN);
   const rockM = snap(new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 1, flatShading: true }));
+  { const lit = C('#e2e6e9'), unlit = new THREE.Color(.62, .65, .69);
+    snowy(terrM, lit, 3); snowy(gM, lit, 2); snowy(rockM, lit, 0); snowy(fMat, unlit, 1); snowy(wM, unlit, 0); }
 
   /* --- instanced pools (rebuilt from chunk data whenever the loaded set changes) --- */
   const mkPool = (geo, mat, cap, color) => {
@@ -1573,13 +1594,14 @@ let streamWorld = () => {};
   box(12, 1.1, .4, M.stone, -6, -.1, 4, { p: O }); addLow(-12, 3.8, 0, 4.2);
 
   /* --- fence along the east garden --- */
-  const fM = snap(new THREE.MeshStandardMaterial({ map: T.woodM, roughness: 1 }));
+  const fM = snowy(snap(new THREE.MeshStandardMaterial({ map: T.woodM, roughness: 1 })), C('#e2e6e9'), 0);
   for (let z = -4; z <= 14; z += 2) { const p = new THREE.Mesh(new THREE.BoxGeometry(.12, 1.1, .12), fM); p.position.set(14, getTerrainHeight(14, z) + .55, z); p.castShadow = true; O.add(p); }
   for (const h of [.4, .85]) { const r = new THREE.Mesh(new THREE.BoxGeometry(.05, .08, 18), fM); r.position.set(14, getTerrainHeight(14, 5) + h, 5); O.add(r); }
   addLow(13.9, -4.1, 14.1, 14.1);
 
   /* --- roof, gables, chimney --- */
   const th = Math.atan2(1.68, 3.95), rl = Math.hypot(1.68, 3.95) + .1;
+  snowy(M.roof, C('#e2e6e9'), 0); M.roof.needsUpdate = true;
   box(9.9, .12, rl, M.roof, 4.5, 3.46, 1.525, { p: O, c: true, rx: -th, s: 1.2 });
   box(9.9, .12, rl, M.roof, 4.5, 3.46, 5.475, { p: O, c: true, rx: th, s: 1.2 });
   box(9.9, .14, .2, M.trim, 4.5, 4.3, 3.5, { p: O, c: true });
@@ -1660,14 +1682,14 @@ scene.add(sky);
 /* ================= snowfall ================= */
 // Flakes live in a box around the camera and wrap at its edges, so the storm never thins out as you walk.
 const snowfall = (() => {
-  const N = isTouch ? 1800 : 3200, A = 22, H = 14;
+  const N = isTouch ? 2600 : 4800, A = 22, H = 14;
   const pos = new Float32Array(N * 3), vel = new Float32Array(N * 2), ph = new Float32Array(N);
   for (let i = 0; i < N; i++) { pos[i * 3] = RR(-A, A); pos[i * 3 + 1] = RR(-2, H); pos[i * 3 + 2] = RR(-A, A); vel[i * 2] = RR(.7, 1.5); vel[i * 2 + 1] = RR(.3, 1); ph[i] = RR(0, 6.28); }
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const m = new THREE.PointsMaterial({ color: 0xe9edf0, size: .09, sizeAttenuation: true, transparent: true, opacity: .9, depthWrite: false });
+  const m = new THREE.PointsMaterial({ color: 0xe9edf0, size: .02, sizeAttenuation: true, transparent: true, opacity: .9, depthWrite: false });
   const P = new THREE.Points(g, m); P.frustumCulled = false; scene.add(P);
   let wind = 0;
-  return (dt, t, cam) => {
+  const f = (dt, t, cam) => {
     wind = .8 + Math.sin(t * .13) * .6 + Math.sin(t * .37) * .3;                 // gusting from the west
     const cx = cam.position.x, cy = cam.position.y, cz = cam.position.z;
     for (let i = 0; i < N; i++) {
@@ -1676,9 +1698,11 @@ const snowfall = (() => {
       let d = pos[j] - cx; if (d > A) pos[j] -= 2 * A; else if (d < -A) pos[j] += 2 * A;
       d = pos[j + 2] - cz; if (d > A) pos[j + 2] -= 2 * A; else if (d < -A) pos[j + 2] += 2 * A;
       d = pos[j + 1] - cy; if (d < -3) pos[j + 1] += H + 3; else if (d > H) pos[j + 1] -= H + 3;
+      if (pos[j + 1] < 4.5 && pos[j] > -.4 && pos[j] < 9.4 && pos[j + 2] > -.4 && pos[j + 2] < 7.4) pos[j + 1] = cy + H - .01;   // roof keeps the flat dry
     }
     g.attributes.position.needsUpdate = true;
   };
+  f.mat = m; return f;
 })();
 
 /* ================= post process ================= */
@@ -1757,6 +1781,7 @@ function makeRT() {
   });
   post.uniforms.tDiffuse.value = rt.texture; post.uniforms.res.value.set(w, h);
   snapU.value.set(Math.min(w, 320) / 2, Math.min(h, 180) / 2);
+  snowfall.mat.size = .022 * h / Math.max(1, renderer.getDrawingBufferSize(new THREE.Vector2()).y);   // ~2 cm flakes
 }
 makeRT();
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); makeRT(); });
@@ -2133,176 +2158,169 @@ function createCritterWorld(scene, opts = {}) {
     rainGroup.add(rainMesh);
 
     // ================================================================
-    // BUNNY GEOMETRY
+    // PSX ANIMAL KIT — low-poly ellipsoids sculpted per vertex, fur coloured per
+    // vertex (countershaded backs/bellies, throat and rump patches, mottling),
+    // flat shaded and vertex-snapped like the rest of the world. Jointed legs,
+    // necks, ears and tails are pivots so the gaits are animated, not slid.
     // ================================================================
-    const BUNNY_COLORS = [
-        0x8a6a4a, 0xd8d0b8, 0x5a4a3a, 0xa89880,
-        0xf0e8d8, 0x3a2a1a, 0xb89878, 0x9a8878
-    ];
+    const TAU = Math.PI * 2;
+    const furM = snap(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }));
+    const antM = snap(new THREE.MeshLambertMaterial({ color: C('#b5a387'), flatShading: true }));
+    const shM = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: .32, depthWrite: false });
+    const shG = new THREE.CircleGeometry(1, 9); shG.rotateX(-Math.PI / 2);
+    const hx = h => { const c = C(h); return [c.r, c.g, c.b]; };
+    const mixc = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const angDiff = (a, b) => { let d = b - a; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; };
+    const turnTo = (o, yaw, rate, dt) => { o.rotation.y += angDiff(o.rotation.y, yaw) * Math.min(1, rate * dt); };
 
-    function createBunnyMesh(color, scale) {
-        const g = new THREE.Group();
-        const mat = new THREE.MeshLambertMaterial({ color, flatShading: true });
-        const dark = new THREE.MeshLambertMaterial({ color: 0x1a1410, flatShading: true });
-        const white = new THREE.MeshLambertMaterial({ color: 0xf0ece0, flatShading: true });
-
-        const body = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.28, 0.46), mat);
-        body.position.set(0, 0.24, 0); g.add(body);
-
-        const chest = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.24, 0.2), white);
-        chest.position.set(0, 0.22, 0.16); g.add(chest);
-
-        const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.22), mat);
-        head.position.set(0, 0.44, 0.18); g.add(head);
-
-        const nose = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.05), dark);
-        nose.position.set(0, 0.42, 0.3); g.add(nose);
-
-        for (const side of [-1, 1]) {
-            const ear = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.32, 0.03), mat);
-            ear.position.set(side * 0.06, 0.7, 0.16);
-            ear.rotation.x = -0.15; ear.rotation.z = side * 0.05;
-            g.add(ear);
-
-            const inner = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.22, 0.02), white);
-            inner.position.set(side * 0.06, 0.7, 0.175);
-            inner.rotation.x = -0.15; g.add(inner);
-
-            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.022, 4, 3), dark);
-            eye.position.set(side * 0.075, 0.47, 0.27); g.add(eye);
-
-            const foot = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.06, 0.16), mat);
-            foot.position.set(side * 0.1, 0.03, -0.05); g.add(foot);
+    /* ellipsoid of radii rx,ry,rz; col(nx,ny,nz) gives the fur colour on the unit sphere, deform(v,nx,ny,nz) sculpts it */
+    function blob(rx, ry, rz, ws, hs, col, deform) {
+        const g = new THREE.SphereGeometry(1, ws, hs), p = g.attributes.position, c = new Float32Array(p.count * 3), v = new THREE.Vector3();
+        for (let i = 0; i < p.count; i++) {
+            v.fromBufferAttribute(p, i); const nx = v.x, ny = v.y, nz = v.z;
+            const k = col(nx, ny, nz), j = .88 + noise2D(Math.round(nx * 9) + ny * 3.1, Math.round(nz * 9) - ny * 5.3) * .24;   // mottled fur
+            c[i * 3] = k[0] * j; c[i * 3 + 1] = k[1] * j; c[i * 3 + 2] = k[2] * j;
+            v.set(nx * rx, ny * ry, nz * rz); if (deform) deform(v, nx, ny, nz); p.setXYZ(i, v.x, v.y, v.z);
         }
-
-        const tail = new THREE.Mesh(new THREE.SphereGeometry(0.065, 5, 4), white);
-        tail.position.set(0, 0.32, -0.24); g.add(tail);
-
-        g.scale.setScalar(scale);
-        g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        return g;
+        g.setAttribute('color', new THREE.BufferAttribute(c, 3)); g.computeVertexNormals(); return g;
+    }
+    const part = (geo, parent, x, y, z, rx, ry, rz, mat) => { const m = new THREE.Mesh(geo, mat || furM); m.position.set(x, y, z); m.rotation.set(rx || 0, ry || 0, rz || 0); parent.add(m); return m; };
+    const piv = (parent, x, y, z) => { const g = new THREE.Group(); g.position.set(x, y, z); parent.add(g); return g; };
+    const solid = c => () => c;
+    /* a tapered antler tine growing along +Y from its parent; returns a pivot at its tip */
+    function tine(parent, x, y, z, rx, rz, len, r) {
+        const g = new THREE.CylinderGeometry(r * .45, r, len, 4, 1); g.translate(0, len / 2, 0);
+        const p = piv(parent, x, y, z); p.rotation.set(rx, 0, rz); part(g, p, 0, 0, 0, 0, 0, 0, antM);
+        return piv(p, 0, len, 0);
+    }
+    /* sit an animal on the terrain, pitched to the slope under it */
+    function plant(m, half) {
+        const s = Math.sin(m.rotation.y) * half, c = Math.cos(m.rotation.y) * half, x = m.position.x, z = m.position.z;
+        const hf = groundHeight(x + s, z + c), hb = groundHeight(x - s, z - c);
+        m.position.y = (hf + hb) / 2; m.rotation.x = -Math.atan2(hf - hb, 2 * half);
     }
 
     // ================================================================
-    // DEER GEOMETRY
+    // WHITE-TAILED DEER (winter coat: grey-brown, cream belly, white throat,
+    // white tail underside that flags when it bolts). ~0.95 m at the shoulder.
     // ================================================================
     function createDeerMesh(scale, isBuck) {
-        const g = new THREE.Group();
-        const brown = new THREE.MeshLambertMaterial({ color: 0x8a6240, flatShading: true });
-        const dark = new THREE.MeshLambertMaterial({ color: 0x3a2a1a, flatShading: true });
-        const cream = new THREE.MeshLambertMaterial({ color: 0xd8c8a8, flatShading: true });
-
-        const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 1.3), brown);
-        body.position.set(0, 1.1, 0); g.add(body);
-
-        const chest = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.48, 0.25), cream);
-        chest.position.set(0, 1.05, 0.55); g.add(chest);
-
-        const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 0.75, 5), brown);
-        neck.position.set(0, 1.55, 0.62); neck.rotation.x = -0.4; g.add(neck);
-
-        const head = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.26, 0.42), brown);
-        head.position.set(0, 1.92, 0.9); head.rotation.x = 0.12; g.add(head);
-
-        const snout = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.18), dark);
-        snout.position.set(0, 1.86, 1.1); g.add(snout);
-
-        for (const side of [-1, 1]) {
-            const ear = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.1), brown);
-            ear.position.set(side * 0.14, 2.1, 0.78); ear.rotation.z = side * 0.4;
-            g.add(ear);
-
-            const inner = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.12, 0.05), dark);
-            inner.position.set(side * 0.16, 2.12, 0.78); inner.rotation.z = side * 0.4;
-            g.add(inner);
-
-            const eye = new THREE.Mesh(new THREE.SphereGeometry(0.03, 4, 3), dark);
-            eye.position.set(side * 0.1, 1.95, 1.02); g.add(eye);
+        const g = new THREE.Group(); g.rotation.order = 'YXZ';
+        const body = piv(g, 0, 0, 0);
+        const coat = hx(isBuck ? '#5c4d40' : '#695949'), back = hx('#433830'), belly = hx('#d6cebf'), leg = hx('#55473a'), black = hx('#141110'), white = hx('#e4e0d6');
+        const coatFn = (x, y, z) => mixc(mixc(coat, back, ss(.35, .95, y)), belly, ss(-.4, -.8, y));
+        // torso: deep chest, raised withers, tucked flank, round rump
+        part(blob(.21, .26, .6, 10, 8, coatFn, (v, x, y, z) => {
+            v.y *= 1 + .14 * z; if (y < 0 && z < 0) v.y *= 1 + .3 * z;
+            v.y += .05 * ss(.2, .7, z) * Math.max(0, y); v.x *= 1 + .1 * ss(-.3, -.9, z);
+        }), body, 0, 1.0, 0);
+        // neck rising from the shoulders, white throat patch near the jaw
+        const neck = piv(body, 0, 1.12, .48);
+        part(blob(.09, .11, .3, 7, 6, (x, y, z) => mixc(coatFn(x, y * .5 + .2, z), white, ss(-.3, -.75, y) * ss(.3, .85, z)),
+            (v, x, y, z) => { v.x *= 1 - .25 * ss(-.2, 1, z); v.y *= 1 - .2 * ss(-.2, 1, z); }), neck, 0, .22, .17, -.9);
+        const headP = piv(neck, 0, .44, .34), head = piv(headP, 0, 0, 0);
+        const faceFn = (x, y, z) => { let c = mixc(coat, hx('#7a6a5a'), .4); c = mixc(c, white, ss(.45, .62, z) * (1 - ss(.66, .76, z)) * ss(0, -.5, y)); return mixc(c, black, ss(.78, .92, z)); };
+        part(blob(.085, .095, .17, 8, 6, faceFn, (v, x, y, z) => { v.x *= 1 - .5 * ss(-.1, 1, z); v.y *= 1 - .42 * ss(-.1, 1, z); v.y -= .02 * ss(.3, 1, z); }), head, 0, 0, .1, .35);
+        part(blob(.026, .022, .02, 5, 4, solid(black)), head, 0, -.05, .26);
+        for (const s of [-1, 1]) {
+            part(blob(.017, .019, .017, 5, 4, solid(black)), head, s * .067, .03, .06);
+            part(blob(.02, .012, .02, 5, 3, solid(white)), head, s * .069, .012, .06);                       // pale eye ring
+            const ear = piv(head, s * .06, .08, -.04); ear.rotation.set(-.15, s * .25, s * .75);
+            part(blob(.042, .095, .016, 6, 5, (x, y, z) => mixc(coat, z > 0 ? hx('#cfc4b4') : back, ss(.3, 1, Math.abs(z)) * .8)), ear, 0, .085, 0);
+            g.userData['ear' + s] = ear;
         }
-
-        if (isBuck) {
-            for (const side of [-1, 1]) {
-                const main = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.035, 0.45, 4), cream);
-                main.position.set(side * 0.08, 2.25, 0.8);
-                main.rotation.z = side * 0.35; main.rotation.x = -0.1;
-                g.add(main);
-
-                const t1 = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.025, 0.22, 4), cream);
-                t1.position.set(side * 0.22, 2.55, 0.8); t1.rotation.z = side * 0.7;
-                g.add(t1);
-
-                const t2 = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.02, 0.18, 4), cream);
-                t2.position.set(side * 0.1, 2.55, 0.78);
-                t2.rotation.z = side * 0.2; t2.rotation.x = 0.3;
-                g.add(t2);
-            }
+        if (isBuck) for (const s of [-1, 1]) {             // main beam sweeping out, back, then forward, with upward tines
+            let t = tine(head, s * .04, .1, -.02, -.5, s * -.55, .14, .022);
+            t = tine(t, 0, 0, 0, 1.3, s * -.3, .2, .019);
+            tine(t, 0, 0, 0, -1.2, 0, .14, .013);
+            t = tine(t, 0, 0, 0, .55, s * .25, .18, .016);
+            tine(t, 0, 0, 0, -1.3, 0, .12, .011);
+            tine(t, 0, 0, 0, .5, s * .3, .1, .01);
         }
-
-        const legPos = [[-0.18, 0.75], [0.18, 0.75], [-0.18, -0.4], [0.18, -0.4]];
-        for (const [x, z] of legPos) {
-            const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.06, 0.5, 4), brown);
-            upper.position.set(x, 0.7, z); g.add(upper);
-            const lower = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.5, 4), dark);
-            lower.position.set(x, 0.28, z); g.add(lower);
-            const hoof = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.12), dark);
-            hoof.position.set(x, 0.03, z); g.add(hoof);
+        // legs: shoulder/hip pivots, carpus/hock pivots, slender cannons, dark hooves
+        const legs = [];
+        for (const [x, z, front] of [[-.12, .4, 1], [.12, .4, 1], [-.12, -.42, 0], [.12, -.42, 0]]) {
+            const hip = piv(body, x, front ? .95 : 1.0, z);
+            if (front) part(blob(.055, .25, .075, 6, 5, (a, y, c) => mixc(coatFn(a, y, c), leg, ss(.2, -.8, y)), (v, a, y) => { v.z *= 1 - .3 * ss(.2, -1, y); }), hip, 0, -.2, 0);
+            else part(blob(.075, .27, .11, 6, 5, (a, y, c) => mixc(coatFn(a, y * .3, c), leg, ss(-.2, -.9, y)), (v, a, y) => { v.z *= 1 - .45 * ss(.2, -1, y); }), hip, 0, -.17, .03);
+            const knee = piv(hip, 0, front ? -.45 : -.44, front ? 0 : -.07);
+            part(blob(.026, .23, .032, 5, 5, (a, y, c) => mixc(leg, c > .3 ? hx('#bdb2a2') : leg, .5)), knee, 0, -.21, 0);
+            part(blob(.032, .035, .05, 5, 3, solid(black), v => { if (v.y < 0) v.y *= .3; }), knee, 0, -.45, .012);
+            legs.push({ hip, knee, front });
         }
-
-        const tail = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.2, 4), cream);
-        tail.position.set(0, 1.3, -0.68); tail.rotation.x = -0.5; g.add(tail);
-
+        // tail: brown above, white beneath; flags straight up when alarmed
+        const tail = piv(body, 0, 1.13, -.58); tail.rotation.x = .15;
+        part(blob(.055, .12, .025, 6, 5, (x, y, z) => z < 0 ? mixc(coat, back, .4) : white), tail, 0, -.1, 0);
+        const sh = new THREE.Mesh(shG, shM); sh.scale.set(.42, 1, .85); sh.position.y = .02; g.add(sh);
         g.scale.setScalar(scale);
-        g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+        g.userData.rig = { body, neck, headP, head, legs, tail };
         return g;
     }
 
     // ================================================================
-    // BIRD GEOMETRY
+    // HARES — snowshoe hares in white winter coat (black ear tips, big hind
+    // feet) and brown cottontails with a white scut. ~0.42 m long.
     // ================================================================
-    const BIRD_COLORS = [0x2a2a2a, 0x3a3a3a, 0x4a3528, 0x2c1e18, 0x556070, 0x6a5a4a];
-
-    function createBirdMesh(color, scale) {
-        const g = new THREE.Group();
-        const mat = new THREE.MeshLambertMaterial({ color, flatShading: true, side: THREE.DoubleSide });
-        const dark = new THREE.MeshLambertMaterial({ color: 0x0a0a0a, flatShading: true });
-
-        const body = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.12, 0.4), mat);
-        g.add(body);
-
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.08, 5, 4), mat);
-        head.position.set(0, 0.05, 0.22); g.add(head);
-
-        const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 4), dark);
-        beak.position.set(0, 0.04, 0.3); beak.rotation.x = Math.PI / 2;
-        g.add(beak);
-
-        const wings = [];
-        for (const side of [-1, 1]) {
-            const pivot = new THREE.Group();
-            pivot.position.set(side * 0.08, 0.02, 0);
-            g.add(pivot);
-
-            const wing = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.14), mat);
-            wing.position.set(side * 0.2, 0, 0);
-            wing.rotation.x = Math.PI / 2;
-            pivot.add(wing);
-
-            const tip = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.12), dark);
-            tip.position.set(side * 0.32, 0, 0.01);
-            tip.rotation.x = Math.PI / 2;
-            pivot.add(tip);
-
-            wings.push({ pivot, side });
+    function createHareMesh(snowshoe) {
+        const g = new THREE.Group(); g.rotation.order = 'YXZ';
+        const body = piv(g, 0, 0, 0);
+        const fur = hx(snowshoe ? '#e6e6e2' : '#7a6855'), back = hx(snowshoe ? '#d2d2cf' : '#5a4a3c'), bel = hx('#ece9e1'), black = hx('#141110');
+        const fn = (x, y, z) => mixc(mixc(fur, back, ss(.3, .95, y)), bel, ss(-.3, -.85, y));
+        // hunched loaf: haunches high and wide at the rear, shoulders low
+        part(blob(.095, .1, .17, 9, 7, fn, (v, x, y, z) => { const r = ss(.3, -.8, z); v.y *= 1 + r * .35; v.x *= 1 + r * .3; v.y += r * .035 - (1 - r) * .01; }), body, 0, .12, 0);
+        const head = piv(body, 0, .17, .14);
+        part(blob(.055, .058, .075, 8, 6, fn, (v, x, y, z) => { v.y *= 1 - .28 * ss(0, 1, z); v.x *= 1 - .2 * ss(.2, 1, z); }), head, 0, 0, .04);
+        const nose = part(blob(.013, .01, .008, 4, 3, solid(hx(snowshoe ? '#6e5a56' : '#4a3a34'))), head, 0, -.01, .113);
+        for (const s of [-1, 1]) {
+            part(blob(.012, .015, .012, 5, 4, solid(black)), head, s * .043, .016, .055);
+            const ear = piv(head, s * .022, .035, .0); ear.rotation.set(-.35, 0, s * .12);
+            part(blob(.021, .075, .009, 6, 5, (x, y) => mixc(fur, snowshoe ? black : hx('#3c3028'), ss(.55, .85, y))), ear, 0, .07, 0);
+            g.userData['ear' + s] = ear;
+            part(blob(.016, .045, .02, 5, 4, fn), body, s * .035, .045, .12);                                   // forelegs
         }
+        const feet = [];
+        for (const s of [-1, 1]) {
+            const f = piv(body, s * .062, .075, -.08);
+            part(blob(.032, .05, .06, 6, 4, fn), f, 0, -.01, .0);                                                // haunch
+            part(blob(.026, .018, snowshoe ? .085 : .065, 5, 3, fn), f, 0, -.058, .035);                          // long hind foot
+            feet.push(f);
+        }
+        part(blob(.033, .033, .028, 6, 4, solid(bel)), body, 0, .16, -.185);                                      // scut
+        const sh = new THREE.Mesh(shG, shM); sh.scale.set(.12, 1, .2); sh.position.y = .015; g.add(sh);
+        g.scale.setScalar(.92 + Math.random() * .16);
+        g.userData.rig = { body, head, nose, feet };
+        return g;
+    }
 
-        const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 0.2), mat);
-        tail.position.set(0, 0.02, -0.28);
-        tail.rotation.x = Math.PI / 2 + 0.3;
-        g.add(tail);
-
-        g.scale.setScalar(scale);
+    // ================================================================
+    // CORVIDS — ravens (wedge tail, glide between flaps) and crows (fan tail,
+    // steady rowing flaps). Two-joint wings with fingered primaries.
+    // ================================================================
+    function createBirdMesh(raven) {
+        const g = new THREE.Group(); g.rotation.order = 'YXZ';
+        const k = hx(raven ? '#101012' : '#17171a'), sheen = hx('#202636');
+        const fn = (x, y) => mixc(k, sheen, ss(.2, 1, y) * .7);
+        const wingM = snap(new THREE.MeshLambertMaterial({ color: C(raven ? '#121214' : '#18181b'), flatShading: true, side: THREE.DoubleSide }));
+        part(blob(.055, .05, .17, 7, 5, fn, (v, x, y, z) => { v.x *= 1 - .45 * ss(0, -1, z); v.y *= 1 - .4 * ss(0, -1, z); }), g, 0, 0, 0);
+        part(blob(.043, .042, .055, 7, 5, fn), g, 0, .03, .165);
+        part(blob(.016, .02, .055, 5, 4, solid(hx('#1c1c1e')), (v, x, y, z) => { const t = ss(-.6, 1, z); v.x *= 1 - .8 * t; v.y *= 1 - .7 * t; v.y -= .012 * t; }), g, 0, .022, .238);
+        const shp = pts => { const s = new THREE.Shape(); s.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]); const geo = new THREE.ShapeGeometry(s); geo.rotateX(Math.PI / 2); return geo; };
+        // tail: (x, -forward) → after rotateX the shape's y runs fore/aft
+        const tailPts = raven ? [[-.03, 0], [.03, 0], [.07, -.17], [0, -.22], [-.07, -.17]] : [[-.03, 0], [.03, 0], [.07, -.16], [.03, -.18], [-.03, -.18], [-.07, -.16]];
+        part(shp(tailPts), g, 0, .005, -.14, 0, 0, 0, wingM);
+        const span = raven ? 1 : .8, wings = [];
+        for (const s of [-1, 1]) {
+            const inner = piv(g, s * .045, .02, .03), mid = piv(inner, s * .24 * span, 0, 0);
+            const arm = [[0, .07], [.24, .06], [.24, -.09], [0, -.1]].map(p => [s * p[0] * span, p[1]]);
+            const hand = [[0, .06], [.18, .045], [.3, .0], [.26, -.02], [.31, -.035], [.25, -.05], [.29, -.07], [.22, -.075], [.24, -.095], [.14, -.095], [0, -.09]].map(p => [s * p[0] * span, p[1]]);
+            part(shp(arm), inner, 0, 0, 0, 0, 0, 0, wingM);
+            part(shp(hand), mid, 0, 0, 0, 0, 0, 0, wingM);
+            wings.push({ inner, mid, s });
+        }
+        g.scale.setScalar(raven ? 1.1 : .85);
         g.userData.wings = wings;
-        g.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
         return g;
     }
 
@@ -2311,76 +2329,59 @@ function createCritterWorld(scene, opts = {}) {
     // ================================================================
     const bunnies = [];
     for (let i = 0; i < BUNNY_COUNT; i++) {
-        const color = BUNNY_COLORS[(Math.random() * BUNNY_COLORS.length) | 0];
-        const scale = 0.65 + Math.random() * 0.75;
-        const mesh = createBunnyMesh(color, scale);
-        scene.add(mesh);
-
-        const sp = safeSpawn();
-        mesh.position.set(sp.x, groundHeight(sp.x, sp.z), sp.z);
-        mesh.rotation.y = Math.random() * Math.PI * 2;
-
-        bunnies.push({
-            mesh,
-            state: 'idle',
-            timer: 0.4 + Math.random() * 2.0,
-            hopDir: new THREE.Vector3(0, 0, 1),
-            hopDuration: 0.4,
-            hopProgress: 0,
-            hopHeight: 0.32 + Math.random() * 0.18,
-            hopDistance: 0.9 + Math.random() * 0.8,
-            phase: Math.random() * Math.PI * 2
-        });
+        const mesh = createHareMesh(Math.random() < .65); scene.add(mesh);
+        const sp = safeSpawn(); mesh.position.set(sp.x, 0, sp.z); mesh.rotation.y = Math.random() * TAU; plant(mesh, .15);
+        bunnies.push({ mesh, rig: mesh.userData.rig, state: 'feed', timer: 1 + Math.random() * 3, yaw: mesh.rotation.y, t: 0, dur: .4, dist: .5, lift: .12, chain: 0, phase: Math.random() * 9 });
     }
 
     const deer = [];
     for (let i = 0; i < DEER_COUNT; i++) {
-        const scale = 0.85 + Math.random() * 0.5;
-        const isBuck = i === 0 || Math.random() < 0.5;
-        const mesh = createDeerMesh(scale, isBuck);
-        scene.add(mesh);
-
-        const sp = safeSpawn();
-        mesh.position.set(sp.x, groundHeight(sp.x, sp.z), sp.z);
-        mesh.rotation.y = Math.random() * Math.PI * 2;
-
-        deer.push({
-            mesh,
-            state: 'graze',
-            timer: 2 + Math.random() * 4,
-            target: new THREE.Vector3(sp.x, 0, sp.z),
-            walkSpeed: 0.55 + Math.random() * 0.35,
-            fleeSpeed: 2.6,
-            headBob: 0
-        });
+        const mesh = createDeerMesh(.92 + Math.random() * .14, i === 0 || Math.random() < .35); scene.add(mesh);
+        const sp = safeSpawn(); mesh.position.set(sp.x, 0, sp.z); mesh.rotation.y = Math.random() * TAU; plant(mesh, .55);
+        deer.push({ mesh, rig: mesh.userData.rig, state: 'graze', timer: 3 + Math.random() * 6, target: new THREE.Vector3(sp.x, 0, sp.z),
+            walkSpeed: .9 + Math.random() * .35, speed: 0, cyc: Math.random(), cool: 0, fleeYaw: 0, flick: 0, ear: 0, phase: Math.random() * 9 });
     }
 
     const birds = [];
     for (let i = 0; i < BIRD_COUNT; i++) {
-        const color = BIRD_COLORS[(Math.random() * BIRD_COLORS.length) | 0];
-        const scale = 0.8 + Math.random() * 0.6;
-        const mesh = createBirdMesh(color, scale);
-        scene.add(mesh);
-
-        const cx = bounds.x1 + Math.random() * (bounds.x2 - bounds.x1);
-        const cz = bounds.z1 + Math.random() * (bounds.z2 - bounds.z1);
-
-        birds.push({
-            mesh,
-            cx, cz,
-            radius: 8 + Math.random() * 15,
-            height: 12 + Math.random() * 15,
-            angle: Math.random() * Math.PI * 2,
-            speed: 0.15 + Math.random() * 0.25,
-            flapSpeed: 6 + Math.random() * 4,
-            phase: Math.random() * Math.PI * 2
-        });
+        const raven = Math.random() < .4, mesh = createBirdMesh(raven); scene.add(mesh);
+        const radius = 10 + Math.random() * 18, dir = Math.random() < .5 ? -1 : 1;
+        birds.push({ mesh, raven, cx: bounds.x1 + Math.random() * (bounds.x2 - bounds.x1), cz: bounds.z1 + Math.random() * (bounds.z2 - bounds.z1),
+            radius, height: 14 + Math.random() * 14, angle: Math.random() * TAU, w: dir * (raven ? 9 : 7.5 + Math.random() * 2) / radius,
+            flapHz: raven ? 3.2 : 4.4, ph: Math.random() * TAU, glideT: Math.random() * 3, gliding: false, phase: Math.random() * TAU });
     }
 
     // ================================================================
     // UPDATE
     // ================================================================
     let elapsed = 0;
+    const W_PH = [.25, .75, 0, .5], B_PH = [.5, .58, 0, .08];          // lateral-sequence walk; bounding gallop (fronts, then hinds)
+
+    function deerRig(d, dt, neckT, headT) {
+        const r = d.rig, sp = d.speed, bound = sp > 3.2;
+        d.cyc += dt * sp / (bound ? 3.6 : 1.2);
+        const amp = bound ? .8 : Math.min(.4, sp * .45), k = Math.min(1, dt * 14);
+        r.legs.forEach((L, i) => {
+            const th = TAU * (d.cyc + (bound ? B_PH[i] : W_PH[i])), swing = Math.max(0, -Math.cos(th));
+            L.hip.rotation.x = lerp(L.hip.rotation.x, Math.sin(th) * amp, k);
+            L.knee.rotation.x = lerp(L.knee.rotation.x, (L.front ? 1.1 : -.85) * swing * Math.min(1, amp * 2.6), k);
+        });
+        r.body.position.y = lerp(r.body.position.y, bound ? Math.max(0, Math.sin(TAU * d.cyc + 1.3)) * .32 : Math.abs(Math.sin(TAU * d.cyc * 2)) * .012 * amp, k);
+        r.body.rotation.x = lerp(r.body.rotation.x, bound ? Math.sin(TAU * d.cyc) * .16 : (neckT > 1.5 ? .07 : 0), k);
+        r.neck.rotation.x = lerp(r.neck.rotation.x, neckT + (bound ? Math.sin(TAU * d.cyc) * .12 : Math.sin(TAU * d.cyc * 2) * .04 * amp), Math.min(1, dt * 3));
+        r.headP.rotation.x = lerp(r.headP.rotation.x, headT + (neckT > 1.5 ? Math.sin(elapsed * 5 + d.phase) * .05 : 0), Math.min(1, dt * 4));
+        d.flick -= dt; if (d.flick < 0) d.flick = 1.5 + Math.random() * 5;
+        r.tail.rotation.x = lerp(r.tail.rotation.x, d.state === 'flee' ? 2.4 : (d.flick < .25 ? .9 : .15), Math.min(1, dt * 10));
+        d.ear -= dt; if (d.ear < 0) d.ear = .8 + Math.random() * 4;
+        for (const s of [-1, 1]) { const e = d.mesh.userData['ear' + s]; e.rotation.y = lerp(e.rotation.y, s * (d.state === 'alert' ? -.1 : (d.ear < .2 && s > 0 ? .9 : .25)), Math.min(1, dt * 12)); }
+    }
+
+    function startHop(b, yaw, flee) {
+        b.state = 'hop'; b.yaw = yaw; b.t = 0; b.flee = flee;
+        b.dur = flee ? .26 + Math.random() * .06 : .32 + Math.random() * .1;
+        b.dist = flee ? 2.1 + Math.random() * .8 : .35 + Math.random() * .35;
+        b.lift = flee ? .3 + Math.random() * .1 : .07 + Math.random() * .05;
+    }
 
     function update(dt, time) {
         elapsed = time || elapsed + dt;
@@ -2389,161 +2390,109 @@ function createCritterWorld(scene, opts = {}) {
 
         // ---------- RAIN ----------
         if (RAIN_COUNT > 0) {
-            if (cam) {
-                rainGroup.position.x = cam.position.x;
-                rainGroup.position.z = cam.position.z;
-            }
+            if (cam) { rainGroup.position.x = cam.position.x; rainGroup.position.z = cam.position.z; }
             const arr = rainGeo.attributes.position.array;
             for (let i = 0; i < RAIN_COUNT; i++) {
-                const ix = i * 6;
-                const fall = rainSpeeds[i] * dt;
-                arr[ix + 1] -= fall;
-                arr[ix + 4] -= fall;
+                const ix = i * 6, fall = rainSpeeds[i] * dt;
+                arr[ix + 1] -= fall; arr[ix + 4] -= fall;
                 if (arr[ix + 4] < -1) seedDrop(i, false);
             }
             rainGeo.attributes.position.needsUpdate = true;
         }
 
-        // ---------- BUNNIES ----------
+        // ---------- HARES ----------
         for (const b of bunnies) {
-            const playerDist = player
-                ? Math.hypot(player.x - b.mesh.position.x, player.z - b.mesh.position.z)
-                : Infinity;
-
-            if (b.state === 'idle') {
-                b.timer -= dt;
-                const gy = groundHeight(b.mesh.position.x, b.mesh.position.z);
-                b.mesh.position.y = gy + Math.sin(elapsed * 2.5 + b.phase) * 0.012;
-
-                if (b.timer <= 0) {
-                    if (playerDist < 5) {
-                        const dx = b.mesh.position.x - player.x;
-                        const dz = b.mesh.position.z - player.z;
-                        const len = Math.hypot(dx, dz) || 1;
-                        b.hopDir.set(dx / len, 0, dz / len);
-                    } else {
-                        const a = Math.random() * Math.PI * 2;
-                        b.hopDir.set(Math.sin(a), 0, Math.cos(a));
-                    }
-                    b.state = 'hop';
-                    b.hopProgress = 0;
-                    b.hopDuration = 0.3 + Math.random() * 0.25;
-                    b.hopDistance = (playerDist < 5 ? 2.2 : 1.0) + Math.random() * 0.7;
-                }
-            } else {
-                b.hopProgress += dt / b.hopDuration;
-                const t = Math.min(1, b.hopProgress);
-                const arc = Math.sin(t * Math.PI) * b.hopHeight;
-
-                const step = b.hopDistance * dt / b.hopDuration;
-                b.mesh.position.x += b.hopDir.x * step;
-                b.mesh.position.z += b.hopDir.z * step;
-
-                if (b.mesh.position.x < bounds.x1) { b.mesh.position.x = bounds.x1; b.hopDir.x = Math.abs(b.hopDir.x); }
-                if (b.mesh.position.x > bounds.x2) { b.mesh.position.x = bounds.x2; b.hopDir.x = -Math.abs(b.hopDir.x); }
-                if (b.mesh.position.z < bounds.z1) { b.mesh.position.z = bounds.z1; b.hopDir.z = Math.abs(b.hopDir.z); }
-                if (b.mesh.position.z > bounds.z2) { b.mesh.position.z = bounds.z2; b.hopDir.z = -Math.abs(b.hopDir.z); }
-
-                const gy = groundHeight(b.mesh.position.x, b.mesh.position.z);
-                b.mesh.position.y = gy + arc;
-
-                const targetAngle = Math.atan2(b.hopDir.x, b.hopDir.z);
-                let diff = targetAngle - b.mesh.rotation.y;
-                while (diff > Math.PI) diff -= Math.PI * 2;
-                while (diff < -Math.PI) diff += Math.PI * 2;
-                b.mesh.rotation.y += diff * Math.min(1, dt * 12);
-
+            const m = b.mesh, r = b.rig;
+            const pd = player ? Math.hypot(player.x - m.position.x, player.z - m.position.z) : 1e9;
+            const away = player ? Math.atan2(m.position.x - player.x, m.position.z - player.z) : 0;
+            if (b.state === 'hop') {
+                b.t += dt / b.dur; const t = Math.min(1, b.t), st = b.dist * dt / b.dur;
+                m.position.x += Math.sin(b.yaw) * st; m.position.z += Math.cos(b.yaw) * st;
+                m.position.x = Math.max(bounds.x1, Math.min(bounds.x2, m.position.x)); m.position.z = Math.max(bounds.z1, Math.min(bounds.z2, m.position.z));
+                turnTo(m, b.yaw, 14, dt); plant(m, .15);
+                const a = Math.sin(Math.PI * t);
+                r.body.position.y = a * b.lift;
+                r.body.rotation.x = -Math.sin(TAU * t) * (b.flee ? .32 : .18);                // nose up on take-off, down on landing
+                r.body.scale.z = 1 + a * (b.flee ? .28 : .12);                               // stretches out in the air
+                for (const f of r.feet) f.rotation.x = a * (b.flee ? 1.2 : .6);              // hind feet kick back
+                for (const s of [-1, 1]) m.userData['ear' + s].rotation.x = lerp(m.userData['ear' + s].rotation.x, b.flee ? -1.15 : -.4, Math.min(1, dt * 10));
                 if (t >= 1) {
-                    b.state = 'idle';
-                    b.timer = 0.3 + Math.random() * 1.6;
-                    b.mesh.position.y = groundHeight(b.mesh.position.x, b.mesh.position.z);
+                    r.body.position.y = 0; r.body.rotation.x = 0; r.body.scale.z = 1; for (const f of r.feet) f.rotation.x = 0;
+                    if (b.flee && --b.chain > 0) startHop(b, away + (Math.random() - .5) * 1.2, true);   // zig-zag escape
+                    else { b.state = pd < 9 ? 'freeze' : 'feed'; b.timer = b.state === 'freeze' ? 2 + Math.random() * 4 : .6 + Math.random() * 3; }
                 }
+                continue;
+            }
+            b.timer -= dt;
+            if (pd < 4.5) { b.chain = 4 + (Math.random() * 4 | 0); startHop(b, away + (Math.random() - .5) * .8, true); continue; }
+            if (b.state === 'feed' && pd < 9) { b.state = 'freeze'; b.timer = 2 + Math.random() * 5; }
+            const freeze = b.state === 'freeze';
+            r.head.rotation.x = lerp(r.head.rotation.x, freeze ? -.15 : .45 + Math.sin(elapsed * 9 + b.phase) * .06 * (Math.sin(elapsed * .7 + b.phase) > 0 ? 1 : 0), Math.min(1, dt * 6));
+            r.nose.scale.setScalar(freeze ? 1 : 1 + Math.max(0, Math.sin(elapsed * 22 + b.phase)) * .35);
+            for (const s of [-1, 1]) { const e = m.userData['ear' + s]; e.rotation.x = lerp(e.rotation.x, freeze ? .05 : -.35 + Math.sin(elapsed * 1.3 + b.phase + s) * .15, Math.min(1, dt * 6)); }
+            if (b.timer <= 0) {
+                if (freeze) { b.state = 'feed'; b.timer = 1 + Math.random() * 3; }
+                else startHop(b, m.rotation.y + (Math.random() - .5) * 1.6, false);
             }
         }
 
         // ---------- DEER ----------
         for (const d of deer) {
-            const playerDist = player
-                ? Math.hypot(player.x - d.mesh.position.x, player.z - d.mesh.position.z)
-                : Infinity;
-
-            if (playerDist < 9 && d.state !== 'flee') {
-                d.state = 'flee';
-                d.timer = 2.2;
-            }
-
-            if (d.state === 'flee') {
-                const dx = d.mesh.position.x - player.x;
-                const dz = d.mesh.position.z - player.z;
-                const len = Math.hypot(dx, dz) || 1;
-                d.mesh.position.x += (dx / len) * d.fleeSpeed * dt;
-                d.mesh.position.z += (dz / len) * d.fleeSpeed * dt;
-                d.mesh.rotation.y = Math.atan2(dx, dz);
-
-                d.headBob += dt * 15;
-                const gy = groundHeight(d.mesh.position.x, d.mesh.position.z);
-                d.mesh.position.y = gy + Math.abs(Math.sin(d.headBob)) * 0.08;
-
-                d.mesh.position.x = Math.max(bounds.x1, Math.min(bounds.x2, d.mesh.position.x));
-                d.mesh.position.z = Math.max(bounds.z1, Math.min(bounds.z2, d.mesh.position.z));
-
-                d.timer -= dt;
-                if (d.timer <= 0) {
-                    d.state = 'graze';
-                    d.timer = 2 + Math.random() * 3;
-                }
+            const m = d.mesh;
+            const pd = player ? Math.hypot(player.x - m.position.x, player.z - m.position.z) : 1e9;
+            const away = player ? Math.atan2(m.position.x - player.x, m.position.z - player.z) : 0;
+            d.timer -= dt; d.cool -= dt;
+            if (d.state !== 'flee' && pd < 11) { d.state = 'flee'; d.timer = 4 + Math.random() * 2.5; d.fleeYaw = away + (Math.random() - .5) * .9; }
+            else if ((d.state === 'graze' || d.state === 'walk') && pd < 24 && d.cool <= 0) { d.state = 'alert'; d.timer = 3 + Math.random() * 4; }
+            let tsp = 0, neckT = .35, headT = 0;
+            if (d.state === 'graze') {
+                neckT = 2.1; headT = -.75;
+                if (d.timer <= 0) { d.target.set(m.position.x + (Math.random() - .5) * 30, 0, m.position.z + (Math.random() - .5) * 30); d.state = 'walk'; }
             } else if (d.state === 'walk') {
-                const dx = d.target.x - d.mesh.position.x;
-                const dz = d.target.z - d.mesh.position.z;
-                const len = Math.hypot(dx, dz);
-
-                if (len < 0.5) {
-                    d.state = 'graze';
-                    d.timer = 2 + Math.random() * 4;
-                } else {
-                    const nx = d.mesh.position.x + (dx / len) * d.walkSpeed * dt;
-                    const nz = d.mesh.position.z + (dz / len) * d.walkSpeed * dt;
-                    if (nx < bounds.x1 || nx > bounds.x2 || nz < bounds.z1 || nz > bounds.z2) {
-                        d.state = 'graze';
-                        d.timer = 2 + Math.random() * 3;
-                    } else {
-                        d.mesh.position.x = nx;
-                        d.mesh.position.z = nz;
-                        d.mesh.rotation.y = Math.atan2(dx, dz);
-                        d.headBob += dt * 6;
-                        const gy = groundHeight(nx, nz);
-                        d.mesh.position.y = gy + Math.abs(Math.sin(d.headBob)) * 0.04;
-                    }
+                const dx = d.target.x - m.position.x, dz = d.target.z - m.position.z;
+                tsp = d.walkSpeed; turnTo(m, Math.atan2(dx, dz), 1.2, dt);
+                if (Math.hypot(dx, dz) < 1) { d.state = 'graze'; d.timer = 4 + Math.random() * 9; }
+            } else if (d.state === 'alert') {
+                neckT = -.25; headT = .12; turnTo(m, away + Math.PI, 1.6, dt);           // stares at you
+                if (d.timer <= 0) {
+                    d.cool = 8;
+                    if (pd < 20) { d.state = 'walk'; d.target.set(m.position.x + Math.sin(away) * 25, 0, m.position.z + Math.cos(away) * 25); }
+                    else { d.state = 'graze'; d.timer = 3 + Math.random() * 6; }
                 }
             } else {
-                d.timer -= dt;
-                d.mesh.position.y = groundHeight(d.mesh.position.x, d.mesh.position.z);
-                if (d.timer <= 0) {
-                    d.target.x = bounds.x1 + Math.random() * (bounds.x2 - bounds.x1);
-                    d.target.z = bounds.z1 + Math.random() * (bounds.z2 - bounds.z1);
-                    d.state = 'walk';
-                }
+                tsp = d.timer > 1 ? 7.5 : 1.2; neckT = .55; headT = -.1;
+                d.fleeYaw += angDiff(d.fleeYaw, away) * Math.min(1, dt * .8);
+                turnTo(m, d.fleeYaw, 3, dt);
+                if (d.timer <= 0) { d.state = 'walk'; d.cool = 10; d.target.set(m.position.x + Math.sin(away) * 20, 0, m.position.z + Math.cos(away) * 20); }
             }
+            d.speed = lerp(d.speed, tsp, Math.min(1, dt * (tsp > d.speed ? 2.5 : 1.8)));
+            m.position.x += Math.sin(m.rotation.y) * d.speed * dt; m.position.z += Math.cos(m.rotation.y) * d.speed * dt;
+            if (m.position.x < bounds.x1 || m.position.x > bounds.x2 || m.position.z < bounds.z1 || m.position.z > bounds.z2) {
+                m.position.x = Math.max(bounds.x1, Math.min(bounds.x2, m.position.x)); m.position.z = Math.max(bounds.z1, Math.min(bounds.z2, m.position.z));
+                const home = Math.atan2((bounds.x1 + bounds.x2) / 2 - m.position.x, (bounds.z1 + bounds.z2) / 2 - m.position.z);
+                d.fleeYaw = home; d.target.set(m.position.x + Math.sin(home) * 15, 0, m.position.z + Math.cos(home) * 15);
+            }
+            plant(m, .55);
+            deerRig(d, dt, neckT, headT);
         }
 
         // ---------- BIRDS ----------
         for (const b of birds) {
-            b.angle += b.speed * dt;
-
-            const x = b.cx + Math.cos(b.angle) * b.radius;
-            const z = b.cz + Math.sin(b.angle) * b.radius;
-            const y = b.height + Math.sin(b.angle * 2 + b.phase) * 1.5;
-
-            b.mesh.position.set(x, y, z);
-
-            const na = b.angle + 0.05;
-            const nx = b.cx + Math.cos(na) * b.radius;
-            const nz = b.cz + Math.sin(na) * b.radius;
-            b.mesh.rotation.y = Math.atan2(nx - x, nz - z);
-
-            const flap = Math.sin(elapsed * b.flapSpeed + b.phase) * 0.7;
-            for (const w of b.mesh.userData.wings) {
-                w.pivot.rotation.z = w.side * flap;
+            b.angle += b.w * dt;
+            const m = b.mesh, x = b.cx + Math.cos(b.angle) * b.radius, z = b.cz + Math.sin(b.angle) * b.radius;
+            const y = b.height + Math.sin(b.angle * 1.3 + b.phase) * 2;
+            const dy = Math.cos(b.angle * 1.3 + b.phase) * 2.6 * b.w, v = Math.abs(b.w) * b.radius;
+            m.position.set(x, y, z);
+            m.rotation.y = Math.atan2(-Math.sin(b.angle) * Math.sign(b.w), Math.cos(b.angle) * Math.sign(b.w));
+            m.rotation.x = -Math.atan2(dy, v) * .8;
+            m.rotation.z = Math.sign(b.w) * Math.atan(b.w * b.w * b.radius / 9.8);           // banks into the turn
+            b.glideT -= dt;
+            if (b.glideT < 0) { b.gliding = !b.gliding; b.glideT = b.gliding ? (b.raven ? 2 + Math.random() * 3 : .4 + Math.random()) : (b.raven ? 1 + Math.random() * 1.5 : 2 + Math.random() * 3); }
+            if (!b.gliding || dy > 1) b.ph += dt * b.flapHz * TAU;
+            for (const w of m.userData.wings) {
+                const f = b.gliding && dy <= 1 ? null : b.ph;
+                w.inner.rotation.z = lerp(w.inner.rotation.z, w.s * (f === null ? .1 : Math.sin(f) * .55 + .08), Math.min(1, dt * (f === null ? 4 : 30)));
+                w.mid.rotation.z = lerp(w.mid.rotation.z, w.s * (f === null ? -.04 : Math.sin(f - .7) * .4), Math.min(1, dt * (f === null ? 4 : 30)));
             }
         }
     }
@@ -2638,6 +2587,7 @@ function frame(now) {
 
   sky.position.copy(camera.position);
   if (!paused) snowfall(dt, time, camera);
+  if (started && !paused) snowAcc.value = Math.min(.9, snowAcc.value + dt / 540);   // ground whitens over ~8 minutes
   cloudG.rotation.y += dt * .004; cloudG.position.x = player.x; cloudG.position.z = player.z;
 
   post.uniforms.time.value = time;
