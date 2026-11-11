@@ -20346,7 +20346,10 @@ function deskLaserToggle() {
 const WB = {
   room: null, open: false, gun: null, rack: null, atts: [], hooks: [], btn: null, cap: null, lamp: null, lbl: null, btnAt: null, btnLocal: null, pressAnim: 0,
   benchX: 2.95, vise: new THREE.Vector3(2.6, 0.905 + 0.3, 2.62),
-  awayR: 2.2, jawOpen: 0.047, jawW: 0.047, jaws: null, stickR: 0.03, hookR: 0.1, kit: null, inv: new THREE.Matrix4(), m: new THREE.Matrix4()
+  awayR: 2.2, jawOpen: 0.047, jawW: 0.047, jaws: null, stickR: 0.09,
+  cradleY: -0.0618, padH: 0.056, padL: 0.031, cradleL: 0.026, squeeze: 0.0005,   // bench fix: cradle top (vise space), pad height / half length, cradle half length, pads press in 0.5 mm
+  reach: { part: 0.15, dev: 0.16, muz: 0.15 },   // bench fix: how far from its place a part let go of still goes on (was 9-10 cm)
+  hookR: 0.1, kit: null, inv: new THREE.Matrix4(), m: new THREE.Matrix4()
 };
 const LASER_EMIT = new THREE.Vector3(-0.008, -0.0245, -0.047), LASER_SW = new THREE.Vector3(-0.0185, -0.0245, 0.008);   // step 78   // step 74: the new module
 const _wbH = new THREE.Quaternion(), _wbZ = new THREE.Vector3(0, 0, 1), _wbP = new THREE.Vector3(), _wbQ = new THREE.Quaternion(), _wbS = new THREE.Vector3(), _wbV = new THREE.Vector3(), _wbD = new THREE.Vector3();
@@ -20498,6 +20501,7 @@ function wbMakeAtt(sub, big = true, variant = null) {
   if (sub === 'ext') return muzMakeExt();                           // step 103
   if (AKM_ITEM[variant] || AKM_ITEM[sub]) return akmMakeAtt(AKM_ITEM[variant] ? variant : sub);   // step 102: the AKM's parts
   if (variant === 'c45') return m19MakeAtt(sub === 'comp' ? 'comp45' : 'can45');   // step 108: the .45 can and comp
+  if (variant === 'awm:dot') { const q = M4A.ready ? m4MakeAtt('dot') : null; if (q) q.item.awmDot = true; return q; }   // bench fix: the AWM's red dot (the M4's CompM4-class dot) lies on the bench
   if (variant && variant.startsWith('awm:')) return awmMakeAtt(variant.slice(4));   // step 113: the AWM's parts
   if (sub === 'm4part' || sub === 'fh' || variant === 'm4s') return m4MakeAtt(variant === 'm4s' ? 'm4can' : variant);   // step 105: the M4A1-S's parts (variant = which)
   const K = wbKit();
@@ -20533,6 +20537,9 @@ function wbSpawn(room) {
     WB.jaws = [-1, 1].map((sd) => { const j = K.jaw.clone(); j.userData.sd = sd; j.position.set(WB.vise.x, WB.vise.y - 0.04, WB.vise.z + sd * WB.jawOpen); room.group.add(j); return j; });
     WB.jawW = WB.jawOpen;
     const s = K.sign.clone(); s.position.set(WB.benchX + 0.2, 1.45, 2.985); s.rotation.y = Math.PI; room.group.add(s);
+    // bench fix: a matte mid-grey work mat over both bench tops (dark parts stand out on it; the light grey trays sit on it)
+    if (!WB.matMat) WB.matMat = new THREE.MeshStandardMaterial({ color: 0x5c5f63, roughness: 0.93, metalness: 0 });
+    for (const bx of [WB.benchX, 1.3]) { const mm = mesh(rbox(1.585, 0.0028, 0.585, 0.0012), WB.matMat, false, true); mm.position.set(bx, 0.9036, 2.67); room.group.add(mm); }
   }
   // step 88: the VISE button (a new one with each safe room)
   WB.btnAt = new THREE.Vector3(WB.btnLocal.x, WB.btnLocal.y, WB.btnLocal.z);
@@ -20555,14 +20562,15 @@ function wbSpawn(room) {
 // strip in front naming the part. Geometry per size, label textures per name (cached); the rims are static colliders on the room body so
 // a dropped part stays in its bin. The part's rest height is unchanged (it sits 2 mm into the floor of the bin).
 const TRAY = { geo: new Map(), lbl: new Map(), mat: null, lmat: null, h: 0.022, t: 0.003, f: 0.002,
-  fp: new Map(), items: new Map(), room: null, m: 0.012, labD: 0.02, gap: 0.006,   // footprints per spot, built trays, margin round a part, label strip depth, gap between trays (m)
+  fp: new Map(), items: new Map(), heads: [], room: null, m: 0.012, labD: 0.024, gap: 0.014, rowGap: 0.016,   // footprints per spot, built trays, group headers, margin round a part, label strip depth, gap between trays / rows (m)
+  geom: new Map(), y0: 0.905,
   names: { light: 'WEAPON LIGHT', laser: 'LASER', sup: 'SUPPRESSOR', ext: 'BARREL EXT.', dot: 'RED DOT', cover: 'OPTIC COVER', comp: 'COMPENSATOR', fh: 'FLASH HIDER', pl2: 'PL-2 LIGHT' } };
 function trayName(t) {
   const it = t[6] && WORKSHOP.byId && WORKSHOP.byId.get(t[6]);
   let n = it ? it.name.replace(/\s*\(.*?\)\s*/g, ' ').trim() : TRAY.names[t[0]] || String(t[5] || t[0]);
   if (!it && t[0] === 'sup') n = t[1] ? 'RIFLE SUPPRESSOR' : 'PISTOL SUPPRESSOR';
   n = n.toUpperCase();
-  return n.length > 20 ? n.slice(0, 19) + '…' : n;
+  return n.length > 26 ? n.slice(0, 25) + '…' : n;
 }
 function trayGeo(w, d) {
   const k = `${w.toFixed(3)}x${d.toFixed(3)}`;
@@ -20577,81 +20585,165 @@ function trayGeo(w, d) {
   TRAY.geo.set(k, g);
   return g;
 }
-function trayLabel(text) {
-  if (TRAY.lbl.has(text)) return TRAY.lbl.get(text);
-  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 64;
+// A label strip: charcoal with white text, a group colour bar on its left end (canvas sized to the strip: no squashed text).
+function trayLabel(text, col, w, h, big) {
+  const k = `${text}|${col}|${w.toFixed(3)}|${h.toFixed(3)}`;
+  if (TRAY.lbl.has(k)) return TRAY.lbl.get(k);
+  const H = 64, W = Math.max(128, Math.min(1024, Math.round(H * w / h)));
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
   const c = cv.getContext('2d');
-  c.fillStyle = '#26282b'; c.fillRect(0, 0, 512, 64);
-  c.fillStyle = '#e9e9e6'; c.font = '600 38px "Barlow Semi Condensed", "Arial Narrow", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillText(text, 256, 34, 490);
+  c.fillStyle = '#26282b'; c.fillRect(0, 0, W, H);
+  c.fillStyle = col || '#8a8d90'; c.fillRect(0, 0, Math.round(H * 0.32), H);
+  c.fillStyle = '#f0f0ec'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  const x0 = H * 0.32 + 8, avail = W - x0 - 10;
+  let fs = big ? 40 : 38;
+  c.font = `700 ${fs}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`;
+  while (fs > 22 && c.measureText(text).width > avail) { fs -= 2; c.font = `700 ${fs}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`; }
+  c.fillText(text, x0 + avail / 2, H / 2 + 2, avail);
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
   const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0 });
-  TRAY.lbl.set(text, m);
+  TRAY.lbl.set(k, m);
   return m;
 }
-// Trays follow the parts: each spot's tray is the footprint of the part lying there (measured once at its home pose,
-// room-local, relative to the spot) plus TRAY.m all round, its label strip in front. Overlapping trays (and labels)
-// push their spots apart (TRAY.gap between rims); a part already at home moves with its spot. Built / refit after
-// every restock and store fill; a spot with no part yet has no tray until its part has been laid there once.
-const _trB = new THREE.Box3();
-function trayFoot(p, room) {
-  p.root.updateMatrixWorld(true);
-  _trB.makeEmpty();
-  p.root.traverse((o) => { if (o.isMesh && o.visible && o.geometry && !(o.material && o.material.blending === THREE.AdditiveBlending)) _trB.expandByObject(o, false); });
-  if (_trB.isEmpty()) return null;
-  const t = p.item.tableSpot, f = [Infinity, -Infinity, Infinity, -Infinity];
-  for (let i = 0; i < 4; i++) {
-    const lx = rLX(room, i & 1 ? _trB.max.x : _trB.min.x), lz = rLZ(room, i & 2 ? _trB.max.z : _trB.min.z);
-    f[0] = Math.min(f[0], lx - t[2]); f[1] = Math.max(f[1], lx - t[2]); f[2] = Math.min(f[2], lz - t[3]); f[3] = Math.max(f[3], lz - t[3]);
+/* Bench fix: the table is laid out by kind. Every part's footprint is measured once from its drawn vertices in its own
+   rest pose (wbFootGeom, cached per kind of part): it lies with its long side along the bench, its lowest point on the
+   floor of its tray (item.restY: no part floats over or sinks into its bin). wbLayout packs the trays in rows, one group
+   after another (lights and lasers, muzzle devices, optics, grips and stocks, then anything else), front edges and labels
+   in a line, even gaps; each group starts a new row with a coloured header strip. Zones: the gunsmith bench right of
+   the vise button (lights, lasers, muzzle devices), the bench to its left (optics, grips, stocks), then the gaps by
+   the vise. A part already at home moves with its spot. Room-local, so a turned safe room is right too. */
+const WB_ZONES = { A: [2.945, 3.745, 2.39, 2.955], L: [0.515, 2.085, 2.39, 2.955], B: [2.165, 2.49, 2.39, 2.955], C: [2.715, 2.925, 2.53, 2.955] };   // room-local [x0, x1, z0 (your side), z1]
+const WB_GROUPS = [
+  { k: 'rail', name: 'LIGHTS + LASERS', col: '#3fae5a', zones: ['A', 'B', 'L', 'C'] },
+  { k: 'muzzle', name: 'MUZZLE DEVICES', col: '#e0832b', zones: ['A', 'B', 'L', 'C'] },
+  { k: 'optic', name: 'OPTICS', col: '#3d8fe0', zones: ['L', 'B', 'A', 'C'] },
+  { k: 'grip', name: 'GRIPS + STOCKS', col: '#a165d8', zones: ['L', 'B', 'A', 'C'] },
+  { k: 'other', name: 'MAGAZINES + KITS', col: '#c9b23a', zones: ['L', 'B', 'A', 'C'] }
+];
+const WB_KIND = {
+  rail: new Set(['light', 'laser', 'pl2']),
+  muzzle: new Set(['sup', 'comp', 'fh', 'ext', 'akfh', 'akcomp', 'ats5', 'a2', 'rcomp', 'c45', 'sb100', 'm4s', 'awm:can']),
+  optic: new Set(['dot', 'cover', 'akdot', 'akholo', 'akx2', 'holo', 'acog', 'awm:scope', 'awm:s10', 'awm:kf', 'awm:shade', 'awm:dot', 'awm:cover']),
+  grip: new Set(['akvg', 'akag', 'akhs', 'vfg', 'afg', 'sopmod', 'ctr', 'awm:bipod', 'awm:cheek'])
+};
+function wbKindOf(t) {
+  for (const k of ['rail', 'muzzle', 'optic', 'grip']) if (WB_KIND[k].has(t[5] || '') || WB_KIND[k].has(t[0])) return k;
+  return 'other';
+}
+function wbFootKey(p) { const it = p.item; return `${it.sub}|${it.big ? 1 : 0}|${wbVar(it) || ''}|${it.part || it.akKey || it.awm || ''}`; }
+// The part's drawn box in its rest frame (restQ, its middle tableC off in x / z), cached per kind of part.
+const _tfM = new THREE.Matrix4(), _tfI = new THREE.Matrix4(), _tfV = new THREE.Vector3(), _tfC = new THREE.Vector3();
+function wbFootGeom(p) {
+  const key = wbFootKey(p);
+  if (TRAY.geom.has(key)) return TRAY.geom.get(key);
+  const it = p.item, root = p.root;
+  root.updateMatrixWorld(true);
+  _tfI.copy(root.matrixWorld).invert();
+  if (it.tableC) { _tfC.copy(it.tableC); if (it.restQ) _tfC.applyQuaternion(it.restQ); } else _tfC.set(0, 0, 0);
+  const B = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity];
+  const shown = (o) => { for (let q = o; q; q = q.parent) { if (!q.visible) return false; if (q === root) return true; } return true; };
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry || !o.geometry.attributes.position || !shown(o)) return;
+    if (o.material && o.material.blending === THREE.AdditiveBlending) return;
+    _tfM.multiplyMatrices(_tfI, o.matrixWorld);
+    const pos = o.geometry.attributes.position, st = Math.max(1, Math.floor(pos.count / 60000));
+    for (let i = 0; i < pos.count; i += st) {
+      _tfV.fromBufferAttribute(pos, i).applyMatrix4(_tfM); if (it.restQ) _tfV.applyQuaternion(it.restQ);
+      const x = _tfV.x - _tfC.x, y = _tfV.y, z = _tfV.z - _tfC.z;
+      if (x < B[0]) B[0] = x; if (x > B[1]) B[1] = x; if (y < B[2]) B[2] = y; if (y > B[3]) B[3] = y; if (z < B[4]) B[4] = z; if (z > B[5]) B[5] = z;
+    }
+  });
+  const r = Number.isFinite(B[0]) ? B : null;
+  if (r) TRAY.geom.set(key, r);
+  return r;
+}
+// Footprint [x0, x1, z0, z1] relative to the spot for a yaw (room-local), from the rest-frame box.
+function wbFootYaw(B, yaw) {
+  const c = Math.cos(yaw), s = Math.sin(yaw), f = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const x of [B[0], B[1]]) for (const z of [B[4], B[5]]) {
+    const X = x * c + z * s, Z = -x * s + z * c;
+    if (X < f[0]) f[0] = X; if (X > f[1]) f[1] = X; if (Z < f[2]) f[2] = Z; if (Z > f[3]) f[3] = Z;
   }
   return f;
 }
-function trayAtHome(p, room) {
-  return p.kinematic && !p.holders.length && !p.item.stuck && !p.item.gun && wbHomePose(p, room, _wbP, _wbQ) && p.root.position.distanceTo(_wbP) < 0.01;
+function wbLayout(room) {
+  const m = TRAY.m, labD = TRAY.labD, gap = TRAY.gap;
+  const spots = wbTable(), byGroup = new Map(WB_GROUPS.map((G) => [G.k, []]));
+  for (const t of spots) {
+    const p = WB.atts.find((q) => q.item.tableSpot === t && !q.removing);
+    if (!p) continue;
+    const B = wbFootGeom(p); if (!B) continue;
+    if (t._yaw0 === undefined) t._yaw0 = t[4];
+    const fa = wbFootYaw(B, t._yaw0), fb = wbFootYaw(B, t._yaw0 + Math.PI / 2);
+    const turn = (fb[3] - fb[2]) < (fa[3] - fa[2]) - 0.01;          // long side along the bench (rows run along x)
+    t[4] = turn ? t._yaw0 + Math.PI / 2 : t._yaw0;
+    const f = turn ? fb : fa;
+    for (const q of WB.atts) if (q.item.tableSpot === t || wbFootKey(q) === wbFootKey(p)) q.item.restY = TRAY.f + 0.0004 - B[2];   // lowest point on the bin's floor
+    TRAY.fp.set(t, f);
+    byGroup.get(wbKindOf(t)).push({ t, w: f[1] - f[0] + 2 * m, d: f[3] - f[2] + 2 * m + labD, f });
+  }
+  const zs = {}; for (const k of Object.keys(WB_ZONES)) zs[k] = { z: WB_ZONES[k][2] };
+  const heads = [], rects = new Map();
+  const HW = 0.105, HD = 0.03;                                       // a group's header strip
+  for (const G of WB_GROUPS) {
+    const L = byGroup.get(G.k);
+    if (!L.length) continue;
+    L.sort((a, b) => (b.d - a.d) || (b.w - a.w) || String(a.t[5] || a.t[0]).localeCompare(String(b.t[5] || b.t[0])));
+    let zi = 0, zone = null, x = 0, rowZ = 0, rowD = 0, headIn = null;
+    const fits = (zn, d, w) => { const Z = WB_ZONES[zn]; return zs[zn].z + Math.max(d, HD) <= Z[3] + 1e-6 && Z[0] + (headIn === zn ? 0 : HW + gap) + w <= Z[1] + 1e-6; };
+    // rows run from your left (room +x: you face +z at the bench) to your right, so the labels read in order
+    const newRow = (d, w) => {                                       // a new row for an item d deep, w wide: this zone, else the group's next one
+      if (zone && rowD > 0) zs[zone].z = rowZ + rowD + TRAY.rowGap;
+      rowD = 0;
+      while (zone === null || !fits(zone, d, w)) { if (zone !== null) zi++; if (zi >= G.zones.length) return false; zone = G.zones[zi]; }
+      rowZ = zs[zone].z; x = WB_ZONES[zone][1];
+      if (headIn !== zone) { heads.push({ G, x: x - HW / 2, z: rowZ + HD / 2 }); x -= HW + gap; rowD = HD; headIn = zone; }
+      return true;
+    };
+    let ok = true;
+    for (const e of L) {
+      if (!zone || x - e.w < WB_ZONES[zone][0] - 1e-6) { if (!newRow(e.d, e.w)) { ok = false; break; } }
+      rects.set(e.t, [x - e.w, x, rowZ, rowZ + e.d]);
+      e.t[2] = x - e.w + m - e.f[0]; e.t[3] = rowZ + labD + m - e.f[2];
+      e.t._laid = true;
+      x -= e.w + gap; rowD = Math.max(rowD, e.d);
+    }
+    if (zone && rowD > 0) zs[zone].z = rowZ + rowD + TRAY.rowGap;
+    if (!ok) console.warn('bench layout: no room left for', G.k);
+  }
+  return { rects, heads };
+}
+// Parts at home move with their spots (kinematic, resting on the table).
+function trayAtHome(p) {
+  return p.kinematic && !p.holders.length && !p.item.stuck && !p.item.gun && !p.removing;
 }
 function trayDrop(e) {
   for (const o of [e.m, e.lab]) if (o && o.parent) o.parent.remove(o);
   for (const h of e.cols) { const c = world.getCollider(h); if (c) world.removeCollider(c, false); colliderInfo.delete(h); const i = e.room.colliderHandles.indexOf(h); if (i >= 0) e.room.colliderHandles.splice(i, 1); }
 }
 function wbTrays(room) {
-  if (!room || !room.active) return;
-  if (!TRAY.mat) TRAY.mat = new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.62, metalness: 0 });   // black polymer bins
-  if (TRAY.room !== room) { TRAY.items = new Map(); TRAY.room = room; }   // the last safe room's trays went with its group
-  for (const p of WB.atts) {                                          // measure what lies at home and has not been measured
-    const t = p.item.tableSpot;
-    if (!t || TRAY.fp.has(t) || p.removing || !trayAtHome(p, room)) continue;
-    const f = trayFoot(p, room); if (f) TRAY.fp.set(t, f);
-  }
-  const spots = wbTable().filter((t) => TRAY.fp.has(t)), m = TRAY.m, labD = TRAY.labD;
-  const rect = (t) => { const f = TRAY.fp.get(t); return [t[2] + f[0] - m, t[2] + f[1] + m, t[3] + f[2] - m - labD, t[3] + f[3] + m]; };   // label strip in front (-z)
-  let moved = false;
-  for (let it = 0; it < 40; it++) {                                   // push overlapping trays apart (the smaller overlap axis)
-    let any = false;
-    for (let i = 0; i < spots.length; i++) for (let j = i + 1; j < spots.length; j++) {
-      const a = spots[i], b = spots[j], A = rect(a), Bq = rect(b);
-      const ox = Math.min(A[1], Bq[1]) - Math.max(A[0], Bq[0]) + TRAY.gap, oz = Math.min(A[3], Bq[3]) - Math.max(A[2], Bq[2]) + TRAY.gap;
-      if (ox <= 0 || oz <= 0) continue;
-      any = moved = true;
-      if (ox <= oz) { const s = (A[0] + A[1]) <= (Bq[0] + Bq[1]) ? 1 : -1; a[2] -= s * ox / 2; b[2] += s * ox / 2; }
-      else { const s = (A[2] + A[3]) <= (Bq[2] + Bq[3]) ? 1 : -1; a[3] -= s * oz / 2; b[3] += s * oz / 2; }
-    }
-    if (!any) break;
-  }
-  if (moved) for (const p of WB.atts) if (p.item.tableSpot && p.kinematic && !p.holders.length && !p.item.stuck && !p.item.gun && !p.removing) wbHome(p, room);   // parts follow their spots
-  const want = new Set(spots);
-  for (const [t, e] of TRAY.items) if (!want.has(t)) { trayDrop(e); TRAY.items.delete(t); }
-  const y0 = 0.905;
-  for (const t of spots) {
-    const R = rect(t), w = R[1] - R[0], d = R[3] - R[2] - labD, x = (R[0] + R[1]) / 2, z = (R[2] + labD + R[3]) / 2;
+  if (!room || !room.active || WB.laying) return;
+  WB.laying = true;
+  try { wbTrays0(room); } finally { WB.laying = false; }
+}
+function wbTrays0(room) {
+  if (!TRAY.mat) TRAY.mat = new THREE.MeshStandardMaterial({ color: 0xa9acaf, roughness: 0.8, metalness: 0 });   // bench fix: light grey polymer bins (dark parts stand out)
+  if (TRAY.room !== room) { TRAY.items = new Map(); TRAY.heads = []; TRAY.room = room; }   // the last safe room's trays went with its group
+  const { rects, heads } = wbLayout(room);
+  for (const p of WB.atts) if (p.item.tableSpot && trayAtHome(p)) { wbHomePose(p, room, _wbP, _wbQ); if (p.root.position.distanceTo(_wbP) > 0.0005 || p.root.quaternion.angleTo(_wbQ) > 0.002) wbHome(p, room); }   // parts follow their spots
+  for (const [t, e] of TRAY.items) if (!rects.has(t)) { trayDrop(e); TRAY.items.delete(t); }
+  const y0 = TRAY.y0, labD = TRAY.labD;
+  for (const [t, R] of rects) {
+    const w = R[1] - R[0], d = R[3] - R[2] - labD, x = (R[0] + R[1]) / 2, z = (R[2] + labD + R[3]) / 2;
     const key = `${x.toFixed(4)},${z.toFixed(4)},${w.toFixed(4)},${d.toFixed(4)}`, old = TRAY.items.get(t);
     if (old && old.key === key) continue;
     if (old) trayDrop(old);
     const e = { key, room, cols: [], m: mesh(trayGeo(w, d), TRAY.mat, false, true), lab: null };
     e.m.position.set(x, y0, z); room.group.add(e.m);
-    const lw = Math.min(w - 0.006, 0.12);
-    e.lab = mesh(new THREE.PlaneGeometry(lw, lw / 8), trayLabel(trayName(t)), false, true);
+    const G = WB_GROUPS.find((q) => q.k === wbKindOf(t)), lw = w - 0.004, lh = labD - 0.006;
+    e.lab = mesh(new THREE.PlaneGeometry(lw, lh), trayLabel(trayName(t), G && G.col, lw, lh), false, true);
     e.lab.rotation.set(-Math.PI / 2, 0, Math.PI);                     // flat on the bench in front of the bin, read from your side (-z)
-    e.lab.position.set(x, y0 + 0.0012, z - d / 2 - lw / 16 - 0.003); room.group.add(e.lab);
+    e.lab.position.set(x, y0 + 0.0012, R[2] + labD / 2 - 0.001); room.group.add(e.lab);
     for (const [hx, hz, cx, cz] of [[w / 2, TRAY.t / 2, 0, d / 2 - TRAY.t / 2], [w / 2, TRAY.t / 2, 0, -d / 2 + TRAY.t / 2], [TRAY.t / 2, d / 2, w / 2 - TRAY.t / 2, 0], [TRAY.t / 2, d / 2, -w / 2 + TRAY.t / 2, 0]]) {
       const col = world.createCollider(RAPIER.ColliderDesc.cuboid(hx, TRAY.h / 2, hz).setTranslation(x + cx, y0 + TRAY.h / 2, z + cz)   // room.body: room-local
         .setFriction(0.6).setRestitution(0.1).setCollisionGroups(COLL.static), room.body);
@@ -20659,6 +20751,17 @@ function wbTrays(room) {
       room.colliderHandles.push(col.handle); e.cols.push(col.handle);
     }
     TRAY.items.set(t, e);
+  }
+  // group header strips (flat on the mat at the start of each group's first row in a zone)
+  const hk = heads.map((h) => `${h.G.k}@${h.x.toFixed(3)},${h.z.toFixed(3)}`).join(';');
+  if (hk !== TRAY.headKey) {
+    for (const o of TRAY.heads) if (o.parent) o.parent.remove(o);
+    TRAY.heads = [];
+    for (const h of heads) {
+      const o = mesh(new THREE.PlaneGeometry(0.105, 0.03), trayLabel(h.G.name, h.G.col, 0.105, 0.03, true), false, true);
+      o.rotation.set(-Math.PI / 2, 0, Math.PI); o.position.set(h.x, y0 + 0.0012, h.z); room.group.add(o); TRAY.heads.push(o);
+    }
+    TRAY.headKey = hk;
   }
 }
 function wbCarried(g) { return !!g && !!g.prop && !g.prop.removing && (g.prop.holders.length > 0 || !!g.slot || (WB.open && WB.gun === g)); }
@@ -20704,13 +20807,13 @@ function wbTable() {
   const L = WB_TABLE.slice(), own = (t) => { const it = WORKSHOP.byId.get(t[6]); return !!(it && it.owned); };
   if (G17A.ready) for (const t of WB_G17) if (own(t)) L.push(t);
   if (AKMA.ready) for (const t of WB_AKM) if (own(t)) L.push(t);   // step 102
-  if (AWMA.ready) for (const t of WB_AWM) if (own(t)) L.push(t);   // step 113: the AWM's parts, the front row of the same bench
+  if (AWMA.ready) for (const t of WB_AWM) if (own(t) && (t[5] !== 'awm:dot' || M4A.ready)) L.push(t);   // step 113: the AWM's parts, the front row of the same bench
   if (M4A.on && M4A.ready) for (const t of WB_M4) if (own(t)) L.push(t);   // step 105: the M4A1-S's parts, on the bench left of the gunsmith's
   return m19Table(railTable(L));                                    // step 108: the 1911's own parts (step 112: a PL-2 that came off)
 }
 // A table spot t ([sub, big, x, z, yaw, variant, store id]) takes part it: the same sub; a can of the same size; the same variant:
 // the AKM's parts (step 102, by key), the .45 parts (step 108), the M4A1-S's (step 105: its can, its parts by kind), the 9 mm compact can.
-function wbVar(it) { return it.awm ? 'awm:' + it.awm : it.pl2 ? 'pl2' : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
+function wbVar(it) { return it.awmDot ? 'awm:dot' : it.awm ? 'awm:' + it.awm : it.pl2 ? 'pl2' : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
 function wbSpotFits(it, t) { return it.sub === t[0] && (t[0] !== 'sup' || !!it.big === t[1]) && wbVar(it) === (t[5] || null); }
 // Step 100 / 105: spots a store purchase just opened get their part.
 function wbTableFill() {
@@ -20723,12 +20826,30 @@ function wbTableFill() {
   try { wbTrays(WB.room); } catch (e) { console.warn('bench trays not built', e); }
 }
 WB.btnLocal = new THREE.Vector3(2.84, 0.905, 2.44);
+// Bench fix: how far a part is from where a fit would put it, measured between its middles (p.center) now and at the seat
+// pose: some parts' origins sit far from what you hold (the AWM scope's is the rifle's own origin), so origin-to-origin read
+// a scope held right over its rings as 20 cm off.
+const _wbPa = new THREE.Vector3(), _wbPb = new THREE.Vector3();
+function wbPartD(p, P, Q) {
+  _wbPa.copy(p.center).applyQuaternion(p.root.quaternion).add(p.root.position);
+  _wbPb.copy(p.center).applyQuaternion(Q).add(P);
+  return Math.min(_wbPa.distanceTo(_wbPb), p.root.position.distanceTo(P));
+}
+// Bench fix: the clamped gun's drawn box (gun-root space, from wbJawPoint's pass) + WB.stickR is where a part let go of
+// is put on it (the pick box ended at the AKM's bore: a dot held 3 cm over its cover was "not near the gun").
+function wbNearGun(g, p) {
+  const B = wbJawPoint(g).box, r = WB.stickR, root = g.prop.root;
+  root.updateMatrixWorld(true); p.root.updateMatrixWorld(true);
+  _wbPa.copy(p.center).applyMatrix4(p.root.matrixWorld); root.worldToLocal(_wbPa);
+  return _wbPa.x > B.min.x - r && _wbPa.x < B.max.x + r && _wbPa.y > B.min.y - r && _wbPa.y < B.max.y + r && _wbPa.z > B.min.z - r && _wbPa.z < B.max.z + r;
+}
 // Where a part lies on its spot (world): turned by the spot's yaw, then its own rest turn (restQ: long parts lie on their side),
 // lifted by its rest height, its middle (tableC, own frame) over the spot. Step 105: restQ / tableC.
 const _wbC = new THREE.Vector3();
 function wbHomePose(p, room, P, Q) {
   const t = p.item.tableSpot, it = p.item;
-  const lift = it.rest ?? (t[0] === 'sup' ? (t[1] ? 0.0178 : 0.0155) : 0.0425);   // a can lies on its side; a light / laser stands on its body, mount up (step 100: each part's own)
+  if (it.restY === undefined) { const B = TRAY.geom.get(wbFootKey(p)); if (B) it.restY = TRAY.f + 0.0004 - B[2]; }   // bench fix: measured, its lowest point on the bin floor
+  const lift = it.restY ?? it.rest ?? (t[0] === 'sup' ? (t[1] ? 0.0178 : 0.0155) : 0.0425);   // a can lies on its side; a light / laser stands on its body, mount up (step 100: each part's own)
   rWP(room, t[2], 0.905 + lift, t[3], P);
   Q.setFromAxisAngle(Y_AXIS, t[4] + rYaw(room));
   if (it.restQ) Q.multiply(it.restQ);
@@ -20745,6 +20866,7 @@ function wbHome(p, room = WB.room) {
   if (g) attRefresh(g);                                             // step 105: it left the gun in the vise (its factory part shows again)
   itemToWorld(p, _wbP, _wbQ, room);
   setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  if (!t._laid && !WB.laying && !WB.layQ) { WB.layQ = true; setTimeout(() => { WB.layQ = false; try { wbTrays(WB.room); } catch (e) { console.warn('bench layout', e); } }, 0); }   // bench fix: a spot not laid out yet (a PL-2 that came off)
   return true;
 }
 function wbButtonLook() {
@@ -20803,39 +20925,50 @@ function wbHook(p, h, room = WB.room) {
 function wbUnhook(it) { if (it.hook) { it.hook.att = null; it.hook = null; } }
 function wbStuckGun() { return WB.open && WB.gun && !WB.gun.prop.removing ? WB.gun : null; }
 function wbVisePose(g, P, Q) {
-  const o = WB.room.origin;
   Q.setFromAxisAngle(Y_AXIS, -Math.PI / 2 + rYaw(WB.room));      // muzzle toward the right wall, sights up
-  // the jaws under the front of the frame / handguard (clear of the magazine and the grip), resting on its underside
+  // bench fix: the section the jaws hold (its middle between the jaws, its underside on the rubber cradle)
   _wbV.copy(wbJawPoint(g));
-  rWP(WB.room, WB.vise.x, WB.vise.y - 0.05, WB.vise.z, P).sub(_wbV.applyQuaternion(Q));
+  rWP(WB.room, WB.vise.x, WB.vise.y + WB.cradleY, WB.vise.z, P).sub(_wbV.applyQuaternion(Q));
 }
-// Where the jaws hold this gun (gun-root space): under the front of the frame / handguard, clear of the
-// magazine and the grip, at the underside of what is really drawn there (the model sits off its boxes).
-const WB_JAW = new Map();
-function wbJawPoint(g) {
-  let J = WB_JAW.get(g.type);
-  if (J) return J;
-  const F = g.def.phys || M1911_PHYS, c = F.pick.c, h = F.pick.h;
-  const zc = c[2] - h[2] * (g.def.cls === 'pistol' ? 0.3 : 0.45);
+/* Where the jaws hold this gun (gun-root space), measured from what is really drawn. Bench fix: the old point came from
+   each gun's pick box (c - 0.45 h for long guns), which put the AKM's jaws at the front end of its handguard, the M4's on
+   its front sight base and the AWM's on the bare barrel in front of the fore-end: the jaws closed on a 2 cm barrel and the
+   rifle looked hung over them. It also read parts hidden by a parent and fitted attachments (the Glock's PL-2 under its
+   frame), so the jaws stopped 5-8 mm off the pistols. Now: a clamp station per gun along its bore (WB_CLAMP, design space:
+   the middle of the handguard / fore-end; pistols under the dust cover), the gun's drawn surface there (the whole visible
+   chain), its underside on the cradle and its side faces between the pads. Measured each time a gun is clamped (g.wbJ). */
+const WB_CLAMP = { akmn: -0.294, akm: -0.294, m4a1s: -0.266, awp: -0.335 };   // design-space z of the jaws' centre (m), else the pick-box rule
+function wbDrawnPts(g, fn) {
   const root = g.prop.root; root.updateMatrixWorld(true);
   const inv = new THREE.Matrix4().copy(root.matrixWorld).invert(), M = new THREE.Matrix4(), v = new THREE.Vector3();
-  let minY = Infinity;
-  const pts = [];
+  const shown = (o) => { for (let q = o; q; q = q.parent) { if (!q.visible) return false; if (q === g.model) return true; } return true; };
   g.model.traverse((o) => {
-    if (!o.isMesh || !o.visible || !o.geometry || !o.geometry.attributes.position) return;
+    if (!o.isMesh || !o.geometry || !o.geometry.attributes.position || !shown(o)) return;
+    const mt = o.material; if (mt && (mt.blending === THREE.AdditiveBlending || mt === WM.flash || mt.visible === false)) return;
+    let att = false; for (let q = o; q && q !== g.model; q = q.parent) if (q.userData.att) { att = true; break; }
     M.multiplyMatrices(inv, o.matrixWorld);
-    const pos = o.geometry.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i).applyMatrix4(M);
-      if (Math.abs(v.z - zc) < 0.025 && Math.abs(v.x) < 0.03) { pts.push(v.x, v.y); if (v.y < minY) minY = v.y; }
-    }
+    const pos = o.geometry.attributes.position, st = pos.count > 120000 ? 2 : 1;
+    for (let i = 0; i < pos.count; i += st) fn(v.fromBufferAttribute(pos, i).applyMatrix4(M), att);
   });
-  let half = 0;                                                     // widest point in the 4.5 cm the jaws cover
-  for (let i = 0; i < pts.length; i += 2) if (pts[i + 1] < minY + 0.045) half = Math.max(half, Math.abs(pts[i]));
-  if (!Number.isFinite(minY)) minY = F.boxes[0].c[1] - F.boxes[0].h[1];
-  J = new THREE.Vector3(0, minY, zc);
-  J.half = half > 0.004 ? half : 0.014;
-  WB_JAW.set(g.type, J);
+}
+function wbJawPoint(g) {
+  if (g.wbJ) return g.wbJ;
+  const F = g.def.phys || M1911_PHYS, c = F.pick.c, h = F.pick.h;
+  const cz = WB_CLAMP[g.type];
+  const zc = cz !== undefined ? cz + g.model.position.z : c[2] - h[2] * (g.def.cls === 'pistol' ? 0.3 : 0.45);
+  const PAD = WB.padH, HL = WB.padL, CR = WB.cradleL;
+  let bot = Infinity;                                               // the underside over the cradle (attachments too: nothing sinks into it)
+  const box = new THREE.Box3();                                     // and the whole drawn gun (wbNearGun)
+  wbDrawnPts(g, (v) => { box.expandByPoint(v); if (Math.abs(v.z - zc) < CR && Math.abs(v.x) < 0.05 && v.y < bot) bot = v.y; });
+  if (!Number.isFinite(bot)) bot = F.boxes[0].c[1] - F.boxes[0].h[1];
+  let x0 = Infinity, x1 = -Infinity;                                // the sides the pads meet (gun and anything fitted there)
+  wbDrawnPts(g, (v) => { if (Math.abs(v.z - zc) < HL && v.y > bot && v.y < bot + PAD) { if (v.x < x0) x0 = v.x; if (v.x > x1) x1 = v.x; } });
+  if (!Number.isFinite(x0)) { x0 = -0.014; x1 = 0.014; }
+  const J = new THREE.Vector3((x0 + x1) / 2, bot, zc);
+  J.half = Math.max(0.004, (x1 - x0) / 2);
+  if (box.isEmpty()) { const c = F.pick.c, h = F.pick.h; box.min.set(c[0] - h[0], c[1] - h[1], c[2] - h[2]); box.max.set(c[0] + h[0], c[1] + h[1], c[2] + h[2]); }
+  J.box = box; g.wbBox = box;
+  g.wbJ = J;
   return J;
 }
 // The gun is over the vise (VR reach), so a release there means the vise, not a holster.
@@ -20874,6 +21007,7 @@ function wbToggle(hand = null, gIn = null) {
   if (!g) { if (hand) pulse(hand, 0.6, 60); toast('Lay a gun by the vise first'); if (!btnSfx('vise', wbButtonPos(_wbB))) sfx('selector'); return true; }
   for (const h of [...g.prop.holders]) release(h);
   g.slot = null; g.cradle = true; WB.gun = g; WB.open = true;
+  g.wbJ = null; g.wbBox = null;                                     // bench fix: measured as it is now
   setKinematic(g.prop); startBlend(g);
   // its frozen attachments come loose again (still where they were)
   for (const p of g.atts || []) wbUnfreeze(g, p);
@@ -20909,21 +21043,19 @@ function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
 function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
-  if (g && !muzIsDev(it) && railDevOf(it)) { const r = railBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 112: the next free rail spot
-  if (g && muzIsDev(it)) { if (muzBenchFit(g, p, 0.09)) return true; }   // step 103: onto the chain's front end
-  else if (g && it.awm && AWMA.ready && (g.type === 'awp' || it.awm === 'kf' || it.awm === 'shade')) { const r = awmBenchFit(g, p, AWMA.reach); if (r !== null) return r; }   // other guns: the generic snap below   // step 113: its place on the AWM
-  else if (g && g.type === 'akmn' && AKMA.ready) { const r = akmBenchFit(g, p, 0.1); if (r !== null) return r; }   // step 102: its rail on the AKM
-  else if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 100: its own place on the Glock
-  else if (g && g.type === 'm1911' && M1911A.ready) { const r = m19BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? 0.1 : 0.09); if (r !== null) return r; }   // step 108: the 1911's plate / rail
-  else if (g && g.type === 'm4a1s' && M4A.ready) { const r = m4BenchFit(g, p, it.sub === 'm4part' ? M4A.reach : 0.1); if (r !== null) return r; }   // step 105: its own place on the M4A1-S
+  if (g && !muzIsDev(it) && railDevOf(it)) { const r = railBenchFit(g, p, WB.reach.dev); if (r !== null) return r; }   // step 112: the next free rail spot
+  if (g && muzIsDev(it)) { if (muzBenchFit(g, p, WB.reach.muz)) return true; }   // step 103: onto the chain's front end
+  else if (g && it.awm && AWMA.ready && (g.type === 'awp' || it.awm === 'kf' || it.awm === 'shade')) { const r = awmBenchFit(g, p, WB.reach.part); if (r !== null) return r; }   // other guns: the generic snap below   // step 113: its place on the AWM
+  else if (g && g.type === 'akmn' && AKMA.ready) { const r = akmBenchFit(g, p, WB.reach.dev); if (r !== null) return r; }   // step 102: its rail on the AKM
+  else if (g && g.type === 'g17') { const r = g17BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? WB.reach.dev : WB.reach.part); if (r !== null) return r; }   // step 100: its own place on the Glock
+  else if (g && g.type === 'm1911' && M1911A.ready) { const r = m19BenchFit(g, p, it.sub === 'light' || it.sub === 'laser' ? WB.reach.dev : WB.reach.part); if (r !== null) return r; }   // step 108: the 1911's plate / rail
+  else if (g && g.type === 'm4a1s' && M4A.ready) { const r = m4BenchFit(g, p, it.sub === 'm4part' ? WB.reach.part : WB.reach.dev); if (r !== null) return r; }   // step 105: its own place on the M4A1-S
   if (g && muzIsDev(it)) {                                          // step 103: muzBenchFit above (out of reach: it stays where it was let go)
   } else if (g) {
-    const F = g.def.phys || M1911_PHYS, root = g.prop.root;
+    const root = g.prop.root;
     root.updateMatrixWorld(true);
-    _wbV.copy(p.center).applyMatrix4(p.root.matrixWorld); root.worldToLocal(_wbV);
-    const c = F.pick.c, h = F.pick.h, r = WB.stickR;
-    if (Math.abs(_wbV.x - c[0]) < h[0] + r && Math.abs(_wbV.y - c[1]) < h[1] + r && Math.abs(_wbV.z - c[2]) < h[2] + r) {
-      wbSnap(g, p);                                                 // step 74: clamped flush onto the gun's surface
+    if (wbNearGun(g, p)) {                                          // bench fix: the drawn gun + WB.stickR (was its pick box + 3 cm)
+      if (!wbSnap(g, p)) { toast('Hold it against the gun where it goes, then let go', 2000); return false; }   // bench fix: no surface found = not left floating by the gun
       if (railDevOf(it) && railClash(g, p)) { toast('No room there: it would sit inside a part already on the gun', 2200); return false; }   // step 112
       it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
       setKinematic(p); p.collider.setCollisionGroups(COLL.item);
@@ -20957,8 +21089,17 @@ function wbSnap(g, p) {
   model.traverse((o) => { if (o.userData.att) return; if (o.isMesh && shown(o) && o !== g.parts.scopeLens && o.material !== WM.flash) meshes.push(o); });
   // attachments already on the gun are skipped (their roots carry userData.att)
   const skip = new Set(); model.traverse((o) => { if (o.userData.att) o.traverse((c) => skip.add(c)); });
-  WB_RC.set(C.clone().addScaledVector(dirW, -0.06), dirW); WB_RC.far = 0.2;
-  const hit = WB_RC.intersectObjects(meshes.filter((m) => !skip.has(m)), false)[0];
+  const cand = meshes.filter((m) => !skip.has(m));
+  WB_RC.set(C.clone().addScaledVector(dirW, -0.06), dirW); WB_RC.far = 0.4;   // bench fix: was 0.2 (a part let go of 15 cm off missed the gun)
+  let hit = WB_RC.intersectObjects(cand, false)[0];
+  if (!hit || !hit.face) {                                          // bench fix: off the bore line (in front of the muzzle, behind the stock): toward the gun's middle
+    const F = g.def.phys || M1911_PHYS;
+    const T = _wbD.set(F.pick.c[0], F.pick.c[1], F.pick.c[2]).applyMatrix4(g.prop.root.matrixWorld);
+    const d2 = T.sub(C); if (d2.lengthSq() < 1e-8) return false;
+    d2.normalize(); dirW.copy(d2);
+    WB_RC.set(C.clone().addScaledVector(dirW, -0.06), dirW); WB_RC.far = 0.9;
+    hit = WB_RC.intersectObjects(cand, false)[0];
+  }
   if (!hit || !hit.face) return false;
   _snN.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
   if (_snN.dot(dirW) > 0) _snN.negate();                           // outward, back toward where you held it
@@ -21347,15 +21488,43 @@ function wbDeskAtt(p) {
   sfx('pMagIn', 0.5);
   toast(`${it.label} on. Click it again to take it off, B to lock`);
 }
+// Bench fix: a part held near the clamped gun (headset) lights a thin blue box round the gun where a release fits it
+// (its drawn box + WB.stickR, the same test wbAttRelease uses: wbNearGun), with a soft tick on the hand that brings it in.
+// One LineSegments made once, a child of the clamped gun's root; nothing per frame but a box test per held part.
+const WB_HINT = { line: null, on: false, hand: null };
+function wbFitHint() {
+  const g = wbStuckGun();
+  let hand = null;
+  if (g && renderer.xr.isPresenting) {
+    const root = g.prop.root, B = wbJawPoint(g).box, r = WB.stickR;
+    for (const p of WB.atts) {
+      if (!p.holders.length || p.removing || !p.holders[0].ctrl) continue;
+      if (wbNearGun(g, p)) { hand = p.holders[0]; break; }
+    }
+    if (hand && !WB_HINT.line) {
+      WB_HINT.line = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineBasicMaterial({ color: 0x5ab8ff, transparent: true, opacity: 0.7, depthWrite: false }));
+      WB_HINT.line.renderOrder = 3; WB_HINT.line.frustumCulled = false;
+    }
+    if (hand) {
+      const L = WB_HINT.line;
+      if (L.parent !== root) root.add(L);
+      B.getCenter(L.position); B.getSize(L.scale).addScalar(r * 0.8);
+    }
+  }
+  if (WB_HINT.line) WB_HINT.line.visible = !!hand;
+  if (hand && WB_HINT.hand !== hand) pulseSoft(hand, 0.22, 14);
+  WB_HINT.hand = hand;
+}
 function wbUpdate() {
   if (!WB.room) return;
   wbButtonVR();                                                     // step 88
+  wbFitHint();                                                      // bench fix: let go here and it fits
   if (WB.cap && WB.btnAt) {                                         // the cap goes down when pressed
     WB.pressAnim = Math.max(0, WB.pressAnim - 0.08);
     WB.cap.position.y = WB.btnAt.y - 0.007 * Math.sin(WB.pressAnim * Math.PI);
   }
   if (WB.jaws) {
-    const want = WB.open && WB.gun ? Math.min(WB.jawOpen, wbJawPoint(WB.gun).half + 0.008) : WB.jawOpen;
+    const want = WB.open && WB.gun ? Math.min(WB.jawOpen, wbJawPoint(WB.gun).half + 0.008 - WB.squeeze) : WB.jawOpen;   // pad inner face 8 mm in from the carrier's centre
     if (Math.abs(want - WB.jawW) > 0.0002) {
       WB.jawW += (want - WB.jawW) * 0.25;
       for (const j of WB.jaws) { j.position.z = WB.vise.z + j.userData.sd * WB.jawW; j.updateMatrixWorld(true); }
@@ -22245,7 +22414,7 @@ function benchLampDesk() {
   else { benchLampTake(null, hit.distance); toast('Lamp head in hand: look to swing the arm, E to let go', 2600); }
   return true;
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcLamp = { BLAMP, benchLampSolve, benchLampPose, benchLampTake, benchLampRelease, TRAY, wbTrays, wbTable, wbTableFill, trayFoot, EXT, EXT_STORE, benchLampToggle, benchLampDesk, benchLampTick, benchLampGrip, extSearSet, flashlight, FLASH_BEAM, flashPeak, setFlashlight, updateLightMount };
+if (/[?&]dev\b/.test(QS)) window.__cqcLamp = { BLAMP, benchLampSolve, benchLampPose, benchLampTake, benchLampRelease, TRAY, wbTrays, wbTable, wbTableFill, wbLayout, wbFootGeom, wbJawPoint, wbVisePose, wbSnap, wbNearGun, wbPartD, WB_HINT, WB_ZONES, EXT, EXT_STORE, benchLampToggle, benchLampDesk, benchLampTick, benchLampGrip, extSearSet, flashlight, FLASH_BEAM, flashPeak, setFlashlight, updateLightMount };
 
 /* ===========================================================================
  *  STEP 79 — YOUR KIT IS ON YOUR BODY
@@ -30964,7 +31133,7 @@ const WORKSHOP = {
   sel: null, cat: {}, pick: null, guns: [],
   hover: null, flashId: null, flashUntil: 0, hits: [], dirty: true, awake: false, lastDraw: -99, lastCheck: -99, msg: '', msgT: -99, msgLive: false,
   hands: new Map(), deskHit: null, deskHitO: { u: 0, v: 0 }, deskHinted: false, wheelT: 0, sigA: -1, sigB: -1, sigC: -1,
-  items: WS_ITEMS, byId: new Map(), fitted: new Set(['awp.dot']),   // the AWM's default build: a red dot, the 3-25x off (it stays owned)
+  items: WS_ITEMS, byId: new Map(), fitted: new Set(),   // bench fix: a fresh AWM has no optic (the 3-25x and the red dot are owned and lie on the bench)
   // Supplies: what the terminal's RESTOCK used to give for free, one category at a time.
   supplies: [
     { id: 'ammo', name: 'Restock ammo', price: 250, desc: 'Every pouch magazine full (shells too); lost bench guns come back' },
@@ -30986,7 +31155,15 @@ try {                                                              // once: the 
   if (!localStorage.getItem('cqc.awmdot.v1')) {
     localStorage.setItem('cqc.awmdot.v1', '1');
     for (const id of ['awp.scope', 'awp.s10', 'awp.kf', 'awp.shade', 'awp.cover']) WORKSHOP.fitted.delete(id);
-    WORKSHOP.fitted.add('awp.dot'); WORKSHOP.byId.get('awp.dot').owned = true;
+    WORKSHOP.byId.get('awp.dot').owned = true;
+  }
+} catch (e) { /* this visit */ }
+try {                                                              // bench fix, once: the AWM starts bare (no scope, no 10x, no red dot); they stay owned, on the bench
+  if (!localStorage.getItem('cqc.awmbare.v1')) {
+    localStorage.setItem('cqc.awmbare.v1', '1');
+    for (const id of ['awp.scope', 'awp.s10', 'awp.kf', 'awp.shade', 'awp.cover', 'awp.dot']) WORKSHOP.fitted.delete(id);
+    WORKSHOP.byId.get('awp.dot').owned = true; WORKSHOP.byId.get('awp.scope').owned = true;
+    wsSave();
   }
 } catch (e) { /* this visit */ }
 function wsSave() {
@@ -44148,7 +44325,7 @@ function g17BenchFit(g, p, reach) {
   if (!g17Local(it.sub, _g17P)) return null;
   if (it.big || (it.sub === 'dot' && !g17Owned('g17.plate'))) return null;   // any-gun fit: the generic snap
   g17Pose(g, it.sub, _g17P, _g17Q);
-  if (reach && p.root.position.distanceTo(_g17P) > reach) return (it.sub === 'light' || it.sub === 'laser' || (it.sub === 'sup' && it.big)) ? null : false;
+  if (reach && wbPartD(p, _g17P, _g17Q) > reach) return (it.sub === 'light' || it.sub === 'laser' || (it.sub === 'sup' && it.big)) ? null : false;
   const why = g17Refuse(g, p);
   if (why) { toast(why, 2600); wsClick(420, 300); return false; }
   if (it.sub === 'light' || it.sub === 'laser') { const S = g.parts.stockLight; if (S) S.visible = false; }
@@ -46097,7 +46274,7 @@ function akmBenchFit(g, p, reach) {
   const it = p.item;
   if (it.sub === 'dot' || it.sub === 'cover' || !akmHw(g).kit) return null;   // any-gun fit: the generic snap
   if (!akmPose(g, it, _akP, _akQ)) return null;
-  if (reach && p.root.position.distanceTo(_akP) > reach) return false;
+  if (reach && wbPartD(p, _akP, _akQ) > reach) return false;
   const why = akmRefuse(g, it);
   if (why) { toast(why, 2600); wsDeny(); return false; }
   p.root.position.copy(_akP); p.root.quaternion.copy(_akQ); p.root.updateMatrixWorld(true);
@@ -46736,7 +46913,7 @@ function m19BenchFit(g, p, reach) {
   if (!m19Local(it.sub, _m19P)) return null;
   if ((it.sub === 'dot' || it.sub === 'cover') ? !m19Owned('m1911.plate') : !m19Owned('m1911.frame')) return null;   // any-gun fit: the generic snap
   m19Pose(g, it.sub, _m19P, _m19Q);
-  if (reach && p.root.position.distanceTo(_m19P) > reach) return false;
+  if (reach && wbPartD(p, _m19P, _m19Q) > reach) return false;
   const why = m19Refuse(g, p);
   if (why) { toast(why, 2600); wsClick(420, 300); return false; }
   p.root.position.copy(_m19P); p.root.quaternion.copy(_m19Q); p.root.updateMatrixWorld(true);
@@ -46942,7 +47119,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { M1911A, M1911_FX, M19_PART
  *  RULES: geometry and materials once per kind; programs compiled at load (m4Precompile); nothing per frame.
  * ========================================================================= */
 const M4A = { on: !/[?&]m4att=off\b/.test(QS), ready: false, M: null, S: null, tpl: {}, info: {}, sling: {}, acog: null,
-  mag20: false, reach: 0.09, glass: {}, key: 'cqc.m4att.v1' };
+  mag20: false, reach: 0.15, glass: {}, key: 'cqc.m4att.v1' };
 // Offline measurements (design space) the cut and the def need before the model is read.
 // handle: any vertex over handleY within the run and the width (its rear sight and windage knob too: up to |x| 13.5 mm); what the
 // body keeps there tops out at the receiver's 0.0203 (0.0245 at the barrel nut), with its side walls at ~0.008.
@@ -47449,7 +47626,7 @@ function m4BenchFit(g, p, reach) {
   const side = dev ? m4FreeSide(g, it, p.root.position) : 0, seat = dev ? (side ? m4SideSeat(it.sub, side) : null) : m4Seat(it.part);
   if (seat) {
     m4SeatWorld(g, seat, _m4P, _m4Q);
-    if (reach && p.root.position.distanceTo(_m4P) > reach) return dev ? null : false;
+    if (reach && wbPartD(p, _m4P, _m4Q) > reach) return dev ? null : false;
   }
   const why = m4Refuse(g, p, seat);
   if (why) { toast(why, 2600); wsDeny(); return false; }
@@ -47566,7 +47743,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { M4A, M4_GEO, M4_PARTS, M4_
  *  bipods' rays (one per held AWM with a bipod) and the glint vectors; no allocation per frame.
  * ========================================================================= */
 const AWMA = { on: !/[?&]awmatt=off\b/.test(QS), ready: false, M: null, S: null, tpl: {}, info: {}, guns: new Set(), scopeGeo: null,
-  glassGeo: new Set(), s10: null, sling: null, mag0: null, cap: 0, reach: 0.09, key: 'cqc.awmatt.v1', pre: null,
+  glassGeo: new Set(), s10: null, sling: null, mag0: null, cap: 0, reach: 0.15, key: 'cqc.awmatt.v1', pre: null,
   glint: { on: false, p: new THREE.Vector3(), d: new THREE.Vector3(), reach: 1, cos: 1 } };
 const AWM_GEO = { axis: 0.0599, obj: -0.4794, objR: 0.0316, eye: 0.0166, eyeR: 0.0366, railTop: 0.0236,
   fore: { bottom: -0.0493, half: 0.0175 }, bip: [-0.424, -0.458], comb: { top: 0.0053, zc: 0.175, half: 0.0167 },
@@ -47601,7 +47778,8 @@ const AWM_SND = { optic: 'thread', bipod: 'latch', stock: 'rail', muzzle: 'threa
 // Bench: a row on the front of the bench left of the gunsmith's (the M4's rows behind it): [sub, big, x, z, yaw, variant, store id]
 const WB_AWM = [['awm', false, 0.72, 2.44, Math.PI / 2, 'awm:bipod', 'awp.bipod'], ['awm', false, 0.96, 2.44, Math.PI / 2, 'awm:cheek', 'awp.cheek'],
   ['awm', false, 1.14, 2.44, Math.PI / 2, 'awm:kf', 'awp.kf'], ['awm', false, 1.3, 2.44, Math.PI / 2, 'awm:shade', 'awp.shade'],
-  ['sup', true, 1.62, 2.44, Math.PI / 2, 'awm:can', 'awp.sup'], ['awm', false, 1.45, 2.32, Math.PI / 2, 'awm:scope', 'awp.scope'], ['awm', false, 0.9, 2.32, Math.PI / 2, 'awm:s10', 'awp.s10']];   // the scopes lie along the bench edge (end on, the 3-25x hung 25 cm over it)
+  ['sup', true, 1.62, 2.44, Math.PI / 2, 'awm:can', 'awp.sup'], ['awm', false, 1.45, 2.5, Math.PI / 2, 'awm:scope', 'awp.scope'], ['awm', false, 0.9, 2.5, Math.PI / 2, 'awm:s10', 'awp.s10'],
+  ['m4part', false, 1.75, 2.5, Math.PI / 2, 'awm:dot', 'awp.dot']];   // bench fix: the AWM's red dot too (positions: wbLayout lays the table out)   // the scopes lie along the bench edge (end on, the 3-25x hung 25 cm over it)
 /* AWM_FX: what each part does on the AWM (GLOCK_FX's terms). The bare rifle (rail and rings, brake, 5 rounds) is the
    base; its identity (precision, stability, identification) stays: optics buy accuracy with aim time and glint,
    the bipod and cheek riser buy stability (the bipod only rested: AWM_REST), the can trades length and weight. */
@@ -48009,7 +48187,7 @@ function awmBenchFit(g, p, reach) {
   if (g.type !== 'awp' && !kfs) return null;                          // scopes / bipod / riser on other guns: the generic snap (seatPart)
   if ((it.awm === 'bipod' && !awmOwned('awp.bipodif')) || (it.awm === 'cheek' && !awmOwned('awp.stockmod'))) return null;   // any-gun fit: generic snap
   awmSeatWorld(g, it.awm, _awP, _awQ, it);
-  if (reach && p.root.position.distanceTo(_awP) > reach) return false;
+  if (reach && wbPartD(p, _awP, _awQ) > reach) return false;
   const why = awmRefuse(g, it);
   if (why) { toast(why, 2600); wsDeny(); return false; }
   p.root.position.copy(_awP); p.root.quaternion.copy(_awQ); p.root.updateMatrixWorld(true);
@@ -48024,6 +48202,7 @@ function awmBase(g, out) { g.model.updateMatrix(); return out.set(0, 0, AWM_GEO.
 function awmFromGun(g) {
   if (!AWMA.ready || !g || g.type !== 'awp') return;
   for (const id of AWM_BENCH) { const it = WORKSHOP.byId.get(id); if (!it) continue; if (awmHave(g, id)) { it.owned = true; WORKSHOP.fitted.add(id); } else WORKSHOP.fitted.delete(id); }
+  if ((g.atts || []).some((p) => !p.removing && p.item.awmDot)) WORKSHOP.fitted.add('awp.dot'); else WORKSHOP.fitted.delete('awp.dot');   // bench fix: the red dot from the bench
   awmFittedFromChain();
   wsSave(); WORKSHOP.dirty = true;
   awmRefresh(g);
