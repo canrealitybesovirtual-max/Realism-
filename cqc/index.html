@@ -30925,6 +30925,10 @@ function enemyShoot(e, now) {
 }
 function enemyShotSfx(dist, type = 'smg', at = null, sup = false) {
   if (!audio.ctx || audio.ctx.state !== 'running') return;
+  if (ESHOT.on && at && !gunSuppressed(type, sup ? { sup } : null) && esShot(type, at)) return;   // his shots: recorded, loud near, ringing room
+  enemyShotSfx0(dist, type, at, sup);
+}
+function enemyShotSfx0(dist, type, at, sup) {
   if (at && hrecOn() && HREC.bufs.supPistol1 && gunSuppressed(type, sup ? { sup } : null)) {   // step 99: his suppressed gun, the recorded take from his muzzle
     const rifle = WEAPON_DEFS[type] && WEAPON_DEFS[type].cls !== 'pistol', k = CONFIG.polish.audio.enemyShot;
     soundAt(at, () => { supPlay(rifle, k); if (rifle) { const B = shotBufs(type), P = shotMix(type); if (B && B.length) playBaked(B, 1.25 * P.gain * GUN_MIX.shot * k * 0.39, P.verb, 0.96 + Math.random() * 0.06, P.echo * GUN_MIX.echo * 0.3, GUN_MIX.tone * 0.8); } });
@@ -30947,6 +30951,144 @@ function enemyShotSfx(dist, type = 'smg', at = null, sup = false) {
     const t = audio.ctx.currentTime + 0.005;
     nBurst(t, 0.4, 'lowpass', 2400, 0.7, 0.38 * k, 0.085, 0.9, 0.7);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ *  HIS GUNSHOTS (ESHOT, ?eshot=off = the step 81 / 85 path)
+ *  A real shot indoors at close range: the recording with its attack kept (no 2.4 kHz lowpass), a short bright crack
+ *  layer (the take's own top end, 30 ms) and a noise pop, a sub thump for long guns, the room's early slaps off the walls
+ *  round him (nadeSlaps' rays, strongest 3), more reverb and echo bus, an ear ring after close shots. Own voice pool whose
+ *  panners have a loud near field (inverse, ref 2.5 m, rolloff 0.85) into a soft-knee compressor (1.2 ms attack, so the
+ *  pop passes), then the mix. Through a wall: soundAt's occlusion, plus extra low shelf and a sub thump so it stays heavy.
+ * ------------------------------------------------------------------------- */
+const ESHOT = { on: !/[?&]eshot=off\b/.test(QS), lvl: 0.85, makeup: 1.15, ref: 2.5, roll: 0.85, nVoices: 6,
+  verb: 1.7, echo: 1.3, slap: 0.5, slapN: 3, slapR: 18, crackR: 20, ringR: 5, ringTau: 5,
+  // per family: src recording, rate, body shelf dB, high shelf dB, lowpass, crack (level, highpass Hz), sub (level, from, to, s), boom layer (src, rate, level)
+  fam: {
+    pistol: { src: 'pistol', rate: 1.0, ls: 0, hs: 2, lp: 14000, ck: 0.6, ckHp: 3800, sub: 0, gain: 1 },
+    smg: { src: 'pistol', rate: 1.06, ls: -1, hs: 2.5, lp: 13000, ck: 0.55, ckHp: 3500, sub: 0, gain: 0.95 },
+    rifle: { src: 'akm', rate: 1.0, ls: 3, hs: 1, lp: 12000, ck: 0.6, ckHp: 2600, sub: 0.22, s0: 95, s1: 42, sd: 0.12, gain: 1 },
+    shot: { src: 'akm', rate: 0.82, ls: 6, hs: -1, lp: 9000, ck: 0.45, ckHp: 2200, sub: 0.4, s0: 82, s1: 35, sd: 0.2, gain: 1.1 },
+    awp: { src: 'awp', rate: 0.98, ls: 5, hs: 0, lp: 10000, ck: 0.7, ckHp: 2000, sub: 0.6, s0: 62, s1: 27, sd: 0.35, gain: 1.15, boom: 'akm', boomRate: 0.7, boomK: 0.35 }
+  },
+  v: null, F: null, buf: null, rate: 1, g: 0, last: Object.create(null), lastRate: Object.create(null),
+  sl: new Float32Array(16), sn: 0, slT: -9, slP: new THREE.Vector3(), cl: 0, clT: 0,
+  o: { ls: 0, hs: 0, lp: 12000, hp: 0, lsF: 150, verb: 1, echo: 0, at: 0, dur: 0 }, so: { pool: null } };
+function esFam(type) {
+  if (type === 'awp') return 'awp';
+  if (type === 'shotgun') return 'shot';
+  if (type === 'smg') return 'smg';
+  if (type === 'akm' || type === 'akmn' || type === 'rifle' || type === 'm4a1s') return 'rifle';
+  const d = WEAPON_DEFS[type];
+  if (!d) return 'pistol';
+  if (d.cls === 'pistol') return 'pistol';
+  if ((d.pellets || 1) > 1) return 'shot';
+  return d.manual ? 'awp' : 'rifle';
+}
+// His own voice pool: near field loud, peaks through a soft-knee compressor (built once).
+function esVoices() {
+  if (ESHOT.v) return ESHOT.v;
+  const ctx = audio.ctx, A = CONFIG.polish.audio, E = ESHOT;
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -14; comp.knee.value = 14; comp.ratio.value = 5; comp.attack.value = 0.0012; comp.release.value = 0.14;
+  const mk = ctx.createGain(); mk.gain.value = E.makeup; comp.connect(mk); mk.connect(audio.out);
+  const lp = () => { const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 20000; f.Q.value = 0.6; return f; };
+  const V = [];
+  for (let i = 0; i < E.nVoices; i++) {
+    const input = ctx.createGain(), occ = lp(), pan = ctx.createPanner();
+    pan.panningModel = A.hrtf ? 'HRTF' : 'equalpower'; pan.distanceModel = 'inverse';
+    pan.refDistance = E.ref; pan.rolloffFactor = E.roll; pan.maxDistance = 80;
+    input.connect(occ); occ.connect(pan); pan.connect(comp);
+    const wet = ctx.createGain(), wocc = lp(); wet.connect(wocc); wocc.connect(audio.verb);
+    const echo = ctx.createGain(), eocc = lp(); echo.connect(eocc); if (audio.echo) eocc.connect(audio.echo);
+    V.push({ input, occ, pan, wet, wocc, echo, eocc });
+  }
+  V.n = 0;
+  E.v = V; E.so.pool = V;
+  return V;
+}
+// The crack: the take's own top end, highpassed, gone in ~30 ms (a dry, bright pop on top of the body).
+function esCrack(buf, gain, rate, hpF) {
+  const c = audio.ctx, src = c.createBufferSource(), hp = c.createBiquadFilter(), g = c.createGain();
+  src.buffer = buf; src.playbackRate.value = rate;
+  hp.type = 'highpass'; hp.frequency.value = hpF; hp.Q.value = 0.7;
+  src.connect(hp); hp.connect(g); g.connect(audio.dest || audio.out);
+  const s = c.createGain(); s.gain.value = 0.25; g.connect(s); s.connect(audio.verbDest || audio.verb);   // the pop excites the room too
+  const t0 = c.currentTime + 0.003 + (audio.delay || 0);
+  g.gain.setValueAtTime(gain, t0); g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.03);
+  src.start(t0); src.stop(t0 + 0.06);
+}
+// Played inside soundAt (no closure): reads ESHOT's state for this shot.
+function esPlay(d, occl) {
+  const E = ESHOT, F = E.F, o = E.o, g = E.g, buf = E.buf, rate = E.rate;
+  const t = audio.ctx.currentTime + 0.003;
+  // 1. the shot itself: attack kept, top end open (air absorption is soundAt's), heavier low end through a wall
+  o.ls = F.ls + (occl ? 5 : 0); o.hs = F.hs + (Math.random() - 0.5) * 3; o.lp = F.lp; o.hp = 0; o.lsF = 150;
+  o.verb = E.verb * E.mix.verb * (occl ? 0.8 : 1); o.echo = E.mix.echo * GUN_MIX.echo * E.echo; o.at = 0; o.dur = 0;
+  hrecPlay(buf, g * (occl ? 1.35 : 1), rate, o);
+  if (F.boom && E.boomBuf) {                                      // AWM: a second heavy layer pitched down
+    o.ls = F.ls + 3; o.hs = -4; o.lp = 2400; o.verb = E.verb * 0.6; o.echo = E.mix.echo * GUN_MIX.echo * 0.6;
+    hrecPlay(E.boomBuf, g * F.boomK, F.boomRate * (rate / F.rate), o);
+  }
+  // 2. the crack and the pop: close and in line of sight
+  const near = clamp(1 - d / E.crackR);
+  if (!occl && near > 0 && F.ck > 0) {
+    const k = g * F.ck * Math.pow(near, 1.2);
+    esCrack(buf, k, rate, F.ckHp);
+    if (audio.noise) nBurst(t, 0.02, 'highpass', F.ckHp * 1.3, 0.7, 0.35 * k, 0.009, 0.15);
+  }
+  // 3. the sub thump: long guns at any range, everything through a wall (most of what is left)
+  const sub = F.sub + (occl ? 0.25 : 0);
+  if (sub > 0) tone(t, F.s0 || 85, F.s1 || 38, F.sd || 0.16, sub * g * (occl ? 1.4 : clamp(4 / (d + 2), 0.35, 1.2)), 'sine', 0.15);
+  // 4. early slaps off the walls round him: the first 0.18 s of the take, darker, the strongest few
+  if (!occl && E.sn > 0 && d < E.slapR) for (let i = 0; i < E.sn; i++) {
+    o.ls = -2; o.hs = 0; o.lp = 3400; o.hp = 180; o.verb = 0.35; o.echo = 0; o.at = E.sl[i * 2]; o.dur = 0.18;
+    hrecPlay(buf, g * E.slap * E.sl[i * 2 + 1] * 2, rate * 0.99, o);
+  }
+  // 5. your ears: the dose as before, and a faint ring after shots close by (more of them, more ring)
+  earsHit((CONFIG.polish.audio.earsShot[E.type] || 0.5) * clamp(3 / (d + 1), 0.15, 1) * (occl ? 0.4 : 1));
+  const nr = clamp(1 - d / E.ringR);
+  if (!occl && nr > 0 && CONFIG.polish.audio.ears && SPAT.ring2 && nrecOn()) {
+    const now = audio.ctx.currentTime;
+    E.cl = E.cl * Math.exp(-(now - E.clT) / E.ringTau) + nr; E.clT = now;
+    SPAT.ring = Math.min(1.5, Math.max(SPAT.ring, Math.min(0.6, 0.12 * nr + 0.08 * E.cl)));
+    SPAT.blast = Math.min(1.3, Math.max(SPAT.blast, Math.min(0.18, 0.04 * nr + 0.03 * E.cl)));
+    SPAT.blastIn = Math.max(SPAT.blastIn || 0, 0.04);
+  }
+}
+// true = played (false = the old path plays). Never the same take twice running; pitch +-4 %, never the same twice.
+function esShot(type, at) {
+  if (!SPAT.ok || !CONFIG.polish.audio.spatial) return false;
+  const E = ESHOT, fam = esFam(type), F = E.fam[fam], L = SHOT_REC[F.src];
+  if (!L || !L.length) return false;
+  let i = (Math.random() * L.length) | 0;
+  if (L.length > 1 && i === E.last[fam]) i = (i + 1 + ((Math.random() * (L.length - 1)) | 0)) % L.length;
+  E.last[fam] = i;
+  let r = F.rate * (0.96 + Math.random() * 0.08);
+  if (Math.abs(r - (E.lastRate[fam] || 0)) < F.rate * 0.012) r += F.rate * (r > F.rate ? -0.025 : 0.025);
+  E.lastRate[fam] = r;
+  const B = F.boom ? SHOT_REC[F.boom] : null;
+  E.F = F; E.buf = L[i]; E.rate = r; E.type = type; E.mix = SHOT_REC_MIX[F.src];
+  E.boomBuf = B && B.length ? B[(Math.random() * B.length) | 0] : null;
+  E.g = 1.25 * E.mix.gain * GUN_MIX.shot * CONFIG.polish.audio.enemyShot * E.lvl * F.gain;
+  // the walls round him (7 rays), at most 4 times a second while he stays put
+  const now = audio.ctx.currentTime;
+  if (now - E.slT > 0.25 || at.distanceToSquared(E.slP) > 1) {
+    E.slT = now; E.slP.copy(at); E.sn = 0;
+    if (headWorld(_p10.h).distanceTo(at) < E.slapR) {
+      nadeSlaps(at);
+      for (let k = 0; k < E.slapN; k++) {                          // strongest first
+        let b = -1, bl = 0;
+        for (let j = 0; j < NB.ns; j++) if (NB.slaps[j * 2 + 1] > bl) { bl = NB.slaps[j * 2 + 1]; b = j; }
+        if (b < 0) break;
+        E.sl[E.sn * 2] = NB.slaps[b * 2]; E.sl[E.sn * 2 + 1] = bl; E.sn++;
+        NB.slaps[b * 2 + 1] = 0;
+      }
+    }
+  }
+  esVoices();
+  soundAt(at, esPlay, E.so);
+  return true;
 }
 
 /* ---------------------------------------------------------------------------
@@ -40973,8 +41115,10 @@ function soundAt(pos, fn, o = null) {
   const dist = _p10.h.distanceTo(pos);
   if (!SPAT.ok || !A.spatial) { fn(dist, false); return; }
   let occl = !(o && o.occlude === false) && occluded(_p10.h, pos);
-  const v = SPAT.voices[SPAT.next];
-  SPAT.next = (SPAT.next + 1) % SPAT.voices.length;
+  const VP = (o && o.pool) || SPAT.voices;                       // ESHOT: his shots have their own voices (near field, compressor)
+  let v;
+  if (VP === SPAT.voices) { v = VP[SPAT.next]; SPAT.next = (SPAT.next + 1) % VP.length; }
+  else { v = VP[VP.n]; VP.n = (VP.n + 1) % VP.length; }
   // Sound through doorways: behind a wall but reachable through a doorway = heard from the doorway, at the path's length,
   // clear through an open door, muffled through a shut one (?portal=off: straight through the wall as before)
   let dist2 = dist, k = -1;
