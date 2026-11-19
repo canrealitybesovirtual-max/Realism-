@@ -2107,3 +2107,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC emotes: VR turning no longer inverted after an emote
 - Cause: the headset emote view restored the rig with rig.quaternion.copy; for a heading past 90 deg three's XYZ Euler then reads x = z = pi, so rotateRigAroundHead's rotation.y += angle (and the walk heading from rotation.y) turned the wrong way. emoCamPre now restores rig.rotation.set(0, yaw, 0) (yaw saved by c3RigYaw). Parse checked only.
+
+## CQC: legs on stairs (other player's soldier and stairwell men)
+- Cause: enemyPose put the root at his floor (enemyFloorY, room-local, e.stairY on a stair) but aimed the foot IK at world y = ankle height (floor 0) and judged head pitch / idle look against floor 0. On a stair flight or landing (or any floor not at world 0) the feet were pulled to the wrong floor: legs stretched away below him, or folded up over the body ("feet on his head").
+- Fix: baseY = enemyBaseY(e) (room origin + his floor) added to the foot targets, the idle look point and the pitch reference. Flat rooms at world 0 unchanged. Module parse + eslint only; not run in a browser or on two devices.
