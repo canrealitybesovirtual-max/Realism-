@@ -54048,14 +54048,15 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHi
  *  His side: emoAvPose replaces enemyPose for the avatar while one plays (his VR hands no longer drive the arms),
  *  blending in and out from the normal pose; his long gun goes onto his back, a pistol into a hip holster.
  * ========================================================================== */
-const EMO_SLOTS = [1, 5, 3, 0, 2, 0, 4, 0];   // slot (0 = up, clockwise) -> emote id
+const EMO_SLOTS = [1, 5, 3, 6, 2, 0, 4, 0];   // slot (0 = up, clockwise) -> emote id
 const EMOTES = [
   { id: 1, key: 'surrender', label: 'Surrender', bubble: 'Surrendering', icon: 'surr', body: 'full', start: emoSurrStart, pose: emoSurrPose, outW: emoSurrOut },
   { id: 2, key: 'dying', label: 'Dying fall', bubble: '', icon: 'fall', body: 'full', start: emoFallStart, pose: emoFallPose, outW: emoFallOut },
   { id: 3, key: 'backflip', label: 'Backflip', bubble: '', icon: 'flip', body: 'full', dur: () => EMO_FLIP_DUR, start: emoFlipStart, pose: emoFlipPose, outW: emoFlipOut },
   { id: 4, key: 'nadekick', label: 'Grenade kick', bubble: '', icon: 'nade', body: 'full', dur: () => EMO_KICK_DUR, start: emoKickStart, pose: emoKickPose, outW: emoKickOut,
     me: emoKickMe, check: () => (NADE.ready && (inv.frag > 0 || MOD.nades)) || (emoBanner('No frags left. Restock in the safe room'), false) },
-  { id: 5, key: 'rack', label: 'Rack & Catch', bubble: '', icon: 'rack', body: 'full', hold: true, dur: () => EMO_RK.dur, start: emoRkStart, pose: emoRkPose, outW: emoRkOut, end: emoRkEnd, check: emoRkCheck }
+  { id: 5, key: 'rack', label: 'Rack & Catch', bubble: '', icon: 'rack', body: 'full', hold: true, dur: () => EMO_RK.dur, start: emoRkStart, pose: emoRkPose, outW: emoRkOut, end: emoRkEnd, check: emoRkCheck },
+  { id: 6, key: 'moonwalk', label: 'Moonwalk', bubble: '', icon: 'moon', body: 'full', travel: true, start: emoMwStart, pose: emoMwPose, outW: emoMwOut, me: emoMwMe }
 ];
 const EMO_BY = new Map(EMOTES.map((d) => [d.id, d]));
 const EMO = {
@@ -54149,7 +54150,7 @@ function emoAvPose(e, dt, now, R = EMO.rem) {                    // R: EMO.rem (
     def.start(e, R, now);
   }
   R.t += dt;
-  if (!R.self && R.phase !== 'out' && Math.hypot(e.pos.x - R.x0, e.pos.y - R.z0) > 0.4) { R.phase = 'out'; R.ot = 0; }   // he walked off (the stop message is on its way)
+  if (!R.self && !def.travel && R.phase !== 'out' && Math.hypot(e.pos.x - R.x0, e.pos.y - R.z0) > 0.4) { R.phase = 'out'; R.ot = 0; }   // he walked off (the stop message is on its way)
   if (def.dur && R.phase !== 'out' && R.t >= def.dur()) { R.phase = 'out'; R.ot = 0; }
   if (R.phase === 'out') R.ot += dt;
   const w = def.outW(e, R, dt);                                   // 0..1 share of the emote pose (in and out)
@@ -54733,6 +54734,114 @@ function emoRkEnd(e, R) {
   const g = e && emoRkGun(e); if (g) emoRkAction(g, 0, false, 1 / 60);
 }
 
+// --- moonwalk: a backward glide. Each half step (EMO_MW.h s) one foot stands on its ball (heel up, world-still: the body
+// glides back over it) while the other, flat, slides back past it; at the end of the half the slider stops (world-still),
+// pops onto its ball and the standing foot's heel drops flat: they swap. Body upright, knees soft, arms loose, a small
+// head and hip bob on each pop. You really travel back at EMO_MW.v (rig moved, walls / leaves / props / bodies / the other
+// player stop it at once: emoMwMe); his soldier on the other side gets its place from his pose stream, only the steps are
+// local. Root frame of the pose: x right, y up, z back; feet are planted by the ball, the ankle found from the heel angle.
+const EMO_MW = { v: 0.35, h: 0.7, x: 0.085, th: 0.55, pop: 0.85, ahead: 0.06, ray: null, hs: [0.25, 0.85, 1.35], P: new THREE.Vector3(), Q: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3() };
+function emoMwStart(e, R) {
+  R.P = Object.assign({}, EMO_POSE0, { fL: [0, 0, 0], fR: [0, 0, 0], aL: [0, 0, 0], aR: [0, 0, 0], tL: EMO_POSE0.tL.slice(), tR: EMO_POSE0.tR.slice(), hand: null });
+  R.mwL = { ank: e.sk.ankle }; R.mwR = { ank: e.sk.ankle }; R.mt = 0; R.mwStep = -1;
+}
+// Ball z (root frame) and heel angle of one foot at moonwalk time mt; side 0 / 1 starts as the slider / the stander.
+function emoMwFoot(mt, side, fwd, out) {
+  const M = EMO_MW, a = M.v * M.h / 2, n = Math.floor(mt / M.h), p = mt / M.h - n, pr = M.pop;
+  const slide = ((n + side) & 1) === 0;                          // this half: sliding (flat) or standing (on the ball)
+  let z, th;
+  if (slide) {
+    if (p < pr) {                                                 // Hermite: world-still at both ends (root-frame rate -2a per unit p)
+      const t = p / pr, t2 = t * t, t3 = t2 * t, z1 = a + 2 * a * (1 - pr), v = -2 * a * pr;
+      z = (2 * t3 - 3 * t2 + 1) * -a + (t3 - 2 * t2 + t) * v + (-2 * t3 + 3 * t2) * z1 + (t3 - t2) * v;
+      th = 0;
+    } else { z = a + 2 * a * (1 - p); th = M.th * smoothstep(pr, 1, p); }   // stopped (world-still) and up onto the ball
+  } else {
+    z = a - 2 * a * p;                                            // world-still: the body glides back over it
+    th = p < pr ? M.th : M.th * (1 - smoothstep(pr, 1, p));      // the heel drops as the other pops up
+  }
+  const c = Math.cos(th), s = Math.sin(th), A = out.ank, F = fwd;  // ankle about the ball: (y ankle, z +F back) turned heel-up by th
+  out.y = A * c + F * s - A; out.z = z + F * c - A * s - F;       // relative to a flat foot whose ankle is at the ball + F
+  out.toe = -th; out.slide = slide && p < pr; out.n = n;
+  return out;
+}
+function emoMwPose(e, R, dt) {
+  const M = EMO_MW, out = R.phase === 'out';
+  if (!out) R.mt += dt;                                          // stopped: the feet stay where they are while it blends out
+  const P = R.P, sk = e.sk, F = sk.footFwd || 0.13;
+  const fl = emoMwFoot(R.mt, 0, F, R.mwL), fr = emoMwFoot(R.mt, 1, F, R.mwR);
+  P.fL[0] = M.x; P.fL[1] = fl.y; P.fL[2] = fl.z; P.toeL = fl.toe;
+  P.fR[0] = M.x; P.fR[1] = fr.y; P.fR[2] = fr.z; P.toe = fr.toe;
+  const n = Math.floor(R.mt / M.h), p = R.mt / M.h - n;
+  const pop = Math.exp(-((p - 0.93) ** 2) / 0.004) + Math.exp(-((p + 0.07) ** 2) / 0.004);   // the beat: each swap
+  const lw = fl.slide ? 1 : -1;                                   // the left foot slides: the right arm a touch forward
+  P.py = -0.035 - 0.012 * pop; P.pz = 0.01;                       // soft knees, a dip on each pop
+  P.pry = 0.035 * lw; P.sy = -0.03 * lw;                          // hips turn with the sliding leg, shoulders a little against it
+  P.sp = -0.03; P.cp = -0.02; P.np = 0.03 - 0.035 * pop; P.hp = 0.02 - 0.03 * pop;   // upright, the head bobs on the beat
+  P.aL[0] = 0.07; P.aL[1] = -0.49; P.aL[2] = 0.03 + 0.04 * lw; P.aR[0] = 0.07; P.aR[1] = -0.49; P.aR[2] = 0.03 - 0.04 * lw;   // hanging loose, elbows soft
+  P.air = 0; P.shin = 0; P.curl = 0.35; P.hand = null;
+  emoBody(e, P);
+  if (EMO.cfg.sound && !out && n !== R.mwStep) { R.mwStep = n; if (R.mt > 0.1) try { emoMwScuff(e, 0.5); } catch (er) { /* no sound */ } }
+}
+function emoMwOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.35, R.t);
+  return 1 - smoothstep(0, 0.3, R.ot);
+}
+// A sole sliding on the floor (each pop).
+function emoMwScuff(e, k) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  e.B.pelvis.getWorldPosition(_eb.a); _eb.a.y = e.room.origin.y + 0.05;
+  soundAt(_eb.a, () => { const t = audio.ctx.currentTime + 0.003; nBurst(t, 0.16, 'bandpass', 2400, 1.2, 0.05 * k, 0.1, 0.4); nBurst(t + 0.13, 0.04, 'lowpass', 300, 0.8, 0.08 * k, 0.03, 0.2); });
+}
+// Your side: you glide back along your heading; anything behind you ends it at once (no step into it).
+function emoMwMe(M, dt, stop) {
+  if (stop || dt <= 0) return;
+  const W = EMO_MW, s = W.v * Math.min(dt, 0.1);
+  rig.updateMatrixWorld(true);
+  headWorld(W.P); emoMeFwd(W.b).negate();                         // back
+  if (emoMwBlocked(W.P, W.b, s + W.ahead)) { emoBanner('Moonwalk: something behind you'); emoStopMine(); return; }
+  rig.position.x += W.b.x * s; rig.position.z += W.b.z * s;
+  rig.updateMatrixWorld(true);
+  if (M.has) { M.prev.x += W.b.x * s; M.prev.z += W.b.z * s; }    // the walking-stops-it check: not your own glide
+}
+function emoMwBlocked(head, b, L) {
+  const W = EMO_MW, r = CONFIG.player.radius, fy = level.floor;
+  W.Q.copy(head).addScaledVector(b, L);
+  W.c.copy(head); resolveBody(W.c); const d0 = (W.c.x - head.x) * b.x + (W.c.z - head.z) * b.z;   // walk boxes (walls, furniture)
+  W.c.copy(W.Q); resolveBody(W.c); const d1 = (W.c.x - W.Q.x) * b.x + (W.c.z - W.Q.z) * b.z;
+  if (d1 < -0.002 || d0 < -0.002) return true;
+  for (const door of doors) {                                     // door leaves (locomote's floor rule)
+    if (door.walk.top <= fy + 0.02 || fy + 1.2 < door.walk.top - CONFIG.door.height) continue;
+    _probe2.copy(head); const a0 = pushOutOf(door.walk, _probe2, r);
+    _probe2.copy(W.Q); if (pushOutOf(door.walk, _probe2, r) > a0 + 0.002) return true;
+  }
+  if (!W.ray) W.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
+  const R = W.ray, G = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR | GROUP.PROP | GROUP.ENEMY);   // loose props, leaves, bodies on the floor
+  for (const h of W.hs) {
+    R.origin.x = head.x; R.origin.y = fy + h; R.origin.z = head.z; R.dir.x = b.x; R.dir.y = 0; R.dir.z = b.z;
+    const hit = world.castRay(R, r + L, true, undefined, G, undefined, undefined, (c) => !CL_skip.has(c.handle) && !emoMwMine(c));
+    if (hit) return true;
+  }
+  for (const m of ENEMY.list) {                                   // men standing behind you
+    if (m.dead || !m.room || !m.room.active) continue;
+    const ex = rWX(m.room, m.pos.x), ez = rWZ(m.room, m.pos.y);
+    const dq = Math.hypot(W.Q.x - ex, W.Q.z - ez), dh = Math.hypot(head.x - ex, head.z - ez);
+    if (dq < r + 0.25 && dq < dh) return true;
+  }
+  if (NBODY.on && netBodyAt(W.c)) {                               // the other player
+    const dq = Math.hypot(W.Q.x - W.c.x, W.Q.z - W.c.z), dh = Math.hypot(head.x - W.c.x, head.z - W.c.z);
+    if (dq < NBODY.R && dq < dh) return true;
+  }
+  return false;
+}
+// A collider that is part of you or what you carry (a held prop, your slung or holstered gun): never in the way.
+function emoMwMine(c) {
+  const p = propByCollider.get(c.handle);
+  if (!p) return false;
+  const it = p.item;
+  return p.holders.length > 0 || !!(it && (it.slot || it.slung || it.worn));
+}
+
 // --- bubble over his head ---------------------------------------------------------------------------------------------
 function emoBubble(dt) {
   const R = EMO.rem, U = EMO.bub, e = R.e;
@@ -54863,6 +54972,14 @@ function emoIcon(c, kind, x, y, s, col) {
     c.lineWidth = 5; c.beginPath(); c.moveTo(30, -6); c.lineTo(52, -6); c.moveTo(44, -14); c.lineTo(54, -6); c.lineTo(44, 2); c.stroke();   // back
     c.save(); c.translate(-6, -46); c.rotate(0.7); c.beginPath(); c.roundRect(-5, -12, 10, 24, 4); c.fill(); c.restore();   // the round
     c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.arc(-6, -46, 20, -2.6, -0.6); c.stroke(); c.globalAlpha = 1;
+  } else if (kind === 'moon') {                                    // gliding back: one heel up, the other foot flat
+    c.beginPath(); c.arc(6, -38, 10, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(4, -26); c.lineTo(2, 10);
+    c.moveTo(3, -18); c.lineTo(-8, 2); c.moveTo(3, -18); c.lineTo(14, 2);
+    c.moveTo(2, 10); c.lineTo(-6, 32); c.lineTo(-2, 50); c.lineTo(8, 56);       // on the ball
+    c.moveTo(2, 10); c.lineTo(14, 32); c.lineTo(20, 54); c.lineTo(34, 54); c.stroke();
+    c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.moveTo(46, 40); c.lineTo(62, 40); c.moveTo(42, 50); c.lineTo(64, 50); c.stroke();
+    c.beginPath(); c.moveTo(-40, 60); c.lineTo(66, 60); c.stroke();
   } else if (kind === 'nade') {
     c.beginPath(); c.arc(-14, -36, 10, 0, Math.PI * 2); c.fill();
     c.beginPath(); c.moveTo(-12, -24); c.lineTo(-8, 10);
