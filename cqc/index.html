@@ -20051,6 +20051,7 @@ function itemGrab(hand, p) {
         return;
       }
     }
+    if (hand.ctrl && g.def.cls === 'pistol' && mpbTry(hand, _wv2, g)) return;   // pistol baseplate grab (MPB): before the support grip
     // Step 30: closing on the exposed magazine pulls it out into this hand.
     const md = magStripDist(g, _wv2);
     if (md < MAG_STRIP.reach && md < sd - MAG_STRIP.bias && md <= rd) { stripMag(g, hand); return; }
@@ -20138,6 +20139,69 @@ function stripMag(g, hand) {
   itemGrab(hand, m);
   if (m.item) m.item.blend = 0.6;                                      // a short slide into the palm
   pulse(hand, 0.35, 25);
+}
+// Pistol baseplate grab (MPB, ?magpinch=off): a free VR hand closing within MPB.reach of a held pistol's
+// magazine baseplate (below the grip, not at the grip front / trigger guard) takes it before any support grip.
+// Unlatched (catch just pressed, or A / X held on the gun hand): out at once. Latched: the hand pinches the plate
+// (tick) and the magazine comes out on A / X or on a pull down the well faster than MPB.pull m/s.
+const MPB = { on: !/[?&]magpinch=off/.test(QS), reach: 0.05, above: 0.006, pull: 0.12, min: 0.008, lose: 0.09 };
+const MPB_inv = new THREE.Matrix4(), MPB_p = new THREE.Vector3(), MPB_c = new THREE.Vector3(), MPB_w = new THREE.Vector3();
+function mpbLocal(g, Pw, out) {                                       // world point -> the seated magazine's own space
+  g.mag.root.updateWorldMatrix(true, false);
+  return out.copy(Pw).applyMatrix4(MPB_inv.copy(g.mag.root.matrixWorld).invert());
+}
+function mpbDist(g, Pw) {                                             // distance to the baseplate; Infinity above it or not a pistol
+  if (!MPB.on || !g || !g.mag || !g.def.magType || g.def.cls !== 'pistol' || g.magAnim < 0) return Infinity;
+  const B = magLocalBox(g.mag);
+  if (B.isEmpty()) return Infinity;
+  const L = mpbLocal(g, Pw, MPB_p), top = B.min.y + MAG_STRIP.pistolLip;
+  if (L.y > top + MPB.above) return Infinity;                         // up at the grip / trigger guard: the support grip's
+  MPB_c.set(clamp(L.x, B.min.x, B.max.x), clamp(L.y, B.min.y, top), clamp(L.z, B.min.z, B.max.z));
+  return MPB_c.distanceTo(L);
+}
+function mpbUnlatched(g) {
+  const pc = g.primary && g.primary.ctrl;
+  return (g.thumbCatchUntil || 0) > performance.now() / 1000 || !!(pc && pc.userData && pc.userData.gamepad && isPressed(pc, 4));
+}
+function mpbTake(g, hand) {                                           // into the hand, with the mag-out recording (ejectMag)
+  hand.magPinch = null;
+  if (!g.mag) return;
+  stripMag(g, hand);
+  mechPulse(hand, 0.3, 14);
+}
+// Squeeze start (before nearestProp) and the second-hand path in itemGrab. True when it took the grab.
+function mpbTry(hand, Pw, gOnly) {
+  if (!MPB.on || !hand.ctrl || (hand.prop && !gOnly)) return false;
+  let best = null, bd = MPB.reach;
+  for (const h of vrHands) {
+    if (h === hand) continue;
+    const g = gunTouched(h);
+    if (!g || g.primary !== h || (gOnly && g !== gOnly)) continue;
+    const d = mpbDist(g, Pw);
+    if (d < bd) { bd = d; best = g; }
+  }
+  if (!best) return false;
+  hand.prop = null;
+  if (mpbUnlatched(best)) { mpbTake(best, hand); return true; }
+  const L = mpbLocal(best, Pw, MPB_p);
+  hand.magPinch = { g: best, mag: best.mag, y: L.y, y0: L.y };
+  pulse(hand, 0.15, 12);                                              // found the plate
+  return true;
+}
+function mpbTick(dt) {
+  if (!MPB.on) return;
+  for (const h of vrHands) {
+    const P = h.magPinch;
+    if (!P) continue;
+    const g = P.g;
+    if (h.prop || !g.primary || g.mag !== P.mag || !g.mag || g.magAnim < 0) { h.magPinch = null; continue; }
+    h.source.getWorldPosition(MPB_w);
+    const d = mpbDist(g, MPB_w), L = mpbLocal(g, MPB_w, MPB_p);
+    if (d > MPB.lose && L.y > P.y0 - 0.03) { h.magPinch = null; continue; }   // wandered off (not pulling down)
+    const v = dt > 0 ? (P.y - L.y) / dt : 0;                          // speed down the well, relative to the gun
+    P.y = L.y;
+    if (mpbUnlatched(g) || (v > MPB.pull && P.y0 - L.y > MPB.min)) mpbTake(g, h);
+  }
 }
 // Step 8.1: distance from a point (gun root space) to the rack zone: a segment along the
 // slide / charging-handle slot. Infinity for guns without one (the pump).
@@ -20516,7 +20580,7 @@ function cycleSelector(g) {
 // Step 11: the gun a hand is on, as its grip, its handguard / forend or its slide. Face buttons
 // on either hand work it, so your support hand's X / Y drop the magazine like the gun hand's A / B.
 function gunTouched(hand) { const p = hand && hand.prop; return p && p.item && p.item.kind === 'gun' ? p.item : null; }
-function gunButtonA(g) { if (g.def.magType && g.mag) { g.thumbCatchUntil = performance.now() / 1000 + 0.3; mechPulse(g.primary, 0.28, 12); ejectMag(g, 1.1); } }   // magazine release (step 59.2: thumb shown on the catch)
+function gunButtonA(g) { if (MPB.on && g.mag) { const ph = vrHands.find((h) => h.magPinch && h.magPinch.g === g); if (ph) { g.thumbCatchUntil = performance.now() / 1000 + 0.3; mechPulse(g.primary, 0.28, 12); mpbTake(g, ph); return; } } if (g.def.magType && g.mag) { g.thumbCatchUntil = performance.now() / 1000 + 0.3; mechPulse(g.primary, 0.28, 12); ejectMag(g, 1.1); } }   // magazine release (step 59.2: thumb shown on the catch)
 function gunButtonB(g) { if (g.def.cls === 'pistol' || (g.slideLocked && !g.def.manual)) slideRelease(g); else if (g.def.cls === 'smg') cycleSelector(g); }   // polish 3: a locked-open M4 / MPX: the bolt catch
 function canFire(g) {
   if (g.free && g.free.primary && !g.free.onGrip) return false;   // step 65: your finger is not at the trigger
@@ -22064,6 +22128,7 @@ function weaponsUpdate(dt, now) {
     h.prevTarget.copy(h.target); h.hasPrev = true;
   }
   flipTick(dt, wnow());                            // gun flip: guns in the air, armed catches
+  mpbTick(dt);                                     // pistol baseplate grab: pull / release while pinched
   if (renderer.xr.isPresenting) { updateRackHover(); updateLightSwitches(); }     // step 8.1; weapon light switches
   // Controller models hide while their hand holds a weapon item.
   for (const h of vrHands) if (h.proxy) h.proxy.visible = !HANDS.ready && !(h.prop && h.prop.item);   // step 13: real hands
@@ -46799,6 +46864,7 @@ for (let i = 0; i < 2; i++) {
     grip.getWorldPosition(_cur);
     if (FLIP.on && !hand.prop) { const fp = flipCatchFind(_cur, hand); if (fp && flipCatch(hand, fp)) return; }   // gun flip: a gun in the air
     if (FLIP.on && FLIP.list.length) hand.flipArm = wnow() + FLIP.arm;   // squeezed just before it arrives: stays armed
+    if (!hand.prop && mpbTry(hand, _cur)) return;                   // pistol baseplate grab (MPB)
     const p = hand.hover || nearestProp(_cur, CONFIG.physics.reach) || slungNear(_cur);   // animated sling: anywhere on the rifle on your chest
     if (p) { grab(hand, p); return; }
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
@@ -46807,7 +46873,7 @@ for (let i = 0; i < 2; i++) {
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { hand.flipArm = 0; benchLampRelease(hand); if (!emoKeepGun(hand)) release(hand); releaseDoor(hand); };   // emote gun fix: a gun stays in the hand while an emote plays   // the bench lamp let go where you hold it
+  const squeezeEnd = () => { hand.flipArm = 0; hand.magPinch = null; benchLampRelease(hand); if (!emoKeepGun(hand)) release(hand); releaseDoor(hand); };   // emote gun fix: a gun stays in the hand while an emote plays   // the bench lamp let go where you hold it
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
