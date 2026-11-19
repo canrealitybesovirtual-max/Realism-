@@ -2014,3 +2014,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Fixed furniture (racks, lockers, cabinets, shelves, tables) is part of the room layout, the same on both sides through MPSYNC. Loose props moved on each side by its own physics, so a crate one player pushed stood somewhere else for the other (he walked through it).
 - netPropFreeze (netTick, twice a second while connected): every loose prop of 6 kg or more (crates, chairs, drums, big boxes; not items, tables, debris, held things) goes back to its layout spot (resetProp) and becomes a Fixed Rapier body: walls for both players, no network traffic. grab() refuses them. Lighter things (cans, bottles, flaps) still move on each side. Link ended = dynamic again.
 - Checked: module parse, eslint no-undef. Not run (no browser, at the user's request).
+
+## CQC VR: camera further forward over the body
+- COMFORT "Your body" forward default +8 -> -4 cm (body 12 cm further back under the eyes, so the chest is less in the way looking down; the user liked the view near the end of the range), range -10..+15 (was -5..+15). A value you saved yourself is kept. Parse checked only.
