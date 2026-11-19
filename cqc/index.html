@@ -57129,8 +57129,12 @@ const EMO_SD_BR = [emoK0(0, {}), emoK0(0.7, { py: -0.03, np: -0.38, hp: -0.28, s
   emoK0(4.8, { py: -0.06, np: -0.16, hp: -0.04, sp: -0.13, cp: -0.08 }), emoK0(5.4, { py: -0.06, np: -0.16, hp: -0.04, sp: -0.13, cp: -0.08 })];
 // the gun held low in front (chest space, as EMO_RK_G): looked at
 const EMO_SD_FP = { p: [0.06, -0.24, -0.3], x: -0.85, y: 0.35, z: 0.15 }, EMO_SD_FR = { p: [0.04, -0.3, -0.3], x: -0.55, y: 0.75, z: 0.2 };
+// Pose knobs (head frame R right, U up, F forward): the pistol's contact point and bore (pc / pd: right, up, forward), its top
+// rolled toward the face by pu, and the elbow poles in chest space (x right, y up, z back) low (pole0) and at the head (pole1);
+// long gun right / left elbow poles. Self-inflicted fix: the old poles pointed the elbow back, so the forearm ran behind the gun.
+const EMO_SD_A = { pc: [0, 0.012, 0.02], pd: [-0.92, 0.06, -0.38], pu: 0, pole0: [0.7, -0.75, 0.15], pole1: [1.0, 1.0, -0.4], piv0: 0.2, piv: 0.55, pivR0: 0, pivR: 2.6, rA: 0.5, gc: [0, 0, 0.005], poleH: 0.3, rifR: [0.7, -0.8, 0.2], rifL: [-0.7, -0.75, 0.15] };
 const _sd = { H: new THREE.Vector3(), A: new THREE.Vector3(), C: new THREE.Vector3(), d: new THREE.Vector3(), u: new THREE.Vector3(), R: new THREE.Vector3(), U: new THREE.Vector3(), F: new THREE.Vector3(),
-  X: new THREE.Vector3(), Y: new THREE.Vector3(), Z: new THREE.Vector3(), q: new THREE.Quaternion(), hq: new THREE.Quaternion(), gq: new THREE.Quaternion(), fq: new THREE.Quaternion(), g: new THREE.Vector3(), f: new THREE.Vector3(),
+  X: new THREE.Vector3(), Y: new THREE.Vector3(), Z: new THREE.Vector3(), q: new THREE.Quaternion(), cq: new THREE.Quaternion(), hq: new THREE.Quaternion(), gq: new THREE.Quaternion(), fq: new THREE.Quaternion(), g: new THREE.Vector3(), f: new THREE.Vector3(),
   m: new THREE.Matrix4(), e: new THREE.Euler(), pole: new THREE.Vector3(), fr: new THREE.Vector3(), o: { p: new THREE.Vector3(), q: new THREE.Quaternion() }, n: new THREE.Vector3() };
 const emoSdLive = (g) => (g.def.action === 'pump' ? g.chamber === 'live' : !!g.chambered && !g.slideLocked);
 function emoSdCheck() {
@@ -57151,12 +57155,17 @@ function emoSdContact(e, pis, C, dir, up) {
   const r = (h ? h.r : 0.11) * 0.78;                               // the capsule is a generous hit volume; the skull is smaller
   e.B.head.getWorldQuaternion(_sd.hq);
   _sd.R.set(1, 0, 0).applyQuaternion(_sd.hq); _sd.U.set(0, 1, 0).applyQuaternion(_sd.hq); _sd.F.set(0, 0, -1).applyQuaternion(_sd.hq);
+  const A = EMO_SD_A;
   if (pis) {                                                       // right temple, a little forward and up of the ear
-    C.copy(_sd.H).addScaledVector(_sd.R, r + 0.004).addScaledVector(_sd.U, 0.012).addScaledVector(_sd.F, 0.014);
-    dir.copy(_sd.R).multiplyScalar(-0.97).addScaledVector(_sd.U, 0.1).normalize(); up.copy(_sd.U);
-  } else {                                                         // under the chin, the bore tipped back into the head
-    C.copy(_sd.H).addScaledVector(_sd.U, -(r + 0.03)).addScaledVector(_sd.F, r * 0.55);
-    dir.copy(_sd.U).multiplyScalar(0.96).addScaledVector(_sd.F, -0.28).normalize(); up.copy(_sd.F);
+    C.copy(_sd.H).addScaledVector(_sd.R, r + 0.004).addScaledVector(_sd.U, A.pc[1]).addScaledVector(_sd.F, A.pc[2]);
+    dir.copy(_sd.R).multiplyScalar(A.pd[0]).addScaledVector(_sd.U, A.pd[1]).addScaledVector(_sd.F, A.pd[2]).normalize();
+    up.copy(_sd.U).addScaledVector(_sd.F, A.pu).addScaledVector(dir, -_sd.U.dot(dir));
+  } else {                                                         // under the chin; the rifle leans out from the body, its butt end
+    C.copy(_sd.H).addScaledVector(_sd.U, -(r + 0.03)).addScaledVector(_sd.F, r * 0.55);   // forward and down, clear of the chest
+    e.root.getWorldQuaternion(_sd.cq);                             // (body heading, not the bowed head: the head's frame put the gun in the torso)
+    _sd.X.set(0, 0, 1).applyQuaternion(_sd.cq); _sd.Y.set(0, 1, 0);
+    dir.copy(_sd.Y).multiplyScalar(Math.cos(A.rA)).addScaledVector(_sd.X, Math.sin(A.rA)).normalize();
+    up.copy(_sd.X).negate();                                       // the sights face out, the grip and magazine toward him
   }
   return h;
 }
@@ -57217,13 +57226,23 @@ function emoSdPose(e, R, dt) {
   e.gun.root.position.copy(_rk.g); e.root.worldToLocal(e.gun.root.position);
   e.gun.root.updateWorldMatrix(false, true);
   // right hand on the grip; a pistol at the temple: the elbow out to the side and up
-  _rk.a.copy(EMO_RK.wrist).applyQuaternion(_rk.gq).add(_rk.g);
-  _rk.qa.copy(_rk.gq).multiply(_rk.hR);
-  if (pis) emoSdArm(e, 'R', _rk.a, _rk.qa, cq, mix(0.7, 1.0, k), mix(-0.75, 0.25, k), mix(0.15, 0.3, k));
-  else emoSdArm(e, 'R', _rk.a, _rk.qa, cq, 0.7, -0.8, 0.2);
+  // (pistol: the hand pivots on the grip about the gun's side axis, so its heel and the wrist drop below the slide, the hand
+  // runs down the backstrap toward a raised elbow; the elbow pole follows the hand's own axis, so the forearm continues the
+  // hand instead of folding back behind the gun)
+  const A = EMO_SD_A, kp = pis ? k : 0;
+  _sd.q.setFromAxisAngle(_rk.X, pis ? mix(A.piv0, A.piv, k) : mix(A.pivR0, A.pivR, k));
+  _rk.a.copy(EMO_RK.wrist).sub(_sd.n.set(A.gc[0], A.gc[1], A.gc[2])).applyQuaternion(_sd.q).add(_sd.n).applyQuaternion(_rk.gq).add(_rk.g);
+  _rk.qa.copy(_rk.gq).multiply(_sd.q).multiply(_rk.hR);
+  if (pis) {
+    _sd.pole.set(mix(A.pole0[0], A.pole1[0], k), mix(A.pole0[1], A.pole1[1], k), mix(A.pole0[2], A.pole1[2], k)).applyQuaternion(cq);
+    _sd.fr.set(0, 1, 0).applyQuaternion(_rk.qa).multiplyScalar(A.poleH * kp);   // the hand's axis, toward the forearm
+    _sd.pole.multiplyScalar(1 - A.poleH * kp).add(_sd.fr);
+    _sd.fr.set(0, 0, -1).applyQuaternion(cq);
+    solveIK(e.B.upperArmR, e.B.foreArmR, e.sk.upper, e.sk.fore, _rk.a, _sd.pole, _sd.fr, e.B.handR, _rk.qa);
+  } else emoSdArm(e, 'R', _rk.a, _rk.qa, cq, A.rifR[0], A.rifR[1], A.rifR[2]);
   if (!pis && W) {                                                  // a long gun: the left hand on the handguard
     emoRkHand('sup', e, R, W, _rk.g, _rk.gq, cq, 0, 0, _sd.o);
-    emoSdArm(e, 'L', _sd.o.p, _sd.o.q, cq, -0.7, -0.75, 0.15);
+    emoSdArm(e, 'L', _sd.o.p, _sd.o.q, cq, A.rifL[0], A.rifL[1], A.rifL[2]);
   }
   enemyCurl(e, 0.6);
   if (!out) {
@@ -57962,7 +57981,7 @@ window.addEventListener('wheel', (ev) => {
   ev.preventDefault(); ev.stopImmediatePropagation();
   C3.dist = clamp(C3.dist * (1 + Math.sign(ev.deltaY) * 0.1), C3.dMin, C3.dMax);
 }, { capture: true, passive: false });
-if (/[?&]dev\b/.test(QS)) window.__cqcEmote = { navGrid, navFree, padPoll, inv, EMO_FLIP, EMO_KICK, emoBody, emoKeys, emoKickMe, EMO, EMOTES, EMO_SLOTS, emoPlay, emoStopMine, emoRx, emoAvPose, emoOpen, emoClose, emoAim, emoDraw, emoTick, emoVrMesh, emoVrStick, emoPadPoll, emoFallMake, emoGun, emoBubble, C3, emoSelfStart, emoSelfTick, emoCamApply, emoCamPre, emoCamVr, emoVrPlace, emo3Snap, emoSelfEnsure, c3Ray, c3Clear, c3HideMine };
+if (/[?&]dev\b/.test(QS)) window.__cqcEmote = { EMO_SD_A, navGrid, navFree, padPoll, inv, EMO_FLIP, EMO_KICK, emoBody, emoKeys, emoKickMe, EMO, EMOTES, EMO_SLOTS, emoPlay, emoStopMine, emoRx, emoAvPose, emoOpen, emoClose, emoAim, emoDraw, emoTick, emoVrMesh, emoVrStick, emoPadPoll, emoFallMake, emoGun, emoBubble, C3, emoSelfStart, emoSelfTick, emoCamApply, emoCamPre, emoCamVr, emoVrPlace, emo3Snap, emoSelfEnsure, c3Ray, c3Clear, c3HideMine };
 </script>
 </body>
 </html>
