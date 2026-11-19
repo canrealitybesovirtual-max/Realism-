@@ -12513,7 +12513,10 @@ function netEnTx(dt) {                                            // host, 15 Hz
     if (!e.nid) e.nid = ++NET.nidC;
     if (!e.lk) e.lk = Object.keys(ENEMY_LOADOUTS).find((k) => ENEMY_LOADOUTS[k] === e.w) || 'smg';
     let w = null;
-    if (!e.dead && (e.engaged || e.watch)) { threatLocal(e, _nm.v); w = [+_nm.v.x.toFixed(2), +_nm.v.y.toFixed(2), +_nm.v.z.toFixed(2)]; }
+    if (!e.dead && ((e.engaged && (e.los || e.hasKnown)) || e.watch)) {   // aimfix: only a real threat point (not lastKnown's default), and the head of the player he fights (NET.tgt is null outside his update)
+      const pT = NET.tgt; NET.tgt = e.tgtR && NET.remOk ? NET.remW : null;
+      try { threatLocal(e, _nm.v); } finally { NET.tgt = pT; }
+      w = [+_nm.v.x.toFixed(2), +_nm.v.y.toFixed(2), +_nm.v.z.toFixed(2)]; }
     const st = e.downed ? 1 : e.surr ? (e.surr.det ? 3 : 2) : 0;    // 1 down alive, 2 hands up, 3 tied: his pose travels as bones
     L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w, +enemyFloorY(e).toFixed(3),   // [10] the floor he stands on (a stairwell landing)
       st, e.spec ? e.spec.kit | 0 : 0, st && !(e.dead && !e.downed) ? netPoseOf(e) : null, e.unarmed ? 1 : 0,
@@ -12614,7 +12617,7 @@ function netTargetFor(e) {
   }
   return e.tgtR ? NET.remW : null;
 }
-function netTgtSwitch(e) { e.losT = 0; e.wasVisible = false; }   // a new man to look for: sight is checked at once, and he takes his reaction time again
+function netTgtSwitch(e) { e.losT = 0; e.wasVisible = false; e.visible = false; e.los = false; }   // aimfix: no shot at the new target before sight of him is checked   // a new man to look for: sight is checked at once, and he takes his reaction time again
 const netTgtDead = () => (NET.tgt ? NET.remDead : playerState.dead);   // inside a man's update: is the player he fights down?
 // Host: who hit him (targeting); the joiner's hits arrive with NET.ehFrom set.
 function netAtk(e) { if (netCoop() && NET.role === 'host') { if (NET.ehFrom) e.atkR = wnow(); else e.atkL = wnow(); } }
@@ -30088,7 +30091,7 @@ function rfSpawn(room, plan, i, now) {
     Dx: D.x, Dz: D.z, nz: D.nz, away,
     sx: D.x + stackLat, sz: D.z - D.nz * (how === 'fast' ? 0.85 : 0.7),
     hx: D.x + away * rnd2(1.2, 1.9), hz: D.z + D.nz * rnd2(0.7, 1.0), born: now, sl: 0, k };
-  if (k) { e.rf.sz -= D.nz * 0.75 * k; e.rf.lead = rfLeader(room, e); if (how === 'fast' && k % 2) e.rf.hx = D.x - away * rnd2(1.2, 1.9); }   // the second man hooks the other way (his corner), if it is free
+  if (k) { e.rf.sz -= D.nz * 0.75 * k; e.rf.lead = rfLeader(room, e); if (how === 'fast' && k % 2) e.rf.hx = D.x - away * rnd2(1.2, 1.9); e.rf.hz += D.nz * 0.7 * k; e.home.set(e.home.x, e.home.y + D.nz * 0.8 * k); }   // aimfix: each man of a stack hooks to his own spot (they all ended on one point inside the door)   // the second man hooks the other way (his corner), if it is free
   { const G = navGrid(room); if (!navFree(G, e.rf.hx, e.rf.hz)) { const ax = D.x - away * rnd2(1.2, 1.9); if (navFree(G, ax, e.rf.hz)) e.rf.hx = ax; else { e.rf.hx = D.x; e.rf.hz = D.z + D.nz * 1.4; } } }
   e.crouchT = how === 'fast' ? 0.15 : 0.45; e.aimT = how === 'fast' ? 0.7 : 0.9;
   enemyPose(e, 0.016, now);
@@ -30337,7 +30340,10 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
 }
 // Somewhere in the far half of the room, ideally behind cover from the entry door.
 function enemySpawnSpot(room, taken = []) {
-  const far = (x, z) => taken.every((t) => Math.hypot(t.x - x, t.z - z) > 1.3);   // step 9: one man per spot
+  // aimfix: men already in the room count as taken too (spawned another way, or earlier), so two never share a spot
+  const occ = taken.concat((room.enemies || []).filter((m) => !m.dead).map((m) => ({ x: m.pos.x, z: m.pos.y })));
+  let minD = 1.3;
+  const far = (x, z) => occ.every((t) => Math.hypot(t.x - x, t.z - z) > minD);   // step 9: one man per spot
   const entry = new THREE.Vector2(room.entryX || 0, room.d / 2);
   const faceDoor = (x, z) => Math.atan2(-(entry.x - x), -(entry.y - z));
   const range = room.plan && room.plan.type === 'range', farZ = -room.d / 2 + 16;   // step 75: on the range they hold the far end
@@ -30357,9 +30363,15 @@ function enemySpawnSpot(room, taken = []) {
   }
   for (let tries = 0; tries < 60; tries++) {
     const x = rnd2(-room.w / 2 + 0.6, room.w / 2 - 0.6), z = range ? rnd2(-room.d / 2 + 0.9, farZ) : rnd2(-room.d / 2 + 0.7, -0.3);
-    if (navFree(grid, x, z) && Math.hypot(x - room.exitX, z + room.d / 2) > 1.0 && (far(x, z) || tries > 45) && (!SPAWNCHK.on || tries > 50 || !spotBad(room, x, z, grid))) return { x, z, yaw: faceDoor(x, z) };
+    if (tries === 40) minD = 0.9;                                  // aimfix: a crowded room spaces them closer, never on one spot
+    if (navFree(grid, x, z) && Math.hypot(x - room.exitX, z + room.d / 2) > 1.0 && far(x, z) && (!SPAWNCHK.on || tries > 50 || !spotBad(room, x, z, grid))) return { x, z, yaw: faceDoor(x, z) };
   }
-  return { x: 0, z: range ? farZ - 2 : -room.d / 4, yaw: 0 };
+  minD = 0.7;                                                      // aimfix: last resort: a ring round the middle, each man his own place
+  for (let k = 0; k < 16; k++) {
+    const a = (occ.length + k) * 2.39996, r = 0.8 + 0.25 * k, x = clamp(Math.sin(a) * r, -room.w / 2 + 0.6, room.w / 2 - 0.6), z = clamp((range ? farZ - 2 : -room.d / 4) + Math.cos(a) * r, -room.d / 2 + 0.6, room.d / 2 - 1.2);
+    if (far(x, z) && navFree(grid, x, z)) return { x, z, yaw: faceDoor(x, z) };
+  }
+  return { x: clamp((occ.length % 4 - 1.5) * 0.9, -room.w / 2 + 0.6, room.w / 2 - 0.6), z: range ? farZ - 2 : -room.d / 4, yaw: 0 };
 }
 function removeEnemy(e) {
   if (e.enade && e.puppet) enadeEnd(e);                           // multiplayer: a copy's grenade in hand goes with it
@@ -31289,6 +31301,7 @@ function enemyFire(e, dt, now) {
   const aimed = (st === 'peek' || st === 'fight' || st === 'ambush' || st === 'suppress' || st === 'search') && e.visible && now > e.acquire;
   const wantFire = (aimed || blind) && e.aim > 0.9 && e.reloadT <= 0 && e.ammo > 0 && now - e.hitT > 0.25;
   if (!wantFire || now < e.nextShot) return;
+  if (AIMFIX.on && !aimFixOk(e, dt, now, aimed)) { e.nextShot = now + 0.08; return; }   // aimfix: gun posed now, aimed at the real target, a clear line (never into a wall)
   _ev.d.subVectors(e.aimPoint, e.gunP).normalize();
   _ev.a.set(0, 0, -1).applyQuaternion(e.gunQ);
   if (_ev.a.dot(_ev.d) < 0.96) return;                          // gun not on target yet
@@ -31298,6 +31311,28 @@ function enemyFire(e, dt, now) {
   enemyShoot(e, now);
   e.burst--;
   e.nextShot = now + (e.burst > 0 && W.rpm ? 60 / W.rpm : rnd2(W.gap[0], W.gap[1]));
+}
+// AIMFIX (?aimfix=off): a man posed at a low rate (off screen, far: co-op men fighting the joiner off the host's view) kept
+// shooting along a gun pose up to a few tenths of a second old, and his sight check runs at ~8 Hz, so rounds went into
+// walls the target had stepped behind. Before each shot: pose him now if that frame was skipped; an aimed shot needs the
+// barrel within ~11 deg of the player he fights (head to belly) and a clear line from the muzzle to him; a blind burst
+// needs 1.5 m clear in front of the muzzle.
+const AIMFIX = { on: !/[?&]aimfix=off\b/.test(QS), cos: 0.98, stat: { held: 0 } };
+const _afx = { m: new THREE.Vector3(), t: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
+function aimFixOk(e, dt, now, aimed) {
+  if (e.poseAcc > 0) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
+  const g = e.gun; g.root.updateWorldMatrix(true, false);
+  _afx.m.copy(g.wr.muzzle).applyMatrix4(g.root.matrixWorld);
+  _afx.b.set(0, 0, -1).applyQuaternion(e.gunQ);
+  let ok;
+  if (aimed) {
+    headWorld(_afx.t);                                              // NET.tgt aware: the player he fights
+    let best = -2;
+    for (const dy of [0.05, -0.35, -0.7]) { _afx.d.set(_afx.t.x, _afx.t.y + dy, _afx.t.z).sub(_afx.m).normalize(); best = Math.max(best, _afx.d.dot(_afx.b)); }
+    ok = best > AIMFIX.cos && (clearLine(_afx.m, _afx.t.setY(_afx.t.y - 0.3), 0.1) || clearLine(_afx.m, _afx.t.setY(_afx.t.y + 0.35), 0.1));
+  } else ok = clearLine(_afx.m, _afx.t.copy(_afx.m).addScaledVector(_afx.b, 1.5), 0.05);
+  if (!ok) AIMFIX.stat.held++;
+  return ok;
 }
 const _es = { o: new THREE.Vector3(), m: new THREE.Vector3(), d: new THREE.Vector3(), b: new THREE.Vector3(), x: new THREE.Vector3(), y: new THREE.Vector3() };
 function enemyShoot(e, now) {

@@ -2107,3 +2107,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC emotes: VR turning no longer inverted after an emote
 - Cause: the headset emote view restored the rig with rig.quaternion.copy; for a heading past 90 deg three's XYZ Euler then reads x = z = pi, so rotateRigAroundHead's rotation.y += angle (and the walk heading from rotation.y) turned the wrong way. emoCamPre now restores rig.rotation.set(0, yaw, 0) (yaw saved by c3RigYaw). Parse checked only.
+
+## CQC: men aim at their real target, no shots into walls, separate spawn spots (AIMFIX, ?aimfix=off; not run in a browser)
+- Co-op joiner's copies looked the wrong way: netEnTx sent threatLocal from outside the man's update (NET.tgt null), so a man fighting the joiner sent the host's head as his look / aim point; also an engaged man with no known spot sent lastKnown's default. Now NET.tgt is set per man (e.tgtR) for the send, and only a real threat point goes.
+- Shots at walls: a man posed at a low rate (off the host's view, far) fired along a gun pose up to a few tenths of a second old, and his sight check runs at ~8 Hz. aimFixOk (enemyFire, before each shot): poses him now if that frame was skipped; an aimed shot needs the barrel within ~11 deg of the player he fights (head to belly) and a clear line muzzle -> him; a blind burst needs 1.5 m clear in front of the muzzle; else held 80 ms. netTgtSwitch drops visible / los at once.
+- Spawns: enemySpawnSpot counts living men already in the room as taken; the random fallback no longer ignores spacing after 45 tries (0.9 m), the last resort is a ring of distinct spots (was one fixed point for everyone). Reinforcements stacked at a door each hook to their own spot / home.
+- Checked: module parse, eslint no-undef (browser globals only).
