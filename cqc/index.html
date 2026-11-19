@@ -18256,14 +18256,14 @@ function fireUpdate(dt) {
   }
 }
 function blastSparks(P, n, hot = [7, 4.2, 1.6]) {
-  const F = WEAPON.fx;
+  const F = WEAPON.fx, fy = fxFloorY(P);   // QA: the floor they bounce on (each pool slot kept the last emitter's)
   for (let i = 0; i < n; i++) {
     const j = F.next; F.next = (F.next + 1) % F.n;
     const u = Math.random() * 2 - 1, a = Math.random() * Math.PI * 2, r = Math.sqrt(1 - u * u), s = 3 + Math.random() * 9;
     F.pos[j * 3] = P.x; F.pos[j * 3 + 1] = P.y + 0.02; F.pos[j * 3 + 2] = P.z;
     F.vel[j * 3] = r * Math.cos(a) * s; F.vel[j * 3 + 1] = Math.abs(u) * s * 0.8 + 1; F.vel[j * 3 + 2] = r * Math.sin(a) * s;
     F.max[j] = F.life[j] = 0.18 + Math.random() * 0.45;
-    F.size[j] = 0.004; F.grow[j] = 0; F.drag[j] = 0.9; F.grav[j] = 9.8; F.land[j] = 0; F.bounce[j] = 1;
+    F.size[j] = 0.004; F.grow[j] = 0; F.drag[j] = 0.9; F.grav[j] = 9.8; F.land[j] = 0; F.bounce[j] = 1; F.fy[j] = fy;
     F.base[j * 4] = hot[0]; F.base[j * 4 + 1] = hot[1]; F.base[j * 4 + 2] = hot[2]; F.base[j * 4 + 3] = 1;
   }
   F.alive = 1;
@@ -21835,7 +21835,7 @@ function makeImpactFx(n) {
   scene.add(points);
   return { n, pos, col, size, vel: new Float32Array(n * 3), life: new Float32Array(n), max: new Float32Array(n), grow: new Float32Array(n),
     base: new Float32Array(n * 4), drag: new Float32Array(n), grav: new Float32Array(n), next: 0, alive: 0, geo, mat, points,
-    land: new Uint8Array(n), bounce: new Uint8Array(n) };   // step 10: blood drops that mark the floor, sparks that bounce
+    land: new Uint8Array(n), bounce: new Uint8Array(n), fy: new Float32Array(n) };   // step 10: blood drops that mark the floor, sparks that bounce; fy: the floor under where it was thrown (QA: stair landings, not world 0)
 }
 const FX_KIND = {
   plaster: { c: [0.86, 0.85, 0.81], n: 10, sp: 1.2, life: 0.9, size: 0.016, grow: 0.05, drag: 3.5, grav: 0.4, sparks: 0 },
@@ -21847,7 +21847,7 @@ const FX_KIND = {
   water: { c: [0.52, 0.58, 0.62], n: 14, sp: 2.2, life: 0.7, size: 0.004, grow: 0, drag: 0.6, grav: 9.8, sparks: 0 }   // step 94: a round into a puddle
 };
 function impactFx(kind, p, nrm, snd) {   // snd: the sound's surface when it differs from the dust's (a cardboard box: wood dust, card sound)
-  const F = WEAPON.fx, K = FX_KIND[kind] || FX_KIND.metal;
+  const F = WEAPON.fx, K = FX_KIND[kind] || FX_KIND.metal, fy = fxFloorY(p);   // QA: sparks / glass bounce on the floor under this hit
   const emit = (count, spark) => {
     for (let i = 0; i < count; i++) {
       const j = F.next; F.next = (F.next + 1) % F.n;
@@ -21859,7 +21859,7 @@ function impactFx(kind, p, nrm, snd) {   // snd: the sound's surface when it dif
       F.size[j] = spark ? 0.0035 : K.size * (0.7 + Math.random() * 0.6);
       F.grow[j] = spark ? 0 : K.grow;
       F.drag[j] = spark ? 0.6 : K.drag; F.grav[j] = spark ? 9.8 : K.grav;
-      F.land[j] = 0; F.bounce[j] = spark ? 1 : 0;
+      F.land[j] = 0; F.bounce[j] = spark ? 1 : 0; F.fy[j] = fy;
       const c = spark ? [7, 4.2, 1.8] : K.c, a = spark ? 1 : 0.55;
       F.base[j * 4] = c[0]; F.base[j * 4 + 1] = c[1]; F.base[j * 4 + 2] = c[2]; F.base[j * 4 + 3] = a;
     }
@@ -21886,10 +21886,11 @@ function updateImpactFx(dt) {
     const dr = Math.exp(-F.drag[j] * dt);
     F.vel[j * 3] *= dr; F.vel[j * 3 + 1] = F.vel[j * 3 + 1] * dr - F.grav[j] * dt; F.vel[j * 3 + 2] *= dr;
     F.pos[j * 3] += F.vel[j * 3] * dt; F.pos[j * 3 + 1] += F.vel[j * 3 + 1] * dt; F.pos[j * 3 + 2] += F.vel[j * 3 + 2] * dt;
-    if (F.pos[j * 3 + 1] < 0.003 && F.vel[j * 3 + 1] < 0) {            // step 10: the floor
-      if (F.land[j]) { bloodDropLanded(F.pos[j * 3], F.pos[j * 3 + 2], F.pos[j * 3 + 1]); F.life[j] = 0; }
-      else if (F.bounce[j]) { F.pos[j * 3 + 1] = 0.003; F.vel[j * 3 + 1] *= -0.3; F.vel[j * 3] *= 0.55; F.vel[j * 3 + 2] *= 0.55; }
-      else if (F.grav[j] > 2) { F.pos[j * 3 + 1] = 0.003; F.vel[j * 3] = F.vel[j * 3 + 1] = F.vel[j * 3 + 2] = 0; }
+    const fl = F.fy[j] + 0.003;
+    if (F.pos[j * 3 + 1] < fl && F.vel[j * 3 + 1] < 0) {            // step 10: the floor (QA: the one under it, not world 0)
+      if (F.land[j]) { bloodDropLanded(F.pos[j * 3], F.pos[j * 3 + 2], fl); F.life[j] = 0; }
+      else if (F.bounce[j]) { F.pos[j * 3 + 1] = fl; F.vel[j * 3 + 1] *= -0.3; F.vel[j * 3] *= 0.55; F.vel[j * 3 + 2] *= 0.55; }
+      else if (F.grav[j] > 2) { F.pos[j * 3 + 1] = fl; F.vel[j * 3] = F.vel[j * 3 + 1] = F.vel[j * 3 + 2] = 0; }
     }
     F.size[j] += F.grow[j] * dt;
     const t = clamp(F.life[j] / F.max[j]);
@@ -34927,7 +34928,7 @@ function loopPlayerDown() {
 }
 function loopUpdate(dt) {
   loop.stress = Math.max(0, loop.stress - CONFIG.loop.stressDecay * dt);
-  try { sbTick(dt); } catch (e) { /* scoreboard */ }                // SCOREBOARD
+  try { sbTick(dt); } catch (e) { if (!sbS().err) { sbS().err = 1; console.warn('scoreboard', e); } }   // SCOREBOARD (a failure is logged once)
 }
 function loopCue(freqs) {                          // a quiet two-note tick: room clear, points banked
   if (!CONFIG.loop.clearCue || !audio.ctx || audio.ctx.state !== 'running') return;
@@ -41996,8 +41997,13 @@ function polishPrecompile(on) {
  * ------------------------------------------------------------------------- */
 // Writes into the step 5 impact pool. axis: main direction; cone: spread (0 = a
 // line, 1 = a hemisphere). o: { c, a, sp, life, size, grow, drag, grav, land }.
+function fxFloorY(p) {   // QA world pass: the floor under a point (stair flights / landings, rooms on another floor), world y
+  const r = roomContaining(p.x, p.z, 0.3, p.y);
+  if (!r) return level.floor;
+  return r.origin.y + roomFloorAt(r, rLX(r, p.x), rLZ(r, p.z), p.y - r.origin.y - 0.6);
+}
 function fxEmit(p, axis, cone, count, o) {
-  const F = WEAPON.fx;
+  const F = WEAPON.fx, fy = fxFloorY(p);
   for (let i = 0; i < count; i++) {
     const j = F.next; F.next = (F.next + 1) % F.n;
     _p10.c.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(cone * 2).add(axis).normalize();
@@ -42007,7 +42013,7 @@ function fxEmit(p, axis, cone, count, o) {
     F.max[j] = F.life[j] = rnd2(o.life[0], o.life[1]);
     F.size[j] = rnd2(o.size[0], o.size[1]);
     F.grow[j] = o.grow; F.drag[j] = o.drag; F.grav[j] = o.grav;
-    F.land[j] = o.land && i < o.land ? 1 : 0; F.bounce[j] = 0;
+    F.land[j] = o.land && i < o.land ? 1 : 0; F.bounce[j] = 0; F.fy[j] = fy;
     const k = 0.8 + Math.random() * 0.3;
     F.base[j * 4] = o.c[0] * k; F.base[j * 4 + 1] = o.c[1] * k; F.base[j * 4 + 2] = o.c[2] * k; F.base[j * 4 + 3] = o.a;
   }
@@ -42108,9 +42114,36 @@ function rollAlong(n, dir) {
   if (_p10.c.lengthSq() < 1e-4) return Math.random() * Math.PI * 2;
   return Math.atan2(_p10.c.dot(_p10.d), _p10.c.dot(_p10.h));
 }
+// QA world pass: a wall spatter is a flat square, and only its middle was snapped to the drawn surface; beside a
+// doorway, a door frame, a column or a cover edge half of it hung in the air. Its edge is probed (8 points at the
+// splat's reach, each along the normal onto the drawn surface); a miss shrinks it, and one that cannot fit is
+// dropped. ?bloodfit=off = as before.
+const BFIT = { on: !/[?&]bloodfit=off\b/.test(QS) };
+const _bfP = new THREE.Vector3(), _bfN = new THREE.Vector3(), _bfT = new THREE.Vector3(), _bfB = new THREE.Vector3(), _bfQ = new THREE.Vector3();
+function bloodFit(P, N, kind, s) {
+  _bfT.set(0, 1, 0); if (Math.abs(N.y) > 0.9) _bfT.set(1, 0, 0);
+  _bfT.addScaledVector(N, -_bfT.dot(N)).normalize(); _bfB.crossVectors(N, _bfT);
+  const reach = (DECAL_SIZE[kind] || 0.3) * (kind === 'run' ? 0.3 : 0.36);   // the splat's paint stays inside ~0.36 of its square (a run: a narrow streak)
+  for (let k = s, tries = 0; tries < 4; tries++, k *= 0.7) {
+    let ok = true;
+    for (let i = 0; i < 8 && ok; i++) {
+      const a = i * Math.PI / 4, r = reach * k * (i & 1 ? 0.8 : 1);
+      _bfQ.copy(P).addScaledVector(_bfT, Math.cos(a) * r).addScaledVector(_bfB, Math.sin(a) * r);
+      if (!hsSnap(_bfQ, N, true)) { ok = false; break; }
+      if (HSN.n.dot(N) < 0.85 || Math.abs(HSN.d.dot(_bfQ.sub(HSN.p))) > 0.025) ok = false;   // another face (a jamb side, the floor), or nothing near the plane
+    }
+    if (ok) return k;
+    if (k < s * 0.4) break;
+  }
+  return 0;
+}
 function addBloodDecal(room, kind, wp, wn, roll, s, save = true) {
   if (!room || !room.active) return null;
-  if (HSN_ON && HSN_BLOOD[kind]) { if (!hsSnap(wp, wn, true)) return null; wp = HSN.p; wn = HSN.n; }   // HOLE SNAP: spatter on the drawn surface, or none
+  if (HSN_ON && HSN_BLOOD[kind]) {
+    if (!hsSnap(wp, wn, true)) return null;
+    wp = _bfP.copy(HSN.p); wn = _bfN.copy(HSN.n);                 // HOLE SNAP: spatter on the drawn surface, or none
+    if (BFIT.on && kind !== 'gib' && (DECAL_SIZE[kind] || 0.3) * s > 0.12 && !(s = bloodFit(wp, wn, kind, s))) return null;   // small drops: no fit   // QA: none hanging past an edge
+  }
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83
   roll = roomRoll(room, wn, roll);
   const L = decalLayer(room, room.group, kind);
@@ -42128,7 +42161,7 @@ function bloodDropLanded(x, z, y) {   // y: where it landed (the floor it fell o
   const room = roomContaining(x, z, 0, y);
   if (!room) return;
   P10.dropBudget -= 1;
-  _p10.a.set(x, room.aptTri && y !== undefined ? y : 0, z);
+  _p10.a.set(x, Number.isFinite(y) ? y : room.origin.y, z);   // QA: where it landed (stair landings, a floor not at world 0; the apartment-only test was left over)
   addBloodDecal(room, 'blood', _p10.a, _p10.up, Math.random() * Math.PI * 2, rnd2(0.12, 0.24));
 }
 // The pool spreads under him for half a minute. It is saved at full size, so a room
@@ -51630,7 +51663,7 @@ function swPrecache(extra) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { FEED, feedTick, wbVisePose, wbJawPoint, BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, LEVEL_RANKS, levelOf, levelRank, xpAdd, xpKill, XPPOP, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { FEED, feedTick, wbVisePose, wbJawPoint, BFIT, bloodFit, addBloodDecal, bloodFx, BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, LEVEL_RANKS, levelOf, levelRank, xpAdd, xpKill, XPPOP, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
