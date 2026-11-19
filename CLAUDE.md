@@ -2111,3 +2111,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: legs on stairs (other player's soldier and stairwell men)
 - Cause: enemyPose put the root at his floor (enemyFloorY, room-local, e.stairY on a stair) but aimed the foot IK at world y = ankle height (floor 0) and judged head pitch / idle look against floor 0. On a stair flight or landing (or any floor not at world 0) the feet were pulled to the wrong floor: legs stretched away below him, or folded up over the body ("feet on his head").
 - Fix: baseY = enemyBaseY(e) (room origin + his floor) added to the foot targets, the idle look point and the pitch reference. Flat rooms at world 0 unchanged. Module parse + eslint only; not run in a browser or on two devices.
+
+## CQC: scoreboard higher, gunsmith instruction text removed
+- Safe room scoreboard centre 1.56 -> 1.82 m. GUNSMITH sign shows only the title (the "press CLAMP ..." instruction lines are gone); the vise button label shows only CLAMP / RELEASE. Parse checked only.
