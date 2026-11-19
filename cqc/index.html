@@ -1180,35 +1180,71 @@
   })();
 </script>
 <script>
-/* Step 54.2: start watchdog (a plain script, so it runs even when the game module can't).
-   If the module never starts (a download from cdn.jsdelivr.net blocked or too slow, or a script error
-   this browser reports), the loading line says why instead of sitting at "Loading Three.js" 0%. */
+/* Step 54.2 / slow-link pass: start watchdog (a plain script, so it runs even when the game module can't).
+   Never gives up on time alone: while the game files come in it says how much has arrived ("Downloading the game:
+   3.4 MB so far, slow connection, 42 s"). A download that fails (a dropped link) reloads the page with backoff
+   (5 s, 10 s, ... 60 s, cqc.dlretry in sessionStorage); the service worker (sw.js) keeps what already arrived, so a
+   retry only fetches the rest. A real script error (with a line number) is shown, not retried. */
 (function () {
-  var errs = [];
-  function say(msg) {
+  var errs = [], t0 = Date.now(), dl = false;
+  function el() { return document.getElementById('loadText'); }
+  function say(msg, bad) {
     if (window.__cqcStarted) return;
-    var t = document.getElementById('loadText');
-    if (t) { t.textContent = msg; t.style.color = '#ff8a7a'; t.style.whiteSpace = 'normal'; }
+    var t = el();
+    if (t) { t.textContent = msg; t.style.color = bad ? '#ff8a7a' : ''; t.style.whiteSpace = 'normal'; }
+  }
+  function got() {   // bytes of finished downloads (resource timing; the page itself once it has arrived)
+    var n = 0, i, e, l;
+    try {
+      l = performance.getEntriesByType('resource');
+      for (i = 0; i < l.length; i++) { e = l[i]; n += e.transferSize || e.encodedBodySize || 0; }
+      e = performance.getEntriesByType('navigation')[0];
+      if (e && e.responseEnd > 0) n += e.transferSize || e.encodedBodySize || 0;
+    } catch (x) { /* old browser */ }
+    return n;
+  }
+  function retry(why) {
+    if (dl || window.__cqcStarted) return;
+    dl = true;
+    var k = 0; try { k = +(sessionStorage.getItem('cqc.dlretry') || 0); } catch (x) { /* none */ }
+    var w = Math.min(60, 5 * Math.pow(2, Math.min(k, 4)));
+    try { sessionStorage.setItem('cqc.dlretry', String(k + 1)); } catch (x) { /* none */ }
+    var left = w;
+    (function tick() {
+      if (window.__cqcStarted) return;
+      say('The connection dropped while downloading the game (' + why + '). Trying again in ' + left + ' s' + (k ? ' (try ' + (k + 1) + ')' : '') + '. What already arrived is kept.');
+      if (left-- <= 0) { location.reload(); return; }
+      setTimeout(tick, 1000);
+    })();
   }
   window.addEventListener('error', function (e) {
     if (window.__cqcStarted) return;
-    var src = e.target && e.target !== window && (e.target.src || e.target.href);
+    var tg = e.target && e.target !== window ? e.target : null;
+    var src = tg && (tg.src || tg.href);
     var m = e.message || '';
-    errs.push(src ? 'could not download ' + src
-      : !e.lineno && (!m || /^script error\.?$/i.test(m)) ? 'the game files (Three.js and the physics engine) could not be loaded. Check the connection, turn off a VPN or content blocker, and reload'
-      : (m || 'script error') + (e.lineno ? ' (line ' + e.lineno + ')' : ''));
-    say('Could not start: ' + errs[errs.length - 1]);
+    if (tg && tg.tagName === 'SCRIPT') { retry(src ? 'could not download ' + String(src).replace(/^.*\//, '') : 'a game file did not arrive'); return; }   // a failed download (module graph, script, style)
+    if (!e.lineno && (!m || /^script error\.?$/i.test(m))) { retry('a game file did not arrive'); return; }
+    errs.push((m || 'script error') + (e.lineno ? ' (line ' + e.lineno + ')' : ''));
+    say('Could not start: ' + errs[errs.length - 1], true);
   }, true);
   window.addEventListener('unhandledrejection', function (e) {
     if (window.__cqcStarted) return;
-    var r = e.reason; errs.push(r && r.message ? r.message : String(r));
-    say('Could not start: ' + errs[errs.length - 1]);
+    var r = e.reason, m = r && r.message ? r.message : String(r);
+    if (/fetch|network|import|load/i.test(m) && !/line \d/.test(m)) { retry(m); return; }
+    errs.push(m); say('Could not start: ' + m, true);
   });
-  setTimeout(function () {
-    if (window.__cqcStarted) return;
-    say(errs.length ? 'Could not start: ' + errs.join(' / ')
-      : 'The game script has not started after 15 s. Check the connection (try Wi-Fi or mobile data, or turn off a VPN or content blocker) and reload.');
-  }, 15000);
+  if (!window.CQCXbox) retry('could not download xbox-mode.js');   // the plain script above (blocking): gone = the module would stop on it
+  (function poll() {   // progress while the game script itself is still on its way
+    if (window.__cqcStarted) { try { sessionStorage.removeItem('cqc.dlretry'); } catch (x) { /* none */ } return; }
+    var s = Math.round((Date.now() - t0) / 1000);
+    if (!dl && !errs.length && s >= 3) say('Downloading the game: ' + (got() / 1048576).toFixed(1) + ' MB so far' + (s >= 15 ? ', slow connection' : '') + ' · ' + s + ' s');
+    setTimeout(poll, 1000);
+  })();
+  // Service worker (sw.js): keeps every game file that arrived, so later starts (and a retry after a drop) load from the device.
+  try {
+    if ('serviceWorker' in navigator && window.isSecureContext && !/[?&]sw=off\b/.test(location.search)) navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(function () { /* plain network */ });
+    else if ('serviceWorker' in navigator && /[?&]sw=off\b/.test(location.search)) navigator.serviceWorker.getRegistrations().then(function (l) { l.forEach(function (r) { r.unregister(); }); });
+  } catch (x) { /* no worker */ }
 })();
 </script>
 <script type="importmap">
@@ -2460,25 +2496,90 @@ const LITE = (() => {
   return { on, auto: !m && o !== 'on' && o !== 'off', weak: weak || xbox, xbox, gpu, flags: ['surf', 'wear', 'wallwear', 'propwear', 'bodywear', 'torchhaze', 'benchlamp', 'wetx'] };
 })();
 const QS = location.search + Object.entries(OPT).filter(([k, v]) => /^[a-z0-9]+$/.test(k) && /^[a-z0-9]+$/.test(String(v))).map(([k, v]) => `&${k}=${v}`).join('')
-// Sound files: a queue, 6 requests at a time, each retried twice. 150+ recordings fetched at once made the browser
-// refuse part of them (net::ERR_INSUFFICIENT_RESOURCES): those sounds fell back to the synth for the whole visit.
+  + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '')   // PERF: lite = the cheap programs
+  // Xbox: fewer shader programs (each one compiles slowly on the console) and lighter effects; an OPTIONS switch turned ON wins.
+  + (LITE.xbox ? window.CQCXbox.flags(OPT) : '');   // Xbox mode: the profile's load-time switches (fewer, cheaper shader programs)
+/* ---------------------------------------------------------------------------
+ *  SLOW-LINK LOADING (DL). Every game file the load needs comes through netBuf(url): retried with backoff on a network
+ *  error, a dropped body or a 5xx / 408 / 429 (1, 2, 4 ... 30 s, never gives up while loading; 404 and other 4xx throw at
+ *  once), no timeout, the bytes counted as they arrive. While a download runs the loading line says
+ *  "Downloading 12.3 / 30.1 MB (slow connection)" next to the stage. Sounds: sndFetch, the same with 6 at a time and 8 tries
+ *  (they have the synth to fall back on). The service worker (sw.js) makes later starts load from the device.
+ * ------------------------------------------------------------------------- */
+const DL = { got: 0, tot: 0, n: 0, t0: 0, last: 0, retry: '', rate: 0, rt: [], dead: /[?&]netsimfail=(\d+)/.exec(location.search) };
+const DL_SLOW = 2.5e6;   // bytes / s: under this the load does not wait for what the safe room can do without (enemy model)
+function dlRate() {      // recent average over the last ~8 s of arriving bytes
+  const now = performance.now(), r = DL.rt;
+  while (r.length > 2 && now - r[0][0] > 8000) r.shift();
+  if (r.length < 2) return DL.rate;
+  const dt = (r[r.length - 1][0] - r[0][0]) / 1000;
+  return (DL.rate = dt > 0.5 ? (r[r.length - 1][1] - r[0][1]) / dt : DL.rate);
+}
+function dlLine() {
+  if (!DL.n && !DL.retry) return '';
+  const mb = (x) => (x / 1048576).toFixed(1), rate = dlRate();
+  if (DL.retry) return DL.retry;
+  if (performance.now() - DL.t0 < 1500) return '';
+  return `Downloading ${mb(DL.got)}${DL.tot > DL.got ? ' / ' + mb(DL.tot) : ''} MB` + (rate > 0 ? ` · ${rate > 1e6 ? (rate / 1048576).toFixed(1) + ' MB/s' : Math.round(rate / 1024) + ' kB/s'}` : '') + (rate > 0 && rate < 4e5 ? ' (slow connection)' : '');
+}
+const dlWait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function netBuf(url, opt = {}) {
+  const tries = opt.tries || Infinity;
+  let k = 0, known = 0;
+  for (;;) {
+    let got = 0;
+    DL.n++; if (DL.n === 1) DL.t0 = performance.now();
+    try {
+      if (DL.dead && Math.random() * 100 < +DL.dead[1]) throw new TypeError('simulated network error');   // ?netsimfail=% (tests)
+      const r = await fetch(url);
+      if (!r.ok) {
+        const e = new Error(url.replace(/^.*\//, '') + ' (HTTP ' + r.status + ')');
+        if (r.status >= 500 || r.status === 408 || r.status === 429) throw Object.assign(e, { again: true });
+        throw Object.assign(e, { fatal: true });
+      }
+      const len = +(r.headers.get('content-length') || 0), enc = r.headers.get('content-encoding');
+      if (len && !known) { known = len; DL.tot += len; }
+      let buf;
+      if (r.body && r.body.getReader) {
+        const rd = r.body.getReader(), parts = [];
+        for (;;) {
+          const { done, value } = await rd.read();
+          if (done) break;
+          parts.push(value); got += value.length; DL.got += value.length; DL.rt.push([performance.now(), DL.got]);
+        }
+        if (len && !enc && got !== len) throw new TypeError('download cut short (' + got + ' of ' + len + ' bytes)');
+        const out = new Uint8Array(got); let o = 0;
+        for (const p of parts) { out.set(p, o); o += p.length; }
+        buf = out.buffer;
+      } else { buf = await r.arrayBuffer(); got = buf.byteLength; DL.got += got; }
+      if (known && known !== got) DL.tot += got - known;
+      DL.n--; DL.retry = '';
+      return buf;
+    } catch (e) {
+      DL.n--; DL.got -= got;
+      if (e && e.fatal) throw e;
+      if (++k >= tries) throw e;
+      const w = Math.min(30, 2 ** Math.min(k - 1, 5));
+      console.warn(`[load] ${url} failed (${e && e.message || e}), retry ${k} in ${w} s`);
+      DL.retry = `Connection dropped: ${url.replace(/^.*\//, '')}, trying again in ${w} s (try ${k + 1})`;
+      await dlWait(w * 1000);
+    }
+  }
+}
+// Sound files: a queue, 6 requests at a time. 150+ recordings fetched at once made the browser refuse part of them
+// (net::ERR_INSUFFICIENT_RESOURCES). Each is now read whole through netBuf (8 tries with backoff, a cut body counts as a
+// failure) and handed back as a Response, so callers keep r.ok / r.arrayBuffer(); a sound that never comes = the synth.
 const SNDQ = { q: [], n: 0, max: 6 };
-function sndFetch(url, tries = 3) {
+function sndFetch(url, tries = 8) {
   return new Promise((res, rej) => { SNDQ.q.push({ url, tries, res, rej }); sndPump(); });
 }
 function sndPump() {
   while (SNDQ.n < SNDQ.max && SNDQ.q.length) {
     const j = SNDQ.q.shift(); SNDQ.n++;
-    fetch(j.url).then((r) => { SNDQ.n--; j.res(r); sndPump(); }, (e) => {
-      SNDQ.n--;
-      if (--j.tries > 0) setTimeout(() => { SNDQ.q.push(j); sndPump(); }, 400); else j.rej(e);
-      sndPump();
-    });
+    netBuf(j.url, { tries: j.tries }).then((b) => { SNDQ.n--; j.res(new Response(b, { status: 200 })); sndPump(); },
+      (e) => { SNDQ.n--; if (e && e.fatal) j.res(new Response(null, { status: 404 })); else j.rej(e); sndPump(); });
   }
 }
-  + (LITE.on ? LITE.flags.filter((k) => OPT[k] !== 'on').map((k) => `&${k}=off`).join('') : '')   // PERF: lite = the cheap programs
-  // Xbox: fewer shader programs (each one compiles slowly on the console) and lighter effects; an OPTIONS switch turned ON wins.
-  + (LITE.xbox ? window.CQCXbox.flags(OPT) : '');   // Xbox mode: the profile's load-time switches (fewer, cheaper shader programs)
 
 /* ============================================================================
  *  CONFIG — every tunable number for step 1 lives here.
@@ -3806,11 +3907,14 @@ const ui = {
 function setLoad(text, frac) {   // step 39: the bar and its percentage only ever move forward
   window.__cqcStarted = true;   // step 54.2: the watchdog stands down
   const f = setLoad.max = Math.max(setLoad.max || 0, Math.min(1, frac || 0)), pct = Math.floor(f * 100);
-  ui.loadText.textContent = text; ui.bar.style.width = `${(f * 100).toFixed(1)}%`;
+  setLoad.text = text;
+  const dl = dlLine();   // slow-link pass: what is downloading right now, next to the stage
+  ui.loadText.textContent = dl ? text + ' · ' + dl : text; ui.bar.style.width = `${(f * 100).toFixed(1)}%`;
   if (ui.loadPct) ui.loadPct.textContent = `${pct}%`;
   if (ui.barWrap) ui.barWrap.setAttribute('aria-valuenow', String(pct));
   bootSave(text, pct);   // step 40
 }
+setInterval(() => { if (!ui.loader.hidden && setLoad.text && !ui.loader.classList.contains('error') && setLoad.text !== 'Ready' && (DL.n || DL.retry || setLoad.dl)) { const d = dlLine(); setLoad.dl = d; ui.loadText.textContent = d ? setLoad.text + ' · ' + d : setLoad.text; } }, 500);   // slow-link pass: live bytes
 function fail(err) {
   console.error(err);
   ui.loader.classList.add('error');
@@ -5474,7 +5578,30 @@ async function buildKit() {
   buildCoverKit();                 // step 6: table, debris (shares every material above)
   setLoad('Building the enemy', 0.945);
   await yieldFrame();
-  try { await buildEnemyKit(); } catch (e) { console.error('step 66: enemy models not loaded', e); }   // the two enemy characters
+  // slow-link pass: the safe room has no men, so on a slow link (or the Xbox profile) the title does not wait for the
+  // enemy model (5-6 MB): it keeps downloading after the title shows and enemyKitLate spawns the rooms' men when it is in.
+  // A fast link waits as before (the men compile with everything else at load).
+  ENEMY.kitP = buildEnemyKit().catch((e) => { console.error('step 66: enemy models not loaded', e); return false; });
+  const slow = /[?&]defer=on\b/.test(QS) || (!/[?&]defer=off\b/.test(QS) && (LITE.xbox || (DL.got > 2e6 && dlRate() > 0 && dlRate() < DL_SLOW)));
+  if (!slow) await ENEMY.kitP;
+  else { ENEMY.late = true; ENEMY.kitP.then((ok) => { if (ok !== false) enemyKitLate(); }); }
+}
+// slow-link pass: the enemy model arrived after the title: compile his programs in the background (parallel compile only),
+// then spawn the planned men into every active room that has none yet (the safe room never has any).
+async function enemyKitLate() {
+  if (!ENEMY.models[0]) return;
+  try {
+    if (renderer.extensions.has('KHR_parallel_shader_compile')) {
+      enemyPrecompile(true); scene.updateMatrixWorld(true);
+      try { await Promise.race([renderer.compileAsync(ENEMY.precompile, camera, scene), new Promise((r) => setTimeout(r, 8000))]); } catch (e) { /* compiles when he shows */ }
+      enemyPrecompile(false); dirtyShadows();
+    }
+  } catch (e) { console.warn('[load] enemy warm-up', e); }
+  for (const r of stream.rooms.values()) {
+    if (!r.active || (r.kind !== 'normal' && r.kind !== 'stair') || (r.enemies && r.enemies.length)) continue;
+    try { enemiesRoomActivated(r); } catch (e) { console.warn('[load] late men', e); }
+  }
+  console.info('[load] enemy model arrived after the title; men placed');
 }
 
 /* ============================================================================
@@ -25065,7 +25192,8 @@ function vmLoad(key) {
   const R = VM.rigs[key];
   VM.cache[key] = (async () => {
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-    const L = new GLTFLoader(), g = await L.loadAsync((LOWMEM.on && !/[?&]fullmodels\b/.test(QS) ? './models/lite/vm/' : './models/vm/') + R.file);   // Xbox: 512 px textures
+    const vu = (LOWMEM.on && !/[?&]fullmodels\b/.test(QS) ? './models/lite/vm/' : './models/vm/') + R.file;   // Xbox: 512 px textures
+    const L = new GLTFLoader(), vb = await netBuf(vu), g = await new Promise((res, rej) => L.parse(vb, vu.replace(/[^/]*$/, ''), res, rej));   // slow-link pass: retried, counted
     const root = g.scene, base = new THREE.Group(); base.add(root); base.matrixAutoUpdate = false;
     const mixer = new THREE.AnimationMixer(root), acts = {};
     if (R.cut) { const src = g.animations[0]; for (const [n, [a, b]] of Object.entries(R.cut)) acts[n] = mixer.clipAction(THREE.AnimationUtils.subclip(src, n, Math.round(a * 30), Math.round(b * 30), 30)); }
@@ -28237,16 +28365,19 @@ function enemyRigidToBones(scene) {
 async function buildEnemyKit() {
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
   const loader = new GLTFLoader();
-  ENEMY.models = [];
-  for (const def of ENEMY_MODELS) {
-    const buf = await glbData(def.id);
-    const gltf = await new Promise((res, rej) => loader.parse(buf, './models/', res, rej));
-    const model = enemyCalibrate(def, gltf.scene);
-    ENEMY.models.push(model);
-  }
-  ENEMY.protos = ENEMY.models.map((m) => m.driver);
-  ENEMY.proto = ENEMY.protos[0];
-  try { await enemyLodPrep(); } catch (e) { console.warn('Enemy LODs not built', e); }   // distance LODs (the models are ~130k triangles a man)
+  ENEMY.loading = true;   // slow-link pass: spawnEnemy waits until the LODs are made (the kit may now finish after the title)
+  try {
+    ENEMY.models = [];
+    for (const def of ENEMY_MODELS) {
+      const buf = await glbData(def.id);
+      const gltf = await new Promise((res, rej) => loader.parse(buf, './models/', res, rej));
+      const model = enemyCalibrate(def, gltf.scene);
+      ENEMY.models.push(model);
+    }
+    ENEMY.protos = ENEMY.models.map((m) => m.driver);
+    ENEMY.proto = ENEMY.protos[0];
+    try { await enemyLodPrep(); } catch (e) { console.warn('Enemy LODs not built', e); }   // distance LODs (the models are ~130k triangles a man)
+  } finally { ENEMY.loading = false; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -29347,7 +29478,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   const W = (spec.gun === 'awp' && !(GUN_BUILD.awp && WEAPON_DEFS.awp && WR.awp)) ? ENEMY_LOADOUTS.smg : (ENEMY_LOADOUTS[spec.gun] || ENEMY_LOADOUTS.smg);   // outdoor start: the AWM until its model has loaded
   if (spec.kit == null) spec.kit = spec.look != null ? spec.look : (Math.random() < 0.5 ? 0 : 1);   // his rifle loadout (0 AKM, 1 M4A1-S), kept in the room plan
   spec.look = 0;                                                   // one model now: the soldier
-  const model = ENEMY.models[0];
+  const model = ENEMY.loading ? null : ENEMY.models[0];   // slow-link pass: still arriving = no man yet (enemyKitLate places them)
   if (!model) return null;                                      // no character loaded: no man (never a body-less one, never a throw mid room activation)
   const root = model.driver.clone(true);
   const B = {};
@@ -29496,6 +29627,7 @@ function enemiesShift(dx, dz, dy = 0) {
   playerState.hasPrev = false;
 }
 function enemyPrecompile(on) {
+  if (on && ENEMY.loading) return;   // slow-link pass: the model is still arriving (enemyKitLate compiles it)
   if (on) {
     const r = ENEMY.precompile = new THREE.Group();
     for (const m of ENEMY.models) {                               // both men, so both skinned programs compile at load
@@ -45818,26 +45950,33 @@ async function xboxWarm(say) {
   // shows them at once (loading them at the pickup froze the console); 25 s at most, else they load when needed
   if (VM.on) {
     say('Preparing the arms…'); await wait();
+    // slow-link pass: the warm-up never waits on a download. Rigs already here (or arriving within 4 s) are compiled and
+    // fitted now; the rest keep downloading and are compiled / fitted in the background when they arrive (a pickup
+    // before that shows empty hands, vmWait).
+    let armsIn = false;
+    const fits = async (cap) => {   // each gun's fit in the arms view (hand bake + solve), one gun at a time
+      try {
+        const t0 = performance.now(), done = new Set();
+        for (const q of props) {
+          const g = q.item && q.item.kind === 'gun' ? q.item : null, key = g && VM.byType[g.type];
+          if (!key || done.has(g.type) || VM.bad[key]) continue;
+          done.add(g.type); if (cap) { say('Preparing the arms… ' + done.size); await wait(); }
+          vmGunFit(g, key);
+          while (VM.fit[g.type] === false && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));
+        }
+      } catch (e) { console.warn('[xbox] fits', e); }
+    };
     try {
       vmSetup();
       const keys = Array.from(new Set(Object.values(VM.byType)));
-      await Promise.race([Promise.all(keys.map(async (k) => {
+      const loads = Promise.all(keys.map(async (k) => {
         const V = await vmLoad(k); if (!V || !V.base) return;
         try { if (renderer.extensions.has('KHR_parallel_shader_compile')) await renderer.compileAsync(V.base, VM.cam, VM.scene); else renderer.compile(V.base, VM.cam, VM.scene); } catch (e) { /* compiles when it shows */ }
-      })), new Promise((r) => setTimeout(r, 25000))]);
+      }));
+      armsIn = await Promise.race([loads.then(() => true, () => true), new Promise((r) => setTimeout(() => r(false), 4000))]);
+      if (!armsIn) loads.then(() => fits(false), () => fits(false));   // in the background once they are here
     } catch (e) { console.warn('[xbox] arms preload', e); }
-    // each gun's fit in the arms view (hand bake + solve) was made at its first pickup: a long stall on the console
-    // (the cut-off switching to the M4A1-S). Solved here, one gun at a time, 20 s at most.
-    try {
-      const t0 = performance.now(), done = new Set();
-      for (const q of props) {
-        const g = q.item && q.item.kind === 'gun' ? q.item : null, key = g && VM.byType[g.type];
-        if (!key || done.has(g.type) || VM.bad[key]) continue;
-        done.add(g.type); say('Preparing the arms… ' + done.size); await wait();
-        vmGunFit(g, key);
-        while (VM.fit[g.type] === false && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));
-      }
-    } catch (e) { console.warn('[xbox] fits', e); }
+    if (armsIn) await fits(true);
   }
   // every gun, part, magazine and grenade lying in the room (locker, bench), hidden pieces shown for the compile, in the
   // room's light AND the arms view's own light (the computer view draws your gun there: its own shader variants). The
@@ -46836,10 +46975,8 @@ async function glbData(id) {
     el.textContent = '';
     return bin.buffer;
   }
-  if (LOWMEM.on && !/[?&]fullmodels\b/.test(QS)) { try { const rl = await fetch('./models/lite/' + id + '.glb'); if (rl.ok) return await rl.arrayBuffer(); } catch (e) { /* the full one */ } }   // Xbox: the same models with 512 px textures (models/lite, gltf-transform resize)
-  const r = await fetch('./models/' + id + '.glb');
-  if (!r.ok) throw new Error('model ' + id + ' could not be loaded (HTTP ' + r.status + ')');
-  return await r.arrayBuffer();
+  if (LOWMEM.on && !/[?&]fullmodels\b/.test(QS)) { try { return await netBuf('./models/lite/' + id + '.glb'); } catch (e) { /* not there: the full one */ } }   // Xbox: the same models with 512 px textures (models/lite)
+  return await netBuf('./models/' + id + '.glb');   // slow-link pass: retried with backoff, bytes counted
 }
 async function m1911Load() {
   const bin = { buffer: await glbData('m1911-glb') };
@@ -47634,10 +47771,9 @@ function g17Measure() {
 /* --- the kit: the packed models + the built parts --- */
 async function g17AttLoad() {
   if (!G17A.on || G17A.ready || !EXTG.g17.ready) return;
-  const r = await fetch(G17A.url);
-  if (!r.ok) throw new Error('step 100: ' + G17A.url + ' HTTP ' + r.status);
+  const ab = await netBuf(G17A.url);   // slow-link pass
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-  const gltf = await gltfParse(GLTFLoader, await r.arrayBuffer());
+  const gltf = await gltfParse(GLTFLoader, ab);
   for (const name of ['dot', 'dotGlass', 'canMD3', 'canSB100', 'comp']) {
     const o = gltf.scene.getObjectByName(name);
     if (!o || !o.isMesh) throw new Error('step 100: no ' + name + ' in ' + G17A.url);
@@ -48927,6 +49063,22 @@ function freeItemHand(h, it, p, P, Q) {
   try { gcApply(h, key + 'S', P, Q, 0, () => gcSolve(h, Array.from(h.tgt), fgItemEnts(it, p.root, P, Q) || [], wrap, 0)); } finally { GC_FREE = false; }
 }
 
+// slow-link pass: after a load, every same-origin game file it fetched (from resource timing: the page, three, Rapier,
+// models, textures, fonts) is handed to the service worker, which stores the ones it does not have yet (2 at a time,
+// in the background; from the HTTP cache when it still holds them). The next start then loads from the device.
+function swPrecache(extra) {
+  try {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.controller) {
+      if (navigator.serviceWorker && !swPrecache.w) { swPrecache.w = true; navigator.serviceWorker.addEventListener('controllerchange', () => swPrecache(extra), { once: true }); }
+      return;
+    }
+    const base = new URL('./', location.href).href, urls = new Set();
+    for (const e of performance.getEntriesByType('resource')) if (e.name.startsWith(base) && !/[?#]/.test(e.name.slice(base.length))) urls.add(e.name);
+    urls.add(new URL('./index.html', location.href).href);
+    for (const u of extra || []) urls.add(new URL(u, location.href).href);
+    navigator.serviceWorker.controller.postMessage({ type: 'precache', urls: Array.from(urls) });
+  } catch (e) { /* no worker: plain network next time */ }
+}
 (async function boot() {
   try {
     setLoad('Starting physics', 0.02);
@@ -49015,6 +49167,10 @@ function freeItemHand(h, it, p, P, Q) {
     setupVRStart();   // start menu: play space + Enter VR (never asks for bounded-floor)
     if (STILLS_ON && stillsLoad().length < CONFIG.stills.minStored) stillsSafeRoom();   // step 42: never an empty board
     ready = true;
+    // slow-link pass: on the Xbox the arms rigs (7 MB) start downloading now, while the title waits for Start (xboxWarm
+    // no longer waits for them); every platform: the files this load used go to the service worker's cache.
+    if (LITE.xbox && VM.on) setTimeout(() => { try { vmSetup(); for (const k of new Set(Object.values(VM.byType))) vmLoad(k).catch(() => { /* when needed */ }); } catch (e) { /* when needed */ } }, 300);
+    swPrecache();
     setLoad('Ready', 1);                           // step 39: show 100% for a moment, then the loader goes
     BOOT.done = true; bootSave('ready', 100); bootNote();   // step 40: this start finished; say so if the last one did not
     setTimeout(() => { ui.loader.hidden = true; ui.loader.style.display = 'none'; }, 400);
@@ -49551,10 +49707,9 @@ function akmRailPose(side, z, P, Q) {
 async function akmAttLoad() {
   if (!AKMA.on || AKMA.ready || !X64.akmn.ready) return;
   akmPrepare();
-  const r = await fetch(AKMA.url);
-  if (!r.ok) throw new Error('step 102: ' + AKMA.url + ' HTTP ' + r.status);
+  const ab = await netBuf(AKMA.url);   // slow-link pass
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-  const gltf = await gltfParse(GLTFLoader, await r.arrayBuffer());
+  const gltf = await gltfParse(GLTFLoader, ab);
   for (const name of AKM_NODES) {
     const o = gltf.scene.getObjectByName(name);
     if (!o || !o.isMesh) throw new Error('step 102: no ' + name + ' in ' + AKMA.url);
@@ -50111,10 +50266,9 @@ function m19Measure() {
 /* --- the kit: the packed models + the built parts --- */
 async function m19AttLoad() {
   if (!M1911A.on || M1911A.ready || !M1911.ready || !G17A.ready) return;
-  const r = await fetch(M1911A.url);
-  if (!r.ok) throw new Error('step 108: ' + M1911A.url + ' HTTP ' + r.status);
+  const ab = await netBuf(M1911A.url);   // slow-link pass
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-  const gltf = await gltfParse(GLTFLoader, await r.arrayBuffer());
+  const gltf = await gltfParse(GLTFLoader, ab);
   for (const name of ['can45', 'comp45']) {
     const o = gltf.scene.getObjectByName(name);
     if (!o || !o.isMesh) throw new Error('step 108: no ' + name + ' in ' + M1911A.url);
