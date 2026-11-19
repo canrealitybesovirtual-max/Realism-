@@ -2195,3 +2195,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - emoGfPlan at the flick: his keyed pose sampled 20 times over the flight (capsules pelvis-chest, chest-neck, head, thighs, shins, left upper / fore arm, right upper arm), 45 points of the gun's drawn box (3 x 3 x 5) tested at each sample; the catch point is pushed right / up / forward (EMO_GF.push, up to 6 steps) until every point stays 8 cm off (2 cm in the last tenth, where the hand meets it; the kicking shin skipped for the first 0.15 s); else the best found. S.clear keeps the margin.
 - Long guns: the support hand comes onto the handguard 0.25 s after the catch (emoRkHand 'sup'). Sounds stay on their events (landing on the foot, flick, catch at launch + air time).
 - Checked: module parse, eslint no-undef (browser globals only).
+
+## CQC: pistol round feeds from under the slide, not under the trigger guard
+- feedLip measured the top round from the magazine's round meshes with no limits: hidden chunks, a mesh carrying the whole gun's vertex buffer or a stack mid-move put the feeding round far below the bore (under the trigger guard). Now only visible meshes, a stack-sized box under the bore counts; the lip height is held to 1.2-3 round radii under the bore and its z to the case length behind the chamber, else the default (2.4 radii under). Parse checked only.
