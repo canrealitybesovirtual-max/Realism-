@@ -28,6 +28,16 @@ The broker only introduces the two players (default: the public PeerJS server 0.
 `"brokers": [{ "host": "your.host", "port": 443, "path": "/cqc", "secure": true, "key": "peerjs" }, { "host": "0.peerjs.com", "port": 443, "path": "/", "secure": true, "key": "peerjs" }]`
 (tried in order; both players must reach one the host is on).
 
+## Public games, Quick match, Browse (no setup needed)
+
+Players can host a **public** game (listed with a random two-word name, e.g. "Rusty Falcon"; a code is shown too) or a
+**private** one (code only). Quick match joins an open game of the chosen mode, else hosts a public one; Browse lists
+the open games (name, mode, players, ping; full games greyed). The public broker cannot list peers, so a public host
+also holds one of 32 lobby ids (`cqc-loop-lobby-0..31`) and a search probes all of them. A self-hosted broker started
+with `--allow_discovery` can be marked `"discovery": true` in its `brokers` entry: the search then asks it for its peer
+list and probes only the lobby ids it has. A probe is a short WebRTC link, so hosts behind strict NAT are only listed
+when TURN is set up.
+
 ## Checking
 
 In the game the watch / M menu has a `Net:` cell: RTT, `direct` or `relayed`, and `relay Metered / Cloudflare / TURN / none`.

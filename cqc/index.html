@@ -734,6 +734,7 @@
   #modWatch button[aria-pressed="true"] { border-color: #ffc46b; background: rgba(255,186,90,.17); color: #ffc46b; }
   #modWatch button b { display: block; font: 700 12px ui-monospace, Menlo, monospace; opacity: .8; }
   #modWatch .mw-restart { text-align: center; }
+  #modWatch .mw-dim { opacity: 0.45; }
   #modWatch .mw-restart[aria-pressed="true"] { border-color: #ff8466; color: #ff8466; }
   #modWatch .mw-close { width: 100%; margin-top: 10px; text-align: center; min-height: 44px; }
   #actions {
@@ -863,6 +864,13 @@
   }
   #title .space button[aria-pressed="true"] { color: var(--t-wall); background: var(--t-ink); border-color: var(--t-ink); }
   #title .space button:disabled { opacity: 0.4; cursor: default; }
+  #title .mplist { margin: 8px 0; padding: 8px; border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; max-height: 40vh; overflow-y: auto; }
+  #title .mplhead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 14px; opacity: 0.85; }
+  #title #mpGames { display: grid; gap: 6px; }
+  #title #mpGames button { display: flex; justify-content: space-between; gap: 10px; text-align: left; padding: 8px 10px; font: inherit; color: inherit; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; cursor: pointer; }
+  #title #mpGames button:disabled { opacity: 0.4; cursor: default; }
+  #title #mpGames button[aria-pressed="true"] { border-color: #e8b04a; }
+  #title #mpGames button span { opacity: 0.75; white-space: nowrap; }
   #title .space input { font: 600 18px/1 "Barlow Semi Condensed", "Arial Narrow", sans-serif; width: 5.5em; min-height: 32px; padding: 0 10px; letter-spacing: 0.2em;
     background: none; color: var(--t-ink); border: 1px solid var(--t-line); border-radius: 16px; text-align: center; }
   #title [hidden] { display: none !important; }
@@ -1300,9 +1308,16 @@
         <button type="button" class="big" data-play="vs" aria-pressed="false"><b>Versus</b><span>Own safe rooms, two random rooms between you</span></button>
       </div>
       <div class="space" role="group" aria-label="Host or join" id="mpRoleRow" hidden>
-        <span>You are</span>
-        <button type="button" data-trole="host" aria-pressed="true">Hosting</button>
-        <button type="button" data-trole="join" aria-pressed="false">Joining</button>
+        <span>Find a game</span>
+        <button type="button" data-trole="quick" aria-pressed="true">Quick match</button>
+        <button type="button" data-trole="browse" aria-pressed="false">Browse games</button>
+        <button type="button" data-trole="hostpub" aria-pressed="false">Host public</button>
+        <button type="button" data-trole="host" aria-pressed="false">Host private (code)</button>
+        <button type="button" data-trole="join" aria-pressed="false">Join with code</button>
+      </div>
+      <div class="mplist" id="mpList" hidden>
+        <div class="mplhead"><span id="mpListSt">Open games</span><button type="button" id="mpRefresh" class="small">Refresh</button></div>
+        <div id="mpGames" role="list"></div>
       </div>
       <div class="space" id="mpCodeRow" hidden>
         <span>Host's 4-digit code</span>
@@ -1390,20 +1405,54 @@
   const mpRoleRow = document.getElementById('mpRoleRow'), mpCodeRow = document.getElementById('mpCodeRow'), mpCode = document.getElementById('mpCode'), mpNote = document.getElementById('mpNote');
   const stepGo = document.getElementById('stepGo'), stepGoSub = document.getElementById('stepGoSub'), stepBack = document.getElementById('stepBack');
   const DEV_NAME = { pc: 'Computer', vr: 'VR headset', xbox: 'Xbox', mobile: 'Mobile' };
-  let device = null, play = 'solo', role = 'host', code = '';
+  let device = null, play = 'solo', role = 'quick', code = '', pick = null;
   try { const o = JSON.parse(localStorage.getItem('cqc.mp.v2') || '{}'); if (o.play) play = o.play; if (o.role) role = o.role; if (o.code) code = o.code; } catch (e) { /* default */ }
+  if (role === 'browse') role = 'quick';                            // a browse pick is not kept between visits
+  const mpList = document.getElementById('mpList'), mpGames = document.getElementById('mpGames'), mpListSt = document.getElementById('mpListSt'), mpRefresh = document.getElementById('mpRefresh');
+  let games = [], searching = false, searchWait = 0;
+  // Browse: the module's lobby search (window.CQC_LOBBY, there once the game script has run).
+  function mpBrowse() {
+    const L = window.CQC_LOBBY;
+    if (!L) { mpListSt.textContent = 'The list comes once the game has loaded…'; clearTimeout(searchWait); searchWait = setTimeout(() => { if (role === 'browse' && !step2.hidden) mpBrowse(); }, 1000); return; }
+    if (searching) return;
+    searching = true; mpListSt.textContent = 'Searching for open games…'; mpRefresh.disabled = true;
+    L.search().then((r) => { games = r || []; }).catch(() => { games = []; }).then(() => {
+      searching = false; mpRefresh.disabled = false;
+      const err = L.err && L.err();
+      mpListSt.textContent = games.length ? `${games.length} open game${games.length > 1 ? 's' : ''} (tap one to join)` : (err ? 'Could not search: ' + err : 'No open games. Host a public one, or Refresh');
+      mpDrawGames();
+    });
+  }
+  function mpDrawGames() {
+    mpGames.textContent = '';
+    for (const g of games) {
+      const b = document.createElement('button'); b.type = 'button'; b.setAttribute('role', 'listitem');
+      const full = g.players >= 2; b.disabled = full;
+      b.setAttribute('aria-pressed', String(!!(pick && pick.code === g.code)));
+      const n = document.createElement('b'); n.textContent = g.name;
+      const d = document.createElement('span'); d.textContent = `${g.mode === 'vs' ? 'Versus' : 'Co-op'} · ${g.players}/2${full ? ' · FULL' : ''} · ${g.ping} ms`;
+      b.appendChild(n); b.appendChild(d);
+      b.addEventListener('click', () => { pick = g; code = g.code; play = g.mode === 'vs' ? 'vs' : 'coop'; mpSave(); step2Show(); mpDrawGames(); if (!stepGo.disabled) stepGo.click(); });
+      mpGames.appendChild(b);
+    }
+  }
+  mpRefresh.addEventListener('click', () => mpBrowse());
   const mpSave = () => { try { localStorage.setItem('cqc.mp.v2', JSON.stringify({ play, role, code })); if (play !== 'solo') localStorage.setItem('cqc.netmode.v1', play); } catch (e) { /* this visit */ } };
   function step2Show() {
     playBtns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.play === play)));
     roleBtns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.trole === role)));
     const mpOn = play !== 'solo';
     mpRoleRow.hidden = !mpOn; mpCodeRow.hidden = !(mpOn && role === 'join'); mpCode.value = code;
-    mpNote.textContent = !mpOn ? '' : role === 'host'
-      ? (play === 'vs' ? 'You get a 4-digit code after Start. Tell it to the other player; the match starts when he joins.' : 'You get a 4-digit code after Start. Tell it to the other player; he joins you in your safe room.')
+    mpList.hidden = !(mpOn && role === 'browse');
+    const pm = play === 'vs' ? 'versus' : 'co-op';
+    mpNote.textContent = !mpOn ? '' : role === 'quick' ? `Joins an open ${pm} game; if there is none, hosts a public one and waits.`
+      : role === 'browse' ? 'Public games from every player. Tap one to join it (its mode is the one played).'
+      : role === 'hostpub' ? `Your ${pm} game is listed with a random name for anyone to join. A code is shown too.`
+      : role === 'host' ? (play === 'vs' ? 'Private: you get a 4-digit code after Start. Tell it to the other player; the match starts when he joins.' : 'Private: you get a 4-digit code after Start. Tell it to the other player; he joins you in your safe room.')
       : 'Type the code from the host\'s screen. The host\'s mode is the one played.';
-    const ready = !!api, needCode = mpOn && role === 'join' && !/^\d{4}$/.test(code);
-    stepGo.disabled = needCode || (device === 'vr' && !ready);
-    stepGoSub.textContent = needCode ? 'Type the 4-digit code first' : !ready ? (device === 'vr' ? 'Still loading…' : 'Starts as soon as it has loaded') : 'Load in';
+    const ready = !!api, needCode = mpOn && role === 'join' && !/^\d{4}$/.test(code), needPick = mpOn && role === 'browse' && !pick;
+    stepGo.disabled = needCode || needPick || (device === 'vr' && !ready);
+    stepGoSub.textContent = needCode ? 'Type the 4-digit code first' : needPick ? 'Pick a game from the list' : !ready ? (device === 'vr' ? 'Still loading…' : 'Starts as soon as it has loaded') : 'Load in';
   }
   function toStep2(dev) { device = dev; root.classList.add('s2'); document.getElementById('step2dev').textContent = DEV_NAME[dev] || dev; step1.hidden = true; step2.hidden = false; step2Show(); stepGo.focus({ preventScroll: true }); }
   // Single player starts at once (nothing else to choose); Co-op / Versus show their rows and bring Start into view (on a TV it can sit below the edge).
@@ -1412,7 +1461,7 @@
     if (play === 'solo') { if (!stepGo.disabled) stepGo.click(); stepGo.scrollIntoView({ block: 'center' }); }
     else (role === 'join' ? mpCode : stepGo).scrollIntoView({ block: 'center' });
   }));
-  roleBtns.forEach((b) => b.addEventListener('click', () => { role = b.dataset.trole; mpSave(); step2Show(); }));
+  roleBtns.forEach((b) => b.addEventListener('click', () => { role = b.dataset.trole; pick = null; mpSave(); step2Show(); if (role === 'browse') { mpBrowse(); mpList.scrollIntoView({ block: 'center' }); } }));
   mpCode.addEventListener('input', () => { code = mpCode.value.replace(/\D/g, '').slice(0, 4); mpCode.value = code; mpSave(); step2Show(); });
   mpCode.addEventListener('keydown', (e) => e.stopPropagation());
   stepBack.addEventListener('click', () => { xbPending = false; root.classList.remove('s2'); step2.hidden = true; step1.hidden = false; device = null; });
@@ -1422,7 +1471,7 @@
     if (device === 'xbox' && 'gamepadInputEmulation' in navigator) { try { navigator.gamepadInputEmulation = 'gamepad'; } catch (e) { /* the game sets it */ } }   // sticks to the game, not the cursor
     if (api) { try { api.start(how); } catch (e) { stepGoSub.textContent = 'Could not start: ' + (e && e.message || e); } } else if (device !== 'vr') { xbPending = how; stepGoSub.textContent = 'Starting as soon as it has loaded…'; }
   });
-  window.CQC_MP = () => ({ sel: play === 'solo' ? 'off' : role, code, mode: play === 'vs' ? 'vs' : 'coop' });
+  window.CQC_MP = () => ({ sel: play === 'solo' ? 'off' : role === 'browse' ? (pick ? 'join' : 'off') : role === 'hostpub' ? 'host' : role, pub: role === 'hostpub', code: role === 'browse' && pick ? pick.code : code, mode: play === 'vs' ? 'vs' : 'coop' });
   // Diagnostics (shown on step 2): browser, WebGL 2, has the game script started, the last error, a clock (if it stops, the page is frozen).
   const diagLine = document.getElementById('diagLine');
   let gl2 = 'unknown';
@@ -11629,10 +11678,10 @@ const NET_SIM = (() => {                                           // ?dev&netsi
 function netQ(k) { const m = new RegExp('[?&]' + k + '=([^&#]*)').exec(location.search); return m ? decodeURIComponent(m[1]) : null; }
 function netLabel() {
   if (NET.st === 'on') return 'Multiplayer: CONNECTED · leave';
-  if (NET.st === 'host') return `Multiplayer: code ${NET.code} · waiting`;
+  if (NET.st === 'host') return LOBBY.pub && LOBBY.name ? `Hosting "${LOBBY.name}" · code ${NET.code} · waiting` : `Multiplayer: code ${NET.code} · waiting`;
   if (NET.st === 'join') return 'Multiplayer: joining…';
   if (NET.st === 're') return 'Multiplayer: reconnecting · leave';
-  return 'Multiplayer: HOST';
+  return `Multiplayer: HOST ${LOBBY.pub ? 'PUBLIC' : 'PRIVATE'} game`;
 }
 function netSay(t, s = 3) { NET.msg = t; try { toast(t, s * 1000); } catch (e) { /* no toast */ } try { vrNote(t, s); } catch (e) { /* no headset */ } try { yardUiSync(); } catch (e) { /* no menu yet */ } }
 function netLib() {
@@ -11722,10 +11771,11 @@ function netPeerKeep(p) {
     setTimeout(again, 1000);
   });
 }
-async function netHost() {
+async function netHost(vis) {
   if (!NET.on) return;
   if (NET.st !== 'off') return netLeave();
-  const gen = ++NET.gen; NET.lastAct = { a: 'host' }; NET.reason = ''; NET.link.cand = {};
+  if (vis === 'pub' || vis === 'priv') LOBBY.pub = vis === 'pub';   // LOBBY: listed public game, or private (code only)
+  const gen = ++NET.gen; NET.lastAct = { a: 'host', vis: LOBBY.pub ? 'pub' : 'priv' }; NET.reason = ''; NET.link.cand = {};
   NET.role = 'host'; NET.st = 'host'; NET.sess = Math.random().toString(36).slice(2, 10); NET.everOn = false;
   NET.code = String(1000 + Math.floor(Math.random() * 9000));
   try { yardUiSync(); } catch (e) { /* no menu */ }
@@ -11743,7 +11793,9 @@ async function netHost() {
           p.on('call', (c) => netVoiceAnswer(c));                    // the other player's voice
           p.on('error', (e) => { NET.brokerErr = e && e.type; });   // after open: broker trouble only (the reconnect handles it)
           NET.codeAt = performance.now();
-          netSay(`Multiplayer code: ${NET.code}. The other player picks Join and types it. Relay: ${netRelayName()}`, 8);
+          LOBBY.name = lbName(NET.sess);
+          if (LOBBY.pub) { netSay(`Public game "${LOBBY.name}" is open (players find it under Browse / Quick match). Code ${NET.code} also works. Relay: ${netRelayName()}`, 8); lbRegister(gen, b); }
+          else netSay(`Multiplayer code: ${NET.code}. The other player picks Join and types it. Relay: ${netRelayName()}`, 8);
           return;
         } catch (e) {
           if (gen !== NET.gen) return;
@@ -11889,6 +11941,7 @@ function netLeave(quiet = false) {
   for (const c of [R, F]) if (c) c.__old = true;
   setTimeout(() => { for (const c of [R, F]) try { c && c.close(); } catch (e) { /* closed */ } try { P && P.destroy(); } catch (e) { /* gone */ } }, R && R.open ? 150 : 0);
   if (NET.dial) NET.dial.fin('timeout');
+  lbUnregister();                                                  // LOBBY: off the public list
   NET.peer = NET.rel = NET.fast = null; NET.st = 'off'; NET.role = null; NET.rem = null; NET.buf.length = 0; NET.remPeer = null; NET.sess = null; NET.everOn = false; NET.relQ.length = 0;
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
   for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } }
@@ -12480,6 +12533,171 @@ function netRemoteHear(r, o) {
     }
   } finally { NET.tgt = prevT; }
 }
+/* ==========================================================================
+ *  LOBBY: public games without a code, Quick match, Browse. No game server of our own: the public PeerJS broker
+ *  cannot list peers (discovery off), so a public host also takes a well-known lobby peer id on its broker,
+ *  <prefix>lobby-<n> (n 0..LOBBY.slots-1, the first free one; 'unavailable-id' = taken). A searcher opens its own peer,
+ *  connects to every slot at once (a missing one answers 'peer-unavailable' at once), the host's lobby peer answers
+ *  { t:'info', name, mode, players, private, build, code } and echoes one ping, then the link closes. The joiner then
+ *  dials the code as before (so codes, versus, co-op, reconnect are unchanged). A broker with "discovery": true in
+ *  net-config.json (a self-hosted peerjs started with --allow_discovery) is asked for its peer list instead
+ *  (GET /<key>/peers), and only the lobby ids it has are probed. Private games never register: code only.
+ *  Each public game has a random two-word title, seeded from the host's session. A game with two players answers
+ *  players 2 (shown FULL). Probes need a WebRTC link like a game does: a host only reachable through TURN is only
+ *  listed when TURN is set up (net-config.json).
+ * ========================================================================== */
+const LOBBY = { slots: 32, pub: (() => { try { return localStorage.getItem('cqc.netpub.v1') !== 'priv'; } catch (e) { return true; } })(),
+  name: '', peer: null, slot: -1, list: [], busy: null, at: 0, page: 0, qbusy: false, err: '' };
+const LB_ADJ = ['Rusty', 'Silent', 'Iron', 'Crimson', 'Hollow', 'Broken', 'Cold', 'Lucky', 'Grim', 'Amber', 'Shadow', 'Copper', 'Steel', 'Wild', 'Quiet', 'Burnt',
+  'Frozen', 'Black', 'Golden', 'Feral', 'Lone', 'Ghost', 'Rapid', 'Stone', 'Brass', 'Ashen', 'Scarlet', 'Neon', 'Sly', 'Dusty', 'Savage', 'Midnight'];
+const LB_NOUN = ['Falcon', 'Wolf', 'Viper', 'Badger', 'Raven', 'Cobra', 'Hound', 'Jackal', 'Hornet', 'Lynx', 'Mantis', 'Otter', 'Panther', 'Rhino', 'Shark', 'Tiger',
+  'Bison', 'Coyote', 'Eagle', 'Fox', 'Gator', 'Hawk', 'Moose', 'Owl', 'Puma', 'Ram', 'Stag', 'Vulture', 'Weasel', 'Yak', 'Boar', 'Heron'];
+function lbName(seed) {                                            // two words, fixed per host session
+  let h = 2166136261; for (const ch of String(seed || Math.random())) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  h >>>= 0; return `${LB_ADJ[h % LB_ADJ.length]} ${LB_NOUN[(h >>> 8) % LB_NOUN.length]}`;
+}
+const lbId = (n) => (NET.cfg ? NET.cfg.prefix : NET_CFG_DEF.prefix) + 'lobby-' + n;
+const lbPlayers = () => (NET.st === 'on' || NET.st === 're' ? 2 : 1);
+function lbInfo() { return { t: 'info', v: 1, name: LOBBY.name, mode: NET.mode, players: lbPlayers(), private: false, build: '1109z', code: NET.code }; }
+// Host: take the first free lobby slot on the broker the game peer is on; answer probes; keep it while the game runs.
+async function lbRegister(gen, b) {
+  lbUnregister();
+  const start = Math.floor(Math.random() * 4);                    // a little spread so two hosts at once rarely race for slot 0
+  for (let k = 0; k < LOBBY.slots; k++) {
+    const n = (start + k) % LOBBY.slots;
+    let p;
+    try { p = await netPeerOpen(lbId(n), b); } catch (e) {
+      if (gen !== NET.gen || NET.role !== 'host') return;
+      if (e.type === 'unavailable-id') continue;
+      LOBBY.err = e.type || 'broker'; return;                     // the broker refused: the game still works by code
+    }
+    if (gen !== NET.gen || NET.role !== 'host' || !LOBBY.pub) { try { p.destroy(); } catch (er) { /* gone */ } return; }
+    LOBBY.peer = p; LOBBY.slot = n; LOBBY.err = '';
+    p.on('connection', (c) => {
+      c.on('open', () => { try { c.send(lbInfo()); } catch (e) { /* closed */ } });
+      c.on('data', (m) => { if (m && m.t === 'pg') try { c.send({ t: 'pgr', a: m.a }); } catch (e) { /* closed */ } });
+      c.on('error', () => {});
+      setTimeout(() => { try { c.close(); } catch (e) { /* closed */ } }, 8000);
+    });
+    p.on('error', () => {});
+    p.on('disconnected', () => {                                   // broker link dropped: get the slot back (another host may take it meanwhile)
+      let t = 0;
+      const again = () => { if (p.destroyed || LOBBY.peer !== p || p.open) return; t++; try { p.reconnect(); } catch (e) { /* retry */ } setTimeout(again, Math.min(30000, 1000 * 2 ** t)); };
+      setTimeout(again, 1000);
+    });
+    try { yardUiSync(); } catch (e) { /* no menu */ }
+    return;
+  }
+  LOBBY.err = 'lobby full';
+  netSay(`Multiplayer: the public list is full; share the code ${NET.code} instead`, 6);
+}
+function lbUnregister() { const p = LOBBY.peer; LOBBY.peer = null; LOBBY.slot = -1; if (p) try { p.destroy(); } catch (e) { /* gone */ } }
+// Searcher: one probe a slot; resolves { info..., id, ping } or null.
+function lbProbe(p, id) {
+  return new Promise((ok) => {
+    let done = false, c = null, info = null, t2 = 0; const t0 = performance.now();
+    const fin = (r) => { if (done) return; done = true; clearTimeout(t); clearTimeout(t2); p.off('error', onE); try { c && c.close(); } catch (e) { /* closed */ } ok(r); };
+    const onE = (e) => { if (e && e.type === 'peer-unavailable' && String(e.message || '').indexOf(id) >= 0) fin(null); };
+    const t = setTimeout(() => fin(info), 5000);
+    p.on('error', onE);
+    try { c = p.connect(id, { label: 'lobby', reliable: true, serialization: 'json' }); } catch (e) { fin(null); return; }
+    if (!c) { fin(null); return; }
+    c.on('data', (m) => {
+      if (!m) return;
+      if (m.t === 'info' && !info) {
+        info = { name: String(m.name || 'Open game').slice(0, 40), mode: m.mode === 'vs' ? 'vs' : 'coop', players: Math.max(1, Math.min(2, +m.players || 1)),
+          private: !!m.private, build: String(m.build || ''), code: String(m.code || '').replace(/\D/g, '').slice(0, 4), id, ping: Math.round((performance.now() - t0) / 3) };
+        try { c.send({ t: 'pg', a: performance.now() }); } catch (e) { /* closed */ }
+        t2 = setTimeout(() => fin(info), 1200);                     // no echo: keep the rough figure
+      } else if (m.t === 'pgr' && info && typeof m.a === 'number') { info.ping = Math.max(1, Math.round(performance.now() - m.a)); fin(info); }
+    });
+    c.on('error', () => {}); c.on('close', () => fin(info));
+  });
+}
+async function lbIds(b) {                                          // a broker that allows discovery: the lobby ids it has; else every slot
+  const all = Array.from({ length: LOBBY.slots }, (_, n) => lbId(n));
+  if (!b.discovery) return all;
+  try {
+    const L = await netFetchJson(`${b.secure ? 'https' : 'http'}://${b.host}:${b.port}${(b.path || '/').replace(/\/?$/, '/')}${encodeURIComponent(b.key || 'peerjs')}/peers`, 2500);
+    if (Array.isArray(L)) return L.filter((id) => typeof id === 'string' && id.indexOf(lbId('')) === 0);
+  } catch (e) { /* not allowed after all: probe */ }
+  return all;
+}
+function lbSearch() {
+  if (LOBBY.busy) return LOBBY.busy;
+  const run = (async () => {
+    try { await netLib(); } catch (e) { LOBBY.err = netWhy('lib'); return []; }
+    if (!NET.cfg || NET.st === 'off') await netCfgLoad();
+    const found = new Map(); let reached = false;
+    await Promise.all(NET.cfg.brokers.map(async (b) => {
+      let p = null;
+      try { p = await netPeerOpen(undefined, b); } catch (e) { return; }
+      reached = true;
+      try {
+        const ids = await lbIds(b);
+        const R = await Promise.all(ids.map((id) => lbProbe(p, id)));
+        for (const g of R) if (g && g.code && !(NET.role === 'host' && g.code === NET.code) && !found.has(g.code)) found.set(g.code, g);
+      } finally { try { p.destroy(); } catch (e) { /* gone */ } }
+    }));
+    LOBBY.err = reached ? '' : netWhy('broker');
+    const L = Array.from(found.values()).sort((a, b) => (a.players - b.players) || (a.ping - b.ping));
+    LOBBY.list = L; LOBBY.at = performance.now(); LOBBY.page = 0;
+    return L;
+  })();
+  LOBBY.busy = run;
+  run.finally(() => { LOBBY.busy = null; try { yardUiSync(); } catch (e) { /* no menu */ } });
+  try { yardUiSync(); } catch (e) { /* no menu */ }
+  return run;
+}
+// Quick match: the open game of this mode with the best ping; none = host a public one and wait.
+async function lbQuick(mode) {
+  if (!NET.on || LOBBY.qbusy) return;
+  if (NET.st !== 'off') netLeave(true);
+  NET.mode = mode === 'vs' ? 'vs' : 'coop';
+  try { localStorage.setItem('cqc.netmode.v1', NET.mode); } catch (e) { /* storage off */ }
+  LOBBY.qbusy = true; netSay(`Quick match (${NET.mode === 'vs' ? 'versus' : 'co-op'}): searching for an open game…`, 4);
+  let L = [];
+  try { L = await lbSearch(); } finally { LOBBY.qbusy = false; }
+  if (NET.st !== 'off') return;                                    // something else started meanwhile
+  const g = L.find((x) => x.mode === NET.mode && x.players < 2 && !x.private);
+  if (g) { netSay(`Quick match: joining "${g.name}"`, 4); netJoin(g.code); return; }
+  netSay(`Quick match: no open ${NET.mode === 'vs' ? 'versus' : 'co-op'} game, hosting a public one`, 5);
+  netHost('pub');
+}
+function lbJoin(g) {
+  if (!g) return;
+  if (g.players >= 2) { netSay(`"${g.name}" already has two players`); return; }
+  netJoin(g.code);
+}
+// Menu / watch cells: Browse (search, next page), three rows of found games.
+const LB_ROWS = 3;
+const lbRow = (i) => LOBBY.list[LOBBY.page * LB_ROWS + i] || null;
+function lbBrowseLabel() {
+  if (LOBBY.busy) return 'Browse games: searching…';
+  if (!LOBBY.at) return 'Browse open games';
+  const n = LOBBY.list.length, pages = Math.ceil(n / LB_ROWS);
+  if (!n) return LOBBY.err ? `Browse: ${LOBBY.err} · retry` : 'Browse: no open games · refresh';
+  return pages > 1 ? `Browse: ${n} games, page ${LOBBY.page + 1}/${pages} · next` : `Browse: ${n} game${n > 1 ? 's' : ''} · refresh`;
+}
+function lbBrowsePress() {
+  const pages = Math.ceil(LOBBY.list.length / LB_ROWS);
+  if (pages > 1 && LOBBY.page + 1 < pages && performance.now() - LOBBY.at < 60000) { LOBBY.page++; try { yardUiSync(); } catch (e) { /* no menu */ } return; }
+  lbSearch();
+}
+function lbRowLabel(i) {
+  const g = lbRow(i);
+  if (!g) return LOBBY.at && i === 0 && !LOBBY.list.length && !LOBBY.busy ? '(no games found)' : '—';
+  return `${g.players >= 2 ? '[FULL] ' : 'Join '}${g.name} · ${g.mode === 'vs' ? 'Versus' : 'Co-op'} · ${g.players}/2 · ${g.ping} ms`;
+}
+function lbRowPress(i) { const g = lbRow(i); if (g) lbJoin(g); else lbSearch(); }
+function lbRowDim(id) { if (!/^ylb\d$/.test(id)) return false; const g = lbRow(+id[3]); return !g || g.players >= 2; }
+function lbVisToggle() {
+  if (NET.st !== 'off') { netSay('Leave the game to change public / private'); return; }
+  LOBBY.pub = !LOBBY.pub;
+  try { localStorage.setItem('cqc.netpub.v1', LOBBY.pub ? 'pub' : 'priv'); } catch (e) { /* storage off */ }
+  netSay(LOBBY.pub ? 'Hosting: public (listed, also a code)' : 'Hosting: private (code only)');
+}
+window.CQC_LOBBY = { search: () => lbSearch(), list: () => LOBBY.list.slice(), busy: () => !!LOBBY.busy, err: () => LOBBY.err };
 // ---- modes: TOGETHER (co-op: the host runs the AI, the joiner sees copies) and VERSUS (own safe rooms, two rooms between) ----
 NET.mode = (() => { try { return localStorage.getItem('cqc.netmode.v1') === 'vs' ? 'vs' : 'coop'; } catch (e) { return 'coop'; } })();
 NET.pup = new Map(); NET.nidC = 0; NET.tgt = null; NET.remW = new THREE.Vector3(); NET.remOk = false; NET.remDead = false; NET.enAcc = 0;
@@ -12491,7 +12709,8 @@ function netTitleBegin() {
   let c = null; try { c = window.CQC_MP ? window.CQC_MP() : null; } catch (e) { c = null; }
   if (!c || !NET.on || NET.st !== 'off') return;
   if (c.mode) NET.mode = c.mode === 'vs' ? 'vs' : 'coop';
-  if (c.sel === 'host') { NET.codeAt = performance.now(); netHost(); }
+  if (c.sel === 'quick') { lbQuick(NET.mode); return; }        // LOBBY: join the first open game of this mode, else host a public one
+  if (c.sel === 'host') { NET.codeAt = performance.now(); netHost(c.pub ? 'pub' : 'priv'); }
   else if (c.sel === 'join') { if (/^\d{4}$/.test(c.code || '')) netJoin(c.code); else netSay('Multiplayer: type the host\'s 4-digit code (watch menu: JOIN)', 5); }
 }
 function netModeLabel() { return `Multiplayer mode: ${NET.mode === 'vs' ? 'VERSUS' : 'TOGETHER'}`; }
@@ -37936,9 +38155,11 @@ function mwBuild(grid) {
   mwButton('game', null, 'Controls panel', 'Every key and button (H)', () => { ui.hud.classList.toggle('hidden'); });
   mwNote('game', 'Difficulty, run mode and records are on the terminal in the safe room.');
   // Multiplayer and gameplay: the shared cells (YARD_CELLS), ids mw_<id> as yardDomBuild makes them
-  const YD = { ynet: 'Host a game and give your code to the other player', yjoin: 'Type the 4-digit code from the host', ymode: 'Together (co-op) or Versus. The host picks',
+  const YD = { yquick: 'Joins the open game of this mode with the best ping, else hosts a public one', ybrowse: 'Search for open public games (press again: next page / refresh)',
+    ylb0: 'A public game: press to join', ylb1: 'A public game: press to join', ylb2: 'A public game: press to join', yvis: 'Public games are listed for everyone; private ones need the code',
+    ynet: 'Host a game (public: listed; private: give your code to the other player)', yjoin: 'Type the 4-digit code from the host', ymode: 'Together (co-op) or Versus. The host picks',
     yvs: 'The host starts and restarts the match', ystealth: 'How well the men see you in the dark', ymeter: 'The ring that shows who is noticing you', ymic: 'Voice chat. Press to allow the microphone, then open / push to talk (hold Y or D-pad left) / off' };
-  const YL = { ymic: 'Microphone', ynet: 'Host a game', yjoin: 'Join a game', ymode: 'Mode', yvs: 'Versus match', ystealth: 'Stealth', ymeter: 'Detection meter' };
+  const YL = { yquick: 'Quick match', ybrowse: 'Browse games', yvis: 'Public / private', ymic: 'Microphone', ynet: 'Host a game', yjoin: 'Join a game', ymode: 'Mode', yvs: 'Versus match', ystealth: 'Stealth', ymeter: 'Detection meter' };
   for (const [id, lab, fn] of YARD_CELLS) {
     const b = mwButton(id === 'ystealth' || id === 'ymeter' ? 'play' : 'mp', 'mw_' + id, lab(), YD[id], () => fn());
     b.dataset.yard = id; b.dataset.lab = YL[id] || ''; if (!YL[id]) delete b.dataset.lab;
@@ -47729,7 +47950,7 @@ function startGame(mode) {
     return;
   }
   gameStarted = true;
-  try { const mp = window.CQC_MP ? window.CQC_MP() : null; if (mp && (mp.sel === 'host' || mp.sel === 'join') && NET.on && NET.voice && MIC.mode !== 'off') netVoiceMic(true); } catch (e) { /* no mic */ }   // MIC: asked inside the Start press
+  try { const mp = window.CQC_MP ? window.CQC_MP() : null; if (mp && (mp.sel === 'host' || mp.sel === 'join' || mp.sel === 'quick') && NET.on && NET.voice && MIC.mode !== 'off') netVoiceMic(true); } catch (e) { /* no mic */ }   // MIC: asked inside the Start press
   if (mode !== 'vr') setTimeout(pcWarm, 3000);                   // PERF pass 3: the arms view's shaders in the background
   setTimeout(netTitleBegin, 1200);                   // multiplayer chosen on the title (Host / Join)
   const title = window.CQC_TITLE;
@@ -54887,7 +55108,13 @@ function stealthMeter(dt) {
  *  UI: the title's start choice, the watch / M panel cells (start, stealth, meter).
  * ------------------------------------------------------------------------- */
 var YARD_CELLS = [
+  ['yquick', () => LOBBY.qbusy ? 'Quick match: searching…' : `Quick match (${NET.mode === 'vs' ? 'versus' : 'co-op'})`, () => lbQuick(NET.mode)],
+  ['ybrowse', () => lbBrowseLabel(), () => lbBrowsePress()],
+  ['ylb0', () => lbRowLabel(0), () => lbRowPress(0)],
+  ['ylb1', () => lbRowLabel(1), () => lbRowPress(1)],
+  ['ylb2', () => lbRowLabel(2), () => lbRowPress(2)],
   ['ynet', () => netLabel(), () => { if (NET.st === 'off') netHost(); else netLeave(); }],
+  ['yvis', () => `Hosting: ${LOBBY.pub ? 'PUBLIC (listed)' : 'PRIVATE (code only)'}`, () => lbVisToggle()],
   ['ymode', () => netModeLabel(), () => netModeToggle()],
   ['yvs', () => VS.on ? `Versus: you ${VS.score[0]} : ${VS.score[1]} them · rematch` : 'Versus: START MATCH (host)', () => { if (NET.role === 'host' && netLive() && NET.mode === 'vs') netVsBegin(); else netSay(NET.mode !== 'vs' ? 'Pick VERSUS mode first' : 'The host starts it, once connected'); }],
   ['yjoin', () => NET.st === 'on' ? `Joined game ${NET.code}` : 'Multiplayer: JOIN a game', () => { if (NET.st !== 'on') netJoin(); }],
@@ -54900,7 +55127,7 @@ function yardCellPress(id) { if (!YARD_CELLS) return false; const c = YARD_CELLS
 function yardUiSync() {
   try { WATCH.dirty = true; } catch (e) { /* not made yet */ }
   try { TERM.dirty = true; } catch (e) { /* not made yet */ }
-  for (const [id, lab] of YARD_CELLS) { const b = document.getElementById('mw_' + id); if (b) { if (id === 'ymic') b.dataset.desc = voxHelp() || 'Voice chat. Press to allow the microphone, then open / push to talk (hold Y or D-pad left) / off'; mwCellText(b, lab()); } }
+  for (const [id, lab] of YARD_CELLS) { const b = document.getElementById('mw_' + id); if (b) { b.classList.toggle('mw-dim', lbRowDim(id)); if (id === 'ymic') b.dataset.desc = voxHelp() || 'Voice chat. Press to allow the microphone, then open / push to talk (hold Y or D-pad left) / off'; mwCellText(b, lab()); } }
 }
 function yardDomBuild(grid) {
   for (const [id, lab, fn] of YARD_CELLS) {
@@ -54918,7 +55145,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
     const i = MOD_LIST.length + 1 + j, x = x0 + (i % cols) * (bw + gap), y = top + Math.floor(i / cols) * (bh + gap), hov = WATCH.hover === id;
     c.fillStyle = hov ? 'rgba(140,255,215,.16)' : 'rgba(140,255,215,.05)'; c.fillRect(x, y, bw, bh);
     c.strokeStyle = hov ? '#c4f5e2' : 'rgba(140,255,215,.3)'; c.lineWidth = 3; c.strokeRect(x + 1.5, y + 1.5, bw - 3, bh - 3);
-    c.textAlign = 'center'; c.fillStyle = '#c4f5e2'; c.font = '600 25px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
+    c.textAlign = 'center'; c.fillStyle = lbRowDim(id) ? 'rgba(196,245,226,.4)' : '#c4f5e2'; c.font = '600 25px "Barlow Semi Condensed", "Arial Narrow", sans-serif';
     c.fillText(lab(), x + bw / 2, y + bh / 2, bw - 20);
     WATCH.hits.push({ id, x, y, w: bw, h: bh });
   });
