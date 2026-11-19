@@ -2070,3 +2070,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Your side (emoSdMe): one round used (as fireGun's bookkeeping: chamber from the magazine, slide lock, case, bolt guns keep the case), the gun's own report (supShot / sfx), the men hear it; then a real death (hp 0, dead, normal respawn and run end). The screen is black at once (playerState.selfDeath: deathFade 1, the third-person view snapped off), no gore from your eyes. No score, XP or kill for anyone: no versus point (netVsTick), the other side's copy dies with netKill set.
 - His side: the emote plays on his soldier on his clock; at the shot his report and flash from the muzzle, then emoSdKill: head wound, exit wound and the step 90 head gore along the bore, enemyDie limp (ragdoll). If his death packet comes first it does the same (emoSdRemDeath hook in netAvApply). Co-op: one line "Lost one of ours". "Show others'" off: he is shown only collapsing (Dying fall from the moment of the shot), his death once he is on the floor (or 1.9 s after his death packet). After the shot the sender sends no stop (def.quietStop), so his side plays on to it.
 - Checked: module parse only.
+
+## CQC emotes: third-person view stays, head movement never ends an emote in VR
+- After an emote ends by itself, EMO.self.hold keeps the third-person view and your body (standing at ease, enemyPose) until you walk (keys, sticks, pad, VR stick: LOCO_IN.t from locomote), shoot (emo3Snap), are hit, die or turn the camera setting off (emoHoldTick). Turning, orbiting and head movement keep it.
+- VR: real head travel no longer ends an emote (the 8 cm check is computer only); walking with the stick does.
+- Checked: module parse, eslint no-undef. Not run in a browser or headset.

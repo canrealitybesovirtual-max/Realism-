@@ -13960,8 +13960,10 @@ function bodyBump(cx, cz, onDoor) {
 }
 
 // fwd/side are stick values (-1..1), yaw is the facing to move along. Returns speed in m/s.
+const LOCO_IN = { t: -1e9 };                                      // emotes: the last frame you walked (stick / keys / pad / VR stick)
 function locomote(dt, fwd, side, yaw, speed) {
   const mag = Math.hypot(fwd, side);
+  if (mag > 0.2) LOCO_IN.t = performance.now();
   if (mag > 1) { fwd /= mag; side /= mag; }
   const sy = Math.sin(yaw), cy = Math.cos(yaw);
   _target.set(-sy * fwd + cy * side, 0, -cy * fwd - sy * side).multiplyScalar(speed);
@@ -54536,13 +54538,22 @@ function emoMeTick(dt) {
   M.t += dt;
   if (def.me) def.me(M, dt, false);
   if (!M.id) return;
-  if (def.dur && M.t > def.dur()) { M.id = 0; return; }           // done by itself (his side ends it on its clock too)
+  if (def.dur && M.t > def.dur()) { M.id = 0; if (!playerState.dead) { EMO.self.hold = true; EMO.self.hit0 = playerState.lastHit; } return; }   // done by itself (his side ends it on its clock too); your third-person view stays (emoHoldTick)
   headWorld(_em.a);
   if (M.has) { const dx = _em.a.x - M.prev.x, dz = _em.a.z - M.prev.z; if (dx * dx + dz * dz < 0.25) { M.ax += dx; M.az += dz; } }
   M.prev.copy(_em.a); M.has = true;
   let input = false;
   if (!renderer.xr.isPresenting) input = keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD') || Math.hypot(stick.x, stick.y) > 0.2 || Math.hypot(PAD.lx, PAD.ly) > 0.2;
-  if (input || Math.hypot(M.ax, M.az) > EMO.moveStop) emoStopMine();
+  if (performance.now() - LOCO_IN.t < 120) input = true;           // walking with the stick (VR too)
+  if (input || (!renderer.xr.isPresenting && Math.hypot(M.ax, M.az) > EMO.moveStop)) emoStopMine();   // VR: moving your head around never ends it
+}
+// After an emote ends by itself the third-person view stays on (your body standing at ease) until you walk, shoot,
+// are hit or die; turning and moving your head keep it.
+function emoHoldTick() {
+  const S = EMO.self; if (!S.hold) return;
+  let end = playerState.dead || playerState.lastHit !== S.hit0 || !EMO.cfg.cam3p || performance.now() - LOCO_IN.t < 120;
+  if (!renderer.xr.isPresenting) end = end || keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD') || Math.hypot(stick.x, stick.y) > 0.2 || Math.hypot(PAD.lx, PAD.ly) > 0.2;
+  if (end || EMO.me.id) S.hold = false;
 }
 
 // --- receiving (the other player's emote on his soldier) -------------------------------------------------------------
@@ -56008,6 +56019,7 @@ function emoTick(dt) {
   if (!mp && EMO.W.open && EMO.W.src !== 'pc') emoClose(false);
   if (!netLive() && !EMO.solo) { if (EMO.rem.phase !== 'off') emoAvEnd(EMO.rem.e); }
   emoMeTick(dt);
+  emoHoldTick();
   emoSdTick();                                                    // self-inflicted: his death after the shot
   emoSelfTick(dt);                                                // EMOTES 3p: your own body plays your emote
   emoBubble(dt);
@@ -56038,7 +56050,7 @@ const C3 = { k: 0, want: false, applied: false, yaw: 0, pitch: 0.35, dist: 2.77,
   vr: { view: false, f: 0, applied: false, p: new THREE.Vector3(), q: new THREE.Quaternion(), rp: new THREE.Vector3(), rq: new THREE.Quaternion(), FADE: 0.15, dist: 2.5, side: 0.5 } };
 const C3_GRP = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR);   // walls, floors, ceilings, door leaves (never your own body, held guns or loose props)
 const C3_AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
-const emoSelfLive = () => { const p = EMO.self.R.phase; return p === 'wait' || p === 'in' || p === 'play'; };
+const emoSelfLive = () => { const p = EMO.self.R.phase; return EMO.self.hold || p === 'wait' || p === 'in' || p === 'play'; };
 function emoHeldGun() { return renderer.xr.isPresenting ? (gunOf(vrHands[1]) || gunOf(vrHands[0])) : gunOf(deskHand); }
 // The soldier (once): out of every list the men are in.
 function emoSelfEnsure() {
@@ -56116,16 +56128,17 @@ function emoSelfTick(dt) {
   if (!S.warmed && EMO.cfg.cam3p) { if (!S.warmAt) S.warmAt = performance.now() + 5000; emoSelfWarm(false); }
   if (!e) return;
   const back = C3.k <= 0 && !C3.vr.view && C3.vr.f <= 0;
-  if (R.phase === 'off' && back) { if (e.root.visible) e.root.visible = false; return; }
+  if (R.phase === 'off' && back && !S.hold) { if (e.root.visible) e.root.visible = false; return; }
   if (!emoSelfPlace(e)) return;
   e.root.visible = true;
   if (!emoAvPose(e, dt, wnow(), R)) { enemyPose(e, dt, wnow()); emoSelfIdleGun(e); }
-  if (R.phase === 'out' && back) { emoAvEnd(e, R); e.root.visible = false; }   // the camera is back: no need to finish the blend
+  if (R.phase === 'out' && back && !S.hold) { emoAvEnd(e, R); e.root.visible = false; }   // the camera is back: no need to finish the blend
 }
 // Blended out (normal pose): the gun stays on the back / in the holster until it is hidden.
 function emoSelfIdleGun(e) { const R = EMO.self.R; if (R.def && R.def.hold) return; R.gk = 1; emoGun(e, R, false); }
 // A hit, a shot, or the setting turned off: the emote ends and the view is first person at once.
 function emo3Snap(quiet) {
+  EMO.self.hold = false;
   if (EMO.me.id) emoStopMine();
   const S = EMO.self, R = S.R;
   if (R.phase !== 'off') emoAvEnd(R.e, R);
