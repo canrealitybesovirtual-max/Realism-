@@ -12175,8 +12175,22 @@ function netTx(dt) {
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: NET.role === 'host' || NET.hiGot || !MPW.on ? stream.frontier : undefined, k: r.kind === 'safe' ? 1 : 0,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
-      ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
+      ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx(), ...netHeldTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
   } catch (e) { /* not ready */ }
+}
+// NARM: what each hand holds that is not the gun, one letter a hand [right, left]: - nothing / the gun, m magazine,
+// n grenade, s syringe, a attachment, h shell, k kit, w wear, o anything else (a box). Omitted when both are '-'.
+function netHeldCode(h) {
+  const p = h && h.prop; if (!p) return '-';
+  const it = p.item; if (!it) return 'o';
+  const k = it.kind;
+  return k === 'gun' ? (it.primary === h ? '-' : 'o') : k === 'mag' ? 'm' : k === 'nade' ? 'n' : k === 'med' ? 's' : k === 'att' ? 'a' : k === 'shell' ? 'h' : k === 'kit' ? 'k' : k === 'wear' ? 'w' : 'o';
+}
+function netHeldTx() {
+  let R = '-', L = '-';
+  if (renderer.xr.isPresenting) { for (const h of vrHands) { if (!h || !h.ctrl) continue; const c = netHeldCode(h); if (h.ctrl.userData.handedness === 'left') L = c; else R = c; } }
+  else { R = netHeldCode(deskHand); if (typeof DNADE !== 'undefined' && DNADE.active) L = 'n'; }
+  return R === '-' && L === '-' ? {} : { hi: R + L };
 }
 // VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
 // really do (a computer player sends none: his copy keeps the aimed pose from the head).
@@ -12732,7 +12746,7 @@ function netSample(rt) {
   if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); gq = [_nsQa.x, _nsQa.y, _nsQa.z, _nsQa.w]; }
   const same = a.gh === b.gh && a.gt === b.gt;
   return { s: a.s, k: a.k, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a,
-    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir };
+    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir, hi: b.hi };
 }
 const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
 function netTick(dt, now) {
@@ -12762,6 +12776,10 @@ function netTick(dt, now) {
   else { const step = Math.min(250, pbN - NET.pbAt); const er = pbW - (NET.pbT + step); NET.pbT += step + clamp(er, -0.08 * step, 0.08 * step); }
   NET.pbAt = pbN;
   const s = netSample(NET.pbT); if (!s) { NET.remOk = false; return; }
+  netAvApply(s, dt);
+}
+// The other player's body from one playback sample (split out of netTick so a test can feed samples).
+function netAvApply(s, dt) {
   const r0 = stream.rooms.get(s.s), r = r0 && mpwKindOk(r0, s.k) ? r0 : null;   // MPSYNC: his slot here must be the same kind of room (a safe room and a fight room at one slot are not one frame)
   NET.remRoom = r && r.active ? r : null; NET.remOk = !!NET.remRoom; NET.remDead = !!s.d;
   if (NET.remRoom) NET.remW.set(rWX(r, s.x), r.origin.y + s.y, rWZ(r, s.z));
@@ -12781,7 +12799,7 @@ function netTick(dt, now) {
     if (r.enemies) { const i = r.enemies.indexOf(e); if (i >= 0) r.enemies.splice(i, 1); }
     e.pos.set(s.x, s.z); NET.rem = { x: s.x, z: s.z };
   }
-  if (s.d) { if (!e.dead) try { enemyDie(e, 'torso', NET._d.set(Math.sin(s.yw), 0, Math.cos(s.yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } return; }
+  if (s.d) { narmClear(e); if (!e.dead) try { enemyDie(e, 'torso', NET._d.set(Math.sin(s.yw), 0, Math.cos(s.yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } return; }
   const px = e.pos.x, pz = e.pos.y;
   e.pos.set(s.x + Math.sin(s.yw) * 0.06, s.z + Math.cos(s.yw) * 0.06);   // the body sits a little behind the eyes
   const sp = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
@@ -12804,6 +12822,9 @@ function netTick(dt, now) {
     H.hasP = !!s.gp; if (s.gp) H.P.set(rWX(r, s.gp[0]), r.origin.y + s.gp[1], rWZ(r, s.gp[2]));
     H.gh = s.gh || 'R';
   } else e.netH = null;                                            // a computer / pad player: the normal gun pose from his head
+  { const L = NET.buf[NET.buf.length - 1];                         // NARM: his hand data is stale (packets stopped): his arms fall back to relaxed / the head-based pose
+    e.netFresh = !L || NET.pbT == null || NET.pbT - L.c < NARM.stale; if (!e.netFresh) e.netH = null; }
+  e.netHi = s.hi || ''; e.netGunOn = !!s.g;                        // NARM: what each hand holds besides a gun ('' = nothing)
   e.reloadT = s.r ? 0.5 : 0;                                      // the reload pose (support hand at the magwell, gun canted)
   netAvGunTick(e, s);                                             // the real gun he holds, its lights and lasers
   if (e.gun && e.gun.root) e.gun.root.visible = !!s.g;
@@ -13156,7 +13177,7 @@ function netRestRx(m) {
   p.body.setLinvel({ x: 0, y: 0, z: 0 }, true); p.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
   p.root.position.copy(_nb.o); p.root.quaternion.copy(_nb.q);
 }
-if (/[?&]dev\b/.test(QS)) Object.assign(window.__cqcNet, { netGunBuild, netGunTx, netBuildGun, netDisp, netDropTx, netDropRx, netTakeTx, netTakeRx, netAvLasers, netAvLight, netSample, spot: () => NET_SPOT });
+if (/[?&]dev\b/.test(QS)) Object.assign(window.__cqcNet, { netGunBuild, netGunTx, netBuildGun, netDisp, netDropTx, netDropRx, netTakeTx, netTakeRx, netAvLasers, netAvLight, netSample, spot: () => NET_SPOT, netAvApply, netHeldTx, netHeldCode, NARM, narmSide, narmAfter });
 // --- multiplayer 2: grenades, men down / surrendered / dead, doors, loot, stealth, versus rounds ------------------------
 // Grenades: a live grenade you let go of (thrown, dropped, a man's throw on the host) goes to the other side as 'nade'
 // (room-local pose, speed, spin, fuse left). His copy flies with its own physics and waits: when yours goes off you send
@@ -30219,6 +30240,97 @@ function solveIK(a, b, la, lb, T, pole, front, endBone = null, endQ = null) {
   if (endBone && endQ) endBone.quaternion.copy(_ik.q2).invert().multiply(endQ);
 }
 const _fw = new THREE.Vector3(), _rt = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0), _yawQ = new THREE.Quaternion();
+// NARM: the other player's (e.net) arms when a hand is not on his gun. Empty-handed both arms hang relaxed (a slight elbow
+// bend, hands by the thighs, swinging opposite the legs as he walks); a hand holding something else (magazine, grenade,
+// syringe, part, box: the pose packet's hi letters) holds it low in front of the hip, with a small stand-in of it in the
+// fist; a VR player's tracked, fresh hands go where his real hands are. Gun pose <-> off-gun and relaxed <-> item <-> VR
+// hand are each eased over NARM.blend s. Only e.net bodies (enemyPose calls it for them alone): the AI is untouched.
+const NARM = { on: !/[?&]netarms=off\b/.test(QS), blend: 0.25, stale: 400, geo: null, mats: null,
+  v: { sh: new THREE.Vector3(), r: new THREE.Vector3(), i: new THREE.Vector3(), o: new THREE.Vector3(), d: new THREE.Vector3(), d2: new THREE.Vector3(),
+    p: new THREE.Vector3(), p2: new THREE.Vector3(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), yi: new THREE.Quaternion(), m: new THREE.Matrix4(),
+    ny: new THREE.Vector3(0, -1, 0), yA: new THREE.Vector3(0, 1, 0), xA: new THREE.Vector3(1, 0, 0), it: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2),
+    hp: new THREE.Vector3(), hq: new THREE.Quaternion(), rq: new THREE.Quaternion(), s: new THREE.Vector3() } };
+// fingers along dir (world), palm turned by roll about the finger axis, in the body's yaw frame (palm faces in at roll 0)
+function narmHandQ(dir, roll, out) {
+  const V = NARM.v;
+  V.yi.copy(_yawQ).invert(); V.d2.copy(dir).applyQuaternion(V.yi).normalize();
+  out.copy(_yawQ).multiply(V.q2.setFromUnitVectors(V.ny, V.d2)).multiply(V.yi.setFromAxisAngle(V.yA, roll));
+  return out;
+}
+function narmSide(e, si, s, SN, dt, NH, cr) {
+  const A = e.nArm || (e.nArm = { w: [1, 1], wi: [0, 0], wv: [0, 0], vh: [new THREE.Vector3(), new THREE.Vector3()], curl: 1, pr: [null, null], prK: ['', ''] });
+  const V = NARM.v, B = e.B, sk = e.sk, side = si ? 'L' : 'R';
+  const code = (e.netHi || '')[si] || '-', item = code !== '-';
+  const vr = !!(NH && (si ? NH.hasL : NH.hasR));
+  const gunHand = NH && NH.hasQ ? NH.gh : 'R';
+  const tw = !e.netGunOn ? 1 : gunHand === side ? 0 : (vr || !item ? 0 : 1);   // support hand: on the handguard unless it holds something (computer: a grenade)
+  const st = dt / NARM.blend, mv = (x, to) => (x < to ? Math.min(to, x + st) : Math.max(to, x - st));
+  if (vr) A.vh[si].copy(si ? NH.L : NH.R);                         // kept: a hand that just went stale eases back from where it was
+  A.w[si] = mv(A.w[si], tw); A.wi[si] = mv(A.wi[si], item ? 1 : 0); A.wv[si] = mv(A.wv[si], vr ? 1 : 0);
+  const w = smoothstep(0, 1, A.w[si]); if (w <= 0) return;
+  const wi = smoothstep(0, 1, A.wi[si]), wv = smoothstep(0, 1, A.wv[si]);
+  B[SN.upperArm].updateWorldMatrix(true, false); V.sh.setFromMatrixPosition(B[SN.upperArm].matrixWorld);
+  const reach = sk.upper + sk.fore, gait = clamp(e.speed / 1.2);
+  const sw = (s < 0 ? -Math.sin(e.phase) : Math.sin(e.phase)) * 0.17 * gait;   // the arm swings with the opposite leg
+  V.r.copy(V.sh).addScaledVector(_up, -reach * 0.94 + sw * sw * 0.7).addScaledVector(_rt, s * 0.05).addScaledVector(_fw, 0.03 + sw + 0.12 * cr);
+  V.i.copy(V.sh).addScaledVector(_up, -reach * 0.72).addScaledVector(_fw, reach * 0.42).addScaledVector(_rt, s * 0.03);
+  V.o.lerpVectors(V.r, V.i, wi);
+  // fingers: relaxed down (a touch forward), holding forward-down, VR along the arm
+  V.d.copy(_fw).multiplyScalar(0.12 + sw * 0.6).addScaledVector(_up, -1).normalize();
+  V.d2.copy(_fw).multiplyScalar(0.75).addScaledVector(_up, -0.65).normalize();
+  V.d.lerp(V.d2, wi);
+  // elbows: back (relaxed), down and back (holding), down and out (VR)
+  V.p.copy(_rt).multiplyScalar(s * 0.3).addScaledVector(_fw, -1).addScaledVector(_up, -0.15);
+  V.p2.copy(_rt).multiplyScalar(s * 0.4).addScaledVector(_up, -0.85).addScaledVector(_fw, -0.35);
+  V.p.lerp(V.p2, wi);
+  let roll = s * mix(0.35, 0.85, wi);
+  if (wv > 0) {
+    const H = A.vh[si];
+    V.o.lerp(H, wv);
+    V.d2.subVectors(H, V.sh); if (V.d2.lengthSq() > 1e-6) V.d.lerp(V.d2.normalize(), wv).normalize();
+    V.p2.copy(_rt).multiplyScalar(s * 0.6).addScaledVector(_up, -0.7).addScaledVector(_fw, -0.2);
+    V.p.lerp(V.p2, wv); roll *= 1 - 0.6 * wv;
+  }
+  narmHandQ(V.d, roll, V.q);
+  _ev.t.lerp(V.o, w); _ev.q.slerp(V.q, w); _ev.p.lerp(V.p, w);
+}
+const NARM_GEO = { m: [0.026, 0.12, 0.07, 0x1d1f1e], n: [0.032, 0.1, 0, 0x4b5232], s: [0.009, 0.15, 0, 0xc8ccd0], a: [0.034, 0.1, 0.034, 0x16181a],
+  h: [0.011, 0.07, 0, 0x8e1c16], k: [0.06, 0.03, 0.09, 0x3a3d3a], w: [0.07, 0.03, 0.1, 0x262a24], o: [0.1, 0.1, 0.1, 0x8a6c48] };
+function narmProxy(code) {
+  if (!NARM.geo) { NARM.geo = {}; NARM.mats = {}; }
+  if (!NARM.geo[code]) {
+    const D = NARM_GEO[code] || NARM_GEO.o;
+    NARM.geo[code] = D[2] ? new THREE.BoxGeometry(D[0], D[1], D[2]) : new THREE.CylinderGeometry(D[0], D[0], D[1], 12);
+    NARM.mats[code] = new THREE.MeshStandardMaterial({ color: D[3], roughness: code === 's' ? 0.3 : 0.7, metalness: code === 's' ? 0.8 : 0.1 });
+  }
+  const m = new THREE.Mesh(NARM.geo[code], NARM.mats[code]); m.castShadow = false; m.raycast = () => {}; m.userData.narm = true;
+  return m;
+}
+function narmClear(e) { const A = e && e.nArm; if (!A) return; for (let i = 0; i < 2; i++) if (A.pr[i]) { A.pr[i].removeFromParent(); A.pr[i] = null; A.prK[i] = ''; } }
+// After both arms: finger curl (gun 1, holding 0.85, relaxed 0.3) and the held things' stand-ins in his fists.
+function narmAfter(e, dt) {
+  const A = e.nArm; if (!A) return;
+  const V = NARM.v, NH = e.netH;
+  let ct = 0.3;
+  for (let si = 0; si < 2; si++) {
+    const code = (e.netHi || '')[si] || '-', SN = si ? POSE_L : POSE_R, s = si ? -1 : 1;
+    const vrSup = !!(NH && (si ? NH.hasL : NH.hasR));
+    const show = code !== '-' && (A.w[si] > 0.5 || vrSup);
+    if (A.w[si] < 0.5) ct = 1; else if (code !== '-' && ct < 0.85) ct = 0.85;
+    if (A.pr[si] && (A.prK[si] !== code || !show)) { A.pr[si].removeFromParent(); A.pr[si] = null; A.prK[si] = ''; }
+    if (!show) continue;
+    if (!A.pr[si]) { A.pr[si] = narmProxy(code); A.prK[si] = code; e.root.add(A.pr[si]); }
+    const H = e.B[SN.hand]; H.updateWorldMatrix(true, false);
+    H.matrixWorld.decompose(V.hp, V.hq, V.s);
+    V.d.set(-s * 0.025, -0.07, -0.005).applyQuaternion(V.hq).add(V.hp);   // in the fist (the hand's fingers run along its -y)
+    e.root.updateWorldMatrix(true, false); e.root.getWorldQuaternion(V.rq);
+    const P = A.pr[si];
+    P.position.copy(V.d); e.root.worldToLocal(P.position);
+    P.quaternion.copy(V.rq).invert().multiply(V.hq).multiply(V.it);
+  }
+  A.curl += (ct - A.curl) * (1 - Math.exp(-dt * 8));
+  if (e.skin) enemyCurl(e, A.curl);
+}
 const _egq = new THREE.Quaternion(), _egp = new THREE.Vector3(), _ecq = new THREE.Quaternion(), _hq = new THREE.Quaternion(), _hv = new THREE.Vector3();
 function enemyPose(e, dt, now) {
   const B = e.B;
@@ -30374,8 +30486,10 @@ function enemyPose(e, dt, now) {
     _ev.q.copy(e.gunQ).multiply(_hq);
     _ev.p.set(s * 0.7, -0.75, 0.15).applyQuaternion(_ecq);       // elbows down and out
     _ev.c.set(0, 0, -1).applyQuaternion(_ecq);
+    if (e.net && NARM.on) narmSide(e, si, s, SN, dt, NH, cr);        // NARM: the other player's empty / item hands (never the AI)
     solveIK(B[SN.upperArm], B[SN.foreArm], sk.upper, sk.fore, _ev.t, _ev.p, _ev.c, B[SN.hand], _ev.q);
   }
+  if (e.net && NARM.on) narmAfter(e, dt);
   if (e.enade) enadeArm(e, _ecq);                                 // enemy grenades: the throwing arm
   eRootUpd(e, false);
   enemySkinSync(e);                                               // step 66
