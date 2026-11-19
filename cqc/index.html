@@ -614,6 +614,7 @@
   #rules li.now::marker { color: var(--tube); }
   #hurt { position: fixed; inset: 0; pointer-events: none; z-index: 14; opacity: 0;
     background: radial-gradient(ellipse at center, rgba(90, 0, 0, 0) 42%, rgba(95, 4, 2, 0.9) 100%); }
+  #hurtfx { position: fixed; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 14; display: none; }
   #flashbang { position: fixed; inset: 0; pointer-events: none; z-index: 14; opacity: 0; background: #fffdf6; }   /* step 23 */
   #downed { position: fixed; inset: 0; pointer-events: none; z-index: 15; opacity: 0; background: #000;
     display: grid; place-items: center; color: var(--ash); letter-spacing: 0.2em; text-transform: uppercase; }
@@ -1628,6 +1629,7 @@
 
 <div id="hint" class="hidden">Click to look around</div>
 <div id="hurt" aria-hidden="true"></div>
+<canvas id="hurtfx" aria-hidden="true"></canvas>
 <div id="flashbang" aria-hidden="true"></div>
 <div id="downed" aria-hidden="true"><p>Down</p></div>
 <div id="reticle" class="hidden" aria-hidden="true"></div>
@@ -10402,13 +10404,14 @@ const FilmGradeShader = {
     uBGrain: { value: CONFIG.replay.bcr.live.grain }, uBVig: { value: CONFIG.replay.bcr.live.vignette }, uBChroma: { value: CONFIG.replay.bcr.live.chroma },
     // step 23.5: auto exposure, rolling shutter, oversharpening, gain noise, compression, clipping (0 = skipped)
     uAE: { value: 1 }, uShut: { value: 0 }, uSharp: { value: 0 }, uNoise: { value: 0 }, uBlock: { value: 0 }, uClip: { value: 0 },
+    uLow: { value: 0 }, uBlur: { value: 0 },   // SCREEN BLOOD: low-health grade, short hit blur (0 = skipped)
     uCas: { value: 0 }   // step 123: contrast-adaptive sharpening (COMFORT Sharpness; 0 = off)
   },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
     uniform sampler2D tDiffuse; uniform float uTime, uGrain, uChroma, uVignette; uniform vec2 uRes; varying vec2 vUv;
     uniform float uBody, uGlitch, uK, uBGrain, uBVig, uBChroma;
-    uniform float uAE, uShut, uSharp, uNoise, uBlock, uClip, uCas;
+    uniform float uAE, uShut, uSharp, uNoise, uBlock, uClip, uCas, uLow, uBlur;
     float rand(vec2 p){ p = fract(p * vec2(443.897, 441.423)); p += dot(p, p.yx + 19.19); return fract((p.x + p.y) * p.x); }
     float bcHash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float bcSeg(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)); }
@@ -10429,6 +10432,11 @@ const FilmGradeShader = {
       vec2 c = uv - 0.5; float r2 = dot(c, c);
       vec2 off = c * (uChroma + uBody * (uBChroma + 0.004 * gk)) * (1.0 + r2 * 4.0);   // lens-like, stronger at edges
       vec3 col = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
+      if (uBlur > 0.0) {                                        // SCREEN BLOOD: a short smear after a hit, 4 taps
+        vec2 bo = c * uBlur * 0.014 + vec2(uBlur * 1.6) / uRes;
+        vec3 bs = texture2D(tDiffuse, uv + bo).rgb + texture2D(tDiffuse, uv - bo).rgb + texture2D(tDiffuse, uv + vec2(bo.x, -bo.y)).rgb + texture2D(tDiffuse, uv + vec2(-bo.x, bo.y)).rgb;
+        col = mix(col, bs * 0.25, clamp(uBlur, 0.0, 1.0) * 0.7);
+      }
       if (uSharp > 0.0) {                                       // step 23.5: body cam oversharpening, two taps
         vec2 px = 1.0 / uRes;
         col = max(col + (col - 0.5 * (texture2D(tDiffuse, uv + px).rgb + texture2D(tDiffuse, uv - px).rgb)) * uSharp, 0.0);
@@ -10445,6 +10453,11 @@ const FilmGradeShader = {
       }
       col *= uAE;                                               // step 23.5: auto exposure (1 when off)
       col *= 1.0 - uVignette * smoothstep(0.1, 0.8, r2 * 2.0);
+      if (uLow > 0.0) {                                         // SCREEN BLOOD: low health drains colour, darkens the edges
+        float ll = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(col, vec3(ll), uLow * 0.6);
+        col *= 1.0 - uLow * (0.07 + 0.3 * smoothstep(0.05, 0.55, r2 * 2.0));
+      }
       float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
       col = mix(mix(col * vec3(0.955, 1.0, 1.035), col, smoothstep(0.0, 0.45, l)), col, 0.0); // cool, slightly green shadows
       if (uBody > 0.0) {
@@ -14219,15 +14232,18 @@ function setVignette(amount, inner, fade) {
  *  The lens quad is the vignette's per-eye quad and only draws while there is
  *  blood or static on it. Off: everything in the headset is as before.
  * ------------------------------------------------------------------------- */
+// SCREEN BLOOD (?screenblood=off = the old red gradient and lens splats): see the section after playerFadeVR.
+const SCRB = { on: !/[?&]screenblood=off\b/.test(QS),
+  vr: { near: 1.0, chance: 0.6, hold: 0.45, fade: 1.1, slide: 0.05 } };   // headset droplets: m from your eyes, s, s, tan units a s
 const BCV_N = CONFIG.replay.bcr.vr.blood.max;
 const bodyCamLensMat = new THREE.ShaderMaterial({
   uniforms: { uP: { value: Array.from({ length: BCV_N }, () => new THREE.Vector4()) }, uQ: { value: Array.from({ length: BCV_N }, () => new THREE.Vector4()) },
-    uCenter: { value: CONFIG.replay.bcr.vr.center }, uG: { value: 0 }, uT: { value: 0 }, uVig: { value: 0 } },
+    uCenter: { value: CONFIG.replay.bcr.vr.center }, uG: { value: 0 }, uT: { value: 0 }, uVig: { value: 0 }, uReal: { value: 0 } },
   vertexShader: vignetteMat.vertexShader,
   fragmentShader: `
     #define N ${BCV_N}
     uniform vec4 uP[N], uQ[N];        // x, y (tan), radius, seed / alpha, drip, 0, 0
-    uniform float uCenter, uG, uT, uVig;
+    uniform float uCenter, uG, uT, uVig, uReal;
     varying vec2 vDir;
     float h1(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     void main() {
@@ -14237,6 +14253,17 @@ const bodyCamLensMat = new THREE.ShaderMaterial({
         if (Q.x <= 0.002) continue;
         vec2 d = (vDir - P.xy) / P.z;
         float r = length(d);
+        if (uReal > 0.5) {                                        // SCREEN BLOOD: one small droplet, dark rim, thin wet trail above
+          if (r > 1.3 + Q.z) continue;
+          float an0 = atan(d.y, d.x);
+          float rr = r / (1.0 + 0.16 * sin(an0 * 3.0 + P.w * 5.0) + 0.09 * sin(an0 * 7.0 + P.w * 11.0));
+          float body = 1.0 - smoothstep(0.8, 1.0, rr), rim = smoothstep(0.5, 0.95, rr) * body;
+          float tr = (1.0 - smoothstep(0.15, 0.3, abs(d.x))) * step(0.0, d.y) * (1.0 - smoothstep(0.0, Q.z + 0.001, d.y)) * 0.22;
+          float a0 = max(body * (0.3 + 0.55 * rim), tr) * Q.x;
+          thick = max(thick, rim * Q.x);
+          A = 1.0 - (1.0 - A) * (1.0 - a0);
+          continue;
+        }
         if (r > 2.2 + Q.y * 2.0) continue;
         float an = atan(d.y, d.x);
         float e = 1.0 + 0.22 * sin(an * 5.0 + P.w * 6.0) + 0.12 * sin(an * 11.0 + P.w * 13.0) + 0.07 * sin(an * 19.0 + P.w * 3.0);
@@ -14303,7 +14330,7 @@ function bodyCamVRHit(dmg, dir) {
     g.rec.vz += F.kick * k;
   }
   for (const h of vrHands) pulse(h, 1, F.buzz);
-  if (!CONFIG.polish.blood.on) return;
+  if (!CONFIG.polish.blood.on || SCRB.on) return;                 // SCREEN BLOOD: your own wound never paints the lens
   // Your own blood comes up from below or from the side the round came from.
   let x = (Math.random() - 0.5) * 1.4, y = -0.25 - Math.random() * 0.55;
   if (dir) { BCV.v.copy(dir).transformDirection(camera.matrixWorldInverse); x = clamp(-BCV.v.x * 0.9 + (Math.random() - 0.5) * 0.5, -1, 1); }
@@ -14315,6 +14342,15 @@ function bodyCamVRSpray(p, part, k) {
   if (!BCV.on) return;
   const B = CONFIG.replay.bcr.vr.blood, v = camera.worldToLocal(BCV.v.copy(p));
   const d = v.length();
+  if (SCRB.on) {                                                   // SCREEN BLOOD: only real close spray, a few small droplets
+    const R = SCRB.vr;
+    if (d > R.near || v.z > -0.08) return;
+    const near = 1 - d / R.near;
+    if (Math.random() > R.chance * near * (part === 'head' ? 1.2 : 0.8) * clamp(k, 0.5, 1.2)) return;
+    const n = 1 + Math.floor(Math.random() * (1 + 2.5 * near)), cx = clamp(v.x / -v.z, -1, 1), cy = clamp(v.y / -v.z, -1, 1);
+    for (let i = 0; i < n; i++) bodyCamVRSplat(cx + (Math.random() - 0.5) * 0.5, cy + (Math.random() - 0.5) * 0.4, 0.012 + 0.022 * Math.random() * (0.5 + near), 0.55 + 0.35 * Math.random());
+    return;
+  }
   if (d > B.near * Math.min(1.3, 0.7 + 0.3 * BCX.kk) || v.z > -0.05 || Math.random() > B.chance * Math.min(1.2, BCX.kk) * (part === 'head' ? 1 : 0.8)) return;
   const near = 1 - d / B.near;
   bodyCamVRSplat(clamp(v.x / -v.z, -1.2, 1.2), clamp(v.y / -v.z, -1.2, 1.2), (0.12 + 0.2 * near) * (part === 'head' ? 1.3 : 1), (0.5 + 0.5 * near) * clamp(k, 0.4, 1.2));
@@ -14325,7 +14361,17 @@ function bodyCamVRPre(now) {
   if (!on) { bodyCamLens.visible = false; BCV.hitK = 0; return; }
   const V = CONFIG.replay.bcr.vr, B = V.blood, u = bodyCamLensMat.uniforms;
   let any = false;
-  BCV.splats.forEach((s, i) => {
+  u.uReal.value = SCRB.on ? 1 : 0;
+  if (SCRB.on) {                                                   // SCREEN BLOOD: droplets slide down a little and are gone in ~1.5 s
+    const R = SCRB.vr;
+    for (let i = 0; i < BCV_N; i++) {
+      const s = BCV.splats[i], a = Math.max(0, now - s.t), al = s.k * (a < R.hold ? 1 : Math.max(0, 1 - (a - R.hold) / R.fade));
+      const sl = R.slide * a * (0.6 + 0.4 * (s.s % 1));
+      u.uP.value[i].set(s.x, s.y - sl, Math.max(0.005, s.r), s.s);
+      u.uQ.value[i].set(al, 0, sl / Math.max(0.005, s.r), 0);
+      if (al > 0.002) any = true;
+    }
+  } else BCV.splats.forEach((s, i) => {
     const hold = B.hold * (0.7 + 0.3 * BCX.kk), a = now - s.t, al = a < 0 ? 0 : s.k * (a < hold ? 1 : Math.max(0, 1 - (a - hold) / B.fade));
     u.uP.value[i].set(s.x, s.y, Math.max(0.01, s.r), s.s);
     u.uQ.value[i].set(al, B.drip * Math.min(1, Math.max(0, a) / B.dripT), 0, 0);
@@ -31553,6 +31599,7 @@ function playerHit(part, dir, E = 1, k = 1) {
   playerState.lastHit = now; playerState.hurt = 1;
   loopPlayerHurt(dmg);
   bodyCamLiveHit(dmg);                                           // step 23.3: ...and your live view
+  scrbHit(dmg, dir);                                               // SCREEN BLOOD: computer hit pulse from the round's side
   bodyCamVRHit(dmg, dir);                                        // step 23.4: ...and in the headset: flinch, blood on the lens
   bodyCamFxHit(dmg);
   stressHit(dmg);                                                // step 41: heart, breath, ringing ears, a shaky gun                                             // step 23.5: the exposure jolts
@@ -31587,11 +31634,145 @@ function updatePlayerVitals(dt, now) {
     deathFade = P.selfDeath && !sdw ? 1 : Math.min(1, Math.max(0, P.deadT - sdw) / 0.6);   // (not watched: black at the shot)
     if (P.deadT > 2.2 + sdw) respawnPlayer();
   } else deathFade = Math.max(0, deathFade - dt * 1.5);
-  if (ui7.hurt) ui7.hurt.style.opacity = renderer.xr.isPresenting ? 0 : (P.hurt * 0.8 + (1 - P.hp / C.playerHealth) * 0.35).toFixed(3);
+  if (SCRB.on) scrbTick(dt, now);                                 // SCREEN BLOOD: hit-side pulse, low health, close spray
+  else if (ui7.hurt) ui7.hurt.style.opacity = renderer.xr.isPresenting ? 0 : (P.hurt * 0.8 + (1 - P.hp / C.playerHealth) * 0.35).toFixed(3);
   if (ui7.downed) ui7.downed.style.opacity = renderer.xr.isPresenting ? 0 : deathFade.toFixed(3);
 }
 // In the headset: the comfort vignette's black fade carries hits and going down.
 function playerFadeVR() { return Math.max(deathFade, playerState.hurt * (BCV.on ? CONFIG.replay.bcr.vr.flinch.fade * Math.min(1.3, BCX.kk) : 0.45)); }   // step 23.4: harder with body cam
+
+/* ---------------------------------------------------------------------------
+ *  SCREEN BLOOD (computer; SCRB declared beside BCV; ?screenblood=off = the old
+ *  #hurt red gradient and the headset's big lens splats). No cartoon splats:
+ *    HIT     a dark red pulse along the screen edge the round came from (up to
+ *            3 at once), rises in 60 ms, gone in ~1 s; a 0.3 s 4-tap smear in
+ *            the film pass (uBlur)
+ *    LOW HP  below 60 %: colour drains and the edges darken (film pass uLow),
+ *            a dark vignette that beats with a lub-dub heartbeat (70-150 bpm)
+ *    SPRAY   only when a man is shot within 1.3 m in front of you: a few small
+ *            irregular semi-transparent droplets (dark rim, faint refraction
+ *            highlight) that creep down and fade in 1-2 s
+ *  One 2D canvas (#hurtfx, 640 px wide), drawn only while something shows; all
+ *  sprites made at load, fixed pools, no per-frame allocation, no shader
+ *  compiled mid-game (the film pass text is compiled at load as before).
+ *  Headset: the canvas stays hidden (the lens quad's droplets, see bodyCamVRSpray).
+ * ------------------------------------------------------------------------- */
+const SCRBC = (() => {
+  const cv = document.getElementById('hurtfx');
+  if (!cv || !SCRB.on) return null;
+  const ctx = cv.getContext('2d');
+  const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+  // Edge glow: opaque dark red at x = 0, gone by x = w, faded toward both ends.
+  const edge = mk(64, 256), eg = edge.getContext('2d');
+  let g = eg.createLinearGradient(0, 0, 64, 0);
+  g.addColorStop(0, 'rgba(78,2,2,0.9)'); g.addColorStop(0.35, 'rgba(60,0,0,0.45)'); g.addColorStop(1, 'rgba(40,0,0,0)');
+  eg.fillStyle = g; eg.fillRect(0, 0, 64, 256);
+  eg.globalCompositeOperation = 'destination-in';
+  g = eg.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.3, 'rgba(0,0,0,1)'); g.addColorStop(0.7, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  eg.fillStyle = g; eg.fillRect(0, 0, 64, 256);
+  // Low health: a dark, barely red ring.
+  const low = mk(256, 256), lg = low.getContext('2d');
+  g = lg.createRadialGradient(128, 128, 60, 128, 128, 182);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.55, 'rgba(14,0,0,0.35)'); g.addColorStop(1, 'rgba(22,0,0,0.85)');
+  lg.fillStyle = g; lg.fillRect(0, 0, 256, 256);
+  // Droplets: irregular blobs, see-through middle, darker rim, a faint highlight bent by the drop.
+  const drops = [];
+  for (let n = 0; n < 5; n++) {
+    const c = mk(64, 64), x = c.getContext('2d'), ph = Math.random() * 6.28, ph2 = Math.random() * 6.28;
+    x.beginPath();
+    for (let i = 0; i <= 40; i++) {
+      const a = i / 40 * Math.PI * 2, r = 22 * (1 + 0.14 * Math.sin(a * 3 + ph) + 0.08 * Math.sin(a * 5 + ph2) + 0.04 * Math.sin(a * 9 + ph * 2));
+      const px = 32 + Math.cos(a) * r, py = 32 + Math.sin(a) * r * 0.92;
+      if (i) x.lineTo(px, py); else x.moveTo(px, py);
+    }
+    x.closePath();
+    g = x.createRadialGradient(30, 30, 2, 32, 32, 26);
+    g.addColorStop(0, 'rgba(96,6,4,0.28)'); g.addColorStop(0.62, 'rgba(70,2,2,0.42)'); g.addColorStop(0.86, 'rgba(32,0,0,0.82)'); g.addColorStop(1, 'rgba(20,0,0,0.9)');
+    x.fillStyle = g; x.fill();
+    x.globalCompositeOperation = 'source-atop';
+    x.strokeStyle = 'rgba(255,215,210,0.16)'; x.lineWidth = 2.2;
+    x.beginPath(); x.arc(27, 27, 12, Math.PI * 1.05, Math.PI * 1.55); x.stroke();
+    drops.push(c);
+  }
+  const D = Array.from({ length: 24 }, () => ({ x: 0, y: 0, r: 0, t: -99, life: 0, vy: 0, a: 0, sp: 0, st: 0 }));
+  const H = Array.from({ length: 3 }, () => ({ ang: 0, k: 0, t: -99 }));
+  return { cv, ctx, edge, low, drops, D, H, drawn: false, w: 0, h: 0, beat: 0, blurT: -99, blurK: 0, v: new THREE.Vector3() };
+})();
+function scrbHit(dmg, dir) {
+  if (!SCRBC) return;
+  const now = performance.now() / 1000, k = clamp(dmg / 35, 0.35, 1);
+  let ang = -Math.PI / 2;                                         // no direction: from below
+  if (dir) {
+    const v = SCRBC.v.copy(dir).negate().transformDirection(camera.matrixWorldInverse);   // toward where it came from, camera axes
+    if (Math.abs(v.x) + Math.abs(v.z) > 0.05) ang = Math.atan2(-v.z, v.x);   // screen: right = +x, top = in front, bottom = behind
+  }
+  let o = SCRBC.H[0];
+  for (const h of SCRBC.H) if (h.t < o.t) o = h;
+  o.ang = ang; o.k = k; o.t = now;
+  SCRBC.blurK = Math.max(SCRBC.blurK * Math.max(0, 1 - (now - SCRBC.blurT) / 0.3), clamp(dmg / 45, 0.25, 1)); SCRBC.blurT = now;
+}
+function scrbSpray(p, part, k) {
+  if (!SCRBC || renderer.xr.isPresenting) return;
+  const v = camera.worldToLocal(SCRBC.v.copy(p)), d = v.length();
+  if (d > 1.3 || v.z > -0.1) return;
+  const near = 1 - d / 1.3;
+  if (Math.random() > 0.65 * near * (part === 'head' ? 1.25 : 0.85) * clamp(k, 0.5, 1.2)) return;
+  v.applyMatrix4(camera.projectionMatrix);                        // camera space -> NDC (applyMatrix4 divides by w)
+  if (Math.abs(v.x) > 1.2 || Math.abs(v.y) > 1.2) return;
+  const now = performance.now() / 1000, n = 2 + Math.floor(Math.random() * (1 + 4 * near));
+  for (let i = 0; i < n; i++) {
+    let o = SCRBC.D[0];
+    for (const q of SCRBC.D) if (q.t + q.life < o.t + o.life) o = q;
+    o.x = 0.5 + 0.5 * (v.x + (Math.random() - 0.5) * 0.5); o.y = 0.5 - 0.5 * (v.y + (Math.random() - 0.5) * 0.45);
+    o.r = (0.004 + 0.011 * Math.random() * Math.random()) * (0.7 + 0.6 * near);   // share of the screen height
+    o.t = now; o.life = 1 + Math.random() * 0.9; o.vy = 0.004 + 0.02 * o.r / 0.015 * Math.random();
+    o.a = 0.55 + 0.4 * Math.random(); o.sp = (Math.random() * SCRBC.drops.length) | 0; o.st = 0.8 + 0.4 * Math.random();
+  }
+}
+function scrbTick(dt, now) {
+  const S = SCRBC, P = playerState, C = CONFIG.enemy;
+  if (!S) return;
+  const vr = renderer.xr.isPresenting;
+  const low = P.dead ? 0 : clamp((0.6 - P.hp / C.playerHealth) / 0.45, 0, 1);
+  S.beat += dt * (70 + 80 * low) / 60;
+  const f = S.beat % 1, b = Math.exp(-((f / 0.07) ** 2)) + 0.6 * Math.exp(-(((f - 0.24) / 0.07) ** 2));   // lub-dub
+  const bt = now - S.blurT, blur = bt < 0.3 ? S.blurK * (1 - bt / 0.3) : 0;
+  if (filmPass) { filmPass.uniforms.uLow.value = vr ? 0 : low * (0.8 + 0.2 * b); filmPass.uniforms.uBlur.value = vr ? 0 : blur + 0.15 * low * b; }
+  let any = low > 0.01;
+  for (const h of S.H) if (now - h.t < 1.05) any = true;
+  for (const q of S.D) if (now - q.t < q.life) any = true;
+  if (vr || !any) {
+    if (S.drawn) { S.ctx.setTransform(1, 0, 0, 1, 0, 0); S.ctx.clearRect(0, 0, S.cv.width, S.cv.height); S.cv.style.display = 'none'; S.drawn = false; }
+    return;
+  }
+  const W = 640, Hh = Math.max(200, Math.round(640 * window.innerHeight / Math.max(1, window.innerWidth)));
+  if (S.w !== W || S.h !== Hh) { S.cv.width = S.w = W; S.cv.height = S.h = Hh; }
+  if (!S.drawn) { S.cv.style.display = 'block'; S.drawn = true; }
+  const x = S.ctx, cx = W / 2, cy = Hh / 2;
+  x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.clearRect(0, 0, W, Hh);
+  if (low > 0.01) { x.globalAlpha = clamp(low * (0.5 + 0.4 * b), 0, 1); x.drawImage(S.low, -W * 0.08, -Hh * 0.08, W * 1.16, Hh * 1.16); }
+  for (const h of S.H) {                                          // hit pulses along the edge the round came from
+    const a = now - h.t;
+    if (a < 0 || a >= 1.05) continue;
+    const al = h.k * (a < 0.06 ? a / 0.06 : 1 - (a - 0.06) / 0.99) * 0.85;
+    const ux = Math.cos(h.ang), uy = -Math.sin(h.ang);
+    const R = Math.min(Math.abs(ux) > 1e-3 ? cx / Math.abs(ux) : 1e9, Math.abs(uy) > 1e-3 ? cy / Math.abs(uy) : 1e9);
+    const depth = Math.min(W, Hh) * (0.3 + 0.15 * h.k), span = Math.max(W, Hh) * 1.3;
+    x.globalAlpha = clamp(al, 0, 1);
+    x.setTransform(1, 0, 0, 1, 0, 0); x.translate(cx, cy); x.rotate(Math.atan2(-uy, -ux));
+    x.drawImage(S.edge, -R - 2, -span / 2, depth, span);
+  }
+  x.setTransform(1, 0, 0, 1, 0, 0);
+  for (const q of S.D) {                                          // droplets creep down, stretch a little, fade
+    const a = now - q.t;
+    if (a < 0 || a >= q.life) continue;
+    const r = q.r * Hh, sl = q.vy * a * Hh, al = q.a * (a < q.life * 0.45 ? 1 : 1 - (a - q.life * 0.45) / (q.life * 0.55));
+    x.globalAlpha = clamp(al, 0, 1);
+    x.drawImage(S.drops[q.sp], q.x * W - r, q.y * Hh + sl - r * q.st, r * 2, r * 2 * q.st + Math.min(sl, r) * 0.6);
+  }
+  x.globalAlpha = 1;
+}
 function respawnPlayer() {
   if (VS.on && netVsRespawn()) return;                          // multiplayer versus: back in your own safe room
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
@@ -40789,6 +40970,7 @@ function bloodFx(p, dir, part, k = 1) {
   const head = part === 'head', big = head ? 1.8 : 1;
   const MIST = BLOOD_MIST, DROP = BLOOD_DROP;
   bodyCamVRSpray(p, part, k);                                    // step 23.4: close enough, it reaches the lens
+  scrbSpray(p, part, k);                                           // SCREEN BLOOD: computer, only real spray within ~1.3 m
   _p10.n.copy(dir).negate();
   fxEmit(p, _p10.n, 0.6, Math.round(4 * k), MIST);                                    // blowback
   fxEmit(p, dir, 0.28, Math.round(12 * big * k), MIST);                                // exit mist

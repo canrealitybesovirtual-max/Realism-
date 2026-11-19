@@ -2107,3 +2107,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC emotes: VR turning no longer inverted after an emote
 - Cause: the headset emote view restored the rig with rig.quaternion.copy; for a heading past 90 deg three's XYZ Euler then reads x = z = pi, so rotateRigAroundHead's rotation.y += angle (and the walk heading from rotation.y) turned the wrong way. emoCamPre now restores rig.rotation.set(0, yaw, 0) (yaw saved by c3RigYaw). Parse checked only.
+
+## CQC: realistic screen blood (SCREEN BLOOD, ?screenblood=off = the old look; not run in a browser, headset check needed)
+- Old: on a computer a static red radial gradient (#hurt) at hurt x 0.8 + missing health x 0.35; in the headset (body cam realism on) big lens splats with spatter and drips on every hit and from men shot within 1.6 m.
+- Computer now (#hurtfx canvas, 640 px wide, drawn only while something shows; sprites made at load, fixed pools): a hit = a dark red pulse along the screen edge the round came from (scrbHit: up to 3, 60 ms rise, gone in ~1 s) and a 0.3 s 4-tap smear in the film pass (uBlur); under 60 % health colour drains and edges darken (film pass uLow) with a dark vignette beating lub-dub at 70-150 bpm; a man shot within 1.3 m in front (scrbSpray from bloodFx, chance by nearness) leaves 2-6 small irregular see-through droplets with a dark rim and a faint highlight that creep down and fade in 1-2 s. Your own wounds never paint the screen.
+- Headset: no splat from your own hits (flinch, buzz and the hit fade stay); close spray (1 m) = 1-3 small droplets on the lens quad (uReal branch: rim, thin trail as they slide), gone in ~1.5 s. No blur or desaturation in the headset.
+- New uniforms in FilmGradeShader and the lens shader are compiled at load with them (branches on 0). SCRB / SCRBC (names sb* are the scoreboard's).
+- Checked: module parse, eslint no-undef only.
