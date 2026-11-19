@@ -2075,3 +2075,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - After an emote ends by itself, EMO.self.hold keeps the third-person view and your body (standing at ease, enemyPose) until you walk (keys, sticks, pad, VR stick: LOCO_IN.t from locomote), shoot (emo3Snap), are hit, die or turn the camera setting off (emoHoldTick). Turning, orbiting and head movement keep it.
 - VR: real head travel no longer ends an emote (the 8 cm check is computer only); walking with the stick does.
 - Checked: module parse, eslint no-undef. Not run in a browser or headset.
+
+## CQC: long builds lie on the floor instead of sticking out of the gun locker (?glfloor=off)
+- glFloorPose: a locker gun whose drawn bounds (glBounds, with its fitted parts) grow more than 3.5 cm past the factory gun its slot was measured on (any side: muzzle chains, big optics, stocks) is put on its side on the floor in front of the locker (0.3 m out, one row per such gun 16 cm apart, bore along the cabinet), keeping every part. gunLockerRestock uses it; glFloorCheck (every 2.5 s while you are in that safe room) moves a gun still in its slot whose build just grew (a store fit) to the floor. Guns you dropped elsewhere are not touched by that check.
+- Checked: module parse, eslint no-undef. Not run in a browser or headset.

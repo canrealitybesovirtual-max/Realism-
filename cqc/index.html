@@ -24582,18 +24582,45 @@ function glCarried(g) { return !!g && !!g.prop && !g.prop.removing && (g.prop.ho
 function glWorld(room, pos, quat) { return GL.M.compose(pos, quat, GL.one).premultiply(room.glGrp.matrixWorld).decompose(GL.v, GL.q, GL.s); }
 function glAt(room, p, pos, quat) { if (!p.inWorld || !p.kinematic || p.holders.length) return false; glWorld(room, pos, quat); return p.root.position.distanceTo(GL.v) < 0.01; }
 function glPut(room, p, pos, quat) { glWorld(room, pos, quat); itemToWorld(p, GL.v, GL.q, room); setKinematic(p); }
+// A gun whose fitted parts make it stick out of its slot (more than GL_FLOOR.grow past the factory gun the slot was
+// measured on) lies on its side on the floor in front of the locker instead, keeping its build. ?glfloor=off = never.
+const GL_FLOOR = { on: !/[?&]glfloor=off\b/.test(QS), grow: 0.035, b: new THREE.Box3(), c: new THREE.Vector3(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), v: new THREE.Vector3(), r: new THREE.Box3() };
+function glFloorPose(p, S, j) {
+  if (!GL_FLOOR.on || !S.b) return null;
+  const G = GL_FLOOR, b = glBounds(p.root, G.b), f = S.b;
+  if (b.isEmpty()) return null;
+  const g = G.grow;
+  if (f.min.z - b.min.z < g && b.max.z - f.max.z < g && f.min.y - b.min.y < g && b.max.y - f.max.y < g && f.min.x - b.min.x < g && b.max.x - f.max.x < g) return null;
+  G.q.setFromAxisAngle(G.v.set(0, 0, 1), Math.PI / 2);            // on its side
+  G.q2.setFromAxisAngle(G.v.set(0, 1, 0), Math.PI / 2); G.q.premultiply(G.q2);   // bore along the cabinet
+  G.r.makeEmpty();
+  for (let i = 0; i < 8; i++) { G.v.set(i & 1 ? b.max.x : b.min.x, i & 2 ? b.max.y : b.min.y, i & 4 ? b.max.z : b.min.z).applyQuaternion(G.q); G.r.expandByPoint(G.v); }
+  G.r.getCenter(G.c);
+  const pos = new THREE.Vector3(-G.c.x, 0.004 - G.r.min.y, GL.D + 0.3 + 0.16 * j - G.c.z);
+  return { pos, quat: G.q.clone() };
+}
+// Every 2.5 s in the safe room: a gun still resting in its slot whose build grew past it (store fit) moves to the floor.
+function glFloorCheck(room) {
+  const F = GL.fit; if (!F || !room.active || !room.glGrp) return;
+  room.glGrp.updateWorldMatrix(true, false);
+  let j = 0;
+  for (const S of F.long.concat(F.pist)) { const p = GL.guns[S.k]; if (p && p.inWorld && !p.removing && glAt(room, p, S.pos, S.quat) && glFloorPose(p, S, 0)) j++; }
+  if (j) gunLockerRestock(room);
+}
 function gunLockerRestock(room = GL.room) {
   const F = GL.fit;
   if (!F || !room || room !== GL.room || !room.active || !room.glGrp) return 0;
   room.glGrp.updateWorldMatrix(true, false);
-  let n = 0;
+  let n = 0, nFloor = 0;
   for (const S of F.long.concat(F.pist)) {
     let p = GL.guns[S.k];
     if (p && (p.removing || !p.inWorld)) p = GL.guns[S.k] = null;
     if (props.some((q) => q.item && q.item.kind === 'gun' && q.item.type === S.k && glCarried(q.item))) continue;   // never a second of a gun you carry
-    if (p && glAt(room, p, S.pos, S.quat)) continue;
     if (!p) { p = GL.spare[S.k] || createGun(S.k); GL.spare[S.k] = null; }
     p.glType = S.k; GL.guns[S.k] = p;
+    const fl = glFloorPose(p, S, nFloor);                          // built out past its slot (long muzzle chain, big optic): on the floor in front, parts kept
+    if (fl) { nFloor++; if (glAt(room, p, fl.pos, fl.quat)) continue; glPut(room, p, fl.pos, fl.quat); n++; continue; }
+    if (glAt(room, p, S.pos, S.quat)) continue;
     glPut(room, p, S.pos, S.quat); n++;
   }
   for (const S of F.mags) {
@@ -47490,6 +47517,7 @@ function tick(timeMs) {
   bodyPre(dt);           // step 14: torso, hips, legs, feet; the holster and pouch sockets (before the weapons use them)
   clothFoley(dt);        // step 86: your clothes and kit (crouch settle, getting up, a hard pivot, a fast arm)
   benchLampTick();       // the bench lamp's light follows its head; the rocker under a fingertip
+  if (GL_FLOOR.on && GL.room && stream.current === GL.room && performance.now() > (GL_FLOOR.at || 0)) { GL_FLOOR.at = performance.now() + 2500; try { glFloorCheck(GL.room); } catch (e) { /* next time */ } }   // a build changed in the store: too long for its slot = on the floor
   try { syrTick(dt); } catch (e) { /* no syringe this frame */ }   // syringe stab (VR)
   rigTick(dt);           // step 79: pouches, leg holster, arm pouch, the sling anchor and the torso capsules follow the bones
   termUpdate(dt);        // step 11: the safe room terminal (touch / aim, redraw only on change)
