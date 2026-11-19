@@ -31582,8 +31582,9 @@ function updatePlayerVitals(dt, now) {
   if (!P.dead && now - P.lastHit > C.regenDelay && P.hp < C.playerHealth) { P.hp = Math.min(C.playerHealth, P.hp + C.regen * dt); hpUi(); }
   if (P.dead) {
     P.deadT += dt;
-    deathFade = P.selfDeath ? 1 : Math.min(1, P.deadT / 0.6);   // EMOTES self-inflicted: black at the shot
-    if (P.deadT > 2.2) respawnPlayer();
+    const sdw = P.selfDeath && EMO_SDW.t ? EMO_SDW.watch : 0;     // EMOTES self-inflicted, watched in third person: the fall first
+    deathFade = P.selfDeath && !sdw ? 1 : Math.min(1, Math.max(0, P.deadT - sdw) / 0.6);   // (not watched: black at the shot)
+    if (P.deadT > 2.2 + sdw) respawnPlayer();
   } else deathFade = Math.max(0, deathFade - dt * 1.5);
   if (ui7.hurt) ui7.hurt.style.opacity = renderer.xr.isPresenting ? 0 : (P.hurt * 0.8 + (1 - P.hp / C.playerHealth) * 0.35).toFixed(3);
   if (ui7.downed) ui7.downed.style.opacity = renderer.xr.isPresenting ? 0 : deathFade.toFixed(3);
@@ -54798,7 +54799,7 @@ function emoMeTick(dt) {
 // are hit or die; turning and moving your head keep it.
 function emoHoldTick() {
   const S = EMO.self; if (!S.hold) return;
-  let end = playerState.dead || playerState.lastHit !== S.hit0 || !EMO.cfg.cam3p || performance.now() - LOCO_IN.t < 120;
+  let end = (playerState.dead && !EMO_SDW.t) || playerState.lastHit !== S.hit0 || !EMO.cfg.cam3p || performance.now() - LOCO_IN.t < 120;
   if (!renderer.xr.isPresenting) end = end || keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD') || Math.hypot(stick.x, stick.y) > 0.2 || Math.hypot(PAD.lx, PAD.ly) > 0.2;
   if (end || EMO.me.id) S.hold = false;
 }
@@ -55951,7 +55952,9 @@ function emoSdMe(M, dt, stop) {
   panel.dirty = true;
   try { if (!supShot(g, d)) sfx(d.sound, g.sup ? 0.39 : 1); } catch (er) { /* no sound */ }
   try { headWorld(_sd.n); enemiesHear(_sd.n); } catch (er) { /* fine */ }
-  try {                                                             // the blood in the room, as a man's head shot leaves it (left there after you respawn)
+  const SE = EMO.self.e, watch = EMO.cfg.cam3p && SE && SE.root && !SE.dead && EMO_SDW.on;   // third person: you watch your body fall (emoSdKill on it)
+  if (watch) { EMO_SDW.t = performance.now(); EMO.self.hold = true; EMO.self.hit0 = playerState.lastHit; try { ENEMY.list.push(SE); SE.sdList = true; emoSdKill(SE, EMO.self.R); } catch (er) { /* no fall */ } }
+  if (!watch) try {                                                 // the blood in the room, as a man's head shot leaves it (left there after you respawn)
     const P = _sd.n.clone(), dir = new THREE.Vector3();
     if (d.cls === 'pistol') dir.set(1, 0, 0).applyQuaternion(camera.getWorldQuaternion(new THREE.Quaternion())).negate().setY(0.15).normalize();   // right temple through the left side
     else { dir.set(0, 1, 0); camera.getWorldDirection(_sd.u); _sd.u.y = 0; if (_sd.u.lengthSq() > 1e-4) dir.addScaledVector(_sd.u.normalize(), -0.25).normalize(); }   // under the chin, up and back
@@ -55962,9 +55965,9 @@ function emoSdMe(M, dt, stop) {
     setTimeout(() => { try { poolAt(F, 1.3, true); } catch (er) { /* no pool */ } }, 1400);
   } catch (er) { /* no gore */ }
   playerState.selfDeath = true;                                     // black at once, no versus point
-  emo3Snap(true);                                                   // the third-person view ends (quiet stop: his side plays to the shot)
+  if (!watch) emo3Snap(true);                                       // the third-person view ends (quiet stop: his side plays to the shot)
   playerState.hp = 0; playerState.dead = true; playerState.deadT = 0;
-  deathFade = 1; if (ui7.downed && !renderer.xr.isPresenting) ui7.downed.style.opacity = '1';   // this frame already
+  if (!watch) { deathFade = 1; if (ui7.downed && !renderer.xr.isPresenting) ui7.downed.style.opacity = '1'; }   // this frame already
   hpUi();
 }
 // His death after the shot: the head wound and its gore, then the normal death (limp). No score for anyone.
@@ -56305,6 +56308,7 @@ const C3 = { k: 0, want: false, applied: false, yaw: 0, pitch: 0.35, dist: 2.77,
   t: new THREE.Vector3(), d: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), q: new THREE.Quaternion(), ray: null,
   hide: [], hideN: 0, DUR: 0.35, dMin: 1.6, dMax: 4, pMin: -0.25, pMax: 1.15, wall: 0.2, body: 0.6,
   vr: { view: false, f: 0, applied: false, p: new THREE.Vector3(), q: new THREE.Quaternion(), rp: new THREE.Vector3(), rq: new THREE.Quaternion(), FADE: 0.15, dist: 2.5, side: 0.5 } };
+const EMO_SDW = { on: !/[?&]sdwatch=off\b/.test(QS), watch: 5, t: 0 };   // self-inflicted: 5 s to watch your body fall before the fade
 const C3_GRP = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR);   // walls, floors, ceilings, door leaves (never your own body, held guns or loose props)
 const C3_AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 const emoSelfLive = () => { const p = EMO.self.R.phase; return EMO.self.hold || p === 'wait' || p === 'in' || p === 'play'; };
@@ -56384,6 +56388,10 @@ function emoSelfTick(dt) {
   const S = EMO.self, R = S.R, e = S.e;
   if (!S.warmed && EMO.cfg.cam3p) { if (!S.warmAt) S.warmAt = performance.now() + 5000; emoSelfWarm(false); }
   if (!e) return;
+  if (e.dead) {                                                    // the self-inflicted fall: the ragdoll drives it; gone after you respawn
+    if (!playerState.dead || !EMO_SDW.t) { EMO_SDW.t = 0; S.hold = false; try { const i = ENEMY.list.indexOf(e); if (i >= 0) ENEMY.list.splice(i, 1); removeEnemy(e); } catch (er) { /* gone */ } S.e = null; S.warmed = true; R.phase = 'off'; }
+    return;
+  }
   const back = C3.k <= 0 && !C3.vr.view && C3.vr.f <= 0;
   if (R.phase === 'off' && back && !S.hold) { if (e.root.visible) e.root.visible = false; return; }
   if (!emoSelfPlace(e)) return;
@@ -56475,7 +56483,7 @@ function c3Free(y, p = C3.pitch) {
 function emoCamApply(dt) {
   if (!EMO.on) return;
   const S = EMO.self, e = S.e;
-  const want = emoSelfLive() && EMO.cfg.cam3p && e && e.root.visible && !(BZ.k > 0) && !SCOPE.desk && !playerState.dead;
+  const want = emoSelfLive() && EMO.cfg.cam3p && e && e.root.visible && !(BZ.k > 0) && !SCOPE.desk && (!playerState.dead || (EMO_SDW.t && playerState.deadT < EMO_SDW.watch));
   if (renderer.xr.isPresenting) { if (C3.k > 0) emo3Snap(true); emoCamVr(dt, want); return; }
   if (C3.vr.view || C3.vr.f > 0) { C3.vr.view = false; C3.vr.f = 0; }
   if (want && !C3.want) {                                          // the start of the ease out: your look is held from here
