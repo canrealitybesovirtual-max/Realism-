@@ -2740,7 +2740,7 @@ const CONFIG = {
     soft: { blocker: 12, pcf: 16 }
   },
   post: { smaa: true, gtao: 0.75, bloomStrength: 0.22, bloomRadius: 0.55, bloomThreshold: 1.0, grain: 0.035, chroma: 0.0012, vignette: 0.3 },   // step 85: chroma 0.0025 -> 0.0012 (fringes read as a filter, not a lens; the body cam adds its own)
-  xr: { foveation: 0.5, framebufferScale: 1.0, targetFps: 72 }, // Quest 3S: 72 is the stable choice; 90 if fps holds
+  xr: { foveation: 0.5, framebufferScale: 1.2, targetFps: 72 },   // VR sharpness pass: start at 1.2x (learned 1.0..1.4) // Quest 3S: 72 is the stable choice; 90 if fps holds
   stills: {                  // step 42: body cam stills for the start screen (?stills=off)
     on: true,
     w: 480, h: 270, fov: 72,   // px, deg (vertical): the helmet cam's view, wider than your eyes
@@ -2786,14 +2786,14 @@ const CONFIG = {
   },
   dynres: {                   // step 37: headset resolution that dips for a late frame instead of a stutter (?dynres=off)
     on: true,
-    min: 0.8,                  // lowest viewport scale (per axis)
+    min: 0.92,                 // lowest viewport scale (per axis); VR sharpness pass: was 0.8 (read as pixelated)
     missAt: 1.25,              // a frame this many slots long that the game's own work does not explain is the GPU
     drop: 0.07,                // scale taken off per late frame
-    hintScale: 0.85,           // a grenade or a newly opened room: at most this for the next hint frames
+    hintScale: 0.94,           // a grenade or a newly opened room: at most this for the next hint frames
     holdFrames: 30,            // on-time frames before easing back up
     rise: 0.01                 // scale added back per on-time frame after that
   },
-  specAA: { on: true, k: 1.0, max: 0.4 },   // step 37: roughness from the shading normal's change across a pixel (?specaa=off)
+  specAA: { on: true, k: 1.4, max: 0.45 },   // VR sharpness pass: k 1.0 -> 1.4, max 0.4 -> 0.45 (less distant shimmer)   // step 37: roughness from the shading normal's change across a pixel (?specaa=off)
   probe: { on: true, settle: 1.5 },         // step 37: each room's reflections, captured once when there is headroom (?probe=off)
   calm: {                     // step 36: rooms switch on when nobody is looking (?calm=off)
     on: true,
@@ -2950,7 +2950,7 @@ const CONFIG = {
       dropBelow: 2, dropAfter: 2, raiseAfter: 8,   // at 72 Hz, anything under 70 is visible judder
       shadowEvery: 2,          // moving doors/props refresh room shadows every Nth frame
       shadowEveryStruggling: 3,
-      scale: [0.7, 1.0]        // framebuffer scale range, learned between sessions
+      scale: [1.0, 1.4]        // framebuffer scale range, learned between sessions (VR sharpness pass: never under 1.0)
     },
     texWorkers: 4,             // parallel texture generation on the first load
     texCache: true             // keep generated textures in IndexedDB so later loads skip generation
@@ -3402,7 +3402,7 @@ const CONFIG = {
     shadowDesktop: 1024, shadowXR: 512,
     shadowEvery: 3, shadowEveryXR: 3, shadowEveryStruggling: 4,
     foveation: 1.0,            // headset: fixed foveation from the first frame
-    xrScale: 0.8,              // headset: framebuffer scale cap for the next session
+    xrScale: 1.0,              // headset: framebuffer scale cap for the next session (VR sharpness pass: was 0.8)
     hazeShare: 0.4, hazeMaxPx: 150,
     contactCap: 40,
     solverIterations: 4
@@ -3413,7 +3413,7 @@ const CONFIG = {
     shadowDesktop: 512, shadowXR: 256,
     shadowEvery: 6, shadowEveryXR: 6, shadowEveryStruggling: 8,
     flashEvery: 4,                // the weapon light's shadow map: every 4th frame
-    xrScale: 0.65,                // headset: framebuffer scale cap for the next session
+    xrScale: 0.85,                // headset: framebuffer scale cap for the next session (was 0.65)
     contactCap: 12,
     solverIterations: 2,
     hideBody: false               // step 25.4: your body stays on in extreme (true = step 13 hands and cuffs only)
@@ -3574,6 +3574,7 @@ try {
   const saved = JSON.parse(localStorage.getItem(PERF_KEY) || '{}');
   const [lo, hi] = CONFIG.perf.xr.scale;
   if (typeof saved.xrScale === 'number') perf.xr.scale = Math.min(hi, Math.max(lo, saved.xrScale));
+  if (!saved.xrSharp) perf.xr.scale = Math.max(perf.xr.scale, CONFIG.xr.framebufferScale);   // VR sharpness pass: an older save (0.7..1.0) starts at 1.2 once
   if (typeof saved.xrRate === 'number') perf.xr.rate = saved.xrRate;   // step 33
   if (saved.mode === 'auto' || Number.isInteger(saved.mode)) perf.mode = saved.mode;
 } catch (e) { /* storage blocked: defaults */ }
@@ -3586,7 +3587,7 @@ const level = { floor: 0, flat: true };
 const KICK = { on: false, t: 0, yaw: 0, foot: new THREE.Vector3(), ext: 0, lift: 0, pitch: 0, struck: false, cap: 1, coolUntil: 0 };
 const JUMP = { air: false, t: 0, vy: 0, prevH: 0, has: false, vr: false, downV: 0, fell: false, still: 0, tuck: 0, landAt: -9, deskY: 0, deskV: 0 };
 function savePerf() {
-  try { localStorage.setItem(PERF_KEY, JSON.stringify({ xrScale: perf.xr.scale, mode: perf.mode, xrRate: perf.xr.rate || 0 })); } catch (e) { /* not fatal */ }
+  try { localStorage.setItem(PERF_KEY, JSON.stringify({ xrScale: perf.xr.scale, mode: perf.mode, xrRate: perf.xr.rate || 0, xrSharp: 1 })); } catch (e) { /* not fatal */ }
 }
 
 /* ============================================================================
@@ -5324,7 +5325,7 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   try { dirtyShadows(); } catch (er) { /* not yet */ }
 });
 renderer.domElement.addEventListener('webglcontextlost', () => { BOOT.lost++; bootSave(BOOT.stage, BOOT.pct); console.warn('[start] the graphics context was lost during: ' + BOOT.stage); });   // step 40
-maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), IS_HEADSET || LITE.on ? 4 : 8);   // PERF: lite = 4   // higher costs Quest bandwidth for no visible gain
+maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), LITE.on && !IS_HEADSET ? 4 : 8);   // VR sharpness pass: headset 8 (was 4): floors / walls at a grazing angle   // PERF: lite = 4   // higher costs Quest bandwidth for no visible gain
 /* ---------------------------------------------------------------------------
  *  SURFACES (?surf=off). The room shells (every wing's floor, wall paint and ceiling: applyMacro's three programs)
  *  were procedural maps repeating every 1.2-2 m, flat up close. Three layers on top, in the same programs:
@@ -10335,7 +10336,8 @@ function dynresFrame(iv) {
     if (D.s >= 0.999) D.full = Math.max(D.full, w);
     else if (D.s <= 0.9 && D.full && D.checks < 30) { D.checks++; if (w > D.full * 0.97) D.noEffect++; if (D.checks === 30 && D.noEffect >= 28) { D.ok = false; D.s = 1; console.info('[XR] this browser ignores viewport scaling: dynamic resolution off'); return; } }
   }
-  if (iv > B * C.missAt && cpu < B * 0.85) { D.s = Math.max(C.min, D.s - C.drop); D.calm = 0; }   // the GPU was late
+  const rateFirst = typeof RATE !== 'undefined' && RATE.ok && RATE.i > 0;   // VR sharpness pass: a raised refresh rate steps down before resolution does
+  if (iv > B * C.missAt && cpu < B * 0.85) { if (!rateFirst) D.s = Math.max(C.min, D.s - C.drop); else RATE.late = (RATE.late || 0) + 1; D.calm = 0; }   // the GPU was late
   else if (D.hint > 0) { D.s = Math.min(D.s, C.hintScale); D.calm = 0; }
   else if (iv <= B * 1.05 && ++D.calm > C.holdFrames) D.s = Math.min(1, D.s + C.rise);
   if (D.hint > 0) D.hint--;
@@ -10759,7 +10761,8 @@ function rateTick(fps, now) {
     return true;
   }
   if (RATE.i > 0) {                                               // a raised rate gives way before any quality does
-    if (fps < r - C.dropBelow || da < 0.93) { if (++RATE.down >= C.dropAfter) rateFail(now, `fell to ${Math.round(fps)} fps`); return true; }
+    const late = RATE.late || 0; RATE.late = 0;
+    if (fps < r - C.dropBelow || da < 0.97 || late > r * 0.05) { if (++RATE.down >= C.dropAfter) rateFail(now, `fell to ${Math.round(fps)} fps`); return true; }
     RATE.down = 0;
   }
   const next = RATE.ladder[RATE.i + 1];
@@ -14431,7 +14434,7 @@ try {
  * target), chroma fringes x0.4, bloom radius 0.55 -> 0.4, render scale allowed up to the screen (max 2x;
  * auto quality still drops it to hold the frame rate). Headset: fixed foveation 0.5 -> 0.35 at session start
  * (the existing adaptive foveation still raises it while frames drop). Textures already use anisotropy 8 / 4. */
-const SHARP = { on: !/[?&]sharp=off/.test(QS), cas: 0.6, chromaK: 0.4, bloomR: 0.4, maxPr: LITE.on ? 1 : 2, fov: 0.35, base: null };   // PERF: lite never raises the render scale past 1x
+const SHARP = { on: !/[?&]sharp=off/.test(QS), cas: 0.6, chromaK: 0.4, bloomR: 0.4, maxPr: LITE.on ? 1 : 2, fov: 0.2, base: null };   // VR sharpness pass: fixed foveation 0.2 (was 0.35)   // PERF: lite never raises the render scale past 1x
 if (SHARP.on && typeof comfort.sharp !== 'boolean') comfort.sharp = true;
 function sharpApply() {
   if (!SHARP.on) return;
@@ -17294,7 +17297,7 @@ function canvasTex(size, draw, srgb = true) {
   draw(c.getContext('2d'), size);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  t.anisotropy = 4;
+  t.anisotropy = Math.max(4, maxAniso);
   return t;
 }
 // Bullet hole: dark centre, a crater of exposed material, a ring of chipped paint / dust.
@@ -41166,7 +41169,7 @@ function bloodCanvas(kind, seed) {
   }
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
+  t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8;
   t.userData.canvas = cv;
   return t;
 }
@@ -41185,7 +41188,7 @@ function bloodNormalTex(src, strength) {
   }
   g.putImageData(out, 0, 0);
   const t = new THREE.CanvasTexture(cv);
-  t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
+  t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8;
   return t;
 }
 
@@ -41417,7 +41420,7 @@ function printCanvas(alpha, seed, wet = false) {   // step 94: wet = a water pri
   lugs(S * 0.66, S * 0.5, S * 0.21, S * 0.13, 7, 5);          // forefoot
   lugs(S * 0.25, S * 0.5, S * 0.12, S * 0.105, 4, 4);         // heel
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8;
   return t;
 }
 // Step 111: a bloody palm, fingers toward +x, dragged back a little as the body was pulled past it
@@ -41435,7 +41438,7 @@ function handPrintCanvas(alpha, seed, left) {
   });
   for (let k = 0; k < 2; k++) if (R() > 0.15) blob(0.5 + k * 0.07, 0.5 + (0.17 + k * 0.05) * ty, 0.04, 0.026, 0.8, 0.6 * ty);   // thumb
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8;
   return t;
 }
 function goreInitPool(im) {                                     // every pool in a layer starts dry; a new one is set fresh
@@ -41894,7 +41897,7 @@ const G90_DROP = { c: [0.17, 0.008, 0.006], a: 0.95, sp: [2.2, 6.5], life: [0.6,
 const g90K = () => (GORE_X && CONFIG.polish.blood.on ? (MENU.bodyCamRealism ? CONFIG.gore.x.bodyCam : 1) : 0);
 function g90Tex(cv) {
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8;
   return t;
 }
 // What the exit side leaves on a wall: a dense wet core, high-velocity streaks flung outward (longer and
@@ -42892,7 +42895,7 @@ function glassCanvas(seed) {
     g.fillRect(S / 2 + Math.cos(a) * r, S / 2 + Math.sin(a) * r, 1 + R() * 1.5, 1 + R() * 1.5);
   }
   const t = new THREE.CanvasTexture(cv);
-  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = IS_HEADSET || LITE.on ? 4 : 8; t.userData.canvas = cv;
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8; t.userData.canvas = cv;
   return t;
 }
 // Fresh blood under the boot: 1 in a pool still spreading, 1 -> 0 while it dries (GORE.dry), 0 for a pool from room memory.

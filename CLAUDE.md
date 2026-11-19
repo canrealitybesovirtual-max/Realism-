@@ -2178,3 +2178,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Ranks every 10 levels (LEVEL_RANKS Recruit .. General, levelRank): store header (beside LV n), terminal GEAR line, safe-room scoreboard (solo and co-op, top right); level-up toast says "Promoted: <rank>" on a new rank.
 - +XP popup (XPPOP): computer a stacking list under the crosshair (+total XP, last 4 lines, fades after 2.2 s); headset a small head-locked line (xpPopTick from vrNoteTick).
 - Checked: module parse, eslint no-undef (browser globals only). Not run in a browser.
+## CQC: sharper VR picture (headset check needed)
+- Framebuffer scale: start 1.2 (CONFIG.xr.framebufferScale), learned range 1.0-1.4 (was 0.7-1.0; -0.1 after a struggling session, +0.05 after one with headroom); an older save (cqcvr.perf.v1 without xrSharp) is raised to 1.2 once. BOOST cap 1.0 (was 0.8), EXTREME 0.85 (was 0.65).
+- Dynamic resolution (DYNRES) lowest viewport scale 0.92 per axis (was 0.8), grenade / room hint 0.94 (was 0.85). At a raised refresh rate (80 / 90 Hz) late GPU frames no longer shrink the viewport: they count toward stepping the rate down (rateTick: late frames over 5 % of the rate, or average scale under 0.97, was 0.93). Order under load: refresh rate, then foveation, then resolution.
+- Fixed foveation 0.2 with Sharpness on (SHARP.fov, was 0.35); xrPerf only raises it (0.25 steps) when the frame rate misses.
+- Anisotropy 8 in the headset (maxAniso and the per-texture 4 / 8 choices; was 4); Lite on a computer stays 4. canvasTex textures take maxAniso (were 4). Scene textures already mipmapped (three's default LinearMipmapLinear); only the flashlight pattern, partition masks and a data volume skip mips (not surfaces).
+- Specular AA (step 37, lights_physical_fragment): k 1.4 (was 1.0), cap 0.45 (was 0.4). XR layer keeps the renderer's antialias (4x MSAA on Quest).
+- Checked: module parse, eslint. Not tried on a Quest (frame time at 1.2-1.4x).
