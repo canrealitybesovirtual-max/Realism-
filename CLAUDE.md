@@ -2168,3 +2168,11 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Room switch: his body is moved into the new room with group.attach (world pose kept) and its room-local position converted, so no one-frame pop to the new room's origin and no speed spike in the legs (netTick runs after enemiesUpdate).
 - Host men copies: 'en' carries the host time c (optional); 20 Hz while the joiner is within 14 m of one of them (adjacent slots), else 15 Hz. The joiner keeps the last 4 samples per copy (typed arrays) and plays them back max(NET.delay, 1.25 x the 'en' interval + 15 ms) late with Hermite and an unwrapped yaw, damped extrapolation past the newest; old hosts (no c) keep the easing. The per-packet seen Set is reused.
 - Checked: module parse, eslint (no errors). Not run in a browser or between two devices.
+
+## CQC: sharper VR picture (headset check needed)
+- Framebuffer scale: start 1.2 (CONFIG.xr.framebufferScale), learned range 1.0-1.4 (was 0.7-1.0; -0.1 after a struggling session, +0.05 after one with headroom); an older save (cqcvr.perf.v1 without xrSharp) is raised to 1.2 once. BOOST cap 1.0 (was 0.8), EXTREME 0.85 (was 0.65).
+- Dynamic resolution (DYNRES) lowest viewport scale 0.92 per axis (was 0.8), grenade / room hint 0.94 (was 0.85). At a raised refresh rate (80 / 90 Hz) late GPU frames no longer shrink the viewport: they count toward stepping the rate down (rateTick: late frames over 5 % of the rate, or average scale under 0.97, was 0.93). Order under load: refresh rate, then foveation, then resolution.
+- Fixed foveation 0.2 with Sharpness on (SHARP.fov, was 0.35); xrPerf only raises it (0.25 steps) when the frame rate misses.
+- Anisotropy 8 in the headset (maxAniso and the per-texture 4 / 8 choices; was 4); Lite on a computer stays 4. canvasTex textures take maxAniso (were 4). Scene textures already mipmapped (three's default LinearMipmapLinear); only the flashlight pattern, partition masks and a data volume skip mips (not surfaces).
+- Specular AA (step 37, lights_physical_fragment): k 1.4 (was 1.0), cap 0.45 (was 0.4). XR layer keeps the renderer's antialias (4x MSAA on Quest).
+- Checked: module parse, eslint. Not tried on a Quest (frame time at 1.2-1.4x).
