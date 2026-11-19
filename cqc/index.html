@@ -12476,11 +12476,20 @@ const NETS = { on: !/[?&]netsmooth=off\b/.test(QS), hzFast: 60, fastV: 2, fastW:
 NET.tx = { slot: -1, x: 0, z: 0, yw: 0, vx: 0, vz: 0, wy: 0 };
 NET.rxIv = 33; NET.jws = new Float32Array(90);
 // --- out: your pose, room-local, 30 Hz ---------------------------------------------------------
+// MPPOSE: the other player's body in multiplayer. Heading from the head's forward + up vectors (looking down, the
+// forward vector's heading spins: the body twisted round), a VR player's real hips yaw (by: his body, not his head),
+// look points sent relative to the room's floor (each side re-bases its world y on its own: men and the other player
+// looked at the ceiling / the floor), hands only while tracked, near the head and plausible (controllers put down on a
+// table or the floor bent the arms backward). ?mppose=off = the old fields and checks.
+const MPP = { on: !/[?&]mppose=off\b/.test(QS), u: new THREE.Vector3(), reach: 0.8, behind: 0.28, under: 1.15, still: 0.02, stillT: 1.2, headMove: 0.3, sendFar: 1.05 };
 function netTx(dt) {
   if (!netLive() || !NET.fast || !NET.fast.open) return;
   const r = stream.current; if (!r) return;
   const f = rF(r), h = headWorld(NET._h); camera.getWorldDirection(NET._f);
-  const fx = NET._f.x * f, fz = NET._f.z * f, lx = rLX(r, h.x), lz = rLZ(r, h.z), yw = Math.atan2(-fx, -fz);
+  let hx = NET._f.x, hz = NET._f.z;
+  if (MPP.on) { MPP.u.setFromMatrixColumn(camera.matrixWorld, 1).normalize(); const sp = clamp(-NET._f.y, -1, 1); hx += MPP.u.x * sp; hz += MPP.u.z * sp; }   // looking down: the top of the head leads (as bodyHeadYaw)
+  const fx = hx * f, fz = hz * f, lx = rLX(r, h.x), lz = rLZ(r, h.z), yw = Math.atan2(-fx, -fz);
+  const vrB = MPP.on && renderer.xr.isPresenting && BODY.ready && BODY.init && CONFIG.body.on && Number.isFinite(BODY.yaw);   // his own hips decide where his copy's body faces
   const T = NET.tx;                                                // NETSMOOTH: your room-local velocity and yaw rate, every frame (smoothed)
   if (T.slot !== r.slot || !(dt > 0) || dt > 0.25) { T.slot = r.slot; T.vx = T.vz = T.wy = 0; }
   else {
@@ -12500,7 +12509,8 @@ function netTx(dt) {
       yw: +yw.toFixed(3), vx: moving ? +T.vx.toFixed(2) : undefined, vz: moving ? +T.vz.toFixed(2) : undefined, wy: moving ? +T.wy.toFixed(2) : undefined, p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: NET.role === 'host' || NET.hiGot || !MPW.on ? stream.frontier : undefined, k: r.kind === 'safe' ? 1 : 0,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
-      ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx(), ...netHeldTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
+      by: vrB ? +nsWrap(BODY.yaw + (f < 0 ? Math.PI : 0)).toFixed(3) : undefined,
+      ...netHandsTx(r, f, g, h), ...netGunTx(g), ...netStTx(), ...netHeldTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
   } catch (e) { /* not ready */ }
 }
 // NARM: what each hand holds that is not the gun, one letter a hand [right, left]: - nothing / the gun, m magazine,
@@ -12520,15 +12530,21 @@ function netHeldTx() {
 // VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
 // really do (a computer player sends none: his copy keeps the aimed pose from the head).
 const _nhq = new THREE.Quaternion(), _nhY = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-function netHandsTx(r, f, g) {
+function netHandsTx(r, f, g, head) {
   if (!renderer.xr.isPresenting || !vrHands.length) return {};
   const o = {}, rd = (v) => +v.toFixed(3);
   for (const h of vrHands) {
     if (!h.target || !h.ctrl || !h.ctrl.userData.tracked && !h.ctrl.userData.handedness) continue;
+    if (MPP.on) {                                                    // MPPOSE: only a hand the headset really tracks, within arm's reach of the head
+      const S = XRSYS_ON && XRSYS.hands[h.ctrl.userData.handedness];
+      if (S && S.state && S.state !== 'tracked') continue;
+      if (head && h.target.distanceTo(head) > MPP.sendFar) continue;
+    }
     const side = h.ctrl.userData.handedness === 'left' ? 'hL' : 'hR';
     o[side] = [rd(rLX(r, h.target.x)), rd(h.target.y - r.origin.y), rd(rLZ(r, h.target.z))];
   }
-  if (g && g.prop && g.prop.root) {
+  const ghH = g && (gunOf(vrHands[0]) === g ? vrHands[0] : vrHands[1]), ghS = ghH && ghH.ctrl && ghH.ctrl.userData.handedness === 'left' ? 'hL' : 'hR';
+  if (g && g.prop && g.prop.root && (!MPP.on || o[ghS])) {         // MPPOSE: the gun hand not sent = his copy holds the gun from the head
     g.prop.root.getWorldQuaternion(_nhq);
     if (f < 0) _nhq.premultiply(_nhY);
     o.gq = [rd(_nhq.x), rd(_nhq.y), rd(_nhq.z), rd(_nhq.w)];
@@ -12645,7 +12661,7 @@ function netRemoteHear(r, o) {
       if (Math.hypot(rLX(e.room, o.x) - e.pos.x, rLZ(e.room, o.z) - e.pos.y) > CONFIG.enemy.hear) continue;
       if (!roomCanSense(e.room)) continue;
       e.hearR = now;
-      if (!e.engaged) { e.lastKnown.set(rLX(e.room, o.x), 1.3, rLZ(e.room, o.z)); e.hasKnown = true; e.heard = true; }
+      if (!e.engaged) { e.lastKnown.set(rLX(e.room, o.x), enemyBaseY(e) + 1.3, rLZ(e.room, o.z)); e.hasKnown = true; e.heard = true; }
       e.suppress = Math.min(3, e.suppress + 0.15);
     }
   } finally { NET.tgt = prevT; }
@@ -12868,7 +12884,7 @@ function netEnTx(dt) {                                            // host, 15 Hz
     if (!e.dead && ((e.engaged && (e.los || e.hasKnown)) || e.watch)) {   // aimfix: only a real threat point (not lastKnown's default), and the head of the player he fights (NET.tgt is null outside his update)
       const pT = NET.tgt; NET.tgt = e.tgtR && NET.remOk ? NET.remW : null;
       try { threatLocal(e, _nm.v); } finally { NET.tgt = pT; }
-      w = [+_nm.v.x.toFixed(2), +_nm.v.y.toFixed(2), +_nm.v.z.toFixed(2)]; }
+      w = [+_nm.v.x.toFixed(2), +(_nm.v.y - (MPP.on ? e.room.origin.y : 0)).toFixed(2), +_nm.v.z.toFixed(2)]; }   // MPPOSE: y over the room's origin (each side re-bases its own world y)
     const st = e.downed ? 1 : e.surr ? (e.surr.det ? 3 : 2) : 0;    // 1 down alive, 2 hands up, 3 tied: his pose travels as bones
     L.push([e.nid, e.room.slot, +e.pos.x.toFixed(3), +e.pos.y.toFixed(3), +e.yaw.toFixed(3), +(e.crouchT || 0).toFixed(2), +(e.aimT || 0).toFixed(2), e.dead ? 1 : 0, e.lk, w, +enemyFloorY(e).toFixed(3),   // [10] the floor he stands on (a stairwell landing)
       st, e.spec ? e.spec.kit | 0 : 0, st && !(e.dead && !e.downed) ? netPoseOf(e) : null, e.unarmed ? 1 : 0,
@@ -12904,7 +12920,7 @@ function netEnRx(m) {                                             // joiner
     e.pupT = now; e.pupX = x; e.pupZ = z; e.pupYw = yw; e.crouchT = cr; e.aimT = aim;
     if (m.c != null) netPupHist(e, m.c, x, z, yw);
     if (fy != null) e.stairY = fy;                                  // a man on a landing is drawn (and hit) there, not on the floor below
-    if (w) { e.watch = e.watch || new THREE.Vector3(); e.watch.set(w[0], w[1], w[2]); } else e.watch = null;
+    if (w) { e.watch = e.watch || new THREE.Vector3(); e.watch.set(w[0], w[1] + (MPP.on ? room.origin.y : 0), w[2]); } else e.watch = null;   // MPPOSE: back to this side's world y
     if (!dead) e.pupDead = 0; else if (!e.pupDead) e.pupDead = now;
     // Dead on the host: the 'ed' message (reliable) brings how he fell; this is only the fallback if it got lost.
     if (dead && !e.dead && st !== 1 && now - e.pupDead > 600) { try { enemyDie(e, 'spine', _nm.w.set(Math.sin(yw), 0, Math.cos(yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } }
@@ -13275,13 +13291,13 @@ if (/[?&]dev\b/.test(QS)) window.__cqcNet = { NET, VS, netRx, netStart, netTick,
 // NETSMOOTH sample: Hermite between packets (his sent velocity / yaw rate, else the neighbours' differences), yaw on the
 // shortest arc, a pair across a doorway (two slots) blended in the first room's frame (no freeze then jump at the slot
 // change), damped extrapolation past the newest packet. Written into one reused object (no allocation per frame).
-const NSO = { s: 0, k: 0, x: 0, y: 0, z: 0, yw: 0, p: 0, e: 0, g: '', d: 0, r: 0, a: 0, hL: null, hR: null, gq: null, gp: null, gh: 'R', gt: null, gb: null, ls: 0, ir: 0, hi: '' };
+const NSO = { s: 0, k: 0, x: 0, y: 0, z: 0, yw: 0, p: 0, e: 0, g: '', d: 0, r: 0, a: 0, hL: null, hR: null, gq: null, gp: null, gh: 'R', gt: null, gb: null, ls: 0, ir: 0, hi: '', by: null };
 const NSA = { hL: [0, 0, 0], hR: [0, 0, 0], gp: [0, 0, 0], gq: [0, 0, 0, 1] };
 const nsWrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 function nsFrom(a) {
   const o = NSO;
   o.s = a.s; o.k = a.k; o.x = a.x; o.y = a.y; o.z = a.z; o.yw = a.yw; o.p = a.p; o.e = a.e; o.g = a.g; o.d = a.d; o.r = a.r; o.a = a.a;
-  o.hL = a.hL; o.hR = a.hR; o.gq = a.gq; o.gp = a.gp; o.gh = a.gh; o.gt = a.gt; o.gb = a.gb; o.ls = a.ls; o.ir = a.ir; o.hi = a.hi;
+  o.hL = a.hL; o.hR = a.hR; o.gq = a.gq; o.gp = a.gp; o.gh = a.gh; o.gt = a.gt; o.gb = a.gb; o.ls = a.ls; o.ir = a.ir; o.hi = a.hi; o.by = a.by != null ? a.by : null;
   return o;
 }
 // Tangent (units per ms) at buffer sample i: the sent rate, else the central difference over same-slot neighbours.
@@ -13311,6 +13327,7 @@ function netSample(rt) {
     const t = Math.min(rt - a.c, NETS.max), dd = NETS.tau * (1 - Math.exp(-t / NETS.tau));
     o.x = a.x + nsTan(B, ia, 'x', 'vx') * dd; o.z = a.z + nsTan(B, ia, 'z', 'vz') * dd; o.y = a.y + nsTan(B, ia, 'y', null) * dd * 0.5;
     o.yw = nsWrap(a.yw + nsTan(B, ia, 'yw', 'wy', true) * dd);
+    if (o.by != null) o.by = nsWrap(o.by + nsTan(B, ia, 'yw', 'wy', true) * dd);   // MPPOSE: the hips turn with the head's turn rate past the newest
     return o;
   }
   const b = B[ia + 1];
@@ -13323,6 +13340,7 @@ function netSample(rt) {
     if (Math.abs(bx - a.x) + Math.abs(bz - a.z) > 3) return a;   // not one doorway apart: no blend
     o.x = a.x + (bx - a.x) * k; o.y = a.y + (by - a.y) * k; o.z = a.z + (bz - a.z) * k; o.yw = nsWrap(a.yw + nsWrap(byw - a.yw) * k);
     o.p = a.p + (b.p - a.p) * k; o.e = a.e + (b.e - a.e) * k;
+    if (a.by != null && b.by != null) { const bb = b.by + (rF(ra) !== rF(rb) ? Math.PI : 0); o.by = nsWrap(a.by + nsWrap(bb - a.by) * k); }
     return o;
   }
   if (T > 250) { o.x = a.x + (b.x - a.x) * k; o.y = a.y + (b.y - a.y) * k; o.z = a.z + (b.z - a.z) * k; }   // a long gap: tangents mean nothing there
@@ -13334,6 +13352,7 @@ function netSample(rt) {
   const y1 = a.yw + nsWrap(b.yw - a.yw);                           // shortest arc across +-pi
   o.yw = nsWrap(T > 250 ? a.yw + (y1 - a.yw) * k : nsHerm(a.yw, nsTan(B, ia, 'yw', 'wy', true), y1, nsTan(B, ia + 1, 'yw', 'wy', true), T, k));
   o.p = a.p + (b.p - a.p) * k; o.e = a.e + (b.e - a.e) * k;
+  o.by = a.by != null && b.by != null ? nsWrap(a.by + nsWrap(b.by - a.by) * k) : b.by != null ? b.by : null;   // MPPOSE: his hips
   o.r = b.r; o.a = b.a;
   o.hL = nsL3(a.hL, b.hL, k, NSA.hL); o.hR = nsL3(a.hR, b.hR, k, NSA.hR);
   o.gq = b.gq;
@@ -13359,7 +13378,7 @@ function netSample0(rt) {                                        // the old line
   if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); gq = [_nsQa.x, _nsQa.y, _nsQa.z, _nsQa.w]; }
   const same = a.gh === b.gh && a.gt === b.gt;
   return { s: a.s, k: a.k, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a,
-    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir, hi: b.hi };
+    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir, hi: b.hi, by: a.by != null && b.by != null ? ang(a.by, b.by) : b.by };
 }
 const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
 // Multiplayer: heavy loose props (crates, chairs, drums, boxes you cannot walk through) are frozen at their room spot while
@@ -13444,13 +13463,13 @@ function netAvApply(s, dt) {
   const sp = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
   e.speed += (sp - e.speed) * (1 - Math.exp(-dt * 8));            // eased: a step pattern from frame timing would make the legs stutter
   e.err = 0; e.errVec.set(0, 0);                                   // his aim does not wander (that is the AI's aim error)
-  e.yaw = s.yw;
+  e.yaw = MPP.on && s.by != null ? s.by : s.yw;                   // MPPOSE: a VR player's hips (his head turns on the neck, as his own body does)
   e.crouchT = clamp((1.62 - s.e) / 0.75, 0, 1);
   e.stairY = r.stair && MPW.on ? s.y - s.e : null;               // MPSYNC: on a stairwell his body stands on his own floor (it stood on the low landing, in the flights)
   e.engaged = false; e.los = false; e.state = 'idle';
   e.watch = e.watch || new THREE.Vector3();
   const cp = Math.cos(s.p);
-  e.watch.set(s.x - Math.sin(s.yw) * cp * 4, s.y + Math.sin(s.p) * 4, s.z - Math.cos(s.yw) * cp * 4);
+  e.watch.set(s.x - Math.sin(s.yw) * cp * 4, s.y + Math.sin(s.p) * 4 + (MPP.on ? r.origin.y : 0), s.z - Math.cos(s.yw) * cp * 4);   // MPPOSE: y is world here (threatLocal), s.y is over his room's origin
   e.aimT = s.g ? (s.a || performance.now() - NET.avShotAt < 1500 ? 1 : 0) : 0;   // aimed (or firing: the gun points where his rounds go), else the normal low ready
   if (s.hR || s.hL) {                                              // VR player: his real hands and gun
     const H = e.netH || (e.netH = { R: new THREE.Vector3(), L: new THREE.Vector3(), P: new THREE.Vector3(), q: new THREE.Quaternion(), hasR: false, hasL: false, hasQ: false, hasP: false, gh: 'R' });
@@ -13463,11 +13482,38 @@ function netAvApply(s, dt) {
   } else e.netH = null;                                            // a computer / pad player: the normal gun pose from his head
   { const L = NET.buf[NET.buf.length - 1];                         // NARM: his hand data is stale (packets stopped): his arms fall back to relaxed / the head-based pose
     e.netFresh = !L || NET.pbT == null || NET.pbT - L.c < NARM.stale; if (!e.netFresh) e.netH = null; }
+  if (MPP.on && e.netH) netAvHandsOk(e, s, r, e.netH);            // MPPOSE: a hand that cannot be his (put down, behind him, out of reach) drops to the relaxed / gun pose
   e.netHi = s.hi || ''; e.netGunOn = !!s.g;                        // NARM: what each hand holds besides a gun ('' = nothing)
   e.reloadT = s.r ? 0.5 : 0;                                      // the reload pose (support hand at the magwell, gun canted)
   netAvGunTick(e, s);                                             // the real gun he holds, its lights and lasers
   if (e.gun && e.gun.root) e.gun.root.visible = !!s.g;
   netDoorGhost(e, dt);                                            // DOORGHOST: never through a leaf shut on this side
+}
+// MPPOSE: is each sent VR hand one his body could have? Out of reach of its shoulder, behind his back, far under his eyes
+// or in the floor, or lying still while his head walked away (controllers put down) = not his hand: that side is dropped
+// (relaxed arm, or the gun held from the head when it was the gun hand). Both gone and no gun turn: no VR hands at all.
+const _mpp = { f: new THREE.Vector3(), rt: new THREE.Vector3(), sh: new THREE.Vector3(), d: new THREE.Vector3() };
+function netAvHandsOk(e, s, r, H) {
+  const hd = NET.remW, yw = e.yaw + rYaw(r), now = performance.now(), sk = e.sk;
+  _mpp.f.set(-Math.sin(yw), 0, -Math.cos(yw)); _mpp.rt.set(-_mpp.f.z, 0, _mpp.f.x);
+  const floorW = hd.y - (s.e || 1.6), reach = Math.max(MPP.reach, (sk ? sk.upper + sk.fore : 0.6) + 0.1);   // a real arm (shoulder to grip ~0.7 m; the model's is shorter, solveIK straightens it)
+  const S = e.nHs || (e.nHs = [{ p: new THREE.Vector3(), h: new THREE.Vector3(), t: 0, has: false }, { p: new THREE.Vector3(), h: new THREE.Vector3(), t: 0, has: false }]);
+  const ok = (P, si) => {
+    const st = S[si];
+    if (!st.has || P.distanceTo(st.p) > MPP.still) { st.p.copy(P); st.h.copy(hd); st.t = now; st.has = true; }
+    else if (now - st.t > MPP.stillT * 1000 && st.h.distanceTo(hd) > MPP.headMove) return false;   // put down: it stays, he walks on
+    _mpp.sh.copy(hd).addScaledVector(_up, -0.24).addScaledVector(_mpp.f, -0.04).addScaledVector(_mpp.rt, si ? -0.18 : 0.18);   // his shoulder, about
+    _mpp.d.subVectors(P, _mpp.sh);
+    if (_mpp.d.length() > reach) return false;
+    if (_mpp.d.dot(_mpp.f) < -MPP.behind) return false;
+    if (P.y < hd.y - MPP.under || P.y < floorW + 0.03) return false;
+    return true;
+  };
+  if (!H.hasR) S[0].has = false; if (!H.hasL) S[1].has = false;   // not sent: its still-timer starts again when it comes back
+  if (H.hasR && !ok(H.R, 0)) H.hasR = false;
+  if (H.hasL && !ok(H.L, 1)) H.hasL = false;
+  if (H.hasQ && !(H.gh === 'L' ? H.hasL : H.hasR)) { H.hasQ = false; H.hasP = false; }   // the gun's hand is not his: the gun from the head
+  if (!H.hasR && !H.hasL && !H.hasQ) e.netH = null;
 }
 // --- the other player's real gun, its lights and lasers; guns and magazines you drop ---------------------------------
 // His gun is the real one (createGun of his type), not a loadout look. Its build travels as { ty, a, v, h }: a = his
@@ -18516,7 +18562,7 @@ function fragBlast(P, inHand) {
     if (r > 7) continue;
     const los = clearLine(P, _nd.c, 0.1), same = insideRoom(e.room, P.x, P.z, 0, P.y);
     const dmg = los ? C.blast * Math.pow(Math.max(0, 1 - r / C.blastR), 1.6) : same ? C.blast * 0.25 * Math.pow(Math.max(0, 1 - r / 3.5), 1.6) : 0;
-    e.suppress = 3; e.lastKnown.set(rLX(e.room, P.x), 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
+    e.suppress = 3; e.lastKnown.set(rLX(e.room, P.x), enemyBaseY(e) + 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
     if (los && r < 5) { e.flashUntil = Math.max(e.flashUntil || 0, now + 0.7 + 1.6 * (1 - r / 5)); e.flashYaw = Math.atan2(-(_nd.c.x - P.x), -(_nd.c.z - P.z)); }
     if (dmg <= 0) continue;
     e.hp -= dmg; e.hitT = now;
@@ -18614,7 +18660,7 @@ function flashBlast(P, inHand) {
     e.flashUntil = Math.max(e.flashUntil || 0, now + 1.2 + C.flashMen * k);
     e.flashYaw = Math.atan2(-(_nd.c.x - P.x), -(_nd.c.z - P.z));
     e.suppress = 3; e.engaged = true;
-    e.lastKnown.set(rLX(e.room, P.x), 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
+    e.lastKnown.set(rLX(e.room, P.x), enemyBaseY(e) + 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
   }
 }
 
@@ -31340,7 +31386,7 @@ function enemiesShift(dx, dz, dy = 0) {
       const t = r.body.translation();
       r.body.setTranslation({ x: t.x + dx, y: t.y + dy, z: t.z + dz }, true);
     }
-    if (dy) { e.lastKnown.y += dy; e.aimPoint.y += dy; e.lookW.y += dy; }   // step 12: heights he remembers are world heights
+    if (dy) { e.lastKnown.y += dy; e.aimPoint.y += dy; e.lookW.y += dy; if (e.watchV) e.watchV.y += dy; }   // step 12: heights he remembers are world heights
     if (e.downed) downedShift(e.downed, dx, dy, dz);              // step 91: his hands on the floor are world points
   }
   if (dy) for (const r of stream.rooms.values()) if (r.ai && r.ai.pos) r.ai.pos.y += dy;
@@ -31554,7 +31600,7 @@ function enemiesHear(worldPos) {
     if (e.dead || (!cur || Math.abs(e.room.slot - cur.slot) > 1)) continue;
     if (Math.hypot(rLX(e.room, worldPos.x) - e.pos.x, rLZ(e.room, worldPos.z) - e.pos.y) > CONFIG.enemy.hear) continue;
     if (!roomCanSense(e.room)) continue;                         // step 22.3: a shut door keeps it in
-    e.lastKnown.set(rLX(e.room, worldPos.x), 1.3, rLZ(e.room, worldPos.z)); e.hasKnown = true;
+    e.lastKnown.set(rLX(e.room, worldPos.x), enemyBaseY(e) + 1.3, rLZ(e.room, worldPos.z)); e.hasKnown = true;
     if (!e.engaged) e.heard = true;
     e.suppress = Math.min(3, e.suppress + 0.15);
   }
@@ -31745,7 +31791,7 @@ function enemyThink(e, dt, now) {
       if (S.scan <= 0) { S.scan = rnd2(CONFIG.ai.searchLook[0], CONFIG.ai.searchLook[1]); S.base = e.yaw; S.t0 = now; e.path = null; e.anchor.copy(e.pos); }
       S.scan -= dt;
       const a = S.base + Math.sin((now - S.t0) * 1.8) * 1.0;
-      e.watch = e.watchV.set(e.pos.x - Math.sin(a) * 4, 1.35, e.pos.y - Math.cos(a) * 4);
+      e.watch = e.watchV.set(e.pos.x - Math.sin(a) * 4, enemyBaseY(e) + 1.35, e.pos.y - Math.cos(a) * 4);
       if (S.scan <= 0) { S.i++; if (!aiSearchNext(e)) aiSetAmbush(e); }
       break;
     }
@@ -35019,7 +35065,7 @@ function aiPlayerWeak(e, now) {
 /* --- before contact: footsteps, doors, suspicion ------------------------- */
 function aiNoise(e, lx, lz, amount) {
   e.alert = Math.min(1.2, e.alert + amount);
-  e.watch = e.watchV.set(lx + rnd2(-0.5, 0.5), 1.35, lz + rnd2(-0.5, 0.5));
+  e.watch = e.watchV.set(lx + rnd2(-0.5, 0.5), enemyBaseY(e) + 1.35, lz + rnd2(-0.5, 0.5));
   if (e.alert >= 1) { e.heard = true; e.lastKnown.copy(e.watch); e.hasKnown = true; return; }
   if (e.state === 'idle' || e.state === 'alert') {
     if (e.state === 'idle') aiRadio(e, 'listen');
@@ -35058,7 +35104,7 @@ function aiDoors() {
         if (e.dead || e.surr || e.engaged) continue;
         if (Math.random() > mix(CONFIG.ai.doorAlert[0], CONFIG.ai.doorAlert[1], e.skill)) continue;
         e.alert = Math.max(e.alert, 0.55);
-        e.watch = e.watchV.set(r.entryX !== null ? r.entryX : 0, 1.4, r.d / 2 - 0.2);
+        e.watch = e.watchV.set(r.entryX !== null ? r.entryX : 0, enemyBaseY(e) + 1.4, r.d / 2 - 0.2);
         e.state = 'alert'; e.stateT = rnd2(5, 9);
         first = first || e;
       }
@@ -35171,8 +35217,8 @@ function aiTick(e, dt, now) {
 function aiSetAmbush(e) {
   const r = e.room, lk = e.lastKnown;
   const inside = e.hasKnown && Math.abs(lk.x) < r.w / 2 && Math.abs(lk.z) < r.d / 2;
-  if (inside && aiFresh(e, wnow()) < 8) e.watchV.set(lk.x, 1.35, lk.z);
-  else e.watchV.set(r.entryX !== null ? r.entryX : 0, 1.35, r.d / 2 - 0.2);   // you'll come back the way you came
+  if (inside && aiFresh(e, wnow()) < 8) e.watchV.set(lk.x, enemyBaseY(e) + 1.35, lk.z);
+  else e.watchV.set(r.entryX !== null ? r.entryX : 0, enemyBaseY(e) + 1.35, r.d / 2 - 0.2);   // you'll come back the way you came
   e.watch = e.watchV;
   if (!e.cover) e.anchor.copy(e.pos);
   e.path = null; e.search = null;
@@ -35197,7 +35243,7 @@ function aiSearchNext(e) {
   while (S && S.i < S.pts.length) {
     const p = S.pts[S.i];
     e.path = findPath(e.room, e.pos.x, e.pos.y, p.x, p.y); e.pathI = 0;
-    if (e.path) { e.state = 'search'; S.scan = 0; e.watch = e.watchV.set(p.x, 1.35, p.y); return true; }   // gun on the spot he is clearing
+    if (e.path) { e.state = 'search'; S.scan = 0; e.watch = e.watchV.set(p.x, enemyBaseY(e) + 1.35, p.y); return true; }   // gun on the spot he is clearing
     S.i++;
   }
   e.search = null; e.watch = null; e.path = null;
@@ -48557,7 +48603,7 @@ function kickStrike(B, D, s, now) {
     kind = 'man';
     e.hp -= K.man.dmg; e.hitT = wnow();   // step 45: world time
     e.stumble = Math.min(0.9, (e.stumble || 0) + K.man.stumble);
-    e.lastKnown.set(rLX(e.room, P.x), 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
+    e.lastKnown.set(rLX(e.room, P.x), enemyBaseY(e) + 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
     aiHurt(e, false, wnow());   // step 45: world time
     if (e.hp <= 0) { e.killPart = 'torso'; enemyDie(e, 'spine', D, P, 6); }
   } else {
@@ -57715,7 +57761,7 @@ function emoSelfPlace(e) {
   e.stairY = level.floor - r.origin.y; e.aptY = e.stairY;
   e.yaw = yw; e.speed = 0; e.vel.set(0, 0); e.crouchT = 0; e.aimT = 0; e.reloadT = 0; e.err = 0; e.errVec.set(0, 0);
   e.engaged = false; e.los = false; e.state = 'idle'; e.netH = null;
-  e.watch.set(e.pos.x - Math.sin(yw) * 4, C3.t.y - r.origin.y, e.pos.y - Math.cos(yw) * 4);
+  e.watch.set(e.pos.x - Math.sin(yw) * 4, C3.t.y, e.pos.y - Math.cos(yw) * 4);   // world y (threatLocal / enemyPose read it so)
   return true;
 }
 // Every frame from emoTick (after the men, before the guns): pose your body while it plays, hide it once you are back.
