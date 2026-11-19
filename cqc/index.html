@@ -13191,7 +13191,9 @@ function netAvGunTick(e, s) {
   sbS().hisGt = s.gt;                                             // SCOREBOARD: his gun
   let key = s.gb ? s.gb : 'ty:' + s.gt, B = s.gb ? NET.builds.get(s.gb) : null;
   if (s.gb && !B) { key = 'ty:' + s.gt; netGbAsk(s.gb); }           // not here yet: his gun as it comes from the factory meanwhile
-  const D = netDisp(key, s.gt, B); if (!D) return;
+  let D = netDisp(key, s.gt, B);
+  if (!D && B) D = netDisp('ty:' + s.gt, s.gt, null);                // emote gun fix: his build failed here: that type from the factory
+  if (!D || D.g.type !== s.gt) { if (e.gun && e.gun.disp && e.gun.root) e.gun.root.visible = false; return; }   // never his last gun in its place (an M1911 shown as the Glock before)
   if (e.gun !== D.eg) netAvSwap(e, D);
   const g = D.g, ls = NET.avLs, map = g.netMap || [];
   for (let i = 0; i < map.length; i++) {
@@ -14964,6 +14966,7 @@ function toast(text, ms = 1800) {
 }
 function deskToggleGrab() {
   if (renderer.xr.isPresenting) return;
+  if (emoBusy()) return;                                           // emote gun fix: E never drops or grabs while an emote plays (the camera is behind you)
   if (SURR.on && surrDetainDesk()) { syncButtons(); return; }      // step 117: E on a man who gave up ties his hands
   if (deskHand.prop) {
     // Step 22.1: with a gun in your hand, E on a magazine, shell or weapon light picks it up (pouch / rail).
@@ -14990,6 +14993,7 @@ function deskToggleGrab() {
 // hand only an exact hit counts (no aim cone) and a man in the line of fire, nearer than the
 // thing, keeps the click as the trigger. Otherwise the click fires (gun) or throws (anything else).
 function deskClickInteract() {
+  if (emoBusy()) return false;                                     // emote gun fix: a click mid-emote only fires (which ends it); nothing aimed from the camera behind you
   if (renderer.xr.isPresenting) return false;
   if (termDeskPress(true)) return true;                    // terminal or replay wall (safe room: nobody to shoot)
   const gun = gunOf(deskHand);
@@ -15012,6 +15016,7 @@ function deskClickInteract() {
 }
 function deskThrow(fromButton = false) {
   if (renderer.xr.isPresenting) return;
+  if (emoKeepGun(deskHand)) return;                                // emote gun fix
   if (!deskHand.prop) { if (fromButton) toast('Grab something first'); return; }
   const cap = throwCap(deskHand.prop.mass) * 0.85;
   camera.getWorldDirection(_tv).multiplyScalar(cap).add(_vel);
@@ -20408,6 +20413,7 @@ function flipCatch(hand, p) {
 }
 // Desktop: 1 / 2 holster or draw. Entering VR stows whatever the desktop hand held.
 function deskSlot(slotName) {
+  if (emoBusy()) return;                                           // emote gun fix: 1 / 2 never stow your gun mid-emote
   const held = gunOf(deskHand);
   const want = props.find((p) => p.item && p.item.kind === 'gun' && p.item.slot === slotName);
   if (held && slotFor(held) === slotName) { stowGun(held); return; }
@@ -46608,7 +46614,7 @@ for (let i = 0; i < 2; i++) {
     if (lootGrab(hand)) return;                                      // step 72: a magazine off a body
     tryPouch(hand);                                                  // step 5: a magazine / shell from the belt
   };
-  const squeezeEnd = () => { hand.flipArm = 0; benchLampRelease(hand); release(hand); releaseDoor(hand); };   // the bench lamp let go where you hold it
+  const squeezeEnd = () => { hand.flipArm = 0; benchLampRelease(hand); if (!emoKeepGun(hand)) release(hand); releaseDoor(hand); };   // emote gun fix: a gun stays in the hand while an emote plays   // the bench lamp let go where you hold it
   ctrl.userData.squeezeStart = squeezeStart; ctrl.userData.squeezeEnd = squeezeEnd;   // step 13: a tracked fist calls these
   ctrl.addEventListener('squeezestart', () => { if (!ctrl.userData.tracked) squeezeStart(); });
   ctrl.addEventListener('squeezeend', () => { if (!ctrl.userData.tracked) squeezeEnd(); });
@@ -56609,16 +56615,42 @@ function emoSelfWarm(force) {
 // Your gun on it: a display copy of the gun in your hand (cached per build), or none.
 function emoSelfGun(e, g) {
   const S = EMO.self;
-  if (!g || !g.prop || !GUN_BUILD[g.type]) { if (e.gun && e.gun.root) e.gun.root.visible = false; S.gunKey = ''; return; }
+  if (!g || !g.prop || !GUN_BUILD[g.type]) { if (e.gun && e.gun.root) e.gun.root.visible = false; S.gunKey = ''; e.netGunOn = false; return; }   // emote gun fix: no gun = empty hands (was left holding an invisible gun)
   let b = null; try { b = netGunBuild(g); } catch (er) { b = null; }
   const key = b ? b.id : 'ty:' + g.type;
-  if (key !== S.gunKey || !e.gun.disp) {
-    const D = netDisp(key, g.type, b ? b.B : null, S.disp, e);
-    if (D) { if (e.gun !== D.eg) netAvSwap(e, D); S.gunKey = key; }
+  if (key !== S.gunKey || !e.gun.disp || e.gun.disp.g.type !== g.type) {
+    if (S.gunFail === key) { emoSelfNoGun(e); return; }            // failed before: not rebuilt every check
+    let D = netDisp(key, g.type, b ? b.B : null, S.disp, e);
+    if (!D && b) D = netDisp('ty:' + g.type, g.type, null, S.disp, e);   // emote gun fix: the build failed: that type as it comes from the factory
+    if (!D || D.g.type !== g.type) { S.gunFail = key; emoSelfNoGun(e); return; }   // never the last gun shown (was: an M1911 emote kept the Glock from before)
+    if (e.gun !== D.eg) netAvSwap(e, D);
+    S.gunKey = key; S.gunFail = '';
   }
   if (e.gun && e.gun.root) e.gun.root.visible = !!e.gun.disp;
   e.netGunOn = !!(e.gun && e.gun.disp);                           // NARM: with a gun the base pose holds it (unset = empty hands: arms hung off the gun)
 }
+// Emote gun fix: no copy of the held gun could be made: nothing in its hands (never a stale copy of another gun).
+function emoSelfNoGun(e) {
+  const S = EMO.self;
+  if (e.gun && e.gun.disp && e.gun.root && e.gun.root.parent) e.gun.root.parent.remove(e.gun.root);
+  if (e.gun && e.gun.root) e.gun.root.visible = false;
+  S.gunKey = ''; e.netGunOn = false;
+}
+// Every 0.5 s while your body shows: the gun on it is the type you hold (a gun swapped in the third-person hold).
+function emoSelfGunCheck(e) {
+  const S = EMO.self, t = performance.now(); if (t < (S.gunChk || 0)) return;
+  S.gunChk = t + 500;
+  const R = S.R; if (R.def && R.def.key === 'gunpass' && R.phase !== 'off') return;   // pass the gun: its own drop hides it
+  const hg = emoHeldGun(), want = hg && GUN_BUILD[hg.type] ? hg.type : '';
+  const have = e.gun && e.gun.disp && e.gun.root && e.gun.root.parent ? e.gun.disp.g.type : '';
+  if (want !== have) emoSelfGun(e, hg);
+}
+// Emote gun fix: while one plays (or the third-person view is on) your real gun stays in your hand: grip let go, E, 1 / 2,
+// a click on something, the phone's Drop never let it go or stow it. Only Pass the gun drops it (its own release).
+function emoBusy() {
+  try { return !!(EMO.on && (EMO.me.id || EMO.self.hold || C3.k > 0 || C3.vr.view)); } catch (e) { return false; }   // (before the EMOTES section has run: false)
+}
+function emoKeepGun(hand) { return !!(hand && hand.prop && gunOf(hand) && emoBusy()); }
 function emoSelfStart(def) {
   const S = EMO.self, R = S.R;
   if (!EMO.cfg.cam3p) return;
@@ -56662,6 +56694,7 @@ function emoSelfTick(dt) {
   if (R.phase === 'off' && back && !S.hold) { if (e.root.visible) e.root.visible = false; return; }
   if (!emoSelfPlace(e)) return;
   e.root.visible = true;
+  emoSelfGunCheck(e);
   if (!emoAvPose(e, dt, wnow(), R)) { enemyPose(e, dt, wnow()); emoSelfIdleGun(e); }
   if (R.phase === 'out' && back && !S.hold) { emoAvEnd(e, R); e.root.visible = false; }   // the camera is back: no need to finish the blend
 }
