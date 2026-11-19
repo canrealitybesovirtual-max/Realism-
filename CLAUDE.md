@@ -2001,4 +2001,5 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## Review fixes 1 (from the session review)
 - VR gun flip: a gun set down gently (hand under 3 rad/s and 1.3 m/s) is a normal drop again, not a flying gun that won every nearby grab for seconds; flipEnd skips a body removeProp already took out of the world (Rapier would panic); the armed catch passes its own vector (flipCatchFind overwrote FLIP.lp inside its swept loop); a 30 deg snap turn (0.52 rad in a frame) no longer counts as a wrist turn (jump 0.6 -> 0.45).
 - Multiplayer: a gun you picked up from the other player sends the finish it wears (g.netFin), not your own saved finish for that type; dying voice counts only play when they grow, and the first count on a copy made another way (a body re-sent) is not played.
+- Workshop BUILD view: the other player's dropped gun (g.netFin) no longer outranks your own gun of that type.
 - Checked: module parse, eslint no-undef. Not run in a browser or headset.
