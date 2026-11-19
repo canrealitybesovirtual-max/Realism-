@@ -2079,3 +2079,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: long builds lie on the floor instead of sticking out of the gun locker (?glfloor=off)
 - glFloorPose: a locker gun whose drawn bounds (glBounds, with its fitted parts) grow more than 3.5 cm past the factory gun its slot was measured on (any side: muzzle chains, big optics, stocks) is put on its side on the floor in front of the locker (0.3 m out, one row per such gun 16 cm apart, bore along the cabinet), keeping every part. gunLockerRestock uses it; glFloorCheck (every 2.5 s while you are in that safe room) moves a gun still in its slot whose build just grew (a store fit) to the floor. Guns you dropped elsewhere are not touched by that check.
 - Checked: module parse, eslint no-undef. Not run in a browser or headset.
+
+## CQC smoke grenade: no screen fog
+- smokeFog keeps scene.fog at 0 (the whole-view fog came on as you entered the room); only the canister's smoke puffs show. The AI line-of-sight check through the smoke is unchanged. Parse checked only.
