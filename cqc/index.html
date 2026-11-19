@@ -6832,6 +6832,7 @@ const _wings = [], _plans = [null];
 const RANGE = { armed: false };
 function rangeWant() {
   if (RANGE.armed) return;
+  if (MPW.on && NET.st !== 'off') return;                          // MPSYNC: no range replan in multiplayer (it changed one side's plan only)
   for (const pl of _plans) if (pl && pl.type === 'range' && stream.current && pl.slot > stream.current.slot) return;   // one is already ahead
   RANGE.armed = true;
   try { rangeReplan(); } catch (e) { console.warn('step 75: range replan failed', e); }
@@ -6998,7 +6999,7 @@ function troffCap(L, room) {
 }
 function ceilingPlan(L, w, d, R) {
   const rr = (a, b) => a + (b - a) * R();
-  if (!L.troffers.length && TFILL.on && w * d >= 40) {
+  if (!L.troffers.length && w * d >= 40) {   // MPSYNC: not TFILL.on (a display switch, off on the Xbox): it changed the random stream, so the rooms differed between devices
     // Large rooms: a grid of fittings ~3.4 m apart (cell centres, so the column grid's lines miss them), the two
     // nearest the middle first (they get the pool's shadowed lights), the rest light the room through the fill.
     const nx = Math.max(1, Math.round(w / 3.4)), nz = Math.max(1, Math.round(d / 3.4));
@@ -7840,6 +7841,7 @@ function roomMaterials(room) {
 function* roomBuilder(room) {
   if (room.kind === 'stair') { yield* stairBuilder(room); return; }   // step 12
   if (!room.layout) room.layout = yield* generateLayout(room);
+  if (MPW.on && room.kind === 'normal' && !room.layJ) room.layJ = mpwLayJson(room.layout);   // MPSYNC: the layout as generated (signature, sent to the joiner on a mismatch)
   const { w, d, h } = room, M = KIT.mat, G = KIT.geo, P = KIT.proto, D = CONFIG.door, T = CONFIG.stream.wallT;
   const L = room.layout, g = room.group, dg = room.doorGroup, RM = room.mats = roomMaterials(room);
   troffCap(L, room);                                               // 1-3 fittings by room size and shape (the user's rule)
@@ -8557,6 +8559,15 @@ function freezeStatic(root, keep = null) {
  *  - anchors[i] = world (x, z) of the doorway between slot i and slot i+1.
  * ========================================================================== */
 const stream = { rooms: new Map(), current: null, frontier: 0, building: null, ready: [], rebases: 0, revSafe: null };   // revSafe: a slot whose safe room opens back into the slot before it (multiplayer versus: the joiner's)
+// MPSYNC: one world for both players (see the MULTIPLAYER WORLD SYNC section). Together, the safe room stands at the
+// lower of the two players' frontiers (each side's own frontier still follows its own walking), so both sides swap the
+// same slot for the safe room and never put it in front of either player. ?mpsync=off = the old capped raise.
+const MPW = { on: !/[?&]mpsync=off\b/.test(QS), lays: new Map(), want: new Map(), rebuild: new Set(), asked: new Map(), log: [], bad: 0, sigAt: 0, facOwn: null, ok: 0 };
+function safeSlotNow() {
+  let F = stream.frontier;
+  try { if (MPW.on && NET.st !== 'off' && NET.mode === 'coop' && NET.remF != null) F = Math.min(F, NET.remF); } catch (e) { /* the network code not set up yet */ }
+  return Math.max(0, F - CONFIG.stream.safeBehind);
+}
 const doors = [];
 const anchors = [], anchorY = [];   // step 12: anchorY[i] = world floor height of the doorway between slot i and i + 1
 const _sh = new THREE.Vector3(), _h2 = new THREE.Vector2(), _lv = new THREE.Vector3(), _hp = new THREE.Vector3();
@@ -8606,10 +8617,11 @@ function makeRoom(slot, kind) {
   else if (kind === 'safe') { const A = anchor(slot); origin.set(A.x - f * p.exitX, anchorY[slot], A.y + f * (T / 2 + p.d / 2)); }
   else { const A = anchor(slot - 1); origin.set(A.x - f * p.entryX, anchorY[slot - 1] - (p.entryY || 0), A.y - f * (T / 2 + p.d / 2)); }
   const room = {
+    layJ: kind === 'normal' && MPW.lays.has(slot) && MPW.lays.get(slot).ty === (p.plan && p.plan.type) ? MPW.lays.get(slot).J : null,
     slot, kind, w: p.w, d: p.d, h: p.h || CONFIG.room.h, entryX: p.entryX, exitX: p.exitX, origin,
     entryY: p.entryY || 0, exitY: p.exitY || 0, stair: p.stair || null,   // step 12: doorway sills, the flight
     plan: kind === 'safe' ? null : p.plan,
-    layout: kind === 'safe' ? safeLayout(p) : kind === 'stair' ? stairLayout(p) : null,          // step 8: generated (and QC'd) inside the time-sliced builder
+    layout: kind === 'safe' ? safeLayout(p) : kind === 'stair' ? stairLayout(p) : mpwLayFor(slot, p),   // MPSYNC: the host's layout when this side's differed          // step 8: generated (and QC'd) inside the time-sliced builder
     mats: null,
     group: new THREE.Group(), doorGroup: new THREE.Group(),
     ownGeo: [], ownMat: [], troffers: [], walkLocal: [],
@@ -8938,7 +8950,7 @@ function roomLabel() {
   const c = stream.current;
   if (!c) return '';
   if (c.kind === 'safe') return 'safe room';
-  const safe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
+  const safe = safeSlotNow();
   if (c.kind === 'stair') return `${c.plan.number} stairwell · ${c.plan.dir > 0 ? 'up' : 'down'} to floor ${floorDigit(c.plan.level)} · safe ${c.slot - safe} back`;
   const m = roomMemory.get(memKey(c)), clear = m && m.plan && m.plan.cleared ? ' · clear' : '';
   return `${c.plan.number} ${ROOM_TYPES[c.plan.type].label}${clear} · safe ${c.slot - safe} back`;
@@ -9095,7 +9107,7 @@ function updateStreaming() {
 
   netCoopFrontier();                                               // together: one plan for both (same safe rooms)
   // What should exist right now.
-  const c = stream.current.slot, safeSlot = Math.max(0, stream.frontier - S.safeBehind);
+  const c = stream.current.slot, safeSlot = safeSlotNow();   // MPSYNC: together, the safe slot both players agree on
   const want = new Map([[safeSlot, 'safe']]);
   for (let s = Math.max(safeSlot + 1, c - S.behind); s <= c + S.ahead; s++) { want.set(s, roomPlan(s).type === 'stair' ? 'stair' : 'normal'); }
   netCoopWant(want);                                              // together: the other player's room and the next one are built here too
@@ -11710,6 +11722,7 @@ function netStart() {
   NET.everOn = true; NET.reason = ''; NET.relQ.length = 0; NET.byeAt = 0;
   Object.assign(NET.link, { rtt: 0, jit: 0, loss: 0, discAt: 0, local: '', remote: '', proto: '', relayed: false, txB: 0, rxB: 0, at: performance.now(), pingAt: 0, statAt: performance.now() - 500, said: false });
   NET.jn = 0; NET.ji = 0; NET.rxN = 0; NET.rxGot = 0; NET.rxMiss = 0; NET.delay = 90;
+  NET.hiGot = false; NET.remF = null; MPW.asked.clear(); MPW.said = false;   // MPSYNC: the joiner's frontier counts once it has the host's plans
   if (NET.dial) NET.dial.fin('ok');
   NET.call = null; setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.pbT = null; NET.lastRx = performance.now();
@@ -11718,6 +11731,7 @@ function netStart() {
   netSay(re ? 'Multiplayer: reconnected' : `Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
   if (NET.role === 'host') {
     const sr = netCurSafe(); netSendRel({ t: 'hi', v: 3, mode: NET.mode, slot: sr ? sr.slot : null, sess: NET.sess });
+    if (MPW.on) { RANGE.armed = false; mpwPlansTx(1); }             // MPSYNC: seed, Facility switch, every plan: the joiner adopts them
     netResyncTx();                                                 // doors, the versus match: what he missed (or never had)
   }
   if (NET.role === 'host' && NET.mode === 'vs') setTimeout(() => { if (netLive() && !VS.on) netVsBegin(); }, 2500);   // versus: the first match starts on its own
@@ -11735,6 +11749,7 @@ function netLeave(quiet = false) {
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
   for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } }
   NET.pup.clear(); NET.tgt = null; NET.remOk = false; NET.warp = null; VS.on = false; VS.lock = false; stream.revSafe = null;
+  NET.remF = null; NET.hiGot = false; MPW.lays.clear(); MPW.rebuild.clear(); if (MPW.facOwn != null) { FAC.on = MPW.facOwn; MPW.facOwn = null; }   // MPSYNC
   if (NET_SPOT) NET_SPOT.intensity = 0;
   netVoiceStop();
   if (!quiet && was !== 'off') netSay('Multiplayer: off');
@@ -11876,6 +11891,7 @@ function netStatusPress() {
 // it out from its own progress, so one saw a safe room where the other had a fight), and the room he is in plus the
 // next one are built on your side as well, so his body, his men and his shots are there when he runs ahead.
 function netCoopFrontier() {
+  if (MPW.on) return;                                              // MPSYNC: safeSlotNow() takes the lower of the two frontiers instead
   if (!netLive() || NET.mode !== 'coop' || NET.remF == null) return;
   const c = stream.current ? stream.current.slot : 0, cap = c - 1 + CONFIG.stream.safeBehind;   // never so far that the room you stand in would become the safe slot
   const f = Math.min(NET.remF, cap);
@@ -11883,13 +11899,144 @@ function netCoopFrontier() {
 }
 function netCoopWant(want) {
   if (!netLive() || NET.mode !== 'coop' || NET.remSlot == null) return;
-  const c = stream.current ? stream.current.slot : 0, safeSlot = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
+  const c = stream.current ? stream.current.slot : 0, safeSlot = safeSlotNow();
   for (const sl of [NET.remSlot, NET.remSlot + 1]) {
     if (sl <= safeSlot || Math.abs(sl - c) > 4 || want.has(sl)) continue;   // never past 4 rooms away (memory)
     want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');
   }
   for (let sl = Math.min(c, NET.remSlot) + 1; sl < Math.max(c, NET.remSlot); sl++) if (sl > safeSlot && !want.has(sl) && Math.abs(sl - c) <= 4) want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');   // the rooms between you
 }
+/* ============================================================================
+ *  MULTIPLAYER WORLD SYNC (MPSYNC, ?mpsync=off)
+ *  Both players must have exactly the same rooms: slot i = the same plan, size, doors, origin, floor height, facing,
+ *  furniture, partitions and walk boxes. What used to differ between two devices:
+ *   - the safe slot (each side worked it out from its own frontier): one side had the 8 x 6 m safe room where the other
+ *     had a fight room, and poses / shots room-local to one were placed in the other (through walls, mid-room);
+ *   - the plan: an AWP picked up (range replan) on one side, the Facility rooms switch (saved OPTIONS), the seed;
+ *   - the layout: ceilingPlan's big-room light grid ran only with TFILL on (off on the Xbox and Lite), and its random
+ *     draws shifted every later draw (furniture, partitions);
+ *   - his body on a stairwell stood on the low landing (enemyFloorY had no floor for him).
+ *  Now: safeSlotNow() (both sides: the lower frontier); the host sends its seed, Facility switch and every plan in 'hi'
+ *  + 'wp' (the joiner adopts them and re-plans from the first slot that differs); no range replan while connected;
+ *  ceilingPlan no longer reads TFILL; poses and shots carry the room kind and are dropped in the other kind of room.
+ *  Check: every 2 s the host sends a signature of each active room (kind, plan type, size, doors, origin and floor
+ *  relative to anchor 0, facing, layout hash, walk-box hash); the joiner compares its own. A plan / position mismatch
+ *  asks for the host's plans again ('wpq'); a layout or walk-box mismatch asks for the host's layout ('layq' -> 'lay'):
+ *  the room is rebuilt from it once out of sight. ?dev logs each mismatch (MPW.log) and a short note is shown.
+ * ========================================================================== */
+const mpwKindOk = (r, k) => !MPW.on || k == null || (r.kind === 'safe') === !!k;
+function mpwPlanPack(p) {
+  if (!p) return null;
+  const o = {}; for (const k of Object.keys(p)) if (k !== 'wing' && k !== 'slot') o[k] = p[k];
+  o.w = p.wing ? p.wing.index : 0; return o;
+}
+function mpwPlanUnpack(s, o) {
+  if (!o) return null;
+  const p = { slot: s, wing: wingAt(o.w | 0) }; for (const k of Object.keys(o)) if (k !== 'w') p[k] = o[k];
+  return p;
+}
+const mpwPlanEq = (a, b) => JSON.stringify(mpwPlanPack(a)) === JSON.stringify(mpwPlanPack(b));
+// Everything planned from slot s on is dropped (rooms unloaded unless you stand in one), as rangeReplan does, always.
+function mpwReplanFrom(s) {
+  s = Math.max(1, s);
+  if (stream.building && stream.building.slot >= s && stream.building !== stream.current) { try { unloadRoom(stream.building); } catch (e) { /* half built */ } stream.building = null; }
+  for (let i = stream.ready.length - 1; i >= 0; i--) if (stream.ready[i].slot >= s) { try { unloadRoom(stream.ready[i]); } catch (e) { /* */ } stream.ready.splice(i, 1); }
+  for (const r of [...stream.rooms.values()]) if (r.slot >= s && r !== stream.current) { try { unloadRoom(r); } catch (e) { /* */ } }
+  _plans.length = Math.min(_plans.length, s);
+  for (const k of [..._paramCache.keys()]) if (k >= s) _paramCache.delete(k);
+  _facing.length = Math.min(_facing.length, Math.max(2, s));
+  anchors.length = Math.min(anchors.length, s); anchorY.length = Math.min(anchorY.length, s);
+  for (const k of [...roomMemory.keys()]) { const n = +k.split(':')[1]; if (n >= s) roomMemory.delete(k); }
+  for (const k of [...MPW.lays.keys()]) if (k >= s) MPW.lays.delete(k);
+}
+// Host -> joiner: the world (seed, Facility switch) and the plans, in chunks of 48.
+function mpwPlansTx(from) {
+  const n = _plans.length, a0 = Math.max(1, from | 0);
+  if (a0 >= n) { netSendRel({ t: 'wp', a: a0, P: [], n, seed: CONFIG.stream.worldSeed, fac: FAC.on ? 1 : 0, last: 1 }); return; }
+  for (let a = a0; a < n; a += 48) {
+    const P = []; for (let i = a; i < Math.min(n, a + 48); i++) P.push(mpwPlanPack(_plans[i]));
+    netSendRel({ t: 'wp', a, P, n, seed: CONFIG.stream.worldSeed, fac: FAC.on ? 1 : 0, last: a + 48 >= n ? 1 : 0 });
+  }
+}
+function mpwPlansRx(m) {
+  if (NET.role !== 'join') return;
+  let cut = Infinity;
+  if (m.seed != null && m.seed !== CONFIG.stream.worldSeed) { CONFIG.stream.worldSeed = m.seed >>> 0; _wings.length = 0; cut = 1; }
+  if (MPW.facOwn == null) MPW.facOwn = FAC.on;
+  if (!!m.fac !== FAC.on) { FAC.on = !!m.fac; cut = Math.min(cut, m.a); }
+  RANGE.armed = false;
+  if (cut === Infinity) for (let j = 0; j < m.P.length; j++) { const s = m.a + j; if (s < _plans.length && !mpwPlanEq(_plans[s], mpwPlanUnpack(s, m.P[j]))) { cut = s; break; } }
+  if (cut !== Infinity) { mpwReplanFrom(cut); mpwNote(`plans from slot ${cut} taken from the host`); }
+  if (_plans.length < m.a) roomPlan(m.a - 1);                         // the chunks come in order; this only bridges a gap
+  for (let j = 0; j < m.P.length; j++) { const s = m.a + j; if (s >= _plans.length) _plans.push(mpwPlanUnpack(s, m.P[j])); }
+  if (m.last) { NET.hiGot = true; MPW.ok++; }
+}
+// Layout of a normal room as text (taken right after it was generated: building it marks it up).
+function mpwLayJson(L) { try { return JSON.stringify(L); } catch (e) { return null; } }
+function mpwLayFor(slot, p) {
+  const q = MPW.on && MPW.lays.get(slot);
+  if (!q || !p || !p.plan || q.ty !== p.plan.type) return null;
+  try { return JSON.parse(q.J); } catch (e) { return null; }
+}
+const mpwR2 = (v) => Math.round(v * 100) / 100;
+function mpwHashLay(J) { return J ? netHash(J.replace(/-?\d+\.\d+(e-?\d+)?/g, (n) => mpwR2(+n).toFixed(2))).toString(36) : '-'; }
+function mpwHashWalk(r) {
+  const W = r.walkLocal || [];
+  return netHash(W.map((b) => [b.x, b.z, b.a || 0, b.hx, b.hz, b.top, b.bot == null ? 'n' : b.bot, b.lvTop == null ? 'n' : b.lvTop].map((v) => (typeof v === 'number' ? mpwR2(v).toFixed(2) : v)).join(',')).sort().join(';')).toString(36) + ':' + W.length;
+}
+// One room's signature: [slot, kind, plan type, w, d, entryX, exitX, origin x, z, y (from anchor 0), facing, layout, walk boxes].
+function mpwSig(r) {
+  const A = anchors[0], y0 = anchorY[0] || 0;
+  const lay = r.kind === 'normal' ? mpwHashLay(r.layJ || null) : r.kind;
+  return [r.slot, r.kind === 'safe' ? 1 : r.kind === 'stair' ? 2 : 0, r.plan ? r.plan.type : 'safe', mpwR2(r.w), mpwR2(r.d), r.entryX == null ? null : mpwR2(r.entryX), mpwR2(r.exitX),
+    mpwR2(r.origin.x - A.x), mpwR2(r.origin.z - A.y), mpwR2(r.origin.y - y0), rF(r), lay, mpwHashWalk(r)];
+}
+function mpwSigs() { const L = []; for (const r of stream.rooms.values()) if (r.active) L.push(mpwSig(r)); return L.sort((a, b) => a[0] - b[0] || a[1] - b[1]); }
+const MPW_F = ['slot', 'kind', 'plan', 'w', 'd', 'entryX', 'exitX', 'x', 'z', 'y', 'facing', 'layout', 'walk'];
+function mpwNote(t) { MPW.log.push(t); if (MPW.log.length > 60) MPW.log.shift(); if (/[?&]dev\b/.test(QS)) console.info('MPSYNC: ' + t); }
+function mpwAsk(key, m) {
+  const now = performance.now(); if (now - (MPW.asked.get(key) || -1e9) < 5000) return;
+  MPW.asked.set(key, now); netSendRel(m);
+}
+function mpwSigRx(m) {
+  if (NET.role !== 'join' || !Array.isArray(m.L)) return;
+  for (const H of m.L) {
+    const r = stream.rooms.get(H[0]); if (!r || !r.active || (r.kind === 'safe' ? 1 : r.kind === 'stair' ? 2 : 0) !== H[1]) continue;
+    const M = mpwSig(r), diff = [];
+    for (let i = 2; i < MPW_F.length; i++) if (JSON.stringify(M[i]) !== JSON.stringify(H[i])) diff.push(`${MPW_F[i]} ${JSON.stringify(M[i])} / host ${JSON.stringify(H[i])}`);
+    if (!diff.length) { r.mpwOk = true; continue; }
+    r.mpwOk = false; MPW.bad++;
+    mpwNote(`slot ${H[0]} (${r.kind}) differs: ${diff.join('; ')}`);
+    if (diff.some((t) => /^(plan|w|d|entryX|exitX|x|z|y|facing) /.test(t))) mpwAsk('wp', { t: 'wpq', a: 1 });
+    else if (r.kind === 'normal') mpwAsk('lay' + H[0], { t: 'layq', s: H[0] });
+    if (!MPW.said) { MPW.said = true; netSay('Multiplayer: a room differed from the host\'s. Taking his', 3); }
+  }
+}
+function mpwLayQRx(m) {
+  if (NET.role !== 'host') return;
+  const r = stream.rooms.get(m.s); if (!r || r.kind !== 'normal' || !r.layJ) return;
+  netSendRel({ t: 'lay', s: r.slot, ty: r.plan.type, J: r.layJ });
+}
+function mpwLayRx(m) {
+  if (NET.role !== 'join' || typeof m.J !== 'string') return;
+  MPW.lays.set(m.s, { ty: m.ty, J: m.J }); MPW.rebuild.add(m.s);
+  mpwNote(`slot ${m.s}: host's layout received (${m.J.length} bytes), rebuilt when out of sight`);
+}
+function mpwTick() {
+  if (!MPW.on || !netLive()) return;
+  const now = performance.now();
+  if (NET.role === 'host' && now - MPW.sigAt > 2000) { MPW.sigAt = now; netSendRel({ t: 'wsig', L: mpwSigs() }); }
+  for (const s of [...MPW.rebuild]) {
+    const r = stream.rooms.get(s);
+    if (stream.building && stream.building.slot === s) { try { unloadRoom(stream.building); } catch (e) { /* half built */ } stream.building = null; }
+    for (let i = stream.ready.length - 1; i >= 0; i--) if (stream.ready[i].slot === s) { try { unloadRoom(stream.ready[i]); } catch (e) { /* */ } stream.ready.splice(i, 1); }
+    if (!r) { MPW.rebuild.delete(s); continue; }
+    if (r.kind !== 'normal') { MPW.rebuild.delete(s); continue; }
+    if (r === stream.current || (r.door && r.door.holder) || ((r.visible || r.doorGroup.visible) && roomInView(r))) continue;   // out of sight first
+    MPW.rebuild.delete(s); unloadRoom(r); mpwNote(`slot ${s} rebuilt with the host's layout`);
+  }
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcMpw = { MPW, mpwSigs, mpwSig, safeSlotNow, mpwPlanPack, mpwPlansTx, mpwReplanFrom, FAC, plans: () => _plans, anchors, anchorY, stairFloor: (...a) => stairFloor(...a), headWorld: (v) => headWorld(v), updateFloor: () => updateFloor(), applyHeight: () => applyHeight(), level, colliders: () => colliders, doors: () => doors };
 // Voice: the two microphones over the same peer link (PeerJS media call, WebRTC with echo cancellation and noise
 // suppression). His voice comes from his body (a panner at his head, through the game's audio); with no microphone
 // (or one refused) you still hear him. ?voice=off.
@@ -12030,7 +12177,7 @@ function netTx(dt) {
   try {
     netSendFast({ t: 's', n: ++NET.seq, c: Math.round(performance.now()), s: r.slot, x: +rLX(r, h.x).toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +rLZ(r, h.z).toFixed(3),
       yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
-      g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: stream.frontier,
+      g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: NET.role === 'host' || NET.hiGot || !MPW.on ? stream.frontier : undefined, k: r.kind === 'safe' ? 1 : 0,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
       ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
   } catch (e) { /* not ready */ }
@@ -12061,7 +12208,7 @@ function netShot(g, o, d) {
   if (!netLive()) return;
   const r = stream.current; if (!r) return;
   const f = rF(r);
-  netSendRel({ t: 'shot', s: r.slot, o: [rLX(r, o.x), o.y - r.origin.y, rLZ(r, o.z)], d: [d.x * f, d.y, d.z * f], g: g.type, sup: gunSuppressed(g.type, g) ? 1 : 0 });
+  netSendRel({ t: 'shot', s: r.slot, k: r.kind === 'safe' ? 1 : 0, o: [rLX(r, o.x), o.y - r.origin.y, rLZ(r, o.z)], d: [d.x * f, d.y, d.z * f], g: g.type, sup: gunSuppressed(g.type, g) ? 1 : 0 });
 }
 // Your round on his body (enemyShot): he takes the hit.
 function netHit(hit, dir, d, E) {
@@ -12124,12 +12271,17 @@ function netRx(m) {
     }
   }
   else if (m.t === 'vs') { if (NET.role === 'join') netVsApply(m, 1); }
+  else if (m.t === 'wp') mpwPlansRx(m);                            // MPSYNC: the host's plans
+  else if (m.t === 'wpq') { if (NET.role === 'host') mpwPlansTx(m.a); }
+  else if (m.t === 'wsig') mpwSigRx(m);
+  else if (m.t === 'layq') mpwLayQRx(m);
+  else if (m.t === 'lay') mpwLayRx(m);
   else if (m.t === 'vsready') VS.otherReady = true;
   else if (m.t === 'vsgo') { if (NET.role === 'join') VS.goAt = performance.now() + 15000; }
   else if (m.t === 'vsdead') { if (VS.on && !VS.over) { VS.score[0]++; netSay(`Got him. You ${VS.score[0]} : ${VS.score[1]} them`, 3); } }
 }
 function netRemoteShot(m) {
-  const r = stream.rooms.get(m.s); if (!r || !r.active) return;
+  const r = stream.rooms.get(m.s); if (!r || !r.active || !mpwKindOk(r, m.k)) return;   // MPSYNC: never in the other kind of room at that slot
   const f = rF(r), o = NET._p.set(rWX(r, m.o[0]), r.origin.y + m.o[1], rWZ(r, m.o[2])), d = NET._d.set(m.d[0] * f, m.d[1], m.d[2] * f).normalize();
   const def = WEAPON_DEFS[m.g] || WEAPON_DEFS.smg;
   const e = NET.av;
@@ -12576,14 +12728,14 @@ function netSample(rt) {
     const z = B[B.length - 2], dtp = a.c - z.c, k = Math.min(rt - a.c, 120) / Math.max(1, dtp);
     if (z.s === a.s && dtp > 0 && dtp < 200) return Object.assign({}, a, { x: a.x + (a.x - z.x) * k, z: a.z + (a.z - z.z) * k, y: a.y + (a.y - z.y) * k });
   }
-  if (!b || a === b || b.s !== a.s) return a;
+  if (!b || a === b || b.s !== a.s || b.k !== a.k) return a;
   const k = clamp((rt - a.c) / Math.max(1, b.c - a.c));
   const ang = (x, y) => x + Math.atan2(Math.sin(y - x), Math.cos(y - x)) * k;
   const l3 = (u, w) => (u && w ? [u[0] + (w[0] - u[0]) * k, u[1] + (w[1] - u[1]) * k, u[2] + (w[2] - u[2]) * k] : w || u);   // his hands and gun between packets too (they stepped at 30 Hz)
   let gq = b.gq;
   if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); gq = [_nsQa.x, _nsQa.y, _nsQa.z, _nsQa.w]; }
   const same = a.gh === b.gh && a.gt === b.gt;
-  return { s: a.s, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a,
+  return { s: a.s, k: a.k, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a,
     hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir };
 }
 const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
@@ -12598,6 +12750,7 @@ function netTick(dt, now) {
   const quiet = performance.now() - NET.lastRx;
   if (quiet > NET.lost) { netSoftDrop('nothing heard for a minute'); return; }
   if (quiet > 4000 && !NET.waitSaid) { NET.waitSaid = true; netSay('Multiplayer: waiting for the other player (loading?)', 3); } else if (quiet < 1000) NET.waitSaid = false;
+  mpwTick();                                                       // MPSYNC: room signatures, rebuilds
   netRestTick();                                                   // dropped items: his not built yet, where yours came to rest
   netDoorTx(dt);                                                   // doors you move: his leaf follows
   { const L = NET.buf[NET.buf.length - 1]; if (L && L.st) { const R = NET.remSt || (NET.remSt = { L: 1, sp: 0, crouch: false }); R.L = L.st[0]; R.sp = L.st[1]; R.crouch = !!L.st[2]; } }   // his stealth state
@@ -12613,7 +12766,7 @@ function netTick(dt, now) {
   else { const step = Math.min(250, pbN - NET.pbAt); const er = pbW - (NET.pbT + step); NET.pbT += step + clamp(er, -0.08 * step, 0.08 * step); }
   NET.pbAt = pbN;
   const s = netSample(NET.pbT); if (!s) { NET.remOk = false; return; }
-  const r = stream.rooms.get(s.s);
+  const r0 = stream.rooms.get(s.s), r = r0 && mpwKindOk(r0, s.k) ? r0 : null;   // MPSYNC: his slot here must be the same kind of room (a safe room and a fight room at one slot are not one frame)
   NET.remRoom = r && r.active ? r : null; NET.remOk = !!NET.remRoom; NET.remDead = !!s.d;
   if (NET.remRoom) NET.remW.set(rWX(r, s.x), r.origin.y + s.y, rWZ(r, s.z));
   let e = NET.av;
@@ -12640,6 +12793,7 @@ function netTick(dt, now) {
   e.err = 0; e.errVec.set(0, 0);                                   // his aim does not wander (that is the AI's aim error)
   e.yaw = s.yw;
   e.crouchT = clamp((1.62 - s.e) / 0.75, 0, 1);
+  e.stairY = r.stair && MPW.on ? s.y - s.e : null;               // MPSYNC: on a stairwell his body stands on his own floor (it stood on the low landing, in the flights)
   e.engaged = false; e.los = false; e.state = 'idle';
   e.watch = e.watch || new THREE.Vector3();
   const cp = Math.cos(s.p);
@@ -30413,7 +30567,7 @@ function respawnPlayer() {
   if (VS.on && netVsRespawn()) return;                          // multiplayer versus: back in your own safe room
   // Step 54.1: the plan's safe room (frontier - safeBehind) when it is live, else the newest live one; the plan is
   // pulled back to it so it stays the safe room.
-  const planSafe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
+  const planSafe = safeSlotNow();
   let safe = null;
   for (const r of stream.rooms.values()) {
     if (r.kind !== 'safe' || !r.active) continue;
@@ -32289,7 +32443,7 @@ function weaponsRoomUnloaded(room) {
     if (insideRoom(room, t.x, t.z, 0.2, t.y)) parkCasing(P, e);
   }
   // Rooms behind the safe room can never be walked into again: forget them.
-  const safe = Math.max(0, stream.frontier - CONFIG.stream.safeBehind);
+  const safe = safeSlotNow();
   for (const k of [...roomMemory.keys()]) if (+k.split(':')[1] < safe) roomMemory.delete(k);
 }
 function weaponsShift(dx, dz, dy = 0) {
