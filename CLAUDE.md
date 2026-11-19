@@ -2096,3 +2096,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC self-inflicted emote: watched through in third person (?sdwatch=off = black at the shot)
 - With the emote camera on, the shot no longer cuts to black: your third-person body takes the head wound, gore and ragdoll fall (emoSdKill on EMO.self.e, put in ENEMY.list while dead so the ragdoll is synced; no score), the camera stays on it for EMO_SDW.watch 5 s, then the normal 0.6 s fade and respawn. The body is removed after you respawn (a fresh one for the next emote). Emote camera off: black at the shot as before. Parse checked only.
+
+## CQC emotes: no view from inside your own head
+- Your third-person soldier is not drawn while the camera is in first person (computer k 0, headset while fading in / out) or within 0.5 m of its head during the ease out / back. Parse checked only.
