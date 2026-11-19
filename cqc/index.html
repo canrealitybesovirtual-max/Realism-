@@ -20661,7 +20661,7 @@ function fireGun(g, now) {
     pool.muzzle.intensity = pool.muzzleI;
     pool.muzzleT = pool.muzzleT0 = MF ? g.mflLT : 0.045;
   }
-  if (!supShot(g, d)) sfx(d.sound, (g.sup ? 0.39 : 1) * AF.snd);  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
+  if (!m556Shot(g, d, AF.snd) && !supShot(g, d)) sfx(d.sound, (g.sup ? 0.39 : 1) * AF.snd);   // M556: the 5.56 report  // step 99: a suppressed pistol is the recorded take, a rifle gets it layered
   _wv.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
   if (g.sup && !g.muzEnd) { if (g.sup.endR) _wv.copy(g.sup.endR).applyMatrix4(root.matrixWorld); else _wv.addScaledVector(_fd, 0.16); }   // the smoke leaves the can's end (step 98: where it really is)
   muzzleSmoke(_wv, _fd, g.type);           // step 10
@@ -22162,6 +22162,7 @@ function updateGun(g, dt, now) {
   }
   if (d.action !== 'pump' && g.parts.slide) g.parts.slide.position.z = g.slideOff;
   chkRoundTick(g);                              // release polish 3: the round in the port while you hold the action part way back
+  feedTick(g);                                  // FEED: bolt / carrier inside, the round going home
 
   // --- Pump ---
   if (d.action === 'pump') {
@@ -23064,6 +23065,119 @@ function chkRoundTick(g) {
   if (!m) return;
   if (show && !m.visible && g.rack) pulseSoft(g.rack, 0.12, 14);  // the headset: a tick as the brass comes into sight
   m.visible = show;
+}
+// FEED (?feed=off): what is inside the action, and the round going home. Per gun, built once (g.fd) under g.model in the
+// gun root's frame (so the desktop viewmodel mirror shows it and vmHideGun hides it): a chamber / barrel hood stand-in (an
+// open dark tube ahead of the case head; not the M1911, which has its barrel), the breech / bolt face riding the action, and
+// on self-loading rifles a bolt carrier behind it (cycles on every shot, locks back inside an M4 / M16 run dry). As the action
+// closes after going back past the top round (a rack, a release, every shot) the live round of the gun's calibre (emoRoundMesh)
+// rides the bolt face off the magazine lips, nose up the ramp, into the chamber; until the rack is finished the magazine shows
+// one round less with its stack rising to the lips. Cases and live rounds leaving are spawnCasing / ejectLiveShell as before.
+const FEED = { on: !/[?&]feed=off/.test(QS), b: new THREE.Box3(), b2: new THREE.Box3(), m: new THREE.Matrix4(), ri: new THREE.Matrix4(), mats: null, geo: {}, car: { akmn: 0.06, akm: 0.06 } };
+function feedMats() {
+  if (!FEED.mats) FEED.mats = {
+    steel: new THREE.MeshStandardMaterial({ color: 0x2c2d30, metalness: 0.85, roughness: 0.4 }),
+    bore: new THREE.MeshStandardMaterial({ color: 0x17181a, metalness: 0.75, roughness: 0.5, side: THREE.DoubleSide })
+  };
+  return FEED.mats;
+}
+function feedGeo(key, make) { return FEED.geo[key] || (FEED.geo[key] = make()); }
+function feedBuild(g) {
+  const d = g.def;
+  if (d.action === 'pump' || !g.wr || !g.wr.eject || !g.model || !g.prop) return (g.fd = null);
+  const K = brassKit();
+  if (!K) return undefined;                                       // brass kit not made yet: next frame
+  const c = brassCalOf(g), C = BRASS_CAL[c];
+  if (C.hull) return (g.fd = null);
+  const M = feedMats(), hz = g.wr.eject.z, rc = C.rb, rifle = d.cls !== 'pistol' && !d.manual;
+  const grp = new THREE.Group(); grp.matrixAutoUpdate = false;
+  g.prop.root.updateMatrixWorld(true);
+  grp.matrix.copy(g.model.matrixWorld).invert().multiply(g.prop.root.matrixWorld);
+  const mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = false; m.raycast = () => {}; grp.add(m); return m; };
+  const fd = { grp, hz, C, so: d.travel * 0.6, lipX: 0, lipY: -0.02, open: false, prev: 0, max: 0, arm: false, on: false, mi: null, y0: 0, face: null, car: null, carH: 0, round: null };
+  if (g.type !== 'm1911') {                                       // the chamber and barrel hood, ahead of the case head (a press check sees the rim)
+    const len = C.L * 0.8;
+    const t = mk(feedGeo('t' + c, () => new THREE.CylinderGeometry(rc + 0.0013, rc + 0.0013, len, 18, 1, true).rotateX(Math.PI / 2)), M.bore);
+    t.position.set(0, 0, hz - C.L * 0.35 - len / 2);
+  }
+  if (!d.manual) {                                                // the breech / bolt face (the AWM has its own bolt)
+    fd.face = mk(feedGeo('f' + c, () => new THREE.CylinderGeometry(rc + 0.0028, rc + 0.0028, 0.014, 18).rotateX(Math.PI / 2)), M.steel);
+    fd.face.position.set(0, 0, hz + 0.007);
+  }
+  if (rifle) {                                                    // the bolt carrier behind it
+    const cl = FEED.car[g.type] || 0.1;
+    fd.car = mk(feedGeo('c' + cl, () => new THREE.CylinderGeometry(0.0085, 0.0085, cl, 18).rotateX(Math.PI / 2)), M.steel);
+    fd.carH = cl / 2; fd.car.position.set(0, 0, hz + 0.014 + cl / 2);
+  }
+  const r = emoRoundMesh(c);
+  if (r) { grp.add(r); r.visible = false; r.rotation.x = -Math.PI / 2; fd.round = r; }
+  g.model.add(grp);
+  return (g.fd = fd);
+}
+// Where the top round sits: the magazine's round visuals (top of their box) in the gun root's frame. Once per closing stroke.
+function feedLip(g, fd) {
+  const rm = g.mag && g.mag.item.roundMesh, C = fd.C, T = g.def.travel;
+  let z = fd.hz - C.L / 2;
+  fd.lipX = 0; fd.lipY = -(C.rb * 2.4);
+  if (rm) {
+    g.prop.root.updateMatrixWorld(true);
+    FEED.ri.copy(g.prop.root.matrixWorld).invert();
+    const B = FEED.b.makeEmpty();
+    rm.traverse((o) => {
+      if (!o.isMesh || !o.geometry) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      FEED.m.copy(FEED.ri).multiply(o.matrixWorld);
+      B.union(FEED.b2.copy(o.geometry.boundingBox).applyMatrix4(FEED.m));
+    });
+    if (!B.isEmpty()) { fd.lipY = Math.min(-C.rb * 1.2, B.max.y - C.rb); z = (B.min.z + B.max.z) / 2; }
+  }
+  fd.so = clamp(z + C.L / 2 - fd.hz + 0.003, T * 0.25, T * 0.95);
+}
+function feedMagShow(fd, it, n, lift) {
+  const rm = it.roundMesh;
+  if (fd.mi !== it) { feedMagEnd(fd); fd.mi = it; fd.y0 = rm.position.y; }
+  if (rm.userData.g17) g17MagRounds(rm, n);
+  rm.visible = n > 0;
+  rm.position.y = fd.y0 - lift;
+}
+function feedMagEnd(fd) {
+  const it = fd.mi;
+  if (!it) return;
+  fd.mi = null;
+  it.roundMesh.position.y = fd.y0;
+  updateMagVisual(it);
+}
+function feedTick(g) {
+  if (!FEED.on) return;
+  if (g.fd === undefined && feedBuild(g) === undefined) return;
+  const fd = g.fd;
+  if (!fd) return;
+  const d = g.def, s = g.slideOff || 0;
+  let bz = d.manual ? Math.max(0, s - d.lift) * d.travel / (d.travel - d.lift) : s;
+  if (fd.car) {                                                   // the carrier cycles every shot, locks back inside when run dry
+    if (g.slideLocked) bz = d.travel;
+    else if (!d.recip && d.action !== 'slide' && g.cycleT < 0.06) bz = Math.max(bz, d.travel * (g.cycleT < 0.018 ? g.cycleT / 0.018 : 1 - (g.cycleT - 0.018) / 0.042));
+  }
+  if (bz > fd.prev + 1e-5) { fd.open = true; fd.max = Math.max(fd.max, bz); }
+  else if (bz < fd.prev - 1e-5 && fd.open) { fd.open = false; feedLip(g, fd); fd.arm = fd.max >= fd.so * 0.98; fd.max = 0; }   // closing starts
+  fd.prev = bz;
+  if (fd.face) fd.face.position.z = fd.hz + 0.007 + bz;
+  if (fd.car) fd.car.position.z = fd.hz + 0.014 + fd.carH + bz;
+  const mag = g.mag && g.mag.item, rounds = mag ? mag.rounds : 0;
+  const on = fd.arm && !fd.open && !g.slideLocked && bz > 0.0008 && bz < fd.so && ((g.racked && rounds > 0) || g.chambered)
+    && !(g.chk && g.chk.visible) && !!fd.round;
+  if (!on) {
+    if (fd.on) { fd.on = false; if (fd.round) fd.round.visible = false; feedMagEnd(fd); }
+    if (bz <= 0.0008) fd.arm = false;
+    return;
+  }
+  fd.on = true;
+  const C = fd.C, u = 1 - bz / fd.so, k = 1 - smoothstep(0, 0.75, u), r = fd.round;
+  r.visible = true;
+  r.position.set(fd.lipX * k, fd.lipY * k, fd.hz + bz - C.L / 2);
+  r.rotation.x = Math.sin(Math.PI * Math.min(1, u / 0.85)) * 0.22 - Math.PI / 2;   // nose up the feed ramp, level in the chamber
+  if (g.racked && mag && mag.roundMesh) feedMagShow(fd, mag, rounds - 1, C.rb * 1.8 * (1 - smoothstep(0, 0.35, u)));   // the stack rises to the lips
+  else feedMagEnd(fd);
 }
 function* reloadMagTask(g) {
   const type = g.def.magType;
@@ -40054,6 +40168,39 @@ function supShot(g, d) {
   earsHit((E[g.type] ?? E[d.sound] ?? 0.5) * 0.28 * (g.afx ? g.afx.snd : 1));
   return true;
 }
+// M4A1-S / M16A1 report (M556, ?m556=off = the AK take at the AK's pitch, as before). A 5.56 carbine is sharper and higher than
+// the AKM's 7.62x39: the AK takes pitched up 13 % with the low body thinned, a bright top and a supersonic snap on top. With its
+// can: a low boom (the AK take pitched way down, lowpassed), the round's supersonic crack still at full level (a can does not
+// slow the bullet), the bolt carrier's clatter (the recorded AK bolt slam, pitched up and short) and the step 99 suppressed
+// layer. Your shot and a copy's (the self-inflicted emote); his guns keep esShot.
+const M556 = { on: !/[?&]m556=off/.test(QS), last: -1, types: { m4a1s: 1, rifle: 1 } };
+function m556Shot(g, d, k = 1, ears = true) {
+  if (!M556.on || !M556.types[g.type] || !audio.ctx || audio.ctx.state !== 'running') return false;
+  const L = SHOT_REC.akm;
+  if (!L.length) return false;                                   // no takes yet: the old path
+  let i = (Math.random() * L.length) | 0;
+  if (L.length > 1 && i === M556.last) i = (i + 1 + ((Math.random() * (L.length - 1)) | 0)) % L.length;
+  M556.last = i;
+  const M = GUN_MIX, P = SHOT_REC_MIX.akm, t = audio.ctx.currentTime + 0.004, base = 1.25 * P.gain * M.shot;
+  const sup = gunSuppressed(g.type, g), r = 0.985 + Math.random() * 0.03;
+  if (!sup) {
+    if (ears) earsHit((CONFIG.polish.audio.earsShot.akm ?? 0.5) * 1.05);
+    hrecPlay(L[i], base * 0.95 * k, 1.13 * r, { ls: -3, lsF: 160, hs: 4, lp: 15000, verb: P.verb * 0.95, echo: P.echo * M.echo * 1.05 });
+    nBurst(t, 0.035, 'highpass', 4200, 0.7, 0.2 * k, 0.012, 0.15);       // the supersonic snap (5.56 at 900 m/s)
+    nBurst(t + 0.002, 0.06, 'bandpass', 2400, 1.2, 0.12 * k, 0.03, 0.25);   // the bright blast edge, above the AK's
+    return true;
+  }
+  const kc = g.afx ? g.afx.snd : 1;                              // step 103: extra cans
+  if (ears) earsHit((CONFIG.polish.audio.earsShot.akm ?? 0.5) * 0.3 * kc);
+  hrecPlay(L[i], base * 0.3 * kc, 0.62 * r, { ls: 5, lsF: 140, lp: 1500, verb: 0.55, echo: 0.6 * M.echo });   // the can's low boom
+  nBurst(t, 0.03, 'highpass', 4600, 0.8, 0.24, 0.009, 0.12);              // the bullet's crack: a can does not slow it
+  nBurst(t + 0.001, 0.05, 'bandpass', 3300, 1.4, 0.07, 0.02, 0.2);
+  const cn = 'akRackFwd' + (1 + ((Math.random() * 4) | 0)), cb = HREC.bufs[cn];
+  if (cb && hrecOn()) hrecPlay(cb, 0.34 * M.handling * (HREC.norm[cn] || 1) * k, 1.55 * r, { hp: 900, lp: 9000, verb: 0.2, at: 0.022, dur: 0.07 });   // carrier back and home
+  else nBurst(t + 0.02, 0.05, 'bandpass', 2700, 2.2, 0.16 * k, 0.03, 0.15);
+  supPlay(true, kc * 0.85);
+  return true;
+}
 // His reload, from his gun: magazine out at the start, in past 55 %, the handle back and home at the end when he ran dry.
 function enemyReloadSfx(e, ev) {
   if (!hrecOn() || !e.gunP || !audio.ctx || audio.ctx.state !== 'running') return;
@@ -48553,7 +48700,7 @@ function m1911Anim(g, dt) {
   A.ss += ((g.slideLocked ? M1911_STOP_UP : 0) - A.ss) * k(30);
   P.slideStop.rotation.x = A.ss;
   A.had = !!g.mag;                                                 // step 59.2: the catch no longer moves
-  P.round.visible = !!g.chambered;
+  P.round.visible = !!g.chambered && !(g.fd && g.fd.on);         // FEED: the round on its way home is drawn there
 }
 // Bench gun and magazines (safeLayout items 'm1911' / 'mag1911'). The gun comes back only if it is
 // nowhere else (hand, holster, floor); magazines top up to two on this bench.
@@ -56264,7 +56411,7 @@ function emoSdMe(M, dt, stop) {
   if (d.action !== 'pump' && d.manual) g.spent = true;
   else if (d.action !== 'pump') { try { spawnCasing(g, d.casing); } catch (er) { /* no case */ } if (!chamberFromMag(g) && locksOpen(d) && g.mag && g.mag.item.rounds === 0) g.slideLocked = true; }
   panel.dirty = true;
-  try { if (!supShot(g, d)) sfx(d.sound, g.sup ? 0.39 : 1); } catch (er) { /* no sound */ }
+  try { if (!m556Shot(g, d) && !supShot(g, d)) sfx(d.sound, g.sup ? 0.39 : 1); } catch (er) { /* no sound */ }
   try { headWorld(_sd.n); enemiesHear(_sd.n); } catch (er) { /* fine */ }
   const SE = EMO.self.e, watch = EMO.cfg.cam3p && SE && SE.root && !SE.dead && EMO_SDW.on;   // third person: you watch your body fall (emoSdKill on it)
   if (watch) { EMO_SDW.t = performance.now(); EMO.self.hold = true; EMO.self.hit0 = playerState.lastHit; try { ENEMY.list.push(SE); SE.sdList = true; emoSdKill(SE, EMO.self.R); } catch (er) { /* no fall */ } }
