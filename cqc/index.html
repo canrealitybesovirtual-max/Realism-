@@ -54192,14 +54192,17 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHi
  *  His side: emoAvPose replaces enemyPose for the avatar while one plays (his VR hands no longer drive the arms),
  *  blending in and out from the normal pose; his long gun goes onto his back, a pistol into a hip holster.
  * ========================================================================== */
-const EMO_SLOTS = [1, 5, 3, 0, 2, 0, 4, 0];   // slot (0 = up, clockwise) -> emote id
+const EMO_SLOTS = [1, 5, 3, 6, 2, 7, 4, 8];   // slot (0 = up, clockwise) -> emote id
 const EMOTES = [
   { id: 1, key: 'surrender', label: 'Surrender', bubble: 'Surrendering', icon: 'surr', body: 'full', start: emoSurrStart, pose: emoSurrPose, outW: emoSurrOut },
   { id: 2, key: 'dying', label: 'Dying fall', bubble: '', icon: 'fall', body: 'full', start: emoFallStart, pose: emoFallPose, outW: emoFallOut },
   { id: 3, key: 'backflip', label: 'Backflip', bubble: '', icon: 'flip', body: 'full', dur: () => EMO_FLIP_DUR, start: emoFlipStart, pose: emoFlipPose, outW: emoFlipOut },
   { id: 4, key: 'nadekick', label: 'Grenade kick', bubble: '', icon: 'nade', body: 'full', dur: () => EMO_KICK_DUR, start: emoKickStart, pose: emoKickPose, outW: emoKickOut,
     me: emoKickMe, check: () => (NADE.ready && (inv.frag > 0 || MOD.nades)) || (emoBanner('No frags left. Restock in the safe room'), false) },
-  { id: 5, key: 'rack', label: 'Rack & Catch', bubble: '', icon: 'rack', body: 'full', hold: true, dur: () => EMO_RK.dur, start: emoRkStart, pose: emoRkPose, outW: emoRkOut, end: emoRkEnd, check: emoRkCheck }
+  { id: 5, key: 'rack', label: 'Rack & Catch', bubble: '', icon: 'rack', body: 'full', hold: true, dur: () => EMO_RK.dur, start: emoRkStart, pose: emoRkPose, outW: emoRkOut, end: emoRkEnd, check: emoRkCheck },
+  { id: 6, key: 'moonwalk', label: 'Moonwalk', bubble: '', icon: 'moon', body: 'full', travel: true, start: emoMwStart, pose: emoMwPose, outW: emoMwOut, me: emoMwMe },
+  { id: 7, key: 'gunflip', label: 'Gun Flip', bubble: '', icon: 'juggle', body: 'full', hold: true, dur: () => EMO_GF.dur, start: emoGfStart, pose: emoGfPose, outW: emoGfOut, check: emoGfCheck },
+  { id: 8, key: 'gunpass', label: 'Pass the gun', bubble: '', icon: 'pass', body: 'full', hold: true, dur: () => EMO_PS.dur, start: emoPsStart, pose: emoPsPose, outW: emoPsOut, end: emoPsEnd, me: emoPsMe, check: emoPsCheck }
 ];
 const EMO_BY = new Map(EMOTES.map((d) => [d.id, d]));
 const EMO = {
@@ -54293,7 +54296,7 @@ function emoAvPose(e, dt, now, R = EMO.rem) {                    // R: EMO.rem (
     def.start(e, R, now);
   }
   R.t += dt;
-  if (!R.self && R.phase !== 'out' && Math.hypot(e.pos.x - R.x0, e.pos.y - R.z0) > 0.4) { R.phase = 'out'; R.ot = 0; }   // he walked off (the stop message is on its way)
+  if (!R.self && !def.travel && R.phase !== 'out' && Math.hypot(e.pos.x - R.x0, e.pos.y - R.z0) > 0.4) { R.phase = 'out'; R.ot = 0; }   // he walked off (the stop message is on its way)
   if (def.dur && R.phase !== 'out' && R.t >= def.dur()) { R.phase = 'out'; R.ot = 0; }
   if (R.phase === 'out') R.ot += dt;
   const w = def.outW(e, R, dt);                                   // 0..1 share of the emote pose (in and out)
@@ -54448,7 +54451,7 @@ const EMO_POSE0 = { py: 0, pz: 0, prx: 0, pry: 0, sp: 0, sy: 0, cp: 0, np: 0, hp
 const emoK0 = (t, o) => [t, Object.assign({}, EMO_POSE0, o.toe != null && o.toeL == null ? { toeL: o.toe } : null, o, { fL: (o.fL || EMO_POSE0.fL).slice(), fR: (o.fR || EMO_POSE0.fR).slice() })];
 const _eb = { a: new THREE.Vector3(), g: new THREE.Vector3(), t: new THREE.Vector3(), sh: new THREE.Vector3(), k: new THREE.Vector3(), pole: new THREE.Vector3(),
   pF: new THREE.Vector3(), rF: new THREE.Vector3(), cF: new THREE.Vector3(), cU: new THREE.Vector3(), cR: new THREE.Vector3(), d: new THREE.Vector3(), x: new THREE.Vector3(),
-  rq: new THREE.Quaternion(), pq: new THREE.Quaternion(), cq: new THREE.Quaternion(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), X: new THREE.Vector3(1, 0, 0) };
+  rq: new THREE.Quaternion(), pq: new THREE.Quaternion(), cq: new THREE.Quaternion(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), X: new THREE.Vector3(1, 0, 0), Y: new THREE.Vector3(0, 1, 0) };
 // P fields (his root frame: x right, y up, z back): py / pz pelvis offset from standing; prx / pry pelvis pitch (+ = back) / yaw;
 // sp, sy, cp, np, hp spine / chest / neck / head; fL / fR feet on the floor (x outward, y lift, z); tL / tR feet in the pelvis'
 // frame (in the air), air 0..1 between the two; toe foot pitch (- = pointed); aL / aR hands from the shoulder in chest axes
@@ -54467,7 +54470,9 @@ function emoBody(e, P) {
   for (let si = 0; si < 2; si++) {
     const s = si ? 1 : -1, S = si ? 'R' : 'L', g = si ? P.fR : P.fL, a = si ? P.tR : P.tL;
     V.g.set(s * g[0], sk.ankle + g[1], g[2]).applyMatrix4(e.root.matrixWorld);
-    V.q.copy(V.rq).multiply(V.q2.setFromAxisAngle(V.X, si ? P.toe : P.toeL));
+    V.q.copy(V.rq);
+    const fy = si ? P.fyR : P.fyL; if (fy) V.q.multiply(V.q2.setFromAxisAngle(V.Y, fy));   // the foot turned about the vertical (+ = toes to his left)
+    V.q.multiply(V.q2.setFromAxisAngle(V.X, si ? P.toe : P.toeL));
     if (P.air > 0) {
       V.a.set(s * a[0], a[1], a[2]).applyMatrix4(B.pelvis.matrixWorld); V.g.lerp(V.a, P.air);
       V.q2.setFromAxisAngle(V.X, -0.55).premultiply(V.pq); V.q.slerp(V.q2, P.air);
@@ -54877,6 +54882,361 @@ function emoRkEnd(e, R) {
   const g = e && emoRkGun(e); if (g) emoRkAction(g, 0, false, 1 / 60);
 }
 
+// --- moonwalk: a backward glide. Each half step (EMO_MW.h s) one foot stands on its ball (heel up, world-still: the body
+// glides back over it) while the other, flat, slides back past it; at the end of the half the slider stops (world-still),
+// pops onto its ball and the standing foot's heel drops flat: they swap. Body upright, knees soft, arms loose, a small
+// head and hip bob on each pop. You really travel back at EMO_MW.v (rig moved, walls / leaves / props / bodies / the other
+// player stop it at once: emoMwMe); his soldier on the other side gets its place from his pose stream, only the steps are
+// local. Root frame of the pose: x right, y up, z back; feet are planted by the ball, the ankle found from the heel angle.
+const EMO_MW = { v: 0.35, h: 0.7, x: 0.085, th: 0.55, pop: 0.85, ahead: 0.06, ray: null, hs: [0.25, 0.85, 1.35], P: new THREE.Vector3(), Q: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3() };
+function emoMwStart(e, R) {
+  R.P = Object.assign({}, EMO_POSE0, { fL: [0, 0, 0], fR: [0, 0, 0], aL: [0, 0, 0], aR: [0, 0, 0], tL: EMO_POSE0.tL.slice(), tR: EMO_POSE0.tR.slice(), hand: null });
+  R.mwL = { ank: e.sk.ankle }; R.mwR = { ank: e.sk.ankle }; R.mt = 0; R.mwStep = -1;
+}
+// Ball z (root frame) and heel angle of one foot at moonwalk time mt; side 0 / 1 starts as the slider / the stander.
+function emoMwFoot(mt, side, fwd, out) {
+  const M = EMO_MW, a = M.v * M.h / 2, n = Math.floor(mt / M.h), p = mt / M.h - n, pr = M.pop;
+  const slide = ((n + side) & 1) === 0;                          // this half: sliding (flat) or standing (on the ball)
+  let z, th;
+  if (slide) {
+    if (p < pr) {                                                 // Hermite: world-still at both ends (root-frame rate -2a per unit p)
+      const t = p / pr, t2 = t * t, t3 = t2 * t, z1 = a + 2 * a * (1 - pr), v = -2 * a * pr;
+      z = (2 * t3 - 3 * t2 + 1) * -a + (t3 - 2 * t2 + t) * v + (-2 * t3 + 3 * t2) * z1 + (t3 - t2) * v;
+      th = 0;
+    } else { z = a + 2 * a * (1 - p); th = M.th * smoothstep(pr, 1, p); }   // stopped (world-still) and up onto the ball
+  } else {
+    z = a - 2 * a * p;                                            // world-still: the body glides back over it
+    th = p < pr ? M.th : M.th * (1 - smoothstep(pr, 1, p));      // the heel drops as the other pops up
+  }
+  const c = Math.cos(th), s = Math.sin(th), A = out.ank, F = fwd;  // ankle about the ball: (y ankle, z +F back) turned heel-up by th
+  out.y = A * c + F * s - A; out.z = z + F * c - A * s - F;       // relative to a flat foot whose ankle is at the ball + F
+  out.toe = -th; out.slide = slide && p < pr; out.n = n;
+  return out;
+}
+function emoMwPose(e, R, dt) {
+  const M = EMO_MW, out = R.phase === 'out';
+  if (!out) R.mt += dt;                                          // stopped: the feet stay where they are while it blends out
+  const P = R.P, sk = e.sk, F = sk.footFwd || 0.13;
+  const fl = emoMwFoot(R.mt, 0, F, R.mwL), fr = emoMwFoot(R.mt, 1, F, R.mwR);
+  P.fL[0] = M.x; P.fL[1] = fl.y; P.fL[2] = fl.z; P.toeL = fl.toe;
+  P.fR[0] = M.x; P.fR[1] = fr.y; P.fR[2] = fr.z; P.toe = fr.toe;
+  const n = Math.floor(R.mt / M.h), p = R.mt / M.h - n;
+  const pop = Math.exp(-((p - 0.93) ** 2) / 0.004) + Math.exp(-((p + 0.07) ** 2) / 0.004);   // the beat: each swap
+  const lw = fl.slide ? 1 : -1;                                   // the left foot slides: the right arm a touch forward
+  P.py = -0.035 - 0.012 * pop; P.pz = 0.01;                       // soft knees, a dip on each pop
+  P.pry = 0.035 * lw; P.sy = -0.03 * lw;                          // hips turn with the sliding leg, shoulders a little against it
+  P.sp = -0.03; P.cp = -0.02; P.np = 0.03 - 0.035 * pop; P.hp = 0.02 - 0.03 * pop;   // upright, the head bobs on the beat
+  P.aL[0] = 0.07; P.aL[1] = -0.49; P.aL[2] = 0.03 + 0.04 * lw; P.aR[0] = 0.07; P.aR[1] = -0.49; P.aR[2] = 0.03 - 0.04 * lw;   // hanging loose, elbows soft
+  P.air = 0; P.shin = 0; P.curl = 0.35; P.hand = null;
+  emoBody(e, P);
+  if (EMO.cfg.sound && !out && n !== R.mwStep) { R.mwStep = n; if (R.mt > 0.1) try { emoMwScuff(e, 0.5); } catch (er) { /* no sound */ } }
+}
+function emoMwOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.35, R.t);
+  return 1 - smoothstep(0, 0.3, R.ot);
+}
+// A sole sliding on the floor (each pop).
+function emoMwScuff(e, k) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  e.B.pelvis.getWorldPosition(_eb.a); _eb.a.y = e.room.origin.y + 0.05;
+  soundAt(_eb.a, () => { const t = audio.ctx.currentTime + 0.003; nBurst(t, 0.16, 'bandpass', 2400, 1.2, 0.05 * k, 0.1, 0.4); nBurst(t + 0.13, 0.04, 'lowpass', 300, 0.8, 0.08 * k, 0.03, 0.2); });
+}
+// Your side: you glide back along your heading; anything behind you ends it at once (no step into it).
+function emoMwMe(M, dt, stop) {
+  if (stop || dt <= 0) return;
+  const W = EMO_MW, s = W.v * Math.min(dt, 0.1);
+  rig.updateMatrixWorld(true);
+  headWorld(W.P); emoMeFwd(W.b).negate();                         // back
+  if (emoMwBlocked(W.P, W.b, s + W.ahead)) { emoBanner('Moonwalk: something behind you'); emoStopMine(); return; }
+  rig.position.x += W.b.x * s; rig.position.z += W.b.z * s;
+  rig.updateMatrixWorld(true);
+  if (M.has) { M.prev.x += W.b.x * s; M.prev.z += W.b.z * s; }    // the walking-stops-it check: not your own glide
+}
+function emoMwBlocked(head, b, L) {
+  const W = EMO_MW, r = CONFIG.player.radius, fy = level.floor;
+  W.Q.copy(head).addScaledVector(b, L);
+  W.c.copy(head); resolveBody(W.c); const d0 = (W.c.x - head.x) * b.x + (W.c.z - head.z) * b.z;   // walk boxes (walls, furniture)
+  W.c.copy(W.Q); resolveBody(W.c); const d1 = (W.c.x - W.Q.x) * b.x + (W.c.z - W.Q.z) * b.z;
+  if (d1 < -0.002 || d0 < -0.002) return true;
+  for (const door of doors) {                                     // door leaves (locomote's floor rule)
+    if (door.walk.top <= fy + 0.02 || fy + 1.2 < door.walk.top - CONFIG.door.height) continue;
+    _probe2.copy(head); const a0 = pushOutOf(door.walk, _probe2, r);
+    _probe2.copy(W.Q); if (pushOutOf(door.walk, _probe2, r) > a0 + 0.002) return true;
+  }
+  if (!W.ray) W.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
+  const R = W.ray, G = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR | GROUP.PROP | GROUP.ENEMY);   // loose props, leaves, bodies on the floor
+  for (const h of W.hs) {
+    R.origin.x = head.x; R.origin.y = fy + h; R.origin.z = head.z; R.dir.x = b.x; R.dir.y = 0; R.dir.z = b.z;
+    const hit = world.castRay(R, r + L, true, undefined, G, undefined, undefined, (c) => !CL_skip.has(c.handle) && !emoMwMine(c));
+    if (hit) return true;
+  }
+  for (const m of ENEMY.list) {                                   // men standing behind you
+    if (m.dead || !m.room || !m.room.active) continue;
+    const ex = rWX(m.room, m.pos.x), ez = rWZ(m.room, m.pos.y);
+    const dq = Math.hypot(W.Q.x - ex, W.Q.z - ez), dh = Math.hypot(head.x - ex, head.z - ez);
+    if (dq < r + 0.25 && dq < dh) return true;
+  }
+  if (NBODY.on && netBodyAt(W.c)) {                               // the other player
+    const dq = Math.hypot(W.Q.x - W.c.x, W.Q.z - W.c.z), dh = Math.hypot(head.x - W.c.x, head.z - W.c.z);
+    if (dq < NBODY.R && dq < dh) return true;
+  }
+  return false;
+}
+// A collider that is part of you or what you carry (a held prop, your slung or holstered gun): never in the way.
+function emoMwMine(c) {
+  const p = propByCollider.get(c.handle);
+  if (!p) return false;
+  const it = p.item;
+  return p.holders.length > 0 || !!(it && (it.slot || it.slung || it.worn));
+}
+
+// --- gun flip (juggle): he turns the gun onto its side over his raised right foot, lets go; it drops flat onto the instep,
+// the foot gives with it, then flicks it up; it rolls once about the bore and comes down into his firing hand at chest
+// height, which reaches up to meet it (the hand sits on the grip from the catch on, as it did before the drop), absorbs
+// it and brings it back to low ready. Only the copy on your soldier moves (yours on the other player's screen, your own
+// third-person body): your real gun is never touched. Refused with no gun in your hand. ~3.4 s.
+const EMO_GF = { dur: 3.4, ready: 0.25, drop: 0.6, overH: 0.7, launch: 1.22, T: 0.72, settle: 2.7, back: 3.2,
+  catchP: new THREE.Vector3(0.2, 1.12, -0.4), catchE: new THREE.Euler(-0.25, 0.22, 0, 'YXZ'), ready0: EMO_RK_G[0][1] };
+EMO_GF.land = EMO_GF.drop + Math.sqrt(2 * EMO_GF.overH / 9.8);
+EMO_GF.qFlat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(   // root frame: bore to his left, right side up
+  new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)));
+const EMO_GF_B = (() => {
+  const T = EMO_GF, k = (t, o) => emoK0(t, Object.assign({ toeL: 0 }, o)), up = (y, z, toe, o) => Object.assign({ fR: [0.13, y, z], toe, fL: [0.1, 0, 0.02], py: -0.05, aL: [0.24, -0.38, -0.04] }, o);
+  return [k(0, {}),
+    k(T.ready, { np: -0.25, hp: -0.15, sp: -0.05, aR: [0.1, -0.3, -0.25] }),
+    k(0.5, up(0.08, -0.16, 0.12, { np: -0.42, hp: -0.25, sp: -0.12, cp: -0.06, aR: [0.1, -0.3, -0.28] })),          // the foot up, eyes on it
+    k(T.land - 0.01, up(0.08, -0.16, 0.12, { np: -0.45, hp: -0.25, sp: -0.12, cp: -0.06, aR: [0.14, -0.28, -0.22], curl: 0.3 })),
+    k(T.land + 0.07, up(0.045, -0.15, 0.08, { np: -0.45, hp: -0.25, sp: -0.08, aR: [0.15, -0.32, -0.18], curl: 0.3 })),   // it gives with the weight
+    k(1.12, up(0.06, -0.15, 0.12, { np: -0.42, hp: -0.25, sp: -0.08, aR: [0.15, -0.32, -0.18], curl: 0.3 })),
+    k(T.launch, up(0.28, -0.26, 0.38, { np: -0.2, hp: -0.05, sp: -0.04, aR: [0.16, -0.25, -0.22], curl: 0.3 })),   // the flick
+    k(1.45, up(0.1, -0.12, 0.1, { np: 0.02, hp: 0.12, aR: [0.15, -0.15, -0.28], curl: 0.3 })),            // eyes up with it
+    k(1.62, { fR: [0.12, 0, 0], np: 0.05, hp: 0.1, py: -0.02, aL: [0.2, -0.42, -0.02], aR: [0.14, -0.08, -0.32], curl: 0.3 }),
+    k(T.launch + T.T - 0.25, { np: -0.12, hp: -0.04, py: -0.02, aL: [0.16, -0.44, 0], aR: [0.15, -0.1, -0.34], curl: 0.3 }),
+    k(T.launch + T.T + 0.12, { np: -0.2, hp: -0.1, py: -0.035, aL: [0.12, -0.46, 0.0] }),               // caught: a small give
+    k(T.settle, { np: -0.12, hp: -0.06 }), k(T.dur, {})];
+})();
+const _gf = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), p: new THREE.Vector3(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(),
+  rq: new THREE.Quaternion(), fq: new THREE.Quaternion(), hp: new THREE.Vector3(), hq: new THREE.Quaternion(), m: new THREE.Matrix4(), box: new THREE.Box3(), bb: new THREE.Box3() };
+function emoGfCheck() {
+  const g = emoHeldGun();
+  if (!g) { emoBanner('Hold a gun to flip it'); return false; }
+  if (g.rack || g.task) { emoBanner('Not now: the gun is busy'); return false; }
+  return true;
+}
+// The gun's drawn box in its own root frame (once per gun root): its middle and half sizes.
+function emoGfBox(root) {
+  const u = root.userData; if (u.emoGfC) return u;
+  root.updateWorldMatrix(true, true);
+  _gf.m.copy(root.matrixWorld).invert(); _gf.box.makeEmpty();
+  root.traverseVisible((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    _gf.bb.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld).applyMatrix4(_gf.m); _gf.box.union(_gf.bb);
+  });
+  if (_gf.box.isEmpty()) _gf.box.set(new THREE.Vector3(-0.015, -0.06, -0.12), new THREE.Vector3(0.015, 0.03, 0.08));
+  u.emoGfC = _gf.box.getCenter(new THREE.Vector3()); u.emoGfH = _gf.box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  return u;
+}
+function emoGfStart(e, R) {
+  R.P = {};
+  R.gf = R.gf || { p0: new THREE.Vector3(), q0: new THREE.Quaternion(), pc: new THREE.Vector3(), qc: new THREE.Quaternion(), v: new THREE.Vector3(), ax: new THREE.Vector3(),
+    fq0: new THREE.Quaternion(), ql: new THREE.Quaternion(), ev: 0, gp: new THREE.Vector3(), gq: new THREE.Quaternion() };
+  R.gf.ev = 0;
+}
+// The instep (world), its foot's turn: the top of the shoe a little ahead of the ankle.
+function emoGfInstep(e, out, q) {
+  const f = e.B.footR; f.updateWorldMatrix(true, false);
+  f.getWorldPosition(out); f.getWorldQuaternion(q);
+  _gf.c.set(0, 0, -1).applyQuaternion(q); out.addScaledVector(_gf.c, 0.06);
+  _gf.c.set(0, 1, 0).applyQuaternion(q); out.addScaledVector(_gf.c, -0.005);
+  return out;
+}
+// A gun pose (world) with its box middle on the instep, lying as q.
+function emoGfOnFoot(e, R, q, outP) {
+  const u = emoGfBox(e.gun.root);
+  emoGfInstep(e, outP, _gf.fq);
+  _gf.c.set(0, 1, 0).applyQuaternion(_gf.fq); outP.addScaledVector(_gf.c, u.emoGfH.x);   // lying on its side: half its width over the shoe
+  return outP.sub(_gf.a.copy(u.emoGfC).applyQuaternion(q));
+}
+// The chest-space key pose (as Rack & Catch's gun keys) in world.
+function emoGfChest(e, k, cq, outP, outQ) {
+  e.B.chest.localToWorld(outP.set(k.p[0], k.p[1], k.p[2]));
+  _gf.c.set(0, 0, -1).applyQuaternion(cq);
+  outQ.setFromAxisAngle(_rk.up, Math.atan2(-_gf.c.x, -_gf.c.z)).multiply(_gf.q2.setFromEuler(_rk.e.set(k.x, k.y, k.z)));
+}
+function emoGfPose(e, R, dt) {
+  const T = EMO_GF, t = Math.min(R.t, T.dur), out = R.phase === 'out', S = R.gf;
+  const P = emoKeys(EMO_GF_B, t, R.P); P.hand = null;
+  emoBody(e, P);
+  if (!e.gun || !e.gun.root) return;
+  const cq = _eb.cq, gp = S.gp, gq = S.gq;
+  e.root.updateWorldMatrix(true, false); e.root.getWorldQuaternion(_gf.rq);
+  let hold = 1;                                                    // the firing hand on the grip (1) or free (0)
+  if (t < T.ready) emoGfChest(e, T.ready0, cq, gp, gq);
+  else if (t < T.drop) {                                           // turned onto its side, out over the raised foot
+    emoGfChest(e, T.ready0, cq, _gf.p, _gf.q);
+    gq.copy(_gf.rq).multiply(T.qFlat);
+    emoGfOnFoot(e, R, gq, gp); gp.y += T.overH;
+    const u = smoothstep(T.ready, T.drop, t); gp.lerpVectors(_gf.p, gp, u); gq.slerpQuaternions(_gf.q, gq, u);
+    S.p0.copy(gp); S.q0.copy(gq);
+  } else if (t < T.land) {                                         // falling flat (straight down onto the instep)
+    const s = t - T.drop; gp.copy(S.p0); gp.y -= 4.9 * s * s; gq.copy(S.q0);
+    hold = 1 - smoothstep(T.drop, T.drop + 0.12, t);
+  } else if (t < T.launch) {                                       // on the foot: rides it (its pitch too)
+    if (S.ev < 1) { S.ev = 1; emoGfInstep(e, _gf.p, S.fq0); S.ql.copy(S.q0); if (EMO.cfg.sound && !out) try { emoThud(e, 0.25); emoRkTick(_gf.p); } catch (er) { /* no sound */ } }
+    emoGfInstep(e, _gf.p, _gf.fq);
+    gq.copy(_gf.fq).multiply(_gf.q2.copy(S.fq0).invert()).multiply(S.ql);
+    emoGfOnFoot(e, R, gq, gp);
+    hold = 0;
+  } else {
+    if (S.ev < 2) {                                                // the flick: the arc to his hand, one roll about the bore
+      S.ev = 2;
+      emoGfInstep(e, _gf.p, _gf.fq); gq.copy(_gf.fq).multiply(_gf.q2.copy(S.fq0).invert()).multiply(S.ql); emoGfOnFoot(e, R, gq, gp);
+      S.p0.copy(gp); S.q0.copy(gq);
+      S.pc.copy(T.catchP).applyMatrix4(e.root.matrixWorld);
+      S.qc.copy(_gf.rq).multiply(_gf.q2.setFromEuler(T.catchE));
+      S.v.subVectors(S.pc, S.p0).multiplyScalar(1 / T.T); S.v.y += 4.9 * T.T;
+      S.ax.set(-1, 0, 0).applyQuaternion(_gf.rq);
+      if (EMO.cfg.sound && !out) try { emoThud(e, 0.35); } catch (er) { /* no sound */ }
+    }
+    const s = t - T.launch;
+    if (s < T.T) {
+      gp.copy(S.p0).addScaledVector(S.v, s); gp.y -= 4.9 * s * s;
+      gq.slerpQuaternions(S.q0, S.qc, smoothstep(0, 1, s / T.T)).premultiply(_gf.q2.setFromAxisAngle(S.ax, (Math.PI * 2 * s) / T.T));
+      hold = smoothstep(T.T - 0.24, T.T, s);                        // the hand comes up to meet it
+    } else {
+      if (S.ev < 3) { S.ev = 3; if (EMO.cfg.sound && !out) try { emoRkTick(S.pc); emoRkSnd(e, R, 'rackFwd', 0.35); } catch (er) { /* no sound */ } }
+      const c = s - T.T, give = Math.sin(Math.PI * clamp(c / 0.16)) * 0.035;   // a small give in the catch
+      emoGfChest(e, T.ready0, cq, _gf.p, _gf.q);
+      const u = smoothstep(T.launch + T.T + 0.1, T.settle, t);
+      gp.lerpVectors(S.pc, _gf.p, u); gp.y -= give * (1 - u); gq.slerpQuaternions(S.qc, _gf.q, u);
+    }
+  }
+  if (R.w < 1) {                                                   // in / out: from and to his normal hold
+    _gf.p.copy(EMO.gP).applyMatrix4(e.root.matrixWorld); gp.lerpVectors(_gf.p, gp, R.w);
+    _gf.q.copy(_gf.rq).multiply(EMO.gQ); gq.slerpQuaternions(_gf.q, gq, R.w);
+  }
+  if (out) hold = 1;
+  // place it (enemy-root space)
+  e.gun.root.quaternion.copy(_gf.rq).invert().multiply(gq);
+  e.gun.root.position.copy(gp); e.root.worldToLocal(e.gun.root.position);
+  e.gun.root.updateWorldMatrix(false, true);
+  // the firing hand: on the grip (as Rack & Catch's hold), or where the keyed arm put it
+  if (hold > 0) {
+    _gf.a.copy(EMO_RK.wrist).applyQuaternion(gq).add(gp); _gf.hq.copy(gq).multiply(_rk.hR);
+    if (hold < 1) {
+      const H = e.B.handR; H.updateWorldMatrix(true, false); H.getWorldPosition(_gf.hp); H.getWorldQuaternion(_gf.q);
+      _gf.a.lerpVectors(_gf.hp, _gf.a, hold); _gf.hq.slerpQuaternions(_gf.q, _gf.hq, hold);
+    }
+    emoRkArm(e, 'R', _gf.a, _gf.hq, cq);
+  }
+  enemyCurl(e, Math.round(mix(0.25, 0.6, hold) * 20) / 20);
+}
+function emoGfOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.3, R.t);
+  return 1 - smoothstep(0, 0.35, R.ot);
+}
+
+// --- pass the gun: he bends, lets his REAL gun drop flat in front of his right foot, plants the left foot beside it and
+// sidefoots it along the floor (inside of the right foot, toes turned out) to the other player's feet: in the same room
+// within EMO_PS.range his body, else straight ahead. The gun is the real item (release: no holster / sling catch on the way,
+// dropItem, the shared drop netDropTx; the kick re-sends it with its new speed), so the other player can pick it up and
+// swap. Speed for a slide that stops short of him: v = sqrt(2 mu g d) (gun on the floor ~0.55). ~2.4 s.
+const EMO_PS = { dur: 2.4, drop: 0.6, kick: 1.3, h: 0.6, fwd: 0.42, side: 0.04, reach: 0.5, range: 8, mu: 0.55, stopShort: 0.55, ahead: 3, vMax: 8,
+  qSide: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2), P: new THREE.Vector3(), Q: new THREE.Quaternion(), F: new THREE.Vector3(), Rt: new THREE.Vector3(), T: new THREE.Vector3(), V: new THREE.Vector3() };
+const EMO_PS_B = (() => {
+  const k = (t, o) => emoK0(t, Object.assign({ toeL: 0 }, o));
+  return [k(0, {}),
+    k(0.3, { sp: -0.1, np: -0.35, hp: -0.15, aL: [0.12, -0.46, 0] }),
+    k(EMO_PS.drop, { py: -0.2, pz: 0.03, sp: -0.38, cp: -0.15, np: -0.3, hp: -0.15, fL: [0.12, 0, 0.02], fR: [0.12, 0, 0.05], aL: [0.2, -0.4, -0.06], aR: [0.12, -0.42, -0.2], curl: 0.6 }),   // bent, the gun let go low
+    k(0.78, { py: -0.1, sp: -0.15, cp: -0.06, np: -0.35, hp: -0.15, fL: [0.12, 0, 0.02], fR: [0.12, 0, 0.05], aL: [0.2, -0.42, -0.04], aR: [0.16, -0.42, 0.02], curl: 0.3 }),
+    k(1.02, { py: -0.08, pz: -0.14, pry: 0.12, sp: -0.12, np: -0.4, hp: -0.15, fL: [0.15, 0, -0.36], fR: [0.13, 0.03, 0.1], fyR: -0.9, aL: [0.3, -0.32, -0.08], aR: [0.24, -0.36, 0.08], curl: 0.3 }),   // left foot planted beside it, weight onto it
+    k(1.16, { py: -0.1, pz: -0.16, pry: 0.2, sp: -0.1, np: -0.42, hp: -0.15, fL: [0.15, 0, -0.36], fR: [0.17, 0.1, 0.22], fyR: -1.3, toe: 0.1, aL: [0.34, -0.28, -0.1], aR: [0.3, -0.3, 0.14], curl: 0.3 }),   // the leg back, toes out
+    k(EMO_PS.kick, { py: -0.09, pz: -0.18, pry: -0.05, sp: -0.12, np: -0.38, hp: -0.12, fL: [0.15, 0, -0.36], fR: [0.05, 0.04, -0.44], fyR: -1.45, toe: 0.12, aL: [0.36, -0.24, 0.02], aR: [0.32, -0.28, -0.08], curl: 0.3 }),   // the inside of the foot through it
+    k(1.48, { py: -0.06, pz: -0.18, pry: -0.18, sp: -0.06, np: -0.25, hp: -0.06, fL: [0.15, 0, -0.36], fR: [0.0, 0.14, -0.68], fyR: -1.2, toe: 0.1, aL: [0.38, -0.22, 0.06], aR: [0.3, -0.3, -0.12], curl: 0.3 }),   // follow-through toward him
+    k(1.75, { py: -0.04, pz: -0.16, pry: -0.08, np: -0.1, fL: [0.15, 0, -0.36], fR: [0.12, 0, -0.3], fyR: -0.3, aL: [0.24, -0.38, 0.02], aR: [0.18, -0.4, -0.04], curl: 0.3 }),   // right foot down beside the left
+    k(2.1, { pz: -0.04, np: -0.05, fL: [0.11, 0, -0.08], fR: [0.11, 0, -0.06], aL: [0.08, -0.47, 0.02], aR: [0.08, -0.47, 0.02], curl: 0.35 }),
+    k(EMO_PS.dur, { curl: 0.35 })];
+})();
+function emoPsCheck() {
+  const g = emoHeldGun();
+  if (!g) { emoBanner('Hold a gun to pass it'); return false; }
+  if (g.rack || g.task) { emoBanner('Not now: the gun is busy'); return false; }
+  return true;
+}
+function emoPsStart(e, R) { R.P = {}; R.ps = R.ps || { gp: new THREE.Vector3(), gq: new THREE.Quaternion() }; R.psKick = 0; }
+function emoPsPose(e, R, dt) {
+  const T = EMO_PS, t = Math.min(R.t, T.dur), out = R.phase === 'out', S = R.ps;
+  const P = emoKeys(EMO_PS_B, t, R.P); P.hand = null;
+  emoBody(e, P);
+  if (EMO.cfg.sound && !out && !R.psKick && t >= T.kick && !R.self) { R.psKick = 1; e.B.footR.getWorldPosition(_eb.a); try { kickSfx('prop', _eb.a, 0.35); } catch (er) { /* no sound */ } }   // your side: the real kick's sound
+  if (!e.gun || !e.gun.root) return;
+  if (t >= T.drop + 0.02 && !out) {                                // let go: the real gun lies on the floor now (his screen: his pose stream hides the copy)
+    if (R.self) e.gun.root.visible = false;
+    return;
+  }
+  if (R.phase === 'out' && t >= T.drop) return;
+  const cq = _eb.cq, gp = S.gp, gq = S.gq;
+  e.root.updateWorldMatrix(true, false); e.root.getWorldQuaternion(_gf.rq);
+  emoGfChest(e, EMO_GF.ready0, cq, _gf.p, _gf.q);                 // low ready, then down and out in front of the right foot, on its side
+  gp.set(T.side, T.h, -(T.fwd + 0.06)).applyMatrix4(e.root.matrixWorld); gq.copy(_gf.rq).multiply(T.qSide);
+  const u = smoothstep(0.2, T.drop, t); gp.lerpVectors(_gf.p, gp, u); gq.slerpQuaternions(_gf.q, gq, u);
+  if (R.w < 1) { _gf.p.copy(EMO.gP).applyMatrix4(e.root.matrixWorld); gp.lerpVectors(_gf.p, gp, R.w); _gf.q.copy(_gf.rq).multiply(EMO.gQ); gq.slerpQuaternions(_gf.q, gq, R.w); }
+  e.gun.root.quaternion.copy(_gf.rq).invert().multiply(gq);
+  e.gun.root.position.copy(gp); e.root.worldToLocal(e.gun.root.position);
+  e.gun.root.updateWorldMatrix(false, true);
+  _gf.a.copy(EMO_RK.wrist).applyQuaternion(gq).add(gp); _gf.hq.copy(gq).multiply(_rk.hR);
+  emoRkArm(e, 'R', _gf.a, _gf.hq, cq);
+}
+function emoPsOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.3, R.t);
+  return 1 - smoothstep(0, 0.35, R.ot);
+}
+function emoPsEnd(e, R) { if (R.self && e) emoSelfGun(e, emoHeldGun()); }   // your own body: the gun only if you hold one again
+// Your side: the real gun, the real kick.
+function emoPsMe(M, dt, stop) {
+  const T = EMO_PS;
+  if (M.stage == null) M.stage = 0;
+  if (stop) return;                                                // before the drop nothing happened; after it the gun just lies there
+  if (M.stage === 0 && M.t >= T.drop) {
+    M.stage = 1;
+    const g = emoHeldGun(), p = g && g.prop;
+    if (!g || !p || !g.primary) { emoBanner('No gun in your hand'); M.stage = 9; emoStopMine(); return; }
+    headWorld(T.P); emoMeFwd(T.F); T.Rt.set(-T.F.z, 0, T.F.x);
+    T.P.addScaledVector(T.F, T.fwd).addScaledVector(T.Rt, T.side); T.P.y = level.floor + T.h;
+    T.Q.setFromAxisAngle(_eb.Y, Math.atan2(-T.F.x, -T.F.z)).multiply(T.qSide);   // on its side, the bore along your heading
+    if (g.support) release(g.support, _eb.x.set(0, 0, 0));        // the support hand first (else it would take the grip)
+    const h = g.primary; if (!h) return;
+    p.root.position.copy(T.P); p.root.quaternion.copy(T.Q); p.root.updateMatrixWorld(true);
+    const c = h.ctrl; h.ctrl = null;                               // a plain drop: no holster, sling or gun-flip on the way down
+    try { release(h, _eb.x.set(0, -0.3, 0)); } finally { h.ctrl = c; }
+    if (p.holders.length || p.item.slot || p.item.slung || p.item.cradle || !p.inWorld) { M.stage = 9; return; }   // something took it (the vise)
+    p.body.setAngvel({ x: rnd2(-0.4, 0.4), y: rnd2(-0.4, 0.4), z: rnd2(-0.4, 0.4) }, true);
+    M.gun = p;
+    if (typeof syncButtons === 'function') syncButtons();
+  }
+  if (M.stage === 1 && M.t >= T.kick) {
+    M.stage = 2;
+    const p = M.gun; if (!p || p.removing || !p.inWorld || p.holders.length) return;
+    headWorld(T.P); emoMeFwd(T.F); T.Rt.set(-T.F.z, 0, T.F.x);
+    T.P.addScaledVector(T.F, T.fwd).addScaledVector(T.Rt, T.side);
+    const G = p.root.position;
+    if (Math.hypot(G.x - T.P.x, G.z - T.P.z) > T.reach || G.y > level.floor + 0.3) { emoBanner('Missed it: the gun is on the floor'); return; }
+    let d = T.ahead; T.T.copy(G).addScaledVector(T.F, T.ahead);    // straight ahead, or to his feet
+    if (NET.on && netLive() && netBodyAt(T.V) && NET.remRoom === stream.current) {
+      const dd = Math.hypot(T.V.x - G.x, T.V.z - G.z);
+      if (dd > 0.6 && dd < T.range) { T.T.copy(T.V); d = dd - T.stopShort; }
+    }
+    T.V.set(T.T.x - G.x, 0, T.T.z - G.z); if (T.V.lengthSq() < 1e-6) T.V.copy(T.F); T.V.normalize();
+    const v = Math.min(T.vMax, Math.sqrt(2 * T.mu * 9.81 * Math.max(0.4, d)) * rnd2(0.97, 1.04));
+    T.V.multiplyScalar(v); T.V.y = 0.25;
+    p.body.setLinvel(T.V, true);
+    p.body.setAngvel({ x: 0, y: rnd2(-2.5, 2.5), z: 0 }, true);   // a slow turn as it slides
+    if (EMO.cfg.sound) try { kickSfx('prop', G, 0.4); } catch (er) { /* no sound */ }
+    netDropTx(p, T.V);                                             // the shared copy: its new speed (same id: rebuilt there from here)
+  }
+}
+
 // --- bubble over his head ---------------------------------------------------------------------------------------------
 function emoBubble(dt) {
   const R = EMO.rem, U = EMO.bub, e = R.e;
@@ -55007,6 +55367,29 @@ function emoIcon(c, kind, x, y, s, col) {
     c.lineWidth = 5; c.beginPath(); c.moveTo(30, -6); c.lineTo(52, -6); c.moveTo(44, -14); c.lineTo(54, -6); c.lineTo(44, 2); c.stroke();   // back
     c.save(); c.translate(-6, -46); c.rotate(0.7); c.beginPath(); c.roundRect(-5, -12, 10, 24, 4); c.fill(); c.restore();   // the round
     c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.arc(-6, -46, 20, -2.6, -0.6); c.stroke(); c.globalAlpha = 1;
+  } else if (kind === 'pass') {                                    // a gun sliding along the floor off the inside of the foot
+    c.beginPath(); c.arc(-26, -38, 10, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(-26, -26); c.lineTo(-24, 10);
+    c.moveTo(-25, -18); c.lineTo(-44, -6); c.moveTo(-25, -18); c.lineTo(-8, -8);
+    c.moveTo(-24, 10); c.lineTo(-32, 34); c.lineTo(-34, 56); c.moveTo(-24, 10); c.lineTo(-6, 34); c.lineTo(6, 50); c.stroke();
+    c.fillRect(22, 46, 30, 8); c.fillRect(24, 50, 7, 9);
+    c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.moveTo(56, 44); c.lineTo(70, 44); c.moveTo(56, 52); c.lineTo(74, 52); c.stroke();
+    c.beginPath(); c.moveTo(-50, 60); c.lineTo(76, 60); c.stroke();
+  } else if (kind === 'juggle') {                                  // a gun flicked up off the foot, spinning
+    c.beginPath(); c.arc(-12, -38, 10, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(-12, -26); c.lineTo(-10, 10);
+    c.moveTo(-11, -18); c.lineTo(-28, -4); c.moveTo(-11, -18); c.lineTo(6, -30);
+    c.moveTo(-10, 10); c.lineTo(-16, 32); c.lineTo(-16, 54); c.moveTo(-10, 10); c.lineTo(8, 24); c.lineTo(22, 22); c.stroke();
+    c.save(); c.translate(26, -34); c.rotate(-0.6); c.fillRect(-16, -5, 30, 9); c.fillRect(4, 2, 8, 13); c.restore();
+    c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.arc(26, -34, 22, 0.6, 2.4); c.stroke(); c.beginPath(); c.moveTo(24, 16); c.lineTo(26, -6); c.stroke();
+  } else if (kind === 'moon') {                                    // gliding back: one heel up, the other foot flat
+    c.beginPath(); c.arc(6, -38, 10, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(4, -26); c.lineTo(2, 10);
+    c.moveTo(3, -18); c.lineTo(-8, 2); c.moveTo(3, -18); c.lineTo(14, 2);
+    c.moveTo(2, 10); c.lineTo(-6, 32); c.lineTo(-2, 50); c.lineTo(8, 56);       // on the ball
+    c.moveTo(2, 10); c.lineTo(14, 32); c.lineTo(20, 54); c.lineTo(34, 54); c.stroke();
+    c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.moveTo(46, 40); c.lineTo(62, 40); c.moveTo(42, 50); c.lineTo(64, 50); c.stroke();
+    c.beginPath(); c.moveTo(-40, 60); c.lineTo(66, 60); c.stroke();
   } else if (kind === 'nade') {
     c.beginPath(); c.arc(-14, -36, 10, 0, Math.PI * 2); c.fill();
     c.beginPath(); c.moveTo(-12, -24); c.lineTo(-8, 10);
@@ -55163,7 +55546,7 @@ const C3 = { k: 0, want: false, applied: false, yaw: 0, pitch: 0.35, dist: 2.77,
   bp: new THREE.Vector3(), bq: new THREE.Quaternion(), bpL: new THREE.Vector3(), bqL: new THREE.Quaternion(), lp: new THREE.Vector3(), lq: new THREE.Quaternion(),
   cp: new THREE.Vector3(), cq: new THREE.Quaternion(), ow: new THREE.Vector3(), oq: new THREE.Quaternion(), sc: new THREE.Vector3(), mi: new THREE.Matrix4(), m: new THREE.Matrix4(),
   t: new THREE.Vector3(), d: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), q: new THREE.Quaternion(), ray: null,
-  hide: [], hideN: 0, DUR: 0.35, dMin: 1.6, dMax: 4, pMin: -0.25, pMax: 1.15, wall: 0.2,
+  hide: [], hideN: 0, DUR: 0.35, dMin: 1.6, dMax: 4, pMin: -0.25, pMax: 1.15, wall: 0.2, body: 0.6,
   vr: { view: false, f: 0, applied: false, p: new THREE.Vector3(), q: new THREE.Quaternion(), rp: new THREE.Vector3(), rq: new THREE.Quaternion(), FADE: 0.15, dist: 2.5, side: 0.5 } };
 const C3_GRP = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR);   // walls, floors, ceilings, door leaves (never your own body, held guns or loose props)
 const C3_AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -55303,18 +55686,29 @@ function c3Clear(T, cp) {
   C3.d.subVectors(cp, T); const L = C3.d.length(); if (L < 1e-4) return;
   C3.d.multiplyScalar(1 / L);
   const t = c3Ray(T, C3.d, L + C3.wall);
-  if (t >= 0) cp.copy(T).addScaledVector(C3.d, Math.max(0.25, t - C3.wall));
+  if (t >= 0) cp.copy(T).addScaledVector(C3.d, Math.max(0.02, t - C3.wall));   // never past the wall (was at least 0.25 m: through a wall within 0.45 m)
   for (let k = 0; k < 2; k++) for (const a of C3_AX) {
     C3.t.set(a[0], a[1], a[2]);
     const s = c3Ray(cp, C3.t, C3.wall);
     if (s >= 0) cp.addScaledVector(C3.t, -(C3.wall - s));
   }
+  return cp.distanceTo(T);
+}
+// Third-person glitch fix: with a wall close behind, the old rule put the camera 0.25 m from the target and the wall probes
+// pushed it on toward the target, i.e. inside your soldier's torso: back faces culled, so the frame showed the room with no
+// body (while the swing to a clear side, rate-limited, was still under way). Now the camera never comes nearer than
+// C3.body to the target: a way that short snaps the orbit to the clearest side at once, raises the pitch if every side is
+// that short, and as a last resort the camera goes over the head looking down.
+function c3Over(T, cp) {
+  C3.t.set(0, 1, 0);
+  const up = c3Ray(T, C3.t, 1.1 + C3.wall), h = up < 0 ? 1.1 : Math.max(0.3, up - C3.wall);
+  cp.set(Math.sin(C3.yaw) * 0.18, h, Math.cos(C3.yaw) * 0.18).add(T);   // a little behind, so the look is never straight down
 }
 const C3_SWING = [0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, Math.PI];
 // Clear length from the target along orbit yaw y (at the current pitch), up to the zoom distance.
-function c3Free(y) {
-  const cp = Math.cos(C3.pitch);
-  C3.d.set(Math.sin(y) * cp, Math.sin(C3.pitch), Math.cos(y) * cp);
+function c3Free(y, p = C3.pitch) {
+  const cp = Math.cos(p);
+  C3.d.set(Math.sin(y) * cp, Math.sin(p), Math.cos(y) * cp);
   const t = c3Ray(C3.T, C3.d, C3.dist + C3.wall);
   return t < 0 ? C3.dist : Math.max(0, t - C3.wall);
 }
@@ -55345,15 +55739,17 @@ function emoCamApply(dt) {
   const def = S.R.def, hips = def && (def.key === 'backflip' || def.key === 'dying');
   (hips ? e.B.pelvis : e.B.chest).getWorldPosition(C3.t);
   if (!C3.Tok) { C3.T.copy(C3.t); C3.Tok = true; } else C3.T.lerp(C3.t, 1 - Math.exp(-(dt || 0) * 12));
-  if (want && c3Free(C3.yaw) < C3.dist * 0.55) {                  // a wall close behind: swing round to the clearest side
+  const f0 = c3Free(C3.yaw);
+  if (want && f0 < C3.dist * 0.55) {                              // a wall close behind: swing round to the clearest side
     let by = C3.yaw, bd = -1;
     for (const o of C3_SWING) { const y = C3.yaw + o, f = c3Free(y); if (f > bd + 0.05) { bd = f; by = y; } }
     const st = 3.2 * Math.min(Math.max(dt || 0, 0), 0.1), dy = by - C3.yaw;
-    C3.yaw += C3.k < 1 ? dy : clamp(dy, -st, st);                  // still easing out: straight there
+    C3.yaw += C3.k < 1 || f0 < C3.body ? dy : clamp(dy, -st, st);  // still easing out, or this way is inside your body: straight there
+    if (bd < C3.body) for (const p of [0.7, 0.95, C3.pMax]) { if (p > C3.pitch && c3Free(C3.yaw, p) >= C3.body) { C3.pitch = p; break; } }   // cornered: from higher up
   }
   const cp = Math.cos(C3.pitch);
   C3.cp.set(Math.sin(C3.yaw) * cp, Math.sin(C3.pitch), Math.cos(C3.yaw) * cp).multiplyScalar(C3.dist).add(C3.T);
-  c3Clear(C3.T, C3.cp);
+  if (c3Clear(C3.T, C3.cp) < C3.body) c3Over(C3.T, C3.cp);       // still too close: over your head, never inside you
   C3.m.lookAt(C3.cp, C3.T, C3.up); C3.cq.setFromRotationMatrix(C3.m);
   const u = C3.k, k = u * u * u * (u * (u * 6 - 15) + 10);       // smootherstep
   C3.ow.lerpVectors(C3.bp, C3.cp, k); C3.oq.slerpQuaternions(C3.bq, C3.cq, k);
@@ -55384,10 +55780,19 @@ function emoVrPlace() {
   headWorld(C3.cp); camera.getWorldDirection(C3.d); C3.d.y = 0;
   if (C3.d.lengthSq() < 1e-6) C3.d.set(0, 0, -1); C3.d.normalize();
   C3.t.set(-C3.d.z, 0, C3.d.x);                                    // your right
-  C3.ow.copy(C3.d).multiplyScalar(V.dist).addScaledVector(C3.t, V.side);
-  const L = C3.ow.length(); C3.ow.multiplyScalar(1 / L);
-  const tHit = c3Ray(C3.cp, C3.ow, L + 0.3);
-  const d = tHit >= 0 ? Math.max(0.9, tHit - 0.3) : L;
+  // the way with the most room: front right, front left, back right, back left (was front right only, pushed out to at
+  // least 0.9 m even through a wall nearer than that)
+  let bd = -1, bf = 1, bs = 1, L = 1;
+  for (const [fs, ss] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    C3.ow.copy(C3.d).multiplyScalar(V.dist * fs).addScaledVector(C3.t, V.side * ss);
+    L = C3.ow.length(); C3.ow.multiplyScalar(1 / L);
+    const th = c3Ray(C3.cp, C3.ow, L + 0.3), d = th >= 0 ? th - 0.3 : L;
+    if (d > bd + 0.2) { bd = d; bf = fs; bs = ss; }
+    if (d >= L) break;
+  }
+  C3.ow.copy(C3.d).multiplyScalar(V.dist * bf).addScaledVector(C3.t, V.side * bs);
+  L = C3.ow.length(); C3.ow.multiplyScalar(1 / L);
+  const d = clamp(bd, Math.min(C3.body, Math.max(0.05, bd)), L);
   C3.T.copy(C3.cp).addScaledVector(C3.ow, d);                     // the viewpoint (world)
   e.B.chest.getWorldPosition(C3.t);
   const yawFace = Math.atan2(-(C3.t.x - C3.T.x), -(C3.t.z - C3.T.z));
