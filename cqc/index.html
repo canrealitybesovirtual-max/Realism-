@@ -15127,7 +15127,7 @@ function stepPhysics(dt) {
       if (p.spawnRoom && p.spawnRoom.active && !p.debris) resetProp(p); else removeProp(p);   // debris has no home: it goes
       continue;
     }
-    if (p.item && !p.holders.length) dropKnock(p, (t.y - p.root.position.y) / dt, now, t, r, rc);   // step 87: dropped kit lands with a sound
+    if (p.item && !p.holders.length) dropKnock(p, (t.y - p.root.position.y) / dt, now, t, r, rc, dt);   // step 87: dropped kit lands with a sound
     p.root.position.set(t.x, t.y, t.z);
     p.root.quaternion.set(r.x, r.y, r.z, r.w);
     // Held prop hit something: the solver changed the velocity we asked for. Buzz the hand.
@@ -40236,22 +40236,55 @@ const DROP_SND = { minV: 1.4, full: 4.5, gap: 0.05, each: 0.15, off: 0.12, at: 0
   rec: null, dur: 0, ls: 0, o: { lp: 0, dur: 0, ls: 0, verb: 0.22 } };   // step 101: rec = a recorded magazine landing
 function dropPlay() {
   const S = DROP_SND;
-  if (S.rec) { const o = S.o; o.lp = S.lp; o.dur = S.dur; o.ls = S.ls; hrecPlay(S.rec, S.g, S.rate, o); }
+  if (S.rec) { const o = S.o; o.lp = S.lp; o.dur = S.dur; o.ls = S.ls; hrecPlay(S.rec, S.g, S.rate, o); if (S.list2) playBaked(S.list2, S.bg, 0.22, S.brate, 0, S.blp); }
   else if (S.list) playBaked(S.list, S.g, 0.22, S.rate, 0, S.lp);
   else if (audio.noise) KNOCK_SND.can(audio.ctx.currentTime + 0.003, S.rate, S.g, 1 / S.rate);
 }
-function dropKnock(p, vy, now, pos, q, rc) {
+function dropKnock(p, vy, now, pos, q, rc, dt) {
+  if (DROP2.on && dt > 0) { dropKnock2(p, now, pos, q, rc, dt); return; }
   if (now - (p.dkT || 0) > 0.1 || vy > 12 || vy < -12) p.vyPk = 0;   // held, asleep or teleported (resetProp): start over
   p.dkT = now;
   if (vy > 12 || vy < -12) return;
   const pk = p.vyPk || 0, S = DROP_SND;
   if (vy < pk) { p.vyPk = vy; return; }                         // still speeding up
   if (pk > -S.minV || vy < pk * 0.35) return;                  // a slow fall, or still going down
-  p.vyPk = 0;
+  dropLand(p, -pk, now, pos, q, rc, false);
+}
+// Drop landings (?dropland=off = the step 87 detection, magazines only on the recording). The step 87 test followed the body
+// origin's step and reset whenever two calls were over 0.1 s apart, so on slow frames (Xbox, Quest stalls) nothing ever
+// landed, and a long gun hitting end-first or a spinning gun read its origin, not the end that hit. Now: the contact's own
+// change to the body's centre velocity (Rapier linvel against free fall) plus how fast its lowest point came down the frame
+// before. A hit over minHit = the landing (every gun on the user's metal-on-floor take, magDrop, pitched by mass, with the
+// synth body under it); a smaller one (clat) = a short quiet clatter for each bounce after.
+const DROP2 = { on: !/[?&]dropland=off\b/.test(QS), minHit: 1.1, clat: 0.5, jump: 0.4, reset: 0.3, eachSec: 0.08, clatG: 0.38, clatDur: 0.2, gunG: 0.8, bodyG: 0.35 };
+function dropLowY(p, pos, q) {
+  const h = p.half, c = p.center, ry0 = 2 * (q.x * q.y + q.w * q.z), ry1 = 1 - 2 * (q.x * q.x + q.z * q.z), ry2 = 2 * (q.y * q.z - q.w * q.x);
+  return pos.y + ry0 * c.x + ry1 * c.y + ry2 * c.z - (Math.abs(ry0) * h.x + Math.abs(ry1) * h.y + Math.abs(ry2) * h.z);
+}
+function dropKnock2(p, now, pos, q, rc, dt) {
+  const v = p.body.linvel(), low = dropLowY(p, pos, q);
+  const fresh = p.dkV === undefined || now - (p.dkT || 0) > DROP2.reset;   // held, asleep or a stall: start over
+  const pv = p.dkV, pl = p.dkLow, plv = p.dkLV || 0;
+  p.dkT = now; p.dkV = v.y; p.dkLow = low;
+  if (fresh) { p.dkLV = 0; return; }
+  const lv = (low - pl) / dt;
+  p.dkLV = Math.abs(lv) > 30 ? 0 : lv;                           // a teleport (resetProp) is not a fall
+  if (Math.abs(lv) > 30) return;
+  const gs = p.body.gravityScale ? p.body.gravityScale() : 1;
+  const jump = v.y - (pv - 9.81 * gs * dt);                     // what the contact added to its centre's upward speed
+  if (jump < DROP2.jump) return;
+  const hit = Math.min(14, Math.max(jump, -plv));
+  if (hit < DROP2.clat) return;
+  const sec = hit < DROP2.minHit || now - (p.dkLand || -9) < 0.25;
+  if (!sec) p.dkLand = now;
+  dropLand(p, hit, now, pos, q, rc, sec);
+}
+function dropLand(p, sp, now, pos, q, rc, sec) {
+  const S = DROP_SND;
   const it = p.item, kd = it.kind, F = foleyK('magLand');
   if (!F || kd === 'wear' || !audio.ctx || audio.ctx.state !== 'running') return;
   const t = audio.ctx.currentTime;
-  if (t - S.at < S.gap || t - (p.dkAt || 0) < S.each) return;
+  if (t - S.at < S.gap || t - (p.dkAt || 0) < (sec ? DROP2.eachSec : S.each)) return;
   const A = CONFIG.polish.audio;
   S.p.set(pos.x, pos.y, pos.z);
   if (headWorld(_p10.h).distanceToSquared(S.p) > A.impactRange * A.impactRange) return;
@@ -40259,16 +40292,29 @@ function dropKnock(p, vy, now, pos, q, rc) {
   const h = p.half, c = p.center, ry0 = 2 * (q.x * q.y + q.w * q.z), ry1 = 1 - 2 * (q.x * q.x + q.z * q.z), ry2 = 2 * (q.y * q.z - q.w * q.x);
   const low = pos.y + ry0 * c.x + ry1 * c.y + ry2 * c.z - (Math.abs(ry0) * h.x + Math.abs(ry1) * h.y + Math.abs(ry2) * h.z);
   const off = low - (rc.origin.y + roomFloorAt(rc, rLX(rc, pos.x), rLZ(rc, pos.z), low - rc.origin.y)) > S.off;
-  const v = clamp(-pk / S.full, 0.15, 1);
+  const v = sec ? clamp(sp / 2.2, 0.1, 0.5) : clamp(sp / S.full, 0.15, 1);
+  if (kd === 'nade' && sec) return;                             // a grenade's bounces: nadeLand's roll covers them
   if (kd === 'nade' && nadeLand(p, v, off, F)) { S.at = p.dkAt = t; return; }   // step 115: steel over the surface under it
-  S.rec = null;
-  const mr = kd === 'mag' && hrecOn() ? hrecAny('mdrop', MDROP_REC) : null;
+  S.rec = null; S.list2 = null;
+  const mr = (kd === 'mag' || (kd === 'gun' && DROP2.on)) && hrecOn() ? hrecAny('mdrop', MDROP_REC) : null;
+  if (mr && kd === 'gun') {                                     // the user's metal-on-floor take for every gun: heavier = lower, louder, + a body
+    const m = p.mass || (it.def && it.def.mass) || 2, H = CONFIG.polish.audio.handlingRec;
+    S.rec = HREC.bufs[mr];
+    S.g = DROP2.gunG * GUN_MIX.handling * HREC.norm[mr] * F * Math.pow(v, 0.9) * clamp(0.8 + 0.08 * m, 0.85, 1.3) * (off ? 1 : 0.85) * (sec ? DROP2.clatG : 1) * (H.gain ?? 1);
+    S.rate = clamp(1.15 - 0.09 * m, 0.7, 1) * (0.94 + Math.random() * 0.12) * (sec ? 1.08 : 1);
+    S.dur = sec ? DROP2.clatDur : 0; S.lp = off ? 12000 : 4500; S.ls = (off ? 0 : 2) + (m > 2 ? 2 : 0);
+    const B = !sec && baked.gunLand, lv = audio.foleyLevel && audio.foleyLevel.gunLand;
+    if (B && B.length && lv) { S.list2 = B; S.bg = lv * GUN_MIX.handling * F * v * DROP2.bodyG * (off ? 0.6 : 1); S.brate = S.rate * 0.9; S.blp = GUN_MIX.tone * (off ? 0.55 : 0.8); }
+    S.at = p.dkAt = t;
+    soundAt(S.p, dropPlay);
+    return;
+  }
   if (mr) {                                                     // step 101: the M4 magazine on a table; on the floor quieter and darker
     const pm = MAG_DEFS[it.type] && MAG_DEFS[it.type].hold === 'pistol', H = CONFIG.polish.audio.handlingRec;
     S.rec = HREC.bufs[mr];
-    S.g = 0.55 * GUN_MIX.handling * HREC.norm[mr] * F * Math.pow(v, 0.9) * (off ? 1 : 0.7) * (pm ? 0.8 : 1) * (H.gain ?? 1);
+    S.g = 0.55 * GUN_MIX.handling * HREC.norm[mr] * F * Math.pow(v, 0.9) * (off ? 1 : 0.7) * (sec ? DROP2.clatG : 1) * (pm ? 0.8 : 1) * (H.gain ?? 1);
     S.rate = (pm ? 1.15 : 1) * (0.95 + Math.random() * 0.1);
-    S.dur = pm ? 0.3 : 0; S.lp = off ? 12000 : 3600; S.ls = off ? 0 : 2;
+    S.dur = sec ? DROP2.clatDur : pm ? 0.3 : 0; S.lp = off ? 12000 : 3600; S.ls = off ? 0 : 2;
     S.at = p.dkAt = t;
     soundAt(S.p, dropPlay);
     return;
@@ -40278,13 +40324,13 @@ function dropKnock(p, vy, now, pos, q, rc) {
     const m = p.mass || 0.3;
     S.list = null;
     S.rate = clamp(Math.cbrt(2.5 / m), 0.6, 1.6) * (0.94 + Math.random() * 0.12) * (off ? 0.85 : 1);
-    S.g = Math.pow(v, 0.8) * clamp(0.35 + 0.25 * Math.cbrt(m)) * F * (off ? 0.6 : 1);
+    S.g = Math.pow(v, 0.8) * clamp(0.35 + 0.25 * Math.cbrt(m)) * F * (off ? 0.6 : 1) * (sec ? 0.4 : 1);
   } else {
     const name = kd === 'shell' ? 'thud' : (kd === 'gun' || kd === 'nade') ? 'gunLand' : 'magLand', B = baked[name];
     const lv = name === 'thud' ? 0.45 : audio.foleyLevel && audio.foleyLevel[name];
     if (!B || !B.length || !lv) return;
     S.list = B;
-    S.g = lv * GUN_MIX.handling * F * v * (off ? 0.6 : 1);
+    S.g = lv * GUN_MIX.handling * F * v * (off ? 0.6 : 1) * (sec ? 0.4 : 1);
     S.rate = (kd === 'nade' ? 1.25 : kd === 'gun' && it.def && it.def.cls === 'pistol' ? 1.15 : 1) * (0.94 + Math.random() * 0.12) * (off ? 0.9 : 1);
     S.lp = name === 'thud' ? 0 : GUN_MIX.tone * (off ? 0.55 : 0.85);
   }
