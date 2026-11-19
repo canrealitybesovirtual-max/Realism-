@@ -8972,6 +8972,7 @@ function activateRoom(room) {
   termRoomActivated(room);             // step 11: the terminal screen, its collider and walk box
   try { wsRoomActivated(room); } catch (e) { console.warn('gunsmith workshop computer not placed', e); }
   try { benchLampRoom(room); } catch (e) { console.warn('bench lamp not placed', e); }   // the lamp over the gunsmith bench
+  try { sbRoom(room); } catch (e) { console.warn('scoreboard not placed', e); }   // SCOREBOARD: the safe room's whiteboard
   nightApplyRoom(room);                // step 11: tubes off in combat rooms at night
   rebuildWalk();
 }
@@ -12400,6 +12401,7 @@ function netRx(m) {
   else if (m.t === 'ebq') { if (NET.role === 'host') netBodyReqRx(m); }
   else if (m.t === 'ebd') { if (NET.role === 'join') netBodyRx(m); }
   else if (m.t === 'vsend') { if (NET.role === 'join') netVsEndRx(m); }
+  else if (m.t === 'sbd') sbRx(m);                                // SCOREBOARD: his numbers (co-op)
   else if (m.t === 'en') { if (NET.role === 'join') netEnRx(m); }
   else if (m.t === 'eh') { if (NET.role === 'host') netEhRx(m); }
   else if (m.t === 'es') { if (NET.role === 'join') netEsRx(m); }
@@ -12784,6 +12786,7 @@ function netEdRx(m) {
   if (m.dn) {                                                       // down alive on the host: the copy goes down with him (his bones, 'en'), shootable
     if (e.pupDnRx) return;
     e.pupDnRx = true; e.pupMine = m.by === 'join'; e.killPart = m.kp || null; e.pupSt = 1;
+    if (e.pupMine) sbS().me.dn++;                                   // SCOREBOARD
     enemyDropGun(e, d);
     try { voxGrunt(e, 0.85, true); loopEnemyDied(e); } catch (er) { /* score */ }   // the kill counts now (his), as it does on the host
     return;
@@ -13163,6 +13166,7 @@ function netAvGunTick(e, s) {
   if (s.gt == null) return;                                         // an older build on the other side: the loadout look
   NET.avLs = s.ls | 0; NET.avIr = s.ir | 0;
   if (!s.gt) return;
+  sbS().hisGt = s.gt;                                             // SCOREBOARD: his gun
   let key = s.gb ? s.gb : 'ty:' + s.gt, B = s.gb ? NET.builds.get(s.gb) : null;
   if (s.gb && !B) { key = 'ty:' + s.gt; netGbAsk(s.gb); }           // not here yet: his gun as it comes from the factory meanwhile
   const D = netDisp(key, s.gt, B); if (!D) return;
@@ -13566,6 +13570,187 @@ function netVsEndRx(m) {
 }
 if (/[?&]dev\b/.test(QS)) Object.assign(window.__cqcNet, { netNadeTx, netNadeRx, netNadeBoomRx, netDoorTx, netDoorRx, netPoseOf, netPupBones, netBodyRx, netBodyReqRx, netVsEndRx, netVsClock, VS_RULES, ENEMY: () => ENEMY, stream: () => stream, doors: () => doors, props: () => props,
   createNade, nadeDetonate, nadeSpoon, dropItem, surrStart, surrDetain, surrDetainDesk, enemyDown, enemyShot, lootDesk, ejectMag, enadeSpawn, netLootTx, operateDoor, rWX, rWZ, rLX, rLZ, nade: () => NADE, drop: () => DROP, hitbox: () => HITBOX, wnow: () => wnow() });
+/* ============================================================================
+ *  SAFE ROOM SCOREBOARD (?board=off): a wall-mounted whiteboard on the safe room's right wall (between the half wall
+ *  and the front corner), written in marker. Single player: this run and the best run. Co-op: you and him side by side
+ *  ('sbd': each side's few numbers, reliable, sent only when they change, at most once a second). Versus: the match
+ *  score, clock, round, last kills (from VS, no new traffic). One canvas for every board (they all show your view),
+ *  redrawn only when a value changes and you stand in a safe room. State hangs on the hoisted sbS (no TDZ at load).
+ * ========================================================================== */
+function sbS() {
+  return sbS.o || (sbS.o = {
+    on: !/[?&]board=off\b/.test(QS), W: 1.2, H: 0.9, y: 1.56, z: 1.75,      // m: board size, centre height, room-local z on the right wall
+    cv: null, ctx: null, base: null, tex: null, mat: null, kit: null, boards: new Set(),
+    me: { k: 0, h: 0, dn: 0, dt: 0, de: 0, p: 0 }, him: null, sess: null, txSig: '', txAt: -99, wasLive: false, wasDead: false,
+    myGt: '', hisGt: '', vsB: -1, round: 0, vs0: [0, 0], log: [], sig: '', acc: 0, dirty: true
+  });
+}
+function sbGunName(t) { return (t && ((WS_GUNS[t] && WS_GUNS[t].name) || (WEAPON_DEFS[t] && WEAPON_DEFS[t].label))) || 'a gun'; }
+function sbKit() {
+  const S = sbS();
+  if (S.kit) return S.kit;
+  const { W, H } = S, cv = document.createElement('canvas'); cv.width = 1024; cv.height = 768;
+  S.cv = cv; S.ctx = cv.getContext('2d');
+  // The board as it is under the writing: off-white enamel, a faint sheen gradient, ghosts of old wipes (made once).
+  const b = document.createElement('canvas'); b.width = 1024; b.height = 768; const c = b.getContext('2d'), R = mulberry32(0x5B0A2D);
+  const gr = c.createLinearGradient(0, 0, 1024, 768); gr.addColorStop(0, '#f6f7f4'); gr.addColorStop(0.55, '#eeefec'); gr.addColorStop(1, '#f3f4f1');
+  c.fillStyle = gr; c.fillRect(0, 0, 1024, 768);
+  c.lineCap = 'round';
+  for (let i = 0; i < 9; i++) {                                     // wipe arcs: the eraser's grey film
+    c.strokeStyle = `rgba(110,118,130,${0.025 + R() * 0.03})`; c.lineWidth = 40 + R() * 70;
+    c.beginPath(); const x = R() * 1024, y = R() * 768; c.moveTo(x, y); c.quadraticCurveTo(x + 150 - R() * 300, y + 120 - R() * 240, x + 300 - R() * 600, y + 80 - R() * 160); c.stroke();
+  }
+  c.font = '64px "Segoe Print","Bradley Hand","Marker Felt","Chalkboard SE","Comic Sans MS",cursive';
+  const old = ['ROOM 4', 'IIII II', 'B → A', '40 rds', 'stack L', '→ exit', 'x3', 'ROOM 2 ✓'];
+  for (let i = 0; i < 7; i++) {                                     // old writing never quite wiped off
+    c.save(); c.translate(R() * 900 + 40, R() * 700 + 50); c.rotate((R() - 0.5) * 0.3);
+    c.fillStyle = `rgba(${R() < 0.5 ? '40,70,150' : '60,60,64'},${0.035 + R() * 0.04})`; c.fillText(old[i], 0, 0); c.restore();
+  }
+  S.base = b;
+  const tex = S.tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  S.mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.22, metalness: 0, envMapIntensity: 0.6 });   // enamelled steel: a slight gloss
+  const alu = new THREE.MeshStandardMaterial({ color: 0xb8bcc1, roughness: 0.34, metalness: 1 });
+  const abs = new THREE.MeshStandardMaterial({ color: 0x5a5e63, roughness: 0.6 });
+  const white = new THREE.MeshStandardMaterial({ color: 0xe9eae6, roughness: 0.45 });
+  const felt = new THREE.MeshStandardMaterial({ color: 0x1b1c1e, roughness: 0.95 });
+  const caps = [0x1f4fa8, 0xb8262b, 0x1d2024].map((c2) => new THREE.MeshStandardMaterial({ color: c2, roughness: 0.4 }));
+  const bx = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
+  const fw = 0.022, fd = 0.02, hw = W / 2, hh = H / 2;              // frame profile: 22 x 20 mm, the board face 12 mm off the wall
+  const frame = mergeGeometries([
+    bx(W + 2 * fw, fw, fd, 0, hh + fw / 2, fd / 2), bx(W + 2 * fw, fw, fd, 0, -hh - fw / 2, fd / 2),
+    bx(fw, H, fd, -hw - fw / 2, 0, fd / 2), bx(fw, H, fd, hw + fw / 2, 0, fd / 2),
+    bx(W * 0.82, 0.004, 0.06, 0, -hh - fw - 0.002, 0.03), bx(W * 0.82, 0.016, 0.003, 0, -hh - fw + 0.004, 0.0585)   // marker tray: shelf, front lip
+  ]);
+  const corners = mergeGeometries([-1, 1].flatMap((sx) => [-1, 1].map((sy) => bx(0.034, 0.034, 0.024, sx * (hw + fw / 2), sy * (hh + fw / 2), 0.012))));
+  const back = bx(W, H, 0.01, 0, 0, 0.006);
+  const face = new THREE.PlaneGeometry(W, H).translate(0, 0, 0.0115);
+  const mk = (x) => new THREE.CylinderGeometry(0.0095, 0.0095, 0.115, 12).rotateZ(Math.PI / 2).translate(x, -hh - fw + 0.0095, 0.03);
+  const cap = (x) => new THREE.CylinderGeometry(0.0102, 0.0102, 0.034, 12).rotateZ(Math.PI / 2).translate(x, -hh - fw + 0.0095, 0.03);
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(face, S.mat), new THREE.Mesh(back, white), new THREE.Mesh(frame, alu), new THREE.Mesh(corners, abs));
+  const mx = [-0.36, -0.22, 0.27];
+  g.add(new THREE.Mesh(mergeGeometries(mx.map((x) => mk(x))), white));
+  mx.forEach((x, i) => g.add(new THREE.Mesh(cap(x + 0.07), caps[i])));
+  g.add(new THREE.Mesh(bx(0.13, 0.024, 0.048, 0.05, -hh - fw + 0.012, 0.03), felt));      // the eraser: felt pad
+  g.add(new THREE.Mesh(bx(0.13, 0.012, 0.048, 0.05, -hh - fw + 0.03, 0.03), abs));        // and its grey back
+  g.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = true; } });
+  return (S.kit = g);
+}
+// activateRoom: a safe room gets its own board (one per room, versus: each side's); a turned room is right through room.group.
+function sbRoom(room) {
+  const S = sbS();
+  if (!S.on || !room || room.kind !== 'safe' || room.sbBoard) return;
+  const g = sbKit().clone();                                        // shared geometry, materials and the one canvas
+  g.position.set(room.w / 2, S.y, S.z); g.rotation.y = -Math.PI / 2;   // its +z (out of the board) is the room's -x
+  room.group.add(g); g.updateMatrixWorld(true);
+  room.sbBoard = g; S.boards.add(room); S.dirty = true;
+}
+// Co-op: his numbers ('sbd').
+function sbRx(m) { sbS().him = { k: m.k | 0, h: m.h | 0, dn: m.dn | 0, dt: m.dt | 0, de: m.de | 0, p: m.p | 0 }; }
+function sbMode() { try { if (netLive() && NET.mode === 'vs' && VS.on) return 'vs'; if (netCoop()) return 'coop'; } catch (e) { /* network code not up yet */ } return 'solo'; }
+function sbTick(dt) {
+  const S = sbS();
+  if (!S.on) return;
+  if (playerState.dead && !S.wasDead) S.me.de++;
+  S.wasDead = playerState.dead;
+  S.acc += dt; if (S.acc < 0.5) return; S.acc = 0;
+  for (const r of S.boards) if (!r.active || r.removing) { S.boards.delete(r); r.sbBoard = null; }
+  const mode = sbMode(), now = performance.now() / 1000;
+  if (mode === 'coop') {
+    if (NET.sess !== S.sess) { S.sess = NET.sess; S.me.k = S.me.h = S.me.dn = S.me.dt = S.me.de = S.me.p = 0; S.him = null; S.txSig = ''; }   // a new session: counts start here
+    const M = S.me, sig = `${M.k},${M.h},${M.dn},${M.dt},${M.de},${M.p}`;
+    if (!S.wasLive) S.txSig = '';                                   // (re)connected: he needs ours once
+    if (sig !== S.txSig && now - S.txAt >= 1) { S.txSig = sig; S.txAt = now; netSendRel({ t: 'sbd', k: M.k, h: M.h, dn: M.dn, dt: M.dt, de: M.de, p: M.p }); }
+  }
+  S.wasLive = mode === 'coop';
+  if (mode === 'vs') {
+    if (VS.B !== S.vsB) { S.vsB = VS.B; S.round++; S.vs0[0] = S.vs0[1] = 0; S.log.length = 0; }
+    const a = VS.score[0] | 0, b = VS.score[1] | 0;
+    for (; S.vs0[0] < a; S.vs0[0]++) S.log.unshift(`you got him with the ${sbGunName(S.myGt)}`);
+    for (; S.vs0[1] < b; S.vs0[1]++) S.log.unshift(`he got you with the ${sbGunName(S.hisGt)}`);
+    S.vs0[0] = a; S.vs0[1] = b; if (S.log.length > 4) S.log.length = 4;
+  }
+  const cur = stream.current;
+  if (!cur || !cur.sbBoard) return;                                 // drawn when you are in a safe room with a board
+  const sig = sbSig(mode);
+  if (sig === S.sig && !S.dirty) return;
+  S.sig = sig; S.dirty = false;
+  sbDraw(mode);
+  S.tex.needsUpdate = true;
+}
+function sbVsLine() {
+  const now = performance.now();
+  if (VS.over) { const a = VS.score[0], b = VS.score[1]; return a > b ? 'MATCH OVER - you win!' : a < b ? 'MATCH OVER - he wins' : 'MATCH OVER - draw'; }
+  if (!VS.goAt) return 'waiting for him...';
+  if (VS.lock) return `doors open in ${Math.max(0, Math.ceil((VS.goAt - now) / 1000))} s`;
+  const left = Math.max(0, Math.ceil(((VS.endAt || VS.goAt + VS_RULES.time * 1000) - now) / 1000));
+  return `time left ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+}
+function sbSig(mode) {
+  const S = sbS(), r = loop.run;
+  if (mode === 'vs') return `v${VS.score[0]}:${VS.score[1]}|${S.round}|${sbVsLine()}|${S.log.join('/')}`;
+  if (mode === 'coop') { const M = S.me, H = S.him; return `c${M.k},${M.h},${M.dn},${M.dt},${M.de},${M.p}|${H ? `${H.k},${H.h},${H.dn},${H.dt},${H.de},${H.p}` : '-'}`; }
+  const b = loop.best;
+  return `s${r.n}|${r.cleared},${r.kills},${r.heads},${r.shots},${r.hits},${r.banked},${r.pending}|${Math.floor((performance.now() / 1000 - r.t0) / 60)}|${b ? `${b.score},${b.rooms},${b.kills}` : '-'}`;
+}
+// Marker handwriting: word by word, each a little off the line and turned (seeded from the text, so a redraw keeps it).
+function sbHand(t, x, y, px, col, align = 'left') {
+  const c = sbS().ctx;
+  let h = 7; for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0;
+  const R = mulberry32(h ^ (x * 7 + y * 13));
+  c.font = `${px}px "Segoe Print","Bradley Hand","Marker Felt","Chalkboard SE","Comic Sans MS",cursive`;
+  c.fillStyle = col; c.textBaseline = 'alphabetic';
+  const words = t.split(' '), sp = px * 0.32;
+  let w = 0; for (const s of words) w += c.measureText(s).width + sp; w -= sp;
+  let cx = align === 'right' ? x - w : align === 'center' ? x - w / 2 : x;
+  for (const s of words) {
+    const ww = c.measureText(s).width;
+    c.save(); c.translate(cx, y + (R() - 0.5) * px * 0.08); c.rotate((R() - 0.5) * 0.05);
+    c.globalAlpha = 0.86 + R() * 0.12; c.fillText(s, 0, 0);
+    c.globalAlpha = 0.35; c.fillText(s, 0.8, 0.5);                  // the felt tip's second pass: denser ink at the strokes
+    c.restore();
+    cx += ww + sp;
+  }
+  c.globalAlpha = 1;
+}
+function sbLine(x0, y0, x1, y1, col, w = 5) {
+  const c = sbS().ctx; c.strokeStyle = col; c.lineWidth = w; c.lineCap = 'round';
+  c.beginPath(); c.moveTo(x0, y0); c.quadraticCurveTo((x0 + x1) / 2, (y0 + y1) / 2 + 3, x1, y1); c.stroke();
+}
+function sbDraw(mode) {
+  const S = sbS(), c = S.ctx, K = '#1d2024', B = '#1f4fa8', Rd = '#b8262b', G = '#1f7a3d';
+  c.drawImage(S.base, 0, 0);
+  if (mode === 'vs') {
+    sbHand(`VERSUS - round ${S.round}`, 60, 90, 60, Rd); sbLine(60, 108, 560, 104, Rd);
+    sbHand('YOU', 290, 220, 58, B, 'center'); sbHand('HIM', 734, 220, 58, K, 'center');
+    sbHand(`${VS.score[0]}`, 290, 380, 170, B, 'center'); sbHand(':', 512, 370, 150, K, 'center'); sbHand(`${VS.score[1]}`, 734, 380, 170, K, 'center');
+    sbHand(`first to ${VS_RULES.kills}  ·  ${sbVsLine()}`, 512, 470, 46, G, 'center');
+    S.log.forEach((t, i) => sbHand(`- ${t}`, 80, 560 + i * 54, 40, i ? K : Rd));
+    return;
+  }
+  if (mode === 'coop') {
+    const M = S.me, H = S.him, v = (o, k) => (o ? String(o[k]) : '-');
+    sbHand('TOGETHER', 60, 90, 60, Rd); sbLine(60, 108, 400, 104, Rd);
+    sbHand('YOU', 640, 160, 50, B, 'center'); sbHand('HIM', 880, 160, 50, K, 'center');
+    const rows = [['kills', 'k'], ['head shots', 'h'], ['downed', 'dn'], ['detained', 'dt'], ['deaths', 'de'], ['points', 'p']];
+    rows.forEach(([lab, k], i) => {
+      const y = 240 + i * 66;
+      sbHand(lab, 80, y, 46, K); sbHand(v(M, k), 640, y, 48, B, 'center'); sbHand(v(H, k), 880, y, 48, K, 'center');
+    });
+    sbLine(520, 135, 524, 640, K, 3); sbLine(760, 135, 764, 640, K, 3);
+    const tk = M.k + (H ? H.k : 0), tp = M.p + (H ? H.p : 0);
+    sbHand(`TEAM: ${tk} kills · ${tp} pts`, 80, 710, 52, G);
+    return;
+  }
+  const r = loop.run, b = loop.best, acc = r.shots ? Math.round(r.hits / r.shots * 100) : 0, min = Math.floor((performance.now() / 1000 - r.t0) / 60);
+  sbHand(`THIS RUN (#${r.n})`, 60, 90, 60, Rd); sbLine(60, 108, 520, 104, Rd);
+  const rows = [['rooms cleared', `${r.cleared}`], ['kills', `${r.kills}  (${r.heads} head)`], ['accuracy', `${acc} %`],
+    ['banked', r.pending ? `${r.banked}  +${r.pending}?` : `${r.banked}`], ['time', `${min} min`]];
+  rows.forEach(([lab, val], i) => { const y = 200 + i * 74; sbHand(lab, 80, y, 48, K); sbHand(val, 600, y, 52, B); });
+  sbHand('BEST RUN', 80, 610, 50, G); sbLine(80, 624, 330, 620, G, 4);
+  sbHand(b ? `${b.score} pts · ${b.rooms} rooms · ${b.kills} kills` : 'none yet', 80, 690, 48, G);
+}
 function setExposure(v) { renderer.toneMappingExposure = clamp(v, 0.3, 2.5); ui.exp.textContent = renderer.toneMappingExposure.toFixed(2); }
 
 /* ============================================================================
@@ -20172,6 +20357,7 @@ function muzzleBlast(o, fd, fx, g, now) {
 }
 function fireGun(g, now) {
   emo3Shot();                                                     // EMOTES 3p: a shot ends the emote, first person at once
+  sbS().myGt = g.type;                                            // SCOREBOARD: the gun of your last shot
   const d = g.def, root = g.prop.root;
   root.updateMatrixWorld(true);
   root.getWorldQuaternion(_wq);
@@ -31600,6 +31786,7 @@ const downArm = (B, s) => ({ mode: 'hang', up: B['upperArm' + s], fore: B['foreA
 function enemyDown(e, h, dir, P) {
   const now = wnow(), B = e.B, f = e.room.f || 1;
   netEnDieTx(e, h.seg, dir, P, 1, true);                         // co-op host: down alive: the joiner's copy goes down and crawls with him
+  if (!NET.ehRx) sbS().me.dn++;                                   // SCOREBOARD: yours (the joiner's rounds count on his side)
   e.dead = true; e.state = 'dead'; e.downAt = now;
   e.vel.set(0, 0); e.speed = 0; e.aim = 0; e.reloadT = 0;
   enemyOut(e);
@@ -32550,6 +32737,7 @@ function surrDetain(e, hand) {
   const S = e.surr, Q = SURR.C.detain, r = loop.run;
   if (e.puppet) { e.pupSt = 3; netSendRel({ t: 'edet', i: e.puppet }); } else { S.det = true; S.kneel = true; S.detK = 0; }   // co-op joiner: the host ties him (his pose comes back); the points are yours
   SURR.stat.det++;
+  sbS().me.dt++;                                                  // SCOREBOARD
   const pts = Math.round(Q.pts * r.mult * MENU_FX.scoreK);
   r.pending += pts;
   walletEarn(Q.pay);
@@ -32962,6 +33150,7 @@ function loopEnemyDied(e) {
   if (!(e.puppet && !e.pupMine) && !e.netKill) {
     r.pending += Math.round((S.kill + (head ? S.head : 0)) * r.mult * MENU_FX.scoreK);   // step 11: mode / difficulty
     r.kills++; if (head) r.heads++;
+    { const B = sbS().me; B.k++; if (head) B.h++; }               // SCOREBOARD
     walletEarn(CONFIG.workshop.killPay);
     xpAdd(LEVEL.gain.kill + (head ? LEVEL.gain.head : 0));   // levels                // $ per kill, straight to the gunsmith wallet
   }
@@ -33009,6 +33198,7 @@ function loopEnterRoom(room) {
     if (!r.pending && r.mult === 1) return;
     const got = r.pending, m = r.mult;
     r.banked += r.pending; r.pending = 0; r.mult = 1;
+    sbS().me.p += got;                                            // SCOREBOARD
     xpAdd(got * LEVEL.gain.bank);                 // levels: getting out alive pays
     walletEarn(got);                              // gunsmith wallet: 1 banked point = $1 (records and scores unchanged)
     loopSaveBest();
@@ -33041,6 +33231,7 @@ function loopPlayerDown() {
 }
 function loopUpdate(dt) {
   loop.stress = Math.max(0, loop.stress - CONFIG.loop.stressDecay * dt);
+  try { sbTick(dt); } catch (e) { /* scoreboard */ }                // SCOREBOARD
 }
 function loopCue(freqs) {                          // a quiet two-note tick: room clear, points banked
   if (!CONFIG.loop.clearCue || !audio.ctx || audio.ctx.state !== 'running') return;
