@@ -1,8 +1,6 @@
-# Realism — the apartment hub (world/), CQC (cqc/), Interstate (interstate/)
+# Realism — CQC (cqc/)
 
-The Studio office is gone (Nov 8): root index.html redirects to world/index.html, the apartment. Sections below about the office, its bundle and add-ons are history.
-
-Read `docs/ROADMAP.md` first ("Read this first"). Work one phase at a time; wait for user confirmation between phases.
+Only the CQC game is left. Root index.html redirects to cqc/index.html. The office (Nov 8), the apartment / world/ (Nov 9) and Interstate (Nov 19) were deleted; sections below about them are history.
 
 ## Project facts (verified)
 - Vite build output only. Main bundle `assets/index-B2A-NN9Y.js` (minified). Add-ons: `addons/editor.js`, `addons/rally.js` (readable).
@@ -1960,3 +1958,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Tracers (STEP 121 section rewritten in place; ?tracer=off unchanged): light 1.2-1.8 m out (1 m ramp; was 10-15 m, so most rooms showed nothing). Drawn is what the eye keeps: every point the round passed in the last 85 ms (CONFIG.tracer.persist), fading, thinning and cooling with the time since (yellow-white core -> orange -> deep red), one quad per straight piece of the path (through walls, ricochets), cap 45 m; so in a room the whole line flashes and fades back from the far end. Core 7 mm (at least 3 px) with a soft halo 5x wider, per-round colour mix, slight flicker; HDR (computer bloom), tone mapped in its shader in the headset. Where it stops: hot sparks (9) and a 0.13 s glow spot. Same mesh / program (more quads: n x 7), compiled at load, no light, no per-frame allocation.
 - Guns: pistols too (9 mm, .380, .45 with their own drag lengths), never the shotgun; his guns too. Store SUPPLIES "Tracer mix" OFF / 1:5 / 1:3 / ALL (default 1:3; a saved choice is kept).
 - Muzzle flash (MFL.kind): open muzzle 1.75x size, 1.5x light, 1.3x time; AK slant / brake / comp ~1.4-1.55x size, 1.6-1.7x light; hider a little more; cans unchanged. WM.flash HDR warm tint (1.55, 1.12, 0.72) so the core stays white and the rest reads yellow-orange; per shot the star and plume get a random aspect; a new camera-facing fireball quad (flashGlow, WM.flash, billboarded in onBeforeRender per eye; the viewmodel mirror copies the hook) swells and goes over the flash time. No new program.
+
+## Interstate removed (Nov 19)
+- Deleted: interstate/ (46 MB), docs/ROADMAP.md (office / Interstate roadmap), tools/cut_siren.py, pack_bike.py, pack_carpack.py, pack_trees.py (Interstate-only). CQC title: the "Interstate" corner link and its CSS gone. Release notes: Interstate and Studio office lines and credits removed.
+- Unused-file scan of cqc/ (every file's name looked up in index.html and xbox-mode.js): only cqc/models/src/*.glb (the source packs tools/pack_*_att.py read, not loaded by the game) and cqc/tools/mvtest.* (multiview test harness) are not loaded; kept. Sounds named by loops (ak1-5, doorOpen / doorShut) are used.
