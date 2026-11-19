@@ -2198,3 +2198,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: pistol round feeds from under the slide, not under the trigger guard
 - feedLip measured the top round from the magazine's round meshes with no limits: hidden chunks, a mesh carrying the whole gun's vertex buffer or a stack mid-move put the feeding round far below the bore (under the trigger guard). Now only visible meshes, a stack-sized box under the bore counts; the lip height is held to 1.2-3 round radii under the bore and its z to the case length behind the chamber, else the default (2.4 radii under). Parse checked only.
+
+## CQC: trigger finger further into the guard (gloved gun hands)
+- vmhFingFrame: the "on the trigger" pose curls the index 0.1 / 0.12 / 0.06 rad past the pack's idle (was opened -0.06 / -0.04, so it rested at the front of the guard), pull 0.24 / 0.32 / 0.2. All guns that use the fitted gloved hand (VR). Off-trigger (along the frame) unchanged. Parse checked only.
