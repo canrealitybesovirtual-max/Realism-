@@ -2168,3 +2168,13 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Room switch: his body is moved into the new room with group.attach (world pose kept) and its room-local position converted, so no one-frame pop to the new room's origin and no speed spike in the legs (netTick runs after enemiesUpdate).
 - Host men copies: 'en' carries the host time c (optional); 20 Hz while the joiner is within 14 m of one of them (adjacent slots), else 15 Hz. The joiner keeps the last 4 samples per copy (typed arrays) and plays them back max(NET.delay, 1.25 x the 'en' interval + 15 ms) late with Hermite and an unwrapped yaw, damped extrapolation past the newest; old hosts (no c) keep the easing. The per-packet seen Set is reused.
 - Checked: module parse, eslint (no errors). Not run in a browser or between two devices.
+
+## CQC: 100 levels, kill-driven XP, ranks, +XP popup (?levels=off)
+- LEVEL section rewritten (after paintPrice). Max level 100; XP to the next level 1000 + 840 (n - 1) (1000, 1840 ... 83,320), 4.17 M in all.
+- XP: AI kill 100, head shot +50, +25 per kill past the 3rd in one room, multikill within 4 s double +50 / triple+ +100 (xpKill), room cleared 150, detained 200, a quarter of banked points, versus player kill 300 (on 'vsdead'). Co-op: the player whose round killed (as before). None with mods on.
+- Pace (about 210 XP a kill with rooms and banking): level 10 ~190 kills, 30 ~1,800, 55 ~6,000, 100 ~20,000 kills (a Call of Duty-like grind).
+- cqc.level.v1 stores total XP (v 2); old saves keep their XP and the level is recomputed (players drop to the new curve's level).
+- LEVEL_UNLOCK spread over 1-100 in the old order (stains 3, metals 6, blackout 10 ... damascus 80, chrome 86, gold 93, holo 100).
+- Ranks every 10 levels (LEVEL_RANKS Recruit .. General, levelRank): store header (beside LV n), terminal GEAR line, safe-room scoreboard (solo and co-op, top right); level-up toast says "Promoted: <rank>" on a new rank.
+- +XP popup (XPPOP): computer a stacking list under the crosshair (+total XP, last 4 lines, fades after 2.2 s); headset a small head-locked line (xpPopTick from vrNoteTick).
+- Checked: module parse, eslint no-undef (browser globals only). Not run in a browser.

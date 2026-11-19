@@ -12524,7 +12524,7 @@ function netRx(m) {
   else if (m.t === 'lay') mpwLayRx(m);
   else if (m.t === 'vsready') VS.otherReady = true;
   else if (m.t === 'vsgo') { if (NET.role === 'join') VS.goAt = performance.now() + 15000; }
-  else if (m.t === 'vsdead') { if (VS.on && !VS.over) { VS.score[0]++; netSay(`Got him. You ${VS.score[0]} : ${VS.score[1]} them`, 3); } }
+  else if (m.t === 'vsdead') { if (VS.on && !VS.over) { VS.score[0]++; xpAdd(LEVEL.gain.pvp, 'Player kill'); netSay(`Got him. You ${VS.score[0]} : ${VS.score[1]} them`, 3); } }
 }
 function netRemoteShot(m) {
   const r = stream.rooms.get(m.s); if (!r || !r.active || !mpwKindOk(r, m.k)) return;   // MPSYNC: never in the other kind of room at that slot
@@ -14076,9 +14076,9 @@ function sbVsLine() {
 function sbSig(mode) {
   const S = sbS(), r = loop.run;
   if (mode === 'vs') return `v${VS.score[0]}:${VS.score[1]}|${S.round}|${sbVsLine()}|${S.log.join('/')}`;
-  if (mode === 'coop') { const M = S.me, H = S.him; return `c${M.k},${M.h},${M.dn},${M.dt},${M.de},${M.p}|${H ? `${H.k},${H.h},${H.dn},${H.dt},${H.de},${H.p}` : '-'}`; }
+  if (mode === 'coop') { const M = S.me, H = S.him; return `L${levelOf().n}|c${M.k},${M.h},${M.dn},${M.dt},${M.de},${M.p}|${H ? `${H.k},${H.h},${H.dn},${H.dt},${H.de},${H.p}` : '-'}`; }
   const b = loop.best;
-  return `s${r.n}|${r.cleared},${r.kills},${r.heads},${r.shots},${r.hits},${r.banked},${r.pending}|${Math.floor((performance.now() / 1000 - r.t0) / 60)}|${b ? `${b.score},${b.rooms},${b.kills}` : '-'}`;
+  return `L${levelOf().n}|s${r.n}|${r.cleared},${r.kills},${r.heads},${r.shots},${r.hits},${r.banked},${r.pending}|${Math.floor((performance.now() / 1000 - r.t0) / 60)}|${b ? `${b.score},${b.rooms},${b.kills}` : '-'}`;
 }
 // Marker handwriting: word by word, each a little off the line and turned (seeded from the text, so a redraw keeps it).
 function sbHand(t, x, y, px, col, align = 'left') {
@@ -14118,6 +14118,7 @@ function sbDraw(mode) {
   if (mode === 'coop') {
     const M = S.me, H = S.him, v = (o, k) => (o ? String(o[k]) : '-');
     sbHand('TOGETHER', 60, 90, 60, Rd); sbLine(60, 108, 400, 104, Rd);
+    if (LEVEL.on) sbHand(`${levelRank()} · LV ${levelOf().n}`, 980, 90, 40, G, 'right');
     sbHand('YOU', 640, 160, 50, B, 'center'); sbHand('HIM', 880, 160, 50, K, 'center');
     const rows = [['kills', 'k'], ['head shots', 'h'], ['downed', 'dn'], ['detained', 'dt'], ['deaths', 'de'], ['points', 'p']];
     rows.forEach(([lab, k], i) => {
@@ -14131,6 +14132,7 @@ function sbDraw(mode) {
   }
   const r = loop.run, b = loop.best, acc = r.shots ? Math.round(r.hits / r.shots * 100) : 0, min = Math.floor((performance.now() / 1000 - r.t0) / 60);
   sbHand(`THIS RUN (#${r.n})`, 60, 90, 60, Rd); sbLine(60, 108, 520, 104, Rd);
+  if (LEVEL.on) sbHand(`${levelRank()} · LV ${levelOf().n}`, 980, 90, 40, G, 'right');
   const rows = [['rooms cleared', `${r.cleared}`], ['kills', `${r.kills}  (${r.heads} head)`], ['accuracy', `${acc} %`],
     ['banked', r.pending ? `${r.banked}  +${r.pending}?` : `${r.banked}`], ['time', `${min} min`]];
   rows.forEach(([lab, val], i) => { const y = 200 + i * 74; sbHand(lab, 80, y, 48, K); sbHand(val, 600, y, 52, B); });
@@ -34104,7 +34106,7 @@ function surrDetain(e, hand) {
   const pts = Math.round(Q.pts * r.mult * MENU_FX.scoreK);
   r.pending += pts;
   walletEarn(Q.pay);
-  xpAdd(LEVEL.gain.detain);   // levels
+  xpAdd(LEVEL.gain.detain, 'Detained');   // levels
   surrZip(e); surrCall(e, 'det');
   if (hand) pulse(hand, 0.35, 40);
   toast(`Detained  +${pts}${WORKSHOP.on && Q.pay > 0 ? `  ·  wallet +${fmtMoney(Q.pay)}` : ''}`, 2200);
@@ -34515,7 +34517,7 @@ function loopEnemyDied(e) {
     r.kills++; if (head) r.heads++;
     { const B = sbS().me; B.k++; if (head) B.h++; }               // SCOREBOARD
     walletEarn(CONFIG.workshop.killPay);
-    xpAdd(LEVEL.gain.kill + (head ? LEVEL.gain.head : 0));   // levels                // $ per kill, straight to the gunsmith wallet
+    xpKill(e, head);   // levels                // $ per kill, straight to the gunsmith wallet
   }
   if (e.puppet) { loopUi(); return; }
   // The others heard him go down. They push harder now.
@@ -34535,7 +34537,7 @@ function loopEnemyDied(e) {
 function loopRoomCleared(room, plan) {
   const L = CONFIG.loop, S = L.score, r = loop.run, now = performance.now() / 1000;
   plan.cleared = true;
-  xpAdd(LEVEL.gain.clear);   // levels
+  xpAdd(LEVEL.gain.clear, 'Room cleared');   // levels
   { let n = 0; for (const e of ENEMY.list) if (e.room === room && e.dead) n++; stillsAsk(`${stillsWhere(room)} · cleared · ${n} down`, 'clear', 0.35); }   // step 42
   const t = plan.enteredT ? now - plan.enteredT : 0;
   const speed = Math.round(S.speed * clamp(1 - (t - S.speedT[0]) / (S.speedT[1] - S.speedT[0])));
@@ -34562,7 +34564,7 @@ function loopEnterRoom(room) {
     const got = r.pending, m = r.mult;
     r.banked += r.pending; r.pending = 0; r.mult = 1;
     sbS().me.p += got;                                            // SCOREBOARD
-    xpAdd(got * LEVEL.gain.bank);                 // levels: getting out alive pays
+    xpAdd(got * LEVEL.gain.bank, 'Banked');                 // levels: getting out alive pays
     walletEarn(got);                              // gunsmith wallet: 1 banked point = $1 (records and scores unchanged)
     loopSaveBest();
     loopCue([520, 520]);
@@ -35550,7 +35552,7 @@ function termLoadout(W, H, now) {
     tBox(16, 304, 992, 76, TC.faint, TC.line);
     tText('Restock at the GUNSMITH computer', 36, 342, 27, TC.hi, 'left', 700, TC.sans, 620);
     tText('Wallet', 760, 342, 20, TC.dim, 'right', 600);
-    if (LEVEL.on) { const L = levelOf(); tText(`Level ${L.n}${L.next ? `  ·  ${L.into} / ${L.next} XP` : '  ·  max'}`, 36, 368, 16, TC.dim, 'left', 600, TC.mono, 600); }   // levels
+    if (LEVEL.on) { const L = levelOf(); tText(`${levelRank(L.n)}  ·  Level ${L.n}${L.next ? `  ·  ${L.into} / ${L.next} XP` : '  ·  max'}`, 36, 368, 16, TC.dim, 'left', 600, TC.mono, 600); }   // levels
     tText(fmtMoney(WALLET.money), 988, 342, 28, TC.ok, 'right', 700, TC.mono, 216);
   } else tBtn('restock', 16, 304, 992, 76, 'RESTOCK', { size: 28, fn: termRestock });
   tHead('Guns', 28, 410);
@@ -37382,41 +37384,93 @@ const paintFinishes = (G, sect) => GUN_FINISHES.filter((f) => (sect === 'camo' ?
   .map((f, i) => [f, i]).sort((a, b) => (LEVEL.on ? (LEVEL_UNLOCK[a[0].id] || 1) - (LEVEL_UNLOCK[b[0].id] || 1) : 0) || a[1] - b[1]).map((q) => q[0]);   // levels: in unlock order
 const paintPrice = (G, f) => (f.orig ? 0 : f.price || G.price);
 /* ============================================================================
- *  LEVELS (?levels=off): experience from play, levels that unlock the finishes
- *  XP: a kill 50 (+25 a head shot), a room cleared 100, a man detained 150, and a quarter of every point you bank in a
- *  safe room (getting out alive pays). None while mods are on (the score is off then too). Level n needs
- *  LEVEL.need(n) more XP (400, 520, 640 ... +120 each), up to level 30. Saved in cqc.level.v1; a save from before this
- *  starts with a quarter of the money it ever earned as XP, so a long-time player is not sent back to level 1.
- *  Unlocks (LEVEL_UNLOCK, finish id -> level): service colours from the start, wood stains 2, metals 3, bright colours 5,
- *  bare stainless 6, then the camos from plain to exotic (blackout 4 ... holographic 30). A locked finish still shows on
- *  your gun when touched; APPLY says the level it needs. Finishes already on your guns stay.
+ *  LEVELS (?levels=off): experience from play, 100 levels with ranks, unlocking the finishes
+ *  A Call of Duty style grind: kills are the main source. XP: a kill 100 (+50 a head shot), +25 for every kill past
+ *  the 3rd in one room, multikills within 4 s (double +50, triple or more +100), a room cleared 150, a man detained
+ *  200, a quarter of every point you bank in a safe room, a versus kill 300. AI kills only (co-op: the player whose
+ *  round killed). None while mods are on. Level n needs LEVEL.need(n) = 1000 + 840 (n - 1) XP to the next (1000,
+ *  1840, 2680 ... 83,320 for 99 -> 100), 4.17 M XP in all: about 210 XP a kill in normal play (rooms, banking
+ *  included), so level 100 takes ~20,000 kills (level 10 ~190, 30 ~1,800, 55 ~6,000). Saved in cqc.level.v1 as the
+ *  total XP; the level is always worked out from it (old saves keep their XP, their level is recomputed).
+ *  Ranks every 10 levels (LEVEL_RANKS: Recruit .. General). Unlocks (LEVEL_UNLOCK) spread over 1-100 in the old
+ *  order, the rarest camos at 80-100. A +XP popup stacks near the crosshair (headset: a small head-locked line).
  * ========================================================================== */
-const LEVEL_UNLOCK = { natural: 2, walnut: 2, darkwood: 2, tungsten: 3, bronze: 3, mbronze: 3, blackout: 4, robin: 5, crimson: 5, white: 5,
-  stainless: 6, woodland: 6, tiger: 8, digital: 10, splinter: 12, arctic: 14, rusty: 16, brushed: 18, carbon: 20,
-  candypink: 22, pinktiger: 23, candyblue: 24, damascus: 26, chrome: 27, gold: 29, holo: 30 };
-const LEVEL = { on: !/[?&]levels=off\b/.test(QS), key: 'cqc.level.v1', xp: 0, max: 30, need: (n) => 400 + 120 * (n - 1),
-  gain: { kill: 50, head: 25, clear: 100, detain: 150, bank: 0.25 } };
+const LEVEL_UNLOCK = { natural: 3, walnut: 3, darkwood: 3, tungsten: 6, bronze: 6, mbronze: 6, blackout: 10, robin: 14, crimson: 14, white: 14,
+  stainless: 18, woodland: 18, tiger: 24, digital: 30, splinter: 36, arctic: 42, rusty: 48, brushed: 54, carbon: 60,
+  candypink: 66, pinktiger: 70, candyblue: 75, damascus: 80, chrome: 86, gold: 93, holo: 100 };
+const LEVEL_RANKS = ['Recruit', 'Private', 'Corporal', 'Sergeant', 'Staff Sergeant', 'Lieutenant', 'Captain', 'Major', 'Colonel', 'General'];
+const LEVEL = { on: !/[?&]levels=off\b/.test(QS), key: 'cqc.level.v1', xp: 0, max: 100, need: (n) => 1000 + 840 * (n - 1),
+  gain: { kill: 100, head: 50, streak: 25, streakFrom: 3, double: 50, triple: 100, multiT: 4, clear: 150, detain: 200, bank: 0.25, pvp: 300 },
+  rk: { room: null, n: 0 }, mk: { t: -99, n: 0 } };
 function levelOf(xp = LEVEL.xp) { let n = 1; while (n < LEVEL.max && xp >= LEVEL.need(n)) { xp -= LEVEL.need(n); n++; } return { n, into: xp, next: n < LEVEL.max ? LEVEL.need(n) : 0 }; }
+const levelRank = (n = levelOf().n) => LEVEL_RANKS[Math.min(LEVEL_RANKS.length - 1, Math.floor((n - 1) / 10))];
 function levelLoad() {
   try { const d = JSON.parse(localStorage.getItem(LEVEL.key) || 'null'); if (d && d.xp >= 0) { LEVEL.xp = d.xp; return; } } catch (e) { /* fresh */ }
   LEVEL.xp = Math.floor((WALLET.earned || 0) * 0.25); levelSave();
 }
-function levelSave() { try { localStorage.setItem(LEVEL.key, JSON.stringify({ v: 1, xp: LEVEL.xp })); } catch (e) { /* this visit */ } }
+function levelSave() { try { localStorage.setItem(LEVEL.key, JSON.stringify({ v: 2, xp: LEVEL.xp })); } catch (e) { /* this visit */ } }
 levelLoad();
 function levelUnlocksAt(n) { return GUN_FINISHES.filter((f) => LEVEL_UNLOCK[f.id] === n).map((f) => f.name); }
 function xpAdd(n, why) {
   if (!LEVEL.on || modAny() || !(n > 0)) return;
   n = Math.round(n); const a = levelOf().n;
   LEVEL.xp += n; levelSave();
+  if (why) xpPop(n, why);
   const b = levelOf().n;
   if (b > a) {
     const un = []; for (let i = a + 1; i <= b; i++) un.push(...levelUnlocksAt(i));
-    const msg = `Level ${b}${un.length ? `  ·  unlocked: ${un.join(', ')}` : ''}`;
+    const rk = levelRank(b), promo = rk !== levelRank(a);
+    const msg = `${promo ? `Promoted: ${rk}  ·  ` : ''}Level ${b}${un.length ? `  ·  unlocked: ${un.join(', ')}` : ''}`;
     if (renderer.xr.isPresenting) vrNote(msg, 3.5); else toast(msg, 3600);
-    loopCue([660, 880]);
+    loopCue(promo ? [660, 880, 1100] : [660, 880]);
   }
   TERM.dirty = true; WORKSHOP.dirty = true; WATCH.dirty = true;
 }
+// A kill's XP: base, head shot, room streak (kills past the 3rd in this room), multikill within 4 s.
+function xpKill(e, head) {
+  const G = LEVEL.gain, now = performance.now() / 1000, R = LEVEL.rk, M = LEVEL.mk;
+  if (R.room !== e.room) { R.room = e.room; R.n = 0; }
+  R.n++;
+  M.n = now - M.t < G.multiT ? M.n + 1 : 1; M.t = now;
+  let xp = G.kill; const tags = ['Kill'];
+  if (head) { xp += G.head; tags.push('Headshot'); }
+  if (R.n > G.streakFrom) { xp += G.streak; tags.push(`Streak ${R.n}`); }
+  if (M.n === 2) { xp += G.double; tags.push('Double kill'); } else if (M.n >= 3) { xp += G.triple; tags.push(M.n === 3 ? 'Triple kill' : `Multikill x${M.n}`); }
+  xpAdd(xp, tags.join(' · '));
+}
+// +XP popup: lines stack and fade; computer a small DOM list under the crosshair, headset a head-locked canvas line.
+const XPPOP = { el: null, lines: [], sum: 0, sumT: 0, mesh: null, ctx: null, tex: null, until: 0, tm: 0 };
+function xpPop(n, why) {
+  const now = performance.now() / 1000;
+  XPPOP.sum = now - XPPOP.sumT < 2.5 ? XPPOP.sum + n : n; XPPOP.sumT = now;
+  XPPOP.lines.unshift({ t: `+${n}  ${why}`, w: why }); if (XPPOP.lines.length > 4) XPPOP.lines.length = 4;
+  if (renderer.xr.isPresenting) { xpPopVr(); return; }
+  if (!XPPOP.el) {
+    const d = XPPOP.el = document.createElement('div');
+    d.style.cssText = 'position:fixed;left:50%;top:56%;transform:translateX(-50%);pointer-events:none;z-index:40;text-align:center;font:600 15px "Barlow Semi Condensed","Arial Narrow",sans-serif;color:#ffd77a;text-shadow:0 1px 2px #000;transition:opacity .4s';
+    document.body.appendChild(d);
+  }
+  const d = XPPOP.el;
+  d.innerHTML = `<div style="font-size:20px;color:#fff1c4">+${XPPOP.sum} XP</div>` + XPPOP.lines.map((l, i) => `<div style="opacity:${1 - i * 0.22}">${l.t}</div>`).join('');
+  d.style.opacity = '1';
+  clearTimeout(XPPOP.tm); XPPOP.tm = setTimeout(() => { d.style.opacity = '0'; XPPOP.lines.length = 0; }, 2200);
+}
+function xpPopVr() {
+  if (!XPPOP.mesh) {
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 64;
+    XPPOP.ctx = cv.getContext('2d'); XPPOP.tex = new THREE.CanvasTexture(cv); XPPOP.tex.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.MeshBasicMaterial({ map: XPPOP.tex, transparent: true, depthTest: false, depthWrite: false, fog: false, toneMapped: false });
+    XPPOP.mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.03), m);
+    XPPOP.mesh.position.set(0, -0.07, -0.85); XPPOP.mesh.renderOrder = 100004; XPPOP.mesh.frustumCulled = false;
+    camera.add(XPPOP.mesh);
+  }
+  const c = XPPOP.ctx, t = `+${XPPOP.sum} XP  ${XPPOP.lines[0].w}`; c.clearRect(0, 0, 512, 64);
+  c.font = '600 30px "Barlow Semi Condensed", "Arial Narrow", sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillStyle = 'rgba(0,0,0,0.55)'; c.fillText(t, 257, 34, 500);
+  c.fillStyle = '#ffd77a'; c.fillText(t, 256, 32, 500);
+  XPPOP.tex.needsUpdate = true; XPPOP.mesh.visible = true; XPPOP.until = performance.now() / 1000 + 2.2;
+}
+function xpPopTick() { if (XPPOP.mesh && XPPOP.mesh.visible && (!renderer.xr.isPresenting || performance.now() / 1000 > XPPOP.until)) XPPOP.mesh.visible = false; }
 const finishLevel = (f) => (LEVEL.on && !f.orig ? LEVEL_UNLOCK[f.id] || 1 : 1);
 const finishLocked = (f) => finishLevel(f) > levelOf().n;
 // the store header's level: LV n and a bar to the next
@@ -37424,6 +37478,7 @@ function levelDraw(x, y) {
   if (!LEVEL.on) return;
   const L = levelOf(), W = WORKSHOP, ctx = W.ctx;
   tText(`LV ${L.n}`, x, y - 4, 24, TC.hi, 'right', 700, TC.mono, 90);
+  tText(levelRank(L.n).toUpperCase(), x - 100, y - 4, 16, TC.dim, 'right', 600, TC.sans, 150);   // rank every 10 levels
   ctx.fillStyle = TC.faint; ctx.fillRect(x - 90, y + 14, 90, 5);
   ctx.fillStyle = TC.ok; ctx.fillRect(x - 90, y + 14, 90 * (L.next ? L.into / L.next : 1), 5);
 }
@@ -39692,7 +39747,7 @@ function vrNote(text, secs = 2) {
   c.fillText(msg, 330, 49, 590);
   VRNOTE.tex.needsUpdate = true; VRNOTE.mesh.visible = true; VRNOTE.until = performance.now() / 1000 + secs;
 }
-function vrNoteTick() { if (VRNOTE.mesh && VRNOTE.mesh.visible && (!renderer.xr.isPresenting || performance.now() / 1000 > VRNOTE.until)) VRNOTE.mesh.visible = false; }
+function vrNoteTick() { xpPopTick(); if (VRNOTE.mesh && VRNOTE.mesh.visible && (!renderer.xr.isPresenting || performance.now() / 1000 > VRNOTE.until)) VRNOTE.mesh.visible = false; }
 function nvgModeChanged() { nvgSave(); NVG.lzKey = -1; nvgLensSweep(); WORKSHOP.dirty = true; }
 function nvgKeys(now) {
   const C = NVG_C;
@@ -51229,7 +51284,7 @@ function swPrecache(extra) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, levelOf, xpAdd, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, LEVEL_RANKS, levelOf, levelRank, xpAdd, xpKill, XPPOP, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
