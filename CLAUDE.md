@@ -2099,3 +2099,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC emotes: no view from inside your own head
 - Your third-person soldier is not drawn while the camera is in first person (computer k 0, headset while fading in / out) or within 0.5 m of its head during the ease out / back. Parse checked only.
+
+## CQC emotes: free camera while emoting (third-person emote camera; not run in a browser or headset)
+- While your emote plays with the third-person camera (emoFreeCam), walking input no longer ends it and no longer moves you (updateDesktopMove / the VR locomotion pass zero input to locomote): it moves the camera. Computer / pad / phone: c3FreeMove shifts the orbit target along the ground relative to the camera's facing (2 m/s, 4 running), at most 10 m from your body, a ray from your body (C3_GRP) stops it short of walls; look orbits, wheel zooms as before. Headset: c3VrFree moves the viewpoint with the left stick relative to the head's yaw (same speed, range and body ray), snap / smooth turns turn the viewpoint about its head. Moonwalk still moves you itself.
+- Ends only by itself (no hold after: the camera comes back; the self-inflicted watch keeps its own hold), the emote button again (Tab tap or the wheel's centre, pad R3 tap, headset stick click tap, phone Emote button tap; emoClose / emoPadPoll / emoVrStick), a shot, a hit, death. First-person emote camera: walking ends it as before.
+- Checked: module parse only.

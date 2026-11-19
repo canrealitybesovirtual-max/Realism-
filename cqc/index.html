@@ -14010,6 +14010,7 @@ function updateDesktopMove(dt) {
   if (Math.hypot(f, s) < 0.12) f = s = 0;     // small dead zone for the thumb stick
   let speed = keys.has('ShiftLeft') || keys.has('ShiftRight') || PAD.run ? CONFIG.player.fast : CONFIG.player.walk;
   speed *= 1 - (1 - CONFIG.player.crouchK) * stance.crouch;   // step 6: crouched walking is slow (the headset's factor too)
+  if (emoFreeCam()) { const fi = C3.fi; fi.f = f; fi.s = s; fi.run = speed > CONFIG.player.walk * 1.05; f = s = 0; }   // EMOTES free camera: the input moves the third-person camera, not you
   locomote(dt, f, s, look.yaw, speed);
 }
 
@@ -46930,6 +46931,7 @@ function updateXRInput(dt) {
     const g = xrHeadOk() ? handsLocomotion(dt, now) : (handsLocoReset(), null);   // step 32: never walk on a tracking glitch
     if (g) { fwd = g.fwd; side = 0; yaw = g.yaw; gestSpeed = g.speed; }
   } else handsLocoReset();
+  if (emoFreeCam()) { const fi = C3.vr.fi; fi.f = fwd; fi.s = side; fi.run = run; fwd = side = 0; gestSpeed = 0; }   // EMOTES free camera: the stick moves the viewpoint
   const speed = locomote(dt, fwd, side, yaw, (gestSpeed || (run ? L.run : L.walk)) * (xrState.crouchOn ? CONFIG.player.crouchK : 1));   // crouched walking is slow
 
   // --- Comfort: vignette while moving/turning, blink on snap, fade if head is in a wall ---
@@ -54762,7 +54764,7 @@ function emoPlay(id) {
   if (netLive()) netSendRel({ t: 'emo', id, n: ++EMO.seq, c: performance.now(), gt: hg ? hg.type : '' });   // gt: his copy of your gun (rack & catch)
   emoSelfStart(def);                                              // EMOTES 3p: your own body plays it (you watch from behind)
   const solo = !netLive() && !def.me && !EMO.cfg.cam3p ? ' (the other player sees this in multiplayer)' : '';
-  emoBanner(`${def.label}${solo}${def.dur ? '' : '. Move to stop'}`);
+  emoBanner(`${def.label}${solo}${emoFreeCam() ? '. Walk to move the camera; the emote button again stops it' : def.dur ? '' : '. Move to stop'}`);
   if (EMO.cfg.sound) try { btnSfx('term'); } catch (e) { /* no sound yet */ }
   if (EMO.solo && !netLive() && NET.av) emoRx({ id, n: EMO.seq, c: performance.now(), gt: hg ? hg.type : '' });   // dev: your own avatar copy plays it
 }
@@ -54777,7 +54779,9 @@ function emoStopMine() {
   if (EMO.solo && !netLive()) emoRx({ id: 0, n: EMO.seq });
 }
 function emoBanner(t) { try { if (renderer.xr.isPresenting) vrNote(t, 2); else toast(t, 1800); } catch (e) { /* no ui */ } }
-// Walking ends it (turning does not): your input, or your head's net travel since it started (a world shift skipped).
+// First-person emote camera: walking ends it (turning does not): your input, or your head's net travel since it started
+// (a world shift skipped). Third person (free camera): only its own end, the emote button again, a shot, a hit or death.
+function emoFreeCam() { const S = EMO.self; return EMO.on && !!EMO.me.id && EMO.cfg.cam3p && !!S.e && S.e.root.visible && !S.e.dead; }
 function emoMeTick(dt) {
   const M = EMO.me; if (!M.id) return;
   if (playerState.dead) { emoStopMine(); return; }
@@ -54786,7 +54790,8 @@ function emoMeTick(dt) {
   M.t += dt;
   if (def.me) def.me(M, dt, false);
   if (!M.id) return;
-  if (def.dur && M.t > def.dur()) { M.id = 0; if (!playerState.dead) { EMO.self.hold = true; EMO.self.hit0 = playerState.lastHit; } return; }   // done by itself (his side ends it on its clock too); your third-person view stays (emoHoldTick)
+  if (def.dur && M.t > def.dur()) { M.id = 0; emoSelfStop(); return; }   // done by itself (his side ends it on its clock too); the camera comes back
+  if (emoFreeCam()) { M.has = false; return; }                     // free camera: walking moves the camera; only the button, a shot, a hit or death end it
   headWorld(_em.a);
   if (M.has) { const dx = _em.a.x - M.prev.x, dz = _em.a.z - M.prev.z; if (dx * dx + dz * dz < 0.25) { M.ax += dx; M.az += dz; } }
   M.prev.copy(_em.a); M.has = true;
@@ -56029,6 +56034,7 @@ function emoClose(pick) {
   W.open = false; if (W.dom) W.dom.classList.remove('open');
   const id = pick && W.sel >= 0 ? emoSlotId(W.sel) : 0;
   if (id) emoPlay(id);
+  else if (pick && EMO.me.id) emoStopMine();                       // a tap of the button / the centre while one plays: stop it
 }
 // Direction (x right, y down; 1 = the ring) -> slot; inside 0.38 = the centre (cancel).
 function emoAim(x, y) {
@@ -56182,9 +56188,10 @@ function emoVrStick(right) {
   const V = EMO.vr, now = performance.now() / 1000, down = isPressed(right, 3);
   if (!down) {
     if (V.on && EMO.W.open && EMO.W.src === 'vr') { emoClose(true); if (EMO.W.mesh) EMO.W.mesh.visible = false; }
+    else if (V.on && V.stop && EMO.me.id) { emoStopMine(); xrState.scLong = true; }   // a tap while one plays: stops it (not the light)
     V.on = false; return false;
   }
-  if (!V.on) { if (!emoAvail()) return false; V.on = true; V.t0 = now; }
+  if (!V.on) { if (!emoAvail()) return false; V.on = true; V.t0 = now; V.stop = !!EMO.me.id; }
   if (!EMO.W.open && now - V.t0 >= EMO.hold) { emoOpen('vr'); emoVrMesh().visible = true; pulse(right.userData.hand, 0.25, 18); }
   if (EMO.W.open) {
     xrState.scLong = true;                                         // the light / laser code: not a tap
@@ -56206,7 +56213,7 @@ function emoPadPoll(B, A, sw, now) {
     return true;
   }
   if (was) {                                                       // let go
-    if (EMO.W.open) emoClose(true); else { padKey('kick', true); padKey('kick', false); }
+    if (EMO.W.open) emoClose(true); else if (EMO.me.id) emoStopMine(); else { padKey('kick', true); padKey('kick', false); }   // a tap while one plays stops it
     P.on = false;
   }
   return false;
@@ -56267,7 +56274,7 @@ function emoMenu() {
     mwValue('play', 'Self-inflicted death emote', 'In the emote wheel; a real death (needs a chambered round)', () => (EMO.cfg.sd ? 'ON' : 'OFF'), null, () => { EMO.cfg.sd = !EMO.cfg.sd; emoSave(); });
     mwValue('play', 'Show others\' self-inflicted death', 'Off: the other player is shown only collapsing', () => (EMO.cfg.sdShow ? 'ON' : 'OFF'), null, () => { EMO.cfg.sdShow = !EMO.cfg.sdShow; emoSave(); });
   }
-  mwNote('mp', 'Emotes: hold Tab and move the mouse (1-9, 0, -, = pick) · hold the right stick click and tilt it (pad, headset) · the Emote button (phone). Let go to play; walking stops it.');
+  mwNote('mp', 'Emotes: hold Tab and move the mouse (1-9, 0, -, = pick) · hold the right stick click and tilt it (pad, headset) · the Emote button (phone). Let go to play. Third-person camera: walking moves the camera; tap the emote button again to stop.');
   mwSyncRows();
 }
 // Every frame (after netTick).
@@ -56307,7 +56314,8 @@ const C3 = { k: 0, want: false, applied: false, yaw: 0, pitch: 0.35, dist: 2.77,
   cp: new THREE.Vector3(), cq: new THREE.Quaternion(), ow: new THREE.Vector3(), oq: new THREE.Quaternion(), sc: new THREE.Vector3(), mi: new THREE.Matrix4(), m: new THREE.Matrix4(),
   t: new THREE.Vector3(), d: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), q: new THREE.Quaternion(), ray: null,
   hide: [], hideN: 0, DUR: 0.35, dMin: 1.6, dMax: 4, pMin: -0.25, pMax: 1.15, wall: 0.2, body: 0.6,
-  vr: { view: false, f: 0, applied: false, p: new THREE.Vector3(), q: new THREE.Quaternion(), rp: new THREE.Vector3(), rq: new THREE.Quaternion(), FADE: 0.15, dist: 2.5, side: 0.5 } };
+  fi: { f: 0, s: 0, run: false }, fo: new THREE.Vector3(), fd: new THREE.Vector3(), FREE: 2, FREE_RUN: 4, FREE_MAX: 10,   // free camera: input, offset from your body, scratch
+  vr: { fi: { f: 0, s: 0, run: false }, ry: 0, h: new THREE.Vector3(), b: new THREE.Vector3(), v: new THREE.Vector3(), qd: new THREE.Quaternion(), view: false, f: 0, applied: false, p: new THREE.Vector3(), q: new THREE.Quaternion(), rp: new THREE.Vector3(), rq: new THREE.Quaternion(), FADE: 0.15, dist: 2.5, side: 0.5 } };
 const EMO_SDW = { on: !/[?&]sdwatch=off\b/.test(QS), watch: 5, t: 0 };   // self-inflicted: 5 s to watch your body fall before the fade
 const C3_GRP = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR);   // walls, floors, ceilings, door leaves (never your own body, held guns or loose props)
 const C3_AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -56488,7 +56496,7 @@ function emoCamApply(dt) {
   if (C3.vr.view || C3.vr.f > 0) { C3.vr.view = false; C3.vr.f = 0; }
   if (want && !C3.want) {                                          // the start of the ease out: your look is held from here
     C3.ly = look.yaw; C3.lpi = look.pitch;
-    if (C3.k <= 0) { C3.yaw = e.yaw + rYaw(e.room); C3.pitch = 0.35; C3.Tok = false; }
+    if (C3.k <= 0) { C3.yaw = e.yaw + rYaw(e.room); C3.pitch = 0.35; C3.Tok = false; C3.fo.set(0, 0, 0); }
   }
   if (!want && C3.want && C3.k > 0) { look.yaw = C3.ly; look.pitch = C3.lpi; applyLook(); }
   C3.want = want;
@@ -56505,6 +56513,8 @@ function emoCamApply(dt) {
   camera.matrixWorld.decompose(C3.bp, C3.bq, C3.sc);
   const def = S.R.def, hips = def && (def.key === 'backflip' || def.key === 'dying');
   (hips ? e.B.pelvis : e.B.chest).getWorldPosition(C3.t);
+  c3FreeMove(dt, want);                                            // free camera: walking input moves the target off your body
+  if (C3.fo.lengthSq() > 0) C3.t.add(C3.fo);
   if (!C3.Tok) { C3.T.copy(C3.t); C3.Tok = true; } else C3.T.lerp(C3.t, 1 - Math.exp(-(dt || 0) * 12));
   const f0 = c3Free(C3.yaw);
   if (want && f0 < C3.dist * 0.55) {                              // a wall close behind: swing round to the clearest side
@@ -56529,18 +56539,65 @@ function emoCamApply(dt) {
   if (!e.dead) { e.B.head.getWorldPosition(C3.t); if (C3.ow.distanceTo(C3.t) < 0.5) e.root.visible = false; }   // easing out of / back into your head: no face from the inside
   if (k > 0.25) c3HideMine();                                      // far enough out: your own first-person body would float in the view
 }
+// Free camera (computer, pad, phone): the walking input moves the orbit target along the ground, relative to the camera's
+// facing; at most FREE_MAX from your body and never past a wall (ray from your body, stopped short). C3.t = your body point.
+function c3FreeMove(dt, want) {
+  const fi = C3.fi, fo = C3.fo;
+  let f = fi.f, s = fi.s; const m = Math.hypot(f, s);
+  if (want && m > 0.05) {
+    if (m > 1) { f /= m; s /= m; }
+    const st = (fi.run ? C3.FREE_RUN : C3.FREE) * Math.min(Math.max(dt || 0, 0), 0.1), sy = Math.sin(C3.yaw), cy = Math.cos(C3.yaw);
+    fo.x += (-sy * f + cy * s) * st; fo.z += (-cy * f - sy * s) * st;   // forward (-sin, -cos), right (cos, -sin)
+  }
+  fi.f = fi.s = 0;
+  fo.y = 0;
+  let L = fo.length(); if (L < 1e-4) { fo.set(0, 0, 0); return; }
+  if (L > C3.FREE_MAX) { fo.multiplyScalar(C3.FREE_MAX / L); L = C3.FREE_MAX; }
+  C3.fd.copy(fo).multiplyScalar(1 / L);
+  const t = c3Ray(C3.t, C3.fd, L + C3.wall);
+  if (t >= 0 && t - C3.wall < L) fo.copy(C3.fd).multiplyScalar(Math.max(0, t - C3.wall));
+}
 // Headset: fade, then the view from in front of you (the rig moved for the draw only), fade back; and the same on the way back.
 function emoCamVr(dt, want) {
   const V = C3.vr, st = Math.min(Math.max(dt || 0, 0), 0.1) / V.FADE;
   if (want !== V.view) { V.f = Math.min(1, V.f + st); if (V.f >= 1) { V.view = want; if (want && !emoVrPlace()) V.view = false; } }
   else V.f = Math.max(0, V.f - st);
+  if (!V.view) V.fi.f = V.fi.s = 0;
   if (V.view) {
     V.rp.copy(rig.position); V.rq.copy(rig.quaternion);
+    c3VrFree(dt);                                                  // free camera: your turns turn the viewpoint, the left stick moves it
     rig.position.copy(V.p); rig.quaternion.copy(V.q); rig.updateMatrixWorld(true);
     V.applied = true;
     c3HideMine();
   } else { const e = EMO.self.e; if (e && e.root.visible && !e.dead) e.root.visible = false; }   // first person (fading): your own soldier would be round your eyes
   if (V.f > 0.001) { const U = vignetteMat.uniforms.uFade; U.value = Math.max(U.value, V.f); vignette.visible = true; }
+}
+// The real rig's yaw (snap / smooth turns) and the viewpoint head in the moved rig.
+function c3RigYaw() { const v = C3.vr.v.set(0, 0, -1).applyQuaternion(rig.quaternion); return Math.atan2(-v.x, -v.z); }
+function c3VrFree(dt) {
+  const V = C3.vr, e = EMO.self.e, fi = V.fi;
+  const ry = c3RigYaw(); let dy = ry - V.ry; V.ry = ry; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+  V.h.copy(camera.position).applyQuaternion(V.q).add(V.p);          // where the viewpoint's head is (world)
+  if (Math.abs(dy) > 1e-6) V.q.premultiply(V.qd.setFromAxisAngle(C3.up, dy));   // turned about that head
+  let f = fi.f, s = fi.s; const m = Math.hypot(f, s);
+  fi.f = fi.s = 0;
+  if (m > 0.05 && e && !e.dead) {
+    if (m > 1) { f /= m; s /= m; }
+    V.v.set(0, 0, -1).applyQuaternion(camera.quaternion).applyQuaternion(V.q);   // the head's facing in the view
+    let hx = V.v.x, hz = V.v.z; const hl = Math.hypot(hx, hz); if (hl < 1e-4) { hx = 0; hz = -1; } else { hx /= hl; hz /= hl; }
+    const st = (fi.run ? C3.FREE_RUN : C3.FREE) * Math.min(Math.max(dt || 0, 0), 0.1);
+    V.h.x += (hx * f - hz * s) * st; V.h.z += (hz * f + hx * s) * st;   // right = (-hz, hx)
+    e.B.chest.getWorldPosition(V.b);
+    V.v.subVectors(V.h, V.b); let L = V.v.length();
+    if (L > C3.FREE_MAX) { V.v.multiplyScalar(C3.FREE_MAX / L); L = C3.FREE_MAX; }
+    if (L > 1e-4) {
+      V.v.multiplyScalar(1 / L);
+      const t = c3Ray(V.b, V.v, L + C3.wall);
+      if (t >= 0 && t - C3.wall < L) L = Math.max(0.05, t - C3.wall);
+      V.h.copy(V.b).addScaledVector(V.v, L);
+    }
+  }
+  V.p.copy(camera.position).applyQuaternion(V.q).negate().add(V.h);
 }
 // The headset viewpoint: 2.5 m in front of you, 0.5 m to the side, your eye height, facing your body (pulled in by walls).
 function emoVrPlace() {
@@ -56568,6 +56625,7 @@ function emoVrPlace() {
   const a = yawFace - Math.atan2(-C3.t.x, -C3.t.z);
   V.q.setFromAxisAngle(C3.up, a);
   V.p.copy(camera.position).applyQuaternion(V.q).negate().add(C3.T);
+  V.ry = c3RigYaw(); V.fi.f = V.fi.s = 0;
   return true;
 }
 // The mouse wheel zooms while you watch yourself.
