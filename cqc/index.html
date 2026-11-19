@@ -55019,7 +55019,7 @@ const C3 = { k: 0, want: false, applied: false, yaw: 0, pitch: 0.35, dist: 2.77,
   bp: new THREE.Vector3(), bq: new THREE.Quaternion(), bpL: new THREE.Vector3(), bqL: new THREE.Quaternion(), lp: new THREE.Vector3(), lq: new THREE.Quaternion(),
   cp: new THREE.Vector3(), cq: new THREE.Quaternion(), ow: new THREE.Vector3(), oq: new THREE.Quaternion(), sc: new THREE.Vector3(), mi: new THREE.Matrix4(), m: new THREE.Matrix4(),
   t: new THREE.Vector3(), d: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), q: new THREE.Quaternion(), ray: null,
-  hide: [], hideN: 0, DUR: 0.35, dMin: 1.6, dMax: 4, pMin: -0.25, pMax: 1.15, wall: 0.2,
+  hide: [], hideN: 0, DUR: 0.35, dMin: 1.6, dMax: 4, pMin: -0.25, pMax: 1.15, wall: 0.2, body: 0.6,
   vr: { view: false, f: 0, applied: false, p: new THREE.Vector3(), q: new THREE.Quaternion(), rp: new THREE.Vector3(), rq: new THREE.Quaternion(), FADE: 0.15, dist: 2.5, side: 0.5 } };
 const C3_GRP = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR);   // walls, floors, ceilings, door leaves (never your own body, held guns or loose props)
 const C3_AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -55159,18 +55159,29 @@ function c3Clear(T, cp) {
   C3.d.subVectors(cp, T); const L = C3.d.length(); if (L < 1e-4) return;
   C3.d.multiplyScalar(1 / L);
   const t = c3Ray(T, C3.d, L + C3.wall);
-  if (t >= 0) cp.copy(T).addScaledVector(C3.d, Math.max(0.25, t - C3.wall));
+  if (t >= 0) cp.copy(T).addScaledVector(C3.d, Math.max(0.02, t - C3.wall));   // never past the wall (was at least 0.25 m: through a wall within 0.45 m)
   for (let k = 0; k < 2; k++) for (const a of C3_AX) {
     C3.t.set(a[0], a[1], a[2]);
     const s = c3Ray(cp, C3.t, C3.wall);
     if (s >= 0) cp.addScaledVector(C3.t, -(C3.wall - s));
   }
+  return cp.distanceTo(T);
+}
+// Third-person glitch fix: with a wall close behind, the old rule put the camera 0.25 m from the target and the wall probes
+// pushed it on toward the target, i.e. inside your soldier's torso: back faces culled, so the frame showed the room with no
+// body (while the swing to a clear side, rate-limited, was still under way). Now the camera never comes nearer than
+// C3.body to the target: a way that short snaps the orbit to the clearest side at once, raises the pitch if every side is
+// that short, and as a last resort the camera goes over the head looking down.
+function c3Over(T, cp) {
+  C3.t.set(0, 1, 0);
+  const up = c3Ray(T, C3.t, 1.1 + C3.wall), h = up < 0 ? 1.1 : Math.max(0.3, up - C3.wall);
+  cp.set(Math.sin(C3.yaw) * 0.18, h, Math.cos(C3.yaw) * 0.18).add(T);   // a little behind, so the look is never straight down
 }
 const C3_SWING = [0.5, -0.5, 1.0, -1.0, 1.6, -1.6, 2.3, -2.3, Math.PI];
 // Clear length from the target along orbit yaw y (at the current pitch), up to the zoom distance.
-function c3Free(y) {
-  const cp = Math.cos(C3.pitch);
-  C3.d.set(Math.sin(y) * cp, Math.sin(C3.pitch), Math.cos(y) * cp);
+function c3Free(y, p = C3.pitch) {
+  const cp = Math.cos(p);
+  C3.d.set(Math.sin(y) * cp, Math.sin(p), Math.cos(y) * cp);
   const t = c3Ray(C3.T, C3.d, C3.dist + C3.wall);
   return t < 0 ? C3.dist : Math.max(0, t - C3.wall);
 }
@@ -55201,15 +55212,17 @@ function emoCamApply(dt) {
   const def = S.R.def, hips = def && (def.key === 'backflip' || def.key === 'dying');
   (hips ? e.B.pelvis : e.B.chest).getWorldPosition(C3.t);
   if (!C3.Tok) { C3.T.copy(C3.t); C3.Tok = true; } else C3.T.lerp(C3.t, 1 - Math.exp(-(dt || 0) * 12));
-  if (want && c3Free(C3.yaw) < C3.dist * 0.55) {                  // a wall close behind: swing round to the clearest side
+  const f0 = c3Free(C3.yaw);
+  if (want && f0 < C3.dist * 0.55) {                              // a wall close behind: swing round to the clearest side
     let by = C3.yaw, bd = -1;
     for (const o of C3_SWING) { const y = C3.yaw + o, f = c3Free(y); if (f > bd + 0.05) { bd = f; by = y; } }
     const st = 3.2 * Math.min(Math.max(dt || 0, 0), 0.1), dy = by - C3.yaw;
-    C3.yaw += C3.k < 1 ? dy : clamp(dy, -st, st);                  // still easing out: straight there
+    C3.yaw += C3.k < 1 || f0 < C3.body ? dy : clamp(dy, -st, st);  // still easing out, or this way is inside your body: straight there
+    if (bd < C3.body) for (const p of [0.7, 0.95, C3.pMax]) { if (p > C3.pitch && c3Free(C3.yaw, p) >= C3.body) { C3.pitch = p; break; } }   // cornered: from higher up
   }
   const cp = Math.cos(C3.pitch);
   C3.cp.set(Math.sin(C3.yaw) * cp, Math.sin(C3.pitch), Math.cos(C3.yaw) * cp).multiplyScalar(C3.dist).add(C3.T);
-  c3Clear(C3.T, C3.cp);
+  if (c3Clear(C3.T, C3.cp) < C3.body) c3Over(C3.T, C3.cp);       // still too close: over your head, never inside you
   C3.m.lookAt(C3.cp, C3.T, C3.up); C3.cq.setFromRotationMatrix(C3.m);
   const u = C3.k, k = u * u * u * (u * (u * 6 - 15) + 10);       // smootherstep
   C3.ow.lerpVectors(C3.bp, C3.cp, k); C3.oq.slerpQuaternions(C3.bq, C3.cq, k);
@@ -55240,10 +55253,19 @@ function emoVrPlace() {
   headWorld(C3.cp); camera.getWorldDirection(C3.d); C3.d.y = 0;
   if (C3.d.lengthSq() < 1e-6) C3.d.set(0, 0, -1); C3.d.normalize();
   C3.t.set(-C3.d.z, 0, C3.d.x);                                    // your right
-  C3.ow.copy(C3.d).multiplyScalar(V.dist).addScaledVector(C3.t, V.side);
-  const L = C3.ow.length(); C3.ow.multiplyScalar(1 / L);
-  const tHit = c3Ray(C3.cp, C3.ow, L + 0.3);
-  const d = tHit >= 0 ? Math.max(0.9, tHit - 0.3) : L;
+  // the way with the most room: front right, front left, back right, back left (was front right only, pushed out to at
+  // least 0.9 m even through a wall nearer than that)
+  let bd = -1, bf = 1, bs = 1, L = 1;
+  for (const [fs, ss] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    C3.ow.copy(C3.d).multiplyScalar(V.dist * fs).addScaledVector(C3.t, V.side * ss);
+    L = C3.ow.length(); C3.ow.multiplyScalar(1 / L);
+    const th = c3Ray(C3.cp, C3.ow, L + 0.3), d = th >= 0 ? th - 0.3 : L;
+    if (d > bd + 0.2) { bd = d; bf = fs; bs = ss; }
+    if (d >= L) break;
+  }
+  C3.ow.copy(C3.d).multiplyScalar(V.dist * bf).addScaledVector(C3.t, V.side * bs);
+  L = C3.ow.length(); C3.ow.multiplyScalar(1 / L);
+  const d = clamp(bd, Math.min(C3.body, Math.max(0.05, bd)), L);
   C3.T.copy(C3.cp).addScaledVector(C3.ow, d);                     // the viewpoint (world)
   e.B.chest.getWorldPosition(C3.t);
   const yawFace = Math.atan2(-(C3.t.x - C3.T.x), -(C3.t.z - C3.T.z));
