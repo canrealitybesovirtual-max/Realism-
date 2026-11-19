@@ -54048,7 +54048,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHi
  *  His side: emoAvPose replaces enemyPose for the avatar while one plays (his VR hands no longer drive the arms),
  *  blending in and out from the normal pose; his long gun goes onto his back, a pistol into a hip holster.
  * ========================================================================== */
-const EMO_SLOTS = [1, 5, 3, 6, 2, 0, 4, 0];   // slot (0 = up, clockwise) -> emote id
+const EMO_SLOTS = [1, 5, 3, 6, 2, 7, 4, 0];   // slot (0 = up, clockwise) -> emote id
 const EMOTES = [
   { id: 1, key: 'surrender', label: 'Surrender', bubble: 'Surrendering', icon: 'surr', body: 'full', start: emoSurrStart, pose: emoSurrPose, outW: emoSurrOut },
   { id: 2, key: 'dying', label: 'Dying fall', bubble: '', icon: 'fall', body: 'full', start: emoFallStart, pose: emoFallPose, outW: emoFallOut },
@@ -54056,7 +54056,8 @@ const EMOTES = [
   { id: 4, key: 'nadekick', label: 'Grenade kick', bubble: '', icon: 'nade', body: 'full', dur: () => EMO_KICK_DUR, start: emoKickStart, pose: emoKickPose, outW: emoKickOut,
     me: emoKickMe, check: () => (NADE.ready && (inv.frag > 0 || MOD.nades)) || (emoBanner('No frags left. Restock in the safe room'), false) },
   { id: 5, key: 'rack', label: 'Rack & Catch', bubble: '', icon: 'rack', body: 'full', hold: true, dur: () => EMO_RK.dur, start: emoRkStart, pose: emoRkPose, outW: emoRkOut, end: emoRkEnd, check: emoRkCheck },
-  { id: 6, key: 'moonwalk', label: 'Moonwalk', bubble: '', icon: 'moon', body: 'full', travel: true, start: emoMwStart, pose: emoMwPose, outW: emoMwOut, me: emoMwMe }
+  { id: 6, key: 'moonwalk', label: 'Moonwalk', bubble: '', icon: 'moon', body: 'full', travel: true, start: emoMwStart, pose: emoMwPose, outW: emoMwOut, me: emoMwMe },
+  { id: 7, key: 'gunflip', label: 'Gun Flip', bubble: '', icon: 'juggle', body: 'full', hold: true, dur: () => EMO_GF.dur, start: emoGfStart, pose: emoGfPose, outW: emoGfOut, check: emoGfCheck }
 ];
 const EMO_BY = new Map(EMOTES.map((d) => [d.id, d]));
 const EMO = {
@@ -54842,6 +54843,153 @@ function emoMwMine(c) {
   return p.holders.length > 0 || !!(it && (it.slot || it.slung || it.worn));
 }
 
+// --- gun flip (juggle): he turns the gun onto its side over his raised right foot, lets go; it drops flat onto the instep,
+// the foot gives with it, then flicks it up; it rolls once about the bore and comes down into his firing hand at chest
+// height, which reaches up to meet it (the hand sits on the grip from the catch on, as it did before the drop), absorbs
+// it and brings it back to low ready. Only the copy on your soldier moves (yours on the other player's screen, your own
+// third-person body): your real gun is never touched. Refused with no gun in your hand. ~3.4 s.
+const EMO_GF = { dur: 3.4, ready: 0.25, drop: 0.6, overH: 0.7, launch: 1.22, T: 0.72, settle: 2.7, back: 3.2,
+  catchP: new THREE.Vector3(0.2, 1.12, -0.4), catchE: new THREE.Euler(-0.25, 0.22, 0, 'YXZ'), ready0: EMO_RK_G[0][1] };
+EMO_GF.land = EMO_GF.drop + Math.sqrt(2 * EMO_GF.overH / 9.8);
+EMO_GF.qFlat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(   // root frame: bore to his left, right side up
+  new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)));
+const EMO_GF_B = (() => {
+  const T = EMO_GF, k = (t, o) => emoK0(t, Object.assign({ toeL: 0 }, o)), up = (y, z, toe, o) => Object.assign({ fR: [0.13, y, z], toe, fL: [0.1, 0, 0.02], py: -0.05, aL: [0.24, -0.38, -0.04] }, o);
+  return [k(0, {}),
+    k(T.ready, { np: -0.25, hp: -0.15, sp: -0.05, aR: [0.1, -0.3, -0.25] }),
+    k(0.5, up(0.08, -0.16, 0.12, { np: -0.42, hp: -0.25, sp: -0.12, cp: -0.06, aR: [0.1, -0.3, -0.28] })),          // the foot up, eyes on it
+    k(T.land - 0.01, up(0.08, -0.16, 0.12, { np: -0.45, hp: -0.25, sp: -0.12, cp: -0.06, aR: [0.14, -0.28, -0.22], curl: 0.3 })),
+    k(T.land + 0.07, up(0.045, -0.15, 0.08, { np: -0.45, hp: -0.25, sp: -0.08, aR: [0.15, -0.32, -0.18], curl: 0.3 })),   // it gives with the weight
+    k(1.12, up(0.06, -0.15, 0.12, { np: -0.42, hp: -0.25, sp: -0.08, aR: [0.15, -0.32, -0.18], curl: 0.3 })),
+    k(T.launch, up(0.28, -0.26, 0.38, { np: -0.2, hp: -0.05, sp: -0.04, aR: [0.16, -0.25, -0.22], curl: 0.3 })),   // the flick
+    k(1.45, up(0.1, -0.12, 0.1, { np: 0.02, hp: 0.12, aR: [0.15, -0.15, -0.28], curl: 0.3 })),            // eyes up with it
+    k(1.62, { fR: [0.12, 0, 0], np: 0.05, hp: 0.1, py: -0.02, aL: [0.2, -0.42, -0.02], aR: [0.14, -0.08, -0.32], curl: 0.3 }),
+    k(T.launch + T.T - 0.25, { np: -0.12, hp: -0.04, py: -0.02, aL: [0.16, -0.44, 0], aR: [0.15, -0.1, -0.34], curl: 0.3 }),
+    k(T.launch + T.T + 0.12, { np: -0.2, hp: -0.1, py: -0.035, aL: [0.12, -0.46, 0.0] }),               // caught: a small give
+    k(T.settle, { np: -0.12, hp: -0.06 }), k(T.dur, {})];
+})();
+const _gf = { a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), p: new THREE.Vector3(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(),
+  rq: new THREE.Quaternion(), fq: new THREE.Quaternion(), hp: new THREE.Vector3(), hq: new THREE.Quaternion(), m: new THREE.Matrix4(), box: new THREE.Box3(), bb: new THREE.Box3() };
+function emoGfCheck() {
+  const g = emoHeldGun();
+  if (!g) { emoBanner('Hold a gun to flip it'); return false; }
+  if (g.rack || g.task) { emoBanner('Not now: the gun is busy'); return false; }
+  return true;
+}
+// The gun's drawn box in its own root frame (once per gun root): its middle and half sizes.
+function emoGfBox(root) {
+  const u = root.userData; if (u.emoGfC) return u;
+  root.updateWorldMatrix(true, true);
+  _gf.m.copy(root.matrixWorld).invert(); _gf.box.makeEmpty();
+  root.traverseVisible((o) => {
+    if (!o.isMesh || !o.geometry) return;
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    _gf.bb.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld).applyMatrix4(_gf.m); _gf.box.union(_gf.bb);
+  });
+  if (_gf.box.isEmpty()) _gf.box.set(new THREE.Vector3(-0.015, -0.06, -0.12), new THREE.Vector3(0.015, 0.03, 0.08));
+  u.emoGfC = _gf.box.getCenter(new THREE.Vector3()); u.emoGfH = _gf.box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  return u;
+}
+function emoGfStart(e, R) {
+  R.P = {};
+  R.gf = R.gf || { p0: new THREE.Vector3(), q0: new THREE.Quaternion(), pc: new THREE.Vector3(), qc: new THREE.Quaternion(), v: new THREE.Vector3(), ax: new THREE.Vector3(),
+    fq0: new THREE.Quaternion(), ql: new THREE.Quaternion(), ev: 0, gp: new THREE.Vector3(), gq: new THREE.Quaternion() };
+  R.gf.ev = 0;
+}
+// The instep (world), its foot's turn: the top of the shoe a little ahead of the ankle.
+function emoGfInstep(e, out, q) {
+  const f = e.B.footR; f.updateWorldMatrix(true, false);
+  f.getWorldPosition(out); f.getWorldQuaternion(q);
+  _gf.c.set(0, 0, -1).applyQuaternion(q); out.addScaledVector(_gf.c, 0.06);
+  _gf.c.set(0, 1, 0).applyQuaternion(q); out.addScaledVector(_gf.c, -0.005);
+  return out;
+}
+// A gun pose (world) with its box middle on the instep, lying as q.
+function emoGfOnFoot(e, R, q, outP) {
+  const u = emoGfBox(e.gun.root);
+  emoGfInstep(e, outP, _gf.fq);
+  _gf.c.set(0, 1, 0).applyQuaternion(_gf.fq); outP.addScaledVector(_gf.c, u.emoGfH.x);   // lying on its side: half its width over the shoe
+  return outP.sub(_gf.a.copy(u.emoGfC).applyQuaternion(q));
+}
+// The chest-space key pose (as Rack & Catch's gun keys) in world.
+function emoGfChest(e, k, cq, outP, outQ) {
+  e.B.chest.localToWorld(outP.set(k.p[0], k.p[1], k.p[2]));
+  _gf.c.set(0, 0, -1).applyQuaternion(cq);
+  outQ.setFromAxisAngle(_rk.up, Math.atan2(-_gf.c.x, -_gf.c.z)).multiply(_gf.q2.setFromEuler(_rk.e.set(k.x, k.y, k.z)));
+}
+function emoGfPose(e, R, dt) {
+  const T = EMO_GF, t = Math.min(R.t, T.dur), out = R.phase === 'out', S = R.gf;
+  const P = emoKeys(EMO_GF_B, t, R.P); P.hand = null;
+  emoBody(e, P);
+  if (!e.gun || !e.gun.root) return;
+  const cq = _eb.cq, gp = S.gp, gq = S.gq;
+  e.root.updateWorldMatrix(true, false); e.root.getWorldQuaternion(_gf.rq);
+  let hold = 1;                                                    // the firing hand on the grip (1) or free (0)
+  if (t < T.ready) emoGfChest(e, T.ready0, cq, gp, gq);
+  else if (t < T.drop) {                                           // turned onto its side, out over the raised foot
+    emoGfChest(e, T.ready0, cq, _gf.p, _gf.q);
+    gq.copy(_gf.rq).multiply(T.qFlat);
+    emoGfOnFoot(e, R, gq, gp); gp.y += T.overH;
+    const u = smoothstep(T.ready, T.drop, t); gp.lerpVectors(_gf.p, gp, u); gq.slerpQuaternions(_gf.q, gq, u);
+    S.p0.copy(gp); S.q0.copy(gq);
+  } else if (t < T.land) {                                         // falling flat (straight down onto the instep)
+    const s = t - T.drop; gp.copy(S.p0); gp.y -= 4.9 * s * s; gq.copy(S.q0);
+    hold = 1 - smoothstep(T.drop, T.drop + 0.12, t);
+  } else if (t < T.launch) {                                       // on the foot: rides it (its pitch too)
+    if (S.ev < 1) { S.ev = 1; emoGfInstep(e, _gf.p, S.fq0); S.ql.copy(S.q0); if (EMO.cfg.sound && !out) try { emoThud(e, 0.25); emoRkTick(_gf.p); } catch (er) { /* no sound */ } }
+    emoGfInstep(e, _gf.p, _gf.fq);
+    gq.copy(_gf.fq).multiply(_gf.q2.copy(S.fq0).invert()).multiply(S.ql);
+    emoGfOnFoot(e, R, gq, gp);
+    hold = 0;
+  } else {
+    if (S.ev < 2) {                                                // the flick: the arc to his hand, one roll about the bore
+      S.ev = 2;
+      emoGfInstep(e, _gf.p, _gf.fq); gq.copy(_gf.fq).multiply(_gf.q2.copy(S.fq0).invert()).multiply(S.ql); emoGfOnFoot(e, R, gq, gp);
+      S.p0.copy(gp); S.q0.copy(gq);
+      S.pc.copy(T.catchP).applyMatrix4(e.root.matrixWorld);
+      S.qc.copy(_gf.rq).multiply(_gf.q2.setFromEuler(T.catchE));
+      S.v.subVectors(S.pc, S.p0).multiplyScalar(1 / T.T); S.v.y += 4.9 * T.T;
+      S.ax.set(-1, 0, 0).applyQuaternion(_gf.rq);
+      if (EMO.cfg.sound && !out) try { emoThud(e, 0.35); } catch (er) { /* no sound */ }
+    }
+    const s = t - T.launch;
+    if (s < T.T) {
+      gp.copy(S.p0).addScaledVector(S.v, s); gp.y -= 4.9 * s * s;
+      gq.slerpQuaternions(S.q0, S.qc, smoothstep(0, 1, s / T.T)).premultiply(_gf.q2.setFromAxisAngle(S.ax, (Math.PI * 2 * s) / T.T));
+      hold = smoothstep(T.T - 0.24, T.T, s);                        // the hand comes up to meet it
+    } else {
+      if (S.ev < 3) { S.ev = 3; if (EMO.cfg.sound && !out) try { emoRkTick(S.pc); emoRkSnd(e, R, 'rackFwd', 0.35); } catch (er) { /* no sound */ } }
+      const c = s - T.T, give = Math.sin(Math.PI * clamp(c / 0.16)) * 0.035;   // a small give in the catch
+      emoGfChest(e, T.ready0, cq, _gf.p, _gf.q);
+      const u = smoothstep(T.launch + T.T + 0.1, T.settle, t);
+      gp.lerpVectors(S.pc, _gf.p, u); gp.y -= give * (1 - u); gq.slerpQuaternions(S.qc, _gf.q, u);
+    }
+  }
+  if (R.w < 1) {                                                   // in / out: from and to his normal hold
+    _gf.p.copy(EMO.gP).applyMatrix4(e.root.matrixWorld); gp.lerpVectors(_gf.p, gp, R.w);
+    _gf.q.copy(_gf.rq).multiply(EMO.gQ); gq.slerpQuaternions(_gf.q, gq, R.w);
+  }
+  if (out) hold = 1;
+  // place it (enemy-root space)
+  e.gun.root.quaternion.copy(_gf.rq).invert().multiply(gq);
+  e.gun.root.position.copy(gp); e.root.worldToLocal(e.gun.root.position);
+  e.gun.root.updateWorldMatrix(false, true);
+  // the firing hand: on the grip (as Rack & Catch's hold), or where the keyed arm put it
+  if (hold > 0) {
+    _gf.a.copy(EMO_RK.wrist).applyQuaternion(gq).add(gp); _gf.hq.copy(gq).multiply(_rk.hR);
+    if (hold < 1) {
+      const H = e.B.handR; H.updateWorldMatrix(true, false); H.getWorldPosition(_gf.hp); H.getWorldQuaternion(_gf.q);
+      _gf.a.lerpVectors(_gf.hp, _gf.a, hold); _gf.hq.slerpQuaternions(_gf.q, _gf.hq, hold);
+    }
+    emoRkArm(e, 'R', _gf.a, _gf.hq, cq);
+  }
+  enemyCurl(e, Math.round(mix(0.25, 0.6, hold) * 20) / 20);
+}
+function emoGfOut(e, R) {
+  if (R.phase !== 'out') return smoothstep(0, 0.3, R.t);
+  return 1 - smoothstep(0, 0.35, R.ot);
+}
+
 // --- bubble over his head ---------------------------------------------------------------------------------------------
 function emoBubble(dt) {
   const R = EMO.rem, U = EMO.bub, e = R.e;
@@ -54972,6 +55120,13 @@ function emoIcon(c, kind, x, y, s, col) {
     c.lineWidth = 5; c.beginPath(); c.moveTo(30, -6); c.lineTo(52, -6); c.moveTo(44, -14); c.lineTo(54, -6); c.lineTo(44, 2); c.stroke();   // back
     c.save(); c.translate(-6, -46); c.rotate(0.7); c.beginPath(); c.roundRect(-5, -12, 10, 24, 4); c.fill(); c.restore();   // the round
     c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.arc(-6, -46, 20, -2.6, -0.6); c.stroke(); c.globalAlpha = 1;
+  } else if (kind === 'juggle') {                                  // a gun flicked up off the foot, spinning
+    c.beginPath(); c.arc(-12, -38, 10, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(-12, -26); c.lineTo(-10, 10);
+    c.moveTo(-11, -18); c.lineTo(-28, -4); c.moveTo(-11, -18); c.lineTo(6, -30);
+    c.moveTo(-10, 10); c.lineTo(-16, 32); c.lineTo(-16, 54); c.moveTo(-10, 10); c.lineTo(8, 24); c.lineTo(22, 22); c.stroke();
+    c.save(); c.translate(26, -34); c.rotate(-0.6); c.fillRect(-16, -5, 30, 9); c.fillRect(4, 2, 8, 13); c.restore();
+    c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.arc(26, -34, 22, 0.6, 2.4); c.stroke(); c.beginPath(); c.moveTo(24, 16); c.lineTo(26, -6); c.stroke();
   } else if (kind === 'moon') {                                    // gliding back: one heel up, the other foot flat
     c.beginPath(); c.arc(6, -38, 10, 0, Math.PI * 2); c.fill();
     c.beginPath(); c.moveTo(4, -26); c.lineTo(2, 10);
