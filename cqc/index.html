@@ -11917,7 +11917,7 @@ function netStart() {
   NET.retry = 0; NET.sentB.clear(); NET.mine = null; NET.drRx = 0; NET.remSt = null; NET.ebAsk.clear();              // his side may have lost your gun builds: send them again
   NET.everOn = true; NET.reason = ''; NET.relQ.length = 0; NET.byeAt = 0;
   Object.assign(NET.link, { rtt: 0, jit: 0, loss: 0, discAt: 0, local: '', remote: '', proto: '', relayed: false, txB: 0, rxB: 0, at: performance.now(), pingAt: 0, statAt: performance.now() - 500, said: false });
-  NET.jn = 0; NET.ji = 0; NET.rxN = 0; NET.rxGot = 0; NET.rxMiss = 0; NET.delay = 90;
+  NET.jn = 0; NET.ji = 0; NET.rxN = 0; NET.rxGot = 0; NET.rxMiss = 0; NET.delay = 90; NET.rxIv = 33; NET.enIv = 60; NET.enLastC = 0;
   NET.hiGot = false; NET.remF = null; MPW.asked.clear(); MPW.said = false;   // MPSYNC: the joiner's frontier counts once it has the host's plans
   if (NET.dial) NET.dial.fin('ok');
   NET.call = null; setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
@@ -12042,11 +12042,16 @@ function netLinkTick(now) {
     const dt = (now - L.at) / 1000; L.up = L.txB / dt / 1024; L.down = L.rxB / dt / 1024; L.txB = L.rxB = 0; L.at = now;
     const n = NET.rxGot + NET.rxMiss; if (n >= 10) { L.loss += ((NET.rxMiss / n) - L.loss) * 0.5; NET.rxGot = NET.rxMiss = 0; }
     if (NET.jn >= 15) {
-      const w = Array.from(NET.jw.subarray(0, Math.min(NET.jn, NET.jw.length))).sort((a, b) => a - b);
-      const p95 = w[Math.floor(w.length * 0.95)] - w[0];
+      const n = Math.min(NET.jn, NET.jw.length), w = NET.jws.subarray(0, n); w.set(NET.jw.subarray(0, n)); w.sort();   // no allocation (typed sort is numeric)
+      const p95 = w[Math.floor(n * 0.95)] - w[0], p90 = w[Math.floor(n * 0.9)] - w[0];
       L.jit = p95;
-      const want = clamp(1000 / NET.hz * (1.5 + 4 * L.loss) + p95 + 12, 55, 450);   // a packet interval and a half (more when packets go missing) + the late tail
-      NET.delay += (want - NET.delay) * (want > NET.delay ? 0.6 : 0.15);
+      if (NETS.on) {                                               // NETSMOOTH: 1.2 intervals (his real rate) + p90, more on loss; shrinks fast while steady
+        const iv = clamp(NET.rxIv, 12, 120), want = clamp(iv * (NETS.iv + 4 * L.loss) + p90 + 6, NETS.floor, 450);
+        NET.delay += (want - NET.delay) * (want > NET.delay ? 0.7 : (p95 - p90 < 12 && L.loss < 0.02 ? 0.45 : 0.2));
+      } else {
+        const want = clamp(1000 / NET.hz * (1.5 + 4 * L.loss) + p95 + 12, 55, 450);   // a packet interval and a half (more when packets go missing) + the late tail
+        NET.delay += (want - NET.delay) * (want > NET.delay ? 0.6 : 0.15);
+      }
     }
   }
   if (now - L.statAt > 2000) { L.statAt = now; netStats(); }
@@ -12372,17 +12377,35 @@ function netVoiceStop() {
   if (NET.vsrc) { try { NET.vsrc.disconnect(); } catch (e) { /* gone */ } NET.vsrc = null; }
 }
 const netLive = () => NET.st === 'on';
+// NETSMOOTH: pose stream knobs. fastV / fastW: when your packets go at hzFast; cap: kB/s up past which they stay at NET.hz.
+// Receiver: Hermite between samples (the sent velocity, else neighbours), damped extrapolation (tau ms, max ms) past the
+// newest, the playback buffer from the measured packet interval x iv + the jitter's p90. ?netsmooth=off = the old linear path.
+const NETS = { on: !/[?&]netsmooth=off\b/.test(QS), hzFast: 60, fastV: 2, fastW: 2, cap: 40, tau: 90, max: 220, iv: 1.2, floor: 40, enHz: 15, enHzNear: 20, enNear: 14 };
+NET.tx = { slot: -1, x: 0, z: 0, yw: 0, vx: 0, vz: 0, wy: 0 };
+NET.rxIv = 33; NET.jws = new Float32Array(90);
 // --- out: your pose, room-local, 30 Hz ---------------------------------------------------------
 function netTx(dt) {
   if (!netLive() || !NET.fast || !NET.fast.open) return;
-  NET.acc += dt; if (NET.acc < 1 / NET.hz) return; NET.acc = 0;
   const r = stream.current; if (!r) return;
   const f = rF(r), h = headWorld(NET._h); camera.getWorldDirection(NET._f);
+  const fx = NET._f.x * f, fz = NET._f.z * f, lx = rLX(r, h.x), lz = rLZ(r, h.z), yw = Math.atan2(-fx, -fz);
+  const T = NET.tx;                                                // NETSMOOTH: your room-local velocity and yaw rate, every frame (smoothed)
+  if (T.slot !== r.slot || !(dt > 0) || dt > 0.25) { T.slot = r.slot; T.vx = T.vz = T.wy = 0; }
+  else {
+    const k = 1 - Math.exp(-dt * 14), vx = (lx - T.x) / dt, vz = (lz - T.z) / dt, wy = Math.atan2(Math.sin(yw - T.yw), Math.cos(yw - T.yw)) / dt;
+    if (Math.hypot(vx, vz) > 12 || Math.abs(wy) > 25) { T.vx = T.vz = T.wy = 0; }   // a teleport / snap turn: not a motion to extrapolate
+    else { T.vx += (vx - T.vx) * k; T.vz += (vz - T.vz) * k; T.wy += (wy - T.wy) * k; }
+  }
+  T.x = lx; T.z = lz; T.yw = yw;
+  // Rate: 30 Hz, 60 Hz while you move fast (> 2 m/s) or turn fast (> 2 rad/s), unless your upload already passes NETS.cap.
+  const fast = (Math.hypot(T.vx, T.vz) > NETS.fastV || Math.abs(T.wy) > NETS.fastW) && NET.link.up < NETS.cap;
+  const iv = 1 / (fast ? NETS.hzFast : NET.hz);
+  NET.acc += dt; if (NET.acc < iv) return; NET.acc = Math.min(NET.acc - iv, iv);
   const g = renderer.xr.isPresenting ? (gunOf(vrHands[1]) || gunOf(vrHands[0])) : gunOf(deskHand);
-  const fx = NET._f.x * f, fz = NET._f.z * f;
+  const moving = Math.abs(T.vx) + Math.abs(T.vz) > 0.05 || Math.abs(T.wy) > 0.05;
   try {
-    netSendFast({ t: 's', n: ++NET.seq, c: Math.round(performance.now()), s: r.slot, x: +rLX(r, h.x).toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +rLZ(r, h.z).toFixed(3),
-      yw: +Math.atan2(-fx, -fz).toFixed(3), p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
+    netSendFast({ t: 's', n: ++NET.seq, c: Math.round(performance.now()), s: r.slot, x: +lx.toFixed(3), y: +(h.y - r.origin.y).toFixed(3), z: +lz.toFixed(3),
+      yw: +yw.toFixed(3), vx: moving ? +T.vx.toFixed(2) : undefined, vz: moving ? +T.vz.toFixed(2) : undefined, wy: moving ? +T.wy.toFixed(2) : undefined, p: +Math.asin(clamp(NET._f.y, -1, 1)).toFixed(3), e: +(h.y - level.floor).toFixed(3),
       g: g ? (g.def.cls === 'pistol' ? 'pistol' : g.def.pellets > 1 ? 'shotgun' : 'smg') : '', d: playerState.dead ? 1 : 0, f: NET.role === 'host' || NET.hiGot || !MPW.on ? stream.frontier : undefined, k: r.kind === 'safe' ? 1 : 0,
       r: g && (g.task || (!g.mag && g.def.action !== 'pump')) ? 1 : 0, a: g && (g.ads > 0.5 || DESK_ADS.mouse || DESK_ADS.key || DESK_ADS.pad) ? 1 : 0,
       ...netHandsTx(r, f, g), ...netGunTx(g), ...netStTx(), ...netHeldTx() });   // reloading (a task, or a magazine out in VR) / aiming: his body shows it
@@ -12446,6 +12469,8 @@ function netRx(m) {
     if (NET.rxN && m.n > NET.rxN) { NET.rxMiss += Math.min(30, m.n - NET.rxN - 1); NET.rxGot++; } else if (!NET.rxN) NET.rxGot++;   // loss on the fast channel
     if (m.n > NET.rxN) NET.rxN = m.n;
     if (NET.buf.length && m.n <= NET.buf[NET.buf.length - 1].n) return;   // out of order (unordered channel): drop the stale one
+    { const P = NET.buf[NET.buf.length - 1], d = P ? (m.c - P.c) / Math.max(1, m.n - P.n) : 0;   // NETSMOOTH: his send interval (it follows his rate: rises fast, falls slowly)
+      if (d > 5 && d < 300) NET.rxIv += (d - NET.rxIv) * (d > NET.rxIv ? 0.3 : 0.04); }
     NET.buf.push(m); if (NET.buf.length > 40) NET.buf.shift();
     NET.remSlot = m.s; if (m.f != null) NET.remF = m.f;
   } else if (m.t === 'hit') {
@@ -12737,12 +12762,15 @@ function netPlaceIn(room, back) {
 }
 // --- co-op: the host's men copied to the joiner -------------------------------------------------------------------
 const _nm = { v: new THREE.Vector3(), w: new THREE.Vector3() };
-function netEnTx(dt) {                                            // host, 15 Hz
-  NET.enAcc += dt; if (NET.enAcc < 1 / 15 || !NET.fast || !NET.fast.open) return; NET.enAcc = 0;
-  const L = [];
+function netEnTx(dt) {                                            // host, 15 Hz (20 Hz with the joiner near one of them: NETSMOOTH)
+  const iv = 1 / (NETS.on && NET.enNear ? NETS.enHzNear : NETS.enHz);
+  NET.enAcc += dt; if (NET.enAcc < iv || !NET.fast || !NET.fast.open) return; NET.enAcc = Math.min(NET.enAcc - iv, iv);
+  const L = [], c = Math.round(performance.now()), nr = NETS.enNear * NETS.enNear;
+  let near = false;
   for (const e of ENEMY.list) {
     if (e.net || e.puppet || !e.room || !e.room.active) continue;
     if (!e.nid) e.nid = ++NET.nidC;
+    if (!near && !e.dead && NET.remOk && NET.remRoom && Math.abs(NET.remRoom.slot - e.room.slot) <= 1) { const dx = rWX(e.room, e.pos.x) - NET.remW.x, dz = rWZ(e.room, e.pos.y) - NET.remW.z; near = dx * dx + dz * dz < nr; }
     if (!e.lk) e.lk = Object.keys(ENEMY_LOADOUTS).find((k) => ENEMY_LOADOUTS[k] === e.w) || 'smg';
     let w = null;
     if (!e.dead && ((e.engaged && (e.los || e.hasKnown)) || e.watch)) {   // aimfix: only a real threat point (not lastKnown's default), and the head of the player he fights (NET.tgt is null outside his update)
@@ -12756,11 +12784,16 @@ function netEnTx(dt) {                                            // host, 15 Hz
   }
   // Split so each packet stays under one UDP datagram (~1.1 kB): a fragmented unreliable message is lost if any piece is.
   let part = [], sz = 0;
-  for (const a of L) { const n = netSize(a) + 1; if (part.length && sz + n > 1050) { netSendFast({ t: 'en', L: part }); part = []; sz = 0; } part.push(a); sz += n; }
-  netSendFast({ t: 'en', L: part });
+  NET.enNear = near;
+  for (const a of L) { const n = netSize(a) + 1; if (part.length && sz + n > 1050) { netSendFast({ t: 'en', c, L: part }); part = []; sz = 0; } part.push(a); sz += n; }
+  netSendFast({ t: 'en', c, L: part });
 }
 function netEnRx(m) {                                             // joiner
-  const now = performance.now(), seen = new Set();
+  const now = performance.now(), seen = NET._enSeen || (NET._enSeen = new Set()); seen.clear();
+  if (m.c != null && m.c > NET.enLastC) {                          // NETSMOOTH: the host's send interval (the parts of one tick share c)
+    const d = m.c - NET.enLastC; if (NET.enLastC && d > 10 && d < 300) NET.enIv += (d - NET.enIv) * (d > NET.enIv ? 0.3 : 0.05);
+    NET.enLastC = m.c;
+  }
   for (const a of m.L) {
     const [id, slot, x, z, yw, cr, aim, dead, lk, w, fy, st = 0, kit = 0, pose = null, un = 0, nd = 0, vx = 0, rk = null] = a; seen.add(id);
     const room0 = stream.rooms.get(slot), room = room0 && mpwKindOk(room0, rk) ? room0 : null;   // MPSYNC: his man in the other kind of room here: not shown
@@ -12777,6 +12810,7 @@ function netEnRx(m) {                                             // joiner
     if (dead && !e.pupDead) e.pupDead = now;                        // dropfix: before netPupState, so a dead copy is never re-armed
     netPupState(e, st, pose, un, now);
     e.pupT = now; e.pupX = x; e.pupZ = z; e.pupYw = yw; e.crouchT = cr; e.aimT = aim;
+    if (m.c != null) netPupHist(e, m.c, x, z, yw);
     if (fy != null) e.stairY = fy;                                  // a man on a landing is drawn (and hit) there, not on the floor below
     if (w) { e.watch = e.watch || new THREE.Vector3(); e.watch.set(w[0], w[1], w[2]); } else e.watch = null;
     if (!dead) e.pupDead = 0; else if (!e.pupDead) e.pupDead = now;
@@ -12812,10 +12846,43 @@ function netPupPose(e, dt, now) {                                 // joiner: eas
   if (e.enade) { const N = e.enade; N.t += dt; if (!N.gone && N.t >= ENADE.C.wind) { N.gone = true; if (N.vis) N.vis.root.visible = false; } if (N.t > ENADE.C.wind + 0.6) enadeEnd(e); }   // the host's 'nade' brings the real one
   if (e.pupSt && netPupBones(e, dt)) return;                      // down, hands up, tied: the host's bones
   const k = 1 - Math.exp(-dt * 12), px = e.pos.x, pz = e.pos.y;
-  if (e.pupX !== undefined) { e.pos.x += (e.pupX - e.pos.x) * k; e.pos.y += (e.pupZ - e.pos.y) * k; e.yaw += Math.atan2(Math.sin(e.pupYw - e.yaw), Math.cos(e.pupYw - e.yaw)) * k; }
+  if (NETS.on && netPupSample(e)) { /* NETSMOOTH: Hermite playback of the host's samples */ }
+  else if (e.pupX !== undefined) { e.pos.x += (e.pupX - e.pos.x) * k; e.pos.y += (e.pupZ - e.pos.y) * k; e.yaw += Math.atan2(Math.sin(e.pupYw - e.yaw), Math.cos(e.pupYw - e.yaw)) * k; }
   e.speed = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
   e.engaged = false; e.los = false; e.state = 'idle';
   e.poseAcc = 0; enemyPose(e, dt, now);
+}
+// NETSMOOTH: the last 4 host samples per copy (host clock), played back NET.delay (at least 1.25 of his send interval)
+// late with Hermite on position (central differences) and the shortest-arc yaw; damped extrapolation past the newest.
+function netPupHist(e, c, x, z, yw) {
+  let H = e.pupH;
+  if (!H) H = e.pupH = { t: new Float64Array(4), x: new Float64Array(4), z: new Float64Array(4), yw: new Float64Array(4), n: 0 };
+  if (H.n && c <= H.t[H.n - 1]) return;                            // out of order / a second part of the same tick
+  if (H.n && c - H.t[H.n - 1] > 600) H.n = 0;                      // a long gap: start again
+  if (H.n === 4) { for (let i = 0; i < 3; i++) { H.t[i] = H.t[i + 1]; H.x[i] = H.x[i + 1]; H.z[i] = H.z[i + 1]; H.yw[i] = H.yw[i + 1]; } H.n = 3; }
+  const i = H.n++; H.t[i] = c; H.x[i] = x; H.z[i] = z; H.yw[i] = i ? H.yw[i - 1] + nsWrap(yw - H.yw[i - 1]) : yw;   // yaw unwrapped along the samples
+}
+function nphTan(A, H, i) {
+  const p = i > 0 ? i - 1 : i, n = i + 1 < H.n ? i + 1 : i, dt = H.t[n] - H.t[p];
+  return dt > 0 ? (A[n] - A[p]) / dt : 0;
+}
+function netPupSample(e) {
+  const H = e.pupH; if (!H || H.n < 2 || NET.off == null) return false;
+  const rt = performance.now() - NET.off - Math.max(NET.delay, NET.enIv * 1.25 + 15);
+  let ia = 0;
+  for (let i = 0; i < H.n; i++) { if (H.t[i] <= rt) ia = i; else break; }
+  let x, z, yw;
+  if (ia === H.n - 1 || rt < H.t[0]) {                             // past the newest (or before the oldest): damped velocity
+    const t = clamp(rt - H.t[ia], 0, NETS.max), dd = NETS.tau * (1 - Math.exp(-t / NETS.tau));
+    x = H.x[ia] + nphTan(H.x, H, ia) * dd; z = H.z[ia] + nphTan(H.z, H, ia) * dd; yw = H.yw[ia] + nphTan(H.yw, H, ia) * dd;
+  } else {
+    const b = ia + 1, T = H.t[b] - H.t[ia], k = clamp((rt - H.t[ia]) / Math.max(1, T));
+    x = nsHerm(H.x[ia], nphTan(H.x, H, ia), H.x[b], nphTan(H.x, H, b), T, k);
+    z = nsHerm(H.z[ia], nphTan(H.z, H, ia), H.z[b], nphTan(H.z, H, b), T, k);
+    yw = nsHerm(H.yw[ia], nphTan(H.yw, H, ia), H.yw[b], nphTan(H.yw, H, b), T, k);
+  }
+  e.pos.set(x, z); e.yaw = nsWrap(yw);
+  return true;
 }
 // Host: which player a man fights. Both count when they are within one room of his (rooms anywhere along the chain):
 // nearer, seen (a clear line from his eyes), the one who just shot him or whose shot he heard, and the one he already
@@ -13113,7 +13180,78 @@ if (/[?&]dev\b/.test(QS)) window.__cqcNet = { NET, VS, netRx, netStart, netTick,
   const t = setInterval(() => { try { if (gameStarted) { clearInterval(t); netJoin(m[1]); } } catch (e) { /* not yet */ } }, 500);
 })();
 // --- the other player's body ---------------------------------------------------------------------
+// NETSMOOTH sample: Hermite between packets (his sent velocity / yaw rate, else the neighbours' differences), yaw on the
+// shortest arc, a pair across a doorway (two slots) blended in the first room's frame (no freeze then jump at the slot
+// change), damped extrapolation past the newest packet. Written into one reused object (no allocation per frame).
+const NSO = { s: 0, k: 0, x: 0, y: 0, z: 0, yw: 0, p: 0, e: 0, g: '', d: 0, r: 0, a: 0, hL: null, hR: null, gq: null, gp: null, gh: 'R', gt: null, gb: null, ls: 0, ir: 0, hi: '' };
+const NSA = { hL: [0, 0, 0], hR: [0, 0, 0], gp: [0, 0, 0], gq: [0, 0, 0, 1] };
+const nsWrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+function nsFrom(a) {
+  const o = NSO;
+  o.s = a.s; o.k = a.k; o.x = a.x; o.y = a.y; o.z = a.z; o.yw = a.yw; o.p = a.p; o.e = a.e; o.g = a.g; o.d = a.d; o.r = a.r; o.a = a.a;
+  o.hL = a.hL; o.hR = a.hR; o.gq = a.gq; o.gp = a.gp; o.gh = a.gh; o.gt = a.gt; o.gb = a.gb; o.ls = a.ls; o.ir = a.ir; o.hi = a.hi;
+  return o;
+}
+// Tangent (units per ms) at buffer sample i: the sent rate, else the central difference over same-slot neighbours.
+function nsTan(B, i, key, vk, ang) {
+  const s = B[i];
+  if (vk && s[vk] != null) return s[vk] / 1000;
+  const p = i > 0 && B[i - 1].s === s.s && s.c - B[i - 1].c < 250 ? B[i - 1] : null;
+  const n = i + 1 < B.length && B[i + 1].s === s.s && B[i + 1].c - s.c < 250 ? B[i + 1] : null;
+  const A = p || s, C = n || s; if (C.c <= A.c) return 0;
+  const d = C[key] - A[key];
+  return (ang ? nsWrap(d) : d) / (C.c - A.c);
+}
+function nsHerm(p0, m0, p1, m1, T, k) {
+  const k2 = k * k, k3 = k2 * k;
+  return (2 * k3 - 3 * k2 + 1) * p0 + (k3 - 2 * k2 + k) * T * m0 + (-2 * k3 + 3 * k2) * p1 + (k3 - k2) * T * m1;
+}
+function nsL3(u, w, k, out) { if (!u || !w) return w || u; out[0] = u[0] + (w[0] - u[0]) * k; out[1] = u[1] + (w[1] - u[1]) * k; out[2] = u[2] + (w[2] - u[2]) * k; return out; }
 function netSample(rt) {
+  if (!NETS.on) return netSample0(rt);
+  const B = NET.buf, n = B.length; if (!n) return null;
+  let ia = -1;
+  for (let i = 0; i < n; i++) { if (B[i].c <= rt) ia = i; else break; }
+  if (ia < 0) return B[0];
+  const a = B[ia];
+  if (ia === n - 1) {                                              // past the newest packet: carry on with its velocity, damped (no jump when the next one comes)
+    const o = nsFrom(a); if (a.d) return o;
+    const t = Math.min(rt - a.c, NETS.max), dd = NETS.tau * (1 - Math.exp(-t / NETS.tau));
+    o.x = a.x + nsTan(B, ia, 'x', 'vx') * dd; o.z = a.z + nsTan(B, ia, 'z', 'vz') * dd; o.y = a.y + nsTan(B, ia, 'y', null) * dd * 0.5;
+    o.yw = nsWrap(a.yw + nsTan(B, ia, 'yw', 'wy', true) * dd);
+    return o;
+  }
+  const b = B[ia + 1];
+  if (b.k !== a.k || a.d !== b.d) return a;
+  const T = b.c - a.c, k = clamp((rt - a.c) / Math.max(1, T)), o = nsFrom(a);
+  if (b.s !== a.s) {                                               // through a doorway: b in a's room frame, blended there (hands stay a's until the switch)
+    const ra = stream.rooms.get(a.s), rb = stream.rooms.get(b.s);
+    if (!ra || !rb) return a;
+    const bx = rLX(ra, rWX(rb, b.x)), bz = rLZ(ra, rWZ(rb, b.z)), by = b.y + rb.origin.y - ra.origin.y, byw = b.yw + (rF(ra) !== rF(rb) ? Math.PI : 0);
+    if (Math.abs(bx - a.x) + Math.abs(bz - a.z) > 3) return a;   // not one doorway apart: no blend
+    o.x = a.x + (bx - a.x) * k; o.y = a.y + (by - a.y) * k; o.z = a.z + (bz - a.z) * k; o.yw = nsWrap(a.yw + nsWrap(byw - a.yw) * k);
+    o.p = a.p + (b.p - a.p) * k; o.e = a.e + (b.e - a.e) * k;
+    return o;
+  }
+  if (T > 250) { o.x = a.x + (b.x - a.x) * k; o.y = a.y + (b.y - a.y) * k; o.z = a.z + (b.z - a.z) * k; }   // a long gap: tangents mean nothing there
+  else {
+    o.x = nsHerm(a.x, nsTan(B, ia, 'x', 'vx'), b.x, nsTan(B, ia + 1, 'x', 'vx'), T, k);
+    o.z = nsHerm(a.z, nsTan(B, ia, 'z', 'vz'), b.z, nsTan(B, ia + 1, 'z', 'vz'), T, k);
+    o.y = nsHerm(a.y, nsTan(B, ia, 'y', null), b.y, nsTan(B, ia + 1, 'y', null), T, k);
+  }
+  const y1 = a.yw + nsWrap(b.yw - a.yw);                           // shortest arc across +-pi
+  o.yw = nsWrap(T > 250 ? a.yw + (y1 - a.yw) * k : nsHerm(a.yw, nsTan(B, ia, 'yw', 'wy', true), y1, nsTan(B, ia + 1, 'yw', 'wy', true), T, k));
+  o.p = a.p + (b.p - a.p) * k; o.e = a.e + (b.e - a.e) * k;
+  o.r = b.r; o.a = b.a;
+  o.hL = nsL3(a.hL, b.hL, k, NSA.hL); o.hR = nsL3(a.hR, b.hR, k, NSA.hR);
+  o.gq = b.gq;
+  if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); const q = NSA.gq; q[0] = _nsQa.x; q[1] = _nsQa.y; q[2] = _nsQa.z; q[3] = _nsQa.w; o.gq = q; }
+  const same = a.gh === b.gh && a.gt === b.gt;
+  o.gp = same ? nsL3(a.gp, b.gp, k, NSA.gp) : b.gp;
+  o.gh = b.gh; o.gt = b.gt; o.gb = b.gb; o.ls = b.ls; o.ir = b.ir; o.hi = b.hi;
+  return o;
+}
+function netSample0(rt) {                                        // the old linear sampler (?netsmooth=off)
   const B = NET.buf; if (!B.length) return null;
   let a = B[0], b = null;
   for (let i = 0; i < B.length; i++) { if (B[i].c <= rt) a = B[i]; else { b = B[i]; break; } }
@@ -13189,7 +13327,12 @@ function netAvApply(s, dt) {
   if (NET.remRoom) NET.remW.set(rWX(r, s.x), r.origin.y + s.y, rWZ(r, s.z));
   let e = NET.av;
   if (e && ENEMY.list.includes(e) && e.room !== r && r && r.active && !e.dead) {   // he went into another room: carry the body over (rebuilding it each door was slow and flickered)
-    r.group.add(e.root); e.room = r; e.root.visible = true; NET.avMoved = (NET.avMoved || 0) + 1;
+    const oR = e.room;
+    if (NETS.on && oR && oR.group) {                               // NETSMOOTH: keep his world pose through the switch (no one-frame pop to the new room's origin; enemyPose runs next frame)
+      e.root.updateMatrixWorld(); r.group.updateMatrixWorld(); r.group.attach(e.root);
+      e.pos.set(rLX(r, rWX(oR, e.pos.x)), rLZ(r, rWZ(oR, e.pos.y)));   // the speed estimate below compares in the new frame
+    } else r.group.add(e.root);
+    e.room = r; e.root.visible = true; NET.avMoved = (NET.avMoved || 0) + 1;
   }
   const look = s.gt != null ? 'smg' : (s.g || 'smg');              // his real gun goes in its hands (netAvGunTick); an older build on the other side: the loadout look
   if (e && (!ENEMY.list.includes(e) || (!s.d && e.dead) || NET.avGun !== look)) { if (ENEMY.list.includes(e)) removeEnemy(e); e = NET.av = null; }
