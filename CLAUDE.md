@@ -2009,3 +2009,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Multiplayer: a gun you picked up from the other player sends the finish it wears (g.netFin), not your own saved finish for that type; dying voice counts only play when they grow, and the first count on a copy made another way (a body re-sent) is not played.
 - Workshop BUILD view: the other player's dropped gun (g.netFin) no longer outranks your own gun of that type.
 - Checked: module parse, eslint no-undef. Not run in a browser or headset.
+
+## CQC multiplayer: heavy props frozen (NPF, ?netprops=off)
+- Fixed furniture (racks, lockers, cabinets, shelves, tables) is part of the room layout, the same on both sides through MPSYNC. Loose props moved on each side by its own physics, so a crate one player pushed stood somewhere else for the other (he walked through it).
+- netPropFreeze (netTick, twice a second while connected): every loose prop of 6 kg or more (crates, chairs, drums, big boxes; not items, tables, debris, held things) goes back to its layout spot (resetProp) and becomes a Fixed Rapier body: walls for both players, no network traffic. grab() refuses them. Lighter things (cans, bottles, flaps) still move on each side. Link ended = dynamic again.
+- Checked: module parse, eslint no-undef. Not run (no browser, at the user's request).

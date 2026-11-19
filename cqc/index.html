@@ -12888,9 +12888,30 @@ function netSample(rt) {
     hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir, hi: b.hi };
 }
 const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
+// Multiplayer: heavy loose props (crates, chairs, drums, boxes you cannot walk through) are frozen at their room spot while
+// connected, so both players have them in the same place without sending them. Small things (cans, bottles, flaps) still
+// move on each side. Back to normal physics after the link ends. ?netprops=off = the old behaviour.
+const NPF = { on: !/[?&]netprops=off\b/.test(QS), min: 6, at: 0, list: [] };
+function netPropFreeze() {
+  if (!NPF.on) return;
+  const live = NET.st !== 'off' && netLive();
+  if (!live) {
+    if (NPF.list.length) { for (const p of NPF.list) if (p.inWorld && p.netFixed) { p.netFixed = false; try { p.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); } catch (e) { /* gone */ } } NPF.list.length = 0; }
+    return;
+  }
+  const t = performance.now(); if (t < NPF.at) return; NPF.at = t + 500;
+  for (let i = NPF.list.length - 1; i >= 0; i--) if (!NPF.list[i].inWorld) NPF.list.splice(i, 1);
+  for (const p of props) {
+    if (p.netFixed || !p.inWorld || p.item || p.table || p.debris || p.kinematic || !(p.mass >= NPF.min) || (p.holders && p.holders.length) || !p.body || !p.spawn) continue;
+    resetProp(p);                                                   // its spot from the room layout: the same on both sides
+    try { p.body.setBodyType(RAPIER.RigidBodyType.Fixed, true); } catch (e) { continue; }
+    p.netFixed = true; NPF.list.push(p);
+  }
+}
 function netTick(dt, now) {
   netAvLight();                                                    // his weapon light (off when he is gone)
   if ((NET.st !== 'off') !== MP_SAME) { MP_SAME = NET.st !== 'off'; applyMenu(); if (MP_SAME && (MOD.speed || MENU.carry !== 'standard')) netSay('Multiplayer: both players move at the same speed (fast move and carry weight off)', 4); }
+  netPropFreeze();                                                 // heavy loose props stand still in multiplayer (both sides the same, no traffic)
   if (NET.st === 'off') return;
   if (NET.st === 'host' && NET.code && performance.now() - (NET.codeAt || 0) > 20000) { NET.codeAt = performance.now(); netSay(`Multiplayer code: ${NET.code} (waiting for the other player)`, 8); }   // the code again while you wait
   netTx(dt);
@@ -14466,7 +14487,7 @@ function nearestProp(point, reach) {
 
 // snap = true pulls the prop's centre to the hand (desktop). VR keeps it exactly where you grabbed it.
 function grab(hand, prop, snap = false) {
-  if (hand.prop || !prop) return;
+  if (hand.prop || !prop || prop.netFixed) return;                 // multiplayer: heavy props are fixed (netPropFreeze)
   if (prop.item) { itemGrab(hand, prop); return; }      // step 5: guns, magazines, shells
   hand.source.updateWorldMatrix(true, false);
   prop.root.updateMatrixWorld(true);
