@@ -3110,7 +3110,7 @@ const CONFIG = {
     // (knees buckle, the torso folds or twists, a hand goes to the wound), then fade into the ragdoll.
     death: { on: true, kp: 11, grip: 16 },
     haze: {
-      on: true, count: 96,     // PERFORMANCE: overdraw on Quest. Lower this first if smoky fights drop frames
+      on: true, count: 150,     // PERFORMANCE: overdraw on Quest. Lower this first if smoky fights drop frames
       maxPx: 300,              // largest sprite in pixels; closer clouds fade out instead
       smoke: [0.62, 0.62, 0.6], smokeAlpha: 0.11,
       plaster: [0.8, 0.79, 0.75], concrete: [0.6, 0.58, 0.55], wood: [0.5, 0.4, 0.3]
@@ -3130,7 +3130,7 @@ const CONFIG = {
     nade: {
       rec: { on: true, gain: 1, boom: 1, sub: 1, crack: 1, verb: 1.7, echo: 1.6, slap: 1, debris: 1, arm: 1, land: 1, swing: 1,
         ears: 1, earsNear: 6, earsTau: 2.2, earsDull: 4, earsFloor: 320, ring: 0.01, ringTau: 6, ringHz: 4300 },
-      smoke: { on: true, n: 44, life: [8, 15], size: [0.16, 0.3], alpha: 0.42, c: [0.27, 0.24, 0.2], headset: 0.4 },
+      smoke: { on: true, n: 60, life: [14, 26], size: [0.2, 0.38], alpha: 0.5, c: [0.33, 0.3, 0.26], headset: 0.4, headsetSize: 1.5 },   // step 124: denser, longer; headset fewer, bigger
       scorch: { on: true, size: [1.2, 2.0], reach: 1.7, rays: 8, wall: 1.1 },
       flash: { light: 1.5, dur: 1.4, shake: 1.25 },
       gore: { on: true, r: 4.5, wounds: 7, pour: 2, severe: 1.5, crater: 0.045, chunks: 12, throw: 2.2, down: 0.55, mist: 1 }
@@ -18192,8 +18192,9 @@ function nadeSmoke(P) {
   const rc = roomContaining(P.x, P.z, 0.3, P.y), lx = rc ? rLX(rc, P.x) : 0, ly = rc ? P.y - rc.origin.y : 0, lz = rc ? rLZ(rc, P.z) : 0;   // bug check 3: later waves follow a world shift
   for (const [delay, share, up, out, sp, sz, buoy, ck, ak] of NSMOKE_WAVES) {
     const m = Math.max(1, Math.round(n * share)), puffs = out > 0.6 ? 6 : 1;
-    const o = { n: Math.max(1, Math.round(m / puffs)), c: [S.c[0] * ck, S.c[1] * ck, S.c[2] * ck], a: S.alpha * ak, sp, life: S.life,
-      size: [S.size[0] * sz, S.size[1] * sz], grow: 0.32, drag: 1.4, buoy, force };
+    const hk = force || IS_HEADSET ? (S.headsetSize || 1) : 1;      // step 124: fewer, bigger puffs in the headset
+    const o = { n: Math.max(1, Math.round(m / puffs)), c: [S.c[0] * ck, S.c[1] * ck, S.c[2] * ck], a: S.alpha * ak * (hk > 1 ? 1.12 : 1), sp, life: S.life,
+      size: [S.size[0] * sz * hk, S.size[1] * sz * hk], grow: 0.36, drag: 1.4, buoy, force, cloud: true };
     const fn = () => {
       if (rc) { if (!rc.active) return; at.set(rWX(rc, lx), rc.origin.y + ly, rWZ(rc, lz)); }   // the room went: no cloud in the void
       const a0 = Math.random() * Math.PI * 2;
@@ -39690,45 +39691,130 @@ function bloodNormalTex(src, strength) {
   return t;
 }
 
+// Smoke and dust (step 124 rewrite of the step 10 haze). Each puff is a point sprite whose pixels are put back on a
+// camera-facing plane through it: alpha fades to 0 where that plane meets the floor, ceiling or a wall of its room box
+// (aBox / aBoxY), so the depth test never cuts a hard line across the floor (no depth texture in this renderer). Inside:
+// two turning, flowing samples of a tileable noise (HAZE_NOISE) erode a soft body (thick core, wispy edge); lit as a
+// sphere (dark underside, self-shadowed core), the flashlight scatters forward through the thin edges. Premultiplied
+// alpha with a 1/255 dither (no 8-bit banding). One program, compiled at load.
+let HAZE_NOISE = null;
+function hazeNoiseTex() {
+  if (HAZE_NOISE) return HAZE_NOISE;
+  const N = 128, d = new Uint8Array(N * N * 4);
+  const lat = (P, s) => { const a = new Float32Array(P * P); let x = s; for (let i = 0; i < a.length; i++) { x = (x * 16807) % 2147483647; a[i] = x / 2147483647; } return a; };
+  const oct = [[4, 0.5], [8, 0.27], [16, 0.15], [32, 0.08]], L = oct.map(([P], i) => [lat(P, 9301 + i * 77), lat(P, 4931 + i * 131)]);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let r = 0, g = 0;
+    for (let o = 0; o < oct.length; o++) {
+      const P = oct[o][0], w = oct[o][1], fx = x / N * P, fy = y / N * P, ix = Math.floor(fx), iy = Math.floor(fy);
+      const tx = fx - ix, ty = fy - iy, sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const i00 = (iy % P) * P + (ix % P), i10 = (iy % P) * P + ((ix + 1) % P), i01 = ((iy + 1) % P) * P + (ix % P), i11 = ((iy + 1) % P) * P + ((ix + 1) % P);
+      for (let c = 0; c < 2; c++) {
+        const A = L[o][c], v = (A[i00] * (1 - sx) + A[i10] * sx) * (1 - sy) + (A[i01] * (1 - sx) + A[i11] * sx) * sy;
+        if (c) g += v * w; else r += v * w;
+      }
+    }
+    const k = (y * N + x) * 4;
+    d[k] = Math.round(clamp(r) * 255); d[k + 1] = Math.round(clamp(g) * 255); d[k + 2] = 128; d[k + 3] = 255;
+  }
+  const t = new THREE.DataTexture(d, N, N, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true; t.needsUpdate = true;
+  return (HAZE_NOISE = t);
+}
 function makeHaze(n) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(n * 3), col = new Float32Array(n * 4), size = new Float32Array(n);
+  const seedA = new Float32Array(n), box = new Float32Array(n * 4), boxY = new Float32Array(n * 2);
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
   geo.setAttribute('aColor', new THREE.BufferAttribute(col, 4).setUsage(THREE.DynamicDrawUsage));
   geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seedA, 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aBox', new THREE.BufferAttribute(box, 4).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aBoxY', new THREE.BufferAttribute(boxY, 2).setUsage(THREE.DynamicDrawUsage));
+  const lite = IS_HEADSET || (typeof LITE !== 'undefined' && LITE.on);
   const mat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({ uMaxPx: { value: CONFIG.polish.haze.maxPx } }, P10U),
+    uniforms: Object.assign({ uMaxPx: { value: CONFIG.polish.haze.maxPx }, uNoise: { value: hazeNoiseTex() } }, P10U),
     vertexShader: `
-      attribute vec4 aColor; attribute float aSize; uniform float uHalfH, uMaxPx; varying vec4 vColor;
+      attribute vec4 aColor; attribute float aSize, aSeed; attribute vec4 aBox; attribute vec2 aBoxY;
+      uniform float uHalfH, uMaxPx;
+      varying vec4 vColor; varying vec3 vC, vR, vU, vF; varying float vHW, vSeed, vScat; varying vec4 vBox; varying vec2 vBoxY;
       ${P10_LIGHT_GLSL}
       void main() {
         vec4 wp = modelMatrix * vec4(position, 1.0);
         vec4 mv = viewMatrix * wp;
         gl_Position = projectionMatrix * mv;
         float z = max(-mv.z, 0.05);
-        float px = aSize * projectionMatrix[1][1] * uHalfH / z;
+        float ppm = projectionMatrix[1][1] * uHalfH / z;       // pixels per metre at its depth
+        float px = aSize * ppm;
         gl_PointSize = min(px, uMaxPx);
+        vHW = 0.5 * gl_PointSize / ppm;                       // half its drawn width in metres
+        vC = wp.xyz; vSeed = aSeed; vBox = aBox; vBoxY = aBoxY;
+        vR = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
+        vU = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
+        vF = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+        // forward scatter: the flashlight shining through it toward the eye
+        vec3 Ld = wp.xyz - uLP; float dl = length(Ld) + 1e-4; Ld /= dl;
+        vec3 Vd = normalize(cameraPosition - wp.xyz);
+        vScat = uLOn * smoothstep(uLCos - 0.1, uLCos + 0.02, dot(Ld, uLD)) * pow(max(dot(Ld, Vd), 0.0), 4.0) * 2.2 / (1.0 + dl * dl * 0.12);
+        float tint = fract(aSeed * 0.731);
+        vec3 tc = mix(vec3(1.05, 0.99, 0.92), vec3(0.93, 0.98, 1.06), tint);   // warm brown .. blue grey
         // a cloud you are standing in fades out instead of becoming one huge sprite
-        vColor = vec4(aColor.rgb * p10Light(wp.xyz), aColor.a * smoothstep(0.25, 0.7, z) * min(1.0, uMaxPx / max(px, 1.0) * 1.5));
+        vColor = vec4(aColor.rgb * tc * p10Light(wp.xyz), aColor.a * smoothstep(0.25, 0.7, z) * min(1.0, uMaxPx / max(px, 1.0) * 1.5));
       }`,
     fragmentShader: `
-      varying vec4 vColor;
+      uniform sampler2D uNoise; uniform float uTime;
+      varying vec4 vColor; varying vec3 vC, vR, vU, vF; varying float vHW, vSeed, vScat; varying vec4 vBox; varying vec2 vBoxY;
       void main() {
-        vec2 c = gl_PointCoord - 0.5; float d = dot(c, c) * 4.0;
-        float a = max(0.0, 1.0 - d); a = a * a * vColor.a;
-        if (a < 0.003) discard;
-        gl_FragColor = vec4(vColor.rgb, a);
+        vec2 c = gl_PointCoord - 0.5; c.y = -c.y;
+        float d = dot(c, c) * 4.0;
+        if (d >= 1.0) discard;
+        // this pixel on the camera-facing plane through the puff: fade where the room's floor, ceiling or walls meet it
+        vec3 wp = vC + (vR * c.x + vU * c.y) * 2.0 * vHW;
+        float soft = max(vHW * 0.9, 0.05);
+        float fade = smoothstep(0.0, soft, wp.y - vBoxY.x) * smoothstep(0.0, soft * 0.7, vBoxY.y - wp.y)
+          * smoothstep(0.0, soft, min(min(wp.x - vBox.x, vBox.z - wp.x), min(wp.z - vBox.y, vBox.w - wp.z)));
+        // turning, flowing density
+        float ang = vSeed * 6.2832 + uTime * (fract(vSeed * 7.31) - 0.5) * 0.3;
+        float cs = cos(ang), sn = sin(ang);
+        vec2 q = mat2(cs, -sn, sn, cs) * c;
+        vec2 fl = vec2(uTime * 0.023, uTime * 0.014);
+        float n = texture2D(uNoise, q * 0.85 + vSeed + fl).r * 0.62${lite ? '' : ' + texture2D(uNoise, q * 2.2 - vSeed * 1.7 - fl * 1.9).g * 0.38'};
+        ${lite ? 'n = n / 0.62;' : ''}
+        float body = 1.0 - d;
+        float dens = clamp(body * 1.3 + (n - 0.5) * 1.7 - 0.12, 0.0, 1.0);
+        dens = dens * dens * (3.0 - 2.0 * dens) * smoothstep(0.0, 0.4, body);
+        float a = dens * vColor.a * fade;
+        // lit as a ball: darker underside, a thick core shadows itself, thin edges catch the beam behind it
+        vec3 nW = vR * c.x * 2.0 + vU * c.y * 2.0 + vF * sqrt(body);
+        float sh = mix(0.6, 1.1, clamp(nW.y * 0.5 + 0.5, 0.0, 1.0)) * mix(1.0, 0.78, dens * body);
+        vec3 col = vColor.rgb * sh + vColor.rgb * vScat * (1.15 - dens);
+        gl_FragColor = vec4(col, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
+        float dith = (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+        a = clamp(a + dith, 0.0, 1.0);
+        if (a < 0.002) discard;
+        gl_FragColor = vec4(gl_FragColor.rgb * a, a);
       }`,
-    transparent: true, depthWrite: false
+    transparent: true, depthWrite: false, premultipliedAlpha: true
   });
   const points = new THREE.Points(geo, mat);
   points.frustumCulled = false; points.renderOrder = 2.5; points.visible = false;
   scene.add(points);
-  return { n, pos, col, size, geo, mat, points, next: 0, alive: 0,
+  return { n, pos, col, size, geo, mat, points, next: 0, alive: 0, seedA, box, boxY, rr: 0, cl: new Uint8Array(n),
     vel: new Float32Array(n * 3), base: new Float32Array(n * 4), life: new Float32Array(n), max: new Float32Array(n),
     grow: new Float32Array(n), drag: new Float32Array(n), buoy: new Float32Array(n), seed: new Float32Array(n) };
+}
+// The room box a puff fades against (world): x / z walls, floor and ceiling; none = open (no fade, no clamp).
+function hazeBox(H, j) {
+  const x = H.pos[j * 3], y = H.pos[j * 3 + 1], z = H.pos[j * 3 + 2], r = roomContaining(x, z, 0.3, y);
+  if (r) {
+    H.box[j * 4] = r.origin.x - r.w / 2; H.box[j * 4 + 1] = r.origin.z - r.d / 2; H.box[j * 4 + 2] = r.origin.x + r.w / 2; H.box[j * 4 + 3] = r.origin.z + r.d / 2;
+    H.boxY[j * 2] = r.origin.y; H.boxY[j * 2 + 1] = r.origin.y + r.h;
+  } else {
+    H.box[j * 4] = H.box[j * 4 + 1] = -1e5; H.box[j * 4 + 2] = H.box[j * 4 + 3] = 1e5; H.boxY[j * 2] = -1e5; H.boxY[j * 2 + 1] = 1e5;
+  }
 }
 
 function makeMotes(n) {
@@ -40114,7 +40200,10 @@ function hazeEmit(p, dir, o) {
     H.size[j] = rnd2(o.size[0], o.size[1]);
     H.grow[j] = o.grow * (0.7 + Math.random() * 0.6); H.drag[j] = o.drag; H.buoy[j] = o.buoy; H.seed[j] = Math.random() * 100;
     H.base[j * 4] = o.c[0]; H.base[j * 4 + 1] = o.c[1]; H.base[j * 4 + 2] = o.c[2]; H.base[j * 4 + 3] = o.a * (0.75 + Math.random() * 0.5);
+    H.seedA[j] = H.seed[j]; H.cl[j] = o.cloud ? 1 : 0;            // step 124: shader seed, grenade cloud behaviour
+    hazeBox(H, j);
   }
+  H.geo.attributes.aSeed.needsUpdate = true; H.geo.attributes.aBox.needsUpdate = true; H.geo.attributes.aBoxY.needsUpdate = true;
   H.alive = 1;
 }
 const SMOKE = { pistol: 3, smg: 2, shotgun: 7, rifle: 3, ppk: 1, fn509: 1, akm: 4 };
@@ -40729,21 +40818,29 @@ function updateHaze(dt, t) {
     if (H.life[j] <= 0) { if (H.size[j] !== 0) { H.size[j] = 0; H.col[j * 4 + 3] = 0; } continue; }
     any = 1;
     H.life[j] -= dt;
-    const dr = Math.exp(-H.drag[j] * dt), sd = H.seed[j];
+    const sd = H.seed[j], cl = H.cl[j], age0 = 1 - H.life[j] / H.max[j], sz = H.size[j];
+    // step 124: the room's floor / ceiling (hazeBox), centre kept off them so the sprite never slices them
+    const lo = H.boxY[j * 2] + 0.05 + 0.3 * sz, hi = Math.max(lo, H.boxY[j * 2 + 1] - 0.05 - 0.25 * sz);
+    const atTop = cl && H.pos[j * 3 + 1] >= hi - 0.03;
+    const dr = Math.exp(-(atTop ? 0.45 : H.drag[j]) * dt);         // a cloud under the ceiling keeps rolling out along it
     // a lazy draft through the room: every puff swirls a little on its own
-    H.vel[j * 3] = H.vel[j * 3] * dr + Math.sin(t * 0.6 + sd) * 0.03 * dt;
-    H.vel[j * 3 + 1] = H.vel[j * 3 + 1] * dr + H.buoy[j] * dt;
-    H.vel[j * 3 + 2] = H.vel[j * 3 + 2] * dr + Math.cos(t * 0.5 + sd * 1.7) * 0.03 * dt;
+    H.vel[j * 3] = H.vel[j * 3] * dr + Math.sin(t * 0.6 + sd) * (cl ? 0.06 : 0.03) * dt;
+    H.vel[j * 3 + 1] = H.vel[j * 3 + 1] * dr + (cl && age0 > 0.5 ? -0.05 * (age0 - 0.5) : H.buoy[j]) * dt;   // the hanging layer slowly sinks
+    H.vel[j * 3 + 2] = H.vel[j * 3 + 2] * dr + Math.cos(t * 0.5 + sd * 1.7) * (cl ? 0.06 : 0.03) * dt;
     H.pos[j * 3] += H.vel[j * 3] * dt; H.pos[j * 3 + 1] += H.vel[j * 3 + 1] * dt; H.pos[j * 3 + 2] += H.vel[j * 3 + 2] * dt;
-    if (H.pos[j * 3 + 1] < 0.05) { H.pos[j * 3 + 1] = 0.05; H.vel[j * 3 + 1] = Math.abs(H.vel[j * 3 + 1]) * 0.2; }
-    if (H.pos[j * 3 + 1] > 2.85) { H.pos[j * 3 + 1] = 2.85; H.vel[j * 3 + 1] = 0; }   // pools under the ceiling, like real smoke
-    H.size[j] += H.grow[j] * dt * (0.4 + 0.6 * H.life[j] / H.max[j]);
+    if (H.pos[j * 3 + 1] < lo) { H.pos[j * 3 + 1] = lo; H.vel[j * 3 + 1] = Math.abs(H.vel[j * 3 + 1]) * 0.2; }
+    if (H.pos[j * 3 + 1] > hi) { H.pos[j * 3 + 1] = hi; H.vel[j * 3 + 1] = 0; }   // pools under the ceiling, like real smoke
+    H.size[j] += H.grow[j] * dt * (cl ? (atTop ? 1.5 : 0.7) + 0.3 * H.life[j] / H.max[j] : 0.4 + 0.6 * H.life[j] / H.max[j]);
     const age = 1 - H.life[j] / H.max[j];
     H.col[j * 4] = H.base[j * 4]; H.col[j * 4 + 1] = H.base[j * 4 + 1]; H.col[j * 4 + 2] = H.base[j * 4 + 2];
-    H.col[j * 4 + 3] = H.base[j * 4 + 3] * smoothstep(0, 0.08, age) * Math.pow(1 - age, 1.4);
+    H.col[j * 4 + 3] = H.base[j * 4 + 3] * smoothstep(0, cl ? 0.04 : 0.08, age) * Math.pow(1 - age, cl ? 0.8 : 1.4);
     if (H.life[j] <= 0) { H.size[j] = 0; H.col[j * 4 + 3] = 0; }
   }
   H.alive = any;
+  if (any) for (let k = 0; k < 4; k++) {                          // step 124: a puff drifting through a doorway takes the next room's box
+    const j = H.rr = (H.rr + 1) % H.n;
+    if (H.life[j] > 0) { hazeBox(H, j); H.geo.attributes.aBox.needsUpdate = true; H.geo.attributes.aBoxY.needsUpdate = true; }
+  }
   H.geo.attributes.position.needsUpdate = true;
   H.geo.attributes.aColor.needsUpdate = true;
   H.geo.attributes.aSize.needsUpdate = true;
