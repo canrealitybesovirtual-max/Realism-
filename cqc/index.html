@@ -21051,12 +21051,14 @@ function fireGun(g, now) {
   const AF = g.afx || AFX0;                                        // step 100: the fitted parts (GLOCK_FX)
   _fx.set(1, 0, 0).applyQuaternion(_wq); _fy.set(0, 1, 0).applyQuaternion(_wq);
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
+  selfArm(g, root, _fo);                                           // SELF HIT: your rounds can hit you
   if (TRC_ON) trcArm(g, g.type, false);    // step 121: every Nth rifle round a tracer
   for (let i = 0; i < d.pellets; i++) {
     const a = Math.random() * Math.PI * 2, r = d.spread * Math.sqrt(Math.random());
     _fd2.copy(_fd).addScaledVector(_fx, Math.cos(a) * r).addScaledVector(_fy, Math.sin(a) * r).normalize();
-    traceBullet(_fo, _fd2, d, g.type);     // step 6: follows the round through soft cover
+    SELF.mask = SELF.mask0; traceBullet(_fo, _fd2, d, g.type);     // step 6: follows the round through soft cover
   }
+  SELF.arm = false;
   netShot(g, _fo, _fd);                    // multiplayer: the other side hears and sees it
   enemiesHear(_fo);                        // step 7: everyone in this room and the next knows
   loopShotFired();                         // step 9: accuracy
@@ -28423,6 +28425,143 @@ function obbExit(P, dir, center, quat, hx, hy, hz, outP, outN) {
 // shots know they reached you). _tbE = energy left, _tbTravel = metres flown.
 // Step 119: called through traceBullet (below), which gives the round its penetration state.
 let _tbE = 1, _tbTravel = 0;
+/* ---------------------------------------------------------------------------
+ *  SELF HIT (?selfhit=off): your own rounds can hit you. In the headset you can
+ *  point the gun at your own leg, foot, hand or body; on a computer only a round
+ *  that already went through something can come back to you.
+ *  Hit volumes = capsules on your body's bones (BODY.M: world matrices) + the
+ *  head sphere. Skipped: the path up to 6 cm past the muzzle, the hands (and
+ *  forearms) holding the gun. A hit: playerHit with damage by part (head lethal,
+ *  torso 40-60 by energy, limbs 20-30, hand 15), blood at the entry, a spray
+ *  behind the exit when it goes through (the round flies on with what it has
+ *  left), drips while you bleed, a pool when you go down, a grunt. Local only.
+ * ------------------------------------------------------------------------- */
+const SELF = {
+  on: !/[?&]selfhit=off\b/.test(QS), arm: false, minT: 0, mask: 0, mask0: 0, vr: false,
+  a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), nd: new THREE.Vector3(), f: new THREE.Vector3(),
+  hit: { t: 0, out: 0, i: 0, part: '' }, bleed: [], dripAt: 0, gruntAt: -9
+};
+// [bone a, bone b (null = hand: 9 cm on past the wrist), radius, part, side]
+const SELF_PARTS = [null,
+  ['pelvis', 'chest', 0.155, 'torso', 0], ['chest', 'neck', 0.15, 'torso', 0],
+  ['upR', 'f0R', 0.055, 'arm', 'R'], ['upL', 'f0L', 0.055, 'arm', 'L'], ['f0R', 'f2R', 0.045, 'arm', 'R'], ['f0L', 'f2L', 0.045, 'arm', 'L'],
+  ['f2R', null, 0.045, 'hand', 'R'], ['f2L', null, 0.045, 'hand', 'L'],
+  ['thighR', 'shinR', 0.075, 'leg', 'R'], ['thighL', 'shinL', 0.075, 'leg', 'L'], ['shinR', 'footR', 0.055, 'leg', 'R'], ['shinL', 'footL', 0.055, 'leg', 'L'],
+  ['footR', 'toeR', 0.05, 'foot', 'R'], ['footL', 'toeL', 0.05, 'foot', 'L']];
+const selfBody = () => BODY.ready && CONFIG.body.on && BODY.M && BODY.M.length;
+// The two ends of part i into SELF.a / SELF.b (false = not available).
+function selfSeg(i) {
+  if (i === 0) { headWorld(SELF.a); SELF.b.copy(SELF.a); return true; }
+  const P = SELF_PARTS[i];
+  if (!selfBody()) {                                               // no body running: the old torso capsule (playerRayHit's)
+    if (i !== 1) return false;
+    headWorld(SELF.c); SELF.a.copy(SELF.c); SELF.a.y -= 0.24; SELF.b.set(SELF.c.x, Math.max(0.3, SELF.c.y - 1.3), SELF.c.z); return true;
+  }
+  SELF.a.setFromMatrixPosition(BODY.M[BB[P[0]]]);
+  if (P[1]) SELF.b.setFromMatrixPosition(BODY.M[BB[P[1]]]);
+  else {
+    SELF.c.setFromMatrixPosition(BODY.M[BB['f1' + P[4]]]);
+    SELF.b.subVectors(SELF.a, SELF.c); const l = SELF.b.length();
+    if (l < 1e-4) return false;
+    SELF.b.multiplyScalar(0.09 / l).add(SELF.a);
+  }
+  return true;
+}
+// fireGun, before its pellets: where the path starts to count, which hands hold the gun.
+function selfArm(g, root, o) {
+  SELF.arm = false;
+  if (!SELF.on || playerState.dead || NET.tgt || !g.wr || !g.wr.muzzle) return;
+  SELF.f.copy(g.wr.muzzle).applyMatrix4(root.matrixWorld);
+  SELF.minT = SELF.f.distanceTo(o) + 0.06;
+  SELF.vr = renderer.xr.isPresenting;
+  let m = 0;
+  if (SELF.vr) {
+    for (const h of vrHands) {
+      if (!h || !h.ctrl || (g.primary !== h && g.support !== h)) continue;
+      const L = h.ctrl.userData.handedness === 'left';
+      m |= L ? (1 << 6) | (1 << 8) : (1 << 5) | (1 << 7);          // that hand and its forearm
+    }
+  } else m = (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8);           // computer: the arms hang at your sides
+  SELF.mask0 = m; SELF.mask = m; SELF.arm = true;
+}
+// Nearest part of you on the path before maxT (null = none). after: the round already went through something.
+function selfRayTest(o, dir, maxT, after) {
+  if (!SELF.vr && !after) return null;                              // computer: the muzzle is ahead of your eye; only a turned round comes back
+  const minT = Math.max(0, SELF.minT - _tbTravel), H = SELF.hit;
+  let best = -1;
+  for (let i = 0; i < SELF_PARTS.length; i++) {
+    if (SELF.mask & (1 << i)) continue;
+    if (!selfSeg(i)) continue;
+    const r = i === 0 ? 0.1 : SELF_PARTS[i][2];
+    const t = capIntersect(o, dir, SELF.a, SELF.b, r);
+    if (!(t > minT) || t >= maxT || (best >= 0 && t >= H.t)) continue;
+    best = i; H.t = t;
+    SELF.nd.copy(dir).negate();                                     // where it comes out: the far side, cast back from beyond
+    SELF.c.copy(o).addScaledVector(dir, t + 0.7);
+    const tb = capIntersect(SELF.c, SELF.nd, SELF.a, SELF.b, r);
+    H.out = tb > 0 ? Math.max(0.01, 0.7 - tb) : 2 * r;
+  }
+  if (best < 0) return null;
+  H.i = best; H.part = best === 0 ? 'head' : SELF_PARTS[best][3];
+  return H;
+}
+// The hit: damage, blood, the exit. Returns the energy the round has left (0 = it stays in you).
+function selfShot(H, o, dir, d, E) {
+  SELF.mask |= 1 << H.i;
+  const part = H.part, head = part === 'head';
+  const dmg = (head ? 1e4 : part === 'torso' ? clamp(40 + 7 * (E - 1), 40, 60) : part === 'hand' ? 15 : clamp(20 + 4 * (E - 1), 20, 30)) * penDmgK();
+  const C = CONFIG.enemy, base = (head ? C.playerDmg.head : C.playerDmg.body) * Math.max(1e-3, MENU_FX.dmgK);
+  const P = o.clone().addScaledVector(dir, H.t);
+  try { playerHit(head ? 'head' : 'body', dir, 1, dmg / Math.max(1e-3, base)); } catch (er) { /* hurt anyway */ }
+  const bk = head ? 1 : part === 'torso' ? 0.9 : part === 'hand' ? 0.45 : 0.65;
+  try { bloodFx(P, dir, head ? 'head' : 'torso', bk); } catch (er) { /* no blood */ }
+  const f = head ? 0.45 : part === 'torso' ? 0.35 : part === 'hand' ? 0.8 : 0.6;
+  const left = Math.max(0, E * f - 0.15 * (head || part === 'torso' ? 1 : 0.4));
+  if (left > 0.02) {                                                // through and through: blood out the far side
+    const X = o.clone().addScaledVector(dir, H.t + H.out);
+    try {
+      bloodFx(X, dir, head ? 'head' : 'torso', bk * 0.8);
+      const K = g90K();
+      if (K) { g90Spray(X, dir, head, E > 2 ? 1 : 0, K, 1); if (head || (part === 'torso' && E > 1.5)) g90Chunks(stream.current, X, dir, head ? 6 : 3, head); }
+    } catch (er) { /* no spray */ }
+  }
+  selfGrunt();
+  if (!playerState.dead) {
+    const now = performance.now() / 1000;
+    SELF.bleed.push({ i: H.i, until: now + (part === 'torso' ? rnd2(10, 18) : part === 'hand' ? rnd2(4, 8) : rnd2(7, 14)) });
+    if (SELF.bleed.length > 6) SELF.bleed.shift();
+  } else {
+    const F = new THREE.Vector3(P.x, level.floor + 0.01, P.z);
+    setTimeout(() => { try { poolAt(F, head ? 1.3 : 1.1, true); } catch (er) { /* no pool */ } }, 1300);
+  }
+  return left;
+}
+function selfGrunt() {
+  const c = audio.ctx, now = performance.now() / 1000;
+  if (!c || c.state !== 'running' || now - SELF.gruntAt < 0.6) return;
+  let buf = null;
+  for (let i = 0, j = (Math.random() * 7) | 0; i < 7 && !buf; i++) buf = VOX.bufs['grunt' + (1 + (j + i) % 7)] || null;
+  if (!buf) return;
+  SELF.gruntAt = now;
+  const src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf; src.playbackRate.value = rnd2(1.0, 1.1);
+  g.gain.value = 0.9; src.connect(g); g.connect(audio.out);
+  src.start(c.currentTime + 0.06);
+}
+// updatePlayerVitals: drips from the wounds while you bleed.
+function selfBleedTick(now) {
+  if (playerState.dead) { SELF.bleed.length = 0; return; }
+  if (now < SELF.dripAt) return;
+  SELF.dripAt = now + rnd2(0.35, 0.9);
+  for (let k = SELF.bleed.length - 1; k >= 0; k--) {
+    const b = SELF.bleed[k];
+    if (now > b.until) { SELF.bleed.splice(k, 1); continue; }
+    if (!selfSeg(b.i)) continue;
+    SELF.c.copy(SELF.a).lerp(SELF.b, Math.random());
+    try { bloodDropLanded(SELF.c.x + rnd2(-0.05, 0.05), SELF.c.z + rnd2(-0.05, 0.05), level.floor); } catch (er) { /* no drop */ }
+  }
+}
+
 function traceBullet0(origin, dir, d, type, opts = null) {
   let E = CONFIG.cover.energy[type] !== undefined ? CONFIG.cover.energy[type] : PEN.live ? PEN.e0 : 1;   // step 119: guns not listed there use their cartridge
   let range = opts && opts.range !== undefined ? opts.range : CONFIG.weapons.rayRange;
@@ -28436,6 +28575,18 @@ function traceBullet0(origin, dir, d, type, opts = null) {
     const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : range;
     if (!fromEnemy) {                                            // step 7: a man in the way?
       const eh = enemyRayTest(_tbo, dir, toi);
+      const sh = SELF.arm && type !== 'frag' ? selfRayTest(_tbo, dir, eh ? eh.t : toi, pass > 0 || PEN.n > 0) : null;   // SELF HIT: you are in the way
+      if (sh) {
+        const Eb = E, st = sh.t, so = sh.out;
+        if (TRC.rec >= 0) trcSeg(_tbo, dir, st, 2, null);
+        E = selfShot(sh, _tbo, dir, d, E); _tbE = E; _tbTravel += st;
+        if (E <= 0.02) return false;
+        range -= st + so; _tbTravel += so;
+        if (range <= 0) return true;
+        _tbo.addScaledVector(dir, st + so + 0.002);
+        if (PEN.live && (range = penOn(Eb, E, range, false)) < 0) return false;
+        continue;
+      }
       if (eh) { _tbTravel += eh.t; if (TRC.rec >= 0) trcSeg(_tbo, dir, eh.t, 2, null); enemyShot(eh, dir, d, E); return false; }   // step 121: a tracer's path
       aiRoundPassed(_tbo, dir, toi);                             // step 11: a crack past his head suppresses him
     }
@@ -32248,6 +32399,7 @@ function updatePlayerVitals(dt, now) {
   if (P.vel.length() > 8) P.vel.set(0, 0, 0);                   // teleports and world shifts
   P.prev.copy(_pr.h); P.hasPrev = true;
   P.hurt = Math.max(0, P.hurt - dt * 1.6);
+  if (SELF.bleed.length) selfBleedTick(now);                       // SELF HIT: drips while you bleed
   if (!P.dead && now - P.lastHit > C.regenDelay && P.hp < C.playerHealth) { P.hp = Math.min(C.playerHealth, P.hp + C.regen * dt); hpUi(); }
   if (P.dead) {
     P.deadT += dt;
