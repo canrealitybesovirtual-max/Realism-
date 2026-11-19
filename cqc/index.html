@@ -18698,9 +18698,11 @@ function dnadeHand(dt) {
   const D = DNADE;
   if (!D.active || !HANDS.ready || (D.phase === 'recover' && D.t > D.dur * 0.7)) return false;
   const L = HANDS.list[1]; if (!L) return false;
-  const hp = holdPose({ kind: 'nade' });
+  if (HSEAT.on && GUNPHYS.contact && !CONTACT.clouds.get('nade:' + D.type)) contactCloud('nade:' + D.type, buildNadeModel(D.type).root, null);   // HSEAT: its surface (made once)
+  const hp = holdPose({ kind: 'nade', type: D.type });
   _dnM.compose(D.P, D.Q, _dnS).multiply(_dnM2.compose(hp.p, hp.q, _dnS).invert()).multiply(L.grips.pistol.m).decompose(HD_hP, HD_hQ, HD_hv);
   if (D.phase === 'recover' || (D.phase === 'swing' && D.t > D.dur * 0.6)) poseCurl(L, 0.12, HPOSE.thumbRest);
+  else if (HSEAT.on) { poseCurl(L, HSEAT.curl[D.type] || 0.36, HPOSE.thumbRest); itemContact(L, { kind: 'nade', type: D.type }, HD_hP, HD_hQ); }   // HSEAT: closed onto it
   else poseCurl(L, D.type === 'frag' ? 0.48 : 0.56, HPOSE.thumbRest);
   placeHand(L, 'deskNade', HD_hP, HD_hQ, dt); applyFingers(L, dt);
   return true;
@@ -18897,8 +18899,13 @@ function attHold(key) {
 function holdPose(it) {
   const ak = it.kind === 'att' && HANDLOOK.on ? attKey(it) : null;   // step 98: the fitted fist round a part that has one
   if (it.hold && !(ak && ATT_HOLD[ak])) return it.hold;            // step 100: a part's own hold (a dot by its sides, a compensator)
-  const key = it.kind === 'mag' ? (MAG_DEFS[it.type].hold || it.type) : ak || it.kind;
+  const key = it.kind === 'mag' ? (MAG_DEFS[it.type].hold || it.type) : ak || (it.kind === 'nade' && HSEAT.on ? 'nade:' + (it.type || 'frag') : it.kind);
   if (!HOLD[key] && ATT_HOLD[key]) HOLD[key] = attHold(key);
+  if (!HOLD[key] && HSEAT.on && HSEAT.base[it.kind]) {             // HSEAT: grenade / syringe seated on the palm, then cached
+    const B = holdSeatBase(it.kind, key), S = holdSeat(B, key);
+    if (!S) return B;                                              // hands or the item's surface not ready yet: not cached
+    HOLD[key] = S;
+  }
   if (!HOLD[key]) {
     const q = new THREE.Quaternion();
     let pos;
@@ -18910,6 +18917,33 @@ function holdPose(it) {
     HOLD[key] = { p: new THREE.Vector3(...pos), q };
   }
   return HOLD[key];
+}
+/* HSEAT (?holdseat=off = the old fixed holds): a grenade and the syringe were placed at a pistol magazine's spot in the
+ * fist. The grenade (56-64 mm) is far bigger than a magazine, so the palm sat ~1.5 cm inside it (the palm solve moves
+ * 12 mm at most); the syringe had no contact surface at all, so the fist closed through the barrel. Now the item starts
+ * at a designed spot in the pistol-grip frame (grenade: fuze up, spoon toward the web of the thumb, the pin ring out on
+ * the index side; syringe: an ice-pick stab grip, barrel up the fist, needle out under the little finger, flange over
+ * the index finger) and is moved onto the palm by the free grab's seat solve (fgSeat: out of the palm where sunk in,
+ * onto it where it hovers) once, on the right hand (the left hand's grip frame is its mirror). The fingers and the
+ * thumb then close onto its surface (itemContact, GC_WRAP.item). Desktop grenade throws use the same hold and solve. */
+const HSEAT = { on: !/[?&]holdseat=off/.test(QS), curl: { frag: 0.34, flash: 0.4, smoke: 0.34, med: 0.42 },
+  base: { nade: { p: [0, -0.004, 0.008], r: -0.3 }, med: { p: [0, -0.0066, 0.0045], r: -0.36, c: [0, -0.0025, 0] } } };
+function holdSeatBase(kind, key) {
+  const D = HSEAT.base[kind], q = new THREE.Quaternion().setFromEuler(new THREE.Euler(D.r, 0, 0));
+  const p = new THREE.Vector3(...D.p);
+  if (D.c) p.sub(new THREE.Vector3(...D.c).applyQuaternion(q));   // the barrel's middle on the spot
+  return { p, q, key };
+}
+function holdSeat(B, key) {
+  const h = HANDS.ready && HANDS.list && HANDS.list[0], cloud = GUNPHYS.contact ? CONTACT.clouds.get(key) : null;
+  if (!h || !h.grips || !h.grips.pistol || !cloud) return null;
+  try {
+    const one = new THREE.Vector3(1, 1, 1), M = new THREE.Matrix4().copy(h.grips.pistol.m).invert().multiply(new THREE.Matrix4().compose(B.p, B.q, one));
+    const ents = cloud.groups.map((G) => gcEnt(G, new THREE.Matrix4().copy(M).multiply(G.rest)));
+    const t = fgSeat(h, ents), R = new THREE.Quaternion();
+    h.grips.pistol.m.decompose(new THREE.Vector3(), R, new THREE.Vector3());
+    return { p: B.p.clone().add(t.applyQuaternion(R)), q: B.q.clone() };   // hand-space move back into the grip frame
+  } catch (e) { console.warn('hold seat off', e); return null; }
 }
 // Shotgun: the shell you thumb into the loading port slides in and up the tube.
 function startShellLoad(g) {
@@ -19595,7 +19629,7 @@ function gcSolve(h, A, ents, wrapMask, skipMask, lock = null, thumb = null) {
 const GC_WRAP = {
   primary: 1 | 4 | 8 | 16, support: 2 | 4 | 8 | 16, vfg: 2 | 4 | 8 | 16, rack: 1 | 2 | 4,
   pistolSup: 0, pistolSupHand: 2 | 4 | 8 | 16,                    // step 26.1: wraps once it can feel the firing hand
-  item: { mag: 1 | 2 | 4 | 8 | 16, light: 1 | 2 | 4 | 8 | 16, nade: 2 | 4 | 8 | 16, shell: 1 | 2 | 4, att: 1 | 2 | 4 | 8 | 16 }
+  item: { mag: 1 | 2 | 4 | 8 | 16, light: 1 | 2 | 4 | 8 | 16, nade: HSEAT.on ? 1 | 2 | 4 | 8 | 16 : 2 | 4 | 8 | 16, shell: 1 | 2 | 4, att: 1 | 2 | 4 | 8 | 16, med: 1 | 2 | 4 | 8 | 16 }   // HSEAT: the thumb closes over the spoon
 };
 const GC_one4 = new THREE.Matrix4();
 function gcKeyTgt(h, skipMask) { let k = ''; for (let f = 0; f < 5; f++) if (!(skipMask & (1 << f))) for (let j = 0; j < 4; j++) k += Math.round(h.tgt[f * 4 + j] * 250) + ','; return k; }
@@ -20052,7 +20086,7 @@ function itemGrab(hand, p) {
   hand.hist.length = 0; hand.hasPrev = false;
   setKinematic(p);
   startBlend(it);
-  if (it.kind !== 'nade' && !(it.kind === 'att' && HANDLOOK.on)) freeGrab(hand, p, 'item');   // step 65 (step 98: an attachment takes its fitted hold)
+  if (it.kind !== 'nade' && !(it.kind === 'med' && HSEAT.on) && !(it.kind === 'att' && HANDLOOK.on)) freeGrab(hand, p, 'item');   // step 65 (step 98: an attachment takes its fitted hold)
   pulse(hand, 0.2, 18);
 }
 // Step 30: magazine strip. Distance from a hand (world) to the part of the seated magazine that sticks
@@ -25636,6 +25670,12 @@ function syrSet(g, k) {
 }
 function createMed() {
   const root = medModel();
+  if (GUNPHYS.contact && HSEAT.on && !CONTACT.clouds.get('med')) {   // HSEAT: its surface for the hand (the pouch cap left out)
+    const cp = root.userData.syr && root.userData.syr.cap, v = cp ? cp.visible : false;
+    if (cp) cp.visible = false;
+    contactCloud('med', root, null);
+    if (cp) cp.visible = v;
+  }
   return makeItem(root, { kind: 'med', type: 'med', label: 'healing syringe' }, { mass: 0.08, half: [0.009, 0.09, 0.009], center: new THREE.Vector3(), restitution: 0.2 });
 }
 function medUse(hand, p) {
@@ -44330,7 +44370,8 @@ function handsUpdate(dt, now) {
         done = (role === 'primary' || role === 'support' || role === 'rack') && driveHeldGun(h, g, role, s.trigT, dt);
         if (done && tracked && performance.now() / 1000 < (h.thumbSelUntil || 0)) setFinger(h, 0, HPOSE.thumbPress);   // step 30: on the selector
         if (!done) poseCurl(h, role === 'rack' ? 0.72 : 0.55, HPOSE.thumbRest);
-      } else if (it && it.kind === 'nade') poseCurl(h, it.type === 'frag' ? 0.48 : 0.56, HPOSE.thumbRest);   // step 23: round the grenade, spoon in the palm
+      } else if (it && it.kind === 'nade') poseCurl(h, HSEAT.on ? HSEAT.curl[it.type] || 0.36 : it.type === 'frag' ? 0.48 : 0.56, HPOSE.thumbRest);   // step 23: round the grenade, spoon in the palm (HSEAT: open, the contact solve closes them onto it)
+      else if (it && it.kind === 'med' && HSEAT.on) poseCurl(h, HSEAT.curl.med, HPOSE.thumbRest);   // HSEAT: the stab grip, closed onto the barrel by itemContact
       else if (it && it.free) poseCurl(h, FREEGRIP.open, HPOSE.thumbRest);   // step 65: open, then onto the surface
       else if (it && it.kind === 'att' && HANDLOOK.on) attHandPose(h, it);   // step 98: closed, then opened onto the part (itemContact)
       else if (it && (it.kind === 'mag' || it.kind === 'light')) { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }   // wrapped round it
