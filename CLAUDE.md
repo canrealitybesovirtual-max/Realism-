@@ -2235,3 +2235,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Scoreboard tick errors are logged once (were swallowed).
 - Looked at, no change: pools, smears, wall runs and spatter in rooms 1-3; men killed by torso / head rounds (ragdolls on the floor, pools under the worst wound); the other player's soldier with and without a rifle (feet on the floor, hands on the gun); your body standing, crouched and looking down; safe room bench, vise, trays, scoreboard, gun locker (headless note: small parts cull by pixel size from the game camera, so render with the game camera near), rooms 1-3 from four corners; shelf boxes sit 6 mm over their decks.
 - Left: head exits and the AWM face craters draw torn flesh over the helmet shell (extreme gore, by design); pools are not clipped at room walls (a pool centred within ~15 cm of a wall can show a sliver under the next room's door); blood drops pass through table / crate tops to the floor. Harness: the renderer grew to 5-7 GB in some runs (OOM-killed in the shared cgroup; not traced: idle with the game's own draw skipped it stayed at 1.7 GB).
+
+## CQC: computer viewmodel arms calmer
+- Walk clip timeScale speed / 2.9 (0.5-1.15; was / 2.2, 0.6-1.6), step bob 3 + 1.5 x speed rad/s (was 4 + 2.2 x), look sway follows at 5/s (was 8/s). Parse checked only.
