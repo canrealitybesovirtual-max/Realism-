@@ -12548,7 +12548,9 @@ function netPupNade(e, nd) {
 // His last moan / breath in 'en' [16]: count x 100 + 50 for a breath + how much he has left (0..49). A new count plays it here.
 function netPupVox(e, vx) {
   const n = (vx / 100) | 0;
-  if (!n || n === e.vxSeen) return;
+  if (!n) return;
+  if (e.vxSeen == null) { e.vxSeen = n; return; }                  // first count on a copy made another way (a body re-sent): from before, not played
+  if (n <= e.vxSeen) return;                                       // counts only grow: a late / out-of-order packet replays nothing
   e.vxSeen = n; VOX.n.net = (VOX.n.net || 0) + 1;                   // (tests: voices from the host)
   const r = vx - n * 100, breath = r >= 50;
   try { voxDyingPlay(e, breath, (r - (breath ? 50 : 0)) / 49); } catch (er) { /* no audio yet */ }
@@ -13012,7 +13014,7 @@ function netGunBuild(g) {
   const v = [], h = [];
   netHwWalk(g, (o, k, vis) => (vis ? v : h).push(k));
   const B = { ty: g.type, a, v, h };
-  const F = PAINT.on && !g.paintOff && PAINT.fin[g.type];            // his finish per group (cqc.paint.v1 ids), only when he has one
+  const F = PAINT.on && !g.paintOff && (g.netFin || PAINT.fin[g.type]);   // the finish this gun wears: his (a copy from him: netFin) or yours (cqc.paint.v1 ids)
   if (F && Object.keys(F).length) B.f = Object.assign({}, F);
   return { B, atts, id: netHash(JSON.stringify(B)).toString(36) };
 }
@@ -19799,10 +19801,11 @@ function itemRelease(hand, vel) {
  *  The grab is the normal one (GRIP_SETTLE: on the grip = the firing grip), plus a short haptic.
  *  Whoosh: a soft air burst every half turn while it spins past FLIP.whooshW rad/s near you.
  * ------------------------------------------------------------------------- */
-const FLIP = { on: !/[?&]gunflip=off/.test(QS), win: 0.065, wMax: 25, jump: 0.6, damp: 0.02, noHand: 0.28,
+const FLIP = { on: !/[?&]gunflip=off/.test(QS), win: 0.065, wMax: 25, jump: 0.45,   // jump: a 30 deg snap turn is 0.52 in one frame; a fast wrist is ~0.35
+  minW: 3, minV: 1.3, damp: 0.02, noHand: 0.28,
   extra: 0.04, extraV: 0.012, extraMax: 0.075, arm: 0.2, whooshW: 6, whooshR: 3.5, maxT: 6, list: [], n: 0,
   qa: new THREE.Quaternion(), qb: new THREE.Quaternion(), w: new THREE.Vector3(), r: new THREE.Vector3(), c: new THREE.Vector3(),
-  lp: new THREE.Vector3(), inv: new THREE.Matrix4(), dv: new THREE.Vector3(), hv: new THREE.Vector3(), wp: new THREE.Vector3(),
+  lp: new THREE.Vector3(), hp: new THREE.Vector3(), inv: new THREE.Matrix4(), dv: new THREE.Vector3(), hv: new THREE.Vector3(), wp: new THREE.Vector3(),
   wf: 0, wg: 0 };
 const COLL_FLIP = groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | GROUP.DEBRIS | GROUP.ENEMY);   // no PLAYER, no HAND
 // Per frame while a hand holds an item (weaponsUpdate): the grip's world turn, timestamped.
@@ -19843,6 +19846,7 @@ function flipHandW(h, out) {
 function flipLaunch(p, hand, vel) {
   if (!FLIP.on || !hand.ctrl || !p.body || p.kinematic) return;
   const now = wnow(), w = flipHandW(hand, FLIP.w);
+  if (w.length() < FLIP.minW && vel.length() < FLIP.minV) return;   // set down, not thrown: the normal drop (it must not win grabs as a flying gun)
   hand.source.getWorldPosition(FLIP.wp);
   const lc = p.body.localCom();                                    // body frame = the gun root
   FLIP.c.set(lc.x, lc.y, lc.z).applyQuaternion(p.root.quaternion).add(p.root.position);
@@ -19863,7 +19867,7 @@ function flipLaunch(p, hand, vel) {
 }
 function flipEnd(i) {
   const f = FLIP.list[i];
-  if (f.p.body) f.p.body.setAngularDamping(GUNPHYS.angDamp);
+  if (f.p.body && f.p.inWorld) try { f.p.body.setAngularDamping(GUNPHYS.angDamp); } catch (e) { /* body gone */ }   // removeProp: the body is no longer in the world
   FLIP.list.splice(i, 1);
 }
 // Per frame (weaponsUpdate): airborne state, impacts, armed catches, the whoosh.
@@ -19876,7 +19880,7 @@ function flipTick(dt, now) {
     if (h.fv.length() > 12) h.fv.set(0, 0, 0);                    // a teleport / snap turn, not a hand
   }
   else if (!FLIP.list.length) for (const h of vrHands) h.fpv = null;
-  for (const h of vrHands) if (h.flipArm && !h.prop) { if (now > h.flipArm) h.flipArm = 0; else { h.source.getWorldPosition(FLIP.lp); const fp = flipCatchFind(FLIP.lp, h); if (fp) { h.flipArm = 0; flipCatch(h, fp); } } }
+  for (const h of vrHands) if (h.flipArm && !h.prop) { if (now > h.flipArm) h.flipArm = 0; else { h.source.getWorldPosition(FLIP.hp); const fp = flipCatchFind(FLIP.hp, h); if (fp) { h.flipArm = 0; flipCatch(h, fp); } } }
   if (!FLIP.list.length || !(dt > 0)) return;
   headWorld(FLIP.hv);
   for (let i = FLIP.list.length - 1; i >= 0; i--) {
