@@ -622,7 +622,7 @@
     color: var(--bone); background: var(--panel); padding: 8px 14px; border-radius: 3px; pointer-events: none;
   }
   #hint.hidden { display: none; }
-  #emoWheel { position: fixed; left: 50%; top: 50%; width: min(72vmin, 540px); height: min(72vmin, 540px); transform: translate(-50%, -50%) scale(0.82); opacity: 0;
+  #emoWheel { position: fixed; left: 50%; top: 50%; width: min(80vmin, 600px); height: min(80vmin, 600px); transform: translate(-50%, -50%) scale(0.82); opacity: 0;
     pointer-events: none; z-index: 60; transition: opacity 0.12s ease-out, transform 0.16s cubic-bezier(.2,.9,.3,1.2); }
   #emoWheel.open { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   #emoWheel canvas { width: 100%; height: 100%; display: block; }
@@ -12861,7 +12861,7 @@ function netVsTick() {
     if (left !== VS.last) { VS.last = left; if (left > 0) netSay(left === 15 ? 'Versus: 15 s to gear up. Doors open at 0' : `${left}`, 1); }
     if (left <= 0) { VS.lock = false; netSay('GO', 2); }
   }
-  if (playerState.dead && !VS.wasDead && !VS.over) { VS.score[1]++; netSendRel({ t: 'vsdead' }); netSay(`Down. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
+  if (playerState.dead && !VS.wasDead && !VS.over && !playerState.selfDeath) { VS.score[1]++;   /* EMOTES self-inflicted: no point for anyone */ netSendRel({ t: 'vsdead' }); netSay(`Down. You ${VS.score[0]} : ${VS.score[1]} them`, 3); }
   VS.wasDead = playerState.dead;
   netVsClock();                                                    // the round clock, the match end, the rematch
 }
@@ -12967,7 +12967,7 @@ function netAvApply(s, dt) {
     if (r.enemies) { const i = r.enemies.indexOf(e); if (i >= 0) r.enemies.splice(i, 1); }
     e.pos.set(s.x, s.z); NET.rem = { x: s.x, z: s.z };
   }
-  if (s.d) { narmClear(e); if (!e.dead) try { enemyDie(e, 'torso', NET._d.set(Math.sin(s.yw), 0, Math.cos(s.yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } return; }
+  if (s.d) { narmClear(e); if (!e.dead && !(EMO.on && emoSdRemDeath(e))) try { enemyDie(e, 'torso', NET._d.set(Math.sin(s.yw), 0, Math.cos(s.yw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ } return; }
   const px = e.pos.x, pz = e.pos.y;
   e.pos.set(s.x + Math.sin(s.yw) * 0.06, s.z + Math.cos(s.yw) * 0.06);   // the body sits a little behind the eyes
   const sp = dt > 0 ? Math.min(4, Math.hypot(e.pos.x - px, e.pos.y - pz) / dt) : 0;
@@ -31335,7 +31335,7 @@ function updatePlayerVitals(dt, now) {
   if (!P.dead && now - P.lastHit > C.regenDelay && P.hp < C.playerHealth) { P.hp = Math.min(C.playerHealth, P.hp + C.regen * dt); hpUi(); }
   if (P.dead) {
     P.deadT += dt;
-    deathFade = Math.min(1, P.deadT / 0.6);
+    deathFade = P.selfDeath ? 1 : Math.min(1, P.deadT / 0.6);   // EMOTES self-inflicted: black at the shot
     if (P.deadT > 2.2) respawnPlayer();
   } else deathFade = Math.max(0, deathFade - dt * 1.5);
   if (ui7.hurt) ui7.hurt.style.opacity = renderer.xr.isPresenting ? 0 : (P.hurt * 0.8 + (1 - P.hp / C.playerHealth) * 0.35).toFixed(3);
@@ -54445,11 +54445,11 @@ if (/[?&]dev\b/.test(QS)) window.__cqcPerf = { PCW, pcWarm, VM, tick, tickSafe, 
 if (window.__cqcDev) Object.assign(window.__cqcDev, { netNadeOf, netPupNade, netPupVox, netFinOf, voxDyingPlay, VOX, paintGroups, paintRefresh, netEnTx });   // multiplayer: finishes, throw arm, voices
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHit, deskToggleGrab, deskThrow, createNade, respawnPlayer, surrStart, surrDetain, NADE, dnadeStart, dnadeRelease, wnow, SNDQ });   // tests
 /* ============================================================================
- *  EMOTES (multiplayer; ?emotes=off). A radial wheel (8 slots, EMO_SLOTS) picks one; it plays on YOUR soldier on the
+ *  EMOTES (multiplayer; ?emotes=off). A radial wheel (12 slots of 30 deg, EMO_SLOTS) picks one; it plays on YOUR soldier on the
  *  other player's screen (one reliable 'emo' message: id, sequence, your clock). Your own view stays first person: a
  *  small banner says what you sent. Data-driven: EMOTES rows (id, key, label, bubble, icon, body, start / pose / out),
  *  so later emotes are one row and one pose function.
- *  Wheel: computer hold Tab, move the mouse, let go (1-8 pick while it is open, Esc cancels); pad and headset hold the
+ *  Wheel: computer hold Tab, move the mouse, let go (1-9, 0, -, = pick while it is open, Esc cancels); pad and headset hold the
  *  right stick click 0.25 s, tilt the right stick, let go (a quick tap keeps its old job: kick / weapon light); phone the
  *  Emote button, drag the thumb, let go. The centre cancels. Solo too: a banner (the grenade kick is real either way).
  *  Headset: R3 held is the wheel now, so the old R3 hold (laser) is gone; a tap is still the light (or the laser).
@@ -54458,7 +54458,10 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { MOD, playerState, playerHi
  *  His side: emoAvPose replaces enemyPose for the avatar while one plays (his VR hands no longer drive the arms),
  *  blending in and out from the normal pose; his long gun goes onto his back, a pistol into a hip holster.
  * ========================================================================== */
-const EMO_SLOTS = [1, 5, 3, 6, 2, 7, 4, 8];   // slot (0 = up, clockwise) -> emote id
+const EMO_N = 12;                              // slots, 30 deg each (0 = up, clockwise)
+const EMO_SLOTS = [1, 5, 0, 3, 6, 0, 2, 9, 7, 4, 0, 8];   // slot -> emote id (0 = empty); the old eight kept near their old bearings
+// The id in slot i, or 0 when that slot is empty or its emote is switched off (def.off()).
+function emoSlotId(i) { const id = EMO_SLOTS[i] || 0, d = id && EMO_BY.get(id); return d && !(d.off && d.off()) ? id : 0; }
 const EMOTES = [
   { id: 1, key: 'surrender', label: 'Surrender', bubble: 'Surrendering', icon: 'surr', body: 'full', start: emoSurrStart, pose: emoSurrPose, outW: emoSurrOut },
   { id: 2, key: 'dying', label: 'Dying fall', bubble: '', icon: 'fall', body: 'full', start: emoFallStart, pose: emoFallPose, outW: emoFallOut },
@@ -54468,16 +54471,18 @@ const EMOTES = [
   { id: 5, key: 'rack', label: 'Rack & Catch', bubble: '', icon: 'rack', body: 'full', hold: true, dur: () => EMO_RK.dur, start: emoRkStart, pose: emoRkPose, outW: emoRkOut, end: emoRkEnd, check: emoRkCheck },
   { id: 6, key: 'moonwalk', label: 'Moonwalk', bubble: '', icon: 'moon', body: 'full', travel: true, start: emoMwStart, pose: emoMwPose, outW: emoMwOut, me: emoMwMe },
   { id: 7, key: 'gunflip', label: 'Gun Flip', bubble: '', icon: 'juggle', body: 'full', hold: true, dur: () => EMO_GF.dur, start: emoGfStart, pose: emoGfPose, outW: emoGfOut, check: emoGfCheck },
-  { id: 8, key: 'gunpass', label: 'Pass the gun', bubble: '', icon: 'pass', body: 'full', hold: true, dur: () => EMO_PS.dur, start: emoPsStart, pose: emoPsPose, outW: emoPsOut, end: emoPsEnd, me: emoPsMe, check: emoPsCheck }
+  { id: 8, key: 'gunpass', label: 'Pass the gun', bubble: '', icon: 'pass', body: 'full', hold: true, dur: () => EMO_PS.dur, start: emoPsStart, pose: emoPsPose, outW: emoPsOut, end: emoPsEnd, me: emoPsMe, check: emoPsCheck },
+  { id: 9, key: 'selfend', label: 'Self-inflicted', bubble: '', icon: 'sd', body: 'full', hold: true, dur: () => EMO_SD.dur, start: emoSdStart, pose: emoSdPose, outW: emoSdOut,
+    me: emoSdMe, check: emoSdCheck, off: () => !EMO.cfg.sd, quietStop: (M) => !!M.sdShot }
 ];
 const EMO_BY = new Map(EMOTES.map((d) => [d.id, d]));
 const EMO = {
   on: NET.on && !/[?&]emotes=off\b/.test(QS), solo: /[?&]emotes=solo\b/.test(QS),
-  cfg: (() => { try { return Object.assign({ bubble: true, sound: true, cam3p: true }, JSON.parse(localStorage.getItem('cqc.emotes.v1') || '{}')); } catch (e) { return { bubble: true, sound: true, cam3p: true }; } })(),
+  cfg: (() => { try { return Object.assign({ bubble: true, sound: true, cam3p: true, sd: true, sdShow: true }, JSON.parse(localStorage.getItem('cqc.emotes.v1') || '{}')); } catch (e) { return { bubble: true, sound: true, cam3p: true, sd: true, sdShow: true }; } })(),
   hold: 0.25, moveStop: 0.08, seq: 0, mp: null, menu: false, fallDir: 0,
   me: { id: 0, t: 0, stage: null, nade: null, prev: new THREE.Vector3(), ax: 0, az: 0, has: false },
   rem: { id: 0, n: 0, at: 0, phase: 'off', t: 0, ot: 0, e: null, def: null, x0: 0, z0: 0, gk: 0, curl0: 0.5, S: null, D: null, w: 0 },
-  W: { open: false, src: '', x: 0, y: 0, sel: -1, k: 0, grow: new Float32Array(8), cv: null, cx: null, dom: null, tex: null, mesh: null, dirty: true, drawnK: -1, lastSel: -2 },
+  W: { open: false, src: '', x: 0, y: 0, sel: -1, k: 0, grow: new Float32Array(EMO_N), cv: null, cx: null, dom: null, tex: null, mesh: null, dirty: true, drawnK: -1, lastSel: -2 },
   pad: { on: false, t0: 0, own: false },
   vr: { on: false, t0: 0 },
   touch: { id: null, x0: 0, y0: 0 },
@@ -54502,7 +54507,7 @@ function emoPlay(id) {
   if (EMO.me.id === id) { emoStopMine('again'); return; }
   if (EMO.me.id) emoStopMine('switch');
   if (def.check && !def.check()) return;
-  const M = EMO.me; M.id = id; M.has = false; M.ax = M.az = 0; M.t = 0; M.stage = null; M.nade = null; M.hit0 = playerState.lastHit;
+  const M = EMO.me; M.id = id; M.sdShot = false; M.has = false; M.ax = M.az = 0; M.t = 0; M.stage = null; M.nade = null; M.hit0 = playerState.lastHit;
   const hg = emoHeldGun();
   if (netLive()) netSendRel({ t: 'emo', id, n: ++EMO.seq, c: performance.now(), gt: hg ? hg.type : '' });   // gt: his copy of your gun (rack & catch)
   emoSelfStart(def);                                              // EMOTES 3p: your own body plays it (you watch from behind)
@@ -54517,6 +54522,7 @@ function emoStopMine() {
   M.id = 0;
   if (def && def.me) def.me(M, 0, true);
   emoSelfStop();                                                  // EMOTES 3p: your body blends out, the camera comes back
+  if (def && def.quietStop && def.quietStop(M)) return;           // self-inflicted: after the shot his side plays on to it (no stop)
   if (netLive()) netSendRel({ t: 'emo', id: 0, n: ++EMO.seq, c: performance.now() });
   if (EMO.solo && !netLive()) emoRx({ id: 0, n: EMO.seq });
 }
@@ -54543,12 +54549,16 @@ function emoMeTick(dt) {
 function emoRx(m) {
   const R = EMO.rem;
   if (!m) return;                                                 // (the reliable channel keeps them in order)
-  if (!m.id) { if (R.phase !== 'off' && R.phase !== 'out') { if (R.phase === 'wait') R.phase = 'off'; else { R.phase = 'out'; R.ot = 0; } } return; }
-  const def = EMO_BY.get(m.id); if (!def) return;
+  if (!m.id) { R.sd = null; if (R.phase !== 'off' && R.phase !== 'out') { if (R.phase === 'wait') R.phase = 'off'; else { R.phase = 'out'; R.ot = 0; } } return; }
+  let def = EMO_BY.get(m.id); if (!def) return;
+  const sd = def.key === 'selfend', sdFall = sd && !EMO.cfg.sdShow;
+  if (sdFall) def = EMO_BY.get(2);                                // "Show others' self-inflicted death" off: he only collapses (Dying fall)
   if (R.phase === 'play' || R.phase === 'in' || R.phase === 'out') emoAvEnd(R.e);   // a new one: from the normal pose again
   const now = performance.now(), off = NET.off == null ? null : NET.off;
   const due = off != null && m.c ? m.c + off + (NET.delay || 90) : now;   // with his pose stream (shown NET.delay late)
   R.id = m.id; R.def = def; R.gt = m.gt || ''; R.at = Math.min(now + 600, Math.max(now, due)); R.phase = 'wait'; R.e = null;
+  R.sd = sdFall ? { fall: true, seen: 0, done: false } : sd ? { kill: false, done: false } : null;
+  if (sdFall) R.at += EMO_SD.shot * 1000;                         // the collapse starts with the shot
 }
 // Called from enemiesUpdate for the avatar: true = posed here (enemyPose not needed).
 function emoAvPose(e, dt, now, R = EMO.rem) {                    // R: EMO.rem (his soldier) or EMO.self.R (your own, 3p)
@@ -55536,6 +55546,199 @@ function emoBubbleText(t) {
   U.tex.needsUpdate = true;
 }
 
+// --- self-inflicted death (Gameplay menu: "Self-inflicted death emote", "Show others' self-inflicted death"). Handled
+// soberly: slow and hesitant, no banner, bubble, score or celebration. He looks down at the gun in his hand (a shaky
+// breath, the hand trembles a little), raises it slowly with a pause half way, a pistol's muzzle to the right temple
+// (a long gun: muzzle under the chin, both hands), holds, breathes, then the shot (the gun's own report). It is a real
+// death: on your side the screen cuts to black at the shot (first person and third person alike, no gore from your own
+// eyes), the round is used, you respawn as from any other death; no score, XP or kill credit for anyone (versus: no
+// point). His side: the shot at his temple on his own clock, then the normal death (ragdoll, limp) with the head-wound
+// gore; one quiet line in co-op ("Lost one of ours"). Show off: he is shown only collapsing (the Dying fall pose from
+// the moment of the shot, then his death). Refused without a held gun with a live round chambered.
+const EMO_SD = { look: 1.6, half: 2.3, hold2: 2.85, up: 3.5, shot: 4.8, dur: 5.4, breath: [0.75, 3.85] };
+// body keys: a pistol (right hand to the temple) and a long gun (both hands, muzzle under the chin); left arm hangs (pistol)
+const EMO_SD_BP = [emoK0(0, {}), emoK0(0.7, { np: -0.38, hp: -0.28, sp: -0.06, cp: -0.03 }), emoK0(1.6, { np: -0.42, hp: -0.3, sp: -0.08, cp: -0.04 }),
+  emoK0(2.3, { np: -0.24, hp: -0.2, sp: -0.07, cp: -0.03 }), emoK0(2.85, { np: -0.28, hp: -0.22, sp: -0.08, cp: -0.04 }), emoK0(3.5, { np: -0.12, hp: -0.14, sp: -0.06, cp: -0.03 }),
+  emoK0(4.8, { np: -0.18, hp: -0.2, sp: -0.08, cp: -0.05 }), emoK0(5.4, { np: -0.18, hp: -0.2, sp: -0.08, cp: -0.05 })];
+const EMO_SD_BR = [emoK0(0, {}), emoK0(0.7, { py: -0.03, np: -0.38, hp: -0.28, sp: -0.07, cp: -0.04 }), emoK0(1.6, { py: -0.04, np: -0.42, hp: -0.3, sp: -0.08, cp: -0.05 }),
+  emoK0(2.3, { py: -0.05, np: -0.28, hp: -0.2, sp: -0.1, cp: -0.06 }), emoK0(2.85, { py: -0.05, np: -0.3, hp: -0.22, sp: -0.1, cp: -0.06 }), emoK0(3.5, { py: -0.06, np: -0.12, hp: -0.02, sp: -0.12, cp: -0.08 }),
+  emoK0(4.8, { py: -0.06, np: -0.16, hp: -0.04, sp: -0.13, cp: -0.08 }), emoK0(5.4, { py: -0.06, np: -0.16, hp: -0.04, sp: -0.13, cp: -0.08 })];
+// the gun held low in front (chest space, as EMO_RK_G): looked at
+const EMO_SD_FP = { p: [0.06, -0.24, -0.3], x: -0.85, y: 0.35, z: 0.15 }, EMO_SD_FR = { p: [0.04, -0.3, -0.3], x: -0.55, y: 0.75, z: 0.2 };
+const _sd = { H: new THREE.Vector3(), A: new THREE.Vector3(), C: new THREE.Vector3(), d: new THREE.Vector3(), u: new THREE.Vector3(), R: new THREE.Vector3(), U: new THREE.Vector3(), F: new THREE.Vector3(),
+  X: new THREE.Vector3(), Y: new THREE.Vector3(), Z: new THREE.Vector3(), q: new THREE.Quaternion(), hq: new THREE.Quaternion(), gq: new THREE.Quaternion(), fq: new THREE.Quaternion(), g: new THREE.Vector3(), f: new THREE.Vector3(),
+  m: new THREE.Matrix4(), e: new THREE.Euler(), pole: new THREE.Vector3(), fr: new THREE.Vector3(), o: { p: new THREE.Vector3(), q: new THREE.Quaternion() }, n: new THREE.Vector3() };
+const emoSdLive = (g) => (g.def.action === 'pump' ? g.chamber === 'live' : !!g.chambered && !g.slideLocked);
+function emoSdCheck() {
+  if (!EMO.cfg.sd) return false;
+  const g = emoHeldGun();
+  if (!g) { emoBanner('Hold a loaded gun'); return false; }
+  if (!emoSdLive(g)) { emoBanner('Nothing chambered'); return false; }
+  if (g.rack || g.task) { emoBanner('Not now: the action is busy'); return false; }
+  return true;
+}
+function emoSdPistol(e, R) { const g = emoRkGun(e), d = g ? g.def : (WEAPON_DEFS[R.gt] || (e.gun && e.gun.def)); return !d || d.cls === 'pistol'; }
+// The contact point on his head (world) and the bore direction into it; up = the gun's top. Head from the head hit capsule.
+function emoSdContact(e, pis, C, dir, up) {
+  const h = (e.hit || HITBOX).find((x) => x.part === 'head'), b = (h && e.B[h.b]) || e.B.head;
+  b.updateWorldMatrix(true, false);
+  if (h) { _sd.H.set(h.a[0], h.a[1], h.a[2]).applyMatrix4(b.matrixWorld); _sd.A.set(h.c[0], h.c[1], h.c[2]).applyMatrix4(b.matrixWorld); _sd.H.lerp(_sd.A, 0.5); }
+  else b.getWorldPosition(_sd.H).y += 0.08;
+  const r = (h ? h.r : 0.11) * 0.78;                               // the capsule is a generous hit volume; the skull is smaller
+  e.B.head.getWorldQuaternion(_sd.hq);
+  _sd.R.set(1, 0, 0).applyQuaternion(_sd.hq); _sd.U.set(0, 1, 0).applyQuaternion(_sd.hq); _sd.F.set(0, 0, -1).applyQuaternion(_sd.hq);
+  if (pis) {                                                       // right temple, a little forward and up of the ear
+    C.copy(_sd.H).addScaledVector(_sd.R, r + 0.004).addScaledVector(_sd.U, 0.012).addScaledVector(_sd.F, 0.014);
+    dir.copy(_sd.R).multiplyScalar(-0.97).addScaledVector(_sd.U, 0.1).normalize(); up.copy(_sd.U);
+  } else {                                                         // under the chin, the bore tipped back into the head
+    C.copy(_sd.H).addScaledVector(_sd.U, -(r + 0.03)).addScaledVector(_sd.F, r * 0.55);
+    dir.copy(_sd.U).multiplyScalar(0.96).addScaledVector(_sd.F, -0.28).normalize(); up.copy(_sd.F);
+  }
+  return h;
+}
+function emoSdQuat(dir, up, out) {
+  _sd.Z.copy(dir).negate(); _sd.Y.copy(up).addScaledVector(_sd.Z, -up.dot(_sd.Z)).normalize(); _sd.X.crossVectors(_sd.Y, _sd.Z);
+  return out.setFromRotationMatrix(_sd.m.makeBasis(_sd.X, _sd.Y, _sd.Z));
+}
+function emoSdStart(e, R) { R.P = {}; R.sdEv = 0; }
+// how far the gun has come from the low hold to the head (hesitant: a pause half way, a slight drop back)
+function emoSdK(t) {
+  const T = EMO_SD;
+  if (t < T.look) return 0;
+  if (t < T.half) return 0.55 * smoothstep(T.look, T.half, t);
+  if (t < T.hold2) return 0.55 - 0.06 * Math.sin(Math.PI * (t - T.half) / (T.hold2 - T.half));
+  return 0.55 + 0.45 * smoothstep(T.hold2, T.up, t);
+}
+function emoSdArm(e, S, T, Q, cq, px, py, pz) {
+  const B = e.B, sk = e.sk;
+  _sd.pole.set(px, py, pz).applyQuaternion(cq); _sd.fr.set(0, 0, -1).applyQuaternion(cq);
+  solveIK(B['upperArm' + S], B['foreArm' + S], sk.upper, sk.fore, T, _sd.pole, _sd.fr, B['hand' + S], Q);
+}
+function emoSdBreath(e, k) {
+  if (!EMO.cfg.sound || !audio.ctx || !e.B || !e.B.head) return;
+  const names = VOX_FILES.filter((n) => n.startsWith('dbreath') && VOX.bufs[n]); if (!names.length) return;
+  const buf = VOX.bufs[names[(Math.random() * names.length) | 0]], at = e.B.head.getWorldPosition(new THREE.Vector3());
+  try { soundAt(at, () => { const c = audio.ctx, s = c.createBufferSource(), g = c.createGain(); s.buffer = buf; s.playbackRate.value = 0.97 + Math.random() * 0.06; g.gain.value = 0.42 * k; s.connect(g); g.connect(audio.dest || audio.out); s.start(c.currentTime + (audio.delay || 0)); }); } catch (er) { /* no sound */ }
+}
+function emoSdPose(e, R, dt) {
+  const T = EMO_SD, t = Math.min(R.t, T.dur), out = R.phase === 'out', pis = emoSdPistol(e, R), g = emoRkGun(e), W = e.gun.wr || (g && g.wr);
+  const P = emoKeys(pis ? EMO_SD_BP : EMO_SD_BR, t, R.P); P.hand = null;
+  P.sp += Math.sin(t * 1.9) * 0.012;                               // slow uneven breathing in the chest
+  emoBody(e, P);
+  const cq = _eb.cq;
+  // the low hold, chest space
+  const F = pis ? EMO_SD_FP : EMO_SD_FR;
+  e.B.chest.localToWorld(_sd.f.set(F.p[0], F.p[1], F.p[2]));
+  _sd.d.set(0, 0, -1).applyQuaternion(cq);
+  _sd.fq.setFromAxisAngle(_rk.up, Math.atan2(-_sd.d.x, -_sd.d.z)).multiply(_sd.q.setFromEuler(_sd.e.set(F.x, F.y, F.z)));
+  // at the head
+  emoSdContact(e, pis, _sd.C, _sd.d, _sd.u);
+  emoSdQuat(_sd.d, _sd.u, _sd.gq);
+  if (W && W.muzzle) _sd.g.copy(W.muzzle).applyQuaternion(_sd.gq); else _sd.g.set(0, 0, pis ? -0.17 : -0.6).applyQuaternion(_sd.gq);
+  _sd.C.sub(_sd.g);                                                 // the gun root with its muzzle on the point
+  const k = out ? 0 : smoothstep(0, 1, emoSdK(t));
+  _rk.g.lerpVectors(_sd.f, _sd.C, k); _rk.gq.copy(_sd.fq).slerp(_sd.gq, k);
+  // the tremor: a few mm, more as it comes up (never off the contact point by more than that)
+  const a = (0.0022 + 0.0032 * k) * (t < T.shot ? 1 : 0.3);
+  _rk.g.x += a * (Math.sin(t * 8.3) + 0.6 * Math.sin(t * 13.1 + 1)); _rk.g.y += a * (Math.sin(t * 9.7 + 2) + 0.5 * Math.sin(t * 15.3)); _rk.g.z += a * (Math.sin(t * 7.1 + 4) + 0.5 * Math.sin(t * 11.9 + 3));
+  _rk.gq.multiply(_sd.q.setFromAxisAngle(_rk.X, 2.2 * a * Math.sin(t * 10.3 + 5)));
+  if (R.w < 1) {                                                    // blend from / to his normal hold
+    e.root.updateWorldMatrix(true, false);
+    _rk.p.copy(EMO.gP).applyMatrix4(e.root.matrixWorld); _rk.g.lerpVectors(_rk.p, _rk.g, R.w);
+    e.root.getWorldQuaternion(_rk.q2).multiply(EMO.gQ); _rk.gq.copy(_rk.q2).slerp(_rk.gq, R.w);
+  }
+  e.root.updateWorldMatrix(true, false);
+  e.root.getWorldQuaternion(_rk.q2);
+  e.gun.root.quaternion.copy(_rk.q2).invert().multiply(_rk.gq);
+  e.gun.root.position.copy(_rk.g); e.root.worldToLocal(e.gun.root.position);
+  e.gun.root.updateWorldMatrix(false, true);
+  // right hand on the grip; a pistol at the temple: the elbow out to the side and up
+  _rk.a.copy(EMO_RK.wrist).applyQuaternion(_rk.gq).add(_rk.g);
+  _rk.qa.copy(_rk.gq).multiply(_rk.hR);
+  if (pis) emoSdArm(e, 'R', _rk.a, _rk.qa, cq, mix(0.7, 1.0, k), mix(-0.75, 0.25, k), mix(0.15, 0.3, k));
+  else emoSdArm(e, 'R', _rk.a, _rk.qa, cq, 0.7, -0.8, 0.2);
+  if (!pis && W) {                                                  // a long gun: the left hand on the handguard
+    emoRkHand('sup', e, R, W, _rk.g, _rk.gq, cq, 0, 0, _sd.o);
+    emoSdArm(e, 'L', _sd.o.p, _sd.o.q, cq, -0.7, -0.75, 0.15);
+  }
+  enemyCurl(e, 0.6);
+  if (!out) {
+    if (R.sdEv < 1 && t >= T.breath[0]) { R.sdEv = 1; emoSdBreath(e, 0.8); }
+    if (R.sdEv < 2 && t >= T.breath[1]) { R.sdEv = 2; emoSdBreath(e, 1); }
+    if (R.sdEv < 3 && t >= T.shot) {                                // the shot, on his clock (your own body: your side plays it)
+      R.sdEv = 3;
+      if (!R.self && R.sd) {
+        try { if (e.gun && e.gun.def && !(g && g.sup)) flashBurst(e.gun, e.gun.def); } catch (er) { /* no flash */ }
+        try {
+          headWorld(_sd.n); _sd.A.copy(_rk.g).add(_sd.g);
+          const snd = WEAPON_DEFS[R.gt] && WEAPON_DEFS[R.gt].sound && shotBufs(WEAPON_DEFS[R.gt].sound) ? WEAPON_DEFS[R.gt].sound : (e.w ? e.w.gun : 'smg');
+          enemyShotSfx(_sd.A.distanceTo(_sd.n), snd, _sd.A.clone(), !!(g && g.sup));
+        } catch (er) { /* no sound */ }
+        R.sd.kill = true;                                           // emoSdTick: the death (head wound, ragdoll)
+      }
+    }
+  }
+}
+function emoSdOut(e, R) { return R.phase !== 'out' ? smoothstep(0, 0.6, R.t) : 1 - smoothstep(0, 0.5, R.ot); }
+// Your side: the shot, one round used, then your death (black at once).
+function emoSdMe(M, dt, stop) {
+  if (stop || M.sdShot || M.t < EMO_SD.shot) return;
+  const g = emoHeldGun();
+  if (!g || !emoSdLive(g)) { emoBanner('Nothing chambered'); emoStopMine(); return; }
+  M.sdShot = true;
+  const d = g.def;
+  if (d.action === 'pump') g.chamber = 'spent'; else g.chambered = false;
+  if (d.action !== 'pump' && d.manual) g.spent = true;
+  else if (d.action !== 'pump') { try { spawnCasing(g, d.casing); } catch (er) { /* no case */ } if (!chamberFromMag(g) && locksOpen(d) && g.mag && g.mag.item.rounds === 0) g.slideLocked = true; }
+  panel.dirty = true;
+  try { if (!supShot(g, d)) sfx(d.sound, g.sup ? 0.39 : 1); } catch (er) { /* no sound */ }
+  try { headWorld(_sd.n); enemiesHear(_sd.n); } catch (er) { /* fine */ }
+  playerState.selfDeath = true;                                     // black at once, no versus point
+  emo3Snap(true);                                                   // the third-person view ends (quiet stop: his side plays to the shot)
+  playerState.hp = 0; playerState.dead = true; playerState.deadT = 0;
+  deathFade = 1; if (ui7.downed && !renderer.xr.isPresenting) ui7.downed.style.opacity = '1';   // this frame already
+  hpUi();
+}
+// His death after the shot: the head wound and its gore, then the normal death (limp). No score for anyone.
+function emoSdKill(e, R) {
+  const pis = emoSdPistol(e, R);
+  const h = emoSdContact(e, pis, _sd.C, _sd.d, _sd.u);
+  const P = _sd.C.clone().addScaledVector(_sd.d, 0.012), dir = _sd.d.clone();
+  const d = WEAPON_DEFS[R.gt] || (e.gun && e.gun.def) || WEAPON_DEFS.smg;
+  e.netKill = true; e.killPart = 'head';
+  try {
+    if (h) {
+      bloodFx(P, dir, 'head', 1);
+      const wIn = addWound(e, e.B[h.b] || e.B.head, P, 'head'), wOut = addExitWound(e, h, P, dir, 1, GORE_X && g90Through(d, 'head', 1));
+      NET.g90K = 0;
+      if (GORE_X) g90Hit(e, 'head', wIn, wOut, P, dir, d, 1);
+    }
+  } catch (er) { /* no gore */ }
+  try { narmClear(e); enemyDie(e, h ? h.seg : 'neck', dir, P, bulletP(d, 1) / 8); } catch (er) { /* fall */ }
+  emoSdSay();
+}
+function emoSdSay() { if (netCoop()) emoBanner('Lost one of ours'); }
+// Show off: the Dying fall from the moment of the shot; his death once he is on the floor.
+function emoSdFallDie(e) {
+  e.netKill = true;
+  try { narmClear(e); enemyDie(e, 'torso', _sd.d.set(Math.sin(e.yaw), 0, Math.cos(e.yaw)), e.root.position.clone().setY(e.root.position.y + 1.1), 1); } catch (er) { /* fall */ }
+  emoSdSay();
+}
+// netAvApply: his death arrived (s.d). true = handled here (or held back until the collapse is on the floor).
+function emoSdRemDeath(e) {
+  const R = EMO.rem, S = R.sd; if (!S || S.done || e !== NET.av) return false;
+  if (S.fall) { if (!S.seen) S.seen = performance.now(); return true; }
+  if (R.phase === 'wait' || R.phase === 'in' || R.phase === 'play') { S.done = true; emoSdKill(e, R); return true; }
+  return false;
+}
+function emoSdTick() {
+  if (playerState.selfDeath && !playerState.dead) playerState.selfDeath = false;
+  const R = EMO.rem, S = R.sd; if (!S || S.done) return;
+  const e = NET.av; if (!e || e.dead) return;
+  if (S.kill) { S.done = true; emoSdKill(e, R); return; }
+  if (S.fall && S.seen && ((R.D && R.D.t >= R.D.end) || performance.now() - S.seen > 1900)) { S.done = true; emoSdFallDie(e); }
+}
+
 // --- the wheel ----------------------------------------------------------------------------------------------------------
 function emoWheelInit() {
   const W = EMO.W; if (W.cv) return;
@@ -55553,7 +55756,7 @@ function emoOpen(src) {
 function emoClose(pick) {
   const W = EMO.W; if (!W.open) return;
   W.open = false; if (W.dom) W.dom.classList.remove('open');
-  const id = pick && W.sel >= 0 ? EMO_SLOTS[W.sel] : 0;
+  const id = pick && W.sel >= 0 ? emoSlotId(W.sel) : 0;
   if (id) emoPlay(id);
 }
 // Direction (x right, y down; 1 = the ring) -> slot; inside 0.38 = the centre (cancel).
@@ -55561,7 +55764,7 @@ function emoAim(x, y) {
   const W = EMO.W, m = Math.hypot(x, y);
   W.x = x; W.y = y;
   let s = -1;
-  if (m > 0.38) { const a = Math.atan2(x, -y); s = ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8; if (!EMO_SLOTS[s]) s = -1; }
+  if (m > 0.38) { const a = Math.atan2(x, -y); s = ((Math.round(a / ((Math.PI * 2) / EMO_N)) % EMO_N) + EMO_N) % EMO_N; if (!emoSlotId(s)) s = -1; }
   if (s !== W.sel) { W.sel = s; W.dirty = true; }
   return s;
 }
@@ -55570,24 +55773,32 @@ function emoDraw(dt) {
   const W = EMO.W, c = W.cx; if (!c) return;
   let moving = false;
   W.k += ((W.open ? 1 : 0) - W.k) * (1 - Math.exp(-dt * 16));
-  for (let i = 0; i < 8; i++) { const t = i === W.sel ? 1 : 0, g = W.grow[i]; W.grow[i] += (t - g) * (1 - Math.exp(-dt * 18)); if (Math.abs(W.grow[i] - t) > 0.004) moving = true; else W.grow[i] = t; }
+  for (let i = 0; i < EMO_N; i++) { const t = i === W.sel ? 1 : 0, g = W.grow[i]; W.grow[i] += (t - g) * (1 - Math.exp(-dt * 18)); if (Math.abs(W.grow[i] - t) > 0.004) moving = true; else W.grow[i] = t; }
   if (!W.dirty && !moving && Math.abs(W.k - W.drawnK) < 0.004) return false;
   W.dirty = false; W.drawnK = W.k;
-  const S = 640, C = S / 2, r0 = 118, r1 = 268;
+  const S = 640, C = S / 2, r0 = 104, r1 = 292, seg = (Math.PI * 2) / EMO_N;
   c.clearRect(0, 0, S, S);
   c.save(); c.translate(C, C);
-  for (let i = 0; i < 8; i++) {
-    const id = EMO_SLOTS[i], def = EMO_BY.get(id), g = W.grow[i], a = (i * Math.PI) / 4 - Math.PI / 2, h = Math.PI / 8 - 0.035;
+  for (let i = 0; i < EMO_N; i++) {
+    const id = emoSlotId(i), def = id ? EMO_BY.get(id) : null, g = W.grow[i], a = i * seg - Math.PI / 2, h = seg / 2 - 0.025;
     const R1 = r1 + 22 * g, R0 = r0 + 6 * g;
     c.beginPath(); c.arc(0, 0, R1, a - h, a + h); c.arc(0, 0, R0, a + h, a - h, true); c.closePath();
     if (def) {
       c.fillStyle = g > 0.01 ? `rgba(${Math.round(36 + 160 * g)},${Math.round(34 + 110 * g)},${Math.round(26 + 30 * g)},${0.8 + 0.15 * g})` : 'rgba(16,18,18,0.82)';
       c.fill(); c.lineWidth = 2 + 2 * g; c.strokeStyle = `rgba(${EMO_GOLD},${0.45 + 0.55 * g})`; c.stroke();
       const rm = (R0 + R1) / 2, x = Math.cos(a) * rm, y = Math.sin(a) * rm, sc = 1 + 0.18 * g;
-      emoIcon(c, def.icon, x, y - 18 * sc, 52 * sc, g > 0.5 ? '#181410' : '#efe6d2');
+      emoIcon(c, def.icon, x, y - 22 * sc, 42 * sc, g > 0.5 ? '#181410' : '#efe6d2');
       c.fillStyle = g > 0.5 ? '#181410' : '#efe6d2'; c.textAlign = 'center'; c.textBaseline = 'middle';
-      c.font = `700 ${Math.round(29 * sc)}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`;
-      c.fillText(def.label.toUpperCase(), x, y + 42 * sc);
+      c.font = `700 ${Math.round(20 * sc)}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`;
+      const lab = def.label.toUpperCase(), maxW = 96 * sc;
+      let L1 = lab, L2 = '';
+      if (c.measureText(lab).width > maxW) {                        // two lines in a 30 deg slot: split at the space or hyphen nearest the middle
+        let sp = -1; for (let j = 0; j < lab.length; j++) if ((lab[j] === ' ' || lab[j] === '-') && (sp < 0 || Math.abs(j - lab.length / 2) < Math.abs(sp - lab.length / 2))) sp = j;
+        if (sp > 0) { L1 = lab.slice(0, lab[sp] === '-' ? sp + 1 : sp); L2 = lab.slice(sp + 1); }
+      }
+      const wm = Math.max(c.measureText(L1).width, L2 ? c.measureText(L2).width : 0);
+      if (wm > maxW) c.font = `700 ${Math.round(20 * sc * maxW / wm)}px "Barlow Semi Condensed", "Arial Narrow", sans-serif`;
+      if (L2) { c.fillText(L1, x, y + 20 * sc); c.fillText(L2, x, y + 40 * sc); } else c.fillText(L1, x, y + 26 * sc);
     } else {
       c.fillStyle = 'rgba(16,18,18,0.45)'; c.fill(); c.setLineDash([6, 8]); c.lineWidth = 1.5; c.strokeStyle = 'rgba(239,230,210,0.22)'; c.stroke(); c.setLineDash([]);
     }
@@ -55656,6 +55867,12 @@ function emoIcon(c, kind, x, y, s, col) {
     c.moveTo(2, 10); c.lineTo(14, 32); c.lineTo(20, 54); c.lineTo(34, 54); c.stroke();
     c.lineWidth = 4; c.globalAlpha = 0.7; c.beginPath(); c.moveTo(46, 40); c.lineTo(62, 40); c.moveTo(42, 50); c.lineTo(64, 50); c.stroke();
     c.beginPath(); c.moveTo(-40, 60); c.lineTo(66, 60); c.stroke();
+  } else if (kind === 'sd') {                                      // a figure standing still, head bowed (no weapon drawn)
+    c.beginPath(); c.arc(6, -34, 11, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.moveTo(0, -20); c.lineTo(-2, 16);
+    c.moveTo(-1, -12); c.lineTo(-12, 8); c.lineTo(-14, 20); c.moveTo(-1, -12); c.lineTo(10, 6); c.lineTo(12, 20);
+    c.moveTo(-2, 16); c.lineTo(-8, 36); c.lineTo(-8, 56); c.moveTo(-2, 16); c.lineTo(6, 36); c.lineTo(8, 56); c.stroke();
+    c.lineWidth = 4; c.globalAlpha = 0.5; c.beginPath(); c.moveTo(-40, 60); c.lineTo(46, 60); c.stroke();
   } else if (kind === 'nade') {
     c.beginPath(); c.arc(-14, -36, 10, 0, Math.PI * 2); c.fill();
     c.beginPath(); c.moveTo(-12, -24); c.lineTo(-8, 10);
@@ -55681,7 +55898,7 @@ function emoVrMesh() {
   const W = EMO.W; if (W.mesh) return W.mesh;
   emoWheelInit();
   W.tex = new THREE.CanvasTexture(W.cv); W.tex.colorSpace = THREE.SRGBColorSpace;
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), new THREE.MeshBasicMaterial({ map: W.tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false }));
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4), new THREE.MeshBasicMaterial({ map: W.tex, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, fog: false }));
   m.renderOrder = 100020; m.position.set(0, -0.06, -0.55); m.visible = false; m.frustumCulled = false;
   camera.add(m); W.mesh = m;
   return m;
@@ -55723,7 +55940,7 @@ function emoPadPoll(B, A, sw, now) {
   }
   return false;
 }
-// Computer: hold Tab (any time in play); the mouse aims it, 1-8 pick, Esc cancels, a click picks.
+// Computer: hold Tab (any time in play); the mouse aims it, 1-9, 0, -, = pick (slots clockwise from the top), Esc cancels, a click picks.
 window.addEventListener('keydown', (e) => {
   if (!EMO.on) return;
   if (e.code === 'Tab') {
@@ -55733,8 +55950,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (!EMO.W.open || EMO.W.src !== 'pc') return;
-  const m = /^(Digit|Numpad)([1-8])$/.exec(e.code);
-  if (m) { e.preventDefault(); e.stopImmediatePropagation(); const s = +m[2] - 1; if (EMO_SLOTS[s]) { EMO.W.sel = s; emoClose(true); } return; }
+  const m = /^(?:Digit|Numpad)([0-9])$/.exec(e.code), s = m ? (m[1] === '0' ? 9 : +m[1] - 1) : e.code === 'Minus' || e.code === 'NumpadSubtract' ? 10 : e.code === 'Equal' || e.code === 'NumpadAdd' ? 11 : -1;
+  if (s >= 0) { e.preventDefault(); e.stopImmediatePropagation(); if (emoSlotId(s)) { EMO.W.sel = s; emoClose(true); } return; }
   if (e.code === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); emoClose(false); }
 }, true);
 window.addEventListener('keyup', (e) => {
@@ -55775,7 +55992,11 @@ function emoMenu() {
   mwValue('mp', 'Emote bubbles', 'The text over the other player\'s head', () => (EMO.cfg.bubble ? 'ON' : 'OFF'), null, () => { EMO.cfg.bubble = !EMO.cfg.bubble; emoSave(); });
   mwValue('mp', 'Emote camera', 'See yourself from behind while you play one', () => (EMO.cfg.cam3p ? 'THIRD PERSON' : 'FIRST PERSON'), null, () => { EMO.cfg.cam3p = !EMO.cfg.cam3p; emoSave(); if (!EMO.cfg.cam3p) emo3Snap(true); });
   mwValue('mp', 'Emote sounds', 'His voice and body sounds when he plays one', () => (EMO.cfg.sound ? 'ON' : 'OFF'), null, () => { EMO.cfg.sound = !EMO.cfg.sound; emoSave(); });
-  mwNote('mp', 'Emotes: hold Tab and move the mouse (1-8 pick) · hold the right stick click and tilt it (pad, headset) · the Emote button (phone). Let go to play; walking stops it.');
+  if (MW.secs.get('play')) {
+    mwValue('play', 'Self-inflicted death emote', 'In the emote wheel; a real death (needs a chambered round)', () => (EMO.cfg.sd ? 'ON' : 'OFF'), null, () => { EMO.cfg.sd = !EMO.cfg.sd; emoSave(); });
+    mwValue('play', 'Show others\' self-inflicted death', 'Off: the other player is shown only collapsing', () => (EMO.cfg.sdShow ? 'ON' : 'OFF'), null, () => { EMO.cfg.sdShow = !EMO.cfg.sdShow; emoSave(); });
+  }
+  mwNote('mp', 'Emotes: hold Tab and move the mouse (1-9, 0, -, = pick) · hold the right stick click and tilt it (pad, headset) · the Emote button (phone). Let go to play; walking stops it.');
   mwSyncRows();
 }
 // Every frame (after netTick).
@@ -55787,6 +56008,7 @@ function emoTick(dt) {
   if (!mp && EMO.W.open && EMO.W.src !== 'pc') emoClose(false);
   if (!netLive() && !EMO.solo) { if (EMO.rem.phase !== 'off') emoAvEnd(EMO.rem.e); }
   emoMeTick(dt);
+  emoSdTick();                                                    // self-inflicted: his death after the shot
   emoSelfTick(dt);                                                // EMOTES 3p: your own body plays your emote
   emoBubble(dt);
   const W = EMO.W;
