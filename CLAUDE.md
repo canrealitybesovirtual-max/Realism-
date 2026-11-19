@@ -2085,3 +2085,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC emotes: no third hand
 - c3HideMine now also hides VMH.meshes (the fitted gun hands are scene children, not under your hands or the gun), which showed as a third hand at your chest during an emote. Parse checked only.
+
+## CQC self-inflicted emote: blood in the room
+- emoSdMe at the shot: bloodFx head x1.4 at your head, the step 90 head spray (g90Spray) on the wall / floor along the round (pistol: right temple out the left side; rifle: up and back from under the chin), 8 tissue chunks, a pool under you 1.4 s later; it stays after you respawn. The other side already got the head gore on his copy. Parse checked only.
