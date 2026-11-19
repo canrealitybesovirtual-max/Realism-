@@ -27560,7 +27560,7 @@ function vmhFit(g) {
       const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
       const geo = H.geo.clone().applyMatrix4(M);
       geo.computeBoundingSphere();
-      const FJ = side === 'R' ? vmhFingFrame(H, M) : null;
+      const FJ = side === 'R' ? vmhFingFrame(H, M, g.def.cls === 'pistol' ? 0.05 : 0.14) : null;
       const mkMats = (U) => H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase);
         if (H.tan && c.normalScale) c.normalScale.y *= -1;               // polish 2: baked without tangents (GLTFLoader's derivative-tangent rule, as the step 109 sleeves)
         return gloveInside(c, FJ && geo.attributes.aIdxW ? U : null); });
@@ -27578,7 +27578,7 @@ function vmhFit(g) {
 // index vertices bend about their own three joints in the vertex shader (aIdxW = weight on each joint's subtree, one
 // hinge axis along the knuckle line), so the finger follows the trigger: off it = straight along the frame above the
 // guard, pointing at the muzzle (trigger discipline); touched = the pad resting on the trigger face; pulled = curled in.
-function vmhFingFrame(H, M) {
+function vmhFingFrame(H, M, rise = 0.05) {
   if (!H.fingJ) return null;
   const J = H.fingJ.map((p) => p.clone().applyMatrix4(M)), Im = H.I.clone().applyMatrix4(M), Km = H.K.clone().applyMatrix4(M), Wm = H.W.clone().applyMatrix4(M);
   const ax = Km.clone().sub(Im).normalize();
@@ -27586,13 +27586,32 @@ function vmhFingFrame(H, M) {
   if (rot(J[3], J[0], 0.2).distanceTo(Wm) > J[3].distanceTo(Wm)) ax.negate();   // + = curl (the tip toward the wrist)
   const sa = (a, b) => { const p = a.clone().projectOnPlane(ax).normalize(), q = b.clone().projectOnPlane(ax).normalize(); return Math.atan2(ax.dot(p.clone().cross(q)), p.dot(q)); };
   const d1 = J[1].clone().sub(J[0]), d2 = J[2].clone().sub(J[1]), d3 = J[3].clone().sub(J[2]);
-  const b2 = sa(d1, d2), b3 = sa(d2, d3), fwd = new THREE.Vector3(0, 0.05, -1);   // gun root space: the bore is -z; a touch up so it clears the guard
-  const a1 = clamp(sa(d1, fwd), -1.4, 0.2);
-  return { J, ax, along: [a1, -0.9 * b2, -0.9 * b3], on: [0.1, 0.12, 0.06], pull: [0.24, 0.32, 0.2] };   // on: curled into the guard onto the blade (was opened off it)
+  const b2 = sa(d1, d2), b3 = sa(d2, d3), fwd = new THREE.Vector3(0, rise, -1).normalize();   // gun root space: the bore is -z; a touch up so it clears the guard (rifles more: the receiver sits higher over the knuckle)
+  const FJ = { J, ax, sx: new THREE.Vector3(), s: 0, along: [clamp(sa(d1, fwd), -1.4, 0.2), -0.9 * b2, -0.9 * b3], on: [0.1, 0.12, 0.06], pull: [0.24, 0.32, 0.2] };   // on: curled into the guard onto the blade
+  // QA guns: the knuckle line is not square to the finger, so bending about it alone left the straightened finger
+  // running in across the gun (through the guard, out the far side of an AWM / AKM). Straight finger = the two outer
+  // joints opened (as before), then the whole finger is turned about the knuckle line (a1) and swung out about the
+  // splay axis (sx, square to the knuckle line and the bore) until it points along the bore, beside the frame.
+  const P = J.map((p) => p.clone()), turn = (i0, k, a, A) => { for (let i = i0 + 1; i < 4; i++) P[i].sub(J[k]).applyAxisAngle(A, a).add(J[k]); };
+  turn(2, 2, FJ.along[2], ax); turn(1, 1, FJ.along[1], ax);
+  const D = P[3].clone().sub(P[0]).normalize(), S = FJ.sx.crossVectors(ax, fwd).normalize(), v = new THREE.Vector3();
+  let best = null, bd = Infinity;
+  for (let i = -700; i <= 300; i++) {                            // a1 in -1.4..0.6 rad: the one that leaves D square to the splay axis
+    const a = i * 0.002; v.copy(D).applyAxisAngle(ax, a);
+    if (v.dot(fwd) <= 0) continue;
+    const e = Math.abs(v.dot(S)) + 0.02 * Math.abs(a - FJ.along[0]);
+    if (e < bd) { bd = e; best = a; }
+  }
+  if (best !== null) {
+    v.copy(D).applyAxisAngle(ax, best);
+    const sp = Math.atan2(S.dot(v.clone().cross(fwd)), v.dot(fwd));
+    if (Math.abs(sp) < 0.7) { FJ.along[0] = best; FJ.s = sp; }
+  }
+  return FJ;
 }
 function vmhFingU(FJ) {
   if (!FJ) return null;
-  return { uFJ1: { value: FJ.J[0] }, uFJ2: { value: FJ.J[1] }, uFJ3: { value: FJ.J[2] }, uFAx: { value: FJ.ax }, uFA: { value: new THREE.Vector3() } };
+  return { uFJ1: { value: FJ.J[0] }, uFJ2: { value: FJ.J[1] }, uFJ3: { value: FJ.J[2] }, uFAx: { value: FJ.ax }, uFA: { value: new THREE.Vector3() }, uFSx: { value: FJ.sx }, uFS: { value: 0 } };
 }
 const _vfA = new THREE.Vector3(), _vfB = new THREE.Vector3();
 function vmhFingPose(h, g, role, FJ, U) {
@@ -27605,10 +27624,12 @@ function vmhFingPose(h, g, role, FJ, U) {
   const now = performance.now() / 1000, dt = clamp(now - (U.t || now), 0, 0.1); U.t = now;
   const k = U.init ? 1 - Math.exp(-22 * dt) : 1; U.init = true;
   U.uFA.value.lerp(_vfA, k);
+  if (U.uFS) U.uFS.value += ((role === 'primary' && !touch ? FJ.s : 0) - U.uFS.value) * k;   // swung out beside the frame only while along it
 }
 const VMH_FING_VS = `
-attribute vec3 aIdxW; uniform vec3 uFJ1, uFJ2, uFJ3, uFAx, uFA;
-vec3 fRot(vec3 v, float a) { float c = cos(a), s = sin(a); return v * c + cross(uFAx, v) * s + uFAx * dot(uFAx, v) * (1.0 - c); }`;
+attribute vec3 aIdxW; uniform vec3 uFJ1, uFJ2, uFJ3, uFAx, uFA, uFSx; uniform float uFS;
+vec3 fRotA(vec3 v, vec3 A, float a) { float c = cos(a), s = sin(a); return v * c + cross(A, v) * s + A * dot(A, v) * (1.0 - c); }
+vec3 fRot(vec3 v, float a) { return fRotA(v, uFAx, a); }`;
 // Each frame before the hands are placed: nothing is taken yet.
 function vmhFrameStart() {
   for (const h of HANDS.list) {
@@ -27702,9 +27723,9 @@ function gloveInside(mat, FU) {
       Object.assign(sh.uniforms, FU);
       sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>' + VMH_FING_VS)
         .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
-objectNormal = fRot(objectNormal, uFA.z * aIdxW.z); objectNormal = fRot(objectNormal, uFA.y * aIdxW.y); objectNormal = fRot(objectNormal, uFA.x * aIdxW.x);`)
+objectNormal = fRot(objectNormal, uFA.z * aIdxW.z); objectNormal = fRot(objectNormal, uFA.y * aIdxW.y); objectNormal = fRot(objectNormal, uFA.x * aIdxW.x); objectNormal = fRotA(objectNormal, uFSx, uFS * aIdxW.x);`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
-transformed = uFJ3 + fRot(transformed - uFJ3, uFA.z * aIdxW.z); transformed = uFJ2 + fRot(transformed - uFJ2, uFA.y * aIdxW.y); transformed = uFJ1 + fRot(transformed - uFJ1, uFA.x * aIdxW.x);`);
+transformed = uFJ3 + fRot(transformed - uFJ3, uFA.z * aIdxW.z); transformed = uFJ2 + fRot(transformed - uFJ2, uFA.y * aIdxW.y); transformed = uFJ1 + fRot(transformed - uFJ1, uFA.x * aIdxW.x); transformed = uFJ1 + fRotA(transformed - uFJ1, uFSx, uFS * aIdxW.x);`);
     }
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vGlvW;')
       .replace('#include <project_vertex>', '#include <project_vertex>\nvGlvW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
