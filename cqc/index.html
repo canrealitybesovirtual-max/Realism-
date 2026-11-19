@@ -8970,6 +8970,7 @@ function activateRoom(room) {
   for (const s of room.layout.props) spawnProp(room, s);
   room.active = true;
   weaponsRoomActivated(room);          // step 5: restore saved bullet holes, stock the safe room's bench
+  hsRoomOn(room);                      // HOLE SNAP: the drawn-triangle grid, built in the background
   coverRoomActivated(room);            // step 6: crate stacks, boards of crates broken last visit
   enemiesRoomActivated(room);          // step 7: one man per combat room (unless you killed him)
   termRoomActivated(room);             // step 11: the terminal screen, its collider and walk box
@@ -9036,7 +9037,7 @@ function unloadRoom(room) {
   for (const geo of room.ownGeo) DISPOSE_Q.push(geo);       // kit geometry is shared and is NOT disposed
   for (const m of room.ownMat) DISPOSE_Q.push(m);
   room.ownGeo.length = 0; room.ownMat.length = 0;
-  room.active = false;
+  room.active = false; room.hsg = null;   // HOLE SNAP: its grid goes with it
   if (stream.rooms.get(room.slot) === room) stream.rooms.delete(room.slot);
   if (flicker.fixture && flicker.fixture.room === room) flicker.fixture = null;
   pool.key = '';
@@ -20700,7 +20701,7 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   if (door) {
     door.body.applyImpulseAtPoint(imp, _fp, true);
     door.drive = null;
-    addDoorHole(door, _fp, _hn, true, 'metal', PEN.live ? PEN.holeS : 1);   // step 119: sized to the calibre
+    if (hsSnapObj(door.group, _fp, _hn)) { _fp.copy(HSN.p); _hn.copy(HSN.n); addDoorHole(door, _fp, _hn, true, 'metal', PEN.live ? PEN.holeS : 1, true); }   // step 119: sized to the calibre; HOLE SNAP: on the drawn leaf
     impactFx('metal', _fp, _hn);
     return;
   }
@@ -20714,6 +20715,8 @@ function bulletHit(hit, dir, d, k = 1) {      // k: energy left after soft cover
   if (info) {
     if (FIX_ON && _hn.y < -0.7 && !(info.room && info.room.apt) && fixtureShot(info.room, _fp, dir)) return;   // step 87: a round into a troffer
     if ((SPLASH.on || SPLASH.yardOn && info.room && info.room.yard) && CONFIG.splash.bullets && info.kind === 'concrete' && _hn.y > 0.7 && splashShot(info.room, _fp)) return;   // step 94: into standing water (the yard's puddles too)
+    if (!hsSnap(_fp, _hn)) { impactFx(info.kind, _fp, _hn); return; }   // HOLE SNAP: nothing drawn here (a collider's margin): no hole
+    _fp.copy(HSN.p); _hn.copy(HSN.n);
     addRoomHole(info.room, info.kind, _fp, _hn, true, undefined, PEN.live ? PEN.holeS : 1);   // step 119: sized to the calibre
     impactFx(info.kind, _fp, _hn);
     if (TRICKLE.on) trickleAdd(info.room, info.kind, _fp, _hn);   // step 88: the hole keeps shedding
@@ -20896,6 +20899,7 @@ function roomRoll(room, wn, roll) {
 }
 function addRoomHole(room, kind, wp, wn, save, tag, sc = 1) {   // tag: which crate / drywall cell it's on (step 6); sc: size (step 119: calibre, exit)
   if (!room.active) return;
+  if (HSN_ON) { if (!hsSnap(wp, wn)) return; wp = HSN.p; wn = HSN.n; }   // HOLE SNAP: on the drawn surface, or none
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83: in the room's frame
   const roll = Math.random() * Math.PI * 2, s = (0.85 + Math.random() * 0.3) * sc;   // random: no need to turn it
   putDecal(decalLayer(room, room.group, kind), kind, lx, ly, lz, nx, wn.y, nz, roll, s);
@@ -20906,7 +20910,8 @@ function addRoomHole(room, kind, wp, wn, save, tag, sc = 1) {   // tag: which cr
   }
 }
 const _dinv = new THREE.Quaternion();
-function addDoorHole(door, wp, wn, save, kind = 'metal', sc = 1) {   // step 119: kind (metalX = an exit), sc: size
+function addDoorHole(door, wp, wn, save, kind = 'metal', sc = 1, snapped = false) {   // step 119: kind (metalX = an exit), sc: size
+  if (HSN_ON && !snapped) { if (!hsSnapObj(door.group, wp, wn)) return; wp = HSN.p; wn = HSN.n; }   // HOLE SNAP: on the drawn leaf
   door.group.updateWorldMatrix(true, false);
   _dp.copy(wp); door.group.worldToLocal(_dp);
   door.group.getWorldQuaternion(_dinv).invert();
@@ -20922,6 +20927,215 @@ function restoreRoomHoles(room) {
   for (const h of m.holes) putDecal(decalLayer(room, room.group, h[0]), h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]);
   if (room.door) for (const h of m.doorHoles) { const k = h[8] || 'metal'; putDecal(decalLayer(room.door, room.door.group, k), k, h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]); }   // step 119: h[8] = exit kind
 }
+
+/* ---------------------------------------------------------------------------
+ *  HOLE SNAP (?holesnap=off) — the colliders are boxes round what is drawn (door
+ *  frames, stair plugs and treads, cover, furniture), so a round or a fragment
+ *  could leave a hole, an exit or blood on a face nobody sees. Every room keeps a
+ *  grid of its drawn static triangles (room.group + room.doorGroup, 0.5 m cells,
+ *  in the group's own frame, built in ~3 ms slices after activation, finished on
+ *  demand). A decal is placed only where a drawn triangle is within reach of the
+ *  hit (along the round's path while a round flies, else along the normal), and
+ *  then on that triangle with its face normal. Door leaves and props test their own
+ *  meshes. hsSnap(wp, wn) -> true with HSN.p / HSN.n, or false (no decal).
+ * ------------------------------------------------------------------------- */
+const HSN_ON = !/[?&]holesnap=off\b/.test(QS);
+const HSN = {
+  cell: 0.5, tr: 0, back: 0.12, ahead: 0.3, nrm: 0.2, cap: 600000, slice: 3,
+  p: new THREE.Vector3(), n: new THREE.Vector3(), o: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion(),
+  m: new THREE.Matrix4(), mi: new THREE.Matrix4(), a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(),
+  stamp: new Uint32Array(1024), sc: 0, rc: null, hits: [], best: { t: 0, tri: -1, g: null }, gv: new THREE.Vector3()
+};
+const hsKey = (ix, iy, iz) => ((ix + 1024) * 2048 + (iy + 1024)) * 2048 + (iz + 1024);
+function hsSkipObj(o, room) {
+  return o === room.doorVisual || (o.userData && (o.userData.enemy || o.userData.noSnap)) || o.isSkinnedMesh || o.isInstancedMesh
+    || o.isPoints || o.isLine || o.isSprite || o.isBatchedMesh;
+}
+function hsMatOk(m) { return !!m && m.visible !== false && m.colorWrite !== false && !(m.transparent && m.depthWrite === false) && !(m.transparent && m.opacity < 0.05); }
+// The meshes to read, in traversal order (a subtree that moves or is not architecture is skipped whole).
+function hsCollect(room) {
+  const out = [];
+  const walk = (o) => {
+    if (hsSkipObj(o, room)) return;
+    if (o.isMesh && o.geometry && o.geometry.attributes.position) out.push(o);
+    for (const c of o.children) walk(c);
+  };
+  for (const g of [room.group, room.doorGroup]) if (g) for (const c of g.children) walk(c);
+  return out;
+}
+function hsGridNew(room) {
+  room.group.updateMatrixWorld(true); if (room.doorGroup) room.doorGroup.updateMatrixWorld(true);
+  return { room, list: hsCollect(room), i: 0, tri: [], meshOf: [], cells: new Map(), pos: null, mesh: [], done: false, gi: new THREE.Matrix4().copy(room.group.matrixWorld).invert() };
+}
+// One mesh into the grid: its drawn triangles (draw range, groups whose material is drawn) in the group's frame.
+function hsAddMesh(G, o) {
+  const geo = o.geometry, P = geo.attributes.position, idx = geo.index, mats = Array.isArray(o.material) ? o.material : null;
+  if (!mats && !hsMatOk(o.material)) return;
+  const nAll = idx ? idx.count : P.count;
+  const dr0 = Math.max(0, geo.drawRange.start), dr1 = Math.min(nAll, geo.drawRange.start + geo.drawRange.count);
+  const ranges = [];
+  if (mats && geo.groups.length) { for (const gr of geo.groups) if (hsMatOk(mats[gr.materialIndex])) ranges.push(Math.max(dr0, gr.start), Math.min(dr1, gr.start + gr.count)); }
+  else if (!mats || hsMatOk(mats[0])) ranges.push(dr0, dr1);
+  if (!ranges.length) return;
+  o.updateWorldMatrix(true, false); G.room.group.updateWorldMatrix(true, false);   // a world shift between slices moves both
+  G.gi.copy(G.room.group.matrixWorld).invert();
+  HSN.m.multiplyMatrices(G.gi, o.matrixWorld);
+  const mi = G.mesh.length; G.mesh.push(o);
+  const T = G.tri, C = HSN.cell, a = HSN.a, b = HSN.b, c = HSN.c;
+  for (let r = 0; r < ranges.length; r += 2) {
+    for (let k = ranges[r] - (ranges[r] % 3 ? ranges[r] % 3 - 3 : 0); k + 2 < ranges[r + 1]; k += 3) {
+      if (T.length / 9 >= HSN.cap) return;
+      const i0 = idx ? idx.getX(k) : k, i1 = idx ? idx.getX(k + 1) : k + 1, i2 = idx ? idx.getX(k + 2) : k + 2;
+      a.fromBufferAttribute(P, i0).applyMatrix4(HSN.m); b.fromBufferAttribute(P, i1).applyMatrix4(HSN.m); c.fromBufferAttribute(P, i2).applyMatrix4(HSN.m);
+      const t = T.length / 9;
+      T.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z); G.meshOf.push(mi);
+      const x0 = Math.floor(Math.min(a.x, b.x, c.x) / C), x1 = Math.floor(Math.max(a.x, b.x, c.x) / C);
+      const y0 = Math.floor(Math.min(a.y, b.y, c.y) / C), y1 = Math.floor(Math.max(a.y, b.y, c.y) / C);
+      const z0 = Math.floor(Math.min(a.z, b.z, c.z) / C), z1 = Math.floor(Math.max(a.z, b.z, c.z) / C);
+      if ((x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 4096) continue;   // a giant ground plane: never a wall face
+      for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) for (let iz = z0; iz <= z1; iz++) {
+        const key = hsKey(ix, iy, iz); let L = G.cells.get(key);
+        if (!L) G.cells.set(key, L = []);
+        L.push(t);
+      }
+    }
+  }
+}
+function hsBuildStep(room, ms) {
+  const G = room.hsg;
+  if (!G || G.done) return true;
+  const t0 = performance.now();
+  while (G.i < G.list.length) {
+    hsAddMesh(G, G.list[G.i++]);
+    if (ms !== Infinity && performance.now() - t0 > ms) return false;
+  }
+  G.pos = new Float32Array(G.tri); G.tri = null; G.list = null; G.done = true;
+  if (HSN.stamp.length < G.meshOf.length) HSN.stamp = new Uint32Array(G.meshOf.length + 1024);
+  return true;
+}
+// From activateRoom: built in the background, a few ms at a time.
+function hsRoomOn(room) {
+  if (!HSN_ON) return;
+  room.hsg = null;
+  const tick = () => {
+    if (!room.active) return;
+    if (!room.hsg) room.hsg = hsGridNew(room);
+    if (!hsBuildStep(room, HSN.slice)) setTimeout(tick, 16);
+  };
+  setTimeout(tick, 400);
+}
+function hsGrid(room) {
+  if (!room.active) return null;
+  if (!room.hsg) room.hsg = hsGridNew(room);
+  if (!room.hsg.done) hsBuildStep(room, Infinity);
+  return room.hsg;
+}
+function hsVisible(o, room) {
+  for (let p = o; p && p !== room.group && p !== room.doorGroup; p = p.parent) if (!p.visible) return false;
+  return true;
+}
+// Ray (O, D unit, both in the grid's frame) against the triangles of the cells the segment [t0, t1] crosses.
+function hsCast(room, G, O, D, t0, t1, tc, best) {
+  const C = HSN.cell, P = G.pos;
+  const ax = O.x + D.x * t0, ay = O.y + D.y * t0, az = O.z + D.z * t0, bx = O.x + D.x * t1, by = O.y + D.y * t1, bz = O.z + D.z * t1;
+  const x0 = Math.floor(Math.min(ax, bx) / C), x1 = Math.floor(Math.max(ax, bx) / C);
+  const y0 = Math.floor(Math.min(ay, by) / C), y1 = Math.floor(Math.max(ay, by) / C);
+  const z0 = Math.floor(Math.min(az, bz) / C), z1 = Math.floor(Math.max(az, bz) / C);
+  const S = HSN.stamp, sc = ++HSN.sc;
+  if (sc === 0xffffffff) { S.fill(0); HSN.sc = 1; }
+  for (let ix = x0; ix <= x1; ix++) for (let iy = y0; iy <= y1; iy++) for (let iz = z0; iz <= z1; iz++) {
+    const L = G.cells.get(hsKey(ix, iy, iz));
+    if (!L) continue;
+    for (let j = 0; j < L.length; j++) {
+      const ti = L[j];
+      if (S[ti] === HSN.sc) continue;
+      S[ti] = HSN.sc;
+      const t = hsTri(P, ti * 9, O, D);
+      if (t < t0 || t > t1) continue;
+      const w = t < tc ? (tc - t) * 2 : t - tc;                   // nearest to the hit; behind it counts double
+      if (w >= best.w) continue;
+      if (!hsVisible(G.mesh[G.meshOf[ti]], room)) continue;
+      best.w = w; best.t = t; best.tri = ti; best.g = G; best.room = room;
+    }
+  }
+}
+// Moller-Trumbore, both faces: distance along D, or Infinity.
+function hsTri(P, o, O, D) {
+  const e1x = P[o + 3] - P[o], e1y = P[o + 4] - P[o + 1], e1z = P[o + 5] - P[o + 2];
+  const e2x = P[o + 6] - P[o], e2y = P[o + 7] - P[o + 1], e2z = P[o + 8] - P[o + 2];
+  const px = D.y * e2z - D.z * e2y, py = D.z * e2x - D.x * e2z, pz = D.x * e2y - D.y * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (Math.abs(det) < 1e-12) return Infinity;
+  const inv = 1 / det, tx = O.x - P[o], ty = O.y - P[o + 1], tz = O.z - P[o + 2];
+  const u = (tx * px + ty * py + tz * pz) * inv;
+  if (u < -1e-6 || u > 1 + 1e-6) return Infinity;
+  const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+  const v = (D.x * qx + D.y * qy + D.z * qz) * inv;
+  if (v < -1e-6 || u + v > 1 + 1e-6) return Infinity;
+  return (e2x * qx + e2y * qy + e2z * qz) * inv;
+}
+// The ray to test from a hit at wp with normal wn: the round's own path while one flies, else -wn through wp.
+function hsRay(wn) {
+  if (HSN.tr > 0 && _rapRay && _rapRay.dir) { HSN.d.set(_rapRay.dir.x, _rapRay.dir.y, _rapRay.dir.z); if (HSN.d.lengthSq() > 0.25) { HSN.d.normalize(); return 0; } }
+  HSN.d.copy(wn).negate().normalize();
+  return 1;
+}
+// World hit -> HSN.p / HSN.n on the nearest drawn static triangle of an active room near it; false = nothing drawn there.
+function hsSnap(wp, wn, nm) {   // nm: along the normal even while a round flies (blood: its own rays)
+  if (!HSN_ON) { HSN.p.copy(wp); HSN.n.copy(wn); return true; }
+  const mode = nm ? (HSN.d.copy(wn).negate().normalize(), 1) : hsRay(wn), t0 = mode ? -HSN.nrm : -HSN.back, t1 = mode ? HSN.nrm : HSN.ahead;
+  const best = HSN.best; best.w = Infinity; best.tri = -1; best.g = null; best.room = null;
+  let any = false;
+  for (const r of stream.rooms.values()) {
+    if (!r.active || !insideRoom(r, wp.x, wp.z, 1.2, wp.y)) continue;
+    const G = hsGrid(r);
+    if (!G || !G.meshOf.length) continue;
+    any = true;
+    HSN.mi.copy(r.group.matrixWorld).invert();
+    HSN.o.copy(wp).applyMatrix4(HSN.mi);
+    r.group.getWorldQuaternion(HSN.q);
+    HSN.gv.copy(HSN.d).applyQuaternion(HSN.q.invert());
+    hsCast(r, G, HSN.o, HSN.gv, t0, t1, 0, best);
+  }
+  if (!any) { HSN.p.copy(wp); HSN.n.copy(wn); return true; }   // no grid near (not built here): as before
+  if (best.tri < 0) return false;
+  const P = best.g.pos, o = best.tri * 9, r = best.room;
+  HSN.a.set(P[o + 3] - P[o], P[o + 4] - P[o + 1], P[o + 5] - P[o + 2]);
+  HSN.b.set(P[o + 6] - P[o], P[o + 7] - P[o + 1], P[o + 8] - P[o + 2]);
+  HSN.n.crossVectors(HSN.a, HSN.b);
+  if (HSN.n.lengthSq() < 1e-14) return false;
+  r.group.getWorldQuaternion(HSN.q);
+  HSN.n.normalize().applyQuaternion(HSN.q);
+  if (HSN.n.dot(wn) < 0) HSN.n.negate();
+  HSN.p.copy(wp).addScaledVector(HSN.d, best.t);
+  return true;
+}
+// A moving thing (door leaf, prop): its own meshes, raycast along the same ray. HSN.p / HSN.n, false = nothing drawn.
+function hsSnapObj(root, wp, wn) {
+  if (!HSN_ON) { HSN.p.copy(wp); HSN.n.copy(wn); return true; }
+  const mode = hsRay(wn), t0 = mode ? -HSN.nrm : -HSN.back, t1 = mode ? HSN.nrm : HSN.ahead;
+  if (!HSN.rc) HSN.rc = new THREE.Raycaster();
+  const rc = HSN.rc; rc.set(HSN.o.copy(wp).addScaledVector(HSN.d, t0), HSN.d); rc.near = 0; rc.far = t1 - t0;
+  const H = HSN.hits; H.length = 0;
+  let any = false;
+  root.updateMatrixWorld(true);
+  root.traverseVisible((o) => {
+    if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh || (o.userData && o.userData.noSnap) || o.geometry === WEAPON.decalGeo) return;
+    const m = Array.isArray(o.material) ? o.material[0] : o.material;
+    if (!hsMatOk(m)) return;
+    any = true; o.raycast(rc, H);
+  });
+  if (!any) { HSN.p.copy(wp); HSN.n.copy(wn); return true; }
+  let bw = Infinity, bh = null;
+  for (const h of H) { if (!h.face) continue; const t = h.distance + t0, w = t < 0 ? -t * 2 : t; if (w < bw) { bw = w; bh = h; } }
+  H.length = 0;
+  if (!bh) return false;
+  HSN.p.copy(bh.point);
+  HSN.n.copy(bh.face.normal).transformDirection(bh.object.matrixWorld);
+  if (HSN.n.dot(wn) < 0) HSN.n.negate();
+  return true;
+}
+const HSN_BLOOD = { blood: 1, run: 1, spray: 1, sprayH: 1, gib: 1, scorchW: 1 };   // spatter on walls and things; floor marks (pools, drips, prints, smears) keep their own floor rays
 
 /* ---------------------------------------------------------------------------
  *  IMPACT PARTICLES — dust, splinters, sparks. One Points object, fixed pool.
@@ -25154,7 +25368,7 @@ function benchLampRoom(room, move = false) {
   if (!BLAMP.grp) benchLampBuild();
   BLAMP.grp.position.set(0, 0, room.d / 2);
   if (BLAMP.held !== undefined) BLAMP.held = undefined;
-  room.group.add(BLAMP.grp);
+  BLAMP.grp.userData.noSnap = true; room.group.add(BLAMP.grp);   // HOLE SNAP: it moves
   BLAMP.grp.updateMatrixWorld(true);
   BLAMP.room = room;
   dirtyShadows();
@@ -27647,7 +27861,8 @@ function penRound(type) {
 }
 function traceBullet(origin, dir, d, type, opts = null) {
   const pt = NET_TB_TYPE; NET_TB_TYPE = type;                    // coop fix: netDefKey reads the gun's key while its round flies
-  try { return traceBulletT(origin, dir, d, type, opts); } finally { NET_TB_TYPE = pt; }
+  HSN.tr++;                                                       // HOLE SNAP: holes are found along the round's path
+  try { return traceBulletT(origin, dir, d, type, opts); } finally { NET_TB_TYPE = pt; HSN.tr--; }
 }
 function traceBulletT(origin, dir, d, type, opts) {
   if (TRC_ON && TRC.arm === 1) { trcBegin(); try { return traceBullet1(origin, dir, d, type, opts); } finally { trcEnd(); } }   // step 121: a tracer records its path
@@ -28249,6 +28464,7 @@ function destroyCell(rec, b, dir) {
 
 const _phI = new THREE.Quaternion(), _phP = new THREE.Vector3(), _phN = new THREE.Vector3();
 function propHole(prop, kind, wp, wn, sc = 1) {          // a hole that rides on a moving prop (the table); sc: size (step 119)
+  if (HSN_ON) { if (!hsSnapObj(prop.root, wp, wn)) return; wp = HSN.p; wn = HSN.n; }   // HOLE SNAP: on its drawn surface
   prop.root.updateMatrixWorld(true);
   _phP.copy(wp); prop.root.worldToLocal(_phP);
   prop.root.getWorldQuaternion(_phI).invert();
@@ -30087,6 +30303,7 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   }
   gb.root.traverse((o) => { if (o.isMesh) o.castShadow = false; });
   root.add(gb.root);
+  root.userData.noSnap = true;                                    // HOLE SNAP: a man is not a wall
   room.group.add(root);
   const gun = { root: gb.root, model: gb.model, parts: gb.parts, flashT: 0, def: gd, wr: WR[W.gun], prop: { root: gb.root }, primary: null };
   const sp = spec.rf ? { x: 0, z: 0, yaw: 0 } : enemySpawnSpot(room, taken);   // reinforcements: rfSpawn places him   // apartment: the far end   // outdoor start: door squad, yard, tower
@@ -40621,6 +40838,7 @@ function rollAlong(n, dir) {
 }
 function addBloodDecal(room, kind, wp, wn, roll, s, save = true) {
   if (!room || !room.active) return null;
+  if (HSN_ON && HSN_BLOOD[kind]) { if (!hsSnap(wp, wn, true)) return null; wp = HSN.p; wn = HSN.n; }   // HOLE SNAP: spatter on the drawn surface, or none
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83
   roll = roomRoll(room, wn, roll);
   const L = decalLayer(room, room.group, kind);
