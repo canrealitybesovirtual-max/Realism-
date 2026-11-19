@@ -2125,3 +2125,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Headset: no splat from your own hits (flinch, buzz and the hit fade stay); close spray (1 m) = 1-3 small droplets on the lens quad (uReal branch: rim, thin trail as they slide), gone in ~1.5 s. No blur or desaturation in the headset.
 - New uniforms in FilmGradeShader and the lens shader are compiled at load with them (branches on 0). SCRB / SCRBC (names sb* are the scoreboard's).
 - Checked: module parse, eslint no-undef only.
+
+## CQC emotes in multiplayer: shown to the other player, arms not twisted (parse + eslint only; two-device / headset check needed)
+- Not shown: the send / receive path is sound ('emo' on the reliable channel, netRx -> emoRx -> emoAvPose on NET.av from enemiesUpdate). The receiver ended his emote at once with its own "he walked off" check: 0.4 m of movement of his body, which follows his head (a VR player's real head moves while he watches his emote; a look turn alone moves the body 6 cm). Now EMO.walkOff 1.5 m (a real walk or a warp); his stop message ends it otherwise, as before.
+- Arms twisted: emoBody (backflip, grenade kick, moonwalk, gun flip, pass, self-inflicted) built each hand's frame with its x axis forward, while the rig's hand frame has x to his right (enemyPose, NARM): hands and forearms were rolled ~90 deg. Now x = his right, turning palm down for an arm out to the side. Your own third-person body also sets e.netGunOn when it holds the gun copy (unset, NARM's base pose hung its arms off the gun before blending into the emote).
