@@ -23507,7 +23507,7 @@ function chkRoundTick(g) {
 // closes after going back past the top round (a rack, a release, every shot) the live round of the gun's calibre (emoRoundMesh)
 // rides the bolt face off the magazine lips, nose up the ramp, into the chamber; until the rack is finished the magazine shows
 // one round less with its stack rising to the lips. Cases and live rounds leaving are spawnCasing / ejectLiveShell as before.
-const FEED = { on: !/[?&]feed=off/.test(QS), b: new THREE.Box3(), b2: new THREE.Box3(), m: new THREE.Matrix4(), ri: new THREE.Matrix4(), mats: null, geo: {}, car: { akmn: 0.06, akm: 0.06 } };
+const FEED = { on: !/[?&]feed=off/.test(QS), b: new THREE.Box3(), b2: new THREE.Box3(), m: new THREE.Matrix4(), ri: new THREE.Matrix4(), mats: null, geo: {}, car: { akmn: 0.06, akm: 0.06 }, port: { m4a1s: { len: 0.08, h: 0.019, y: 0.0035, dz: -0.02, x: 0.0011 } } };
 function feedMats() {
   if (!FEED.mats) FEED.mats = {
     steel: new THREE.MeshStandardMaterial({ color: 0x2c2d30, metalness: 0.85, roughness: 0.4 }),
@@ -23528,25 +23528,37 @@ function feedBuild(g) {
   g.prop.root.updateMatrixWorld(true);
   grp.matrix.copy(g.model.matrixWorld).invert().multiply(g.prop.root.matrixWorld);
   const mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = false; m.raycast = () => {}; grp.add(m); return m; };
-  const fd = { grp, hz, C, so: d.travel * 0.6, lipX: 0, lipY: -0.02, open: false, prev: 0, max: 0, arm: false, on: false, mi: null, y0: 0, face: null, car: null, carH: 0, round: null };
+  const bm = g.wr.muzzle, bx = bm ? bm.x : 0, by = bm ? bm.y : 0;   // the bore line in the gun root's frame (the root is the palm, not the bore)
+  const fd = { grp, hz, bx, by, C, so: d.travel * 0.6, lipX: 0, lipY: -0.02, open: false, prev: 0, max: 0, arm: false, on: false, mi: null, y0: 0, face: null, car: null, carH: 0, round: null };
   if (g.type !== 'm1911') {                                       // the chamber and barrel hood, ahead of the case head (a press check sees the rim)
     const len = C.L * 0.8;
     const t = mk(feedGeo('t' + c, () => new THREE.CylinderGeometry(rc + 0.0013, rc + 0.0013, len, 18, 1, true).rotateX(Math.PI / 2)), M.bore);
-    t.position.set(0, 0, hz - C.L * 0.35 - len / 2);
+    t.position.set(bx, by, hz - C.L * 0.35 - len / 2);
   }
   if (!d.manual) {                                                // the breech / bolt face (the AWM has its own bolt)
     fd.face = mk(feedGeo('f' + c, () => new THREE.CylinderGeometry(rc + 0.0028, rc + 0.0028, 0.014, 18).rotateX(Math.PI / 2)), M.steel);
-    fd.face.position.set(0, 0, hz + 0.007);
+    fd.face.position.set(bx, by, hz + 0.007);
   }
   if (rifle) {                                                    // the bolt carrier behind it
     const cl = FEED.car[g.type] || 0.1;
     fd.car = mk(feedGeo('c' + cl, () => new THREE.CylinderGeometry(0.0085, 0.0085, cl, 18).rotateX(Math.PI / 2)), M.steel);
-    fd.carH = cl / 2; fd.car.position.set(0, 0, hz + 0.014 + cl / 2);
+    fd.carH = cl / 2; fd.car.position.set(bx, by, hz + 0.014 + cl / 2);
   }
   const r = emoRoundMesh(c);
   if (r) { grp.add(r); r.visible = false; r.rotation.x = -Math.PI / 2; fd.round = r; }
+  if (FEED.port[g.type]) feedPortBuild(g, fd, grp, mk, M);
   g.model.add(grp);
   return (g.fd = fd);
+}
+// The M4A1-S's ejection port: the model's bolt carrier side is cut out of the body (parts.bolt, moved with the carrier in
+// feedTick); behind it the model has nothing, so a dark backing inside the receiver keeps the port from showing the far side
+// once the carrier runs back (the open chamber, the bolt face and the feeding round show in front of it).
+function feedPortBuild(g, fd, grp, mk, M) {
+  const P = FEED.port[g.type];
+  const back = mk(feedGeo('pb', () => new THREE.PlaneGeometry(1, 1).rotateY(Math.PI / 2)), M.bore);
+  back.scale.set(1, P.h, P.len); back.position.set(fd.bx + P.x, fd.by + P.y, fd.hz + P.dz);
+  if (fd.car) fd.car.visible = false;                             // the model's own carrier is the one seen
+  fd.port = { back };
 }
 // Where the top round sits: the magazine's round visuals (top of their box) in the gun root's frame. Once per closing stroke.
 function feedLip(g, fd) {
@@ -23565,8 +23577,9 @@ function feedLip(g, fd) {
     });
     // only a stack-sized box under the bore counts (a mesh carrying the whole gun's vertex buffer, or a stack measured
     // mid-move, put the round down by the trigger guard); the top round sits one to three radii under the bore
-    if (!B.isEmpty() && B.max.y - B.min.y < 0.14 && B.max.y < C.rb && B.max.y > -C.rb * 4) {
-      fd.lipY = clamp(B.max.y - C.rb, -C.rb * 3, -C.rb * 1.2);
+    const ty = B.max.y - fd.by;
+    if (!B.isEmpty() && B.max.y - B.min.y < 0.14 && ty < C.rb && ty > -C.rb * 4) {
+      fd.lipY = clamp(ty - C.rb, -C.rb * 3, -C.rb * 1.2);
       z = clamp((B.min.z + B.max.z) / 2, fd.hz - C.L * 1.2, fd.hz);
     }
   }
@@ -23602,6 +23615,7 @@ function feedTick(g) {
   fd.prev = bz;
   if (fd.face) fd.face.position.z = fd.hz + 0.007 + bz;
   if (fd.car) fd.car.position.z = fd.hz + 0.014 + fd.carH + bz;
+  if (g.parts.bolt) g.parts.bolt.position.z = bz;                // the model's carrier runs back through the port
   const mag = g.mag && g.mag.item, rounds = mag ? mag.rounds : 0;
   const on = fd.arm && !fd.open && !g.slideLocked && bz > 0.0008 && bz < fd.so && ((g.racked && rounds > 0) || g.chambered)
     && !(g.chk && g.chk.visible) && !!fd.round;
@@ -23613,7 +23627,7 @@ function feedTick(g) {
   fd.on = true;
   const C = fd.C, u = 1 - bz / fd.so, k = 1 - smoothstep(0, 0.75, u), r = fd.round;
   r.visible = true;
-  r.position.set(fd.lipX * k, fd.lipY * k, fd.hz + bz - C.L / 2);
+  r.position.set(fd.bx + fd.lipX * k, fd.by + fd.lipY * k, fd.hz + bz - C.L / 2);
   r.rotation.x = Math.sin(Math.PI * Math.min(1, u / 0.85)) * 0.22 - Math.PI / 2;   // nose up the feed ramp, level in the chamber
   if (g.racked && mag && mag.roundMesh) feedMagShow(fd, mag, rounds - 1, C.rb * 1.8 * (1 - smoothstep(0, 0.35, u)));   // the stack rises to the lips
   else feedMagEnd(fd);
@@ -49515,12 +49529,13 @@ function extBuild(type) {
   const X = EXTG[type], d = WEAPON_DEFS[type], { root, model, parts } = gunShell(d);
   const mesh = (k) => { const o = new THREE.Mesh(X.geo[k], X.mat[k]); o.receiveShadow = true; o.castShadow = false; return o; };
   for (const k of Object.keys(X.geo)) {
-    if (k === 'mag' || k === 'slide' || k === 'ch' || k === 'rounds' || k === 'can') continue;   // step 105: the M4's can is a part (m4MakeAtt)
+    if (k === 'mag' || k === 'slide' || k === 'ch' || k === 'rounds' || k === 'can' || k === 'bolt') continue;   // step 105: the M4's can is a part (m4MakeAtt)
     if (type === 'g17' && (k === 'light' || k === 'lens')) continue;   // step 98: the modelled stock light instead
     model.add(mesh(k));
   }
   if (X.geo.slide) { parts.slide = new THREE.Group(); parts.slide.add(mesh('slide')); model.add(parts.slide); }
   if (X.geo.ch) { parts.slide = new THREE.Group(); parts.slide.add(mesh('ch')); model.add(parts.slide); }   // step 62: rides g.slideOff back when racked
+  if (X.geo.bolt) { parts.bolt = new THREE.Group(); parts.bolt.add(mesh('bolt')); model.add(parts.bolt); }   // FEED moves it with the carrier
   if (type === 'm4a1s') for (const k of M4_CUT_KEYS) { const o = model.children.find((c) => c.geometry === X.geo[k]); if (o) parts[k] = o; }   // step 105: swapped by M4A
   addFlash(model, d, parts);
   if (type === 'g17' && !RAIL.on) g17LightBuild(model, parts);     // step 98 (step 112: a PL-2 part instead, railMakePl2)
@@ -51444,7 +51459,7 @@ function swPrecache(extra) {
 })();
 
 /* Studio build: a read-only handle for tests and tooling, only with ?dev in the address. */
-if (/[?&]dev\b/.test(QS)) window.__cqcDev = { BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, LEVEL_RANKS, levelOf, levelRank, xpAdd, xpKill, XPPOP, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
+if (/[?&]dev\b/.test(QS)) window.__cqcDev = { FEED, feedTick, BLAMP, BB, applyLook, ELB, armPoleBlend, frameErr: () => FRAME_ERR, VSs: () => VS, safeAdopt, safeKeep, wbBind, THREE, medModel, syrSet, SYR, syrTick, LOWMEM, normalParams, anchorY, scene, renderer, camera, rig, HANDS, props, controllers, VM, vmTick, deskReload, deskRack, level, anchor, roomFacing, floorAt, footFloor, colliders, resolveBody, insideRoom, roomContaining, ENEMY, enemyPose, enemyDress, spawnEnemy, removeEnemy, enemyDie, traceBullet, WEAPON_DEFS, stream, vrHands, freeFrame, fgRig, gripFor, primaryRot, canFire, HAND_FIT, nearestProp, CONFIG, MS_box, magLocalBox, magStripDist, rackDistance, handLocalZ, rackReachOf, MAG_STRIP, CONTACT, spawnProp, KIT, propBreak, DROP, lootBodyAt, inv, MAG_DEFS, WB, wbToggle, wbAttRelease, wbClose, itemGrab, release, toggleGunLight, toggleGunLaser, gunOf, deskHand, X64, SCOPE, deskInput, scopeTick, RANGE, rangeWant, roomPlan, _plans, look, WATCH, watchHands, watchBuild, BODY, WEAR, wearTake, wearApply, EXT, extToggle, MAG_DEFS2: MAG_DEFS, createGun, wbKit, RIG, slingAttach, stowGun, BODY2: BODY, VOX, ROOMAC, ACOUSTICS, roomAcoustic, updateAcoustics, ownStep, BUMP, bodyBump, pulseSoft, audio, flashlight, setFlashlight, FLASH_BEAM, SHOT_REC, sfx, sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(); } }, CLOTH, clothFoley, doorSfx, DOORSND, knockSfx, KNOCK_SND, KNOCK_MAT, AMB, ambTick, ambPipe, ambDuct, ambDoor, ambSwell, enemyBodyFoley, MECH_HAP, mechPulse, pulse, brassTink, dropKnock, BRASS_SND, DROP_SND, foleyK, FOLEY_GRP, FIX_ON, FIXJ, fixtureShot, fixtureKill, fixJolt, fixJoltTick, fixShare, fixturesBlast, fixturesRestore, DESK_ADS, deskAdsSync, stance, doors, operateDoor, colliderInfo, getWorld: () => world, TORCH_HAZE, P10U, P10_LIGHT_GLSL, NIGHT, updateParticleLight, TRICKLE, TRICKLE_GRAIN, TRICKLE_HAZE, trickleAdd, trickleTick, trickleBlast, MBLAST, MBLAST_GRIT, MBLAST_HAZE, MBLAST_HZ, muzzleBlast, mbSlapPlay, GT_ON, GT, GT_SND, gunTouch, handTouch, gtKind, CREAK, doorCreak, creakPlay, GORE_X, G90, G90U, g90K, g90Hit, g90RagHit, g90StreamOn, g90Update, g90Chunks, g90Spray, g90Merge, enemyShot, enemyRayTest, addWound, poolAt, P10, g90Sim: (n) => { for (let i = 0; i < n; i++) { enemiesDyingUpdate(1 / 72); stepPhysics(1 / 72); enemiesPostPhysics(1 / 72); updateImpactFx(1 / 72); g90Update(1 / 72); polishUpdate(1 / 72, performance.now() / 1000); } }, VMH, VM_FIT, DNADE, vmGun, vmLoad, vmhBake, vmhRegister, vmhSolve, vmGunFit, vmGunPlace, vmMirSync, vmHideGun, vmWait, DOWNED, downedOn, enemyDown, downedUpdate, downedApply, downedNext, limpStart, downedAway, downedSnap, downedSave, downedRestore, downedGoal, downedStep, downedMark, downedSmear, downedPrint, downedLife, RAG_SETTLE_LIMP, UF_ON, GLASS_Q, WET_ON, UF, underfoot, ufBrass, ufKick, ufHis, ufHisPlay, ufGlassAt, ufGlassOn, glassCrunch, glassFloor, glassCanvas, bloodWet, wetSlap, wetPeel, FLOOR_WEAR, floorWearShade, floorWearAttr, floorWearInject, SPLASH, wearWetAt, splashWetAt, splashSnd, splashPrint, splashFoot, splashStep, splashHis, splashShot, splashTick, WALL_WEAR, wallWearShade, wallWearRoom, wallWearAttr, wallWearInject, EYE, eyeLight, eyeAdaptPre, eyeAdaptPost, PROP_WEAR, PW97_KINDS, propWearShade, propWearTag, propWearSync, propWearApply, propWearInject, wbRestock, GL, glBounds, glFit, gunLockerSpawn, gunLockerRestock, safeRestock, wbSpawn, wbFreeze, weaponsEnterRoom, enemyDropType, enemyDropGun, removeProp, itemToWorld, HREC, HREC_SET, HREC_FAM, HREC_LVL, SUP_VAR, baked, gunSfx, hrecPlay, hrecPick, hrecAny, clothRec, pickSfx, PICK_REC, CLOTH_REC, supPlay, supShot, enemyReloadSfx, enemyReloadTick, playBuy, PIST_RATE, PIST_LS, HREC_ALT, DRY_REC, DRY_RESET_REC, MDROP_REC, BTN_REC, BTN_KIND, HREC_SFX, dryFireSfx, dryResetSfx, btnSfx, selSfx, hrecSfx, IMPREC, IMPR, impactSound, impactFx, impactBody, impRecSet, impRecOn, penSound, AMB_BED, ambBedTick, ambBedTarget, ambBedVent, SPAT, WORKSHOP, WALLET, LEVEL, LEVEL_UNLOCK, LEVEL_RANKS, levelOf, levelRank, xpAdd, xpKill, XPPOP, finishLocked, WS_ITEMS, WS_GUNS, walletEarn, walletSpend, wsSelect, wsCat, wsBuySupply, wsBuyItem, wsFit, wsStats, wsRestock, wsPress, wsDraw, wsUpdate, termDeskPress, refillInventory, vmhFit, vmhContacts, vmhGunSurface, vmhSd, vmhShrink, VMH_FIT, VMH_FIT98, HANDLOOK, HAND_DATA, holdPose, GC_WRAP, vmhSurface, attKey, ATT_HOLD, ATT_C0, ATT_POSE, HOLD, wbMakeAtt, itemContact, holdTest: (i, p) => {   // step 98 test: hand i drawn round held prop p (hand root at P, the part at its hold), fingers settled at once
     const h = HANDS.list[i], it = p.item, one = new THREE.Vector3(1, 1, 1), P = new THREE.Vector3(0, 1.2, 0), Q = new THREE.Quaternion();
     it.blend = 0; if (it.kind === 'att') attHandPose(h, it); else { poseFromGrip(h, h.grips.pistol); setFinger(h, 1, h.grips.pistol.p.middle); }
     const hp = holdPose(it), M = new THREE.Matrix4().compose(P, Q, one).multiply(h.grips.pistol.m.clone().invert()).multiply(new THREE.Matrix4().compose(hp.p, hp.q, one));
@@ -53069,7 +53084,8 @@ const M4A = { on: !/[?&]m4att=off\b/.test(QS), ready: false, M: null, S: null, t
 // Offline measurements (design space) the cut and the def need before the model is read.
 // handle: any vertex over handleY within the run and the width (its rear sight and windage knob too: up to |x| 13.5 mm); what the
 // body keeps there tops out at the receiver's 0.0203 (0.0245 at the barrel nut), with its side walls at ~0.008.
-const M4_GEO = { shoulder: -0.4925, stub: -0.5199, handleY: 0.0215, handleZ: [-0.166, 0.016], handleX: 0.016, hgZ: [-0.3455, -0.1865], hgR: 0.018, stockZ: 0.1215 };
+const M4_GEO = { shoulder: -0.4925, stub: -0.5199, handleY: 0.0215, handleZ: [-0.166, 0.016], handleX: 0.016, hgZ: [-0.3455, -0.1865], hgR: 0.018, stockZ: 0.1215,
+  bolt: { r: 0.0112, x: 0.0008, y: -0.0095, z0: -0.1525, z1: -0.068 } };   // the carrier's side in the port (630 triangles, all three vertices inside)
 const M4_CUT_KEYS = ['handle', 'hg', 'stock'];                        // cut meshes that stay on the gun (parts.*), shown or hidden
 const M4_R = { tube: 0.0235, rail: 0.0295 };                          // quad rail: body radius, rail-top radius (the 12 / 3 / 6 / 9 faces)
 const M4_VFG_DROP = 0.0568;                                           // grip point under the rail face (the AKM foregrip's: VFG_SUP)
@@ -53154,14 +53170,18 @@ function m4CutOf(c, rMax, zMin, yMax) {
 }
 function m4Cut(X) {
   const g = X.geo.body.index ? X.geo.body.toNonIndexed() : X.geo.body, P = g.attributes.position;
-  const L = { body: [], can: [], handle: [], hg: [], stock: [] }, a = new THREE.Vector3(), c = new THREE.Vector3();
+  const L = { body: [], can: [], handle: [], hg: [], stock: [], bolt: [] }, a = new THREE.Vector3(), c = new THREE.Vector3(), B = M4_GEO.bolt;
   for (let t = 0; t < P.count; t += 3) {
     let rMax = 0, zMin = Infinity, yMax = -Infinity; c.set(0, 0, 0);
-    for (let k = 0; k < 3; k++) { a.fromBufferAttribute(P, t + k); c.addScaledVector(a, 1 / 3); rMax = Math.max(rMax, Math.hypot(a.x, a.y)); zMin = Math.min(zMin, a.z); yMax = Math.max(yMax, a.y); }
+    let inB = true;
+    for (let k = 0; k < 3; k++) { a.fromBufferAttribute(P, t + k); c.addScaledVector(a, 1 / 3); rMax = Math.max(rMax, Math.hypot(a.x, a.y)); zMin = Math.min(zMin, a.z); yMax = Math.max(yMax, a.y);
+      if (Math.hypot(a.x, a.y) > B.r || a.x < B.x || a.y < B.y || a.z < B.z0 || a.z > B.z1) inB = false; }   // inside the carrier's round, right half
+    if (inB) { L.bolt.push(t); continue; }   // the bolt carrier seen through the ejection port (welded into the body mesh): rides the action
     L[m4CutOf(c, rMax, zMin, yMax) || 'body'].push(t);
   }
   if (!L.can.length || !L.handle.length || !L.hg.length || !L.stock.length) throw new Error('step 105: the M4A1-S model is not the measured one');
   for (const k of Object.keys(L)) X.geo[k] = triPick(g, L[k]);
+  if (!L.bolt.length) delete X.geo.bolt; else X.mat.bolt = X.mat.body;
   for (const k of M4_CUT_KEYS) X.mat[k] = X.mat.body;                // the one texture (no material = three's white MeshBasicMaterial)
   X.geo.can.translate(0, 0, -M4_GEO.shoulder);                        // its origin: the rear face, on the shoulder
   M4A.M = m4Measure(X.geo);
