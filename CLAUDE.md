@@ -2082,3 +2082,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC smoke grenade: no screen fog
 - smokeFog keeps scene.fog at 0 (the whole-view fog came on as you entered the room); only the canister's smoke puffs show. The AI line-of-sight check through the smoke is unchanged. Parse checked only.
+
+## CQC emotes: no third hand
+- c3HideMine now also hides VMH.meshes (the fitted gun hands are scene children, not under your hands or the gun), which showed as a third hand at your chest during an emote. Parse checked only.
