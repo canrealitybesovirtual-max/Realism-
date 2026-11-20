@@ -2243,3 +2243,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - ACOG: eyepiece glass 17.8 mm radius (was 11.8), its bell 19.8 mm and rubber eyecup 20.5 mm (were 15.5 / 15.8); field afov 52 (was 36); eye box 0.05 (was 0.026); picture shows with the eye within 8 cm of the axis (was 5.5); relief tolerance /0.14 (was /0.09), scope shadow never smaller than 0.72 of the glass (was 0.55). Computer: full-screen view at 100 / 4 = 25 deg (deskFov; was 72 / 4 = 18), mask 49 vmin (was 46). Other scopes (AWM 3-25x, 10x) get the forgiving eye box only.
 - 2x (AKM / any gun): picture camera 30 deg (was 20), glass at the full eyepiece radius, eye box 0.05 (was 0.03), shows within 9 cm of the axis and up to 34 cm back (was 6 / 30), relief tolerance /0.18.
 - Parse checked only.
+
+## CQC: bench work mat no longer flickers
+- Cause: its top (0.905) was the same height as the trays' floors, and the bench's own vinyl top (0.904) sat 1.4 mm under it. Now 5.2 mm thick from 0.8995 to 0.9047 (the vinyl inside it, 0.3 mm under the trays) and drawn with polygonOffset (1, 2) so things standing on it win. Parse checked only.
