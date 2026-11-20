@@ -2369,3 +2369,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: breakable room walls off by default
 - Their cavity (yellow insulation bays, studs) showed inside rooms as striped panels. RW.on now only with ?roomwalls=on. Parse checked only.
+
+## CQC: extra big-room partitions removed
+- The 1-3 extra drywall partitions in rooms of 55 m2+ (the tall walls standing in storage rooms) are off; ?bigpart=on brings them back. Room-type partitions unchanged. Parse checked only.
