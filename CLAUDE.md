@@ -2487,3 +2487,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Fixed: aiming the bare AWM (it starts with no optic) pulled the sniper take's fists over your eye. awmNoSight: no optic and no flip-up sights on it = the aim only raises the gun 35 %, and a one-time hint says to fit a scope or dot. With a scope it aims as before (full scope view).
 - Fixed: class picker at 1280 x 720 cut off the stats list and last part rows; short screens (<= 820 px tall) get a compact layout (everything fits at 720 and 768).
 - Looked at, no change: title (both steps), safe room views, all five guns at the hip and aimed (Glock, M1911, AKM, M4 irons line up), M menu.
+
+## CQC: enemy guns stay out of walls and doors (EGC, ?egunclip=off; update 1.09; headset check needed)
+- egcClip (enemyPose, after the gun pose, not the other player's body): one Rapier ray from 32 cm behind his grip down the bore to the muzzle + 4 cm against walls, cover and door leaves. Blocked = he pulls the gun in (up to 16 cm), else tips it down / turns it along the wall / high port (14 candidates, first that clears; up to 34 cm in when cornered). Snaps in, eases back out at 5/s. A tipped gun is off target, so aimFixOk holds his fire.
+- egcDropFree (enemyDropGun, after itemToWorld): a dropped gun whose box is inside a wall or leaf is slid back toward his chest until free (turned 90 deg if needed).
+- Autorun (AKM, 4 rooms): 340 poses fixed, 2 drops moved out of walls, 3 poses still through (grip itself inside a swinging leaf). Pass, no errors. autorun.js prints the counts.

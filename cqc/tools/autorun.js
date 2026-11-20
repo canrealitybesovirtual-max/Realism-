@@ -322,7 +322,7 @@ function installBot(cfg) {
       if (Date.now() - t0 > TIMEOUT + 900000) throw new Error('harness timeout');
       await page.waitForTimeout(2000);
     }
-    report = await page.evaluate(() => { const A = window.__AR, D = window.__cqcDev; if (A.cur && !A.rooms.includes(A.cur)) A.rooms.push(A.cur); return { fail: A.fail, rooms: A.rooms, nan: A.nan, stuck: A.stuck, unkillable: A.unkillable, programsBad: A.programsBad, notes: A.notes, frameErr: D.frameErr().list.slice(), log: A.log.slice(-60), fallbacks: A.fallbacks, hp: D.playerState.hp }; });
+    report = await page.evaluate(() => { const A = window.__AR, D = window.__cqcDev; if (A.cur && !A.rooms.includes(A.cur)) A.rooms.push(A.cur); return { fail: A.fail, rooms: A.rooms, nan: A.nan, stuck: A.stuck, unkillable: A.unkillable, programsBad: A.programsBad, notes: A.notes, frameErr: D.frameErr().list.slice(), log: A.log.slice(-60), fallbacks: A.fallbacks, hp: D.playerState.hp, egc: D.EGC && D.EGC.stat }; });
   } catch (e) {
     report = { fail: 'harness: ' + (e && e.message || e), rooms: [], nan: [], stuck: [], unkillable: [], programsBad: [], notes: [], frameErr: [], log: [] };
     try { Object.assign(report, await page.evaluate(() => ({ log: window.__AR ? window.__AR.log.slice(-60) : [], frameErr: window.__cqcDev ? window.__cqcDev.frameErr().list.slice() : [] }))); } catch (e2) { /* page gone */ }
@@ -339,6 +339,7 @@ function installBot(cfg) {
       `${r.kind === 'safe' || r.kind === 'stair' ? 'pass' : (r.cleared ? 'CLEARED in ' + r.fightS.toFixed(1) + ' s' : 'NOT CLEARED')} fired ${r.fired ?? '-'} kills ${r.killed ?? '-'} [${r.ends || ''}] racks ${r.racks || 0} reloads ${r.reloads || 0} fallbacks ${r.fallbacks} ` +
       `tick avg ${avg} ms max ${r.tickMax.toFixed(0)} ms real frame ${r.realMs == null ? '-' : r.realMs + ' ms'} programs ${r.programs} bad ${r.progBad}`);
   }
+  if (R.egc) console.log('enemy gun clip: ' + JSON.stringify(R.egc));
   const combat = R.rooms.filter((r) => r.cleared).length;
   if (R.fail) fails.push('run: ' + R.fail);
   if (combat < ROOMS) fails.push(`cleared ${combat} of ${ROOMS} rooms`);

@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.08</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.09</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.08</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.09</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -35886,6 +35886,7 @@ function enemyPose(e, dt, now) {
   _ev.q.multiply(_ev.q2.setFromAxisAngle(_ev.x.set(1, 0, 0), e.recoil * 0.12));
   e.gunQ.copy(_ev.q);
   e.gunP.copy(_egp).addScaledVector(_ev.z.set(0, 0, 1).applyQuaternion(e.gunQ), e.recoil * 0.025);
+  if (EGC.on && !e.net) egcClip(e, dt);                           // EGC: not through walls, leaves, cover
   const NH = e.net && e.netH;                                     // multiplayer: the VR player's own gun hand and gun turn
   if (NH && NH.hasQ) { const hp = NH.hasP ? NH.P : NH.gh === 'L' ? (NH.hasL ? NH.L : null) : (NH.hasR ? NH.R : null); if (hp) { e.gunP.copy(hp); e.gunQ.copy(NH.q); } }
   // into enemy-root space
@@ -35960,6 +35961,78 @@ function enemyFire(e, dt, now) {
 // needs 1.5 m clear in front of the muzzle.
 const AIMFIX = { on: !/[?&]aimfix=off\b/.test(QS), cos: 0.98, stat: { held: 0 } };
 const _afx = { m: new THREE.Vector3(), t: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3() };
+// EGC (?egunclip=off): his gun never goes through a wall, door leaf or cover. Each pose one Rapier ray runs from behind
+// his grip down the bore to the muzzle (+4 cm); blocked = he pulls the gun in (up to 16 cm, a compressed ready), and if that
+// is not enough tips the muzzle down (low ready) or, failing that, up (high port): the first angle that clears. It snaps in
+// at once and eases back out (5/s), so nothing pokes through for a frame. A tipped gun is off target, so aimFixOk holds
+// his fire. His dropped gun (egcDropFree) is never left inside a wall or leaf: slid back toward his chest until free.
+const EGC = { on: !/[?&]egunclip=off\b/.test(QS), back0: 0.32, maxBack: 0.16, hardBack: 0.34, ray: null,
+  cands: [[0, 0], [-0.3, 0], [-0.6, 0], [0, 0.6], [0, -0.6], [-0.9, 0], [-0.6, 0.8], [-0.6, -0.8], [-1.25, 0], [0, 1.2], [0, -1.2], [0.95, 0], [-1.4, 1.1], [-1.4, -1.1]],
+  grp: groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR), dgrp: groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR),
+  b: new THREE.Vector3(), o: new THREE.Vector3(), q: new THREE.Quaternion(), r: new THREE.Quaternion(), x: new THREE.Vector3(1, 0, 0),
+  c: new THREE.Vector3(), t: new THREE.Vector3(), p: new THREE.Vector3(), stat: { clipped: 0, drops: 0, left: 0 } };
+function egcNeed(e, q, L) {
+  const R = EGC.ray || (EGC.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 }));
+  EGC.b.set(0, 0, -1).applyQuaternion(q);
+  EGC.o.copy(e.gunP).addScaledVector(EGC.b, -EGC.back0);
+  R.origin.x = EGC.o.x; R.origin.y = EGC.o.y; R.origin.z = EGC.o.z;
+  R.dir.x = EGC.b.x; R.dir.y = EGC.b.y; R.dir.z = EGC.b.z;
+  const max = EGC.back0 + L, h = world.castRay(R, max, true, undefined, EGC.grp);
+  return h ? max - h.timeOfImpact : 0;
+}
+function egcClip(e, dt) {
+  if (!world || !e.gun || !e.gun.wr) return;
+  const st = e.egc || (e.egc = { back: 0, tip: 0, yaw: 0 });
+  const L = Math.max(0.2, -e.gun.wr.muzzle.z) + 0.04;
+  let back = 0, tip = 0, yaw = 0;
+  try {
+    const need = egcNeed(e, e.gunQ, L);
+    if (need > 0) {
+      let best = Infinity, bt = 0, by = 0;
+      for (const c of EGC.cands) {                                 // [tip about the gun's x, turn about world up]
+        const q = c[0] || c[1] ? egcRot(EGC.q.copy(e.gunQ), c[0], c[1]) : e.gunQ;
+        const n = c[0] || c[1] ? egcNeed(e, q, L) : need;
+        if (n <= EGC.maxBack) { best = n; bt = c[0]; by = c[1]; break; }
+        if (n < best) { best = n; bt = c[0]; by = c[1]; }
+      }
+      back = Math.min(best, EGC.hardBack); tip = bt; yaw = by; EGC.stat.clipped++;
+    }
+  } catch (err) { EGC.on = false; console.warn('egunclip off', err); return; }
+  const k = 1 - Math.exp(-5 * dt);
+  const snap = (v, t) => (Math.abs(t) >= Math.abs(v) || (t && Math.sign(t) !== Math.sign(v)) ? t : v + (t - v) * k);
+  st.back = back >= st.back ? back : st.back + (back - st.back) * k;
+  st.tip = snap(st.tip, tip); st.yaw = snap(st.yaw, yaw);
+  if (st.tip || st.yaw) egcRot(e.gunQ, st.tip, st.yaw);
+  if (st.back > 1e-4) e.gunP.addScaledVector(EGC.b.set(0, 0, 1).applyQuaternion(e.gunQ), st.back);
+  if (back && window.__cqcDev) { const n = egcNeed(e, e.gunQ, L) - EGC.back0; if (n > 0.02) { EGC.stat.left++; EGC.stat.leftMax = Math.max(EGC.stat.leftMax || 0, n); } }   // dev: still through after the fix
+}
+function egcRot(q, tip, yaw) {
+  if (tip) q.multiply(EGC.r.setFromAxisAngle(EGC.x, tip));
+  if (yaw) q.premultiply(EGC.r.setFromAxisAngle(_up, yaw));
+  return q;
+}
+function egcFree(g, s, P, Q) {
+  EGC.c.copy(s.c).applyQuaternion(Q).add(P);
+  try { return world.intersectionWithShape(EGC.c, Q, s.shape, undefined, EGC.dgrp, undefined, g.prop.body) === null; } catch (err) { return true; }
+}
+function egcDropFree(p, e) {
+  const g = p.item;
+  if (!EGC.on || !world || !g || !g.def || !g.def.col || !g.wr) return;
+  const s = gunClipShape(g), t = p.body.translation(), r = p.body.rotation();
+  EGC.p.set(t.x, t.y, t.z); EGC.q.set(r.x, r.y, r.z, r.w);
+  if (egcFree(g, s, EGC.p, EGC.q)) return;
+  const c = e.B && (e.B.chest || e.B.spine);
+  if (c) c.getWorldPosition(EGC.t); else EGC.t.set(rWX(e.room, e.pos.x), enemyBaseY(e) + 1.1, rWZ(e.room, e.pos.y));
+  let ok = egcFree(g, s, EGC.t, EGC.q);
+  if (!ok) { EGC.t.y += 0.3; ok = egcFree(g, s, EGC.t, EGC.q); }
+  if (!ok) { EGC.r.setFromAxisAngle(_up, Math.PI / 2).multiply(EGC.q); if (egcFree(g, s, EGC.t, EGC.r)) { EGC.q.copy(EGC.r); ok = true; } }
+  let f = 0;                                                      // fraction from his chest toward the hand pose that is still free
+  if (ok) { let lo = 0, hi = 1; for (let i = 0; i < 8; i++) { const m = (lo + hi) / 2; if (egcFree(g, s, EGC.o.lerpVectors(EGC.t, EGC.p, m), EGC.q)) lo = m; else hi = m; } f = lo; }
+  EGC.o.lerpVectors(EGC.t, EGC.p, f);
+  p.body.setTranslation({ x: EGC.o.x, y: EGC.o.y, z: EGC.o.z }, true); p.body.setRotation({ x: EGC.q.x, y: EGC.q.y, z: EGC.q.z, w: EGC.q.w }, true);
+  p.root.position.copy(EGC.o); p.root.quaternion.copy(EGC.q); p.root.updateMatrixWorld(true);
+  EGC.stat.drops++;
+}
 function aimFixOk(e, dt, now, aimed) {
   if (e.poseAcc > 0) { enemyPose(e, e.poseAcc, now); e.poseAcc = 0; }
   const g = e.gun; g.root.updateWorldMatrix(true, false);
@@ -36730,6 +36803,7 @@ function enemyDropGun(e, dir) {
     const p = createGun(t), g = p.item, cap = MAG_DEFS[g.def.magType] ? MAG_DEFS[g.def.magType].capacity : 0;
     if (g.mag && g.mag.item) { g.mag.item.rounds = clamp(Math.round(cap * (e.ammo || 0) / Math.max(1, e.w.ammo)), 0, cap); updateMagVisual(g.mag.item); }
     itemToWorld(p, wp, wq, e.room);
+    egcDropFree(p, e);                                             // EGC: never left inside a wall or leaf
     const hb = e.rag && e.rag.find((r) => r.seg === 'foreArmR');
     const v = hb ? hb.body.linvel() : { x: 0, y: 0, z: 0 };
     if (!Number.isFinite(v.x + v.y + v.z) || Math.abs(v.x) + Math.abs(v.y) + Math.abs(v.z) > 60) { v.x = 0; v.y = 0; v.z = 0; }   // dropfix
@@ -56036,7 +56110,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { flashBlast, fragBlast, NADE });   // grenade effect tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { KIT, PANELLOOK, panelAtlasMat });   // PANELLOOK tests
-if (window.__cqcDev) Object.assign(window.__cqcDev, { roomFloorAt, rLX, rLZ, enemyDown, surrStart, enemiesDyingUpdate, enemiesPostPhysics, stepPhysics, DROPFIX, dropFixCheck, dropFixSupported });   // dropped-gun tests
+if (window.__cqcDev) Object.assign(window.__cqcDev, { roomFloorAt, rLX, rLZ, enemyDown, surrStart, enemiesDyingUpdate, enemiesPostPhysics, stepPhysics, DROPFIX, dropFixCheck, dropFixSupported, EGC, egcClip, egcDropFree, enemyDropGun });   // dropped-gun tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { DG, locomote, stepPhysics, updateDoorsPost, headGuard, HG, netDoorGhost, rWX, rWZ, rLX, rLZ, netDoorRx, nudgeDoor, pushOutOf, doorSide, rebuildWalk, MIC, netVoiceMic, voxPress, voxKey, voxApply, applyMenu, MENU, MOD, MENU_BASE });   // DOORGHOST / VOX / one speed tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain, flashBurst, fireGun, BHEAD, bodyHeadYaw, rigNadeAt, enemyShoot, muzSync, muzChain, getMUZ: () => MUZ });   // muzzle flash by device, VR body heading
 if (window.__cqcDev) Object.assign(window.__cqcDev, { clock, loop, playerState, keys, headRoom, headWorld, roomMem, doorPress, safeSlotNow, aimedProp, isReady: () => ready, isStarted: () => gameStarted, findPath, exitLeaf, applyLook, RAY_GROUPS, colliderInfo, rapierRay: (o, d) => new RAPIER.Ray({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z }) });   // automatic 5-room test run (cqc/tools/autorun.js)
