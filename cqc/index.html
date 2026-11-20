@@ -5067,6 +5067,90 @@ function stencilTexture(lines, planeW, planeH, gapsY, gap, seed) {
 }
 
 /* ============================================================================
+ *  CRATE WEAR (?cratewear=off = the old crates). Crates (crateA-D, the small crate) and their loose / broken boards
+ *  use their own copy of the pine (M.crateWood) with one more layer: a tiled wear texture (512 px, 256 on Lite /
+ *  Xbox / low memory) read through each board's own grain offset, so every board differs: grey weathering in
+ *  patches, dark grime and water streaks running down the grain, forklift scrapes and gouges, chalk / marker marks
+ *  (tallies, lot numbers, crosses) and orange-brown rust runs; rougher where weathered or chalked. Nails rust.
+ *  One program, compiled at load with the kit; no per-frame work.
+ * ========================================================================== */
+const CRW = { on: !/[?&]cratewear=off\b/.test(QS), tex: null };
+function crateWearTex() {
+  if (CRW.tex) return CRW.tex;
+  const S = (LITE.on || LITE.xbox || LOWMEM.on) ? 256 : 512, k = S / 512;
+  const cv = document.createElement('canvas'); cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d', { willReadFrequently: true }), img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const u = x / S, v = y / S, i = (y * S + x) * 4;
+    const wthr = smoothstep(0.42, 0.72, fbm(u, v, 4, 4, 4, 77));                               // grey weathering patches
+    const strk = smoothstep(0.55, 0.85, fbm(u, v * 0.12, 24, 2, 3, 91)) * (0.4 + 0.6 * fbm(u, v, 8, 8, 2, 13));   // grime runs along the grain
+    const rust = smoothstep(0.78, 0.95, fbm(u, v * 0.08, 40, 2, 3, 205));
+    d[i] = wthr * 255; d[i + 1] = strk * 200; d[i + 2] = 0; d[i + 3] = rust * 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const R = mulberry32(0xC4A7E);
+  const rr = (a, b) => a + (b - a) * R();
+  // forklift scrapes and gouges (dark, into G), chalk / marker (B) drawn on a second pass via channel masks
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 9; i++) {
+    const x = R() * S, y = R() * S, L = rr(40, 160) * k, a = rr(-0.25, 0.25);
+    ctx.strokeStyle = `rgba(0,${Math.round(rr(90, 160))},0,1)`; ctx.lineWidth = rr(1.5, 4) * k;
+    for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.moveTo(x, y + j * 3 * k); ctx.lineTo(x + Math.cos(a) * L, y + j * 3 * k + Math.sin(a) * L); ctx.stroke(); }
+  }
+  ctx.fillStyle = 'rgba(0,0,255,1)'; ctx.strokeStyle = 'rgba(0,0,230,1)'; ctx.lineWidth = 2.5 * k;
+  const marks = ['17', 'X', 'B4', '||||', 'OK', '3/12', 'LOT 9', 'RJ', '→', '44'];
+  for (let i = 0; i < 6; i++) {
+    const x = rr(0.05, 0.85) * S, y = rr(0.1, 0.9) * S;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(rr(-0.4, 0.4));
+    ctx.font = `700 ${Math.round(rr(22, 40) * k)}px "Comic Sans MS", cursive, Arial, sans-serif`;
+    const m = marks[Math.floor(R() * marks.length)];
+    if (m === '||||') for (let j = 0; j < 5; j++) { ctx.beginPath(); ctx.moveTo(j * 7 * k, 0); ctx.lineTo(j * 7 * k + 2 * k, -24 * k); ctx.stroke(); if (j === 4) { ctx.beginPath(); ctx.moveTo(-4 * k, -6 * k); ctx.lineTo(32 * k, -18 * k); ctx.stroke(); } }
+    else ctx.fillText(m, 0, 0);
+    ctx.restore();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = maxAniso;
+  CRW.tex = t;
+  return t;
+}
+function crateWearApply(mat) {
+  const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey, tex = crateWearTex();
+  mat.onBeforeCompile = (sh, r) => {
+    if (prev) prev.call(mat, sh, r);
+    sh.uniforms.uCrW = { value: tex };
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uCrW;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+vec4 cwT = vec4(0.0);
+#ifdef USE_MAP
+cwT = texture2D(uCrW, vMapUv * 0.37 + vec2(0.13, 0.71));
+{ float cl = dot(diffuseColor.rgb, vec3(0.3, 0.59, 0.11));
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(cl) * vec3(1.0, 0.98, 0.95) * 1.08, cwT.r * 0.62);   // sun-greyed pine
+  diffuseColor.rgb *= 1.0 - cwT.g * 0.5;                                                             // grime runs, scrapes
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.13, 0.05) * (0.6 + cl), cwT.a * 0.6);        // rust runs
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80, 0.79, 0.74), cwT.b * 0.7); }                  // chalk / marker
+#endif`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = min(1.0, roughnessFactor + cwT.r * 0.1 + cwT.b * 0.15 - cwT.g * 0.05);`);
+  };
+  mat.customProgramCacheKey = () => (prevKey ? prevKey.call(mat) : '') + '|crw1';
+  return mat;
+}
+// Rusty nail heads: a small noise map on the old nail material's place.
+function crateNailMat() {
+  const S = 64, cv = document.createElement('canvas'); cv.width = S; cv.height = S;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(S, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const n = fbm(x / S, y / S, 6, 6, 3, 31), i = (y * S + x) * 4;
+    d[i] = 70 + n * 110; d[i + 1] = 42 + n * 50; d[i + 2] = 24 + n * 22; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.MeshStandardMaterial({ map: t, roughness: 0.82, metalness: 0.3 });
+}
+
+/* ============================================================================
  *  CARDBOARD ATLAS (?boxlabels=off = the old plain kraft). One canvas atlas made at load (2048 px, 512 on Lite /
  *  Xbox / low memory): 4 x 8 cells of 2:1 box faces. Cells 0-7 are tops (flap seam, tape or torn residue), 8-31
  *  sides (kraft tone, print, arrows, FRAGILE, part numbers, handling icons, maker's stamp, shipping labels with
@@ -5741,7 +5825,8 @@ async function buildKit() {
   M.plastic = new THREE.MeshStandardMaterial({ color: 0xd8d2c2, roughness: 0.42, metalness: 0 });
   M.whiteMetal = new THREE.MeshStandardMaterial({ color: 0xdedcd6, roughness: 0.5, metalness: 0.1 });
   M.dark = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 1, metalness: 0 });
-  M.nail = new THREE.MeshStandardMaterial({ color: 0x4a443d, roughness: 0.5, metalness: 0.85 });
+  M.nail = CRW.on ? crateNailMat() : new THREE.MeshStandardMaterial({ color: 0x4a443d, roughness: 0.5, metalness: 0.85 });   // CRATE WEAR: rusty heads
+  M.crateWood = CRW.on ? crateWearApply(propWearApply(makeSurfaceMaterial(sets['crate pine'], { metalness: 0, metalnessMap: null, vertexColors: true }), 'wood')) : M.wood;
   M.housing = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.55, metalness: 0.2 });   // step 66: black fittings
 
   // --- Shared geometry: one doorway's worth of hardware, troffers, conduit ---
@@ -5782,11 +5867,11 @@ async function buildKit() {
   }
 
   // Crates are built from real boards, cleats and nails (see makeCrate). Four variants.
-  P.crateA = makeCrate({ w: 0.8, h: 0.6, d: 0.6, seed: 3, stencil: ['FRAGILE', 'LOT 4417-B'] }, M.wood, M.nail);
-  P.crateB = makeCrate({ w: 0.6, h: 0.45, d: 0.5, baseY: 0.6, seed: 7 }, M.wood, M.nail);
+  P.crateA = makeCrate({ w: 0.8, h: 0.6, d: 0.6, seed: 3, stencil: ['FRAGILE', 'LOT 4417-B'] }, M.crateWood, M.nail);
+  P.crateB = makeCrate({ w: 0.6, h: 0.45, d: 0.5, baseY: 0.6, seed: 7, stencil: CRW.on ? ['NSN 8140-01', 'LOT 0921-C'] : null }, M.crateWood, M.nail);
   await yieldFrame();
-  P.crateC = makeCrate({ w: 0.6, h: 0.45, d: 0.5, seed: 11, stencil: ['38 KG', 'THIS SIDE UP'] }, M.wood, M.nail);
-  P.crateD = makeCrate({ w: 0.6, h: 0.45, d: 0.5, seed: 23 }, M.wood, M.nail);
+  P.crateC = makeCrate({ w: 0.6, h: 0.45, d: 0.5, seed: 11, stencil: ['38 KG', 'THIS SIDE UP'] }, M.crateWood, M.nail);
+  P.crateD = makeCrate({ w: 0.6, h: 0.45, d: 0.5, seed: 23, stencil: CRW.on ? ['KEEP DRY', 'C-7731  DO NOT DROP'] : null }, M.crateWood, M.nail);
   await yieldFrame();
 
   // Return-air vent, facing +z.
@@ -10471,7 +10556,7 @@ function buildPropKit() {
   plank.add(mesh(toneWood(plankGeo(0.6, 0.038, 0.089, 0.003), 0.95), M.wood));
   K.plank = { proto: plank, name: 'two-by-four', mass: 0.9, half: [0.3, 0.019, 0.0445], friction: 0.6, restitution: 0.12, y: 0.0205 };
   // Empty pine crate, light enough to throw.
-  const small = makeCrate({ w: 0.42, h: 0.3, d: 0.3, seed: 19, stencil: ['SPARES', 'NO 2'] }, M.wood, M.nail);
+  const small = makeCrate({ w: 0.42, h: 0.3, d: 0.3, seed: 19, stencil: ['SPARES', 'NO 2'] }, M.crateWood || M.wood, M.nail);
   K.smallCrate = { proto: small, name: 'small crate', mass: 2.8, half: [0.23, 0.15, 0.17], friction: 0.65, restitution: 0.05, y: 0.152 };
   // Step 71: more loose things. Glass bottles shatter (a round, or a fall/throw), a jerry can sloshes about,
   // paint tins roll; cardboard boxes tear apart after a few rounds.
@@ -28720,7 +28805,7 @@ function buildCoverKit() {
   const M = KIT.mat;
   COVER.boxTpl = new THREE.BoxGeometry(1, 1, 1);
   crateRand = 8080;
-  const board = (len, t, wd, k) => { const g = new THREE.Group(); g.add(mesh(toneWood(plankGeo(len, t, wd, 0.002), k), M.wood)); return g; };
+  const board = (len, t, wd, k) => { const g = new THREE.Group(); g.add(mesh(toneWood(plankGeo(len, t, wd, 0.002), k), M.crateWood || M.wood)); return g; };   // CRATE WEAR: the crates' own weathered pine
   let crSeed = 4242; const crandBits = () => ((crSeed = (crSeed * 16807) % 2147483647) / 2147483647);
   // Broken drywall (was a flat painted box that read as a floor tile): a jagged outline, 12.5 mm thick, the painted
   // paper face on both caps (the wall's own material) and the crumbly gypsum core round the edge (M.paper, off-white).
