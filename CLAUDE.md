@@ -2385,7 +2385,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Broken wall pieces 1.5-7 cm (were 3-15 cm), crumbs 0.6-1.4 cm (were 1.2-2.4). Parse checked only.
 
 ## CQC: update number
-- Title screen shows "UPDATE 1.04" bottom right (#verTag); the M / pad menu header shows "Update 1.04". Bump both on each update.
+- Title screen shows "UPDATE 1.05" bottom right (#verTag); the M / pad menu header shows "Update 1.05". Bump both on each update.
 
 ## CQC: racking ejects live rounds (?liveeject=off)
 - ejectChambered (non-pump): a chambered round racked out is a real cartridge (emoRoundMesh case + bullet, own small Rapier body, up to 10, gone after 45 s), slower than a fired case, not counted as brass. Fired cases unchanged. Parse checked only.
@@ -2467,3 +2467,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: graphics mode preset by device (?gfxpreset=off)
 - Once per browser (cqc.gfxpre.v1, replaces the old Lite-only switch): Xbox mode = Max FPS (extreme), a phone / tablet browser = Sharp (boost), a computer = Sharp on a weak GPU (LITE: Intel, base Apple M, software, mobile GPUs) else Cinematic; the headset is not touched. Pressing Play on mobile sets Sharp once more (cqc.gfxpre.mob) for touch devices the user agent missed. Any mode you pick later stays. Parse checked only.
+## CQC: class / loadout picker (?classes=off; headset check needed)
+- CLASS / LOADOUT PICKER section at the end of the module. Five presets of real GUNSMITH rows (CL_CLASSES): Assault (M4A1-S: flat-top + quad rail, holo, foregrip light, laser, its can, 100-round C-Mag, SOPMOD, single-stage; Glock dot + light), Breacher (AKM: kit, dot, GP-25, comp, light, 75 drum, stock; M1911 rail light, comp, 10-round; 2 C4), Marksman (AWM: 3-25x + shade + killflash, bipod, cheek riser, .338 can, 10-round; Glock dot + compact can), Operator (Glock: dot, comp, X300, 50 drum, auto sear, flat trigger, tall sights; M1911 dot, laser, 8-round, cocobolo), Stealth (M4A1-S: dot, can, laser, angled grip, CTR, single-stage; Glock dot, MD3, laser; IR lasers if night vision is owned). "a|b" = first row that exists (UB rows).
+- Choosing one (clApply): its rows owned (free), the store's fitted set for its two guns made exactly that (clSetGun: each gun's WS_REAL.changed once per muzzle / mag / trigger / launcher row, once for the rest, drumStore, wrap rails; g17Sfx / m19Sfx muted by globalThis.__clMute, one playBuy). Computer: the primary from the locker into your empty hand. Saved cqc.class.v1 { seen, last }.
+- Previews (clPrepare, each time the picker opens, 4 s apart): every class's primary built for a moment, wsStats measured, a mirror (vmMirSync) shot in a small studio scene (bvStudioEnv) drawn straight to the canvas's corner and copied to a JPEG; then the store and MUZ.saved put back exactly (a short hitch while the panel is up).
+- Shown once on a save, 2.5 s after Start when the safe room's locker guns exist (clFirst; never in multiplayer). Reopen: M menu Game "Choose class / loadout", terminal GEAR "CHOOSE CLASS / LOADOUT" (replaced the stale M1911 text).
+- Computer / phone: DOM overlay #clsPick (title / M menu design: Archivo + Barlow, the tube accent, amber focus ring): class list with thumbnails, big preview, parts as icon chips, sidearm line, 12 stat bars, Select. Keys arrows / WASD, Enter, Esc (game keys swallowed while up). Pad: D-pad / stick, A, B / Menu (padPoll hook clPadPoll). Headset: the terminal page TERM.page 'classes' (5 cards with the thumbnails, SELECT by fingertip).
