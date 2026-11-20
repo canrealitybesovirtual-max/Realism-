@@ -6591,7 +6591,7 @@ function wallBand(len, hWall, y1, gaps, tile) {
  *  Atlas 2048 px (1024 on Lite / Xbox / low memory). Desk laminate edge wear,
  *  chair fabric pilling and cabinet scuffs are step 97's prop wear.
  * ========================================================================== */
-const OFFR = { on: !/[?&]officereal=off\b/.test(QS), N: { desk: 6, cabinet: 4, whiteboard: 3, wall: 4 }, tex: null, paper: null, scr: null, cell: null };
+const OFFR = { on: !/[?&]officereal=off\b/.test(QS), N: { desk: 6, cabinet: 4, whiteboard: 3, wall: 4, deskScreen: 4 }, tex: null, paper: null, scr: null, cell: null };
 function offrAtlas() {
   const S = (LITE.on || LOWMEM.on) ? 1024 : 2048, C = S / 8, R = mulberry32(0x0ff1ce);
   const cv = document.createElement('canvas'); cv.width = cv.height = S;
@@ -6712,6 +6712,24 @@ function offrBox(w, h, d, a, b) {
   for (let f = 0; f < 6; f++) { const r = f === 0 ? a : b; for (let i = f * 4; i < f * 4 + 4; i++) uv.setXY(i, r[0] + uv.getX(i) * (r[2] - r[0]), r[1] + uv.getY(i) * (r[3] - r[1])); }
   return g;
 }
+// A cable from the monitor / phone over the desk's back edge (x -0.38, top 0.745) and down behind it to the floor.
+// The curve is sampled densely and clamped: on the top it lies on the laminate, behind the edge it stays at least
+// 5 mm under the top surface (OFFR.cab), so no loop shows over the back edge. OFFR.cabMax records the measure.
+const OFFR_EDGE = -0.38, OFFR_TOP = 0.745;
+function offrCable(z0, z1) {
+  const V = (x, y, z) => new THREE.Vector3(x, y, z), r = 0.0035;
+  const raw = new THREE.CatmullRomCurve3([V(-0.215, 0.80, z0), V(-0.235, OFFR_TOP + r, z0 + 0.01), V(-0.35, OFFR_TOP + r, z0 + 0.02),
+    V(-0.388, 0.715, z0 + 0.03), V(-0.392, 0.55, z0 + 0.05), V(-0.385, 0.05, z1), V(-0.34, 0.006, z1 + 0.15), V(-0.36, 0.006, z1 + 0.45)], false, 'centripetal');
+  const pts = raw.getPoints(90);
+  let mx = -1;
+  for (const q of pts) {
+    if (q.x < OFFR_EDGE - 0.001) q.y = Math.min(q.y, OFFR_TOP - 0.005 - r);              // behind the edge: top of the cable >= 5 mm under the top
+    else if (q.x < -0.23) q.y = Math.min(q.y, OFFR_TOP + r + 0.0005);                     // on the top: lies on it
+    if (q.x < OFFR_EDGE - 0.001) mx = Math.max(mx, q.y + r);
+  }
+  OFFR.cabMax = Math.max(OFFR.cabMax || -1, mx);
+  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, false, 'centripetal'), 60, r, 5, false);
+}
 function offrKit() {
   if (!OFFR.on) return;
   offrAtlas();
@@ -6756,10 +6774,8 @@ function offrKit() {
     for (let i = 0, n = 2 + ri(4); i < n; i++) paper.push(ball(R, 0.12 + rr(-0.05, 0.05), 0.2 + R() * 0.12, 0.56 + rr(-0.05, 0.05), rr(0.03, 0.045)));
     if (R() < 0.4) paper.push(ball(R, rr(0.25, 0.45), 0.03, rr(0.3, 0.75), 0.035));
     // Cables from the monitor and phone over the back edge to the floor.
-    for (const [z0, z1] of [[0.18, 0.32], [-0.08, -0.02]]) {
-      const cur = new THREE.CatmullRomCurve3([new THREE.Vector3(-0.22, 0.76, z0), new THREE.Vector3(-0.37, 0.75, z0 + 0.02), new THREE.Vector3(-0.395, 0.6, z0 + 0.06), new THREE.Vector3(-0.385, 0.05, z1), new THREE.Vector3(-0.34, 0.006, z1 + 0.15), new THREE.Vector3(-0.36, 0.006, z1 + 0.45)]);
-      black.push(new THREE.TubeGeometry(cur, 28, 0.0035, 5, false));
-    }
+    for (const [z0, z1] of [[0.18, 0.32], [-0.08, -0.02]]) black.push(offrCable(z0, z1));
+
     P['desk_v' + k] = kitGroup(...base(P.desk, [M.paper, M.screen]), merged(paper, Mp, false), merged(scr, OFFR.scr, false), merged(black, M.blackPlastic), merged(plastic, M.plastic));
   }
   // --- Filing cabinets: labels in the card holders, sometimes paper / binders on top ---
@@ -6772,10 +6788,24 @@ function offrKit() {
   }
   // --- Whiteboards: pinned sheets and notes, magnets ---
   for (let k = 0; k < OFFR.N.whiteboard; k++) {
-    const R = mulberry32(0xb0a7d + k * 331), paper = [], mag = [];
+    const R = mulberry32(0xb0a7d + k * 331), paper = [], mag = [], used = [];
+    // Free zones of the board's own writing (M.whiteboard canvas, 1024 x 768 on 1.18 x 0.88 m, centre 1.5 m):
+    // top right above the floor plan sketch, bottom middle between the list and the sketch, bottom right under it.
+    // Sheets and notes only go where nothing is written; they never overlap each other.
+    const Z = [[0.095, 1.62, 0.48, 1.92], [-0.13, 1.08, 0.095, 1.45], [0.11, 1.07, 0.5, 1.21]];
     for (let i = 0, n = 1 + Math.floor(R() * 3); i < n; i++) {
-      const x = -0.5 + R() * 1.0, y = 1.2 + R() * 0.5, doc = R() < 0.5, s = doc ? [0.21, 0.297] : [0.076, 0.076];
-      const g = offrUV(new THREE.PlaneGeometry(s[0], s[1]), doc ? A(Math.floor(R() * 8), 0) : A(Math.floor(R() * 4), 1)); g.rotateZ((R() - 0.5) * 0.12); g.translate(x, y, 0.0285); paper.push(g);
+      let doc = R() < 0.5, s = doc ? [0.21, 0.297] : [0.076, 0.076], at = null;
+      for (let tries = 0; tries < 24 && !at; tries++) {
+        if (tries === 12 && doc) { doc = false; s = [0.076, 0.076]; }                 // no room for a sheet: a note
+        const z = Z[Math.floor(R() * Z.length)], hw = s[0] / 2 + 0.012, hh = s[1] / 2 + 0.012;
+        if (z[2] - z[0] < 2 * hw || z[3] - z[1] < 2 * hh) continue;
+        const x = z[0] + hw + R() * (z[2] - z[0] - 2 * hw), y = z[1] + hh + R() * (z[3] - z[1] - 2 * hh);
+        if (!used.some((u) => Math.abs(u[0] - x) < u[2] + hw && Math.abs(u[1] - y) < u[3] + hh)) at = [x, y, hw, hh];
+      }
+      if (!at) continue;
+      used.push(at);
+      const [x, y] = at;
+      const g = offrUV(new THREE.PlaneGeometry(s[0], s[1]), doc ? A(Math.floor(R() * 8), 0) : A(Math.floor(R() * 4), 1)); g.rotateZ((R() - 0.5) * 0.08); g.translate(x, y, 0.0285); paper.push(g);
       mag.push(placed(new THREE.CylinderGeometry(0.012, 0.012, 0.008, 12), x, y + s[1] / 2 - 0.02, 0.033, Math.PI / 2, 0, 0));
     }
     P['whiteboard_v' + k] = kitGroup(...base(P.whiteboard, []), merged(paper, Mp, false), merged(mag, M.redPaint));
@@ -6789,6 +6819,29 @@ function offrKit() {
     for (let i = 0, n = Math.floor(R() * 3); i < n; i++) paper.push(offrUp(0.076, 0.076, A(Math.floor(R() * 4), 1), 0.0035, 1.0 + R() * 0.15, (R() - 0.5) * 1.2, (R() - 0.5) * 0.2));
     for (const g of paper) { g.computeBoundingBox(); const b = g.boundingBox; pin.push(placed(new THREE.SphereGeometry(0.005, 6, 4), 0.006, b.max.y - 0.015, (b.min.z + b.max.z) / 2)); }
     P['offWall_v' + k] = kitGroup(merged(paper, Mp, false), merged(pin, M.redPaint, false));
+  }
+  // --- Fabric screen between back-to-back desks: pinned papers, notes, a calendar on both faces (above the desks). ---
+  for (let k = 0; k < OFFR.N.deskScreen; k++) {
+    const R = mulberry32(0x5c4e + k * 457), paper = [], pin = [];
+    for (const sd of [1, -1]) {
+      const used = [];
+      const item = (w, h, r, y0, y1) => {
+        for (let t = 0; t < 14; t++) {
+          const z = -0.7 + w / 2 + R() * (1.4 - w), y = y0 + h / 2 + R() * Math.max(0, y1 - y0 - h);
+          if (used.some((u) => Math.abs(u[0] - z) < (u[2] + w) / 2 + 0.01 && Math.abs(u[1] - y) < (u[3] + h) / 2 + 0.01)) continue;
+          used.push([z, y, w, h]);
+          const g = offrUp(w, h, r, 0, y, z, (R() - 0.5) * 0.06);
+          if (sd < 0) g.rotateY(Math.PI);
+          g.translate(sd * 0.0158, 0, 0); paper.push(g);
+          pin.push(placed(new THREE.SphereGeometry(0.0045, 6, 4), sd * 0.019, y + h / 2 - 0.012, z));
+          return;
+        }
+      };
+      if (R() < 0.45) item(0.21, 0.297, A(4 + Math.floor(R() * 2), 3), 0.78, 1.17);   // calendar
+      for (let i = 0, n = 1 + Math.floor(R() * 3); i < n; i++) item(0.21, 0.297, A(Math.floor(R() * 8), 0), 0.8, 1.17);
+      for (let i = 0, n = Math.floor(R() * 4); i < n; i++) item(0.076, 0.076, A(Math.floor(R() * 4), 1), 0.85, 1.16);
+    }
+    P['deskScreen_v' + k] = kitGroup(...base(P.deskScreen, []), merged(paper, Mp, false), merged(pin, M.redPaint, false));
   }
   GEN.kit17.push('desk_v0', 'cabinet_v0', 'whiteboard_v0', 'offWall_v0');   // compiled at load with the kit (two atlas programs)
 }
@@ -6807,6 +6860,19 @@ function offrWallSpot(f, w, d) {
   else if (Math.abs(nz) > 0.9) t = (d / 2 - Math.sign(-nz) * f.z);
   if (!(t < 0.5)) return null;
   return [f.x - nx * (t - 0.001), f.z - nz * (t - 0.001)];
+}
+
+// The wall decor's strip (1.9 m along the wall, 0.15 m in front of it, from 0.9 m up) must be free of glass modules,
+// partitions, screens and any other furniture standing there (the desk under it is lower).
+function offrWallFree(L, f, ws) {
+  const ry = f.ry || 0, nx = Math.cos(ry), nz = -Math.sin(ry), tx = Math.sin(ry), tz = Math.cos(ry);
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const s of [-0.95, 0.95]) for (const q of [0, 0.15]) { const x = ws[0] + tx * s + nx * q, z = ws[1] + tz * s + nz * q; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+  const hit = (cx, cz, hx, hz, r) => { const c = Math.abs(Math.cos(r || 0)), sn = Math.abs(Math.sin(r || 0)), ex = hx * c + hz * sn, ez = hx * sn + hz * c; return cx + ex > x0 && cx - ex < x1 && cz + ez > z0 && cz - ez < z1; };
+  for (const g of L.furniture || []) { if (g === f) continue; const F = FURN[g.type]; if (F && (F.y1 === undefined || F.y1 > 0.9) && hit(g.x, g.z, F.hx || 0.3, F.hz || 0.3, g.ry)) return false; }
+  for (const p of L.partitions || []) if (hit(p.x, p.z, p.len / 2, 0.08, p.ry)) return false;
+  for (const dc of L.decor || []) if (dc.type === 'deskScreen' && hit(dc.x, dc.z, 0.03, 0.76, dc.ry)) return false;
+  return true;
 }
 
 // Load-time shader warm-up: one of every step 8 piece and finish in view while compiling.
@@ -8936,7 +9002,7 @@ function* roomBuilder(room) {
       bProto(f.finish ? P[`${f.type}_${f.finish}`] : offrPick(P, f.type, room, fi), f.x, FURN[f.type].y, f.z, f.ry);   // step 17: column_bare, pilaster_sage...; office realism: variants
       if (OFFR.on && f.type === 'desk') {                                         // office realism: poster / calendar on the wall behind a desk
         const ws = offrWallSpot(f, w, d);
-        if (ws && !(L.fixtures || []).some((x) => { const q = fixtureAt(x.wall, x.u, w, d); return Math.hypot(q[0] - ws[0], q[1] - ws[1]) < 1.0; })) bProto(offrPick(P, 'wall', room, fi), ws[0], 0, ws[1], f.ry);
+        if (ws && offrWallFree(L, f, ws) && !(L.fixtures || []).some((x) => { const q = fixtureAt(x.wall, x.u, w, d); return Math.hypot(q[0] - ws[0], q[1] - ws[1]) < 1.0; })) bProto(offrPick(P, 'wall', room, fi), ws[0], 0, ws[1], f.ry);
       }
       room.furnObj.push(null);
     }
@@ -8952,7 +9018,7 @@ function* roomBuilder(room) {
   }
 
   // --- Step 17: desk screens, floor paint, sawcut joints, the drain (all batched, none cast) ---
-  for (const dc of L.decor || []) bProto(P[dc.type], dc.x, 0, dc.z, dc.ry);
+  for (let di = 0; di < (L.decor || []).length; di++) { const dc = L.decor[di]; bProto(offrPick(P, dc.type, room, 2000 + di), dc.x, 0, dc.z, dc.ry); }   // office realism: screen variants
   if (L.joints) {
     for (const x of L.joints.xs) bGeo(G.markQuad, M.joint, x, 0.0008, 0, 0, -Math.PI / 2, 0, d, 1, 0.006, false);
     for (const z of L.joints.zs) bGeo(G.markQuad, M.joint, 0, 0.0008, z, 0, 0, 0, w, 1, 0.006, false);
