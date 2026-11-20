@@ -7452,8 +7452,10 @@ function buildCandidate(p, R, T) {
       wallSpan(sd < 0 ? 'left' : 'right', wallU(sd < 0 ? 'left' : 'right', 0, zc) - 0.4, wallU(sd < 0 ? 'left' : 'right', 0, zc) + 0.4);
       putStack(xEnd - sd * (FURN.crateA.hx + 0.03), zc, rr(-0.1, 0.1));
       const S = FURN.shelfA, unitL = 2 * S.hz + 0.004, room0 = (zc - Pf.hx - 1.3) - (-d / 2 + 0.05), un = clamp(Math.floor(room0 / unitL), 0, 2);
-      if (un > 0) {
-        const xs = -sd * (w / 2 - 1.4);
+      const xs = -sd * (w / 2 - 1.4);
+      // Review fix: this back-wall unit took no keep-out test and could stand in the exit doorway (seen 23 cm over its
+      // jamb: the leaf's swing and the way out pinched). Not built when it comes within 0.55 m of the doorway.
+      if (un > 0 && Math.abs(xs - p.exitX) >= S.hx + D.width / 2 + 0.55) {
         for (let j = 0; j < un; j++) putF('shelfA', xs, -d / 2 + 0.05 + (j + 0.5) * unitL, sd > 0 ? 0 : Math.PI, { range: true });
         ranges.push({ x0: xs - S.hx, x1: xs + S.hx, z0: -d / 2 + 0.05, z1: -d / 2 + 0.05 + un * unitL });
         wallSpan('back', wallU('back', xs, 0) - 0.3, wallU('back', xs, 0) + 0.3);
@@ -7485,8 +7487,13 @@ function buildCandidate(p, R, T) {
       // Two cabinets on the back wall beside the exit, toward the middle.
       const C = FURN.cabinet, fits = (dr) => Math.abs(p.exitX + dr * (0.85 + 3 * C.hz + 0.004)) < w / 2 - 0.05;
       const dir = fits(-sd) ? -sd : sd;                                    // away from the stacks: never a pinch behind them
+      // Review fix: an exit behind the stacks (its x inside their run) put the cabinets across the end of the back aisle,
+      // 45 cm from the last stack: the exit was walled in (a softlock in 1-3 records rooms in 600, every attempt alike).
+      // Cabinets toward the middle start 0.9 m past the stacks' end.
+      let x0c = p.exitX + dir * 0.85;
+      if (dir === -sd) x0c = dir > 0 ? Math.max(x0c, xe + 0.9) : Math.min(x0c, xe - 0.9);
       for (let j = 0; j < 2; j++) {
-        const x = p.exitX + dir * (0.85 + C.hz + j * (2 * C.hz + 0.004)), z = -d / 2 + C.hx + 0.02;
+        const x = x0c + dir * (C.hz + j * (2 * C.hz + 0.004)), z = -d / 2 + C.hx + 0.02;
         if (Math.abs(x) > w / 2 - C.hz - 0.05) break;
         if (dir === sd && Math.abs(x) + C.hz > w / 2 - 0.05 - len - 0.9) break;
         putF('cabinet', x, z, -Math.PI / 2);
@@ -8003,19 +8010,24 @@ function* generateLayout(room) {
     yield;
     return L;
   }
-  let best = null, bestPass = null;
-  for (let a = 0; a < C.attempts; a++) {
+  // Review fix: when none of the usual attempts passes, keep trying (up to 4x, same seeds after them, so every room that
+  // passed before is unchanged) and never fall back to a layout whose doors are not connected (furniture walled the exit
+  // off: a softlock; seen for 1-3 rooms in 600 with other world seeds).
+  let best = null, bestPass = null, bestConn = null;
+  for (let a = 0; a < C.attempts * 4; a++) {
+    if (a >= C.attempts && bestPass) break;
     const L = buildCandidate(p, mulberry32((p.seed + Math.imul(a + 1, 0x9E3779B1)) >>> 0), T);
     L.qc = qcLayout(p, L, T);
     L.qc.attempt = a + 1;
     if (L.qc.pass && (!bestPass || L.qc.score > bestPass.qc.score)) bestPass = L;
     if (!best || L.qc.score > best.qc.score) best = L;
+    if (!L.qc.fails.includes('doors not connected') && (!bestConn || L.qc.score > bestConn.qc.score)) bestConn = L;
     if (bestPass && bestPass.qc.score >= C.goodEnough) break;
     yield;
   }
-  const L = bestPass || best;
+  const L = bestPass || bestConn || best;
   L.qc.fallback = !bestPass;
-  if (!bestPass) console.warn(`Room ${room.slot} (${p.plan.type}): no candidate passed QC, using the best one`, best.qc.fails);
+  if (!bestPass) console.warn(`Room ${room.slot} (${p.plan.type}): no candidate passed QC, using the best one`, L.qc.fails);
   return L;
 }
 
@@ -12192,14 +12204,37 @@ function netCoopFrontier() {
   const f = Math.min(NET.remF, cap);
   if (f > stream.frontier) stream.frontier = f;
 }
+// Review fix: a slot's room box (world x / z / floor .. ceiling), as makeRoom places it. A U-turn stairwell sends the next
+// wing back over (or under) the last, so rooms 4-6 slots apart can stand in the same space; single player never holds
+// rooms more than 3 apart, but co-op builds the other player's rooms up to 4 away (+1), and two live rooms in one place
+// put walls, walk boxes and floors through each other. Measured over 1500 slots: none within 3 slots, 8-21 at 4, ~100 at 5.
+function slotBox(sl, kind) {
+  const T = CONFIG.stream.wallT, safe = kind === 'safe';
+  const p = safe ? { w: CONFIG.room.w, d: CONFIG.room.d, exitX: CONFIG.door.x } : normalParams(sl);
+  let ox, oy, oz;
+  if (safe) { const f = roomFacing(sl + 1), A = anchor(sl); ox = A.x - f * p.exitX; oy = anchorY[sl]; oz = A.y + f * (T / 2 + p.d / 2); }
+  else { const f = roomFacing(sl), A = anchor(sl - 1); ox = A.x - f * p.entryX; oy = anchorY[sl - 1] - (p.entryY || 0); oz = A.y - f * (T / 2 + p.d / 2); }
+  return { x0: ox - p.w / 2, x1: ox + p.w / 2, z0: oz - p.d / 2, z1: oz + p.d / 2, y0: oy, y1: oy + (p.h || CONFIG.room.h) };
+}
+function slotClashes(sl, want) {
+  if (sl < 1) return false;
+  const a = slotBox(sl, 'normal'), m = 0.05;
+  for (const [s2, k] of want) {
+    if (s2 === sl || Math.abs(s2 - sl) <= 3 || s2 < 1 && k !== 'safe') continue;
+    const b = slotBox(s2, k);
+    if (Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) > m && Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0) > m && Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) > m) return true;
+  }
+  return false;
+}
 function netCoopWant(want) {
   if (!netLive() || NET.mode !== 'coop' || NET.remSlot == null) return;
   const c = stream.current ? stream.current.slot : 0, safeSlot = safeSlotNow();
+  const add = (sl) => { if (!slotClashes(sl, want)) want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal'); };   // review fix: never into a live room's space
+  for (let sl = Math.min(c, NET.remSlot) + 1; sl < Math.max(c, NET.remSlot); sl++) if (sl > safeSlot && !want.has(sl) && Math.abs(sl - c) <= 4) add(sl);   // the rooms between you (nearest first: they win a clash)
   for (const sl of [NET.remSlot, NET.remSlot + 1]) {
     if (sl <= safeSlot || Math.abs(sl - c) > 4 || want.has(sl)) continue;   // never past 4 rooms away (memory)
-    want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');
+    add(sl);
   }
-  for (let sl = Math.min(c, NET.remSlot) + 1; sl < Math.max(c, NET.remSlot); sl++) if (sl > safeSlot && !want.has(sl) && Math.abs(sl - c) <= 4) want.set(sl, roomPlan(sl).type === 'stair' ? 'stair' : 'normal');   // the rooms between you
 }
 /* ============================================================================
  *  MULTIPLAYER WORLD SYNC (MPSYNC, ?mpsync=off)
@@ -31053,7 +31088,8 @@ function rfDue(room, plan, now) {
     if (!R || R.in || plan.dead[i]) continue;
     if ((room.enemies || []).some((m) => m.idx === i && !m.puppet)) { R.in = true; continue; }   // came with a rebuilt room
     if (now < R.due) continue;
-    if (now - R.due > RF.C.give) {                                // no way in for too long: he never came
+    if (R.due0 == null) R.due0 = R.due;                            // review fix: a failed try below moves due on, so 'give' timed from it never came (the room never counted as clear)
+    if (now - R.due0 > RF.C.give) {                               // no way in for too long: he never came
       plan.dead[i] = true; R.in = true; R.gone = true; RF.stat.dropped++;
       if (plan.dead.every(Boolean)) loopRoomCleared(room, plan);
       continue;
@@ -31361,11 +31397,16 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
   return e;
 }
 // Somewhere in the far half of the room, ideally behind cover from the entry door.
+const _spP = new THREE.Vector3();
 function enemySpawnSpot(room, taken = []) {
   // aimfix: men already in the room count as taken too (spawned another way, or earlier), so two never share a spot
   const occ = taken.concat((room.enemies || []).filter((m) => !m.dead).map((m) => ({ x: m.pos.x, z: m.pos.y })));
   let minD = 1.3;
-  const far = (x, z) => occ.every((t) => Math.hypot(t.x - x, t.z - z) > minD);   // step 9: one man per spot
+  // Review fix: men placed while you stand in the room (the slow-link enemy model arriving mid-room, a late placement)
+  // could appear at arm's length or behind you: inside the room, no spot within 4.5 m of you (dropped for the last resorts).
+  const pw = _spP.setFromMatrixPosition(camera.matrixWorld), pin = insideRoom(room, pw.x, pw.z, 0, pw.y);
+  const plx = pin ? rLX(room, pw.x) : 0, plz = pin ? rLZ(room, pw.z) : 0;
+  const far = (x, z) => occ.every((t) => Math.hypot(t.x - x, t.z - z) > minD) && (!pin || minD < 1.3 || Math.hypot(x - plx, z - plz) > 4.5);   // step 9: one man per spot
   const entry = new THREE.Vector2(room.entryX || 0, room.d / 2);
   const faceDoor = (x, z) => Math.atan2(-(entry.x - x), -(entry.y - z));
   const range = room.plan && room.plan.type === 'range', farZ = -room.d / 2 + 16;   // step 75: on the range they hold the far end
