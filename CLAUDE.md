@@ -2318,3 +2318,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Crates (CRW): rust streaks under 75 % of nail heads (tapered strips on the nail material's streak half; the wear texture's random rust runs are gone), chalk stronger (key |crw2), break boards' snapped end faces fresh lighter pine (crateFreshEnds).
 - Cartons (CARD): pallet_v0..3 carton loads picked per pallet; 6 torn-flap variants (KIT.props.flapV) picked per break. Fix: flaps had no vertex colours on the vertex-coloured cardboard material and drew black.
 - Checked: module parse, eslint no-undef (browser globals only), headless (?dev&lite=on&lowmem=on): no page errors, programs linked, protos rendered in a test scene. Not checked: an office room built in play, Quest. Streaks still read a bit orange in a strongly lit test render.
+
+## CQC: stair balustrade pickets end inside the top rail
+- Cause: the pickets' tops followed the nosing line (one riser above the straight top rail in a U-turn well: nNose at the top was rise + rs, clamped), while the top rail is a straight line between its ends, so pickets stuck up through it. Now every picket top = the rail's own height at that point - 12 mm (railYB in stairBuilderU, railYL in the straight well's flight-1 balustrade). Parse checked only.
