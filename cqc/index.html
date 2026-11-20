@@ -30455,6 +30455,58 @@ const G90_GLSL = `
           gWet = max(gWet, max(rim, fl) * (0.5 + 0.5 * fr));
         }
       }`;
+// GRITTY BLOOD: the same wound blown open: flapped torn rim, an uneven lumpy cavity (muscle, clots, pale fat / bone flecks).
+const G90_CHUNK = `
+      vec3 a = A.xyz;
+      float rho = length(q), ex = step(A.w, 0.0), fr = uBloodT[i].w, L = w.w * 2.6;
+      if (ds.y < 0.0 && ds.y > -L && dot(ds.xz, ds.xz) < w.w * w.w * 1.7) {
+        vec3 tH = cross(vec3(0.0, 1.0, 0.0), gN); float tl = length(tH);
+        float u = dot(ds, tH) / max(tl, 1e-3) + 0.005 * sin(ds.y * 55.0 + float(i) * 1.7);
+        float lane = u * 48.0 + float(i) * 0.37, fx = abs(fract(lane) - 0.5) * 2.0;
+        float len = L * (0.3 + 0.7 * bHash(vec3(floor(lane), float(i) * 7.0, 3.0)));
+        float tp = clamp(1.0 + ds.y / len, 0.0, 1.0);
+        float run = (1.0 - smoothstep(0.12 + 0.3 * tp, 0.22 + 0.36 * tp, fx)) * step(-len, ds.y) * step(0.2, tl) * (1.0 - smoothstep(w.w * 0.5, w.w * 0.95, abs(u)));
+        run *= smoothstep(0.28, 0.6, bNoise(vec3(u * 260.0, ds.y * 90.0, float(i))));   // the runs break up, beaded and dried in places
+        bloodK = max(bloodK, run * 0.97); gWet = max(gWet, run * (0.3 + 0.4 * fr)); gFresh = max(gFresh, run * fr * 0.6);
+      }
+      if (rho < h * 2.6 && abs(al) < 0.07 + h && dot(gN, a) < 0.2) {
+        vec3 T = uBloodT[i].xyz, Bt = cross(a, T), ql = vec3(dot(q, T), dot(q, Bt), al);
+        vec3 qn = q / max(rho, 1e-5), qs = vec3(dot(qn, T), dot(qn, Bt), 0.0);
+        float nA = bNoise(qs * 2.6 + vec3(float(i) * 3.1)), nB = bNoise(ql * 290.0);
+        float nF = bNoise(vec3(qs.xy * 7.5, float(i) * 1.3));   // torn flaps round the rim
+        float edge = h * (0.66 + (0.55 + 0.45 * ex) * nA + 0.32 * (nF - 0.5) + 0.22 * (nB - 0.5));
+        if (rho < edge) {
+          vec3 vp = gV - a * dot(gV, a);
+          float va = max(dot(gV, a), 0.03), A2 = max(dot(vp, vp), 1e-5), Bq = dot(q, vp), Cq = rho * rho - edge * edge;
+          float t = (-Bq + sqrt(max(Bq * Bq - A2 * Cq, 0.0))) / A2, z = t * va;
+          vec3 wq = q + vp * t, wl = vec3(dot(wq, T), dot(wq, Bt), al + z);
+          float nK = bNoise(wl * 150.0), nW = bNoise(wl * 330.0);                       // lumps of torn muscle, fine fibre
+          float D = mix(0.09, 0.05, ex) * (0.55 + 0.6 * nA + 0.45 * nK), zz = clamp(z / D, 0.0, 1.0);   // an uneven blown cavity, not a tube
+          vec3 c = mix(vec3(0.3, 0.035, 0.025), vec3(0.04, 0.003, 0.002), zz * (0.6 + 0.6 * nK)) * (0.55 + 0.75 * nW) * (0.7 + 0.3 * fr);
+          c = mix(c, vec3(0.03, 0.001, 0.001), smoothstep(0.62, 0.78, nK) * 0.85);       // dark clots
+          c = mix(c, vec3(0.58, 0.2, 0.15), smoothstep(0.7, 0.9, nW) * (1.0 - zz) * (0.4 + 0.6 * ex));   // paler torn tissue
+          c = mix(c, vec3(0.74, 0.64, 0.5), smoothstep(0.93, 0.97, nW * 0.6 + nK * 0.4) * (1.0 - zz * 0.7));   // fat / bone flecks
+          c = z > D ? vec3(0.035, 0.002, 0.0015) : c;
+          c = mix(c, vec3(0.42, 0.05, 0.035) * (0.7 + 0.3 * fr), smoothstep(edge * 0.62, edge * 0.95, rho) * 0.75);   // the torn margin, wet muscle
+          float k = 1.0 - smoothstep(edge * 0.82, edge, rho);
+          if (k > gHole) { gHole = k; gCol = c; gBump = z > D ? vec3(0.0) : (-normalize(wq) - gN) * 0.9 + (T * (nK - 0.5) + Bt * (nW - 0.5)) * 1.6; }   // lumpy
+          gWet = max(gWet, k);
+        } else {
+          float rim = 1.0 - smoothstep(edge, edge * (1.5 + 0.4 * ex), rho);
+          gRim = max(gRim, rim * (1.0 - ex * 0.4)); gFresh = max(gFresh, rim * fr);
+          float thr = smoothstep(0.62, 0.86, bNoise(vec3(qs.xy * 34.0, rho * 70.0 + float(i)))) * rim * (1.0 - ex);
+          gThr = max(gThr, thr);
+          float nT = bNoise(ql * 230.0);
+          float flap = (1.0 - smoothstep(edge, edge * 1.35, rho)) * smoothstep(0.45, 0.7, nF);   // a torn flap curled up at the edge
+          gRim = max(gRim, flap * 0.8); gBump += qn * flap * 0.9;
+          float fl = ex * (1.0 - smoothstep(edge, edge * 1.9, rho)) * smoothstep(0.32, 0.55, bNoise(ql * 170.0 + 5.0) + 0.35 * rim);
+          vec3 tissue = mix(vec3(0.3, 0.03, 0.022), vec3(0.46, 0.13, 0.1), smoothstep(0.55, 0.85, nT));
+          tissue = mix(tissue, vec3(0.05, 0.003, 0.002), (1.0 - smoothstep(0.2, 0.45, nT)) * 0.75) * (0.75 + 0.25 * fr);
+          if (fl > gHole) { gHole = fl; gCol = tissue; }
+          gBump += qn * rim * (ex > 0.5 ? 0.55 : -0.45);
+          gWet = max(gWet, max(rim, fl) * (0.5 + 0.5 * fr));
+        }
+      }`;
 const G90U = { uGoreX: { value: 0 } };   // step 90: shared by every man (one uniform object), 1 = extreme wounds
 function enemyBloodMat(m, U) {
   const c = m.clone();
@@ -30464,7 +30516,7 @@ function enemyBloodMat(m, U) {
     sh.vertexShader = 'varying vec3 vBloodW; varying vec3 vBloodO; varying vec3 vBloodN;\n' + sh.vertexShader.replace('#include <skinning_vertex>',
       '#include <skinning_vertex>\n  vBloodO = position; vBloodW = (modelMatrix * vec4(transformed, 1.0)).xyz; vBloodN = normalize(mat3(modelMatrix) * objectNormal);');
     sh.fragmentShader = BB_GLSL_NOISE + '\n' + sh.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-  float bloodK = 0.0, bloodCore = 0.0, gWet = 0.0, gHole = 0.0, gRim = 0.0, gThr = 0.0, gFresh = 0.0;   // step 90: g*
+  float bloodK = 0.0, bloodCore = 0.0, gWet = 0.0, gHole = 0.0, gRim = 0.0, gThr = 0.0, gFresh = 0.0, gClot = 0.0, gGrain = 0.5, gMid = 0.0;   // step 90: g*; GRITTY BLOOD: gClot, gGrain, gMid
   vec3 gCol = vec3(0.0), gBump = vec3(0.0), gCloth = diffuseColor.rgb;
   if (uBloodN > 0) {
     float n1 = bNoise(vBloodO * 42.0), n2 = bNoise(vBloodO * 130.0);
@@ -30482,20 +30534,30 @@ function enemyBloodMat(m, U) {
       float r = length(vec3(ds.x, dy, ds.z)) + (n1 - 0.5) * w.w * 0.55 + (n2 - 0.5) * w.w * 0.18;
       bloodK = max(bloodK, smoothstep(w.w, w.w * 0.45, r));
       if (!deep) { bloodCore = max(bloodCore, smoothstep(0.011, 0.004, length(d))); continue; }
-      ${G90_GLSL}
+      ${BGRIT.on ? G90_CHUNK : G90_GLSL}
     }
     // blood soaked into cloth: dark maroon, nearly black on dark fabric; a light fabric shows more red
     float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-    vec3 soaked = vec3(0.115, 0.01, 0.008) * (0.45 + lum * 1.2);
+    vec3 soaked = vec3(0.115, 0.01, 0.008) * (0.45 + lum * 1.2);${BGRIT.on ? `
+    // GRITTY BLOOD: a grainy, broken stain edge; dark gel clots; the thin edge dried brown; the soak uneven
+    gGrain = bNoise(vBloodO * 430.0);
+    bloodK *= smoothstep(0.22, 0.42, bloodK + (gGrain - 0.5) * 0.55 + (n2 - 0.5) * 0.25);
+    gClot = smoothstep(0.6, 0.82, n2 * 0.6 + gGrain * 0.4) * smoothstep(0.5, 0.9, bloodK);
+    gMid = smoothstep(0.55, 0.95, bloodK);
+    float gCrust = (1.0 - gMid) * smoothstep(0.08, 0.3, bloodK);
+    soaked *= 0.72 + 0.56 * gGrain;
+    soaked = mix(soaked, vec3(0.13, 0.042, 0.022) * (0.45 + lum * 1.2), gCrust * (0.45 + 0.4 * n1));
+    soaked = mix(soaked, vec3(0.022, 0.001, 0.001), gClot * 0.85);` : ''}
     diffuseColor.rgb = mix(diffuseColor.rgb, soaked, bloodK * 0.92);
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.025, 0.0, 0.0), bloodCore);
-    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.15, 0.006, 0.004), gFresh * 0.6);        // step 90: fresh blood still red,
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.15, 0.006, 0.004)${BGRIT.on ? ' * (0.55 + 0.7 * gGrain) * (1.0 - 0.6 * gClot)' : ''}, gFresh * 0.6);        // step 90: fresh blood still red,
     diffuseColor.rgb *= 1.0 - 0.55 * gRim;                                                   // the torn rim,
     diffuseColor.rgb = mix(diffuseColor.rgb, mix(gCloth * 0.8, soaked * 1.6, 0.55), gThr);   // its frayed threads,
     diffuseColor.rgb = mix(diffuseColor.rgb, gCol, gHole);                                   // the hole and torn flesh
   }`).replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-  roughnessFactor = mix(roughnessFactor, 0.42, bloodK * uBloodWet);
-  roughnessFactor = mix(roughnessFactor, 0.2, gWet * max(uBloodWet, 0.45));   // step 90: an open wound glistens`)
+  roughnessFactor = mix(roughnessFactor, 0.42, bloodK * uBloodWet);${BGRIT.on ? `
+  roughnessFactor = mix(roughnessFactor, mix(0.86, 0.26 + 0.12 * gClot, gMid * uBloodWet) + 0.1 * (gGrain - 0.5), bloodK);   // GRITTY BLOOD: wet glossy middle, dry matte edge` : ''}
+  roughnessFactor = mix(roughnessFactor, ${BGRIT.on ? '0.24 + 0.3 * gGrain' : '0.2'}, gWet * max(uBloodWet, 0.45));   // step 90: an open wound glistens`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
   if (uGoreX > 0.0) normal = normalize(normal + mat3(viewMatrix) * gBump);   // step 90: the rim dips (entry) or bulges (exit); inside, the wall`);
   };
@@ -41434,7 +41496,29 @@ function bloodCanvas(kind, seed) {
   let s = seed;
   const R = () => (s = (s * 16807) % 2147483647) / 2147483647;
   const col = (a) => `rgba(${(34 + R() * 14) | 0}, ${(1 + R() * 2) | 0}, ${(1 + R() * 2) | 0}, ${a.toFixed(3)})`;
-  if (kind === 'pool') {
+  if (kind === 'pool' && BGRIT.on) {
+    // GRITTY BLOOD: one body with an uneven rim (a few angular harmonics), tongues that crept along the floor's
+    // low spots, and satellite drops that fell around it. Thickness, clots, crust and grit come from bloodGrit.
+    const c = S / 2, hs = [];
+    for (let k = 2; k <= 11; k++) hs.push([k, R() * 6.283, 0.11 / Math.pow(k, 0.75) * (0.5 + R())]);
+    const rim = (a) => { let r = 1; for (const [k, ph, am] of hs) r += am * Math.sin(k * a + ph); return S * 0.29 * r; };
+    g.fillStyle = col(1); g.beginPath();
+    for (let i = 0; i <= 240; i++) { const a = i / 240 * Math.PI * 2, r = rim(a); if (i) g.lineTo(c + Math.cos(a) * r, c + Math.sin(a) * r); else g.moveTo(c + Math.cos(a) * r, c + Math.sin(a) * r); }
+    g.fill();
+    for (let i = 0; i < 6; i++) {                                 // tongues: a tapering chain of blobs from the rim outward
+      const a = R() * Math.PI * 2, r0 = rim(a) * 0.85, len = S * (0.05 + R() * 0.13), w = S * (0.025 + R() * 0.035), bend = (R() - 0.5) * 0.5;
+      for (let k = 0; k <= 10; k++) {
+        const f = k / 10, aa = a + bend * f * f, d = r0 + len * f, rr = w * (1 - 0.75 * f) * (0.8 + 0.4 * R());
+        if (d + rr > S * 0.48) break;
+        g.fillStyle = col(1); g.beginPath(); g.ellipse(c + Math.cos(aa) * d, c + Math.sin(aa) * d, rr * 1.3, rr, aa, 0, Math.PI * 2); g.fill();
+      }
+    }
+    for (let i = 0; i < 46; i++) {                                // drops that fell round it (more close in)
+      const a = R() * Math.PI * 2, d = rim(a) + S * (0.008 + Math.pow(R(), 1.8) * 0.17), rr = S * (0.002 + R() * R() * 0.013);
+      if (d + rr * 2 > S * 0.48) continue;
+      g.fillStyle = col(0.8 + R() * 0.2); g.beginPath(); g.ellipse(c + Math.cos(a) * d, c + Math.sin(a) * d, rr * (1 + R() * 0.8), rr, R() * 3.14, 0, Math.PI * 2); g.fill();
+    }
+  } else if (kind === 'pool') {
     for (let i = 0; i < 16; i++) {
       const a = R() * Math.PI * 2, r = R() * S * 0.15, rr = S * (0.14 + R() * 0.15);
       g.fillStyle = col(1); g.beginPath(); g.arc(S / 2 + Math.cos(a) * r, S / 2 + Math.sin(a) * r, rr, 0, Math.PI * 2); g.fill();
@@ -41448,6 +41532,28 @@ function bloodCanvas(kind, seed) {
     gr.addColorStop(0, 'rgba(26, 0, 0, 0.65)'); gr.addColorStop(1, 'rgba(26, 0, 0, 0)');
     g.fillStyle = gr; g.fillRect(0, 0, S, S);
     g.globalCompositeOperation = 'source-over';
+  } else if (kind === 'smear' && BGRIT.on) {
+    // GRITTY BLOOD: a body dragged through blood leaves a band (+x = the drag) with a wavering, frayed edge, its density
+    // breaking up along the way, fibre lanes from the cloth pressed along it, and a few clots dragged into comet tails.
+    const vn = bgNoise(R), id = g.createImageData(S, S), d = id.data, ph = R() * 6.283;
+    const lane = new Float32Array(S); for (let y = 0; y < S; y++) lane[y] = Math.pow(vn(7.3, y / 3.2), 1.4) * 0.6 + vn(3.1, y / 11) * 0.4;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const u = x / S, v = y / S, cy = 0.5 + 0.035 * Math.sin(u * 5.1 + ph) + 0.02 * (vn(u * 3, 9.7) - 0.5);
+      const taper = Math.pow(Math.max(0, Math.sin(Math.PI * Math.min(1, Math.max(0, (u - 0.04) / 0.92)))), 0.55);   // the drag narrows to both ends
+      const hw = (0.09 + 0.14 * vn(u * 3 + 2.2, 4.4) + 0.05 * vn(u * 9, 8.8)) * taper + 1e-3;
+      const dist = Math.abs(v - cy) / hw + 0.55 * (vn(u * 14, v * 6 + 20) - 0.5) + 0.3 * (vn(u * 45, v * 12 + 40) - 0.5);
+      let a = Math.max(0, Math.min(1, (1.05 - dist) / 0.4));
+      a *= Math.max(0, Math.min(1, (vn(u * 2.2 + 5.5, v * 1.5) - 0.18) * 3));                      // where the body lifted: gaps
+      a *= (0.45 + 0.55 * vn(u * 6, v * 2.5)) * (0.4 + 0.8 * lane[y]);
+      const j = (y * S + x) * 4; d[j] = 50; d[j + 1] = 3; d[j + 2] = 3; d[j + 3] = Math.min(1, a * 1.5) * 255;
+    }
+    g.putImageData(id, 0, 0);
+    for (let i = 0; i < 7; i++) {                                  // clots dragged into comet tails (head ahead, +x)
+      const x = S * (0.25 + R() * 0.6), y = S * (0.5 + (R() - 0.5) * 0.18), r = S * (0.006 + R() * 0.012), len = S * (0.05 + R() * 0.16);
+      const gr = g.createLinearGradient(x - len, y, x, y); gr.addColorStop(0, col(0)); gr.addColorStop(1, col(0.8));
+      g.fillStyle = gr; g.beginPath(); g.moveTo(x - len, y); g.lineTo(x, y - r * 0.8); g.lineTo(x, y + r * 0.8); g.closePath(); g.fill();
+      g.fillStyle = col(0.95); g.beginPath(); g.ellipse(x, y, r * 1.3, r, 0, 0, Math.PI * 2); g.fill();
+    }
   } else if (kind === 'smear') {
     // Step 70: a body dragged through blood leaves a smudged film: uneven density, ragged edges, a few
     // smeared drops and fabric texture pressed in. No long parallel strokes (they read as a paint brush).
@@ -41519,6 +41625,94 @@ function bloodNormalTex(src, strength) {
   const t = new THREE.CanvasTexture(cv);
   t.anisotropy = LITE.on && !IS_HEADSET ? 4 : 8;
   return t;
+}
+
+// GRITTY BLOOD (?bloodgrit=off = the smooth step 67/70 look). Real blood is not a flat painted film: its thickness
+// varies, it clots into darker gel clumps, it dries first at its thin edge into a brown, matte, cracked crust that
+// breaks up, floor dust and grit sit in it and poke through, small satellite drops ring it. bloodGrit takes a blood
+// canvas (its alpha = where the blood is) and repaints it pixel by pixel from its own thickness (a blurred alpha) and
+// a few noise fields: the colour map, a roughness map (wet glossy middle, matte dry rim, gel clots, dust specks) and a
+// normal map from the same height. Done once at load per decal kind; the decals keep their materials (no new program
+// mid-game: the maps are on them from the start and the precompile dummies compile them). Xbox: skipped (load time).
+const BGRIT = { on: !/[?&]bloodgrit=off\b/.test(QS) && !LITE.xbox };
+function bgNoise(R) {                                               // value noise on a 64 x 64 lattice (wraps), smooth-stepped
+  const L = 64, lat = new Float32Array(L * L); for (let i = 0; i < lat.length; i++) lat[i] = R();
+  return (x, y) => {
+    const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const x0 = ((ix % L) + L) % L, y0 = ((iy % L) + L) % L, x1 = (x0 + 1) % L, y1 = (y0 + 1) % L;
+    const a = lat[y0 * L + x0], b = lat[y0 * L + x1], c = lat[y1 * L + x0], d = lat[y1 * L + x1];
+    return (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+  };
+}
+function bloodGrit(cv, o) {
+  const S = cv.width, g = cv.getContext('2d'), R = mulberry32(o.seed || 1);
+  const id = g.getImageData(0, 0, S, S), px = id.data, N = S * S;
+  // thickness: the alpha blurred a little (a thin film is thin, a big mass is thick)
+  const tc = document.createElement('canvas'); tc.width = tc.height = S;
+  const tg = tc.getContext('2d'); tg.filter = `blur(${Math.max(1, Math.round(S / (o.blur || 70)))}px)`; tg.drawImage(cv, 0, 0); tg.filter = 'none';
+  const tb = tg.getImageData(0, 0, S, S).data;
+  // value noise: a 64 x 64 lattice, smooth-stepped; anisotropic for drag marks (sx along the drag, +x)
+  const vn = bgNoise(R);
+  const sx = o.streak || 1, f1 = 18 / S, f2 = 52 / S, f3 = 150 / S;
+  const H = new Float32Array(N), RO = new Uint8ClampedArray(N);
+  const thin = o.thin || [92, 8, 6], thick = o.thick || [46, 3, 3], crust = o.crust || [62, 26, 14], clot = [12, 0, 1], dust = o.dust || [74, 64, 54];
+  const ero = o.erode === undefined ? 0.42 : o.erode, nDust = o.specks === undefined ? 0.035 : o.specks, rW = o.rWet === undefined ? 0.16 : o.rWet, rD = o.rDry === undefined ? 0.82 : o.rDry;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x, j = i * 4;
+    let a = px[j + 3] / 255;
+    if (a < 0.003) { RO[i] = 230; continue; }
+    const t = Math.min(1, tb[j + 3] / 255 * (o.tK || 1));
+    const nC = vn(x * f2 / sx, y * f2) * 0.65 + vn(x * f1 / sx + 9.1, y * f1 + 3.7) * 0.35;   // clumps
+    const nM = vn(x * f3 / sx + 31.3, y * f3 + 17.9), nG = R();                             // grain, per-pixel speckle
+    const edge = Math.min(1, Math.max(0, (0.8 - t) / 0.55));                                 // 1 at the drying rim, 0 in the thick middle
+    // broken, crusty edge: the rim breaks into grains where the noise is high
+    const big = Math.min(1, Math.max(0, (t - 0.06) / 0.2));                               // part of a mass, not a lone droplet (those keep their shape)
+    const cut = edge * big * (0.62 * nM + 0.38 * nG);
+    if (cut > ero) a *= Math.max(0, 1 - (cut - ero) * 7);
+    if (nG > 0.997 - 0.014 * edge) a *= 0.3;                                                   // pinholes, floor grit poking through (mostly where it is thin)
+    const sp = nG < nDust * (0.1 + edge);
+    if (o.streak) a *= 0.55 + 0.75 * vn(x * f3 / (sx * 3) + 71.3, y * f3 * 1.6 + 5.1);           // drag: striations along the drag (+x)                                                     // dust and grit caught in it
+    const cl = t > 0.45 ? Math.max(0, Math.min(1, (nC - 0.58) * 5)) * Math.min(1, (t - 0.45) * 4) : 0;   // gel clots in the thick parts
+    // colour: thin film redder, thick darker, clots near black, the rim browner (dried), speckled
+    const m = 0.78 + 0.44 * (0.6 * nM + 0.4 * nG);
+    if (px[j] > 85 || px[j + 1] > 14) { px[j] *= m; px[j + 1] *= m; px[j + 2] *= m; px[j + 3] = a * 255; RO[i] = 0.4 * 255; H[i] = a * 0.8 + 0.1 * nG; continue; }   // torn tissue, bone: their own colour, grained
+    const k = Math.max(Math.min(1, t * (0.85 + 0.6 * nC)), 0.75 * (1 - big));                 // a lone droplet is a full bead, dark                                             // the thickness is uneven: thinner, redder streaks inside
+    let r = thin[0] + (thick[0] - thin[0]) * k, gg = thin[1] + (thick[1] - thin[1]) * k, b = thin[2] + (thick[2] - thin[2]) * k;
+    const ck = cl * 0.85; r += (clot[0] - r) * ck; gg += (clot[1] - gg) * ck; b += (clot[2] - b) * ck;
+    const dk = edge * (0.15 + 0.85 * big) * (o.crustK === undefined ? 0.7 : o.crustK) * (0.55 + 0.45 * nM); r += (crust[0] - r) * dk; gg += (crust[1] - gg) * dk; b += (crust[2] - b) * dk;
+    r *= m; gg *= m; b *= m;
+    if (sp) { const w = 0.3 + 0.35 * R(); r += (dust[0] - r) * w; gg += (dust[1] - gg) * w; b += (dust[2] - b) * w; a = Math.max(a, 0.55); }
+    px[j] = r; px[j + 1] = gg; px[j + 2] = b; px[j + 3] = a * 255;
+    // roughness: wet and glossy where thick and fresh, matte where it dried at the edge, specks of dust matte
+    let ro = rW + (rD - rW) * Math.pow(edge, 0.8) + 0.07 * (nM - 0.5) + 0.05 * nG;
+    if (cl > 0) ro += (0.3 - ro) * cl * 0.6;
+    if (sp) ro = 0.92;
+    RO[i] = Math.max(0, Math.min(1, ro)) * 255;
+    H[i] = a * (0.35 + 0.65 * t) * (0.85 + 0.3 * nC) + 0.4 * cl * (0.6 + 0.4 * nC) + 0.05 * nG * edge + (sp ? 0.08 : 0);   // grain only in the dry rim (no glitter in the wet middle)
+  }
+  g.putImageData(id, 0, 0);
+  // normal map from the height (no blur: the grit stays crisp) and the roughness map; both linear
+  const nc = document.createElement('canvas'), rc = document.createElement('canvas'); nc.width = nc.height = rc.width = rc.height = S;
+  const ng = nc.getContext('2d'), rg = rc.getContext('2d'), nd = ng.createImageData(S, S), rd = rg.createImageData(S, S), on = nd.data, orr = rd.data, st = (o.bump || 1) * S / 256;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x, j = i * 4, xl = x > 0 ? i - 1 : i, xr = x < S - 1 ? i + 1 : i, yu = y > 0 ? i - S : i, yd = y < S - 1 ? i + S : i;
+    const dx = (H[xr] - H[xl]) * st, dy = (H[yd] - H[yu]) * st, l = Math.hypot(dx, dy, 1);
+    on[j] = (-dx / l * 0.5 + 0.5) * 255; on[j + 1] = (dy / l * 0.5 + 0.5) * 255; on[j + 2] = (1 / l * 0.5 + 0.5) * 255; on[j + 3] = 255;
+    orr[j] = orr[j + 1] = orr[j + 2] = RO[i]; orr[j + 3] = 255;
+  }
+  ng.putImageData(nd, 0, 0); rg.putImageData(rd, 0, 0);
+  const an = LITE.on && !IS_HEADSET ? 4 : 8;
+  const nt = new THREE.CanvasTexture(nc), rt = new THREE.CanvasTexture(rc); nt.anisotropy = rt.anisotropy = an;
+  return { nor: nt, rough: rt };
+}
+// A blood decal material: the canvas texture plus, with grit on, its normal and roughness maps (roughness 1: the map
+// carries it). Without grit: the old flat material (base) with the old normal map (oldNor) if it had one.
+function bloodMat(tex, o, base) {
+  const cv = tex.userData.canvas || tex.image;
+  if (!BGRIT.on) return new THREE.MeshStandardMaterial(Object.assign({ map: tex }, base, o.oldNor ? { normalMap: bloodNormalTex(cv, o.oldNor), normalScale: new THREE.Vector2(1, 1) } : {}));
+  const q = bloodGrit(cv, o); tex.needsUpdate = true;
+  const m = new THREE.MeshStandardMaterial(Object.assign({ map: tex }, base, { normalMap: q.nor, normalScale: new THREE.Vector2(o.ns || 1, o.ns || 1), roughnessMap: q.rough, roughness: 1 }));
+  return m;
 }
 
 // Smoke and dust (step 124 rewrite of the step 10 haze). Each puff is a point sprite whose pixels are put back on a
@@ -41925,20 +42119,20 @@ function polishKit() {
   const B = CONFIG.polish.blood;
   // Blood decals: two more decal kinds, same per-room layers as bullet holes.
   DECAL_SIZE.blood = B.spatterSize; DECAL_SIZE.pool = B.poolSize;
-  WEAPON.decalMat.blood = new THREE.MeshStandardMaterial({
-    map: bloodCanvas('spatter', 424242), transparent: true, depthWrite: false, roughness: 0.55, metalness: 0, envMapIntensity: 0.4,
+  WEAPON.decalMat.blood = bloodMat(bloodCanvas('spatter', 424242), { seed: 4241, blur: 45, erode: 0.36, specks: 0.02, rWet: 0.22, rDry: 0.7, bump: 0.7 }, {   // GRITTY BLOOD: + normal / roughness maps
+    transparent: true, depthWrite: false, roughness: 0.55, metalness: 0, envMapIntensity: 0.4,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4
   });
-  const poolMap = bloodCanvas('pool', 777777);
-  WEAPON.decalMat.pool = new THREE.MeshStandardMaterial({
-    map: poolMap, normalMap: bloodNormalTex(poolMap.userData.canvas, 0.9), normalScale: new THREE.Vector2(1, 1),   // step 67: a low meniscus, no bright ring (step 70)
+  WEAPON.decalMat.pool = bloodMat(bloodCanvas('pool', 777777), { seed: 7771, blur: 60, oldNor: 0.9, ns: 0.8 }, {   // step 67: a low meniscus, no bright ring (step 70)
     transparent: true, depthWrite: false, roughness: 0.58, metalness: 0, envMapIntensity: 0.15,   // step 70: wet but not a mirror
     polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6
   });
   // Step 67: drag trails (heavy, then thinning) and runs down walls; the spatter's shader, nothing new compiles.
   DECAL_SIZE.smear1 = DECAL_SIZE.smear2 = CONFIG.gore.smearSize; DECAL_SIZE.run = B.runSize;
   for (const [k, a, kind] of [['smear1', 1, 'smear'], ['smear2', 0.55, 'smear'], ['run', 1, 'run']]) {
-    WEAPON.decalMat[k] = new THREE.MeshStandardMaterial({ map: bloodCanvas(kind, k === 'smear2' ? 31337 : 4242 + kind.length), transparent: true, opacity: a, depthWrite: false,
+    const go = kind === 'smear' ? { seed: k === 'smear2' ? 3131 : 4249, blur: 90, streak: 4, tK: 1.4, erode: 0.3, specks: 0.05, rWet: 0.3, rDry: 0.85, crustK: 0.85, thin: [96, 14, 8], bump: 0.8 }
+      : { seed: 4253, blur: 120, erode: 0.55, specks: 0.01, rWet: 0.14, rDry: 0.55, crustK: 0.35, bump: 1.2 };   // GRITTY BLOOD: drags are thin and dry fast; runs stay wet
+    WEAPON.decalMat[k] = bloodMat(bloodCanvas(kind, k === 'smear2' ? 31337 : 4242 + kind.length), go, { transparent: true, opacity: a, depthWrite: false,
       roughness: kind === 'smear' ? 0.62 : 0.5, metalness: 0, envMapIntensity: 0.35, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
   }
   // Step 41: boot prints, three strengths (the spatter's shader: nothing new compiles)
@@ -42364,8 +42558,10 @@ function g90Kit() {
   DECAL_SIZE.spray = DECAL_SIZE.sprayH = X.spray; DECAL_SIZE.gib = X.gib;
   DECAL_SIZE.drip = DECAL_SIZE.blood; WEAPON.decalMat.drip = WEAPON.decalMat.blood;   // drip marks: the spatter, its own layer
   for (const [k, cv] of [['spray', g90SprayCanvas(90901, false)], ['sprayH', g90SprayCanvas(90902, true)], ['gib', g90GibCanvas(90903)]]) {
-    WEAPON.decalMat[k] = new THREE.MeshStandardMaterial({ map: g90Tex(cv), normalMap: bloodNormalTex(cv, k === 'gib' ? 2.4 : 1.3), normalScale: new THREE.Vector2(1, 1),
-      transparent: true, depthWrite: false, roughness: 0.36, metalness: 0, envMapIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+    const gt = g90Tex(cv); gt.userData.canvas = cv;                // GRITTY BLOOD: clots, crusted rims, grit; tissue and bone keep their colour
+    WEAPON.decalMat[k] = bloodMat(gt, k === 'gib' ? { seed: 9093, blur: 30, erode: 0.5, specks: 0.01, rWet: 0.2, rDry: 0.5, bump: 1.6, oldNor: 2.4 }
+      : { seed: k === 'spray' ? 9091 : 9092, blur: 55, erode: 0.38, specks: 0.025, rWet: 0.2, rDry: 0.72, bump: 0.8, oldNor: 1.3 },
+      { transparent: true, depthWrite: false, roughness: 0.36, metalness: 0, envMapIntensity: 0.3, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
     const im = new THREE.InstancedMesh(WEAPON.decalGeo, WEAPON.decalMat[k], 1);
     im.setMatrixAt(0, new THREE.Matrix4().makeTranslation(0, 1.5, 0).scale(new THREE.Vector3(0.001, 0.001, 0.001)));
     im.frustumCulled = false;
