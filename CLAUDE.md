@@ -2354,3 +2354,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: trigger finger a little lower on the trigger
 - vmhFingFrame: the gloved firing hand's on-trigger pose curls the knuckle 0.16 rad (was 0.10), pull 0.30 (was 0.24): the pad sits a little lower on the blade. Off-trigger (along the frame) unchanged. Parse checked only; seen only in the headset.
+
+## CQC: gun internals less dark
+- FEED materials (chamber tube, ejection-port backing, bolt face, carrier): steel 0x2c2d30 metal 0.85 -> 0x6b6d72 metal 0.6 with a faint emissive; bore / backing 0x17181a -> 0x45474b, metal 0.5, faint emissive, so the inside of the port reads as dim steel instead of black. Same programs (material values only). Parse checked only.
