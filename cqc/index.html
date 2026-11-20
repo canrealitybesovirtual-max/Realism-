@@ -6033,6 +6033,13 @@ const kitGroup = (...meshes) => { const g = new THREE.Group(); g.add(...meshes.f
 const lbox = (w, h, d, r = 0.004, tile = CONFIG.tile.prop) => boxUV(new RoundedBoxGeometry(w, h, d, 1, Math.min(r, Math.min(w, h, d) * 0.45)), tile);
 const fbox = (w, h, d, tile = CONFIG.tile.prop) => boxUV(new THREE.BoxGeometry(w, h, d), tile);
 
+// Electrical panel look (PANELLOOK; ?panellook=off = the old plain board). Layout in metres about the panel's centre
+// (x right, y up): louvre rows, frame screws, the sticker triangle (top, bottom left, bottom right). Geometry and the
+// painted atlas (panelAtlasMat) both read these, so the paint lines up with the relief.
+const PANELLOOK = { on: !/[?&]panellook=off\b/.test(QS) };
+const PANEL_LOU = [0.27, 0.236, 0.202, 0.168, 0.134, -0.13, -0.164, -0.198, -0.232, -0.266, -0.30];
+const PANEL_SCREWS = [[-0.243, 0.383], [0, 0.383], [0.243, 0.383], [-0.243, -0.383], [0, -0.383], [0.243, -0.383]];
+const PANEL_TRI = [[0, 0.088], [-0.1, -0.084], [0.1, -0.084]];
 function buildFurnitureKit(macro) {
   const M = KIT.mat, sets = KIT.sets, G = KIT.geo, P = KIT.proto;
 
@@ -6316,7 +6323,82 @@ function buildFurnitureKit(macro) {
     for (const g of parts) for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
     P.extinguisher = kitGroup(merged(parts, M.extKit));
   }
-  {
+  if (PANELLOOK.on) {
+    // Wall-mounted electrical enclosure (PANELLOOK): brushed steel can with an outer frame on 6 cross-head screws, a recessed
+    // door with a raised border, two butt hinges, two banks of pressed louvres (5 + 6), a high-voltage sticker, a recessed
+    // pull handle, a riveted DANGER plate, conduit into the top. One mesh, one material: every face takes its UVs from its
+    // position (front / side / top regions of panelAtlasMat's painted atlas), so a room's panels batch into one draw.
+    // Three geometry variants share it; a vertex-colour wash gives each a different grime level (picked per fixture).
+    const H0 = CONFIG.room.h, cy = 1.45, zb = 0.11, zf = zb + 0.014, zd = zb + 0.008;
+    const parts = [];
+    const add = (g) => { parts.push(g.index ? g.toNonIndexed() : g); return g; };
+    add(placed(lbox(0.52, 0.80, zb, 0.004), 0, cy, zb / 2));                                // can
+    for (const s of [-1, 1]) {                                                              // outer frame bars
+      add(placed(lbox(0.52, 0.034, 0.016, 0.003), 0, cy + s * 0.383, zb + 0.006));
+      add(placed(lbox(0.034, 0.732, 0.016, 0.003), s * 0.243, cy, zb + 0.006));
+    }
+    add(placed(lbox(0.444, 0.724, 0.012, 0.002), 0, cy, zd - 0.004));                      // door (recessed 6 mm under the frame)
+    for (const s of [-1, 1]) {                                                              // raised inner border of the door
+      add(placed(lbox(0.444, 0.012, 0.006, 0.002), 0, cy + s * 0.356, zd));
+      add(placed(lbox(0.012, 0.70, 0.006, 0.002), s * 0.216, cy, zd));
+    }
+    for (const y of PANEL_LOU) {                                                            // pressed louvre: a rounded lip leaning out over its slot
+      add(placed(lbox(0.30, 0.017, 0.012, 0.0055), 0, cy + y, zd + 0.002, -0.38, 0, 0));
+    }
+    const screw = (x, y, z, r) => { add(placed(new THREE.CylinderGeometry(r, r * 1.08, 0.0025, 14), x, y, z + 0.00125, Math.PI / 2, 0, 0));
+      add(placed(new THREE.SphereGeometry(r, 14, 4, 0, Math.PI * 2, 0, 0.55), x, y, z + 0.0025 - r * Math.cos(0.55), Math.PI / 2, 0, 0)); };
+    for (const [x, y] of PANEL_SCREWS) screw(x, cy + y, zf, 0.0072);                       // 6 frame screws
+    for (const s of [-1, 1]) {                                                              // butt hinges on the left
+      const y = cy + s * 0.25;
+      add(placed(lbox(0.026, 0.075, 0.003, 0.001), -0.244, y, zf + 0.0015));                // frame leaf
+      add(placed(lbox(0.024, 0.075, 0.003, 0.001), -0.205, y, zd + 0.0015));                // door leaf
+      add(placed(new THREE.CylinderGeometry(0.0055, 0.0055, 0.078, 12), -0.2255, y, zf + 0.002));   // knuckle
+      for (const e of [-0.041, 0.041]) add(placed(new THREE.CylinderGeometry(0.0062, 0.0062, 0.004, 12), -0.2255, y + e, zf + 0.002));   // pin caps
+      for (const sy of [-0.022, 0.022]) { screw(-0.248, y + sy, zf + 0.003, 0.0035); screw(-0.205, y + sy, zd + 0.003, 0.0035); }
+    }
+    add(placed(lbox(0.034, 0.135, 0.004, 0.0015), 0.188, cy, zd + 0.002));                  // pull handle: plate and bar
+    add(placed(lbox(0.012, 0.074, 0.012, 0.004), 0.188, cy, zd + 0.006));
+    screw(0.188, cy + 0.055, zd + 0.004, 0.0035); screw(0.188, cy - 0.055, zd + 0.004, 0.0035);
+    add(placed(lbox(0.15, 0.03, 0.0015, 0.0006), 0, cy + 0.318, zd + 0.0035));              // riveted DANGER plate
+    for (const x of [-0.068, 0.068]) add(placed(new THREE.SphereGeometry(0.0028, 8, 4, 0, Math.PI * 2, 0, 1.2), x, cy + 0.318, zd + 0.0035, Math.PI / 2, 0, 0));
+    { const t = new THREE.BufferGeometry(), a = PANEL_TRI[2];                              // the sticker's lifting corner (bottom right)
+      t.setAttribute('position', new THREE.Float32BufferAttribute([a[0] - 0.034, cy + a[1] + 0.003, zd + 0.0016, a[0] + 0.004, cy + a[1] - 0.002, zd + 0.011, a[0] - 0.015, cy + a[1] + 0.031, zd + 0.0016], 3));
+      t.computeVertexNormals(); t.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 2)); add(t); }
+    // UVs from position: front faces (|nz| largest) into the painted front (u 0..0.75), sides u 0.75..0.875,
+    // tops / bottoms u 0.875..1 v 0..0.5; conduit u 0.875..1 v 0.5..1 (galvanised).
+    for (const g of parts) {
+      const p = g.attributes.position, n = g.attributes.normal, uv = new THREE.BufferAttribute(new Float32Array(p.count * 2), 2);
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i) - cy, z = p.getZ(i), ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+        if (az >= ax && az >= ay) uv.setXY(i, (x + 0.27) / 0.54 * 0.75, (y + 0.41) / 0.82);
+        else if (ax >= ay) uv.setXY(i, 0.75 + Math.min(1, z / 0.15) * 0.125, (y + 0.41) / 0.82);
+        else uv.setXY(i, 0.875 + Math.min(1, z / 0.15) * 0.125, (x + 0.27) / 0.54 * 0.5);
+      }
+      g.setAttribute('uv', uv);
+    }
+    for (const x of [-0.12, 0.1]) {                                                         // conduit to the ceiling, locknut, coupling, saddle
+      for (const g0 of [new THREE.CylinderGeometry(0.0145, 0.0145, H0 - cy - 0.4, 14, 1, true), new THREE.CylinderGeometry(0.021, 0.021, 0.014, 6),
+        new THREE.CylinderGeometry(0.018, 0.018, 0.03, 14), new THREE.CylinderGeometry(0.0175, 0.0175, 0.012, 14)]) {
+        const L = g0.parameters.height, y0 = L > 1 ? (cy + 0.4 + H0) / 2 : g0.parameters.radialSegments === 6 ? cy + 0.407 : L > 0.02 ? cy + 0.62 : H0 - 0.55;
+        const g = placed(g0.index ? g0.toNonIndexed() : g0, x, y0, 0.035), p = g.attributes.position, uv = g.attributes.uv;
+        for (let i = 0; i < p.count; i++) uv.setXY(i, 0.875 + 0.12 * (Math.atan2(p.getZ(i) - 0.035, p.getX(i) - x) / 6.2832 + 0.5), 0.5 + 0.49 * (((p.getY(i) - cy) * 0.35) % 1));
+        parts.push(g);
+      }
+    }
+    for (const g of parts) for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
+    const geo = mergeGeometries(parts); parts.forEach((g) => g.dispose());
+    if (!geo) throw new Error('Could not merge panel geometry');
+    if (!M.panelKit) M.panelKit = panelAtlasMat();
+    const VAR = [[[1, 1, 1], [0.95, 0.94, 0.92]], [[0.96, 0.95, 0.93], [0.76, 0.72, 0.67]], [[0.9, 0.91, 0.93], [0.83, 0.82, 0.81]]];   // [top, bottom] wash
+    P.panel_vv = VAR.map(([t, b], vi) => {
+      const g = vi ? geo.clone() : geo, p = g.attributes.position, c = new Float32Array(p.count * 3);
+      for (let i = 0; i < p.count; i++) { const k = Math.min(1, Math.max(0, (p.getY(i) - cy + 0.4) / 0.8));
+        for (let j = 0; j < 3; j++) c[i * 3 + j] = b[j] + (t[j] - b[j]) * k; }
+      g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+      return kitGroup(mesh(g, M.panelKit, true, true));
+    });
+    P.panel = P.panel_vv[0];
+  } else {
     // Surface-mounted distribution board: steel can, door, latch, two conduits to the ceiling.
     const H0 = CONFIG.room.h, cy = 1.45;
     const can = [placed(lbox(0.5, 0.78, 0.1, 0.006), 0, cy, 0.05), placed(lbox(0.46, 0.74, 0.012, 0.004), 0, cy, 0.104)];
@@ -8827,7 +8909,7 @@ function* roomBuilder(room) {
   if (L.sign) put(g, P.sign.clone(), L.sign.x, L.sign.y, -d / 2 + 0.003);
   for (let xi = 0; xi < (L.fixtures || []).length; xi++) {
     const f = L.fixtures[xi], [x, z, ry] = fixtureAt(f.wall, f.u, w, d);
-    bProto(offrPick(P, f.type, room, 1000 + xi), x, 0, z, ry);   // office realism: whiteboard variants
+    bProto(f.type === 'panel' && P.panel_vv ? P.panel_vv[((room.slot | 0) * 7 + xi) % 3] : offrPick(P, f.type, room, 1000 + xi), x, 0, z, ry);   // office realism: whiteboard variants; PANELLOOK grime variants
   }
   if (L.exitSign) bProto(P.exitSign, ex, 0, -d / 2 + (room.kind === 'safe' ? 0.02 : 0), 0);   // safe room: in front of the slats
   if (L.terminal && P.terminal) bProto(P.terminal, L.terminal.x, 0, L.terminal.z, L.terminal.ry);   // step 11: enclosure (screen attaches on activation)
@@ -10701,6 +10783,131 @@ function extAtlasMat() {
   const map = new THREE.CanvasTexture(C); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = maxAniso;
   const orm = new THREE.CanvasTexture(O); orm.anisotropy = maxAniso;
   return new THREE.MeshStandardMaterial({ map, roughnessMap: orm, metalnessMap: orm, roughness: 1, metalness: 1, side: THREE.DoubleSide });
+}
+// The electrical panel's atlas (PANELLOOK): sRGB colour, linear ORM (G roughness, B metalness) and a normal map from a
+// painted height field. u 0..0.75 the front (x -0.27..0.27, y -0.41..0.41 about the centre), 0.75..0.875 the sides,
+// 0.875..1 the top (v 0..0.5, dusty) and the galvanised conduit (v 0.5..1). Painted once at load.
+function panelAtlasMat() {
+  const W = LITE.on || LOWMEM.on ? 512 : 1024, H = W, k = W / 1024;
+  const cv = () => { const e = document.createElement('canvas'); e.width = W; e.height = H; return [e, e.getContext('2d')]; };
+  const [C, c] = cv(), [O, o] = cv(), [HC, h] = cv();
+  const R = mulberry32(7019), rnd = (a, b) => a + (b - a) * R();
+  const X = (x) => (x + 0.27) / 0.54 * 0.75 * W, Y = (y) => (1 - (y + 0.41) / 0.82) * H, S = 0.75 * W / 0.54;   // front px per metre (x)
+  const rect = (ctx, x0, y0, x1, y1, st) => { ctx.fillStyle = st; ctx.fillRect(X(x0), Y(y1), X(x1) - X(x0), Y(y0) - Y(y1)); };
+  const all = (x0, y0, x1, y1, col, orm, ht) => { rect(c, x0, y0, x1, y1, col); if (orm) rect(o, x0, y0, x1, y1, orm); if (ht) rect(h, x0, y0, x1, y1, ht); };
+  // base: brushed grey steel everywhere, vertical brushing
+  c.fillStyle = '#878b90'; c.fillRect(0, 0, W, H); o.fillStyle = 'rgb(255,105,215)'; o.fillRect(0, 0, W, H); h.fillStyle = 'rgb(128,128,128)'; h.fillRect(0, 0, W, H);
+  for (let i = 0; i < 2600 * k; i++) { const x = rnd(0, W), y = rnd(-40, H), l = rnd(20, 260) * k, v = R() < 0.5;
+    c.fillStyle = v ? `rgba(200,204,210,${rnd(0.03, 0.09)})` : `rgba(40,42,46,${rnd(0.03, 0.08)})`; c.fillRect(x, y, Math.max(1, k * rnd(0.6, 1.6)), l);
+    h.fillStyle = v ? 'rgba(140,140,140,0.25)' : 'rgba(116,116,116,0.25)'; h.fillRect(x, y, Math.max(1, k), l); }
+  for (let i = 0; i < 160 * k; i++) { const x = rnd(0, W), y = rnd(0, H), r = rnd(20, 90) * k, g = c.createRadialGradient(x, y, 0, x, y, r);   // blotchy oxidation / wipe marks
+    g.addColorStop(0, `rgba(${R() < 0.5 ? '60,58,54' : '170,172,175'},${rnd(0.03, 0.08)})`); g.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = g; c.fillRect(x - r, y - r, 2 * r, 2 * r); }
+  // door gap round the door and the dark slot under each louvre lip
+  for (const [a, b] of [[0.222, 0.229]]) { all(-b, -0.366, -a, 0.366, '#141414', 'rgb(255,250,0)', 'rgb(70,70,70)'); all(a, -0.366, b, 0.366, '#141414', 'rgb(255,250,0)', 'rgb(70,70,70)');
+    all(-b, 0.362, b, 0.369, '#141414', 'rgb(255,250,0)', 'rgb(70,70,70)'); all(-b, -0.369, b, -0.362, '#141414', 'rgb(255,250,0)', 'rgb(70,70,70)'); }
+  for (const y of PANEL_LOU) {
+    all(-0.148, y - 0.013, 0.148, y - 0.0035, '#0c0c0c', 'rgb(255,250,0)', 'rgb(60,60,60)');                 // the open slot under the lip
+    rect(c, -0.15, y - 0.004, 0.15, y + 0.0095, 'rgba(225,228,232,0.22)');                                   // lip highlight
+    rect(c, -0.15, y + 0.007, 0.15, y + 0.0105, 'rgba(160,148,124,0.55)'); rect(o, -0.15, y + 0.007, 0.15, y + 0.0105, 'rgb(255,240,20)');   // dust on the lip
+    for (let i = 0; i < 9; i++) { const x = rnd(-0.14, 0.14), x0 = X(x), y0 = Y(y - 0.012), l = rnd(0.01, 0.06) * S;   // grime run out of the slot
+      const g = c.createLinearGradient(0, y0, 0, y0 + l); g.addColorStop(0, `rgba(48,38,28,${rnd(0.15, 0.35)})`); g.addColorStop(1, 'rgba(48,38,28,0)'); c.fillStyle = g; c.fillRect(x0, y0, rnd(1.5, 5) * k, l); }
+  }
+  // dust along every upward ledge: frame top inside, door border top, hinge and handle tops
+  for (const [x0, x1, y] of [[-0.226, 0.226, 0.366], [-0.21, 0.21, 0.35], [-0.22, -0.19, 0.2875], [-0.22, -0.19, -0.2125], [0.171, 0.205, 0.0675], [-0.26, 0.26, 0.4]]) {
+    rect(c, x0, y - 0.004, x1, y + 0.002, 'rgba(158,148,128,0.5)'); rect(o, x0, y - 0.004, x1, y + 0.002, 'rgb(255,240,20)'); }
+  // high-voltage sticker: faded yellow, black border and bolt, scuffed, bottom-right corner peeling (adhesive showing)
+  { const [A, B2, Cc] = PANEL_TRI, tri = (ctx, s, fill) => { const m = [(A[0] + B2[0] + Cc[0]) / 3, (A[1] + B2[1] + Cc[1]) / 3];
+      ctx.beginPath(); for (const p of [A, B2, Cc]) ctx.lineTo(X(m[0] + (p[0] - m[0]) * s), Y(m[1] + (p[1] - m[1]) * s)); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); };
+    for (const ctx of [c, o, h]) { ctx.save(); ctx.lineJoin = 'round'; ctx.lineWidth = 0.012 * S; ctx.strokeStyle = ctx === c ? '#1c1a16' : ctx === o ? 'rgb(255,170,0)' : 'rgb(138,138,138)'; }
+    c.beginPath(); for (const p of [A, B2, Cc]) c.lineTo(X(p[0]), Y(p[1])); c.closePath(); c.stroke(); tri(c, 1, '#1c1a16'); tri(c, 0.8, '#cfae3e');
+    o.beginPath(); for (const p of [A, B2, Cc]) o.lineTo(X(p[0]), Y(p[1])); o.closePath(); o.stroke(); tri(o, 1, 'rgb(255,170,0)');
+    h.beginPath(); for (const p of [A, B2, Cc]) h.lineTo(X(p[0]), Y(p[1])); h.closePath(); h.stroke(); tri(h, 1, 'rgb(138,138,138)');
+    for (const ctx of [c, o, h]) ctx.restore();
+    // bolt
+    const bolt = [[0.012, 0.05], [-0.022, -0.004], [0.002, -0.002], [-0.014, -0.05], [0.022, 0.006], [-0.002, 0.004], [0.014, 0.05]];
+    c.beginPath(); for (const p of bolt) c.lineTo(X(p[0]), Y(p[1] - 0.012)); c.closePath(); c.fillStyle = '#1a1814'; c.fill();
+    c.beginPath(); c.moveTo(X(-0.014), Y(-0.062)); c.lineTo(X(-0.024), Y(-0.04)); c.lineTo(X(-0.006), Y(-0.046)); c.closePath(); c.fill();
+    // fade, scuffs, dirt in the lower half
+    c.save(); c.beginPath(); for (const p of [A, B2, Cc]) c.lineTo(X(p[0]), Y(p[1])); c.closePath(); c.clip();
+    { const g = c.createLinearGradient(0, Y(0.09), 0, Y(-0.09)); g.addColorStop(0, 'rgba(235,225,190,0.18)'); g.addColorStop(1, 'rgba(70,58,40,0.22)'); c.fillStyle = g; c.fillRect(X(-0.11), Y(0.1), 0.22 * S, Y(-0.1) - Y(0.1)); }
+    for (let i = 0; i < 60; i++) { c.fillStyle = `rgba(${R() < 0.6 ? '228,222,200' : '60,50,36'},${rnd(0.12, 0.4)})`; c.save(); c.translate(X(rnd(-0.09, 0.09)), Y(rnd(-0.08, 0.08))); c.rotate(rnd(-0.6, 0.6)); c.fillRect(0, 0, rnd(4, 24) * k, Math.max(1, rnd(0.6, 2.2) * k)); c.restore(); }
+    c.restore();
+    // peeled corner: where it lifted, pale dirty adhesive on the steel
+    c.beginPath(); c.moveTo(X(Cc[0] - 0.034), Y(Cc[1] + 0.003)); c.lineTo(X(Cc[0] + 0.004), Y(Cc[1] - 0.002)); c.lineTo(X(Cc[0] - 0.015), Y(Cc[1] + 0.031)); c.closePath();
+    c.fillStyle = '#a49c86'; c.fill(); }
+  // pull handle pocket, plate edge, oily hand smudges and fingerprints round it
+  all(0.181, -0.04, 0.195, 0.04, '#121212', 'rgb(255,240,0)', 'rgb(60,60,60)');
+  for (let i = 0; i < 26; i++) { const x = X(0.188 + rnd(-0.05, 0.03)), y = Y(rnd(-0.08, 0.08)), rx = rnd(4, 9) * k, ry = rx * rnd(1.2, 1.7);
+    c.fillStyle = `rgba(52,46,38,${rnd(0.06, 0.16)})`; c.beginPath(); c.ellipse(x, y, rx, ry, rnd(-0.5, 0.5), 0, 6.3); c.fill();
+    o.fillStyle = 'rgba(255,60,190,0.35)'; o.beginPath(); o.ellipse(x, y, rx, ry, 0, 0, 6.3); o.fill(); }
+  for (let i = 0; i < 6; i++) { const x = X(0.16 + rnd(-0.01, 0.01)), y = Y(rnd(-0.06, 0.06)); c.strokeStyle = 'rgba(40,36,30,0.18)'; c.lineWidth = Math.max(1, k);
+    for (let r = 2; r < 9; r += 1.6) { c.beginPath(); c.ellipse(x, y, r * k, r * 1.4 * k, 0.3, 0, 6.3); c.stroke(); } }
+  // screws: cross slot, rust ring and a rust run below
+  const screwPaint = (x, y, r, rust) => {
+    c.fillStyle = '#9fa3a8'; c.beginPath(); c.arc(X(x), Y(y), r * S, 0, 6.3); c.fill();
+    o.fillStyle = 'rgb(255,80,255)'; o.beginPath(); o.arc(X(x), Y(y), r * S, 0, 6.3); o.fill();
+    c.strokeStyle = '#1b1b1b'; h.strokeStyle = 'rgb(40,40,40)';
+    for (const ctx of [c, h]) { ctx.lineWidth = Math.max(1, r * 0.28 * S); ctx.beginPath(); ctx.moveTo(X(x - r * 0.62), Y(y)); ctx.lineTo(X(x + r * 0.62), Y(y)); ctx.moveTo(X(x), Y(y - r * 0.62)); ctx.lineTo(X(x), Y(y + r * 0.62)); ctx.stroke(); }
+    if (rust > 0) { const g = c.createRadialGradient(X(x), Y(y), r * S * 0.5, X(x), Y(y), r * S * 1.7); g.addColorStop(0, `rgba(120,58,22,${0.5 * rust})`); g.addColorStop(1, 'rgba(120,58,22,0)');
+      c.fillStyle = g; c.fillRect(X(x) - 2 * r * S, Y(y) - 2 * r * S, 4 * r * S, 4 * r * S);
+      const l = rnd(0.02, 0.07) * S * rust, gg = c.createLinearGradient(0, Y(y), 0, Y(y) + l); gg.addColorStop(0, `rgba(110,52,20,${0.45 * rust})`); gg.addColorStop(1, 'rgba(110,52,20,0)');
+      c.fillStyle = gg; c.fillRect(X(x) - r * S * 0.25, Y(y) + r * S * 0.6, r * S * 0.5, l);
+      o.fillStyle = 'rgba(255,235,40,0.6)'; o.beginPath(); o.arc(X(x), Y(y), r * S * 1.3, 0, 6.3); o.fill(); }
+  };
+  for (const [x, y] of PANEL_SCREWS) screwPaint(x, y, 0.0072, rnd(0.3, 1));
+  for (const s of [-1, 1]) { const y = s * 0.25;
+    all(-0.257, y - 0.0375, -0.231, y + 0.0375, '#8f9399', 'rgb(255,95,230)', null); all(-0.217, y - 0.0375, -0.193, y + 0.0375, '#8f9399', 'rgb(255,95,230)', null);
+    all(-0.231, y - 0.039, -0.22, y + 0.039, '#7a7d81', 'rgb(255,80,255)', null);                                  // knuckle
+    for (const e of [-0.041, 0.041]) { const g = c.createRadialGradient(X(-0.2255), Y(y + e), 0, X(-0.2255), Y(y + e), 0.012 * S); g.addColorStop(0, 'rgba(125,60,22,0.65)'); g.addColorStop(1, 'rgba(125,60,22,0)'); c.fillStyle = g; c.fillRect(X(-0.24), Y(y + e + 0.012), 0.03 * S, 0.024 * S); }
+    { const l = 0.08 * S, g = c.createLinearGradient(0, Y(y - 0.04), 0, Y(y - 0.04) + l); g.addColorStop(0, 'rgba(100,50,20,0.35)'); g.addColorStop(1, 'rgba(100,50,20,0)'); c.fillStyle = g; c.fillRect(X(-0.229), Y(y - 0.04), 0.004 * S, l); }
+    for (const sy of [-0.022, 0.022]) { screwPaint(-0.248, y + sy, 0.0035, rnd(0, 0.8)); screwPaint(-0.205, y + sy, 0.0035, rnd(0, 0.8)); } }
+  screwPaint(0.188, 0.055, 0.0035, 0.4); screwPaint(0.188, -0.055, 0.0035, 0.3);
+  // riveted DANGER plate (red, white letters, a little faded) and a small rating label low right
+  all(-0.075, 0.303, 0.075, 0.333, '#9d2a22', 'rgb(255,150,0)', 'rgb(134,134,134)');
+  c.fillStyle = '#ece6dc'; c.font = `bold ${Math.round(0.019 * S)}px Arial`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('DANGER  400 V', X(0), Y(0.3175), 0.12 * S);
+  rect(c, -0.075, 0.303, 0.075, 0.333, 'rgba(210,200,190,0.12)');
+  all(0.155, -0.352, 0.215, -0.318, '#d9d4c6', 'rgb(255,200,0)', 'rgb(132,132,132)');
+  c.fillStyle = '#1c1c1c'; c.font = `bold ${Math.round(0.006 * S)}px Arial`; c.textAlign = 'left';
+  const lab = ['DB-3  230/400V 3~', 'In 63A  Icc 10kA', 'IP43   EN 61439-3', 'SERIAL 0417-22'];
+  for (let i = 0; i < 4; i++) c.fillText(lab[i], X(0.158), Y(-0.323 - i * 0.0075), 0.054 * S);
+  for (let i = 0; i < 40; i++) { c.fillStyle = `rgba(110,90,60,${rnd(0.05, 0.2)})`; c.fillRect(X(rnd(0.155, 0.215)), Y(rnd(-0.352, -0.318)), rnd(1, 5) * k, rnd(1, 4) * k); }
+  // marker scrawl on the door
+  c.save(); c.translate(X(-0.13), Y(0.06)); c.rotate(-0.08); c.fillStyle = 'rgba(22,22,26,0.82)'; c.font = `italic bold ${Math.round(0.022 * S)}px "Comic Sans MS", "Segoe Print", cursive`;
+  c.fillText('DB-3', 0, 0); c.font = `italic ${Math.round(0.012 * S)}px "Comic Sans MS", "Segoe Print", cursive`; c.fillText('isolate at', 0, 0.026 * S); c.fillText('main - L2', 0, 0.042 * S);
+  c.strokeStyle = 'rgba(22,22,26,0.75)'; c.lineWidth = Math.max(1, 0.0014 * S); c.beginPath(); c.moveTo(0, 0.055 * S); c.quadraticCurveTo(0.03 * S, 0.068 * S, 0.06 * S, 0.05 * S); c.stroke(); c.restore();
+  // scratches, then chips to dark steel at the frame edges and door corners
+  for (let i = 0; i < 140 * k; i++) { const x = rnd(0, 0.75 * W), y = rnd(0, H), a = rnd(0, 6.3), l = rnd(4, 40) * k;
+    c.strokeStyle = `rgba(${R() < 0.6 ? '205,208,212' : '50,50,52'},${rnd(0.12, 0.35)})`; c.lineWidth = Math.max(1, 0.7 * k); c.beginPath(); c.moveTo(x, y); c.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l * 0.4); c.stroke();
+    h.strokeStyle = 'rgba(100,100,100,0.5)'; h.lineWidth = Math.max(1, 0.7 * k); h.beginPath(); h.moveTo(x, y); h.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l * 0.4); h.stroke(); }
+  const chip = (x, y, r) => { c.beginPath(); for (let a = 0; a < 6.28; a += 0.8) { const q = r * rnd(0.5, 1.3); c.lineTo(x + Math.cos(a) * q, y + Math.sin(a) * q); } c.closePath();
+    c.fillStyle = `rgba(${rnd(58, 80) | 0},${rnd(56, 72) | 0},${rnd(50, 64) | 0},0.85)`; c.fill(); h.fillStyle = 'rgb(108,108,108)'; h.beginPath(); h.arc(x, y, r, 0, 6.3); h.fill(); };
+  for (let i = 0; i < 90; i++) { const e = R(), t = rnd(-1, 1);
+    const [x, y] = e < 0.25 ? [t * 0.26, 0.4 - rnd(0, 0.006)] : e < 0.5 ? [t * 0.26, -0.4 + rnd(0, 0.006)] : e < 0.75 ? [-0.26 + rnd(0, 0.006), t * 0.4] : [0.26 - rnd(0, 0.006), t * 0.4];
+    chip(X(x), Y(y), rnd(1, 4) * k); }
+  for (let i = 0; i < 24; i++) chip(X(rnd(-0.22, 0.22)), Y(R() < 0.5 ? rnd(-0.36, -0.34) : rnd(-0.2, 0.36)), rnd(0.8, 2.5) * k);
+  // grime: darker toward the bottom of the front, streaks from the frame screws, kick marks near the base
+  { const g = c.createLinearGradient(0, Y(0.1), 0, Y(-0.41)); g.addColorStop(0, 'rgba(50,42,32,0)'); g.addColorStop(1, 'rgba(50,42,32,0.28)'); c.fillStyle = g; c.fillRect(0, Y(0.1), 0.75 * W, Y(-0.41) - Y(0.1));
+    const go = o.createLinearGradient(0, Y(0), 0, Y(-0.41)); go.addColorStop(0, 'rgba(255,200,120,0)'); go.addColorStop(1, 'rgba(255,200,120,0.4)'); o.fillStyle = go; o.fillRect(0, Y(0), 0.75 * W, Y(-0.41) - Y(0)); }
+  for (const [x, y] of PANEL_SCREWS) { if (y < 0) continue; const l = rnd(0.12, 0.3) * S, g = c.createLinearGradient(0, Y(y), 0, Y(y) + l);
+    g.addColorStop(0, 'rgba(60,46,32,0.22)'); g.addColorStop(1, 'rgba(60,46,32,0)'); c.fillStyle = g; c.fillRect(X(x) - 3 * k, Y(y), 6 * k, l); }
+  // sides: same steel, a dust line along the top; top region: thick dust (rough, not metal); conduit: galvanised
+  { const x0 = 0.75 * W, w = 0.125 * W; for (let i = 0; i < 400 * k; i++) { c.fillStyle = `rgba(${R() < 0.5 ? '40,38,34' : '170,170,170'},0.08)`; c.fillRect(x0 + rnd(0, w), rnd(0, H), Math.max(1, k), rnd(10, 60) * k); } }
+  { const x0 = 0.875 * W, w = 0.125 * W; c.fillStyle = '#958b78'; c.fillRect(x0, H / 2, w, H / 2); o.fillStyle = 'rgb(255,245,10)'; o.fillRect(x0, H / 2, w, H / 2);
+    for (let i = 0; i < 900 * k; i++) { c.fillStyle = `rgba(${R() < 0.5 ? '70,64,54' : '190,182,165'},${rnd(0.1, 0.35)})`; c.fillRect(x0 + rnd(0, w), H / 2 + rnd(0, H / 2), rnd(1, 4) * k, rnd(1, 4) * k); }
+    c.fillStyle = '#9a9ea2'; c.fillRect(x0, 0, w, H / 2); o.fillStyle = 'rgb(255,120,210)'; o.fillRect(x0, 0, w, H / 2);
+    for (let i = 0; i < 260 * k; i++) { c.fillStyle = `rgba(${R() < 0.5 ? '120,122,124' : '190,194,198'},${rnd(0.15, 0.4)})`; const r = rnd(2, 9) * k; c.beginPath(); c.arc(x0 + rnd(0, w), rnd(0, H / 2), r, 0, 6.3); c.fill(); }   // spangle
+    for (let i = 0; i < 40; i++) { c.fillStyle = 'rgba(150,140,120,0.35)'; c.fillRect(x0 + rnd(0, w * 0.5), rnd(0, H / 2), rnd(2, 6) * k, rnd(4, 20) * k); } }
+  // normal map from the height field
+  const hd = h.getImageData(0, 0, W, H).data, nd = new ImageData(W, H), N = nd.data, st = 3.2 * k;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4, l = hd[(y * W + Math.max(0, x - 1)) * 4], r = hd[(y * W + Math.min(W - 1, x + 1)) * 4], u = hd[(Math.max(0, y - 1) * W + x) * 4], d = hd[(Math.min(H - 1, y + 1) * W + x) * 4];
+    let nx = (l - r) / 255 * st, ny = (d - u) / 255 * st; const inv = 1 / Math.hypot(nx, ny, 1);
+    N[i] = (nx * inv * 0.5 + 0.5) * 255; N[i + 1] = (ny * inv * 0.5 + 0.5) * 255; N[i + 2] = (inv * 0.5 + 0.5) * 255; N[i + 3] = 255; }
+  h.putImageData(nd, 0, 0);
+  const map = new THREE.CanvasTexture(C); map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = maxAniso;
+  const orm = new THREE.CanvasTexture(O); orm.anisotropy = maxAniso;
+  const nrm = new THREE.CanvasTexture(HC); nrm.anisotropy = maxAniso;
+  return new THREE.MeshStandardMaterial({ map, roughnessMap: orm, metalnessMap: orm, normalMap: nrm, normalScale: new THREE.Vector2(0.8, 0.8), roughness: 1, metalness: 1, vertexColors: true });
 }
 // Bakes a transform into a geometry so same-material parts merge into one draw call.
 function placed(geo, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
