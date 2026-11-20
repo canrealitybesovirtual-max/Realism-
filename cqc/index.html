@@ -4138,7 +4138,8 @@ function pbrTextures(d, size) {
  *  them back from IndexedDB in about a second. The cache key hashes the source
  *  of the recipe and the noise code, so editing a material regenerates it.
  * ------------------------------------------------------------------------- */
-const SHADE_FNS = { shadeFloor, shadeWall, shadeCeiling, shadePaintedMetal, shadeBrushed, shadeWood };
+const SHADE_FNS = { shadeFloor, shadeWall, shadeCeiling, shadePaintedMetal, shadeBrushed, shadeWood, shadeTableWood };
+const DARKWOOD = !/[?&]darkwood=off/.test(QS);   // DARK WOOD: smoked oak tables / bench tops
 const TEX_DB = 'cqcvr-textures', TEX_STORE = 'sets';
 function strHash(str) {
   let h = 2166136261;
@@ -4405,6 +4406,32 @@ function shadeWood(u, v, o) {
   o.h = 0.5 - late * 0.12 + (fine - 0.5) * 0.35 + (saw - 0.5) * 0.12 - knot * 0.08;
   o.rough = clamp(0.84 + (fine - 0.5) * 0.08 + grey * 0.06 - knot * 0.14);
   o.metal = 0; o.ao = 1 - knot * 0.15;
+}
+
+// DARK WOOD: smoked oak table / bench tops (the user's photo). Grain runs along U (the board's length):
+// long open pores (thin dark streaks of varying width), gentle waviness, faint cathedral growth bands,
+// lighter ray flecks and fine speckle. Near-black brown, low contrast, satin.
+function shadeTableWood(u, v, o) {
+  const warp = fbm(u, v, 2, 3, 3, 801) - 0.5, wav = fbm(u, v, 6, 5, 3, 803) - 0.5;
+  const vv = v + warp * 0.07 + wav * 0.012;                  // slow drift + gentle waves along the board
+  const ring = vv * 46 + (fbm(u, v, 1, 3, 3, 811) - 0.5) * 9 + u * 0.0;   // growth bands (arcs where they wander)
+  const fr = ring - Math.floor(ring);
+  const late = smoothstep(0.55, 0.85, fr) * (1 - smoothstep(0.92, 1, fr));
+  const pA = fbm(u, vv, 3, 520, 3, 821, 0.6);                // pore lanes: long, thin
+  const pB = fbm(u, vv, 5, 1100, 2, 823, 0.55);              // finer pores
+  const dash = fbm(u, vv, 40, 260, 2, 827);                  // pores break up along their length
+  const pores = clamp(smoothstep(0.58, 0.74, pA) * (0.55 + 0.6 * dash) + smoothstep(0.62, 0.8, pB) * 0.6 + late * 0.35);
+  const fleck = smoothstep(0.78, 0.9, fbm(u, vv, 90, 160, 2, 831)) * (1 - pores);   // ray flecks: short lighter dashes
+  const speck = smoothstep(0.82, 0.95, vnoise(u * 700, v * 900, 700, 900, 837));
+  const tone = fbm(u, v, 3, 8, 3, 841) - 0.5;                // board-scale tone
+  const k = 1 + tone * 0.18 + (fbm(u, vv, 6, 300, 2, 843) - 0.5) * 0.12;
+  let r = 0.2 * k, g = 0.155 * k, b = 0.118 * k;             // #33281e-ish smoked oak
+  r = mix(r, 0.085, pores * 0.8); g = mix(g, 0.066, pores * 0.8); b = mix(b, 0.05, pores * 0.8);
+  r = mix(r, 0.29, fleck * 0.55 + speck * 0.25); g = mix(g, 0.225, fleck * 0.55 + speck * 0.25); b = mix(b, 0.17, fleck * 0.55 + speck * 0.25);
+  o.r = r; o.g = g; o.b = b;
+  o.h = 0.55 - pores * 0.42 - late * 0.05 + fleck * 0.05 + (pB - 0.5) * 0.08;   // pores sunken
+  o.rough = clamp(0.58 + pores * 0.16 - fleck * 0.06 + tone * 0.08);
+  o.metal = 0; o.ao = 1 - pores * 0.25;
 }
 
 /* ---------------------------------------------------------------------------
@@ -5817,6 +5844,7 @@ async function buildKit() {
     { name: 'brushed steel', size: S.prop, fn: shadeBrushed, depth: 0.0003 },
     { name: 'crate pine', size: S.surface, fn: shadeWood, depth: 0.004 }
   ];
+  if (DARKWOOD) jobs.push({ name: 'smoked oak', size: S.surface, fn: shadeTableWood, depth: 0.0018 });
   const tex = await loadTextureSets(jobs, (msg, f) => setLoad(msg, f * (jobs.length / (jobs.length + 1))));
   const sets = {};
   for (const j of jobs) sets[j.name] = pbrTextures(tex[j.name], j.size);
@@ -5857,6 +5885,7 @@ async function buildKit() {
   M.steel = makeSurfaceMaterial(sets['brushed steel']);
   M.wood = makeSurfaceMaterial(sets['crate pine'], { metalness: 0, metalnessMap: null, vertexColors: true });
   propWearApply(M.locker, 'paint'); propWearApply(M.steel, 'steel'); propWearApply(M.wood, 'wood');   // step 97
+  M.tableWood = DARKWOOD ? propWearApply(makeSurfaceMaterial(sets['smoked oak'], { metalness: 0, metalnessMap: null, vertexColors: true }), 'wood') : M.wood;   // DARK WOOD
   M.vinyl = new THREE.MeshStandardMaterial({ color: 0x2b2b2a, roughness: 0.6, metalness: 0, normalMap: sets['concrete floor'].normalMap, normalScale: new THREE.Vector2(0.15, 0.15) });
   M.plastic = new THREE.MeshStandardMaterial({ color: 0xd8d2c2, roughness: 0.42, metalness: 0 });
   M.whiteMetal = new THREE.MeshStandardMaterial({ color: 0xdedcd6, roughness: 0.5, metalness: 0.1 });
@@ -5944,7 +5973,7 @@ async function buildKit() {
   benchWood.push(placed(toneWood(plankGeo(0.62, 0.03, 1.62, 0.003), 0.92), 0, 0.885, 0));
   benchWood.push(placed(toneWood(plankGeo(0.52, 0.018, 1.5, 0.003), 0.86), 0, 0.194, 0));
   P.bench = new THREE.Group();
-  P.bench.add(merged(benchFrame, M.door), merged(benchWood, M.wood), merged([placed(rbox(0.5, 0.004, 1.4, 0.0018), 0, 0.902, 0)], M.vinyl));
+  P.bench.add(merged(benchFrame, M.door), merged(benchWood, M.tableWood), merged([placed(rbox(0.5, 0.004, 1.4, 0.0018), 0, 0.902, 0)], M.vinyl));
 
   // Wall gun rack: painted steel frame, plywood back, three lipped shelves. Front faces local +x,
   // the back sits on the wall at x = -RK.hx; origin on the floor. Shelf tops are RK.shelves.
@@ -29481,7 +29510,7 @@ function buildCoverKit() {
   // Origin = centre of the top. The top is one collider; the legs are four more (spawnTable).
   crateRand = 6161;
   const t = new THREE.Group();
-  t.add(mesh(toneWood(plankGeo(1.2, 0.025, 0.6, 0.004), 0.8), M.wood));
+  t.add(mesh(toneWood(plankGeo(1.2, 0.025, 0.6, 0.004), DARKWOOD ? 0.95 : 0.8), M.tableWood || M.wood));
   const steel = [], feet = [];
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     steel.push(placed(rbox(0.03, 0.715, 0.03, 0.003), sx * 0.56, -0.37, sz * 0.26));
@@ -30204,7 +30233,7 @@ function buildPartition(room, sp, pi, own) {
   grp.add(studs);
   if (sp.pony) {                                           // half wall: a pine cap you can rest a gun on
     crateRand = 1000 + pi * 77 + room.slot;
-    const cap = mesh(own(toneWood(plankGeo(sp.len + 0.02, 0.025, 0.13, 0.004), 0.86)), M.wood);
+    const cap = mesh(own(toneWood(plankGeo(sp.len + 0.02, 0.025, 0.13, 0.004), 0.86)), M.tableWood || M.wood);
     cap.position.set(0, sp.h + 0.0125, 0);
     grp.add(cap);
   }
