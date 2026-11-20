@@ -2372,3 +2372,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: extra big-room partitions removed
 - The 1-3 extra drywall partitions in rooms of 55 m2+ (the tall walls standing in storage rooms) are off; ?bigpart=on brings them back. Room-type partitions unchanged. Parse checked only.
+
+## CQC: breakable room walls back on (panels inside rooms fixed)
+- Cause: the end walls' far board (paper back) and wool were their own meshes placed by copying the wall's matrix with matrixAutoUpdate off, but freezeStatic later runs updateMatrix() on every room child, which rebuilt that matrix from position / rotation (both 0): the tan / yellow cavity panels stood across the middle of the room. Now they carry the wall's own position / rotation.
+- Also fixed: the "off by default" edit had commented out RW.share / run / minRun / corner / doorPad on the same line.
+- RW on by default again (?roomwalls=off = the old solid shell).
+- Checked headless (?dev&lite=on&lowmem=on): no cavity vertex inside room 1's box (was 52, up to 3.5 m in); AKM rounds at each wall open holes in all four masks. Only room 1 was checked (no storage / turned room built in the run).
