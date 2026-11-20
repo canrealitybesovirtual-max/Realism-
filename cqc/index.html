@@ -28241,11 +28241,26 @@ function buildCoverKit() {
   COVER.boxTpl = new THREE.BoxGeometry(1, 1, 1);
   crateRand = 8080;
   const board = (len, t, wd, k) => { const g = new THREE.Group(); g.add(mesh(toneWood(plankGeo(len, t, wd, 0.002), k), M.wood)); return g; };
-  const chunk = (sx, sy, sz) => {
-    const geo = boxUV(new THREE.BoxGeometry(sx, sy, sz), CONFIG.tile.wall);
-    // Same attributes as the room walls, so the wall shader is reused as is.
-    geo.setAttribute('macroUv', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 2).fill(0.5), 2));
-    const g = new THREE.Group(); g.add(mesh(geo, M.wall)); return g;
+  let crSeed = 4242; const crandBits = () => ((crSeed = (crSeed * 16807) % 2147483647) / 2147483647);
+  // Broken drywall (was a flat painted box that read as a floor tile): a jagged outline, 12.5 mm thick, the painted
+  // paper face on both caps (the wall's own material) and the crumbly gypsum core round the edge (M.paper, off-white).
+  const crumble = (R, nPts) => {
+    const sh = new THREE.Shape();
+    for (let k = 0; k < nPts * 2; k++) {
+      const a = (k / (nPts * 2)) * Math.PI * 2 + (crandBits() - 0.5) * 0.4;
+      const r = R * (k % 2 ? 0.55 + crandBits() * 0.35 : 0.85 + crandBits() * 0.4);   // spikes and notches
+      const x = Math.cos(a) * r * 1.25, y = Math.sin(a) * r * 0.85;
+      k ? sh.lineTo(x, y) : sh.moveTo(x, y);
+    }
+    const t = R < 0.02 ? SHEET * 0.7 : SHEET;
+    const geo = new THREE.ExtrudeGeometry(sh, { depth: t, bevelEnabled: false, steps: 1 }).translate(0, 0, -t / 2);
+    const nz = geo.index ? geo.toNonIndexed() : geo; nz.computeVertexNormals();
+    boxUV(nz, CONFIG.tile.wall);
+    nz.setAttribute('macroUv', new THREE.BufferAttribute(new Float32Array(nz.attributes.position.count * 2).fill(0.5), 2));
+    nz.computeBoundingBox();
+    const bb = nz.boundingBox, hx = (bb.max.x - bb.min.x) / 2, hy = (bb.max.y - bb.min.y) / 2;
+    const g = new THREE.Group(); const m = new THREE.Mesh(nz, [M.wall, M.paper]); m.castShadow = true; m.receiveShadow = true; g.add(m);
+    return { proto: g, name: 'drywall chunk', mass: Math.max(0.01, hx * hy * 4 * t * 900), half: [hx * 0.8, hy * 0.8, t / 2] };
   };
   COVER.kit = {
     boards: [
@@ -28254,11 +28269,9 @@ function buildCoverKit() {
       { proto: board(0.62, 0.02, 0.075, 0.76), name: 'board', mass: 0.55, half: [0.31, 0.01, 0.0375] },  // a cleat
       { proto: board(0.3, 0.018, 0.07, 0.95), name: 'board', mass: 0.2, half: [0.15, 0.009, 0.035] }       // a snapped end
     ],
-    chunks: [
-      { proto: chunk(0.14, 0.1, SHEET), name: 'drywall chunk', mass: 0.12, half: [0.07, 0.05, SHEET / 2] },
-      { proto: chunk(0.09, 0.12, SHEET), name: 'drywall chunk', mass: 0.09, half: [0.045, 0.06, SHEET / 2] }
-    ]
+    chunks: [6, 9, 12, 5, 8, 11, 4].map((n, i) => crumble(0.025 + i * 0.016, n))   // broken drywall: jagged pieces 3-15 cm, paper face, gypsum core edges
   };
+  COVER.kit.crumbs = [3, 4, 5].map((n, i) => crumble(0.012 + i * 0.006, 7 + i));   // small gypsum bits shaken out with each break
 
   // Utility table, 120 x 60 cm, 74 cm high: 25 mm pine top, painted steel tube legs and aprons.
   // Origin = centre of the top. The top is one collider; the legs are four more (spawnTable).
@@ -29455,6 +29468,21 @@ function destroyCell(rec, b, dir) {
     _dcQ.setFromEuler(_cv.e.set((Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6, Math.random() * Math.PI));
     _dcV.copy(dir).multiplyScalar(0.5 + Math.random() * 1.2); _dcV.y += 0.3 + Math.random() * 0.6;
     spawnDebris(room, def, _dcP, _dcQ, _dcV, _dcN2.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10));
+  }
+  // wall dust: crumbled gypsum falls out of the break (grit + powder that drops and settles), a hanging cloud, 1-2 small bits
+  _dcP.set(rWX(room, sp.x + cx), cy, rWZ(room, sp.z + zs));
+  if (WEAPON.fx) {
+    _dcN2.copy(_dcN).multiplyScalar(0.35); _dcN2.y -= 1;
+    fxEmit(_dcP, _dcN2, 0.5, 18, PEN_FX.plaster.bits);
+    fxEmit(_dcP, _dcN2, 0.6, 12, PEN_FX.plaster.dust);
+    fxEmit(_dcP, _dcN, 0.5, 8, PEN_FX.plaster.dust);
+  }
+  hazeEmit(_dcP, _dcN, PEN_HAZE.plaster);
+  if (COVER.kit.crumbs) for (let k = 0, nk = 1 + (Math.random() < 0.5 ? 1 : 0); k < nk; k++) {
+    const cd = COVER.kit.crumbs[Math.floor(Math.random() * COVER.kit.crumbs.length)];
+    _dcQ.setFromEuler(_cv.e.set(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28));
+    _dcV.copy(_dcN).multiplyScalar(0.3 + Math.random() * 0.6); _dcV.y += 0.2;
+    spawnDebris(room, cd, _dcP, _dcQ, _dcV, _dcN2.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14));
   }
   coverSfx('cellBreak');
   dirtyShadows();
