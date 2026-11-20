@@ -2351,3 +2351,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: scopes seen through from further back (headset check needed)
 - All scope pictures (AWM 3-25x, 10x, ACOG, AKM 2x on any gun) now show with the eye anywhere 1-60 cm behind the eyepiece and within 14 cm + 15 % of the distance off the axis (was within 26 / 34 cm and 8 / 9 cm). The scope shadow only closes in when the eye is closer than ~45 % of the eye relief; from the relief out to arm's length the picture stays full, and an off-axis eye's shift / shading is capped (off length 1.2 eye boxes). Desktop ADS unchanged (full-screen scope). GLSL edits in scopeMat and akmPipMat; module parse only.
+
+## CQC: trigger finger a little lower on the trigger
+- vmhFingFrame: the gloved firing hand's on-trigger pose curls the knuckle 0.16 rad (was 0.10), pull 0.30 (was 0.24): the pad sits a little lower on the blade. Off-trigger (along the frame) unchanged. Parse checked only; seen only in the headset.
