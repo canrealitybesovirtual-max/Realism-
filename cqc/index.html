@@ -18617,6 +18617,18 @@ function buildShellModel() {
  * ------------------------------------------------------------------------- */
 const WEAPON = { flashGeo: null, decalGeo: null, decalMat: {}, debris: {}, fx: null, ready: false, precompileDummies: [] };
 const DECAL_SIZE = { plaster: 0.034, concrete: 0.03, metal: 0.017, wood: 0.026 };
+// STAIR BLOOD knobs (the section is after updateBloodPools); declared here, before anything that can place a mark.
+const SBL = {
+  on: !/[?&]stairblood=off\b/.test(QS),
+  edge: 0.32,          // m: a pool on a pad / landing this close to a flight's top edge spills down it
+  steps: 5,            // treads a spill runs down at most
+  keep: 0.58,          // share of the pool's size the next pool gets
+  minS: 0.16,          // pool size (x DECAL_SIZE.pool) below which it stops running on
+  paint: 0.9,          // share of a pool decal's square its paint covers (diameter)
+  raw: false, depth: 0,
+  o: { band: 0, tread: false, top: 0, qa: 0, qb: 0, dq: 0, qe: NaN, nTop: 0, nq: 0, z0: 0, z1: 0, q: 0 },
+  p: new THREE.Vector3(), n: new THREE.Vector3(), dn: new THREE.Vector3(0, -1, 0), a: new THREE.Vector3(), log: []
+};
 
 function canvasTex(size, draw, srgb = true) {
   const c = document.createElement('canvas');
@@ -43751,7 +43763,7 @@ function goreSmear(e) {
     if (t.y < bestY) { bestY = t.y; best = r; }
   }
   if (!best) return;
-  const t = best.body.translation(), v = best.body.linvel(), fy = floorAt(t.x, t.z);
+  const t = best.body.translation(), v = best.body.linvel(), fy = SBL.on ? fxFloorY(t) : floorAt(t.x, t.z);   // STAIR BLOOD: the tread under him
   if (Math.hypot(v.x, v.z) < C.smearSpeed || t.y - fy > C.smearHeight) { if (e.smearAt) e.smearAt.ok = false; return; }
   if (!e.smearAt) e.smearAt = new THREE.Vector3();
   if (!e.smearAt.ok) { e.smearAt.set(t.x, fy, t.z); e.smearAt.ok = true; return; }
@@ -43914,6 +43926,7 @@ function polishPrecompile(on) {
 function fxFloorY(p) {   // QA world pass: the floor under a point (stair flights / landings, rooms on another floor), world y
   const r = roomContaining(p.x, p.z, 0.3, p.y);
   if (!r) return level.floor;
+  if (SBL.on && r.stair) return r.origin.y + sbTop(r, rLX(r, p.x), rLZ(r, p.z), p.y - r.origin.y - 0.6);   // STAIR BLOOD: the tread, not the walking ramp
   return r.origin.y + roomFloorAt(r, rLX(r, p.x), rLZ(r, p.z), p.y - r.origin.y - 0.6);
 }
 function fxEmit(p, axis, cone, count, o) {
@@ -44053,11 +44066,12 @@ function bloodFit(P, N, kind, s) {
 }
 function addBloodDecal(room, kind, wp, wn, roll, s, save = true) {
   if (!room || !room.active) return null;
-  if (HSN_ON && HSN_BLOOD[kind]) {
+  if (HSN_ON && HSN_BLOOD[kind] && !SBL.raw) {                     // STAIR BLOOD: a riser run is placed on the riser exactly
     if (!hsSnap(wp, wn, true)) return null;
     wp = _bfP.copy(HSN.p); wn = _bfN.copy(HSN.n);                 // HOLE SNAP: spatter on the drawn surface, or none
     if (BFIT.on && kind !== 'gib' && (DECAL_SIZE[kind] || 0.3) * s > 0.12 && !(s = bloodFit(wp, wn, kind, s))) return null;   // small drops: no fit   // QA: none hanging past an edge
   }
+  if (SBL.on && !SBL.raw && room.stair && wn.y > 0.7 && kind !== 'pool') { if (!(s = sbFlat(room, wp, kind, s))) return null; wp = SBL.p; }   // STAIR BLOOD: on the tread under it, inside its edges
   const fr = rF(room), lx = rLX(room, wp.x), ly = wp.y - room.origin.y, lz = rLZ(room, wp.z), nx = fr * wn.x, nz = fr * wn.z;   // step 83
   roll = roomRoll(room, wn, roll);
   const L = decalLayer(room, room.group, kind);
@@ -44101,14 +44115,17 @@ function startBloodPool(e) {
 function poolAt(at, s1, slow) {
   const C = CONFIG.polish.blood;
   _p10.c.copy(at);
-  if (_p10.c.y > 1.3 + level.floor) return;                      // step 67: slumped against something, it still runs down to the floor
-  if (_p10.c.y > 0.45 + level.floor) s1 *= 0.75;
+  const fl0 = SBL.on ? fxFloorY(at) : level.floor;               // STAIR BLOOD: his floor (a tread, a landing), not yours
+  if (_p10.c.y > 1.3 + fl0) return;                              // step 67: slumped against something, it still runs down to the floor
+  if (_p10.c.y > 0.45 + fl0) s1 *= 0.75;
   _p10.d.set(0, -1, 0);
   const hit = p10Ray(_p10.c, _p10.d, 1.6, P10_STATIC_RAY);
   if (!hit || hit.normal.y < 0.7) return;
   const info = colliderInfo.get(hit.collider.handle);
   if (!info || coverByCollider.has(hit.collider.handle)) return;   // the floor itself, not a crate top
   _p10.c.y -= p10Toi(hit);
+  const sb = SBL.on && info.room.stair ? sbPool(info.room, _p10.c, s1) : null;   // STAIR BLOOD: on the tread, across the flight
+  if (sb) _p10.c.copy(SBL.p).y -= 0.05;
   // Step 70: liquid joins liquid. A pool landing on a spreading one makes that one bigger instead of a
   // second layer on top of it (stacked rims and doubled gloss).
   for (const g of P10.pools) {
@@ -44118,6 +44135,11 @@ function poolAt(at, s1, slow) {
   }
   const d = addBloodDecal(info.room, 'pool', _p10.c, _p10.up, Math.random() * Math.PI * 2, s1);
   if (!d) return;
+  if (sb) {                                                       // STAIR BLOOD: square along the flight, capped to the tread; saved at the size that fits
+    d.roll = 0; d.cx = sb.cx || 0; d.cz = sb.cz || 0; d.sb = { o: sb.o, depth: SBL.depth, ran: false };
+    const m = roomMem(info.room), h = m.holes[m.holes.length - 1], cap = Math.min(d.cx || 9, d.cz || 9) / DECAL_SIZE.pool;
+    if (h && h[0] === 'pool') { h[7] = 0; h[8] = Math.min(s1, cap); }
+  }
   P10.pools.push(Object.assign(d, { room: info.room, s1, t: 0, T: C.poolTime * slow * (0.8 + Math.random() * 0.4) }));
   setPoolScale(P10.pools[P10.pools.length - 1], 0.08);
   goreFreshPool(P10.pools[P10.pools.length - 1]);   // step 41: fresh now, dark later
@@ -44125,7 +44147,7 @@ function poolAt(at, s1, slow) {
 function setPoolScale(g, k) {
   const size = DECAL_SIZE.pool * g.s1 * k;
   _p10.q.setFromUnitVectors(_dz, _p10.up).multiply(_p10.q2.setFromAxisAngle(_dz, g.roll));
-  _p10.m.compose(_p10.a.set(g.lx, g.ly + 0.0012, g.lz), _p10.q, _p10.s.set(size, size, 1));
+  _p10.m.compose(_p10.a.set(g.lx, g.ly + 0.0012, g.lz), _p10.q, _p10.s.set(g.cx ? Math.min(size, g.cx) : size, g.cz ? Math.min(size, g.cz) : size, 1));   // STAIR BLOOD: held to its tread
   g.L.im.setMatrixAt(g.idx, _p10.m);
   g.L.im.instanceMatrix.needsUpdate = true;
 }
@@ -44135,10 +44157,140 @@ function updateBloodPools(dt) {
     g.t += dt;
     const gone = !g.room.active || !g.room.decals || g.room.decals.pool !== g.L || g.L.n - g.n0 > g.L.im.instanceMatrix.count;
     if (gone) { P10.pools.splice(i, 1); continue; }
-    const x = Math.min(1, g.t / g.T);
-    setPoolScale(g, 0.08 + 0.92 * (1 - Math.pow(1 - x, 2.4)));   // fast at first, then creeping
+    const x = Math.min(1, g.t / g.T), k = 0.08 + 0.92 * (1 - Math.pow(1 - x, 2.4));
+    setPoolScale(g, k);   // fast at first, then creeping
+    if (g.sb) sbPoolTick(g, k);                                  // STAIR BLOOD: outgrew its tread: over the nosing
     if (x >= 1) P10.pools.splice(i, 1);
   }
+}
+
+/* ---------------------------------------------------------------------------
+ *  STAIR BLOOD (?stairblood=off = as before)
+ *  Floor marks on a stair flight lie on the drawn tread under them, never on the
+ *  walking ramp (it runs along the nosings, up to a riser above / below a tread)
+ *  and never past a nosing or the flight's sides: sbAt finds the tread (or the
+ *  pad / landing) under a room-local point from the same numbers the builders
+ *  use (U-turn and switchback wells, turned rooms through rLX / rWX). A pool on a
+ *  tread is stretched across the flight and held to the tread's depth; once it
+ *  outgrows it, the rest runs over the nosing: a 'run' down the riser and a
+ *  smaller pool on the tread below, which may run on (SBL.steps, less each time).
+ *  A pool on a landing or pad by the top of a flight runs down it the same way.
+ *  Event-driven (pool growth, P10.pending), no new decal kinds or programs.
+ * ------------------------------------------------------------------------- */
+// Which flight band a room-local z is in: 1 = the lower flight (U: far, switchback: flight 1), 2 = the upper, 0 = neither.
+function sbBand(S, lz, o) {
+  if (S.u) {
+    if (lz >= -S.d / 2 && lz <= S.zF) { o.z0 = -S.d / 2; o.z1 = S.zF; return 1; }
+    if (lz >= S.zN && lz < S.zc) { o.z0 = S.zN; o.z1 = S.zc; return 2; }
+    return 0;
+  }
+  const u = S.zs * lz, a = S.uLo - S.fw;
+  if (u >= a && u <= S.uLo) { o.z0 = Math.min(S.zs * a, S.zs * S.uLo); o.z1 = Math.max(S.zs * a, S.zs * S.uLo); return 1; }
+  if (u <= -a && u >= -S.uLo) { o.z0 = Math.min(-S.zs * a, -S.zs * S.uLo); o.z1 = Math.max(-S.zs * a, -S.zs * S.uLo); return 2; }
+  return 0;
+}
+// The stair surface under room-local (lx, lz) at about height ly: a tread (its top, q span, downhill side), or a pad /
+// landing with the flight's top edge it spills over (qe), or null (corridors, the core, nothing that drops away).
+function sbAt(S, lx, lz, ly) {
+  const o = SBL.o, b = sbBand(S, lz, o);
+  if (!b) return null;
+  const q = S.side * (S.xp - lx), g = S.going, R = S.riser, E = SBL.edge, BIG = 1e3;
+  o.band = b; o.q = q; o.qe = NaN; o.tread = false;
+  if (b === 1) {
+    o.dq = -1;
+    if (q <= 0) { o.top = 0; o.qa = -BIG; o.qb = 0; return o; }                                           // ground pad
+    if (q >= S.run) { o.top = S.h1; o.qa = S.run; o.qb = BIG; if (q < S.run + E) { o.qe = S.run; o.nTop = (S.nf - 1) * R; o.nq = S.run - 0.5 * g; } return o; }   // half landing over the flight's top
+    const k = Math.min(S.nf - 1, Math.floor(q / g) + 1);
+    o.tread = true; o.top = k * R; o.qa = (k - 1) * g; o.qb = k * g; o.qe = o.qa; o.nTop = (k - 1) * R; o.nq = k > 1 ? (k - 1.5) * g : -0.18;
+    return o;
+  }
+  o.dq = 1;
+  if (q >= S.run) { o.top = S.h1; o.qa = S.run; o.qb = BIG; return o; }                                 // the landing at its foot
+  if (q <= 0) {
+    if (S.u && ly < S.rise * 0.5) { o.top = 0; o.qa = -BIG; o.qb = 0; return o; }                        // U well: the ground pad under the top pad
+    o.top = S.rise; o.qa = -BIG; o.qb = 0;
+    if (q > -E) { o.qe = 0; o.nTop = S.h1 + (S.nf - 1) * R; o.nq = 0.5 * g; }
+    return o;
+  }
+  const k = Math.min(S.nf - 1, Math.floor((S.run - q) / g) + 1);
+  o.tread = true; o.top = S.h1 + k * R; o.qa = S.run - k * g; o.qb = S.run - (k - 1) * g; o.qe = o.qb; o.nTop = S.h1 + (k - 1) * R; o.nq = k > 1 ? S.run - (k - 1.5) * g : S.run + 0.18;
+  return o;
+}
+// The floor a mark / drop lands on at room-local (lx, lz): the tread top on a flight (stairFloor is the ramp).
+function sbTop(r, lx, lz, ly) {
+  const S = r.stair, o = S && sbAt(S, lx, lz, ly);
+  return o ? o.top : roomFloorAt(r, lx, lz, ly);
+}
+// A flat mark (normal up) in a stairwell: onto the tread top, its centre pulled in so its paint (radius ~0.42 of its
+// square) stays on the tread (depth and the flight's width) or short of a pad's edge; shrunk when the tread is too
+// shallow for it. Returns the new size (0 = none fits); the point is in SBL.p (world).
+function sbFlat(room, wp, kind, s) {
+  const S = room.stair, lx = rLX(room, wp.x), lz = rLZ(room, wp.z), o = sbAt(S, lx, lz, wp.y - room.origin.y);
+  SBL.p.copy(wp);
+  if (!o) return s;
+  const ds = DECAL_SIZE[kind] || 0.3, pr = 0.42, m = 0.012;
+  let q = o.q, z = lz;
+  if (o.tread) {
+    const dep = o.qb - o.qa - 2 * m;
+    if (2 * pr * ds * s > dep) s = dep / (2 * pr * ds);
+    const r = pr * ds * s;
+    q = clamp(q, o.qa + m + r, o.qb - m - r);
+    if (2 * r > o.z1 - o.z0 - 2 * m) return 0;
+    z = clamp(z, o.z0 + m + r, o.z1 - m - r);
+  } else if (Number.isFinite(o.qe)) {
+    const r = pr * ds * s;
+    if (o.dq < 0 ? q - r < o.qe + m : q + r > o.qe - m) q = o.qe - o.dq * (r + m);
+  }
+  if (s < 0.05) return 0;
+  SBL.p.set(rWX(room, S.xp - S.side * q), room.origin.y + o.top, rWZ(room, z));
+  return s;
+}
+// A new pool in a stairwell (poolAt): placed and capped like sbFlat, but stretched across the flight (it spreads along
+// the tread, not over the nosing). cx / cz cap its square along the room's x (the run of the flight) and z.
+function sbPool(room, at, s1) {
+  const S = room.stair, lx = rLX(room, at.x), lz = rLZ(room, at.z), o = sbAt(S, lx, lz, at.y - room.origin.y);
+  if (!o) return null;
+  const P = SBL.paint, m = 0.012, full = DECAL_SIZE.pool * s1;
+  const r = { q: o.q, z: lz, cx: 0, cz: 0, o: Object.assign({}, o) };
+  if (o.tread) {
+    r.cx = (o.qb - o.qa - 2 * m) / P;
+    r.cz = (o.z1 - o.z0 - 2 * m) / P;
+    r.q = (o.qa + o.qb) / 2;
+    const hz = Math.min(full, r.cz) * P / 2;
+    r.z = clamp(lz, o.z0 + m + hz, o.z1 - m - hz);
+  } else if (Number.isFinite(o.qe)) {
+    const d = Math.max(0.1, (o.q - o.qe) * -o.dq);                // from the edge, uphill
+    r.q = o.qe - o.dq * d;
+    r.cx = 2 * (d - m) / P;
+  } else return null;
+  r.o.q = r.q;
+  SBL.p.set(rWX(room, S.xp - S.side * r.q), room.origin.y + o.top + 0.05, rWZ(room, r.z));
+  return r;
+}
+// Pool growth on a stair (updateBloodPools): past its cap the rest runs over the nosing, once per pool.
+function sbPoolTick(g, k) {
+  if (!g.sb || g.sb.ran || g.sb.depth >= SBL.steps || !Number.isFinite(g.sb.o.qe)) return;
+  if (DECAL_SIZE.pool * g.s1 * k < (g.cx || Infinity) * 1.12) return;
+  g.sb.ran = true;
+  sbSpill(g.room, g.sb.o, g.lz, g.s1 * SBL.keep, g.sb.depth + 1);
+}
+// Over the edge: a run down the riser face (or the flight's top riser from a landing), then a smaller pool on the
+// surface below a moment later. o is a copy of sbAt's result for the surface it leaves.
+function sbSpill(room, o, lz, vol, depth) {
+  if (!room || !room.active || !room.stair || vol < SBL.minS) return;
+  const S = room.stair, f = rF(room), h = o.top - o.nTop;
+  const z = clamp(lz + rnd2(-0.06, 0.06), o.z0 + 0.06, o.z1 - 0.06);
+  if (h > 0.02) {                                                 // the riser it runs down (its face looks downhill)
+    const size = Math.min(0.26, h * 1.25), s = size / DECAL_SIZE.run;
+    SBL.n.set(-S.side * o.dq * f, 0, 0);
+    SBL.p.set(rWX(room, S.xp - S.side * o.qe), room.origin.y + o.top - 0.41 * size - 0.004, rWZ(room, z));
+    SBL.raw = true;
+    try { addBloodDecal(room, 'run', SBL.p, SBL.n, rollAlong(SBL.n, SBL.dn), s); } finally { SBL.raw = false; }
+  }
+  const x = rWX(room, S.xp - S.side * o.nq), y = room.origin.y + o.nTop + 0.12, wz = rWZ(room, z);
+  SBL.log.push({ slot: room.slot, depth, vol: +vol.toFixed(3), q: +o.nq.toFixed(3), top: +o.nTop.toFixed(3) });
+  if (SBL.log.length > 40) SBL.log.shift();
+  P10.pending.push({ at: P10.time + rnd2(1.2, 2.6), fn: () => { SBL.depth = depth; try { poolAt(SBL.a.set(x, y, wz), vol, 0.55); } finally { SBL.depth = 0; } } });
 }
 
 /* ---------------------------------------------------------------------------
@@ -44438,7 +44590,7 @@ function g90StreamTick(s, dt, now, K) {
   w.bone.updateWorldMatrix(true, false);
   const Pw = _g90.a.copy(w.lp).applyMatrix4(w.bone.matrixWorld), out = _g90.b.copy(w.la).transformDirection(w.bone.matrixWorld).negate();
   if (w.part !== 'limb' && w.part !== 'body') Pw.addScaledVector(out, -0.015);
-  if (now >= s.fyAt) { s.fy = floorAt(Pw.x, Pw.z); s.fyAt = now + 0.3; }
+  if (now >= s.fyAt) { s.fy = SBL.on ? fxFloorY(Pw) : floorAt(Pw.x, Pw.z); s.fyAt = now + 0.3; }   // STAIR BLOOD: drops land on the tread
   const hw = Math.min(2, w.hole / 0.02), jit = w.hole * 0.4, f2 = rF(e.room), mvx = dead ? 0 : f2 * e.vel.x, mvz = dead ? 0 : f2 * e.vel.y;   // a walking man's blood keeps his speed
   while (s.acc >= 1) {
     s.acc -= 1;
@@ -44454,7 +44606,7 @@ function g90StreamTick(s, dt, now, K) {
 // crosses it, else it lands on the floor and stays.
 function g90Chunks(room, p, dir, n, heavy) {
   if (!G90.mesh || n <= 0) return;
-  const fy = floorAt(p.x, p.z);
+  const fy = SBL.on ? fxFloorY(p) : floorAt(p.x, p.z);
   for (let i = 0; i < n; i++) {
     const j = g90Slot(true), j3 = j * 3;
     _g90.d.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.7).add(dir).normalize();
@@ -53607,6 +53759,7 @@ if (/[?&]dev\b/.test(QS)) window.__cqcDev = { FEED, feedTick, wbVisePose, wbJawP
     writeBones(h); h.root.matrix.compose(P, Q, one); h.root.matrixWorldNeedsUpdate = true; h.root.visible = true; h.root.updateMatrixWorld(true);
     return !!h.gcLim;
   } };
+if (window.__cqcDev) Object.assign(window.__cqcDev, { SBL, sbAt, sbFlat, sbPool, sbSpill, fxFloorY, updateBloodPools, stairFloor });   // STAIR BLOOD
 if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick, comfort, VIEW_FIT, viewFitStep, fovFor, TERM, termDraw, updateDeskGunInput });   // body position / field of view checks
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { flashBlast, fragBlast, NADE });   // grenade effect tests
