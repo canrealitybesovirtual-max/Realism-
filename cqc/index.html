@@ -8028,7 +8028,52 @@ function* generateLayout(room) {
   const L = bestPass || bestConn || best;
   L.qc.fallback = !bestPass;
   if (!bestPass) console.warn(`Room ${room.slot} (${p.plan.type}): no candidate passed QC, using the best one`, L.qc.fails);
+  loosePathFix(p, L);
   return L;
+}
+// Review fix: loose props heavy and tall enough to block the men's nav grid (jerry cans, office chairs; concrete blocks
+// counted too) could close the last gap between shelf runs (~1 storage room in 330 over 20 world seeds). The doors are
+// checked on the game's own nav rule (0.2 m cells, his radius, furniture / partition / table / prop footprints as their
+// world AABBs, like navGrid and propBoxes) and a prop that closes the way is left out (the layout is otherwise unchanged).
+const LOOSE_BLOCK = { jerry: [0.083, 0.17], chair: [0.3, 0.3], block: [0.195, 0.095] };
+function loosePathFix(p, L) {
+  if (!L || !L.props || !L.props.some((q) => LOOSE_BLOCK[q.type])) return 0;
+  const { w, d } = p, cs = 0.2, r = CONFIG.enemy.radius + 0.02, nx = Math.max(1, Math.floor(w / cs)), nz = Math.max(1, Math.floor(d / cs));
+  const aabb = (x, z, a, hx, hz) => { const c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)); return { x, z, a: 0, hx: c * hx + sn * hz, hz: sn * hx + c * hz }; };
+  const B = [];
+  for (const f of L.furniture) { if (f.type === 'crateB') continue; const sp = FURN[f.type]; if (sp) B.push({ x: f.x, z: f.z, a: f.ry || 0, hx: sp.hx, hz: sp.hz }); }
+  for (const sp of L.partitions) B.push({ x: sp.x + sp.free * SHEET / 2, z: sp.z, a: 0, hx: sp.len / 2 + SHEET / 2, hz: PART_T / 2 });
+  for (const q of L.props) if (q.type === 'table') B.push(q.tipped ? aabb(q.x - 0.36 * Math.sin(q.ry), q.z - 0.36 * Math.cos(q.ry), q.ry, 0.6, 0.38) : aabb(q.x, q.z, q.ry, 0.6, 0.3));
+  const base = new Uint8Array(nx * nz);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const x = -w / 2 + (i + 0.5) * cs, z = -d / 2 + (j + 0.5) * cs;
+    let ok = Math.abs(x) <= w / 2 - r && Math.abs(z) <= d / 2 - r;
+    if (ok) for (const b of B) if (boxDist(x, z, b) < r) { ok = false; break; }
+    base[j * nx + i] = ok ? 1 : 0;
+  }
+  const cell = (x, z) => clamp(Math.floor((z + d / 2) / cs), 0, nz - 1) * nx + clamp(Math.floor((x + w / 2) / cs), 0, nx - 1);
+  const A = cell(p.entryX, d / 2 - 0.4), E = cell(p.exitX, -d / 2 + 0.4);
+  const linked = (H) => {
+    const g = base.slice();
+    for (const h of H) for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const k = j * nx + i; if (g[k] && boxDist(-w / 2 + (i + 0.5) * cs, -d / 2 + (j + 0.5) * cs, h) < r) g[k] = 0; }
+    if (!g[A] || !g[E]) return false;
+    const q = [A]; g[A] = 2;
+    while (q.length) { const c = q.pop(), i = c % nx, j = (c / nx) | 0; if (c === E) return true;
+      if (i > 0 && g[c - 1] === 1) { g[c - 1] = 2; q.push(c - 1); } if (i < nx - 1 && g[c + 1] === 1) { g[c + 1] = 2; q.push(c + 1); }
+      if (j > 0 && g[c - nx] === 1) { g[c - nx] = 2; q.push(c - nx); } if (j < nz - 1 && g[c + nx] === 1) { g[c + nx] = 2; q.push(c + nx); } }
+    return false;
+  };
+  if (!linked([])) return 0;                                       // furniture alone: qcLayout's business, not the props'
+  const hv = () => L.props.filter((q) => LOOSE_BLOCK[q.type]).map((q) => ({ q, b: aabb(q.x, q.z, q.ry || 0, LOOSE_BLOCK[q.type][0], LOOSE_BLOCK[q.type][1]) }));
+  let H = hv(), cut = 0;
+  while (H.length && !linked(H.map((h) => h.b))) {
+    let drop = H.findIndex((h, k) => linked(H.filter((_, m) => m !== k).map((x) => x.b)));   // the one that closes it
+    if (drop < 0) drop = 0;                                        // two together: leave them out one by one
+    L.props.splice(L.props.indexOf(H[drop].q), 1); cut++;
+    H = hv();
+  }
+  if (cut && L.qc) L.qc.notes = (L.qc.notes || []).concat([`${cut} loose prop(s) left out of the walk`]);
+  return cut;
 }
 
 /* ============================================================================
@@ -9075,6 +9120,7 @@ function activateRoom(room) {
 
 function removeProp(p) {
   p.removing = true;
+  if (p.npfW && npfUnwalk(p)) rebuildWalk();                          // review fix: a frozen prop's walk box (multiplayer) goes with it
   for (const hh of [...p.holders]) release(hh, new THREE.Vector3());
   if (p.item && p.item.kind === 'gun') {
     if (p.item.mag) { world.removeRigidBody(p.item.mag.body); p.item.mag = null; }
@@ -9103,6 +9149,7 @@ function unloadRoom(room) {
   coverRoomUnloaded(room);                        // step 6
   enemiesRoomUnloaded(room);                      // step 7: him, or his body
   if (room.active) {
+    room.npfGone = true;                                     // review fix: frozen props' walk boxes go with the room (no rebuild per prop)
     // Loose things in this room go with it. Things you carried elsewhere stay.
     for (let i = props.length - 1; i >= 0; i--) {
       const p = props[i];
@@ -9350,11 +9397,12 @@ function updateStreaming() {
     for (const [s, kind] of want) {
       const r = stream.rooms.get(s);
       if (r && r.kind === kind) continue;
+      const F = SB.fails.get(s); if (F && F.kind === kind && F.until && performance.now() < F.until) continue;   // review fix: a failing slot waits, the others still build
       if (stream.ready.some((q) => q.slot === s && q.kind === kind)) continue;
       const dd = Math.abs(s - c);
       if (dd < bestD) { bestD = dd; best = s; }
     }
-    if (best !== null) stream.building = makeRoom(best, want.get(best));
+    if (best !== null) stream.building = sbMake(best, want.get(best));
   }
   // Time-sliced build: a few milliseconds per frame, then hand the frame back.
   if (stream.building) {
@@ -9363,7 +9411,9 @@ function updateStreaming() {
     const budget = PACE.moveStart && nowB - PACE.moveStart < 0.05 ? 0 : S.buildBudgetMs * (paceBusy(nowB) ? CONFIG.pace.buildBusyK : 1);
     while (performance.now() - t0 < budget) {
       if (stream.building.plan && stream.building.plan.type === 'yard') stream.building.ySteps = (stream.building.ySteps || 0) + 1;   // the outdoor map's loading panel counts its steps
-      if (stream.building.builder.next().done) { stream.ready.push(stream.building); stream.building = null; break; }
+      let done;
+      try { done = stream.building.builder.next().done; } catch (e) { sbFail(stream.building, e, 'build'); stream.building = null; break; }   // review fix: a builder that threw is discarded (it used to go to ready half built)
+      if (done) { stream.ready.push(stream.building); stream.building = null; break; }
     }
   }
 
@@ -9397,13 +9447,58 @@ function updateStreaming() {
     }
     stream.ready.splice(i, 1);
     stream.rooms.set(r.slot, r);
-    activateRoom(r);
+    try { activateRoom(r); } catch (e) { sbFail(r, e, 'activate'); continue; }   // review fix: a half-activated room is taken out again and built anew
+    sbOk(r);
     roomCompile(r);                                             // no-op when roomWarm already did it
     roomUi();
   }
 
   updateVisibility();
 }
+
+// Review fix: a room builder (or its activation) that throws. The generator is closed by the throw, so the next frame
+// used to read it as finished and switch the half-built room on. Now: logged once per slot, the room is discarded (out of
+// the scene, its colliders and body removed), built again once, and if it fails a second time built with a bare layout
+// (its planned size, doors and ceiling lights, no furniture or props: SB.bare). A stairwell or safe room has no bare form:
+// it is tried again every SB.wait s (never every frame). Success clears the slot's count.
+const SB = { fails: new Map(), logged: new Set(), wait: 4, bare: new Set() };
+function sbMake(slot, kind) {
+  const F = SB.fails.get(slot);
+  if (F && F.kind === kind && F.until && performance.now() < F.until) return null;
+  const room = makeRoom(slot, kind);
+  if (F && F.kind === kind && F.n >= 2 && kind === 'normal') {
+    room.layout = sbBareLayout(slot); room.layJ = null; room.sbBare = true; SB.bare.add(slot);
+  }
+  return room;
+}
+function sbBareLayout(slot) {
+  const p = normalParams(slot);
+  const L = { type: p.plan.type, furniture: [], props: [], troffers: [], vent: null, conduit: null, switch: null, sign: null,
+    partitions: [], fixtures: [], pipes: null, sprinklers: [], smoke: null, exitSign: true, missing: [], items: [],
+    columns: [], decor: [], marks: null, joints: null, drain: null, sbBare: true };
+  try { ceilingPlan(L, p.w, p.d, mulberry32(p.seed >>> 0)); } catch (e) { L.troffers = [[0, 0]]; }
+  L.qc = { pass: true, score: 0, attempt: 0, fails: [], notes: ['bare fallback'] };
+  return L;
+}
+function sbFail(room, e, phase) {
+  const slot = room.slot, F = SB.fails.get(slot) || { n: 0, kind: room.kind, until: 0 };
+  if (F.kind !== room.kind) { F.n = 0; F.kind = room.kind; }
+  F.n++;
+  if (room.kind !== 'normal' || F.n > 2) F.until = performance.now() + SB.wait * 1000;
+  SB.fails.set(slot, F);
+  const key = `${slot}:${room.kind}:${phase}:${F.n > 2 ? 3 : F.n}`;
+  if (!SB.logged.has(key)) { SB.logged.add(key); console.error(`Room ${slot} (${room.kind}${room.sbBare ? ', bare' : ''}) failed to ${phase} (try ${F.n}): ${e && e.message || e}`, e); }
+  if (room.body && !room.active) room.active = true;   // unloadRoom only frees colliders, props and the door of an active room
+  try { unloadRoom(room); } catch (e2) {
+    try { scene.remove(room.group, room.doorGroup); } catch (e3) { /* gone */ }
+    try { if (room.body) { world.removeRigidBody(room.body); room.body = null; } } catch (e3) { /* gone */ }
+    try { if (room.door && doors.indexOf(room.door) >= 0) { world.removeRigidBody(room.door.body); doors.splice(doors.indexOf(room.door), 1); room.door = null; } } catch (e3) { /* gone */ }
+    room.active = false;
+    if (stream.rooms.get(slot) === room) stream.rooms.delete(slot);
+    try { rebuildWalk(); } catch (e3) { /* nothing more to do */ }
+  }
+}
+function sbOk(room) { if (SB.fails.has(room.slot) && SB.fails.get(room.slot).kind === room.kind && !room.sbBare) SB.fails.delete(room.slot); }
 
 // Portal visibility: you see a room only through open doors, at most 2 rooms away.
 function doorOpen(slot) { const r = stream.rooms.get(slot); return !!(r && r.door && Math.abs(r.door.angle) > 0.012); }   // step 53: either way
@@ -12411,6 +12506,7 @@ function mpwSigRx(m) {
   if (NET.role !== 'join' || !Array.isArray(m.L)) return;
   for (const H of m.L) {
     const r = stream.rooms.get(H[0]); if (!r || !r.active || (r.kind === 'safe' ? 1 : r.kind === 'stair' ? 2 : 0) !== H[1]) continue;
+    if (r.sbBare) continue;                                         // review fix: a room that failed to build twice here is bare (no layout of the host's would build either)
     const M = mpwSig(r), diff = [];
     for (let i = 2; i < MPW_F.length; i++) if (JSON.stringify(M[i]) !== JSON.stringify(H[i])) diff.push(`${MPW_F[i]} ${JSON.stringify(M[i])} / host ${JSON.stringify(H[i])}`);
     if (!diff.length) { r.mpwOk = true; continue; }
@@ -13508,18 +13604,45 @@ function netPropFreeze() {
   if (!NPF.on) return;
   const live = NET.st !== 'off' && netLive();
   if (!live) {
-    if (NPF.list.length) { for (const p of NPF.list) if (p.inWorld && p.netFixed) { p.netFixed = false; try { p.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); } catch (e) { /* gone */ } } NPF.list.length = 0; }
+    if (NPF.list.length) { let w = false; for (const p of NPF.list) { w = npfUnwalk(p) || w; if (p.inWorld && p.netFixed) { p.netFixed = false; try { p.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true); } catch (e) { /* gone */ } } } NPF.list.length = 0; if (w) rebuildWalk(); }
     return;
   }
   const t = performance.now(); if (t < NPF.at) return; NPF.at = t + 500;
-  for (let i = NPF.list.length - 1; i >= 0; i--) if (!NPF.list[i].inWorld) NPF.list.splice(i, 1);
+  let walk = false;
+  for (let i = NPF.list.length - 1; i >= 0; i--) if (!NPF.list[i].inWorld) { walk = npfUnwalk(NPF.list[i]) || walk; NPF.list.splice(i, 1); }
   for (const p of props) {
     if (p.netFixed || !p.inWorld || p.item || p.table || p.debris || p.kinematic || !(p.mass >= NPF.min) || (p.holders && p.holders.length) || !p.body || !p.spawn) continue;
     resetProp(p);                                                   // its spot from the room layout: the same on both sides
     try { p.body.setBodyType(RAPIER.RigidBodyType.Fixed, true); } catch (e) { continue; }
     p.netFixed = true; NPF.list.push(p);
+    walk = npfWalk(p) || walk;
   }
+  if (walk) rebuildWalk();
 }
+// Review fix: a frozen prop is a Fixed Rapier body, but you (and the men's push-out) only meet walk boxes, so both players
+// walked through it. While frozen it has a walk box in its room (room-local, from its layout spot, like furniture), which
+// also goes into the men's nav grid (navGrid's box signature changes, so the grid is made again). Removed when it is
+// unfrozen or removed; a room unloaded takes it with its walk list. ?netprops=off = none of this.
+function npfWalk(p) {
+  const room = p.spawnRoom, s = p.spawn, h = p.half;
+  if (!room || !room.walkLocal || !s || !h || p.npfW) return false;
+  const m = _npfM.makeRotationFromQuaternion(s.quat).elements;
+  const hy = Math.abs(m[1]) * h.x + Math.abs(m[5]) * h.y + Math.abs(m[9]) * h.z, top = s.pos[1] + hy - room.origin.y;
+  if (top < 0.3) return false;                                       // flat on the floor: stepped over (as propBoxes)
+  const b = { x: rLX(room, s.pos[0]), z: rLZ(room, s.pos[2]), a: 0, top, npf: true,
+    hx: Math.abs(m[0]) * h.x + Math.abs(m[4]) * h.y + Math.abs(m[8]) * h.z, hz: Math.abs(m[2]) * h.x + Math.abs(m[6]) * h.y + Math.abs(m[10]) * h.z };
+  room.walkLocal.push(b); p.npfW = { room, b };
+  return !!room.active;
+}
+function npfUnwalk(p) {
+  const W = p.npfW; if (!W) return false;
+  p.npfW = null;
+  const L = W.room.walkLocal, i = L ? L.indexOf(W.b) : -1;
+  if (i < 0) return false;
+  L.splice(i, 1);
+  return !!W.room.active && !W.room.npfGone;
+}
+const _npfM = new THREE.Matrix4();
 function netTick(dt, now) {
   netAvLight();                                                    // his weapon light (off when he is gone)
   if ((NET.st !== 'off') !== MP_SAME) { MP_SAME = NET.st !== 'off'; applyMenu(); if (MP_SAME && (MOD.speed || MENU.carry !== 'standard')) netSay('Multiplayer: both players move at the same speed (fast move and carry weight off)', 4); }
@@ -31619,8 +31742,10 @@ function rfDoor(room) {
   headWorld(_tb.w);
   const px = rLX(room, _tb.w.x), pz = rLZ(room, _tb.w.z), hd = room.d / 2;
   const next = stream.rooms.get(room.slot + 1), prev = stream.rooms.get(room.slot - 1);
-  const exitOk = !!(next && next.active && room.door && !room.noDoor) && Math.hypot(px - room.exitX, pz + hd) > 3;
-  const deep = room.entryX !== null && Math.hypot(px - room.entryX, pz - hd) > 4.5;
+  // Review fix: co-op, the other player keeps the same door rules (either side of the doorway: he may stand in the room the man comes from)
+  const R = netRemIn(room, true), rx = R ? R.x : 1e6, rz = R ? R.z : 1e6, rnear = R && Math.abs(NET.remW.y - (room.origin.y + 1.5)) < 2.5;
+  const exitOk = !!(next && next.active && room.door && !room.noDoor) && Math.hypot(px - room.exitX, pz + hd) > 3 && (!rnear || Math.hypot(rx - room.exitX, rz + hd) > 3);
+  const deep = room.entryX !== null && Math.hypot(px - room.entryX, pz - hd) > 4.5 && (!rnear || Math.hypot(rx - room.entryX, rz - hd) > 4.5);
   const entryOk = !!(prev && prev.active && prev.door && (prev.kind === 'normal' || prev.kind === 'stair') && deep);
   if (exitOk) return { door: room.door, x: room.exitX, z: -hd, nz: 1, beyond: next, which: 'exit' };
   if (entryOk) return { door: prev.door, x: room.entryX, z: hd, nz: -1, beyond: prev, which: 'entry' };
@@ -31641,6 +31766,7 @@ function rfSpawn(room, plan, i, now) {
     const x = D.x + lat, z = D.z - D.nz * dep;
     _tb.g.set(rWX(room, x), room.origin.y + 1.5, rWZ(room, z));
     let s = clearLine(_tb.t, _tb.g, 0.05) ? 0 : 2;
+    if (s && netRemIn(room, true) && clearLine(NET.remW, _tb.g, 0.05)) s = 0;   // review fix: hidden from the other player too
     if (G2 && navFree(G2, rLX(D.beyond, _tb.g.x), rLZ(D.beyond, _tb.g.z))) s += 1;
     if (s > best) { best = s; sx = x; sz = z; }
   }
@@ -31914,6 +32040,15 @@ function spawnEnemy(room, spec = null, idx = 0, taken = []) {
 }
 // Somewhere in the far half of the room, ideally behind cover from the entry door.
 const _spP = new THREE.Vector3();
+// Review fix: the other player (co-op) in this room: his room-local position, else null. Used where a spawn keeps clear of you.
+const _nri = { x: 0, z: 0 };
+function netRemIn(room, any) {
+  if (NET.st === 'off' || !NET.remOk || NET.remDead) return null;
+  const W = NET.remW;
+  if (!any && !insideRoom(room, W.x, W.z, 0, W.y)) return null;
+  _nri.x = rLX(room, W.x); _nri.z = rLZ(room, W.z);
+  return _nri;
+}
 function enemySpawnSpot(room, taken = []) {
   // aimfix: men already in the room count as taken too (spawned another way, or earlier), so two never share a spot
   const occ = taken.concat((room.enemies || []).filter((m) => !m.dead).map((m) => ({ x: m.pos.x, z: m.pos.y })));
@@ -31922,7 +32057,8 @@ function enemySpawnSpot(room, taken = []) {
   // could appear at arm's length or behind you: inside the room, no spot within 4.5 m of you (dropped for the last resorts).
   const pw = _spP.setFromMatrixPosition(camera.matrixWorld), pin = insideRoom(room, pw.x, pw.z, 0, pw.y);
   const plx = pin ? rLX(room, pw.x) : 0, plz = pin ? rLZ(room, pw.z) : 0;
-  const far = (x, z) => occ.every((t) => Math.hypot(t.x - x, t.z - z) > minD) && (!pin || minD < 1.3 || Math.hypot(x - plx, z - plz) > 4.5);   // step 9: one man per spot
+  const R = netRemIn(room), rin = !!R, rlx = rin ? R.x : 0, rlz = rin ? R.z : 0;   // review fix: co-op, the other player in this room (the host places men in the joiner's room too) keeps the same 4.5 m
+  const far = (x, z) => occ.every((t) => Math.hypot(t.x - x, t.z - z) > minD) && (minD < 1.3 || ((!pin || Math.hypot(x - plx, z - plz) > 4.5) && (!rin || Math.hypot(x - rlx, z - rlz) > 4.5)));   // step 9: one man per spot
   const entry = new THREE.Vector2(room.entryX || 0, room.d / 2);
   const faceDoor = (x, z) => Math.atan2(-(entry.x - x), -(entry.y - z));
   const range = room.plan && room.plan.type === 'range', farZ = -room.d / 2 + 16;   // step 75: on the range they hold the far end
@@ -52329,13 +52465,20 @@ function swPrecache(extra) {
     await yieldFrame();
     for (const [slot, kind] of [[0, 'safe'], [1, 'normal']]) {
       bootSave(`Building the first rooms: ${kind === 'safe' ? 'safe room' : 'room ' + slot}`, 95);   // step 46: which room, if it dies
-      const r = makeRoom(slot, kind);
-      if (BOOT.phone) {                          // step 46: in slices, so a phone can breathe (and free memory) between them
-        let t0 = performance.now();
-        while (!r.builder.next().done) if (performance.now() - t0 > CONFIG.texSize.phoneSlice) { await yieldFrame(); t0 = performance.now(); }
-      } else while (!r.builder.next().done) { /* build it all now */ }
-      stream.rooms.set(slot, r);
-      activateRoom(r);
+      let r;
+      for (let attempt = 0; ; attempt++) {       // review fix: room 1 failing to build is built again, then bare (sbFail / sbBareLayout)
+        r = makeRoom(slot, kind);
+        if (attempt >= 2) { r.layout = sbBareLayout(slot); r.layJ = null; r.sbBare = true; SB.bare.add(slot); }
+        try {
+          if (BOOT.phone) {                      // step 46: in slices, so a phone can breathe (and free memory) between them
+            let t0 = performance.now();
+            while (!r.builder.next().done) if (performance.now() - t0 > CONFIG.texSize.phoneSlice) { await yieldFrame(); t0 = performance.now(); }
+          } else while (!r.builder.next().done) { /* build it all now */ }
+          stream.rooms.set(slot, r);
+          activateRoom(r);
+          break;
+        } catch (e) { if (kind !== 'normal' || attempt >= 2) throw e; sbFail(r, e, 'build'); }
+      }
       roomWarm(r);   // step 36: while loading (also compiles the warm-up material now)
       if (BOOT.phone) await yieldFrame();        // step 46
     }
