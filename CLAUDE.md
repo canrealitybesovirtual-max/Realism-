@@ -2357,3 +2357,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: gun internals less dark
 - FEED materials (chamber tube, ejection-port backing, bolt face, carrier): steel 0x2c2d30 metal 0.85 -> 0x6b6d72 metal 0.6 with a faint emissive; bore / backing 0x17181a -> 0x45474b, metal 0.5, faint emissive, so the inside of the port reads as dim steel instead of black. Same programs (material values only). Parse checked only.
+
+## CQC: mount brackets reshaped (MSHAPE, ?mountshape=off = the old square brackets; not run in a browser, headset check needed)
+- AKM side mount (akmMountShaped, from akmKit): one skeletonised side plate (2D profile in z / y extruded 6.5 mm across x, bevelled, mshExtrude) in the shape of a side-rail scope mount: the leg clamps the side rail (same clamp face, lips, x range), rises up the receiver's left side, a sweeping concave cut under the forward arm out to the rail's front; rectangle, slanted slot, round and triangle lightening cuts, a triangle cut in the leg; thumb screw, two clamp screws, a bolt head top rear. The web over the dust cover and the rail on top are unchanged (same height and z range: optic seats, sight lines, akmLocal as before).
+- Cross-gun riser (optMountShaped, from optMount): a chamfered spine under the rail and two side cheeks that drop as clamp feet only at the cross-bolts, an arched underside between them, two lightening slots (round holes too on the taller scope riser). Same footprint, lift, jaw depth and bolts.
+- Built once at load (AKM kit) / once per fit (riser), same materials. Checked: node --check, eslint no-undef, Node build of both shapes with three (no NaN, bounds as the old parts).

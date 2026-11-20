@@ -26235,6 +26235,7 @@ const _spB = new THREE.Box3(), _spL = new THREE.Vector3();
  * (base plate, rail with recoil slots, cross-bolts with nuts) whose jaws clamp down both sides of the slide / receiver top,
  * so the optic visibly sits on a part that holds it, clear of the gun's body and sights. Child of the optic (it comes off
  * with it), hidden when the optic is taken off (wbGrabbed). Geometry per size, one shared material. */
+const MSHAPE = { on: !/[?&]mountshape=off\b/.test(QS) };
 const OPTM = { on: !/[?&]optmount=off\b/.test(QS), lift: 0.0065, liftScope: 0.011, jaw: 0.0075, mat: null };
 function optMountMat() {
   return OPTM.mat || (OPTM.mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.012, 0.012, 0.013), roughness: 0.42, metalness: 0.65, name: 'optMount' }));
@@ -26249,6 +26250,23 @@ function optGunHalf(g, y, z) {
   }
   return hx > 0.004 && hx < 0.03 ? hx : 0.0115;
 }
+// The riser as a chamfered spine under the rail and two side cheeks that come down as clamp feet at the cross-bolts,
+// an arched underside between them and lightening slots (same footprint, lift and jaw contact as the old box).
+function optMountShaped(add, bl, cz, ySeat, yT, bw, jw) {
+  const h = bl / 2, c = Math.min(0.0022, (yT - ySeat) * 0.45), yJ = ySeat - OPTM.jaw + 0.0015, f0 = 0.2 * bl, f1 = 0.41 * bl, e = 0.0012;
+  const sp = mshPoly([[-h, ySeat], [h, ySeat], [h, yT - c], [h - c, yT], [-h + c, yT], [-h, yT - c]]);
+  const spine = new THREE.Shape(sp.getPoints());
+  add(mshExtrude(spine, -bw / 2, bw / 2, 0.0005), 0, 0, cz);
+  const S = new THREE.Shape();
+  S.moveTo(-h, yT - c); S.lineTo(-h + c, yT); S.lineTo(h - c, yT); S.lineTo(h, yT - c); S.lineTo(h, ySeat);
+  S.lineTo(f1, ySeat); S.lineTo(f1, yJ + e); S.lineTo(f1 - e, yJ); S.lineTo(f0, yJ);
+  S.quadraticCurveTo(0, 2 * ySeat - yJ, -f0, yJ);                                         // arched underside between the feet
+  S.lineTo(-f1 + e, yJ); S.lineTo(-f1, yJ + e); S.lineTo(-f1, ySeat); S.lineTo(-h, ySeat); S.closePath();
+  const hb = yT - ySeat;
+  if (hb > 0.0035) for (const [a, b] of [[-0.15, -0.03], [0.03, 0.15]]) S.holes.push(mshPoly([[a * bl, ySeat + 0.0011], [b * bl, ySeat + 0.0011], [b * bl, yT - 0.0013], [a * bl, yT - 0.0013]]));
+  if (hb > 0.006) for (const z of [-0.3, 0.3]) S.holes.push(mshCircle(z * bl, (ySeat + yT) / 2 + 0.001, Math.min(0.0022, hb / 2 - 0.0016)));
+  for (const sx of [1, -1]) add(sx > 0 ? mshExtrude(S, jw, jw + 0.0026, 0.0005) : mshExtrude(S, -jw - 0.0026, -jw, 0.0005), 0, 0, cz);
+}
 function optMount(g, p, B, lift, S) {
   const it = p.item, old = it.optMount;
   if (old) { old.parent?.remove(old); old.traverse((o) => o.geometry?.dispose()); }
@@ -26262,11 +26280,12 @@ function optMount(g, p, B, lift, S) {
   cz = Math.min(Math.max(cz, gb[0] - Lz + bl / 2 + 0.008), gb[1] - Lz - bl / 2 - 0.008);
   const yTop = B.min.y, ySeat = yTop - lift, tooth = 0.0022, bw = 0.0212;
   const hx = optGunHalf(g, S.top - 0.004, Lz + cz), jw = Math.max(bw / 2, hx + 0.0012);
-  add(new THREE.BoxGeometry(Math.max(bw, 2 * jw + 0.003), lift - tooth, bl), 0, ySeat + (lift - tooth) / 2, cz);          // riser body
+  if (MSHAPE.on) optMountShaped(add, bl, cz, ySeat, yTop - tooth, bw, jw);                                                // spine + skeletonised cheeks
+  else add(new THREE.BoxGeometry(Math.max(bw, 2 * jw + 0.003), lift - tooth, bl), 0, ySeat + (lift - tooth) / 2, cz);          // riser body
   const nT = Math.max(2, Math.floor(bl / 0.01)), tG = new THREE.BoxGeometry(bw, tooth, 0.0052);
   for (let i = 0; i < nT; i++) add(tG, 0, yTop - tooth / 2, cz - (nT - 1) * 0.005 + i * 0.01);                            // rail teeth (recoil slots between)
   const jG = new THREE.BoxGeometry(0.0026, OPTM.jaw, bl * 0.82);
-  for (const sx of [1, -1]) add(jG, sx * (jw + 0.0013), ySeat - OPTM.jaw / 2 + 0.0015, cz);                                 // jaws down the sides of the top
+  if (!MSHAPE.on) for (const sx of [1, -1]) add(jG, sx * (jw + 0.0013), ySeat - OPTM.jaw / 2 + 0.0015, cz);           // jaws down the sides of the top
   const bG = new THREE.CylinderGeometry(0.0019, 0.0019, 2 * jw + 0.009, 10).rotateZ(Math.PI / 2), nG = new THREE.CylinderGeometry(0.0034, 0.0034, 0.0026, 6).rotateZ(Math.PI / 2);
   for (const dz of [-0.32, 0.32]) {                                                                                         // cross-bolts through the jaws, hex nut one side
     const z = cz + dz * bl, y = ySeat - OPTM.jaw * 0.45;
@@ -54535,6 +54554,41 @@ function akmPipMat(rt) {
     toneMapped: true
   });
 }
+// Mount shape (?mountshape=off = the old square brackets): the AKM side mount and the cross-gun riser as skeletonised
+// plates (a side-rail scope mount's look): a 2D profile in (z, y) with lightening holes, extruded across x, edges bevelled.
+// The profile pts / holes ([[z, y], ...] or { c: [z, y], r }) extruded between xa and xb, bevel b (outline kept).
+function mshExtrude(shape, xa, xb, b = 0.0006) {
+  const depth = Math.max(0.0004, xb - xa - 2 * b);
+  return new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: b > 0, bevelThickness: b, bevelSize: b, bevelOffset: -b, bevelSegments: 1, curveSegments: 10 })
+    .rotateY(-Math.PI / 2).translate(xb - b, 0, 0);
+}
+function mshPoly(pts) { const s = new THREE.Path(); s.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) s.lineTo(pts[i][0], pts[i][1]); s.closePath(); return s; }
+function mshCircle(z, y, r) { const s = new THREE.Path(); s.absarc(z, y, r, 0, Math.PI * 2, false); return s; }
+// The AKM side mount: a leg plate clamping the side rail, rising up the receiver's left side, a sweeping concave cut
+// under the forward arm, rectangle / slanted slot / round / triangle lightening cuts, the bridge and rail on top.
+function akmMountShaped(M, MD, sr, jx, cz0, cz1, yb) {
+  const yBot = sr.y0 - 0.0045, yT = M.mountY, yk = sr.y1 + 0.0055, zr = Math.max(cz1, MD.z1), zf = MD.z0, c = 0.0016;
+  const S = new THREE.Shape();
+  S.moveTo(zf, yT); S.lineTo(zf + 0.004, yT - 0.007);
+  S.quadraticCurveTo(cz0, yT - 0.007, cz0, yk + 0.004);              // the sweeping cut under the arm
+  S.lineTo(cz0, yBot + c); S.lineTo(cz0 + c, yBot); S.lineTo(zr - c, yBot); S.lineTo(zr, yBot + c);
+  S.lineTo(zr, yT - c); S.lineTo(zr - c, yT); S.closePath();
+  const ya = yk + 0.0045, yz = yT - 0.0075, ym = (ya + yz) / 2, L = zr - cz0;
+  const at = (f) => cz0 + f * L;                                      // along the leg, 0 front .. 1 rear
+  S.holes.push(mshPoly([[at(0.86), ya + 0.002], [at(0.94), ya + 0.002], [at(0.94), yz], [at(0.86), yz]]),                        // rectangle
+    mshPoly([[at(0.73), ya + 0.002], [at(0.77), ya + 0.002], [at(0.74), yz], [at(0.70), yz]]),                                     // slanted slot
+    mshCircle(at(0.57), ym + 0.001, Math.min(0.0065, (yz - ya) / 2 - 0.001)),                                                      // round
+    mshPoly([[at(0.44), yz], [at(0.15), yz], [at(0.44), ya]]),                                                                       // triangle
+    mshPoly([[at(0.62), yBot + 0.0045], [at(0.30), yBot + 0.0045], [at(0.62), yk - 0.0035]]));                                    // leg cut
+  const out = [mshExtrude(S, jx, sr.x, 0.0007),
+    akmPrism([[sr.x, sr.y1], [sr.x + 0.0028, sr.y1 + 0.0028], [sr.x + 0.0028, sr.y1 + 0.0055], [sr.x, sr.y1 + 0.0055]], cz0, cz1),   // lips over the rail's chamfers
+    akmPrism([[sr.x, sr.y0], [sr.x, sr.y0 - 0.0045], [sr.x + 0.0028, sr.y0 - 0.0045], [sr.x + 0.0028, sr.y0 - 0.0028]], cz0, cz1),
+    placed(rbox(MD.xR - jx, MD.plate, MD.z1 - MD.z0, 0.0015), (MD.xR + jx) / 2, yb + MD.plate / 2, (MD.z0 + MD.z1) / 2),          // the arm's web over the dust cover
+    placed(new THREE.CylinderGeometry(0.0048, 0.0048, 0.0035, 18), jx - 0.0017, (sr.y0 + sr.y1) / 2, at(0.8), 0, 0, Math.PI / 2),  // thumb screw
+    placed(new THREE.CylinderGeometry(0.0034, 0.0034, 0.0015, 6), jx - 0.0007, yT - 0.009, zr - 0.006, 0, 0, Math.PI / 2)];       // bolt head, top rear
+  for (const f of [0.12, 0.45]) out.push(placed(new THREE.CylinderGeometry(0.0026, 0.0026, 0.0012, 12), jx - 0.0006, (sr.y0 + sr.y1) / 2, at(f), 0, 0, Math.PI / 2));   // clamp screws
+  return out;
+}
 function akmKit() {
   if (AKMA.kit) return AKMA.kit;
   const M = akmMeasure(), D = AKM_DIM, R = D.rail, H = D.hg, MD = D.mount, ST = D.stock, ex = AKMA.ex;
@@ -54553,14 +54607,14 @@ function akmKit() {
   // side mount: the clamp's face on the side rail's flat, lips over its chamfers, a lever; the arm up the side; the
   // bridge over the dust cover (MD.clear above it); the optics rail on top
   const sr = M.sr, jx = sr.x - MD.jaw, cz0 = sr.z1 - 0.008, cz1 = sr.z0 + 0.008, yb = M.mountY - MD.plate;
-  const mount = [akmPrism([[jx, sr.y0 - 0.0045], [sr.x, sr.y0 - 0.0045], [sr.x, sr.y1 + 0.0055], [jx, sr.y1 + 0.0055]], cz0, cz1),
+  const mount = MSHAPE.on ? akmMountShaped(M, MD, sr, jx, cz0, cz1, yb) : [akmPrism([[jx, sr.y0 - 0.0045], [sr.x, sr.y0 - 0.0045], [sr.x, sr.y1 + 0.0055], [jx, sr.y1 + 0.0055]], cz0, cz1),
     akmPrism([[sr.x, sr.y1], [sr.x + 0.0028, sr.y1 + 0.0028], [sr.x + 0.0028, sr.y1 + 0.0055], [sr.x, sr.y1 + 0.0055]], cz0, cz1),
     akmPrism([[sr.x, sr.y0], [sr.x, sr.y0 - 0.0045], [sr.x + 0.0028, sr.y0 - 0.0045], [sr.x + 0.0028, sr.y0 - 0.0028]], cz0, cz1),
     akmPrism([[jx, sr.y1 + 0.0055], [sr.x + 0.0035, sr.y1 + 0.0055], [sr.x + 0.0035, M.mountY], [jx, M.mountY]], cz0, cz1),
     placed(rbox(MD.xR - jx, MD.plate, MD.z1 - MD.z0, 0.0015), (MD.xR + jx) / 2, yb + MD.plate / 2, (MD.z0 + MD.z1) / 2),
     placed(new THREE.CylinderGeometry(0.0042, 0.0042, 0.004, 16), jx - 0.002, (sr.y0 + sr.y1) / 2, (cz0 + cz1) / 2, 0, 0, Math.PI / 2),
     placed(rbox(0.004, 0.009, 0.05, 0.0015), jx - 0.004, (sr.y0 + sr.y1) / 2 - 0.004, (cz0 + cz1) / 2 + 0.012)];
-  for (const z of [cz0 - 0.012, cz1 + 0.012]) mount.push(placed(new THREE.CylinderGeometry(0.0028, 0.0028, 0.0012, 12), jx - 0.0006, sr.y1 - 0.001, z, 0, 0, Math.PI / 2));   // cross-bolt heads
+  if (!MSHAPE.on) for (const z of [cz0 - 0.012, cz1 + 0.012]) mount.push(placed(new THREE.CylinderGeometry(0.0028, 0.0028, 0.0012, 12), jx - 0.0006, sr.y1 - 0.001, z, 0, 0, Math.PI / 2));   // cross-bolt heads
   for (const q of akmRailGeo(MD.z1 - 0.003, MD.z0 + 0.003)) mount.push(q.translate(0, M.mountY, 0));
   K.mountGeo = akmMerge(mount);
   // the collar: rear face on the front sight block, knurled, 5/8x24 bore in front
