@@ -5066,6 +5066,240 @@ function stencilTexture(lines, planeW, planeH, gapsY, gap, seed) {
   return tex;
 }
 
+/* ============================================================================
+ *  CARDBOARD ATLAS (?boxlabels=off = the old plain kraft). One canvas atlas made at load (2048 px, 512 on Lite /
+ *  Xbox / low memory): 4 x 8 cells of 2:1 box faces. Cells 0-7 are tops (flap seam, tape or torn residue), 8-31
+ *  sides (kraft tone, print, arrows, FRAGILE, part numbers, handling icons, maker's stamp, shipping labels with
+ *  barcodes, LPN stickers, inventory tags, marker, tape, scuffs, water stains). Matching roughness (tape glossy)
+ *  and a normal map from a height canvas. Each box face picks a cell from its box seed (cardUV for meshes, the same
+ *  maths in the instanced shelf shader from aCard), so every box differs and both multiplayer sides agree.
+ * ========================================================================== */
+const CARD = { on: !/[?&]boxlabels=off\b/.test(QS), map: null, rough: null, nrm: null };
+function cardFaceIdx(f, s) { return f === 2 || f === 3 ? (s + f * 3) % 8 : 8 + (s * 7 + f * 5) % 24; }
+// The face (0 +x, 1 -x, 2 +y, 3 -y, 4 +z, 5 -z) and its 0..1 coordinates (text upright and unmirrored seen from outside).
+function cardFace(nx, ny, nz, x, y, z, ex, ey, ez, out) {
+  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+  let f, U, V, eu, ev;
+  if (ax >= ay && ax >= az) { f = nx > 0 ? 0 : 1; U = nx > 0 ? -z : z; V = y; eu = ez; ev = ey; }
+  else if (ay >= az) { f = ny > 0 ? 2 : 3; U = x; V = ny > 0 ? -z : z; eu = ex; ev = ez; }
+  else { f = nz > 0 ? 4 : 5; U = nz > 0 ? x : -x; V = y; eu = ex; ev = ey; }
+  out[0] = f; out[1] = Math.min(0.999, Math.max(0, U / eu + 0.5)); out[2] = Math.min(1, Math.max(0, V / ev + 0.5)); out[3] = eu; out[4] = ev;
+  return out;
+}
+const _cf = [0, 0, 0, 0, 0];
+function cardCellUV(idx, lu, lv, eu, ev, uv, i) {
+  if (ev > eu * 1.15) { const t = lu; lu = lv; lv = 1 - t; }
+  const col = idx % 4, row = Math.floor(idx / 4);
+  uv.setXY(i, (col + 0.01 + lu * 0.98) / 4, (7 - row + 0.01 + lv * 0.98) / 8);
+}
+// Atlas UVs for one box geometry (local, before placing). seed: an integer, the box's own.
+function cardUV(geo, seed) {
+  if (!CARD.on) return geo;
+  geo.computeBoundingBox();
+  const b = geo.boundingBox, cx = (b.min.x + b.max.x) / 2, cy = (b.min.y + b.max.y) / 2, cz = (b.min.z + b.max.z) / 2;
+  const ex = Math.max(1e-4, b.max.x - b.min.x), ey = Math.max(1e-4, b.max.y - b.min.y), ez = Math.max(1e-4, b.max.z - b.min.z);
+  const p = geo.attributes.position, n = geo.attributes.normal, uv = geo.attributes.uv, s = (seed >>> 0) % 65521;
+  for (let i = 0; i < p.count; i++) {
+    cardFace(n.getX(i), n.getY(i), n.getZ(i), p.getX(i) - cx, p.getY(i) - cy, p.getZ(i) - cz, ex, ey, ez, _cf);
+    cardCellUV(cardFaceIdx(_cf[0], s), _cf[1], _cf[2], _cf[3], _cf[4], uv, i);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+// A box's seed: room slot + its index (the same on both multiplayer sides).
+function cardSeed(slot, i) { return (Math.imul((slot | 0) + 7, 2654435761) ^ Math.imul(i + 1, 40503)) >>> 0; }
+// The shelf's unit box: uv.x = face + raw u, uv.y = raw v; the shader picks the cell from aCard and the instance scale.
+function cardUnitUV(geo) {
+  const p = geo.attributes.position, n = geo.attributes.normal, uv = geo.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    cardFace(n.getX(i), n.getY(i), n.getZ(i), p.getX(i), p.getY(i), p.getZ(i), 1, 1, 1, _cf);
+    uv.setXY(i, _cf[0] + _cf[1], _cf[2]);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+const CARD_VS = `
+#ifdef USE_INSTANCING
+{ float cf = floor(uv.x); float lu = uv.x - cf, lv = uv.y;
+  vec3 csc = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+  vec2 cex = cf < 1.5 ? csc.zy : (cf < 3.5 ? csc.xz : csc.xy);
+  if (cex.y > cex.x * 1.15) { float ct = lu; lu = lv; lv = 1.0 - ct; }
+  float cidx = (cf > 1.5 && cf < 3.5) ? mod(aCard + cf * 3.0, 8.0) : 8.0 + mod(aCard * 7.0 + cf * 5.0, 24.0);
+  float ccol = mod(cidx, 4.0), crow = floor(cidx / 4.0 + 0.001);
+  vec2 cuv = vec2((ccol + 0.01 + lu * 0.98) / 4.0, (7.0 - crow + 0.01 + lv * 0.98) / 8.0);
+  #ifdef USE_MAP
+  vMapUv = cuv;
+  #endif
+  #ifdef USE_ROUGHNESSMAP
+  vRoughnessMapUv = cuv;
+  #endif
+  #ifdef USE_NORMALMAP
+  vNormalMapUv = cuv;
+  #endif
+}
+#endif
+`;
+// The instanced copy of the cardboard material (one more program, compiled at load with the warm-up shelf).
+function cardInstMat(base) {
+  const m = base.clone();
+  m.onBeforeCompile = (sh) => {
+    sh.vertexShader = 'attribute float aCard;\n' + sh.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n' + CARD_VS);
+  };
+  m.customProgramCacheKey = () => 'card-inst1';
+  return m;
+}
+function cardAtlas() {
+  const S = (LITE.on || LITE.xbox || LOWMEM.on) ? 512 : 2048, CW = S / 4, CH = S / 8, k = S / 2048;
+  const mk = () => { const c = document.createElement('canvas'); c.width = S; c.height = S; return c; };
+  const cC = mk(), cR = mk(), cH = mk(), X = cC.getContext('2d'), RX = cR.getContext('2d'), HX = cH.getContext('2d', { willReadFrequently: true });
+  RX.fillStyle = 'rgb(230,230,230)'; RX.fillRect(0, 0, S, S);           // kraft roughness ~0.9
+  HX.fillStyle = 'rgb(128,128,128)'; HX.fillRect(0, 0, S, S);
+  const R = mulberry32(0xCA4D80);
+  const pick = (a) => a[Math.floor(R() * a.length)], rr = (a, b) => a + (b - a) * R();
+  const alnum = (n) => { let s = ''; for (let i = 0; i < n; i++) s += '0123456789ABCDEFGHJKLMNPRSTUVWXYZ'[Math.floor(R() * 33)]; return s; };
+  const digits = (n) => { let s = ''; for (let i = 0; i < n; i++) s += Math.floor(R() * 10); return s; };
+  const BRANDS = ['NORTHLINE', 'KESTREL SUPPLY', 'VANTEC', 'ORION PARTS', 'HALVERSEN', 'DURACORE', 'MERIDIAN', 'BLUEPEAK', 'TORVAL', 'ASHGROVE', 'IRONBRIDGE', 'SOLANO'];
+  const GOODS = ['FASTENERS M8', 'CABLE TIES 300MM', 'FILTER CARTRIDGES', 'LED PANELS', 'HYDRAULIC FITTINGS', 'NITRILE GLOVES', 'COPY PAPER A4', 'BEARINGS 6204', 'CONDUIT CLIPS', 'SPARE SEALS', 'FUSES 10A', 'TONER'];
+  const INKS = ['#2a2420', '#1d2a3a', '#6d1d16', '#24402a', '#3a2f63'];
+  const FONT = 'Impact, "Arial Black", "Arial Narrow", sans-serif', SANS = 'Arial, Helvetica, sans-serif';
+  const both = (fn, rough, height) => {      // the same shape on colour, roughness and height
+    X.save(); fn(X, 0); X.restore();
+    if (rough != null) { RX.save(); fn(RX, 1, `rgb(${rough},${rough},${rough})`); RX.restore(); }
+    if (height != null) { HX.save(); fn(HX, 1, `rgb(${height},${height},${height})`); HX.restore(); }
+  };
+  const barcode = (ctx, x, y, w, h, col) => { ctx.fillStyle = col; let px = x; while (px < x + w) { const bw = Math.max(1, Math.round((1 + Math.floor(R() * 3)) * k * 1.6)); if (R() < 0.55) ctx.fillRect(px, y, bw, h); px += bw; } };
+  const arrows = (ctx, x, y, s, col) => {
+    ctx.fillStyle = col;
+    for (const dx of [0, s * 0.9]) { ctx.beginPath(); ctx.moveTo(x + dx, y); ctx.lineTo(x + dx + s * 0.28, y + s * 0.4); ctx.lineTo(x + dx - s * 0.28, y + s * 0.4); ctx.closePath(); ctx.fill(); ctx.fillRect(x + dx - s * 0.07, y + s * 0.38, s * 0.14, s * 0.62); }
+    ctx.fillRect(x - s * 0.3, y + s * 1.08, s * 1.5, s * 0.07);
+  };
+  const glass = (ctx, x, y, s, col) => { ctx.strokeStyle = col; ctx.lineWidth = 3 * k + 1; ctx.beginPath(); ctx.moveTo(x - s * 0.3, y); ctx.quadraticCurveTo(x - s * 0.3, y + s * 0.5, x, y + s * 0.55); ctx.quadraticCurveTo(x + s * 0.3, y + s * 0.5, x + s * 0.3, y); ctx.closePath(); ctx.moveTo(x, y + s * 0.55); ctx.lineTo(x, y + s * 0.9); ctx.moveTo(x - s * 0.2, y + s * 0.9); ctx.lineTo(x + s * 0.2, y + s * 0.9); ctx.stroke(); };
+  const umbrella = (ctx, x, y, s, col) => { ctx.strokeStyle = col; ctx.lineWidth = 3 * k + 1; ctx.beginPath(); ctx.arc(x, y + s * 0.4, s * 0.4, Math.PI, 0); ctx.closePath(); ctx.moveTo(x, y + s * 0.4); ctx.lineTo(x, y + s * 0.85); ctx.stroke(); ctx.fillStyle = col; for (let i = 0; i < 4; i++) ctx.fillRect(x - s * 0.35 + i * s * 0.22, y - s * 0.12 + (i % 2) * s * 0.08, 2 * k + 1, s * 0.12); };
+  const tape = (x0, y0, x1, y1, w, kind) => {     // a strip of tape from (x0,y0) to (x1,y1), w px wide
+    const a = Math.atan2(y1 - y0, x1 - x0), L = Math.hypot(x1 - x0, y1 - y0);
+    both((c, r, col) => {
+      c.translate(x0, y0); c.rotate(a);
+      if (r) { c.fillStyle = col; c.fillRect(0, -w / 2, L, w); return; }
+      if (kind === 'clear') { c.fillStyle = 'rgba(255,248,230,0.16)'; c.fillRect(0, -w / 2, L, w); c.fillStyle = 'rgba(255,255,255,0.22)'; c.fillRect(0, -w / 2, L, 1.5 * k + 1); c.fillRect(0, w / 2 - 1.5 * k - 1, L, 1.5 * k + 1);
+        for (let i = 0; i < 6; i++) { c.fillStyle = 'rgba(255,255,255,0.10)'; c.fillRect(rr(0, L), rr(-w / 2, w / 2), rr(8, 40) * k, 1.2 * k + 0.5); } }
+      else if (kind === 'brown') { c.fillStyle = 'rgba(150,110,62,0.92)'; c.fillRect(0, -w / 2, L, w); c.fillStyle = 'rgba(255,230,180,0.18)'; c.fillRect(0, -w / 2, L, 1.5 * k + 1);
+        for (let i = 0; i < 10; i++) { c.fillStyle = 'rgba(90,60,30,0.15)'; c.fillRect(rr(0, L), rr(-w / 2, w / 2), rr(10, 60) * k, 1 * k + 0.5); } }
+      else { c.fillStyle = 'rgba(236,232,222,0.95)'; c.fillRect(0, -w / 2, L, w); c.fillStyle = '#b3241b'; c.font = `900 ${Math.round(w * 0.62)}px ${FONT}`; c.textBaseline = 'middle';
+        const word = kind === 'fragile' ? 'FRAGILE  -  HANDLE WITH CARE  -  ' : 'SECURITY SEAL  -  DO NOT ACCEPT IF BROKEN  -  '; let tx = 0; while (tx < L) { c.fillText(word, tx, 0); tx += c.measureText(word).width; } }
+    }, kind === 'clear' ? 70 : kind === 'brown' ? 95 : 120, 150);
+  };
+  const residue = (x, y, w, h) => both((c, r, col) => {   // torn tape: ragged pale strips with fibres pulled up
+    c.beginPath(); c.moveTo(x, y); let px = x; while (px < x + w) { px += rr(4, 14) * k + 1; c.lineTo(Math.min(px, x + w), y + rr(-3, 3) * k); }
+    px = x + w; while (px > x) { px -= rr(4, 14) * k + 1; c.lineTo(Math.max(px, x), y + h + rr(-3, 3) * k); } c.closePath();
+    c.fillStyle = r ? col : 'rgba(232,212,176,0.75)'; c.fill();
+  }, 160, 140);
+  const label = (x, y, w, h) => {
+    both((c, r, col) => { c.fillStyle = r ? col : '#efece4'; c.fillRect(x, y, w, h); }, 180, 150);
+    X.fillStyle = '#1a1a1a'; const fs = Math.max(4, Math.round(h * 0.075));
+    X.font = `700 ${fs}px ${SANS}`; X.fillText('SHIP TO:', x + w * 0.05, y + h * 0.12);
+    X.font = `${fs}px ${SANS}`;
+    const L = [pick(['R. KOVALENKO', 'M. ADEYEMI', 'J. LINDQVIST', 'T. OKAFOR', 'A. MORENO', 'S. PATEL', 'D. BRENNAN']), `${10 + Math.floor(R() * 980)} ${pick(['INDUSTRIAL WAY', 'DOCK RD', 'KESTREL AVE', 'MILL ST', 'HARBOR BLVD'])}`, `UNIT ${Math.floor(R() * 40) + 1}, BAY ${alnum(2)}`, `${pick(['RIVERTON', 'ASHFORD', 'KELBY', 'NORWICK', 'PORT ELLIS'])} ${digits(5)}`];
+    L.forEach((t, i) => X.fillText(t, x + w * 0.05, y + h * (0.22 + i * 0.09)));
+    X.fillRect(x + w * 0.04, y + h * 0.58, w * 0.92, 2 * k + 0.5);
+    barcode(X, x + w * 0.06, y + h * 0.63, w * 0.88, h * 0.22, '#111');
+    X.font = `${Math.max(4, Math.round(fs * 0.85))}px ${SANS}`; X.fillText(`TRK ${digits(4)} ${digits(4)} ${digits(4)}`, x + w * 0.06, y + h * 0.93);
+    if (R() < 0.5) { X.fillStyle = 'rgba(80,60,30,0.18)'; X.fillRect(x + w * rr(0.5, 0.9), y, w * 0.1, h); }   // a scuffed crease
+  };
+  const lpn = (x, y, w) => {
+    const h = w * 0.5;
+    both((c, r, col) => { c.fillStyle = r ? col : '#f4f4f0'; c.fillRect(x, y, w, h); }, 175, 145);
+    X.fillStyle = '#111'; X.font = `900 ${Math.max(4, Math.round(h * 0.22))}px ${SANS}`; X.fillText('LPN', x + w * 0.05, y + h * 0.26);
+    X.font = `700 ${Math.max(4, Math.round(h * 0.17))}px ${SANS}`; X.fillText(alnum(10), x + w * 0.3, y + h * 0.26);
+    barcode(X, x + w * 0.05, y + h * 0.36, w * 0.9, h * 0.5, '#111');
+  };
+  const tag = (x, y, w) => {
+    const h = w * 0.62, col = pick(['#e8c63a', '#e8803a', '#7dc4e8', '#e8e8e8']);
+    both((c, r, cc) => { c.fillStyle = r ? cc : col; c.fillRect(x, y, w, h); }, 190, 140);
+    X.fillStyle = '#222'; X.font = `900 ${Math.max(4, Math.round(h * 0.2))}px ${SANS}`; X.fillText('INVENTORY', x + w * 0.06, y + h * 0.24, w * 0.88);
+    X.font = `700 ${Math.max(4, Math.round(h * 0.15))}px ${SANS}`; X.fillText(`No ${digits(6)}`, x + w * 0.06, y + h * 0.48);
+    X.fillText(`LOC ${alnum(1)}-${digits(2)}-${digits(1)}`, x + w * 0.06, y + h * 0.7);
+    X.strokeStyle = '#222'; X.lineWidth = 2 * k + 0.5; X.beginPath(); X.moveTo(x + w * 0.06, y + h * 0.88); X.lineTo(x + w * rr(0.5, 0.9), y + h * 0.84); X.stroke();   // initials
+  };
+  const scrawl = (x, y, s) => {
+    X.save(); X.translate(x, y); X.rotate(rr(-0.25, 0.25)); X.fillStyle = pick(['rgba(15,15,20,0.85)', 'rgba(20,30,90,0.8)', 'rgba(140,20,20,0.8)']);
+    X.font = `italic 700 ${Math.max(5, Math.round(s))}px "Comic Sans MS", "Segoe Print", cursive, ${SANS}`;
+    X.fillText(pick(['RETURNS', 'B-12', 'DO NOT STACK', 'KEEP', 'BAY 4', 'CHECKED', 'x3', 'DAMAGED?', 'URGENT', 'OLD STOCK', '#' + digits(3)]), 0, 0); X.restore();
+  };
+  const stamp = (x, y, r, col) => {   // the box maker's certificate
+    X.strokeStyle = col; X.fillStyle = col; X.lineWidth = 2 * k + 0.5; X.beginPath(); X.arc(x, y, r, 0, Math.PI * 2); X.stroke(); X.beginPath(); X.arc(x, y, r * 0.8, 0, Math.PI * 2); X.stroke();
+    X.font = `700 ${Math.max(4, Math.round(r * 0.22))}px ${SANS}`; X.textAlign = 'center'; X.fillText('BOX CERT.', x, y - r * 0.35); X.fillText(`${200 + Math.floor(R() * 8) * 25} LB/SQ IN`, x, y); X.fillText(`${pick(['SW', 'DW'])} ${alnum(2)}`, x, y + r * 0.35); X.textAlign = 'left';
+  };
+  const blotch = (x, y, r, a) => {     // water stain: darker inside, a tide line at the edge
+    X.save(); X.beginPath(); for (let i = 0; i <= 24; i++) { const t = i / 24 * Math.PI * 2, r2 = r * (0.75 + 0.35 * Math.sin(t * 3 + a) * Math.cos(t * 5 - a)); X.lineTo(x + Math.cos(t) * r2, y + Math.sin(t) * r2 * 0.8); }
+    X.closePath(); X.fillStyle = 'rgba(90,60,30,0.16)'; X.fill(); X.strokeStyle = 'rgba(70,45,20,0.35)'; X.lineWidth = 3 * k + 1; X.stroke(); X.restore();
+    HX.fillStyle = 'rgba(110,110,110,0.4)'; HX.beginPath(); HX.arc(x, y, r * 0.8, 0, Math.PI * 2); HX.fill();
+  };
+  for (let idx = 0; idx < 32; idx++) {
+    const col = idx % 4, row = Math.floor(idx / 4), x0 = col * CW, y0 = row * CH;
+    X.save(); RX.save(); HX.save();
+    for (const c of [X, RX, HX]) { c.beginPath(); c.rect(x0, y0, CW, CH); c.clip(); }
+    // kraft: tone, fibre speckle, flutes showing through faintly, edges darker (handled, dusty)
+    const kr = rr(176, 208), kg2 = kr * rr(0.78, 0.83), kb = kr * rr(0.52, 0.62);
+    X.fillStyle = `rgb(${kr | 0},${kg2 | 0},${kb | 0})`; X.fillRect(x0, y0, CW, CH);
+    for (let i = 0, n = Math.round(3600 * k * k) + 150; i < n; i++) { X.fillStyle = R() < 0.5 ? 'rgba(60,35,10,0.07)' : 'rgba(255,240,210,0.07)'; X.fillRect(x0 + R() * CW, y0 + R() * CH, rr(1, 5) * k + 1, 1); }
+    const fl = rr(10, 14) * k + 2;
+    for (let fx = x0; fx < x0 + CW; fx += fl) { X.fillStyle = 'rgba(70,45,15,0.035)'; X.fillRect(fx, y0, fl * 0.45, CH); HX.fillStyle = 'rgba(150,150,150,0.5)'; HX.fillRect(fx, y0, fl * 0.5, CH); }
+    const eg = X.createLinearGradient(x0, y0, x0, y0 + CH); eg.addColorStop(0, 'rgba(50,30,10,0.12)'); eg.addColorStop(0.12, 'rgba(0,0,0,0)'); eg.addColorStop(0.85, 'rgba(0,0,0,0)'); eg.addColorStop(1, 'rgba(40,25,10,0.22)');
+    X.fillStyle = eg; X.fillRect(x0, y0, CW, CH);
+    X.textBaseline = 'alphabetic';
+    if (idx < 8) {                                        // top: two flaps meet along the middle
+      const sy = y0 + CH / 2 + rr(-2, 2) * k;
+      both((c, r, cc) => { c.fillStyle = r ? cc : 'rgba(40,25,8,0.75)'; c.fillRect(x0, sy - 1.5 * k - 0.5, CW, 3 * k + 1); }, 240, 40);
+      X.fillStyle = 'rgba(0,0,0,0.06)'; X.fillRect(x0, sy + 1.5 * k, CW, 10 * k);
+      const t = idx % 4;
+      if (t === 0) tape(x0 - 4, sy, x0 + CW + 4, sy, CH * 0.2, 'brown');
+      else if (t === 1) tape(x0 - 4, sy, x0 + CW + 4, sy, CH * 0.2, 'clear');
+      else if (t === 2) tape(x0 - 4, sy, x0 + CW + 4, sy, CH * 0.2, idx < 4 ? 'fragile' : 'seal');
+      else { residue(x0 + CW * 0.1, sy - CH * 0.08, CW * 0.5, CH * 0.16); residue(x0 + CW * 0.7, sy - CH * 0.07, CW * 0.25, CH * 0.14); }
+      if (R() < 0.6) scrawl(x0 + rr(0.08, 0.5) * CW, y0 + rr(0.2, 0.35) * CH, CH * 0.12);
+      if (R() < 0.5) lpn(x0 + rr(0.55, 0.75) * CW, y0 + CH * 0.62, CW * 0.2);
+      if (R() < 0.35) blotch(x0 + rr(0.2, 0.8) * CW, y0 + rr(0.25, 0.75) * CH, CH * rr(0.12, 0.25), R() * 6);
+    } else {                                              // sides
+      const ink = pick(INKS), brand = pick(BRANDS), goods = pick(GOODS), v = idx % 6;
+      X.fillStyle = ink; X.globalAlpha = rr(0.72, 0.92);
+      if (v !== 5) { X.font = `${Math.round(CH * rr(0.13, 0.18))}px ${FONT}`; X.fillText(brand, x0 + CW * 0.06, y0 + CH * 0.24, CW * 0.6); }
+      if (v === 0 || v === 3) { X.font = `700 ${Math.round(CH * 0.08)}px ${SANS}`; X.fillText(goods, x0 + CW * 0.06, y0 + CH * 0.36, CW * 0.7); X.fillText(`QTY ${pick([6, 12, 24, 48, 100, 250])}   P/N ${alnum(4)}-${digits(3)}`, x0 + CW * 0.06, y0 + CH * 0.47, CW * 0.7); }
+      if (v === 1 || v === 4) { X.font = `900 ${Math.round(CH * 0.16)}px ${FONT}`; X.fillStyle = '#8a1a14'; X.fillText(pick(['FRAGILE', 'THIS SIDE UP', 'KEEP DRY', 'HEAVY']), x0 + CW * 0.06, y0 + CH * 0.5, CW * 0.6); X.fillStyle = ink; }
+      if (v !== 2) arrows(X, x0 + CW * 0.84, y0 + CH * 0.08, CH * 0.16, ink);
+      if (v === 0 || v === 2) { glass(X, x0 + CW * 0.92, y0 + CH * 0.42, CH * 0.18, ink); umbrella(X, x0 + CW * 0.8, y0 + CH * 0.45, CH * 0.18, ink); }
+      X.globalAlpha = 0.6; if (R() < 0.6) stamp(x0 + CW * rr(0.08, 0.2), y0 + CH * 0.78, CH * 0.13, ink); X.globalAlpha = 1;
+      X.font = `${Math.max(4, Math.round(CH * 0.055))}px ${SANS}`; X.fillStyle = ink; X.fillText(`LOT ${alnum(2)}${digits(4)}  ${pick(['MADE IN EU', 'PRINTED ON RECYCLED BOARD', 'FEFCO 0201', 'CORRUGATED  C-FLUTE'])}`, x0 + CW * 0.3, y0 + CH * 0.94);
+      if (R() < 0.45) label(x0 + CW * rr(0.38, 0.52), y0 + CH * rr(0.3, 0.42), CW * 0.36, CH * 0.5);
+      if (R() < 0.45) lpn(x0 + CW * rr(0.05, 0.3), y0 + CH * rr(0.52, 0.62), CW * 0.2);
+      if (R() < 0.3) tag(x0 + CW * rr(0.62, 0.78), y0 + CH * rr(0.55, 0.65), CW * 0.17);
+      if (R() < 0.5) scrawl(x0 + CW * rr(0.05, 0.55), y0 + CH * rr(0.55, 0.8), CH * rr(0.09, 0.14));
+      // tape running down from the top seam over the edge (the flaps' tape folds onto the sides)
+      const tk = R(); if (tk < 0.55) tape(x0 + CW / 2, y0 - 4, x0 + CW / 2, y0 + CH * rr(0.18, 0.3), CH * 0.2, tk < 0.25 ? 'brown' : tk < 0.45 ? 'clear' : 'fragile');
+      else if (tk < 0.7) residue(x0 + CW * 0.45, y0, CW * 0.1, CH * 0.22);
+      if (R() < 0.35) blotch(x0 + rr(0.1, 0.9) * CW, y0 + rr(0.6, 1.0) * CH, CH * rr(0.15, 0.32), R() * 6);
+    }
+    for (let i = 0, n = 6 + R() * 10; i < n; i++) {     // scuffs and rubs
+      const sx = x0 + R() * CW, sy = y0 + R() * CH, L = rr(10, 60) * k + 3, a = rr(-0.5, 0.5);
+      X.strokeStyle = R() < 0.6 ? 'rgba(40,25,10,0.18)' : 'rgba(255,240,220,0.14)'; X.lineWidth = rr(1, 4) * k + 0.5;
+      X.beginPath(); X.moveTo(sx, sy); X.lineTo(sx + Math.cos(a) * L, sy + Math.sin(a) * L); X.stroke();
+      HX.strokeStyle = 'rgba(100,100,100,0.5)'; HX.lineWidth = 2 * k + 0.5; HX.beginPath(); HX.moveTo(sx, sy); HX.lineTo(sx + Math.cos(a) * L, sy + Math.sin(a) * L); HX.stroke();
+    }
+    X.restore(); RX.restore(); HX.restore();
+  }
+  // height -> normal
+  const hd = HX.getImageData(0, 0, S, S).data, nC = mk(), NX = nC.getContext('2d'), nd = NX.createImageData(S, S), o = nd.data, st = 2.2 * k + 0.6;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = (y * S + x) * 4, l = hd[(y * S + Math.max(0, x - 1)) * 4], r = hd[(y * S + Math.min(S - 1, x + 1)) * 4];
+    const u = hd[(Math.max(0, y - 1) * S + x) * 4], d = hd[(Math.min(S - 1, y + 1) * S + x) * 4];
+    const dx = (l - r) / 255 * st, dy = (d - u) / 255 * st, il = 1 / Math.sqrt(dx * dx + dy * dy + 1);
+    o[i] = (dx * il * 0.5 + 0.5) * 255; o[i + 1] = (dy * il * 0.5 + 0.5) * 255; o[i + 2] = (il * 0.5 + 0.5) * 255; o[i + 3] = 255;
+  }
+  NX.putImageData(nd, 0, 0);
+  const tx = (c, srgb) => { const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = maxAniso; return t; };
+  CARD.map = tx(cC, true); CARD.rough = tx(cR, false); CARD.nrm = tx(nC, false);
+  return CARD;
+}
+
 function makeCrate({ w, h, d, baseY = 0, seed = 1, stencil = null }, woodMat, nailMat) {
   crateRand = seed * 9301 + 49297;
   const wood = [], nails = [];
@@ -5751,10 +5985,12 @@ function buildFurnitureKit(macro) {
   G.spotCan = new THREE.CylinderGeometry(0.036, 0.036, 0.12, 16);
   G.spotStem = new THREE.CylinderGeometry(0.008, 0.008, 0.05, 8);
   G.spotLens = new THREE.CylinderGeometry(0.027, 0.027, 0.004, 16);
-  M.cardboard = makeSurfaceMaterial(sets['painted drywall'], {
+  M.cardboard = CARD.on ? (cardAtlas(), new THREE.MeshStandardMaterial({ map: CARD.map, roughnessMap: CARD.rough, normalMap: CARD.nrm, normalScale: new THREE.Vector2(0.9, 0.9), roughness: 1, metalness: 0, vertexColors: true }))   // CARDBOARD ATLAS
+    : makeSurfaceMaterial(sets['painted drywall'], {
     metalness: 0, metalnessMap: null, aoMap: null, roughnessMap: null, roughness: 0.93,
     color: new THREE.Color('#d3a86e'), vertexColors: true, normalScale: new THREE.Vector2(1.6, 1.6)
   });
+  M.cardboardI = CARD.on ? cardInstMat(M.cardboard) : M.cardboard;   // the shelves' instanced boxes (aCard picks each face's cell)
   M.tape = new THREE.MeshStandardMaterial({ color: 0x9c7c4e, roughness: 0.3, metalness: 0 });
   M.laminate = new THREE.MeshStandardMaterial({ color: 0xc4bcab, roughness: 0.42, metalness: 0, normalMap: sets['painted drywall'].normalMap, normalScale: new THREE.Vector2(0.4, 0.4) });
   M.redPaint = new THREE.MeshPhysicalMaterial({ color: 0x9a140e, roughness: 0.34, metalness: 0, clearcoat: 0.7, clearcoatRoughness: 0.2 });
@@ -5861,7 +6097,7 @@ function buildFurnitureKit(macro) {
           const tone = archive ? 0.98 + rnd() * 0.08 : 0.74 + rnd() * 0.34;
           if (SHELF.on) slots.push({ x: bx, y: y0 + bh / 2, z: bz, ry, d: bd, h: bh, w: bw - 0.02, tone, tape: !archive });   // real boxes (SHELF): drawn instanced per room, wake into props
           else {
-            boxes.push(placed(toneWood(lbox(bd, bh, bw - 0.02, 0.004), tone), bx, y0 + bh / 2, bz, 0, ry, 0));
+            boxes.push(placed(toneWood(cardUV(lbox(bd, bh, bw - 0.02, 0.004), cardSeed(seed, boxes.length)), tone), bx, y0 + bh / 2, bz, 0, ry, 0));
             if (!archive) tape.push(placed(fbox(bd + 0.002, 0.002, 0.048), bx, y0 + bh + 0.001, bz, 0, ry, 0));
           }
         }
@@ -5928,7 +6164,7 @@ function buildFurnitureKit(macro) {
   // --- Taped cardboard box (loose prop), 40 x 30 x 30 cm, packed. ---
   {
     crateRand = 7171;
-    const box = kitGroup(merged([toneWood(rbox(0.4, 0.3, 0.3, 0.005), 0.95)], M.cardboard),
+    const box = kitGroup(merged([toneWood(cardUV(rbox(0.4, 0.3, 0.3, 0.005), 7171), 0.95)], M.cardboard),
       merged([placed(fbox(0.402, 0.002, 0.05), 0, 0.151, 0), placed(fbox(0.002, 0.08, 0.05), 0.201, 0.11, 0), placed(fbox(0.002, 0.08, 0.05), -0.201, 0.11, 0)], M.tape, false));
     KIT.props.box = { proto: box, name: 'cardboard box', mass: 2.4, half: [0.2, 0.15, 0.15], friction: 0.7, restitution: 0.04, y: 0.152 };
   }
@@ -6136,7 +6372,7 @@ function buildFurnitureKit(macro) {
       for (let layer = 0; layer < 3; layer++) for (let i = 0; i < 2; i++) for (let j = 0; j < 3; j++) {
         if (layer === 2 && R() < 0.25) continue;                      // the top layer is never quite full
         const x = -0.25 + i * 0.5 + (R() - 0.5) * 0.012, z = -0.4 + j * 0.4 + (R() - 0.5) * 0.012, y = 0.122 + layer * 0.31 + 0.15, ry = (R() - 0.5) * 0.03;
-        cart.push(toneWood(placed(lbox(0.49, 0.3, 0.39, 0.004), x, y, z, 0, ry, 0), 0.8 + R() * 0.24));
+        cart.push(toneWood(placed(cardUV(lbox(0.49, 0.3, 0.39, 0.004), cardSeed(5150, cart.length)), x, y, z, 0, ry, 0), 0.8 + R() * 0.24));
         tape.push(placed(fbox(0.492, 0.002, 0.05), x, y + 0.151, z, 0, ry, 0));
       }
       addProto('pallet', kitGroup(merged(wood, M.wood), merged(cart, M.cardboard), merged(tape, M.tape, false)));
@@ -10259,7 +10495,7 @@ function buildPropKit() {
     g.add(mesh(placed(new THREE.CylinderGeometry(r + 0.0006, r + 0.0006, 0.12, 28, 1, true), 0, -0.01, 0), label));
     K.paint = { proto: g, name: 'paint tin', mass: 2.6, shape: 'cylinder', half: [r, h / 2, r], friction: 0.45, restitution: 0.12, y: h / 2 + 0.001 }; }
   // a torn cardboard flap (what a shot-up box comes apart into)
-  { const g = new THREE.Group(); g.add(mesh(rbox(0.3, 0.006, 0.26, 0.002), KIT.mat.cardboard || M.wood));
+  { const g = new THREE.Group(); g.add(mesh(cardUV(rbox(0.3, 0.006, 0.26, 0.002), 913), KIT.mat.cardboard || M.wood));
     K.flap = { proto: g, name: 'cardboard flap', mass: 0.06, half: [0.15, 0.004, 0.13] }; }   // 0.3 x 0.26 m of corrugated board (~0.75 kg/m2)
   if (K.box) K.box.brk = { hp: 2.4, fx: 'wood', flaps: 3 };
   if (K.smallCrate) K.smallCrate.brk = { hp: 3.5, fx: 'wood', boards: 4 };
@@ -10303,11 +10539,19 @@ function shelfBoxesBuild(room, g) {
     const pr = P[f.type], sl = pr && pr.userData.slots;
     if (!sl || !sl.length) continue;
     const y0 = FURN[f.type] ? FURN[f.type].y : 0, ca = Math.cos(f.ry || 0), sa = Math.sin(f.ry || 0);
-    for (const t of sl) list.push({ x: f.x + t.x * ca + t.z * sa, y: y0 + t.y, z: f.z - t.x * sa + t.z * ca, a: (f.ry || 0) + t.ry, d: t.d, h: t.h, w: t.w, tone: t.tone, tape: t.tape, i: 0, c: null, awake: false });
+    for (const t of sl) list.push({ x: f.x + t.x * ca + t.z * sa, y: y0 + t.y, z: f.z - t.x * sa + t.z * ca, a: (f.ry || 0) + t.ry, d: t.d, h: t.h, w: t.w, tone: t.tone, tape: t.tape, i: 0, c: null, awake: false, seed: 0 });
   }
   if (!list.length) return null;
-  if (!SHELF.geo) { SHELF.geo = toneWood(new RoundedBoxGeometry(1, 1, 1, 1, 0.012), 1); SHELF.tapeGeo = new THREE.BoxGeometry(1, 1, 1); }
-  const mesh = new THREE.InstancedMesh(SHELF.geo, M.cardboard, list.length), tape = new THREE.InstancedMesh(SHELF.tapeGeo, M.tape, list.length);
+  if (!SHELF.geo) { SHELF.geo = toneWood(new RoundedBoxGeometry(1, 1, 1, 1, 0.012), 1); if (CARD.on) cardUnitUV(SHELF.geo); SHELF.tapeGeo = new THREE.BoxGeometry(1, 1, 1); }
+  let geo = SHELF.geo;
+  if (CARD.on) {          // CARDBOARD ATLAS: per room its own aCard (shared vertex data), seeded by slot + index
+    geo = new THREE.BufferGeometry(); for (const k in SHELF.geo.attributes) geo.setAttribute(k, SHELF.geo.attributes[k]);
+    if (SHELF.geo.index) geo.setIndex(SHELF.geo.index);
+    const sd = new Float32Array(list.length);
+    list.forEach((b, i) => { b.seed = cardSeed(room.slot, i) % 65521; sd[i] = b.seed; });
+    geo.setAttribute('aCard', new THREE.InstancedBufferAttribute(sd, 1));
+  }
+  const mesh = new THREE.InstancedMesh(geo, M.cardboardI, list.length), tape = new THREE.InstancedMesh(SHELF.tapeGeo, M.tape, list.length);
   list.forEach((b, i) => {
     b.i = i;
     SHELF.q.setFromAxisAngle(Y_AXIS, b.a);
@@ -10346,7 +10590,7 @@ function shelfWake(room, b, imp, P) {
   }
   S.mesh.setMatrixAt(b.i, SHELF.zero); S.tape.setMatrixAt(b.i, SHELF.zero);
   S.mesh.instanceMatrix.needsUpdate = true; S.tape.instanceMatrix.needsUpdate = true;
-  const M = KIT.mat, root = kitGroup(mesh(toneWood(lbox(b.d, b.h, b.w, 0.004), b.tone), M.cardboard),
+  const M = KIT.mat, root = kitGroup(mesh(toneWood(cardUV(lbox(b.d, b.h, b.w, 0.004), b.seed), b.tone), M.cardboard),
     b.tape ? mesh(placed(fbox(b.d + 0.002, 0.002, 0.048), 0, b.h / 2 + 0.001, 0), M.tape, false) : null);
   const prop = addProp(root, { name: 'cardboard box', mass: Math.max(0.5, b.d * b.h * b.w * SHELF.dens), half: [b.d / 2 - 0.003, b.h / 2 - 0.003, b.w / 2 - 0.003], friction: 0.7, restitution: 0.04,   // 3 mm in: neighbours that touch never pop each other up
     pos: [rWX(room, b.x), room.origin.y + b.y + 0.002, rWZ(room, b.z)], rot: new THREE.Euler(0, b.a + rYaw(room), 0) });
@@ -10418,6 +10662,7 @@ function spawnProp(room, s) {
   if (s.type === 'table') return spawnTable(room, s);   // step 6: compound body, can start tipped over
   const def = KIT.props[s.type], o = room.origin;
   const root = def.proto.clone();
+  if (CARD.on && s.type === 'box') { const sd = cardSeed(room.slot, Math.round(s.x * 37 + s.z * 101)); for (const c of root.children) if (c.material === KIT.mat.cardboard) c.geometry = cardUV(c.geometry.clone(), sd); }   // CARDBOARD ATLAS: each loose box its own faces
   for (const c of root.children) freezeStatic(c);       // parts never move inside a prop; only the root does
   const prop = addProp(root, {
     name: def.name, mass: def.mass, shape: def.shape, half: def.half, friction: def.friction, restitution: def.restitution,
