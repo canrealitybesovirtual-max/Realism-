@@ -2372,3 +2372,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: extra big-room partitions removed
 - The 1-3 extra drywall partitions in rooms of 55 m2+ (the tall walls standing in storage rooms) are off; ?bigpart=on brings them back. Room-type partitions unchanged. Parse checked only.
+
+## CQC: trigger finger lowers on every gun
+- The 0.16 rad knuckle curl lowered the fingertip on the rifles but raised it on the pistols (their knuckle sits under the blade). vmhFingFrame now picks the knuckle angle 0.04 or 0.16 (pull +0.14) whose fingertip lands lower in gun space. Measured headless (tip y in the gun frame, mm, old 0.10 -> now): Glock 22.6 -> 21.8, M1911 38.9 -> 38.4 (0.04), AKM 37.3 -> 35.8, M4A1-S 29.2 -> 28.4, AWM 9.6 -> 8.3 (0.16). Screenshots not taken (headless screenshot timed out); not seen in a headset.
