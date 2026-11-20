@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.07</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.08</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.07</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.08</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -12229,7 +12229,16 @@ const canvas = renderer.domElement;
 const stance = { lean: 0, crouch: 0, crouchOn: false, roll: 0 };   // step 6: desktop lean / crouch (see updateStance)
 function applyLook() { camera.rotation.set(look.pitch, look.yaw, -stance.roll, 'YXZ'); }
 canvas.addEventListener('click', () => { if (!IS_TOUCH && !renderer.xr.isPresenting && canvas.requestPointerLock) canvas.requestPointerLock(); });
-document.addEventListener('pointerlockchange', () => { if (!IS_TOUCH) ui.hint.classList.toggle('hidden', document.pointerLockElement === canvas || PAD.active || !ready); });
+document.addEventListener('pointerlockchange', () => { MSPIKE.t = performance.now(); if (!IS_TOUCH) ui.hint.classList.toggle('hidden', document.pointerLockElement === canvas || PAD.active || !ready); });
+// QA fix: Chromium can report one huge movementX / Y on the first moves after the pointer locks (the cursor's jump to the
+// lock point: here exactly half the window), which flicked the view ~45-80 deg up and round when you clicked or aimed.
+// Dropped: a step over 15 % of the window within 0.4 s of the lock, or over 30 % of it at any time (moves are coalesced
+// per frame: even a very fast flick is ~150 px in one event).
+const MSPIKE = { t: 0 };
+function mouseSpike(e) {
+  const m = Math.max(Math.abs(e.movementX || 0), Math.abs(e.movementY || 0)), w = Math.max(1000, innerWidth);
+  return m > w * 0.3 || (performance.now() - MSPIKE.t < 400 && m > w * 0.15);
+}
 // Click while holding something = throw it.
 document.addEventListener('mousedown', (e) => {
   if (document.pointerLockElement !== canvas) return;
@@ -12243,7 +12252,7 @@ document.addEventListener('mouseup', (e) => {
 });
 document.addEventListener('contextmenu', (e) => { if (document.pointerLockElement === canvas) e.preventDefault(); });
 document.addEventListener('mousemove', (e) => {
-  if (document.pointerLockElement !== canvas) return;
+  if (document.pointerLockElement !== canvas || mouseSpike(e)) return;
   const dg = gunOf(deskHand), sens = 0.0022 * (dg ? 1 - 0.4 * dg.ads : 1);   // slower while aiming down sights
   look.yaw -= e.movementX * sens; look.pitch -= e.movementY * sens;
   look.pitch = clamp(look.pitch, -1.45, 1.45); applyLook();
@@ -29196,6 +29205,12 @@ function vmHipAim(H, g) {
   return true;
 }
 const VM_HIP = { awp: [0.025, -0.03, -0.06], g17: [0.01, 0.05, -0.02], m1911: [0.01, 0.05, -0.02] };   // screenshot pass: the pistols sat below the frame (hands off screen)
+// QA fix: an AWM with no optic and no flip-up sights on it (it starts bare) has no sight line to bring to the eye.
+function awmNoSight(g) {
+  if (!g || g.type !== 'awp') return false;
+  for (const p of g.atts || []) { const it = p && p.item; if (it && (optIs(it) || it.o2 === 'buisR' || it.o2 === 'buisF')) return false; }
+  return true;
+}
 function vmGunPlace(V, F, g) {
   const W = _v9, mm = vmMirOf(VM.mir, g.model);
   // hip: where the pack's gun is this frame (vmPlace has posed the rig)
@@ -29221,7 +29236,8 @@ function vmGunPlace(V, F, g) {
     c = Db && vmMirOf(mm, g.parts.shroud); if (c) vmFollow(c, Db);
   }
   // aimed: eased to where your real gun is in your view (deskGunPose), scaled about its eye; the arms come with it
-  const k = smoothstep(0, 1, g.ads), n = VM.nadeT * VM.nadeT, base = V.base;
+  const nsA = awmNoSight(g), k = smoothstep(0, 1, g.ads) * (nsA ? 0.35 : 1), n = VM.nadeT * VM.nadeT, base = V.base;   // QA fix: a bare AWM has nothing to look through: raised, not pulled to the eye (the take's fists filled the view)
+  if (nsA && g.ads > 0.6 && !VM.nsToast) { VM.nsToast = true; toast('The AWM has no sight fitted: put a scope or red dot on it at the GUNSMITH bench', 3200); }
   VM.adsK = k;
   const vf = fovFor(VM.fov);                                       // step 98: at the hip the arms keep their size against the world
   VM.fovNow = vf + (camera.fov - vf) * k;
@@ -41060,6 +41076,7 @@ window.addEventListener('mousemove', (e) => {
   if (BV.drag !== 'desk') return;
   if (document.pointerLockElement !== canvas) { BV.drag = null; return; }
   e.stopImmediatePropagation();                                     // before the look handler (capture on window)
+  if (mouseSpike(e)) return;
   bvTurn(e.movementX, e.movementY, null);
 }, { capture: true });
 window.addEventListener('mouseup', (e) => { if (e.button === 0 && BV.drag === 'desk') BV.drag = null; }, true);
@@ -55548,6 +55565,7 @@ if (BZ.on) {
   window.addEventListener('mousemove', (e) => {
     if (!BZ.want || document.pointerLockElement !== canvas) return;
     e.stopImmediatePropagation();
+    if (mouseSpike(e)) return;
     const r = canvas.getBoundingClientRect();
     BZ.nx = clamp(BZ.nx + e.movementX * 2 / Math.max(1, r.width), -1, 1);
     BZ.ny = clamp(BZ.ny - e.movementY * 2 / Math.max(1, r.height), -1, 1);
@@ -62838,6 +62856,7 @@ window.addEventListener('mousemove', (e) => {
   e.stopImmediatePropagation();                                    // no look while it is open
   const W = EMO.W;
   let x, y;
+  if (document.pointerLockElement === canvas && mouseSpike(e)) return;
   if (document.pointerLockElement === canvas) { x = W.x + e.movementX / 140; y = W.y + e.movementY / 140; const m = Math.hypot(x, y); if (m > 1.2) { x *= 1.2 / m; y *= 1.2 / m; } }
   else { const r = Math.min(innerWidth, innerHeight) * 0.3; x = (e.clientX - innerWidth / 2) / r; y = (e.clientY - innerHeight / 2) / r; }
   emoAim(x, y);
@@ -64134,6 +64153,7 @@ const CL_CSS = `
 #clsPick .cl-go{min-height:52px;padding:0 30px;border-radius:7px;border:1px solid #d9ecd2;background:#d9ecd2;color:#0e120e;font:800 18px/1 "Archivo","Arial Black",sans-serif;font-stretch:112%;text-transform:uppercase;letter-spacing:.02em;cursor:pointer}
 #clsPick .cl-go:hover{background:#eef8ea}
 @media (max-width:860px){#clsPick .cl-body{grid-template-columns:1fr}#clsPick .cl-list{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid rgba(140,255,215,.1)}#clsPick .cl-card{grid-template-columns:1fr;min-width:150px}#clsPick .cl-th{width:100%}#clsPick .cl-main{grid-template-columns:1fr}#clsPick .cl-view .cl-vn{font-size:32px}#clsPick .cl-stats{grid-template-columns:1fr}#clsPick .cl-sub{display:none}}
+@media (max-height:820px){#clsPick .cl-box{max-height:calc(100vh - 16px)}#clsPick .cl-head{padding:10px 18px}#clsPick h2{font-size:24px}#clsPick .cl-main{padding:12px 18px;gap:14px}#clsPick .cl-view{height:clamp(140px,26vh,240px)}#clsPick .cl-view .cl-vn{font-size:34px}#clsPick .cl-view .cl-vr{font-size:15px}#clsPick .cl-chip{min-height:32px;padding:4px 9px;font-size:14px}#clsPick .cl-parts{gap:5px}#clsPick .cl-stats{gap:3px}#clsPick .cl-st{font-size:13px}#clsPick .cl-side{margin-top:8px;padding:7px 10px;font-size:14px}#clsPick .cl-card{padding:6px}#clsPick .cl-list{gap:6px;padding:12px}#clsPick .cl-foot{padding:10px 18px}#clsPick .cl-go{min-height:44px}}
 @media (min-width:1900px){#clsPick{font-size:18px}#clsPick .cl-box{width:min(1560px,calc(100vw - 48px))}}
 `;
 function clBuild() {

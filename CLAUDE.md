@@ -2480,3 +2480,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: drums show at once, shield bought (update 1.07)
 - drumSwap(t) (from drumStore): fitting / removing a drum swaps the magazine seated in every gun of that type (full, not one in a hand) and the gun locker shelf's spares (removed, restocked), so the 50 / 75 / 100 drum shows right away. Before, only new magazines were drums.
 - Shield (SHD.own, cqc.shield.v1 own): bought once at GUNSMITH SUPPLIES for $400 (BUY button; III plates $600 more as before); shdBuy puts it leaning by the gun locker of the safe room you are in at once, and every safe-room restock after. Not owned = not placed. Old saves that bought III keep it. Headless: Glock seated + 2 locker mags became 50-round drums; shield bought, placed at room-local (3.8, -1.22).
+
+## CQC: QA pass (update 1.08; headless screenshots + two autorun passes)
+- Autorun: AKM 6 rooms (incl. a stairwell) and M4A1-S 4 rooms cleared, no page / frame errors, no unlinked programs, no 404s.
+- Fixed: view flicked ~45 deg up and ~80 deg round when you clicked / aimed with the right mouse: Chromium sent one mousemove with movementX / Y = minus half the window right after the pointer lock (measured -640 / -360 at 1280 x 720). mouseSpike drops a step over 15 % of the window within 0.4 s of a lock change, or over 30 % at any time (look, bench zoom cursor, build-view drag, emote wheel).
+- Fixed: aiming the bare AWM (it starts with no optic) pulled the sniper take's fists over your eye. awmNoSight: no optic and no flip-up sights on it = the aim only raises the gun 35 %, and a one-time hint says to fit a scope or dot. With a scope it aims as before (full scope view).
+- Fixed: class picker at 1280 x 720 cut off the stats list and last part rows; short screens (<= 820 px tall) get a compact layout (everything fits at 720 and 768).
+- Looked at, no change: title (both steps), safe room views, all five guns at the hip and aimed (Glock, M1911, AKM, M4 irons line up), M menu.
