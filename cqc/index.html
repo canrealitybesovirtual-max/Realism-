@@ -12712,6 +12712,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyR' && !e.repeat) { if (!deskReload() && !gunOf(deskHand)) props.forEach(resetProp); }   // polish 2: R during a reload never resets the room's objects
   if (e.code === 'KeyV' && !e.repeat) { if (e.shiftKey) deskCheck(); else deskRack(); }   // polish 3: Shift+V = press check
   if (e.code === 'KeyX' && !e.repeat) { const g = gunOf(deskHand); if (g) cycleSelector(g); }
+  if ((e.code === 'Comma' || e.code === 'Period') && !e.repeat) o2Key(e.code);   // new optics: cant onto the offset dot / flip the magnifier or the flip-up sights
   if (e.code === 'Digit1' && !e.repeat && !renderer.xr.isPresenting) deskSlot('hip');
   if (e.code === 'Digit2' && !e.repeat && !renderer.xr.isPresenting) deskSlot('chest');
   if (e.code === 'KeyQ' && !e.repeat) cycleQuality();
@@ -12840,6 +12841,7 @@ function padPoll(dt) {
   else if (PAD.fire && rt < 0.2) { PAD.fire = false; deskInput.fire = false; DOORUSE.mouse = false; }
   if (!PAD.ads && lt > 0.35) { PAD.ads = true; DESK_ADS.pad = true; deskAdsSync(); }
   else if (PAD.ads && lt < 0.2) { PAD.ads = false; DESK_ADS.pad = false; deskAdsSync(); }
+  o2Pad(B);                                        // new optics: LT + Y flips, LT + D-pad left cants
   // buttons
   for (const k in PAD.map) {
     const b = +k, m = PAD.map[k], p = !!(B[b] && B[b].pressed), was = !!PAD.prev[b];
@@ -20678,7 +20680,7 @@ function attHandPose(h, it) {
   for (let k = 1; k < 5; k++) setFinger(h, k, lerpPose(HPOSE.relax[k], HPOSE.fist[k], c));
   setFinger(h, 0, lerpPose(HPOSE.thumbRest, HPOSE.fist[0], ATT_POSE.thumb));
 }
-function attKey(it) { return it.awm ? 'att:awm:' + it.awm : it.can === 'm4s' || it.sub === 'm4part' || it.sub === 'fh' ? 'att:m4:' + it.part : it.type === 'sup' ? 'att:sup:' + (it.big ? 'b' : 's') : 'att:' + it.sub; }   // step 105
+function attKey(it) { return it.o2 ? 'att:o2:' + it.o2 : it.awm ? 'att:awm:' + it.awm : it.can === 'm4s' || it.sub === 'm4part' || it.sub === 'fh' ? 'att:m4:' + it.part : it.type === 'sup' ? 'att:sup:' + (it.big ? 'b' : 's') : 'att:' + it.sub; }   // step 105
 function attHold(key) {
   const A = ATT_HOLD[key], q = new THREE.Quaternion().setFromEuler(new THREE.Euler(A.r[0], A.r[1], A.r[2], 'XYZ'));
   const c = CONTACT.clouds.get(key), o = new THREE.Vector3();
@@ -23863,6 +23865,7 @@ function deskGunPose(g, dt, P, Q) {
     P.x -= 0.03 * bk; P.y += 0.02 * bk; P.z -= 0.16 * bk;
     Q.multiply(_wq.setFromEuler(_we.set(-0.1 * bk, 0.12 * bk, 0.5 * bk)));
   }
+  if (O2.on) o2DeskCant(g, t, P, Q);                              // new optics: canted onto the offset dot
   deskHeft(g, dt, t, Q);                                          // step 27
   stressTremor(Q, t);                                             // step 41: after a hit the gun shakes (computer)
   camera.updateWorldMatrix(true, false);
@@ -23940,6 +23943,7 @@ let lastAmmoText = '';
 const _bq = new THREE.Quaternion();
 function weaponsUpdate(dt, now) {
   if (!WEAPON.ready) return;
+  o2Tick(dt);                                                     // new optics: flips, folds, cant, the VR push
   _aimFix.setFromEuler(_we.set(CONFIG.weapons.aimPitch, 0, 0));
   updateBodyFrame();
   for (let i = props.length - 1; i >= 0; i--) {
@@ -25606,6 +25610,7 @@ function wbKit() {
   return WB.kit;
 }
 function wbMakeAtt(sub, big = true, variant = null) {
+  if (variant && variant.startsWith('o2:')) return o2MakeAtt(variant.slice(3));   // new optics
   if (variant === 'pl2') return railMakePl2();                     // step 112: the Glock's PL-2
   if (sub === 'ext') return muzMakeExt();                           // step 103
   if (AKM_ITEM[variant] || AKM_ITEM[sub]) return akmMakeAtt(AKM_ITEM[variant] ? variant : sub);   // step 102: the AKM's parts
@@ -25946,11 +25951,11 @@ function wbTable() {
   if (AKMA.ready) for (const t of WB_AKM) if (own(t)) L.push(t);   // step 102
   if (AWMA.ready) for (const t of WB_AWM) if (own(t) && (t[5] !== 'awm:dot' || M4A.ready)) L.push(t);   // step 113: the AWM's parts, the front row of the same bench
   if (M4A.on && M4A.ready) for (const t of WB_M4) if (own(t)) L.push(t);   // step 105: the M4A1-S's parts, on the bench left of the gunsmith's
-  return m19Table(railTable(L));                                    // step 108: the 1911's own parts (step 112: a PL-2 that came off)
+  return o2Table(m19Table(railTable(L)));                         // new optics                                    // step 108: the 1911's own parts (step 112: a PL-2 that came off)
 }
 // A table spot t ([sub, big, x, z, yaw, variant, store id]) takes part it: the same sub; a can of the same size; the same variant:
 // the AKM's parts (step 102, by key), the .45 parts (step 108), the M4A1-S's (step 105: its can, its parts by kind), the 9 mm compact can.
-function wbVar(it) { return it.awmDot ? 'awm:dot' : it.awm ? 'awm:' + it.awm : it.pl2 ? 'pl2' : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
+function wbVar(it) { return it.o2 ? 'o2:' + it.o2 : it.awmDot ? 'awm:dot' : it.awm ? 'awm:' + it.awm : it.pl2 ? 'pl2' : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
 function wbSpotFits(it, t) { return it.sub === t[0] && (t[0] !== 'sup' || !!it.big === t[1]) && wbVar(it) === (t[5] || null); }
 // Step 100 / 105: spots a store purchase just opened get their part.
 function wbTableFill() {
@@ -26185,6 +26190,7 @@ function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
 function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
+  if (g && it.o2 && O2.on) return o2BenchFit(g, p, WB.reach.part);   // new optics: its place on this gun (out of reach: it stays where let go)
   if (g && !muzIsDev(it) && railDevOf(it)) { const r = railBenchFit(g, p, WB.reach.dev); if (r !== null) return r; }   // step 112: the next free rail spot
   if (g && muzIsDev(it)) { if (muzBenchFit(g, p, WB.reach.muz)) return true; }   // step 103: onto the chain's front end
   else if (g && it.awm && AWMA.ready && (g.type === 'awp' || it.awm === 'kf' || it.awm === 'shade')) { const r = awmBenchFit(g, p, WB.reach.part); if (r !== null) return r; }   // other guns: the generic snap below   // step 113: its place on the AWM
@@ -26272,7 +26278,7 @@ function wbSnap(g, p) {
  * g.wr.eye (desktop ADS), the scope picture (ACOG desc with this gun's objective, the AKM 2x's own picture). Taken off: the
  * gun's own line again (its own refresh, or what it had before). */
 const OPT_AK = new Set(['akdot', 'akholo', 'akx2']), _osB = new THREE.Box3(), _osV = new THREE.Vector3();
-function optIs(it) { return !!it && (it.awm === 'scope' || it.awm === 's10' || it.sub === 'dot' || OPT_AK.has(it.akKey) || (it.sub === 'm4part' && (it.part === 'dot' || it.part === 'holo' || it.part === 'acog'))); }
+function optIs(it) { return !!it && (it.o2Primary || it.awm === 'scope' || it.awm === 's10' || it.sub === 'dot' || OPT_AK.has(it.akKey) || (it.sub === 'm4part' && (it.part === 'dot' || it.part === 'holo' || it.part === 'acog'))); }
 function optOwn(g, it) { return !it.snapped && ((it.awm && g.type === 'awp') || (it.sub === 'dot' && (g.type === 'g17' || g.type === 'm1911')) || (it.akKey && g.type === 'akmn') || (it.sub === 'm4part' && g.type === 'm4a1s')); }
 function optAxisMesh(it) { return it.eyepiece || it.reticle || it.pip || it.glass || null; }
 // The optic's axis point in the gun's design space (g.model), or null.
@@ -26460,7 +26466,8 @@ function foreignFx(g, own) {
   A.mass = (A.mass || 0) + m; for (const q of ['kick', 'climb', 'dkick', 'sway', 'aim', 'ads']) A[q] = (A[q] ?? 1) * N[q];
   g._ffx = N;
 }
-function optSight(g, own) {
+function optSight(g, own) { optSight0(g, own); o2Sight(g); }   // new optics: magnifier, flip-up sights, offset dot
+function optSight0(g, own) {
   if (!g || !g.prop || !g.model) return;
   const p = (g.atts || []).find((q) => optIs(q.item) && !optOwn(g, q.item));
   const P = g.parts || (g.parts = {}), d = g.def, pm = d.palm || [0, 0, 0];
@@ -26570,7 +26577,7 @@ function wbFreeze(g, p) {
   const root = g.prop.root;
   root.updateMatrixWorld(true);
   if (muzIsDev(it)) { muzRefresh(g); return; }                     // step 103: cans, comps, extensions: the chain
-  if (it.akKey || it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp' || it.sub === 'm4part' || it.awm) { attRefresh(g); return; }   // step 100 / 102 / 105 / 108
+  if (it.akKey || it.sub === 'dot' || it.sub === 'cover' || it.sub === 'comp' || it.sub === 'm4part' || it.awm || it.o2) { attRefresh(g); return; }   // step 100 / 102 / 105 / 108
   if (it.sub === 'sup') { g.sup = it; it.endR = root.worldToLocal((it.endR || new THREE.Vector3()).set(0, 0, -(it.len || 0.16)).applyMatrix4(p.root.matrixWorld)); if (g.type === 'g17') g17Refresh(g); return; }   // step 78: quieter, no flash (step 98: its end, gun-root space)
   if (RAIL.on && (it.sub === 'light' || it.sub === 'laser')) { railWire(g, p); attRefresh(g); return; }   // step 112: one of several
   if (it.sub === 'light') {
@@ -26622,6 +26629,7 @@ function wbDeskAtt0(p) {
     if (held) { wbToggle(null, held); g = wbStuckGun(); }
     if (!g) { toast('Hold a gun (or lay it by the vise), then click a part, or press CLAMP'); return; }
   }
+  if (it.o2 && O2.on) { wbUnhook(it); if (o2BenchFit(g, p, 0)) toast(`${it.label} on. Click it again to take it off, B to lock`); return; }   // new optics
   if (railDevOf(it)) {                                              // step 112: the next free rail spot (null: no rails on this gun)
     wbUnhook(it);
     const r = railBenchFit(g, p, 0);
@@ -36756,6 +36764,7 @@ function weaponsPrecompile(on) {
   akmPrecompile(on);                                // step 102: the AKM's parts, its reticles, the 2x view
   m19Precompile(on);                                // step 108: the 1911's parts, rail, grip panel program
   awmPrecompile(on);                                // step 113: the AWM's parts, the 10x eyepiece, the .338 can's glow
+  o2Precompile(on);                                 // new optics
   m4Precompile(on);                                 // step 105: the M4A1-S's reticle glasses and scope eyepiece
   railPrecompile(on);                               // step 112: the light glow cones
   trcPrecompile(on);                                // step 121: the tracer streaks (built now, always in the scene)
@@ -38514,7 +38523,13 @@ const WS_ITEMS = [
   // step 126 (DRUM): drum magazines; one spare rides with you (a drum does not fit a magazine pouch)
   { id: 'g17.d50', gun: 'g17', cat: 'mag', name: '50-round drum (D-50 class)', price: 130, desc: 'Polymer drum under a full-length feed tower: 50 rounds; heavy, slow to seat, one spare', requires: [], model: 'd50', fx: {}, owned: true },
   { id: 'akmn.d75', gun: 'akmn', cat: 'mag', name: '75-round steel drum', price: 180, desc: 'Stamped steel drum with a winding key: 75 rounds; very heavy, slow to seat, one spare', requires: [], model: 'd75', fx: {}, owned: true },
-  { id: 'm4a1s.d100', gun: 'm4a1s', cat: 'mag', name: '100-round double drum (C-Mag class)', price: 320, desc: 'A drum each side of the feed tower: 100 rounds; heavy, slow to seat, one spare', requires: [], model: 'd100', fx: {}, owned: true }
+  { id: 'm4a1s.d100', gun: 'm4a1s', cat: 'mag', name: '100-round double drum (C-Mag class)', price: 320, desc: 'A drum each side of the feed tower: 100 rounds; heavy, slow to seat, one spare', requires: [], model: 'd100', fx: {}, owned: true },
+  // New optics: any gun (bought onto the bench table, fitted at the vise on a riser that clamps to that gun)
+  { id: 'o2.lpvo', gun: 'any', anyGun: true, o2: 'lpvo', cat: 'optic', name: '1-6x24 LPVO (cantilever mount)', price: 1650, desc: '1x up close, 6x to identify; lit dot and horseshoe; zoom with the wheel / right stick', requires: [], model: 'o2:lpvo', fx: {} },
+  { id: 'o2.mag', gun: 'any', anyGun: true, o2: 'mag', cat: 'optic', addon: true, name: '3x magnifier (flip-to-side mount)', price: 680, desc: 'Behind a red dot / holo: 3x through it; flips aside (Period, LT + Y, or push it)', requires: [], model: 'o2:mag', fx: {} },
+  { id: 'o2.odot', gun: 'any', anyGun: true, o2: 'odot', cat: 'optic', addon: true, name: 'Offset red dot (45-degree, RMR class)', price: 520, desc: 'Cant the gun to use it (Comma, LT + D-pad left; in VR just tilt it)', requires: [], model: 'o2:odot', fx: {} },
+  { id: 'o2.buisR', gun: 'any', anyGun: true, o2: 'buisR', cat: 'optic', addon: true, name: 'Flip-up rear sight (MBUS class)', price: 75, desc: 'Folds under an optic, up without one; fit with the front sight', requires: [], model: 'o2:buisR', fx: {} },
+  { id: 'o2.buisF', gun: 'any', anyGun: true, o2: 'buisF', cat: 'optic', addon: true, name: 'Flip-up front sight (MBUS class)', price: 65, desc: 'Folds under an optic, up without one; fit with the rear sight', requires: [], model: 'o2:buisF', fx: {} },
 ];
 /* ===========================================================================
  *  GUN INTERNALS (GI; ?internals=off = none): trigger groups in the GUNSMITH store, a new TRIGGER GROUP slot per gun.
@@ -38877,6 +38892,7 @@ function wsBuyItem(id, anyGun = false) {
   if (it.model && !it.hw && !anyGun) wsFit(id, true);             // any-gun buy: it goes on the bench table
   wsSave();
   const RB = WS_REAL[it.gun], live = wsReal(it.gun);
+  if (it.o2) wbTableFill();                                        // new optics: onto the bench table
   if (RB) RB.changed(it, true);                                    // step 100 / 102 / 105 / 108: on every gun of the type (and on the bench table)
   if (RAIL.on && RAIL_WRAP[it.gun] && RAIL_WRAP[it.gun].id === it.id) railSyncType(it.gun);   // step 112: the wrap rail on every gun of the type
   wsMsg(`${it.name} bought for ${fmtMoney(it.price)}${it.hw ? (live ? `: on your ${live.name} now` : '') : it.model ? (live ? ` and fitted on your ${live.name}` : ' and fitted') : '. Model coming: it fits in a later update'}`);
@@ -39014,7 +39030,7 @@ function wsDrawGun(k, now) {
       if (mine) { ctx.fillStyle = TC.ok; ctx.beginPath(); ctx.arc(x + tw - 10, y + 10, 4.5, 0, Math.PI * 2); ctx.fill(); }
     }
     const rows = WS_ITEMS.filter((it) => it.gun === k && (cat === 'hardware' ? it.hw : it.cat === cat));
-    if (cat !== 'hardware') for (const it of WS_ITEMS) if (it.gun !== k && !it.hw && it.model && it.cat === cat && cat !== 'fcg' && WS_GUNS[it.gun]) rows.push(it);   // any-gun fit: every gun's parts for this slot (fitted at the vise)
+    if (cat !== 'hardware') for (const it of WS_ITEMS) if (it.gun !== k && !it.hw && it.model && it.cat === cat && cat !== 'fcg' && (WS_GUNS[it.gun] || it.anyGun)) rows.push(it);   // any-gun fit: every gun's parts for this slot (fitted at the vise)
     const pages = Math.max(1, Math.ceil(rows.length / WS_SLOTS_MAX)), pg = W.anyPage = (W.anyCat === k + cat ? Math.min(W.anyPage || 0, pages - 1) : 0); W.anyCat = k + cat;
     if (pages > 1) { tBtn('anypg:prev', x0 + pw - 150, 256, 70, 28, '\u25b2', { size: 15, disabled: pg <= 0, fn: () => { W.anyPage = pg - 1; W.dirty = true; } }); tBtn('anypg:next', x0 + pw - 74, 256, 70, 28, '\u25bc', { size: 15, disabled: pg >= pages - 1, fn: () => { W.anyPage = pg + 1; W.dirty = true; } }); }
     tHead(cat === 'hardware' ? 'HARDWARE  ·  mounting parts: they enable, mostly weight' : `${WS_CAT_NAME[cat].toUpperCase()}  ·  factory: ${(G.factory || {})[cat] || '—'}`, x0, 272);
@@ -39029,7 +39045,7 @@ function wsItemRow(it, x, y, w, h, foreign = false) {
   const W = WORKSHOP, req = foreign || wsReqOk(it), fit = W.fitted.has(it.id), pick = W.pick === it.id, hov = W.hover === `row:${it.id}`;
   tBox(x, y, w, h, fit || (it.hw && it.owned) ? TC.hiBg : hov || pick ? 'rgba(140, 255, 215, 0.12)' : TC.faint, fit || pick ? TC.hi : hov ? TC.text : TC.line);
   const bw = 112, tx = x + 14, tw = w - bw - 120;
-  tText(foreign ? `${it.name}  (${(WS_GUNS[it.gun] || {}).name || it.gun} part)` : it.name, tx, y + 21, 21, req ? TC.text : TC.dim, 'left', 700, TC.sans, tw);
+  tText(foreign ? `${it.name}  (${it.anyGun ? 'any gun' : ((WS_GUNS[it.gun] || {}).name || it.gun) + ' part'})` : it.name, tx, y + 21, 21, req ? TC.text : TC.dim, 'left', 700, TC.sans, tw);
   const sub = !req ? `Needs: ${wsMissing(it).join(', ')}` : it.cosmetic ? (it.desc.startsWith('Cosmetic') ? it.desc : `Cosmetic  ·  ${it.desc}`) : !it.model && !it.hw ? `Model coming  ·  ${it.desc}` : it.desc;
   tText(sub, tx, y + 47, 16, !req ? TC.warn : TC.dim, 'left', 600, TC.sans, tw);
   tText(it.owned ? (it.hw ? 'OWNED' : fit ? 'FITTED' : 'OWNED') : fmtMoney(it.price), x + w - bw - 18, y + h / 2 + 1, it.owned ? 16 : 22, it.owned ? TC.ok : req && WALLET.money >= it.price ? TC.hi : TC.warn, 'right', 700, TC.mono, 100);
@@ -53242,7 +53258,7 @@ function retOvTick() {
   eyeMid(RETOV.head);
   for (const R of RETOV.list) {
     const o = R.mesh, ov = R.ov, c = ov.userData.c;
-    if (!o.parent || !ov.material.userData.ready || !isShown(o)) continue;
+    if (!o.parent || !ov.material.userData.ready || !isShown(o) || o.userData.o2Hide) continue;   // (new optics: a magnifier in front of it shows its dot)
     o.updateMatrixWorld(true);
     o.worldToLocal(RETOV.l.copy(RETOV.head));
     const ex = RETOV.l.x - c.x, ey = RETOV.l.y - c.y, ez = RETOV.l.z - c.z;   // the optic looks along -z: the eye sits at +z
@@ -57371,6 +57387,504 @@ if (AWMA.on) {
 if (window.__cqcDev) Object.assign(window.__cqcDev, { AWMA, AWM_GEO, AWM_PARTS, AWM_FX, AWM_FX_VR, AWM_BIP, AWM_REST, AWM_S10, AWM_SPEC, WB_AWM, awmInit, awmMeasure, awmSeats,
   awmTpl, awmMakeAtt, awmHw, awmSyncGun, awmRefresh, awmBenchFit, awmRefuse, awmFromGun, awmStoreChanged, awmStats, awmGunIds, awmMagApply, awmMagDress,
   awmTick, awmBipodTick, awmRestPose, awmRestFx, awmLegsSet, awmDrop, awmGlint, awmHoneycomb, awmSlingGeo, awmS10Desc, awmNotchPad });   // step 113
+/* ===========================================================================
+ *  NEW OPTICS (?optics2=off): a 3x flip-to-side magnifier (Aimpoint 3XMag-1 class), a 1-6x24 LPVO in a cantilever mount
+ *  (Razor HD Gen III class, SPR mount), a 45-degree offset red dot (RMR class) and flip-up backup iron sights (MBUS Pro
+ *  class), for any gun. Store rows (gun 'any') put them on the bench; they fit at the vise (o2BenchFit) on a riser that
+ *  clamps to that gun (optMount). Magnifier: behind a red dot / holo, its 3x picture through the dot (SCOPE + SWIN);
+ *  flips aside (Period / Shift... see o2Key, pad LT + Y, VR: push it with the other hand's fingertip). LPVO: the SCOPE
+ *  path, 1-6x (wheel / VR right stick), lit dot and horseshoe. Offset dot: a RETICLE glass (both-eyes overlay in VR);
+ *  desktop Comma (pad LT + D-pad left) cants the gun 45 deg onto it; the zero follows. Flip-up sights: one line for both
+ *  (risers), folded under any optic, up without one or as you flip them; their line is the sight line when up.
+ *  Spec parts merged per material (shared programs); templates built once, clones share geometry and materials.
+ * ========================================================================== */
+// O2_SPEC: the new optics as spec parts (item frame: origin on the rail top under the part's base, -z forward, +y up, +x right).
+const O2_MAG_H = 0.032;                // magnifier axis over its base (a low flip-to-side mount: a riser makes up the rest)
+const O2_LP = { h: 0.049, ze: 0.075, L: 0.257, eyeR: 0.0170, ob: 0.0137 };   // LPVO: axis height (1.93 in cantilever), eyepiece rear z, length
+const O2_OFF = { c: [0.0262, 0.0196], a: -Math.PI / 4 };                     // offset mount: the RMR plate centre (x, y) and its turn about z
+const O2_BUIS_H = 0.0355;              // aperture centre / post tip over the base bottom, up (1.41 in: the AR flat-top line)
+const O2_LATHE = (pts, m, x = 0, y = 0, z = 0, seg = 40) => ({ k: 'l', m, a: [pts, seg], p: [x, y, z], r: [-Math.PI / 2, 0, 0] });   // [r, a]: a forward (-z) from z
+// knurl / rib band as a lathe zigzag between r0 and r1 over len (n ribs)
+function o2Ribs(r0, r1, a0, len, n) { const p = [[r0, a0]]; for (let i = 0; i < n; i++) { const a = a0 + (i + 0.5) / n * len; p.push([r1, a - 0.25 * len / n], [r1, a + 0.25 * len / n]); p.push([r0, a0 + (i + 1) / n * len]); } return p; }
+// Picatinny clamp base: a plate with rounded ends, jaws over both flanks, cross-bolts in the recoil slots (nut right)
+function o2Base(len, w = 0.0255, t = 0.0055, zc = 0, bolts = [0]) {
+  const p = [pB('anod', w, t, len, 0, t / 2, zc, 0, 0, 0, 0.0016)];
+  for (const sx of [-1, 1]) p.push(pB('anod', 0.0028, 0.0085, len - 0.002, sx * 0.012, -0.0016, zc, 0, 0, 0, 0.0008));
+  for (const dz of bolts) { p.push(pCX('steel', 0.0021, 0.031, 0, -0.0035, zc + dz, 12), pCX('steel', 0.0042, 0.004, 0.0175, -0.0035, zc + dz, 6), pCX('steel', 0.0034, 0.0022, -0.0164, -0.0035, zc + dz, 16)); }
+  return p;
+}
+const O2_SPEC = {
+  /* Aimpoint 3XMag-1 class magnifier (107 mm, 28 mm tube, 35 mm eyepiece) in a flip-to-side mount: QD base with its lever on
+   * the right, a hinge block on the left, the arm and split ring on the flip group (pivot on the hinge axis), a thumb tab. */
+  mag() {
+    const h = O2_MAG_H, base = o2Base(0.04, 0.0255, 0.0055, 0.004, [-0.01, 0.012]);
+    base.push(pB('anod', 0.0042, 0.0095, 0.03, 0.0158, 0.0035, 0.006, 0, 0, 0, 0.0012), pCX('steelB', 0.0032, 0.0062, 0.0153, 0.006, -0.008, 16),   // QD lever + cam
+      pB('anod', 0.0085, 0.0105, 0.034, -0.0108, 0.0055 + 0.0052, 0.004, 0, 0, 0, 0.0018),                   // hinge block
+      pC('anod', 0.0042, 0.0042, 0.036, -0.0118, 0.0158, 0.004, 20), pC('steel', 0.0019, 0.0019, 0.0385, -0.0118, 0.0158, 0.004, 12),   // hinge barrel + pin
+      pB('rubber', 0.0034, 0.0042, 0.006, -0.0074, 0.0118, 0.016, 0, 0, 0, 0.001));                      // the stop pad the arm rests on
+    const piv = [-0.0118, 0.0158], xc = -piv[0], yc = h - piv[1], R = 0.0142;
+    const arm = [pEZ('anod', 0.022, gpath().M(-0.0048, -0.0035).L(0.0046, -0.0046).L(xc + 0.0058, yc - R - 0.0012).L(xc - 0.009, yc - R + 0.0018).Z(), 0, 0, 0.004, { bevel: 0.0009 }),
+      { ...pC('anod', R + 0.0032, R + 0.0032, 0.019, xc, yc, 0.004, 40), tube: 0.0032 },                    // split ring round the tube
+      pB('anod', 0.011, 0.0042, 0.019, xc, yc + R + 0.0032, 0.004, 0, 0, 0, 0.0012),                          // ring cap boss
+      pC('steel', 0.0019, 0.0019, 0.0028, xc - 0.0034, yc + R + 0.0055, 0.004 - 0.0052, 12, Math.PI / 2), pC('steel', 0.0019, 0.0019, 0.0028, xc + 0.0034, yc + R + 0.0055, 0.004 + 0.0052, 12, Math.PI / 2),
+      pB('anod', 0.0065, 0.0105, 0.016, xc + R + 0.0058, yc - 0.002, 0.004, 0, 0, 0, 0.0016)];               // thumb tab (push here)
+    for (let i = 0; i < 4; i++) arm.push(pB('anodD', 0.0012, 0.0094, 0.0016, xc + R + 0.0092, yc - 0.002, 0.004 - 0.0054 + i * 0.0036, 0, 0, 0, 0.0004));
+    // the body: ocular bell with its rubber diopter ring, 28 mm tube, objective bell (lathe, forward from the eyepiece end)
+    const ze = 0.0535 - 0.006, body = [O2_LATHE([[0.0124, 0], [0.0166, 0], [0.0172, 0.0012], [0.0172, 0.024], [0.0164, 0.0262], [0.0142, 0.033], [0.0142, 0.076],
+      [0.0149, 0.082], [0.0158, 0.087], [0.0158, 0.1045], [0.0151, 0.107], [0.0128, 0.107], [0.0126, 0.104]], 'anod', xc, yc, ze),
+      O2_LATHE(o2Ribs(0.0172, 0.0178, 0.0016, 0.0168, 14), 'rubber', xc, yc, ze),
+      O2_LATHE([[0.0126, 0.0], [0.0126, 0.003]], 'anodD', xc, yc, ze, 32),                                  // the eyepiece's inner barrel
+      pC('glass', 0.0127, 0.0127, 0.0006, xc, yc, ze - 0.1035, 32),                                        // objective glass
+      pB('anodD', 0.008, 0.0005, 0.016, xc, yc + 0.01425, ze - 0.054, 0, 0, 0, 0.0002)];                     // engraving band
+    return { base, flip: arm.concat(body), piv, axis: [0, h], eye: [xc, yc, ze - 0.0015], eyeR: 0.0122, ob: [xc, yc, ze - 0.107], front: ze - 0.107, rear: ze };
+  },
+  /* 1-6x24 LPVO, Razor HD Gen III class (257 mm, 30 mm tube, 44 mm eyepiece, capped turrets, illumination dial left, power
+   * ring with a throw lever) in a one-piece cantilever mount (1.93 in, rings forward of the base: SPR class). */
+  lpvo() {
+    const { h, ze, L } = O2_LP, P = o2Base(0.085, 0.026, 0.0062, -0.0225, [-0.03, 0.025]);
+    const rr = 0.015, ro = 0.0187, rings = [-0.015, -0.106];
+    // mount body: side profile (z, y), skeletonised, from the base up to both rings
+    const yb = 0.006, yt = h - rr - 0.0012;
+    P.push(pE('anod', 0.017, gpath().M(0.02, yb).L(-0.065, yb).L(-0.1135, yt - 0.006).L(-0.1135, yt).L(-0.0985, yt).L(-0.094, yt - 0.0035).L(-0.0275, yt - 0.0035).L(-0.023, yt)
+      .L(-0.0075, yt).L(-0.0075, yt - 0.004).Q(0.008, yt - 0.006, 0.02, yb + 0.006).Z(),
+      { bevel: 0.0012, holes: [gpath().M(-0.024, yb + 0.004).L(-0.056, yb + 0.004).L(-0.08, yt - 0.0085).L(-0.03, yt - 0.0085).Z(), gpath().M(-0.003, yb + 0.0042).L(-0.015, yb + 0.0042).L(-0.015, yt - 0.009).L(-0.008, yt - 0.009).Z()] }));
+    for (const z of rings) {
+      P.push({ ...pC('anod', ro, ro, 0.0152, 0, h, z, 40), tube: ro - rr }, pB('anod', 0.0185, 0.0044, 0.0152, 0, h - rr - 0.0018, z, 0, 0, 0, 0.001));
+      for (const sx of [-1, 1]) for (const dz of [-0.0042, 0.0042]) P.push(pC('steel', 0.0018, 0.0018, 0.0034, sx * 0.0128, h + 0.0122, z + dz, 12, Math.PI / 2, -sx * 0.8, 0));   // cap screws (2 a side)
+      P.push(pB('anodD', 0.0006, 0.0008, 0.0154, ro - 0.0003, h, z, 0, 0, 0, 0.0002), pB('anodD', 0.0006, 0.0008, 0.0154, -ro + 0.0003, h, z, 0, 0, 0, 0.0002));   // cap split lines
+    }
+    // the scope: lathe forward from the eyepiece end; rubber eyecup; power ring with ribs; turret saddle and turrets
+    P.push(O2_LATHE([[0.0196, 0.008], [0.0222, 0.008], [0.0222, 0.0385], [0.0214, 0.0425], [0.0206, 0.046], [0.0206, 0.0685], [0.0182, 0.0715], [0.0156, 0.0775], [0.0150, 0.08],
+      [0.0150, 0.2], [0.0157, 0.208], [0.0169, 0.219], [0.0172, 0.222], [0.0172, 0.2525], [0.0166, 0.257], [0.0141, 0.257], [0.0139, 0.2535]], 'anod', 0, h, ze),
+    O2_LATHE([[0.0185, 0], [0.0218, 0], [0.0225, 0.0015], [0.0225, 0.0075], [0.0221, 0.0085], [0.0196, 0.0085]], 'rubber', 0, h, ze),
+    O2_LATHE(o2Ribs(0.0206, 0.0213, 0.047, 0.021, 18), 'anodD', 0, h, ze),
+    O2_LATHE([[0.0185, 0], [0.0185, 0.006]], 'anodD', 0, h, ze, 40),                                              // eyepiece inner barrel
+    pC('glass', 0.0138, 0.0138, 0.0006, 0, h, ze - L + 0.0035, 32));
+    const zs = ze - 0.123;                                                                                       // turret saddle centre
+    P.push(pB('anod', 0.036, 0.034, 0.04, 0, h, zs, 0, 0, 0, 0.0075));
+    const vt = (x, y, rx, rz, r, len, m, seg = 28) => pC(m, r, r, len, x, y, zs, seg, rx, 0, rz);
+    // elevation (top): base, cap, knurl, index line
+    P.push(vt(0, h + 0.0195, Math.PI / 2, 0, 0.0118, 0.006, 'anod'), vt(0, h + 0.0285, Math.PI / 2, 0, 0.0128, 0.012, 'anod'), vt(0, h + 0.0352, Math.PI / 2, 0, 0.0122, 0.0016, 'anod'));
+    for (let i = 0; i < 5; i++) P.push(vt(0, h + 0.0236 + i * 0.002, Math.PI / 2, 0, 0.0131, 0.0009, 'anodD'));
+    P.push(pB('steel', 0.0008, 0.004, 0.0006, 0, h + 0.0262, zs + 0.0129, 0, 0, 0, 0.0002));
+    // windage (right) and illumination (left, battery cap) along x
+    P.push(pCX('anod', 0.0118, 0.006, 0.0195, h, zs, 28), pCX('anod', 0.0128, 0.012, 0.0285, h, zs, 28), pCX('anod', 0.0122, 0.0016, 0.0352, h, zs, 28));
+    for (let i = 0; i < 5; i++) P.push(pCX('anodD', 0.0131, 0.0009, 0.0236 + i * 0.002, h, zs, 28));
+    P.push(pCX('anod', 0.0112, 0.0085, -0.0225, h, zs, 28), pCX('anodD', 0.0116, 0.0012, -0.0215, h, zs, 28), pCX('steelB', 0.0082, 0.0045, -0.0292, h, zs, 24));
+    for (let i = 0; i < 11; i++) { const a = i / 11 * Math.PI * 2; P.push(pB('anodD', 0.0012, 0.0012, 0.0028, -0.0262, h + Math.sin(a) * 0.0113, zs + Math.cos(a) * 0.0113, 0, 0, 0, 0.0003)); }   // dial detents
+    // throw lever on the power ring (top right), grooved tip
+    const la = Math.PI / 4, lr = 0.0206 + 0.0095, lx = Math.sin(la) * lr, ly = h + Math.cos(la) * lr, lz = ze - 0.058;
+    P.push(pB('anod', 0.0058, 0.019, 0.0105, lx, ly, lz, 0, 0, -la, 0.0018));
+    for (let i = 0; i < 3; i++) { const d = 0.0072 - i * 0.0026; P.push(pB('anodD', 0.0062, 0.0008, 0.0108, Math.sin(la) * (lr + d), h + Math.cos(la) * (lr + d), lz, 0, 0, -la, 0.0002)); }
+    P.push(pB('anodD', 0.0007, 0.0007, 0.0016, 0, h + 0.0214, ze - 0.042, 0, 0, 0, 0.0002));                      // power index dot
+    return { P, eye: [0, h, ze - 0.004], eyeR: O2_LP.eyeR, ob: [0, h, ze - L], front: ze - L, rear: ze };
+  },
+  /* Trijicon RMR class (45.2 x 27.9 x 25.4 mm, 22 x 16 mm window) on a 45-degree offset mount (QD-less clamp, right side). */
+  odot() {
+    const [cx, cy] = O2_OFF.c, P = o2Base(0.032, 0.0245, 0.0055, 0, [0]);
+    // the arm: its section (x, y) extruded along z, from the base top out to the 45-degree plate, a lightening pocket
+    const nx = Math.SQRT1_2, ny = Math.SQRT1_2, w = 0.0145;            // plate normal (up-right) and half width across it
+    const a = [cx + nx * 0.0, cy + 0], r = [ny, -nx];                   // plate centre, the plate's "right"
+    const A0 = [a[0] - r[0] * w, a[1] - r[1] * w], A1 = [a[0] + r[0] * w, a[1] + r[1] * w];
+    P.push(pEZ('anod', 0.03, gpath().M(-0.0105, 0.0055).L(0.0125, 0.0055).L(A1[0], A1[1]).L(A0[0], A0[1]).L(-0.0035, 0.0185).Q(-0.0105, 0.0155, -0.0105, 0.0055).Z(), 0, 0, 0, {
+      bevel: 0.0009, holes: [gpath().M(-0.004, 0.0085).L(0.006, 0.0085).L(A1[0] - nx * 0.0055 - r[0] * 0.007, A1[1] - ny * 0.0055 - r[1] * 0.007).L(A0[0] - nx * 0.0055 + r[0] * 0.006, A0[1] - ny * 0.0055 + r[1] * 0.006).Z()] }));
+    P.push(pCX('steelB', 0.0024, 0.0035, 0.0145, 0.0035, 0.009, 12), pCX('steelB', 0.0024, 0.0035, 0.0145, 0.0035, -0.009, 12));   // clamp screws
+    // the dot itself, in its own frame (window up +y, front -z), turned onto the plate
+    const D = [pE('anod', 0.0279, gpath().M(0.0226, 0).L(-0.0226, 0).L(-0.0226, 0.0072).Q(-0.0226, 0.0088, -0.021, 0.0088).L(0.0185, 0.0088).L(0.0226, 0.0062).Z(), { bevel: 0.0014 }),   // lower body
+      pE('anod', 0.0279, gpath().M(0.0226, 0.004).L(0.0042, 0.004).L(0.0042, 0.0158).Q(0.0042, 0.0172, 0.0068, 0.0172).L(0.0168, 0.0168).Q(0.0226, 0.0158, 0.0226, 0.011).Z(), { bevel: 0.0014 })];   // rear tower (LED, buttons)
+    for (const sx of [-1, 1]) D.push(pE('anod', 0.0036, gpath().M(0.0068, 0.0068).L(0.0068, 0.0262).L(-0.0072, 0.0262).Q(-0.0105, 0.0262, -0.0132, 0.0232).L(-0.0226, 0.0128).L(-0.0226, 0.0068).Z(), { bevel: 0.0008, p: [sx * 0.0122, 0, 0] }));   // the hood's horns (sloping down to the nose)
+    D.push(pB('anod', 0.0279, 0.0022, 0.0088, 0, 0.0251, -0.0018, 0, 0, 0, 0.0008),                                   // the bridge over the lens
+      pB('rubber', 0.0016, 0.0062, 0.0074, 0.0146, 0.0105, 0.0118, 0, 0, 0, 0.0007), pB('rubber', 0.0016, 0.0062, 0.0074, -0.0146, 0.0105, 0.0118, 0, 0, 0, 0.0007),   // - / + buttons
+      pB('dark', 0.0062, 0.0034, 0.0022, 0, 0.0104, 0.0049, 0, 0, 0, 0.0004),                                        // LED emitter
+      pC('steel', 0.0021, 0.0021, 0.0007, 0, 0.00915, -0.0188, 14, Math.PI / 2), pC('steel', 0.0021, 0.0021, 0.0007, 0, 0.0175, 0.0168, 14, Math.PI / 2),   // mount screws
+      pB('glass', 0.0206, 0.0148, 0.0012, 0, 0.0166, -0.0046, -0.16, 0, 0, 0.0004));                                // the lens (raked)
+    return { P, D, at: [cx, cy, 0], turn: O2_OFF.a, glass: [0, 0.0166, -0.0028, 0.0204, 0.0146] };
+  },
+  /* Flip-up rear sight, MBUS Pro / Troy class: base on the rail, the leaf hinged at the base's rear (folds forward onto it),
+   * a small aperture in a round housing between two protective ears, a windage drum on the right. */
+  buisR() {
+    const B = o2Base(0.04, 0.0235, 0.0085, 0, [0.006]), hy = 0.0088, hz = 0.0145;
+    B.push(pCX('steel', 0.0021, 0.0255, 0, hy, hz, 14), pCX('anod', 0.0038, 0.003, -0.0118, hy, hz, 16), pCX('anod', 0.0038, 0.003, 0.0118, hy, hz, 16),   // hinge pin + knuckles
+      pCX('anod', 0.0046, 0.0055, 0.0148, 0.0046, -0.008, 22), pB('dark', 0.0016, 0.0026, 0.002, 0.0118, 0.0083, -0.016, 0, 0, 0, 0.0003),   // windage drum, detent window
+      pB('anodD', 0.012, 0.0008, 0.018, 0, 0.0086, -0.006, 0, 0, 0, 0.0003));                                         // the leaf's bed
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2; B.push(pB('anodD', 0.0058, 0.0009, 0.0009, 0.0148, 0.0046 + Math.sin(a) * 0.0046, -0.008 + Math.cos(a) * 0.0046, a, 0, 0, 0.0002)); }
+    const ya = O2_BUIS_H - hy;                                                                                      // aperture centre over the pivot
+    const leaf = [pEZ('anod', 0.0042, gpath().M(-0.0098, -0.0028).L(0.0098, -0.0028).L(0.0098, 0.004).L(0.0064, ya - 0.0074).L(-0.0064, ya - 0.0074).L(-0.0098, 0.004).Z(), 0, 0, 0,
+      { bevel: 0.0006, holes: [gpath().M(-0.0035, 0.0045).L(0.0035, 0.0045).L(0.0028, ya - 0.0105).L(-0.0028, ya - 0.0105).Z()] }),
+      { ...pC('anod', 0.0064, 0.0064, 0.0046, 0, ya, 0, 32), tube: 0.0064 - 0.0011 },                                // aperture housing (2.2 mm aperture)
+      pT('steelB', 0.0019, 0.00055, 0, ya, 0.0024),                                                                   // the aperture's chamfered rim
+      pB('anod', 0.0028, 0.0172, 0.0046, -0.0094, ya - 0.0006, 0, 0, 0, 0, 0.0011), pB('anod', 0.0028, 0.0172, 0.0046, 0.0094, ya - 0.0006, 0, 0, 0, 0, 0.0011),   // protective ears
+      pB('anod', 0.0216, 0.0038, 0.0046, 0, ya - 0.0082, 0, 0, 0, 0, 0.0009),
+      pB('anodD', 0.0034, 0.004, 0.0012, 0.0094, ya + 0.003, -0.0026, 0, 0, 0, 0.0003), pB('anodD', 0.0034, 0.004, 0.0012, -0.0094, ya + 0.003, -0.0026, 0, 0, 0, 0.0003)];   // ear grip notches
+    return { base: B, leaf, piv: [0, hy, hz], fold: -Math.PI / 2 };
+  },
+  /* Flip-up front sight, MBUS Pro class: base with the hinge at its front (folds rearward), a post in protective wings, the
+   * elevation drum under the post. */
+  buisF() {
+    const B = o2Base(0.034, 0.0235, 0.0085, 0, [-0.004]), hy = 0.0088, hz = -0.0125;
+    B.push(pCX('steel', 0.0021, 0.0255, 0, hy, hz, 14), pCX('anod', 0.0038, 0.003, -0.0118, hy, hz, 16), pCX('anod', 0.0038, 0.003, 0.0118, hy, hz, 16),
+      pB('anodD', 0.012, 0.0008, 0.016, 0, 0.0086, 0.004, 0, 0, 0, 0.0003));
+    const yt = O2_BUIS_H - hy;
+    const leaf = [pEZ('anod', 0.0048, gpath().M(-0.0104, -0.0028).L(0.0104, -0.0028).L(0.0104, yt + 0.0012).Q(0.0104, yt + 0.0034, 0.0083, yt + 0.0034).L(0.0074, yt + 0.0034).Q(0.0058, yt + 0.0034, 0.0058, yt + 0.0012)
+      .L(0.0058, 0.009).L(-0.0058, 0.009).L(-0.0058, yt + 0.0012).Q(-0.0058, yt + 0.0034, -0.0074, yt + 0.0034).L(-0.0083, yt + 0.0034).Q(-0.0104, yt + 0.0034, -0.0104, yt + 0.0012).Z(), 0, 0, 0, { bevel: 0.0006 }),
+      pC('anod', 0.0042, 0.0042, 0.0052, 0, 0.0122, 0, 24, Math.PI / 2),                                                // elevation drum
+      pB('steelB', 0.0019, yt - 0.0128, 0.0021, 0, (yt + 0.0128) / 2, 0, 0, 0, 0, 0.0002),                  // the post, tip on the line
+      pC('steelB', 0.0016, 0.0016, 0.0012, 0, 0.0156, 0, 12, Math.PI / 2)];
+    for (let i = 0; i < 10; i++) { const a = i / 10 * Math.PI * 2; leaf.push(pB('anodD', 0.0007, 0.0054, 0.0007, Math.sin(a) * 0.0043, 0.0122, Math.cos(a) * 0.0043, 0, 0, 0, 0.0002)); }
+    return { base: B, leaf, piv: [0, hy, hz], fold: Math.PI / 2 };
+  }
+};
+// A kind's group: spec parts merged per material, the moving parts on their own pivots (named), the eyepiece / reticle glass.
+function o2Build(kind, add, mats) {
+  const g = new THREE.Group(), S = O2_SPEC[kind]();
+  const named = (o, n) => { o.name = n; return o; };
+  if (kind === 'mag') {
+    add(g, S.base);
+    const f = named(new THREE.Group(), 'o2Flip'); f.position.set(S.piv[0], S.piv[1], 0); add(f, S.flip); g.add(f);
+    const e = named(new THREE.Mesh(new THREE.CircleGeometry(S.eyeR, 40), mats.eye('mag')), 'o2Eye'); e.position.set(...S.eye); e.renderOrder = 3; e.castShadow = e.receiveShadow = false; f.add(e);
+    g.userData.o2 = { ob: new THREE.Vector3(...S.ob), obF: true, front: S.front, rear: S.rear };
+  } else if (kind === 'lpvo') {
+    add(g, S.P);
+    const e = named(new THREE.Mesh(new THREE.CircleGeometry(S.eyeR, 48), mats.eye('lpvo')), 'o2Eye'); e.position.set(...S.eye); e.renderOrder = 3; e.castShadow = e.receiveShadow = false; g.add(e);
+    g.userData.o2 = { ob: new THREE.Vector3(...S.ob), front: S.front, rear: S.rear };
+  } else if (kind === 'odot') {
+    add(g, S.P);
+    const d = named(new THREE.Group(), 'o2Rmr'); d.position.set(...S.at); d.rotation.z = S.turn; add(d, S.D); g.add(d);
+    const [x, y, z, w, h] = S.glass;
+    const o = named(new THREE.Mesh(new THREE.PlaneGeometry(w, h), mats.reticle()), 'o2Glass'); o.position.set(x, y, z); o.renderOrder = 2; o.castShadow = false; d.add(o);
+    g.userData.o2 = {};
+  } else {
+    add(g, S.base);
+    const l = named(new THREE.Group(), 'o2Leaf'); l.position.set(...S.piv); add(l, S.leaf.map((q) => ({ ...q, p: [q.p[0] - S.piv[0], q.p[1], q.p[2]] }))); g.add(l);
+    g.userData.o2 = { fold: S.fold };
+  }
+  g.updateMatrixWorld(true);
+  return g;
+}
+const O2 = { on: !/[?&]optics2=off\b/.test(QS), tpl: {}, info: {}, desc: {}, items: [], ret: null, pre: null, kindsOk: false, flipT: 0 };
+const O2_LABEL = { mag: '3x magnifier', lpvo: '1-6x LPVO', odot: 'offset red dot', buisR: 'flip-up rear sight', buisF: 'flip-up front sight' };
+const O2_MASS = { mag: 0.36, lpvo: 0.85, odot: 0.075, buisR: 0.06, buisF: 0.05 };
+const O2_BASE = { mag: [0.04, 0.004], lpvo: [0.085, -0.0225], odot: [0.032, 0], buisR: [0.04, 0], buisF: [0.034, 0] };   // [base length, base centre z]
+// bench spots [sub, big, x, z, yaw, variant, store id] (wbLayout lays them out with the optics)
+const O2_TABLE = [['o2', false, 0.7, 2.5, 0, 'o2:lpvo', 'o2.lpvo'], ['o2', false, 0.95, 2.5, 0, 'o2:mag', 'o2.mag'], ['o2', false, 1.12, 2.5, 0, 'o2:odot', 'o2.odot'],
+  ['o2', false, 1.26, 2.5, 0, 'o2:buisR', 'o2.buisR'], ['o2', false, 1.38, 2.5, 0, 'o2:buisF', 'o2.buisF']];
+// The picture descriptions (SCOPE): one render target and eyepiece material per kind, shared by every copy.
+SCOPE_RETICLE.mag3 = { col: 'vec3(1.0, 0.05, 0.02) * 1.6', svg: '<circle cx="0" cy="0" r="1.2" fill="#ff2a10"/>',
+  glsl: 'float reticle(vec2 p) { float r = length(p); return min(1.0, (1.0 - smoothstep(0.009, 0.014, r)) + 0.22 * exp(-r / 0.02)); }' };
+SCOPE_RETICLE.lpvo = { col: 'retC',
+  svg: `<g fill="#050505" stroke="#050505"><rect x="-100" y="-2" width="45" height="4"/><rect x="55" y="-2" width="45" height="4"/><rect x="-2" y="55" width="4" height="45"/>
+    <line x1="-55" y1="0" x2="-12" y2="0" stroke-width="0.5"/><line x1="12" y1="0" x2="55" y2="0" stroke-width="0.5"/><line x1="0" y1="12" x2="0" y2="55" stroke-width="0.5"/>
+    ${[1, 2, 3, 4].map((i) => `<line x1="${-(5 - 0.8 * i)}" y1="${12 + 9 * i}" x2="${5 - 0.8 * i}" y2="${12 + 9 * i}" stroke-width="0.5"/>`).join('')}</g>
+    <circle cx="0" cy="0" r="1.4" fill="#ff2a10"/><path d="M -6.1 5.9 A 8.5 8.5 0 1 1 6.1 5.9" fill="none" stroke="#ff2a10" stroke-width="0.9"/>`,
+  glsl: `uniform vec3 uRetCol; vec3 retC = vec3(0.004);
+    float reticle(vec2 p) {
+      float ax = abs(p.x);
+      float post = max(line(p.y, 0.04) * step(0.55, ax), line(p.x, 0.04) * step(p.y, -0.55));
+      float fine = max(line(p.y, 0.006) * step(0.12, ax) * step(ax, 0.55), line(p.x, 0.006) * step(p.y, -0.12) * step(-0.55, p.y));
+      float bdc = 0.0;
+      for (int i = 1; i <= 4; i++) { float s = -0.12 - 0.09 * float(i); bdc = max(bdc, line(p.y - s, 0.006) * step(ax, 0.05 - 0.008 * float(i))); }
+      float r = length(p);
+      float lit = max(1.0 - smoothstep(0.011, 0.017, r), line(r - 0.085, 0.01) * step(-0.06, p.y));   // the lit dot and horseshoe (open at the bottom)
+      float etch = max(max(post, fine), bdc);
+      retC = mix(vec3(0.004), uRetCol, lit / max(lit + etch, 1e-4));
+      return max(lit, etch);
+    }` };
+function o2Desc(kind) {
+  if (O2.desc[kind]) return O2.desc[kind];
+  const rt = new THREE.WebGLRenderTarget(512, 512, { type: THREE.HalfFloatType, depthBuffer: true });
+  if (!SCOPE.cam) SCOPE.cam = new THREE.PerspectiveCamera(20, 1, 0.6, 140);
+  const mag = kind === 'mag';
+  const mat = scopeMat(rt, mag ? 'mag3' : 'lpvo');
+  if (!mag) mat.uniforms.uRetCol = { value: new THREE.Color(1.0, 0.06, 0.02).multiplyScalar(1.5) };
+  // Aimpoint 3XMag-1: 3x, 7 deg true field, 70 mm eye relief. Razor HD Gen III 1-6x24: 22 deg at 1x, 94 mm eye relief.
+  return (O2.desc[kind] = mag ? { reticle: 'mag3', mag: 3, min: 3, max: 3, afov: 21, relief: 0.07, box: 0.05, deskFov: 72, rt, mat }
+    : { reticle: 'lpvo', mag: 1, min: 1, max: 6, afov: 22, relief: 0.094, box: 0.06, deskFov: 72, rt, mat });
+}
+function o2Tpl(kind) {
+  if (O2.tpl[kind]) return O2.tpl[kind];
+  if (!O2.ret) O2.ret = g17GlassMat(3.25);                         // RMR 3.25 MOA: a RETICLE glass (brightness, both-eyes overlay)
+  return (O2.tpl[kind] = o2Build(kind, addSpecParts, { eye: (k) => o2Desc(k).mat, reticle: () => O2.ret }));
+}
+function o2Info(kind) {
+  if (O2.info[kind]) return O2.info[kind];
+  const b = new THREE.Box3().setFromObject(o2Tpl(kind)), c = b.getCenter(new THREE.Vector3()), half = b.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  return (O2.info[kind] = { b, c, half, rest: 0.0005 - b.min.y, hold: g17Hold('fist', c, kind === 'lpvo' || kind === 'mag') });
+}
+function o2MakeAtt(kind) {
+  if (!O2.on || !O2_SPEC[kind]) return null;
+  const T = o2Tpl(kind), I = o2Info(kind), g = T.clone(), U = T.userData.o2;
+  const item = { kind: 'att', type: 'o2', sub: 'o2', o2: kind, label: O2_LABEL[kind], hook: null, stuck: null, gun: null, lamp: null, rest: I.rest, tableC: I.c, hold: I.hold };
+  if (kind === 'lpvo' || kind === 'mag') {
+    item.eyepiece = g.getObjectByName('o2Eye'); item.scopeDesc = Object.assign({}, o2Desc(kind)); item.obL = U.ob.clone();
+    if (kind === 'lpvo') item.o2Primary = true; else item.o2Node = g.getObjectByName('o2Flip');
+  }
+  if (kind === 'odot') item.glass = g.getObjectByName('o2Glass');
+  if (kind === 'buisR' || kind === 'buisF') { item.o2Node = g.getObjectByName('o2Leaf'); item.o2Fold = U.fold; }
+  const p = makeItem(g, item, { mass: O2_MASS[kind], half: [I.half.x, I.half.y, I.half.z], center: I.c, restitution: 0.1 });
+  g.userData.att = true;
+  if (GUNPHYS.contact && HANDLOOK.on) contactCloud(attKey(item), g, null);
+  O2.items.push(p);
+  return p;
+}
+function o2Table(L) {
+  if (!O2.on) return L;
+  if (!O2.kindsOk) { O2.kindsOk = true; for (const t of O2_TABLE) WB_KIND.optic.add(t[5]); }
+  for (const t of O2_TABLE) { const it = WORKSHOP.byId.get(t[6]); if (it && it.owned) L.push(t); }
+  return L;
+}
+
+/* --- fitting (at the vise) --- */
+// My parts on gun g: locked on, or stuck to it in the vise.
+function o2On(g) {
+  const out = [];
+  for (const p of g.atts || []) if (!p.removing && p.item.o2) out.push(p);
+  for (const p of WB.atts) if (p.item.o2 && p.item.stuck && p.item.stuck.g === g && !p.removing && !out.includes(p)) out.push(p);
+  return out;
+}
+function o2Optics(g, not = null) {
+  const out = [];
+  for (const p of (g.atts || []).concat(WB.atts.filter((q) => q.item.stuck && q.item.stuck.g === g))) if (p !== not && !p.removing && optIs(p.item) && !out.includes(p)) out.push(p);
+  return out;
+}
+// The red dot / holo a magnifier works behind: a reticle-glass optic (not a scope, not the 2x).
+function o2Dot(g) { return o2Optics(g).find((p) => !p.item.eyepiece && !p.item.pip && (p.item.glass || p.item.reticle)) || null; }
+const _o2V = new THREE.Vector3(), _o2W = new THREE.Vector3(), _o2Q = new THREE.Quaternion(), _o2B = new THREE.Box3(), _o2RC = new THREE.Raycaster(), _o2Z = new THREE.Vector3(0, 0, 1);
+// Model-space box of a part (drawn bounds).
+function o2ModelBox(g, p, out) {
+  out.makeEmpty(); const inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), M = new THREE.Matrix4(), b = new THREE.Box3();
+  p.root.updateMatrixWorld(true);
+  p.root.traverse((o) => { if (!o.isMesh || !o.geometry) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); out.union(b.copy(o.geometry.boundingBox).applyMatrix4(M)); });
+  return out;
+}
+// The highest drawn point of the gun at model z (one ray down on the centreline).
+function o2Top(g, z) {
+  const W = g.model.matrixWorld;
+  _o2V.set(0, 0.4, z).applyMatrix4(W); _o2W.set(0, -1, 0).transformDirection(W);
+  _o2RC.set(_o2V, _o2W); _o2RC.far = 0.8;
+  const h = _o2RC.intersectObjects(gunMeshes(g), false)[0];
+  return h ? g.model.worldToLocal(h.point).y : null;
+}
+// The receiver: the ejection port's z (model space), else the palm's.
+function o2Anchor(g) {
+  const r = g.prop.root; r.updateMatrixWorld(true); g.model.updateMatrixWorld(true);
+  if (g.wr && g.wr.eject) return g.model.worldToLocal(r.localToWorld(_o2V.copy(g.wr.eject))).z;
+  return (g.def.palm ? g.def.palm[2] : 0) - 0.04;
+}
+// Rear and front end of the gun's top round the receiver (rays every 8 mm), per gun.
+function o2Ends(g) {
+  if (g._o2Ends) return g._o2Ends;
+  g.model.updateMatrixWorld(true);
+  const zE = o2Anchor(g), t0 = o2Top(g, zE); if (t0 === null) return null;
+  let zr = zE, zf = zE;
+  for (let z = zE; z < zE + 0.3; z += 0.008) { const t = o2Top(g, z); if (t === null || t < t0 - 0.012) break; zr = z; }
+  const zm = g.def.muzzle ? g.def.muzzle[2] + 0.03 : zE - 0.4;
+  for (let z = zE; z > zm; z -= 0.008) { const t = o2Top(g, z); if (t === null || t < t0 - 0.03 || t > t0 + 0.015) break; zf = z; }
+  return (g._o2Ends = { zE, zr, zf, t0 });
+}
+// Where a part sits on gun g (model space): its origin L, the riser lift under its base, the gun's top there, its base box.
+function o2Seat(g, p) {
+  const k = p.item.o2, model = g.model; model.updateMatrixWorld(true);
+  const E = o2Ends(g); if (!E) return null;
+  const [bl, bz] = O2_BASE[k], B = new THREE.Box3(new THREE.Vector3(-0.013, 0, bz - bl / 2), new THREE.Vector3(0.013, 0.006, bz + bl / 2));
+  const span = (oz) => gunSpan(g, oz + bz - bl / 2, oz + bz + bl / 2, 0.016);
+  let L = null, lift = OPTM.lift, S = null;
+  const mineZ = (kk) => { const q = o2On(g).find((r) => r.item.o2 === kk && r !== p); return q ? o2ModelBox(g, q, new THREE.Box3()) : null; };
+  if (k === 'lpvo') {
+    let oz = E.zE + 0.04; const rb = mineZ('buisR');
+    if (rb && oz + bz + bl / 2 > rb.min.z - 0.004) oz = rb.min.z - 0.004 - bz - bl / 2;   // its base clear of the rear sight's
+    S = span(oz); if (!S) return null; L = new THREE.Vector3(0, S.top + 0.0006 + lift, oz);
+  }
+  else if (k === 'odot') {
+    const prim = o2Optics(g)[0];
+    let oz = E.zE - 0.03;
+    if (prim) { o2ModelBox(g, prim, _o2B); oz = _o2B.min.z - 0.022; }
+    S = span(oz); if (!S) { oz = E.zE; S = span(oz); } if (!S) return null;
+    if (prim && oz + bz + bl / 2 > _o2B.min.z && oz + bz - bl / 2 < _o2B.max.z) return { room: true };   // nothing free on the top ahead of the optic
+    L = new THREE.Vector3(0, S.top + 0.0006 + lift, oz);
+  } else if (k === 'mag') {
+    const D = o2Dot(g); if (!D) return null;
+    const A = optAxis(g, D, new THREE.Vector3()); o2ModelBox(g, D, _o2B);
+    const oz = _o2B.max.z + 0.012 + 0.0595;                          // its objective 12 mm behind the dot
+    S = span(oz); if (!S) return null;
+    L = new THREE.Vector3(A.x, A.y - O2_MAG_H, oz); lift = L.y - (S.top + 0.0006);
+    if (lift < -0.0008) return { low: true };
+  } else {                                                           // flip-up sights: rear at the top's rear end, front at its front end, one line for both
+    const zm = g.def.muzzle ? g.def.muzzle[2] : E.zE - 0.3, far = zm < E.zE - 0.3;
+    const zr = E.zr - 0.022, zf = Math.min(Math.max(E.zf + 0.02, far ? E.zE + 0.55 * (zm - E.zE) : -Infinity), zr - 0.09);   // a long gun's front sight not out on its barrel
+    const ob = o2On(g).filter((r) => r !== p && (r.item.o2 === 'lpvo' || r.item.o2 === 'odot')).map((r) => { const q = r.item.o2, b = O2_BASE[q]; const z0 = model.worldToLocal(r.root.getWorldPosition(new THREE.Vector3())).z; return [z0 + b[1] - b[0] / 2, z0 + b[1] + b[0] / 2]; });
+    const zc = k === 'buisR' ? zr : zf;
+    if (ob.some(([a, b2]) => zc + 0.02 > a && zc - 0.02 < b2)) return { room: true };   // a mount already on that part of the rail
+    const Sr = span(zr), Sf = span(zf); if (!Sr || !Sf) return null;
+    const H = Math.max(Sr.top, Sf.top) + 0.0006 + O2_BUIS_H;
+    S = k === 'buisR' ? Sr : Sf;
+    L = new THREE.Vector3(0, H - O2_BUIS_H, k === 'buisR' ? zr : zf); lift = L.y - (S.top + 0.0006);
+    p.item.o2H = H;
+  }
+  return { L, lift, top: S.top, B };
+}
+function o2Refuse(g, it) {
+  const mine = o2On(g).filter((q) => q.item !== it);
+  if (mine.some((q) => q.item.o2 === it.o2)) return `This gun already has a ${it.label}`;
+  if (it.o2 === 'lpvo') { const o = o2Optics(g).filter((q) => q.item !== it); if (o.length) return `One optic at a time: take the ${o[0].item.label} off first`; }
+  if (it.o2 === 'mag' && !o2Dot(g)) return 'A magnifier goes behind a red dot or holographic sight: fit one first';
+  return null;
+}
+function o2BenchFit(g, p, reach) {
+  const it = p.item, why = o2Refuse(g, it);
+  if (why) { toast(why, 2600); wsDeny(); return false; }
+  const s = o2Seat(g, p);
+  if (!s || s.low || s.room) { toast(s && s.low ? 'The dot sits too low for the magnifier\'s mount' : s && s.room ? `No room on the rail for the ${it.label}: fit it first, or take a part off` : `No place for the ${it.label} on this gun`, 2600); wsDeny(); return false; }
+  const model = g.model, P = model.localToWorld(s.L.clone()), Q = model.getWorldQuaternion(new THREE.Quaternion());
+  if (reach && wbPartD(p, P, Q) > reach) return false;
+  if (it.optMount) { it.optMount.parent?.remove(it.optMount); it.optMount.traverse((o) => o.geometry?.dispose()); it.optMount = null; }
+  p.root.position.copy(P); p.root.quaternion.copy(Q); p.root.updateMatrixWorld(true);
+  if (OPTM.on && s.lift > 0.001) optMount(g, p, s.B, s.lift, { top: s.top });   // the riser that clamps it to this gun
+  it.snapped = true; it.o2Man = undefined;
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  it.stuck = { g, m: new THREE.Matrix4().copy(WB.inv.copy(root.matrixWorld).invert()).multiply(p.root.matrixWorld) };
+  setKinematic(p); p.collider.setCollisionGroups(COLL.item);
+  g17Sfx('rail', p.root.position);
+  attRefresh(g);
+  return true;
+}
+
+/* --- sight lines, the magnifier's picture, the flip-up sights, the offset dot (after optSight) --- */
+function o2Sight(g) {
+  if (!O2.on || !g || !g.model || !g.prop) return;
+  const P = g.parts || (g.parts = {}), L = g._o2L || (g._o2L = {});
+  // undo the last pass where nothing else changed it since
+  if (L.scope && P.scope === L.scope) { if (L.ps) { P.scope = L.ps; P.scopeLens = L.pl; } else { delete P.scope; delete P.scopeLens; } }
+  if (L.eye && g.wr && g.wr.eye === L.eye) g.wr = Object.assign({}, g.wr, { eye: L.pe });
+  if (L.sy !== undefined && g.sightY === L.sy) { g.sightY = L.psy; g.sightX = L.psx; }
+  if (L.hid) L.hid.userData.o2Hide = false;
+  for (const k of Object.keys(L)) delete L[k];
+  g._o2Off = null;
+  const mine = o2On(g); if (!mine.length) return;
+  const opt = o2Optics(g), pm = g.def.palm || [0, 0, 0], model = g.model; model.updateMatrixWorld(true);
+  const setEye = (x, y, z) => { L.pe = g.wr && g.wr.eye; L.eye = new THREE.Vector3(x - pm[0], y - pm[1], z - pm[2]); g.wr = Object.assign({}, g.wr, { eye: L.eye }); };
+  for (const q of mine) {
+    const it = q.item;
+    if (it.o2 === 'lpvo' && P.scopeLens === it.eyepiece && P.scope && P.scope !== it.scopeDesc) { it.scopeDesc.ob = P.scope.ob; P.scope = g._acogDesc = it.scopeDesc; }   // its power stays where you zoomed it
+    if (it.o2 === 'buisR' || it.o2 === 'buisF') it.o2T = it.o2Man !== undefined && it.o2ManN === opt.length ? (it.o2Man ? 0 : 1) : (opt.length ? 1 : 0);   // folded under an optic, up without one (or as you flipped it)
+  }
+  const rear = mine.find((q) => q.item.o2 === 'buisR'), front = mine.find((q) => q.item.o2 === 'buisF');
+  if (rear && front && !opt.length && !rear.item.o2T && !front.item.o2T) {   // the irons are the sight line
+    const H = rear.item.o2H ?? front.item.o2H;
+    L.psy = g.sightY; L.psx = g.sightX; g.sightY = L.sy = H; g.sightX = 0;
+    const rz = model.worldToLocal(rear.root.getWorldPosition(_o2V)).z;
+    setEye(0, H, Math.max(rz + 0.07, g.def.eye ? g.def.eye[2] : rz + 0.07));
+  }
+  const mg = mine.find((q) => q.item.o2 === 'mag'), D = mg && !mg.item.o2Out ? o2Dot(g) : null;
+  if (mg && D) {                                                     // flipped in behind a dot: its 3x picture
+    const it = mg.item; it.o2Node.updateMatrixWorld(true);
+    it.scopeDesc.ob = model.worldToLocal(it.obL.clone().applyMatrix4(it.o2Node.matrixWorld));
+    L.ps = P.scope; L.pl = P.scopeLens; P.scope = L.scope = it.scopeDesc; P.scopeLens = it.eyepiece;
+    const e = model.worldToLocal(it.eyepiece.getWorldPosition(_o2V));
+    setEye(e.x, e.y, e.z + it.scopeDesc.relief);
+    const gl = D.item.glass || D.item.reticle; if (gl) { gl.userData.o2Hide = true; L.hid = gl; }   // its dot is in the picture (no both-eyes overlay over it)
+  }
+  const od = mine.find((q) => q.item.o2 === 'odot');
+  if (od && od.item.glass) {                                         // the offset dot's own line (cant to use it)
+    const gw = od.item.glass.getWorldPosition(_o2W), m = model.worldToLocal(_o2V.copy(gw)), r = g.prop.root.worldToLocal(gw.clone());
+    g._o2Off = { sx: m.x, sy: m.y, e: new THREE.Vector3(r.x, r.y, g.wr && g.wr.eye ? g.wr.eye.z : r.z + 0.3) };
+  }
+}
+
+/* --- flips, cant, the VR hand (each frame) --- */
+function o2Flip(g, quiet) {
+  const mine = o2On(g), mg = mine.find((q) => q.item.o2 === 'mag');
+  if (mg) { mg.item.o2Out = !mg.item.o2Out; attRefresh(g); g17Sfx('cover', mg.root.getWorldPosition(_o2W)); if (!quiet) toast(mg.item.o2Out ? 'Magnifier flipped aside: 1x through the dot' : 'Magnifier in: 3x'); return true; }
+  const bs = mine.filter((q) => q.item.o2 === 'buisR' || q.item.o2 === 'buisF');
+  if (bs.length) {
+    const up = bs.some((q) => !q.item.o2T), n = o2Optics(g).length;
+    for (const q of bs) { q.item.o2Man = !up; q.item.o2ManN = n; }
+    attRefresh(g); g17Sfx('cover', bs[0].root.getWorldPosition(_o2W)); if (!quiet) toast(up ? 'Backup sights folded' : 'Backup sights up');
+    return true;
+  }
+  return false;
+}
+function o2Cant(g) {
+  if (!g || !g._o2Off) { toast('No offset sight on this gun'); return; }
+  g._o2Cant = !g._o2Cant; toast(g._o2Cant ? 'Canted: the offset dot' : 'Upright');
+}
+function o2Key(code) {
+  const g = gunOf(deskHand);
+  if (!O2.on || !g) return;
+  if (code === 'Comma') o2Cant(g); else if (!o2Flip(g)) toast('No magnifier or flip-up sights on this gun');
+}
+// Pad: LT held + Y flips the magnifier / sights, LT held + D-pad left cants (the presses do nothing else).
+function o2Pad(B) {
+  if (!O2.on || !B[6] || B[6].value < 0.35) return;
+  const g = gunOf(deskHand); if (!g) return;
+  const edge = (i) => B[i] && B[i].pressed && !PAD.prev[i];
+  if (edge(3)) { PAD.eat = PAD.eat || {}; PAD.eat[3] = true; if (!o2Flip(g)) toast('No magnifier or flip-up sights on this gun'); }
+  if (edge(14)) { PAD.eat = PAD.eat || {}; PAD.eat[14] = true; o2Cant(g); }
+}
+// Desktop ADS canted: the gun rolls 45 deg about its bore and the eye goes onto the offset dot's line.
+const _o2E = new THREE.Vector3(), _o2R = new THREE.Quaternion();
+function o2DeskCant(g, t, P, Q) {
+  const k = g._o2CantK || 0;
+  if (!(k > 0.001) || !g._o2Off || !(t > 0)) return;
+  const c = smoothstep(0, 1, k);
+  _o2R.setFromAxisAngle(_o2Z, Math.PI / 4 * c * t);
+  _o2E.copy(g.wr.eye).lerp(g._o2Off.e, c).applyQuaternion(_o2R).negate().add(g.wr.eye);
+  P.addScaledVector(_o2E, t);
+  Q.multiply(_o2R);
+}
+const _o2T = new THREE.Vector3(), _o2H = new THREE.Vector3();
+function o2Tick(dt) {
+  if (!O2.on || !O2.items.length) return;
+  const now = performance.now() / 1000;
+  for (let i = O2.items.length - 1; i >= 0; i--) {
+    const p = O2.items[i], it = p.item;
+    if (p.removing) { O2.items.splice(i, 1); continue; }
+    if (!it.o2Node) continue;
+    const a = it.o2 === 'mag' ? (it.o2Out ? Math.PI / 2 : 0) : (it.o2T ? it.o2Fold : 0), n = it.o2Node;
+    const cur = it.o2 === 'mag' ? n.rotation.z : n.rotation.x, d = a - cur;
+    if (Math.abs(d) > 1e-4) { const v = cur + Math.sign(d) * Math.min(Math.abs(d), dt * 9); if (it.o2 === 'mag') n.rotation.z = v; else n.rotation.x = v; }
+  }
+  // the gun in your hand: the cant (desktop: your key; headset: your head behind the offset dot) moves the zero onto that line
+  const vr = renderer.xr.isPresenting;
+  for (const h of vr ? vrHands : [deskHand]) {
+    const g = gunOf(h); if (!g) continue;
+    let want = false;
+    if (g._o2Off) {
+      if (!vr) { g._o2CantK = clamp((g._o2CantK || 0) + (g._o2Cant ? dt : -dt) / 0.25, 0, 1); want = g._o2CantK > 0.5; }
+      else { const od = o2On(g).find((q) => q.item.o2 === 'odot'); if (od) { eyeMid(_o2H); od.item.glass.worldToLocal(_o2H); want = _o2H.z > 0.02 && Math.hypot(_o2H.x, _o2H.y) < 0.045; } }
+    } else g._o2CantK = 0;
+    if (want && !g._o2Z) { g._o2Z = { x: g.sightX || 0, y: g.sightY }; g.sightX = g._o2Off.sx; g.sightY = g._o2Off.sy; }
+    else if (!want && g._o2Z) { g.sightX = g._o2Z.x; g.sightY = g._o2Z.y; g._o2Z = null; }
+  }
+  // headset: push the magnifier aside (or back) / a flip-up sight down (or up) with a fingertip of the other hand
+  if (vr && now - O2.flipT > 0.5) for (const vh of vrHands) {
+    const T = vrTips(vh); if (!T) continue;
+    const prev = vh._o2P || (vh._o2P = T.i.clone()), vel = _o2T.copy(T.i).sub(prev).divideScalar(Math.max(dt, 1e-3)); prev.copy(T.i);
+    for (const hg of vrHands) {
+      const g = gunOf(hg); if (!g || hg === vh) continue;
+      for (const q of o2On(g)) {
+        const it = q.item; if (!it.o2Node) continue;
+        it.o2Node.getWorldPosition(_o2H);
+        if (T.i.distanceTo(_o2H) > (it.o2 === 'mag' ? 0.05 : 0.035) || vel.length() < 0.35) continue;
+        O2.flipT = now;
+        if (it.o2 === 'mag') o2Flip(g, true); else { it.o2Man = !!it.o2T; it.o2ManN = o2Optics(g).length; attRefresh(g); g17Sfx('cover', _o2H); }
+        pulseSoft(vh, 0.35, 22);
+        break;
+      }
+    }
+  }
+}
+function o2Precompile(on) {
+  if (!O2.on) return;
+  if (!on) { if (O2.pre) { scene.remove(O2.pre); O2.pre = null; } return; }
+  try {
+    const g = new THREE.Group();
+    for (const k of Object.keys(O2_SPEC)) g.add(o2Tpl(k).clone());
+    camera.updateMatrixWorld(true);
+    g.position.set(0, 0, -0.8).applyMatrix4(camera.matrixWorld);
+    scene.add(g); O2.pre = g;
+  } catch (e) { console.warn('new optics not precompiled', e); }
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcO2 = { O2, O2_SPEC, o2MakeAtt, o2BenchFit, o2Seat, o2Sight, o2Flip, o2Cant, o2On, o2Optics, o2Ends, o2Top, o2Tpl, o2ModelBox, wbClose, wbDeskAtt, wbMakeAtt, attRefresh, gunMeshes, WORKSHOP, wbTableFill, SCOPE, optAxis };
 /* ===========================================================================
  *  STEP 112 — RAILS: STACKED DEVICES, WRAP-AROUND RAILS, THE GLOCK'S STOCK LIGHT  (?rails=off)
  *  RAIL SPOTS. Every gun with rails lists its rail faces (railFaces, model space = design space): the Glock's
