@@ -2383,3 +2383,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: smaller drywall debris
 - Broken wall pieces 1.5-7 cm (were 3-15 cm), crumbs 0.6-1.4 cm (were 1.2-2.4). Parse checked only.
+
+## CQC: title screen-size polish
+- Checked headless at 390x844, 844x390, 820x1180, 1280x720, 1366x768, 1920x1080, 2560x1440 and ?xbox=on 1920x1080 (steps 1 and 2, no horizontal scroll anywhere).
+- Fixed: the Safe room plate stretched tall on a tablet (grid row stretch); phone landscape showed only the footage on the first screen (the reel is hidden under 561 px tall); the loader was 520 px wide in a full-width column on small screens; an empty dark sticky band stayed after loading (foot hidden once #loader is hidden); touch pills (play space, Xbox mode, browse list) 36 -> 44+ px on coarse pointers; 1440p and up: cards, labels, loader and pills one size up (text was laptop-sized). CSS only.
