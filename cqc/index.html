@@ -10587,7 +10587,8 @@ const FilmGradeShader = {
       }
       vec2 c = uv - 0.5; float r2 = dot(c, c);
       vec2 off = c * (uChroma + uBody * (uBChroma + 0.004 * gk)) * (1.0 + r2 * 4.0);   // lens-like, stronger at edges
-      vec3 col = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
+      vec3 cC = texture2D(tDiffuse, uv).rgb;                    // POSTFAST: the centre tap, read once (the CAS below uses it too)
+      vec3 col = vec3(texture2D(tDiffuse, uv + off).r, cC.g, texture2D(tDiffuse, uv - off).b);
       if (uBlur > 0.0) {                                        // SCREEN BLOOD: a short smear after a hit, 4 taps
         vec2 bo = c * uBlur * 0.014 + vec2(uBlur * 1.6) / uRes;
         vec3 bs = texture2D(tDiffuse, uv + bo).rgb + texture2D(tDiffuse, uv - bo).rgb + texture2D(tDiffuse, uv + vec2(bo.x, -bo.y)).rgb + texture2D(tDiffuse, uv + vec2(-bo.x, bo.y)).rgb;
@@ -10599,7 +10600,7 @@ const FilmGradeShader = {
       }
       if (uCas > 0.0 && uBody < 0.5) {                          // step 123: CAS (AMD FidelityFX style), 4 extra taps
         vec2 px = 1.0 / uRes;
-        vec3 ca = texture2D(tDiffuse, uv).rgb, cn = texture2D(tDiffuse, uv + vec2(0.0, px.y)).rgb, cs = texture2D(tDiffuse, uv - vec2(0.0, px.y)).rgb;
+        vec3 ca = cC, cn = texture2D(tDiffuse, uv + vec2(0.0, px.y)).rgb, cs = texture2D(tDiffuse, uv - vec2(0.0, px.y)).rgb;
         vec3 ce = texture2D(tDiffuse, uv + vec2(px.x, 0.0)).rgb, cw = texture2D(tDiffuse, uv - vec2(px.x, 0.0)).rgb;
         vec3 mn = min(ca, min(min(cn, cs), min(ce, cw))), mx = max(ca, max(max(cn, cs), max(ce, cw)));
         vec3 amp = sqrt(clamp(min(mn, 2.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
@@ -10649,12 +10650,82 @@ const FilmGradeShader = {
       gl_FragColor = vec4(col, 1.0);
     }`
 };
+/* ----------------------------------------------------------------------------
+ *  POSTFAST (Cinematic post chain, same picture; ?postms=off, ?bloomfuse=off)
+ *  1. MSAA only where it does something: the scene draw. EffectComposer gave
+ *     both ping-pong targets the scene's samples, so the bloom blend, the tone
+ *     map, the SMAA blend (and GTAO's output) each wrote a multisampled
+ *     half-float target and resolved it again. A full-screen quad covers every
+ *     sample of a pixel with one colour, so the resolve gave back exactly what
+ *     a plain target holds. Now the scene renders into POSTFAST.rt (samples),
+ *     every later pass ping-pongs between two plain targets (no depth buffer).
+ *  2. The bloom's last step (an additive full-resolution blend of its half-size
+ *     composite onto the scene) is done inside the OutputPass shader instead:
+ *     same texture, same filtering, rgb += bloom.rgb * bloom.a before the tone
+ *     map (only the fp16 rounding of the stored sum is gone).
+ * -------------------------------------------------------------------------- */
+const POSTFAST = { ms: !/[?&]postms=off/.test(QS), fuse: !/[?&]bloomfuse=off/.test(QS), rt: null, out: null };
+function postFastComposer(samples) {
+  const C = composer;
+  if (samples > 0) POSTFAST.rt = new THREE.WebGLRenderTarget(C.renderTarget1.width, C.renderTarget1.height, { type: THREE.HalfFloatType, samples });
+  const size = C.setSize.bind(C);
+  C.setSize = function (w, h) { size(w, h); if (POSTFAST.rt) POSTFAST.rt.setSize(this.renderTarget1.width, this.renderTarget1.height); };
+  C.render = function (dt) {                                     // EffectComposer.render without masks, with its own read / write choice
+    const R = this.renderer, cur = R.getRenderTarget(), P = this.passes;
+    let last = -1; for (let i = 0; i < P.length; i++) if (P[i].enabled) last = i;
+    let read = POSTFAST.rt || this.renderTarget1;
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i]; if (!p.enabled) continue;
+      p.renderToScreen = this.renderToScreen && i === last;
+      const write = read === this.renderTarget1 ? this.renderTarget2 : this.renderTarget1;
+      p.render(R, write, read, dt, false);
+      if (p.needsSwap) read = write;
+    }
+    this.readBuffer = read;                                      // the last image (the Xbox warm-up compiles against it)
+    R.setRenderTarget(cur);
+  };
+}
+function postFastFuse(B, O) {
+  const fs = O.material.fragmentShader, a = 'gl_FragColor = texture2D( tDiffuse, vUv );';
+  if (fs.indexOf(a) < 0) { POSTFAST.fuse = false; return; }
+  O.uniforms.tBloom = { value: B.renderTargetsHorizontal[0].texture }; O.uniforms.uBloomK = { value: 1 };
+  O.material.fragmentShader = fs.replace('uniform sampler2D tDiffuse;', 'uniform sampler2D tDiffuse; uniform sampler2D tBloom; uniform float uBloomK;')
+    .replace(a, a + ' vec4 fbl = texture2D( tBloom, vUv ); gl_FragColor.rgb += fbl.rgb * fbl.a * uBloomK;');
+  O.material.needsUpdate = true;
+  POSTFAST.out = O;
+  const oRender = O.render.bind(O);
+  O.render = function (r, w, rd, dt, m) { this.uniforms.uBloomK.value = B.enabled ? 1 : 0; this.uniforms.tBloom.value = B.renderTargetsHorizontal[0].texture; return oRender(r, w, rd, dt, m); };
+  B.render = function (renderer, writeBuffer, readBuffer) {      // UnrealBloomPass.render up to its composite; the blend is O's
+    renderer.getClearColor(this._oldClearColor); this.oldClearAlpha = renderer.getClearAlpha();
+    const oldAutoClear = renderer.autoClear; renderer.autoClear = false;
+    renderer.setClearColor(this.clearColor, 0);
+    this.highPassUniforms.tDiffuse.value = readBuffer.texture; this.highPassUniforms.luminosityThreshold.value = this.threshold;
+    this.fsQuad.material = this.materialHighPassFilter;
+    renderer.setRenderTarget(this.renderTargetBright); renderer.clear(); this.fsQuad.render(renderer);
+    let input = this.renderTargetBright;
+    for (let i = 0; i < this.nMips; i++) {
+      const M = this.separableBlurMaterials[i]; this.fsQuad.material = M;
+      M.uniforms.colorTexture.value = input.texture; M.uniforms.direction.value = UnrealBloomPass.BlurDirectionX;
+      renderer.setRenderTarget(this.renderTargetsHorizontal[i]); renderer.clear(); this.fsQuad.render(renderer);
+      M.uniforms.colorTexture.value = this.renderTargetsHorizontal[i].texture; M.uniforms.direction.value = UnrealBloomPass.BlurDirectionY;
+      renderer.setRenderTarget(this.renderTargetsVertical[i]); renderer.clear(); this.fsQuad.render(renderer);
+      input = this.renderTargetsVertical[i];
+    }
+    this.fsQuad.material = this.compositeMaterial;
+    const U = this.compositeMaterial.uniforms; U.bloomStrength.value = this.strength; U.bloomRadius.value = this.radius; U.bloomTintColors.value = this.bloomTintColors;
+    renderer.setRenderTarget(this.renderTargetsHorizontal[0]); renderer.clear(); this.fsQuad.render(renderer);
+    renderer.setClearColor(this._oldClearColor, this.oldClearAlpha); renderer.autoClear = oldAutoClear;
+  };
+}
 function setupPost() {
   const w = window.innerWidth, h = window.innerHeight;
   // Performance pass: the chain renders into an MSAA target. Before, it had no
   // anti-aliasing at all, so only a 2x Retina pixel ratio hid the jaggies.
-  const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: renderer.extensions.has('EXT_color_buffer_float') ? CONFIG.perf.desktop.msaa : 0 });   // step 47: same on mobile, if the GPU can
+  const samples = renderer.extensions.has('EXT_color_buffer_float') ? CONFIG.perf.desktop.msaa : 0;   // step 47: same on mobile, if the GPU can
+  // POSTFAST: only the scene target is multisampled; the full-screen passes write plain targets (no depth either)
+  const rt = new THREE.WebGLRenderTarget(w, h, POSTFAST.ms ? { type: THREE.HalfFloatType, samples: 0, depthBuffer: false } : { type: THREE.HalfFloatType, samples });
   composer = new EffectComposer(renderer, rt);
+  if (POSTFAST.ms) postFastComposer(samples);
   composer.setPixelRatio(renderer.getPixelRatio());
   composer.setSize(w, h);
   composer.addPass(new RenderPass(scene, camera));
@@ -10672,7 +10743,9 @@ function setupPost() {
   } catch (e) { console.warn('GTAO unavailable, continuing without it.', e); }
   bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), CONFIG.post.bloomStrength, CONFIG.post.bloomRadius, CONFIG.post.bloomThreshold);
   composer.addPass(bloomPass);
-  composer.addPass(new OutputPass());       // tone mapping + sRGB happen here
+  const outPass = new OutputPass();
+  if (POSTFAST.fuse) postFastFuse(bloomPass, outPass);   // POSTFAST: the bloom is added inside the tone-map pass (one full-screen pass less)
+  composer.addPass(outPass);                // tone mapping + sRGB happen here
   // Step 20: edge smoothing. MSAA only sees triangle edges; SMAA also catches what it misses: shiny
   // edges on steel and gun parts, thin pickets and rails, tile joints, and the stair-step edges you
   // get whenever adaptive quality drops the render scale. It runs on the finished image (after tone
@@ -52356,6 +52429,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { roomFloorAt, rLX, rLZ, ene
 if (window.__cqcDev) Object.assign(window.__cqcDev, { DG, locomote, stepPhysics, updateDoorsPost, headGuard, HG, netDoorGhost, rWX, rWZ, rLX, rLZ, netDoorRx, nudgeDoor, pushOutOf, doorSide, rebuildWalk, MIC, netVoiceMic, voxPress, voxKey, voxApply, applyMenu, MENU, MOD, MENU_BASE });   // DOORGHOST / VOX / one speed tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain, flashBurst, fireGun, BHEAD, bodyHeadYaw, rigNadeAt, enemyShoot, muzSync, muzChain, getMUZ: () => MUZ });   // muzzle flash by device, VR body heading
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
+if (window.__cqcDev) Object.assign(window.__cqcDev, { post: () => ({ composer, filmPass, gtaoPass, bloomPass }), bodyCamLivePre, bodyCamLivePost, tickSafe, applyLevel, perf, POSTFAST });   // post chain perf tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
 if (window.__cqcDev) Object.assign(window.__cqcDev, { locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
 if (window.__cqcDev) Object.assign(window.__cqcDev, { FLIP, flipRecord, flipHandW, flipLaunch, flipTick, flipCatchFind, flipCatch, itemRelease, weaponsUpdate, dropItem });   // gun flip tests
