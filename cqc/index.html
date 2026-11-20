@@ -52650,14 +52650,14 @@ const G17_MOA = Math.PI / 180 / 60;
 const RETICLE = { lvl: 1, mats: [] };
 function g17GlassMat(moa = 3, ring = 0) {
   const m = new THREE.ShaderMaterial({
-    uniforms: { uLvl: { value: RETICLE.lvl }, uR: { value: moa / 2 * G17_MOA }, uRing: { value: ring / 2 * G17_MOA }, uRw: { value: 0.8 * G17_MOA }, uTint: { value: new THREE.Color(0.09, 0.2, 0.22) }, uA: { value: 0.08 } },
+    uniforms: { uLvl: { value: RETICLE.lvl }, uR: { value: moa / 2 * G17_MOA }, uRing: { value: ring / 2 * G17_MOA }, uRw: { value: 0.8 * G17_MOA }, uTint: { value: new THREE.Color(0.09, 0.2, 0.22) }, uA: { value: 0.08 }, uOv: { value: 0 } },
     vertexShader: `varying vec3 vP; varying vec3 vF; varying vec3 vN;
       void main() {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         vP = mv.xyz; vF = (modelViewMatrix * vec4(0.0, 0.0, -1.0, 0.0)).xyz; vN = normalMatrix * normal;
         gl_Position = projectionMatrix * mv;
       }`,
-    fragmentShader: `uniform float uLvl, uR, uRing, uRw, uA; uniform vec3 uTint; varying vec3 vP; varying vec3 vF; varying vec3 vN;
+    fragmentShader: `uniform float uLvl, uR, uRing, uRw, uA, uOv; uniform vec3 uTint; varying vec3 vP; varying vec3 vF; varying vec3 vN;
       void main() {
         vec3 v = normalize(vP), f = normalize(vF);
         float c = dot(v, f);
@@ -52671,7 +52671,12 @@ function g17GlassMat(moa = 3, ring = 0) {
         core = max(core, step(1e-6, uRing) * (1.0 - smoothstep(rw - px * 0.6, rw + px * 0.6, abs(a - uRing))));
         float fr = pow(1.0 - abs(dot(normalize(vN), v)), 4.0);      // the coating shows at a grazing angle
         float al = clamp(uA + 0.35 * fr, 0.0, 0.55);
-        gl_FragColor = vec4(uTint * al + vec3(1.0, 0.045, 0.02) * (core + halo) * on, al);
+        #ifdef RETOV
+          float k = (core + halo) * on; if (k < 0.004) discard;             // both-eyes overlay (RETOV): the dot alone, added
+          gl_FragColor = vec4(vec3(1.0, 0.045, 0.02) * k, 0.0);
+        #else
+          gl_FragColor = vec4(uTint * al + vec3(1.0, 0.045, 0.02) * (core + halo) * on * (1.0 - uOv), al);
+        #endif
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
@@ -52960,7 +52965,64 @@ function reticleTick(dt) {
   const L = typeof eyeLight === 'function' ? eyeLight(stream.current) : 1, want = clamp(0.32 + 0.75 * Math.sqrt(clamp(L, 0, 1.5)), 0.3, 1.2);
   RETICLE.lvl += (want - RETICLE.lvl) * (1 - Math.exp(-Math.min(dt, 0.1) * 1.6));
   for (const m of RETICLE.mats) m.uniforms.uLvl.value = RETICLE.lvl;
+  retOvTick();
 }
+/* Red dot / holo reticles with both eyes (VR; ?scopewin=off = as before). The dot is drawn per eye by angle off the
+ * optic's axis (at infinity, parallax-correct), but only where that eye's view crosses the small window glass, so the
+ * eye beside the optic never saw it. In the headset, while your head centre is behind a held optic, an overlay in the
+ * glass's plane (larger, drawn last, no depth test, added light only) draws the same dot for both eyes; the glass then
+ * draws its tint without the dot (uOv), so the eye behind it does not see it twice. */
+const RETOV = { at: 0, guns: [], list: [], head: new THREE.Vector3(), l: new THREE.Vector3() };
+function retOvMat(mat) {
+  let m = mat.userData.retOv;
+  if (m) return m;
+  m = mat.userData.retOv = new THREE.ShaderMaterial({ uniforms: mat.uniforms, vertexShader: mat.vertexShader, fragmentShader: mat.fragmentShader, defines: { RETOV: '' },
+    transparent: true, depthTest: false, depthWrite: false, premultipliedAlpha: true, toneMapped: true, side: THREE.DoubleSide });
+  m.userData.ready = false;
+  try { const p = renderer.compileAsync ? renderer.compileAsync(new THREE.Mesh(new THREE.PlaneGeometry(1, 1), m), camera, scene) : null; if (p) p.then(() => { m.userData.ready = true; }, () => { m.userData.ready = true; }); else m.userData.ready = true; }
+  catch (e) { m.userData.ready = true; }
+  return m;
+}
+function retOvTick() {
+  const vr = SWIN.on && renderer.xr.isPresenting, now = performance.now();
+  for (const o of RETOV.list) o.ov.visible = false;
+  for (const m of RETICLE.mats) if (m.uniforms.uOv) m.uniforms.uOv.value = 0;
+  if (!vr) return;
+  if (now - RETOV.at > 500) {                                      // the reticle glasses on the guns in your hands, found twice a second
+    RETOV.at = now; RETOV.list.length = 0;
+    const mats = new Set(RETICLE.mats.filter((m) => m.uniforms.uOv));
+    for (const h of vrHands) {
+      const g = gunOf(h); if (!g || !g.model) continue;
+      g.model.traverse((o) => {
+        if (!o.isMesh || !mats.has(o.material) || !o.geometry) return;
+        let ov = o.userData.retOv;
+        if (!ov) {
+          const G = o.geometry; if (!G.boundingBox) G.computeBoundingBox();
+          const B = G.boundingBox;
+          ov = o.userData.retOv = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), retOvMat(o.material));
+          ov.userData.c = B.getCenter(new THREE.Vector3()); ov.userData.r = Math.max(0.005, Math.max(B.max.x - B.min.x, B.max.y - B.min.y) / 2);
+          ov.renderOrder = 61; ov.frustumCulled = false; ov.castShadow = ov.receiveShadow = false; ov.visible = false;
+          o.add(ov);
+        }
+        RETOV.list.push({ mesh: o, ov });
+      });
+    }
+  }
+  eyeMid(RETOV.head);
+  for (const R of RETOV.list) {
+    const o = R.mesh, ov = R.ov, c = ov.userData.c;
+    if (!o.parent || !ov.material.userData.ready || !isShown(o)) continue;
+    o.updateMatrixWorld(true);
+    o.worldToLocal(RETOV.l.copy(RETOV.head));
+    const ex = RETOV.l.x - c.x, ey = RETOV.l.y - c.y, ez = RETOV.l.z - c.z;   // the optic looks along -z: the eye sits at +z
+    if (!(ez > 0.015 && ez < 0.7 && Math.hypot(ex, ey) < 0.08)) continue;
+    ov.position.set(c.x + ex, c.y + ey, c.z + 0.0005);
+    ov.scale.set(ov.userData.r + 0.06, ov.userData.r + 0.06, 1);
+    ov.visible = true;
+    o.material.uniforms.uOv.value = 1;
+  }
+}
+function isShown(o) { for (let q = o; q; q = q.parent) if (!q.visible) return false; return true; }
 // VR heft: the added parts' inertia makes the gun trail your hand's turn by a few ms (GLOCK_FX_VR); never on a grab's blend.
 function g17VrHeft(g, dt, Q) {
   const F = g.afx, L = g.vrHeft || (g.vrHeft = { q: new THREE.Quaternion(), at: -1 }), now = performance.now() / 1000;
@@ -53209,18 +53271,105 @@ const SCOPE_RETICLE = {
     }` }
 };
 // The eyepiece material: the picture through the exit pupil (scope shadow off the axis, too close / too far), the reticle on it.
+/* SCOPE WINDOW (both eyes, VR; ?scopewin=off = the picture on the eyepiece disc only, one eye at a time).
+ * The scope pictures (SCOPE: AWM 3-25x / 10x, M4 ACOG; the AKM 2x) were drawn on the eyepiece disc, a few cm in front of
+ * the eye: in the headset only the eye on the scope's axis looked into that disc (the other eye saw it 6 cm off to the
+ * side, through the eyecup, at a different depth), so you could see through it with one eye at a time. Now, in VR, a
+ * window (a larger disc in the eyepiece's plane, drawn last, no depth test) shows the same picture sampled by each
+ * pixel's view direction against the scope's axis: the picture and its reticle are at infinity (collimated, as a real
+ * scope's image), the same for both eyes and parallax-correct per eye. Whether you look through it, the exit pupil /
+ * scope shadow and its size come from the head centre (the midpoint of the two eyes), so both eyes see the same full
+ * picture. Desktop unchanged (the disc). One program more per scope material, compiled in the background on first use. */
+const SWIN = { on: !/[?&]scopewin=off\b/.test(QS), maxOff: 0.09, pad: 0.05 };
+const SWIN_U = () => ({ uWin: { value: 0 }, uTanR: { value: 0.2 }, uWX: { value: new THREE.Vector3(1, 0, 0) }, uWY: { value: new THREE.Vector3(0, 1, 0) }, uWF: { value: new THREE.Vector3(0, 0, -1) } });
+const SWIN_VS = `#ifdef SWIN
+  varying vec3 vW; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }
+#else
+  varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+#endif`;
+const SWIN_FS = `uniform float uWin, uTanR; uniform vec3 uWX, uWY, uWF;
+#ifdef SWIN
+  varying vec3 vW;
+  float swinP(out vec2 p) {
+    vec3 dv = normalize(vW - cameraPosition);
+    float fw = dot(dv, uWF);
+    if (uWin < 0.5 || fw <= 1e-3) discard;
+    p = vec2(dot(dv, uWX), dot(dv, uWY)) / (fw * uTanR);
+    if (dot(p, p) > 1.21) discard;
+    return uLit;
+  }
+#else
+  varying vec2 vUv;
+  float swinP(out vec2 p) { p = (vUv - 0.5) * 2.0; return uLit * (1.0 - uWin); }
+#endif
+#define SWIN_P vec2 p; float lit = swinP(p);`;
+const _sw = { a: new THREE.Vector3(), b: new THREE.Vector3(), x: new THREE.Vector3(), y: new THREE.Vector3(), z: new THREE.Vector3(), box: new THREE.Box3() };
+// The head centre: in the headset the midpoint of the two eyes (three's XR camera sits ~3 cm behind them), else the camera.
+function eyeMid(out) {
+  if (renderer.xr.isPresenting) {
+    const xc = renderer.xr.getCamera(), C = xc && xc.cameras;
+    if (C && C.length >= 2) {
+      _sw.a.setFromMatrixPosition(C[0].matrixWorld); _sw.b.setFromMatrixPosition(C[1].matrixWorld);
+      if (_sw.a.distanceToSquared(_sw.b) < 0.04 && Number.isFinite(_sw.a.x + _sw.b.x)) return out.copy(_sw.a).add(_sw.b).multiplyScalar(0.5);
+    }
+  }
+  return out.setFromMatrixPosition(camera.matrixWorld);
+}
+// The lens disc's centre and radius in its own frame (its glass faces +z), measured once.
+function swinLensInfo(lens) {
+  const U = lens.userData;
+  if (!U.swC) {
+    const g = lens.geometry; if (!g.boundingBox) g.computeBoundingBox();
+    const B = g.boundingBox;
+    U.swC = B.getCenter(new THREE.Vector3());
+    U.swR = Math.max(0.004, Math.min(B.max.x - B.min.x, B.max.y - B.min.y) / 2);
+  }
+  return U;
+}
+// Each frame for the scope you look through: head = the head centre in the lens's frame. on false = the window off (the disc shows the picture).
+function swinTick(lens, mat, head, on) {
+  const U = mat.uniforms, L = swinLensInfo(lens), c = L.swC, r = L.swR;
+  let W = L.swWin;
+  const ex = head.x - c.x, ey = head.y - c.y, ez = head.z - c.z;
+  const use = SWIN.on && on && renderer.xr.isPresenting && ez > 0.01 && Math.hypot(ex, ey) < SWIN.maxOff;
+  if (W && W.userData.mat !== mat) { lens.remove(W); W = L.swWin = null; }
+  if (!use) { U.uWin.value = 0; if (W) W.visible = false; return; }
+  if (!W) {
+    let wm = mat.userData.swWin;
+    if (!wm) {
+      wm = mat.userData.swWin = new THREE.ShaderMaterial({ uniforms: mat.uniforms, vertexShader: mat.vertexShader, fragmentShader: mat.fragmentShader,
+        defines: { SWIN: '' }, depthTest: false, depthWrite: false, toneMapped: true });
+      wm.userData.ready = false;
+      try { const p = renderer.compileAsync ? renderer.compileAsync(new THREE.Mesh(new THREE.CircleGeometry(1, 8), wm), camera, scene) : null; if (p) p.then(() => { wm.userData.ready = true; }, () => { wm.userData.ready = true; }); else wm.userData.ready = true; }
+      catch (e) { wm.userData.ready = true; }
+    }
+    W = L.swWin = new THREE.Mesh(new THREE.CircleGeometry(1, 48), wm);
+    W.userData.mat = mat; W.renderOrder = 60; W.frustumCulled = false; W.castShadow = W.receiveShadow = false;
+    lens.add(W);
+  }
+  if (!W.material.userData.ready) { U.uWin.value = 0; W.visible = false; return; }
+  W.visible = true;
+  W.position.set(c.x + ex, c.y + ey, c.z + 0.002);                 // under the head, so each eye's view along the axis lands on it
+  W.scale.setScalar(r * 1.35 + SWIN.pad);
+  lens.matrixWorld.extractBasis(_sw.x, _sw.y, _sw.z);
+  U.uWX.value.copy(_sw.x).normalize(); U.uWY.value.copy(_sw.y).normalize(); U.uWF.value.copy(_sw.z).normalize().negate();
+  U.uTanR.value = clamp(r / Math.max(ez, 0.02), 0.06, 0.75);       // the eyepiece's angular size from the head: the picture fills it as before
+  U.uWin.value = 1;
+}
 function scopeMat(rt, reticle) {
   const R = SCOPE_RETICLE[reticle];
   return new THREE.ShaderMaterial({
     uniforms: { tScene: { value: rt.texture }, uEye: { value: new THREE.Vector3(0, 0, SCOPE.relief) }, uRelief: { value: SCOPE.relief },
-      uBox: { value: SCOPE.box }, uLit: { value: 0 }, uMag: { value: SCOPE.mag } },
-    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      uBox: { value: SCOPE.box }, uLit: { value: 0 }, uMag: { value: SCOPE.mag }, ...SWIN_U() },
+    vertexShader: SWIN_VS,
     fragmentShader: `
-      uniform sampler2D tScene; uniform vec3 uEye; uniform float uRelief, uBox, uLit, uMag; varying vec2 vUv;
+      uniform sampler2D tScene; uniform vec3 uEye; uniform float uRelief, uBox, uLit, uMag;
       float line(float d, float w) { return 1.0 - smoothstep(w * 0.6, w, abs(d)); }
       ${R.glsl}
+      ${SWIN_FS}
       void main() {
-        vec2 p = (vUv - 0.5) * 2.0;                                   // -1..1 across the eyepiece
+        SWIN_P                                                        // p: -1..1 across the eyepiece (disc), or by view direction (both-eyes window)
+        float uLit = lit;
         vec2 off = uEye.xy / uBox; off *= min(1.0, 1.2 / max(length(off), 1e-4));   // eye off the axis, in eye-box units (capped: a far / off-axis eye still sees the picture)
         float dz = max(0.0, uRelief * 0.45 - uEye.z) / 0.03;          // only far too close shades it: from the eye relief out to arm's length the picture stays full
         float R = clamp(1.04 - 0.03 * dot(off, off) - 0.08 * dz * dz, 0.8, 1.04);
@@ -53305,16 +53454,20 @@ function scopeTick(dt) {
   const wasDesk = SCOPE.desk;
   SCOPE.desk = !vr && !!g && g.ads > 0.92;
   if (SCOPE.desk !== wasDesk || (SCOPE.desk && (SCOPE.deskGun !== g || SCOPE.deskKind !== S.reticle))) scopeDeskView(SCOPE.desk, g);
-  if (SCOPE.lit && (!S || SCOPE.lit !== S.mat)) { SCOPE.lit.uniforms.uLit.value = 0; SCOPE.lit = null; }   // the scope you put down goes dark
+  if (SCOPE.lit && (!S || SCOPE.lit !== S.mat)) { SCOPE.lit.uniforms.uLit.value = 0; SCOPE.lit.uniforms.uWin.value = 0; SCOPE.lit = null; }   // the scope you put down goes dark
+  if (SCOPE.winLens && (!g || SCOPE.winLens !== g.parts.scopeLens)) { const W = SCOPE.winLens.userData.swWin; if (W) W.visible = false; SCOPE.winLens = null; }
   if (!g || !SCOPE.cam) { SCOPE.looking = false; return; }
   const lens = g.parts.scopeLens;
   lens.updateMatrixWorld(true);
-  headWorld(_scE);
+  eyeMid(_scE);                                                      // the head centre (both eyes), not one eye
   SCOPE.eyeL.copy(_scE); lens.worldToLocal(SCOPE.eyeL);
   if (SCOPE.force) SCOPE.eyeL.set(0.002, 0.001, S.relief);   // dev: as if your eye were on the axis
   SCOPE.looking = SCOPE.desk || ((vr || SCOPE.force) && SCOPE.eyeL.z > 0.01 && SCOPE.eyeL.z < 0.6 && Math.hypot(SCOPE.eyeL.x, SCOPE.eyeL.y) < 0.14 + 0.15 * SCOPE.eyeL.z);   // seen from anywhere behind it within arm's length
   const U = S.mat.uniforms;
   U.uLit.value = SCOPE.looking ? 1 : 0; SCOPE.lit = S.mat;
+  if (SCOPE.winLens && SCOPE.winLens !== lens) { const W = SCOPE.winLens.userData.swWin; if (W) W.visible = false; }
+  SCOPE.winLens = lens;
+  swinTick(lens, S.mat, SCOPE.eyeL, SCOPE.looking && !SCOPE.desk);   // VR: both eyes see the picture (at infinity)
   if (!SCOPE.looking || SCOPE.desk) return;        // the computer view zooms the main camera instead
   // zoom: right stick up / down while you look through it (a fixed power stays)
   const right = vrHands.find((h) => !h.left && h.ctrl && h.ctrl.userData.gamepad);
@@ -54593,14 +54746,14 @@ function akmForEach(fn) { for (const q of props) if (q.item && q.item.kind === '
 function akmReticleMat(dotMoa, ringMoa) {
   return new THREE.ShaderMaterial({
     uniforms: { uLvl: { value: 1 }, uR: { value: dotMoa / 2 * G17_MOA }, uRing: { value: ringMoa / 2 * G17_MOA }, uRingW: { value: 1.3 * G17_MOA },
-      uTint: { value: new THREE.Color(0.08, 0.16, 0.2) }, uA: { value: 0.07 } },
+      uTint: { value: new THREE.Color(0.08, 0.16, 0.2) }, uA: { value: 0.07 }, uOv: { value: 0 } },
     vertexShader: `varying vec3 vP; varying vec3 vF; varying vec3 vN;
       void main() {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         vP = mv.xyz; vF = (modelViewMatrix * vec4(0.0, 0.0, -1.0, 0.0)).xyz; vN = normalMatrix * normal;
         gl_Position = projectionMatrix * mv;
       }`,
-    fragmentShader: `uniform float uLvl, uR, uRing, uRingW, uA; uniform vec3 uTint; varying vec3 vP; varying vec3 vF; varying vec3 vN;
+    fragmentShader: `uniform float uLvl, uR, uRing, uRingW, uA, uOv; uniform vec3 uTint; varying vec3 vP; varying vec3 vF; varying vec3 vN;
       void main() {
         vec3 v = normalize(vP), f = normalize(vF);
         float c = dot(v, f);
@@ -54613,7 +54766,12 @@ function akmReticleMat(dotMoa, ringMoa) {
         float halo = exp(-a / (r * 1.8)) * 0.14;
         float fr = pow(1.0 - abs(dot(normalize(vN), v)), 4.0);
         float al = clamp(uA + 0.35 * fr, 0.0, 0.55);
-        gl_FragColor = vec4(uTint * al + vec3(1.0, 0.05, 0.025) * (core + 0.85 * ring + halo) * on, al);
+        #ifdef RETOV
+          float k = (core + 0.85 * ring + halo) * on; if (k < 0.004) discard;   // both-eyes overlay (RETOV)
+          gl_FragColor = vec4(vec3(1.0, 0.05, 0.025) * k, 0.0);
+        #else
+          gl_FragColor = vec4(uTint * al + vec3(1.0, 0.05, 0.025) * (core + 0.85 * ring + halo) * on * (1.0 - uOv), al);
+        #endif
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }`,
@@ -54623,11 +54781,13 @@ function akmReticleMat(dotMoa, ringMoa) {
 // The 2x's eyepiece: the view from its objective (AKMA.kit.pip.rt), an exit pupil, a red ring-and-dot reticle.
 function akmPipMat(rt) {
   return new THREE.ShaderMaterial({
-    uniforms: { tScene: { value: rt.texture }, uEye: { value: new THREE.Vector3(0, 0, AKM_DIM.relief) }, uRelief: { value: AKM_DIM.relief }, uBox: { value: 0.05 }, uLit: { value: 0 }, uLvl: { value: 1 } },   // wide eye box (forgiving)
-    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-    fragmentShader: `uniform sampler2D tScene; uniform vec3 uEye; uniform float uRelief, uBox, uLit, uLvl; varying vec2 vUv;
+    uniforms: { tScene: { value: rt.texture }, uEye: { value: new THREE.Vector3(0, 0, AKM_DIM.relief) }, uRelief: { value: AKM_DIM.relief }, uBox: { value: 0.05 }, uLit: { value: 0 }, uLvl: { value: 1 }, ...SWIN_U() },   // wide eye box (forgiving)
+    vertexShader: SWIN_VS,
+    fragmentShader: `uniform sampler2D tScene; uniform vec3 uEye; uniform float uRelief, uBox, uLit, uLvl;
+      ${SWIN_FS}
       void main() {
-        vec2 p = (vUv - 0.5) * 2.0;
+        SWIN_P
+        float uLit = lit;
         vec2 off = uEye.xy / uBox; off *= min(1.0, 1.2 / max(length(off), 1e-4));   // eye off the axis, in eye-box units (capped: a far / off-axis eye still sees the picture)
         float dz = max(0.0, uRelief * 0.45 - uEye.z) / 0.03;        // only far too close shades it
         float R = clamp(1.06 - 0.05 * dot(off, off) - 0.06 * dz * dz, 0.82, 1.06);   // the picture fills the eyepiece; a thin soft edge only
@@ -54993,12 +55153,16 @@ function akmPipGun() {
 function akmPipTick() {
   const P = AKMA.kit.pip, U = P.mat.uniforms, g = akmPipGun();
   U.uLit.value = 0;
+  if (P.winLens && (!g || P.winLens !== g.akLens)) { const W = P.winLens.userData.swWin; if (W) W.visible = false; U.uWin.value = 0; P.winLens = null; }
   if (!g) return;
   const lens = g.akLens, X = AKMA.ex.x2;
   lens.updateMatrixWorld(true);
-  lens.worldToLocal(headWorld(P.eyeL));                             // the eye in the eyepiece's frame (its glass faces +z)
+  lens.worldToLocal(eyeMid(P.eyeL));                                // the head centre (both eyes) in the eyepiece's frame (its glass faces +z)
+  P.winLens = lens;
+  const seen = P.eyeL.z - X.eyeZ > 0.01 && P.eyeL.z - X.eyeZ < 0.6 && Math.hypot(P.eyeL.x, P.eyeL.y - X.axisY) < 0.14 + 0.15 * (P.eyeL.z - X.eyeZ);   // seen from anywhere behind it within arm's length
+  swinTick(lens, P.mat, P.eyeL, seen);                              // VR: both eyes see the picture (at infinity)
   P.eyeL.y -= X.axisY; P.eyeL.z -= X.eyeZ;
-  if (!(P.eyeL.z > 0.01 && P.eyeL.z < 0.6 && Math.hypot(P.eyeL.x, P.eyeL.y) < 0.14 + 0.15 * P.eyeL.z)) return;   // seen from anywhere behind it within arm's length
+  if (!seen) return;
   U.uLit.value = 1; U.uEye.value.copy(P.eyeL);
   P.cam.position.set(0, X.axisY, X.objZ).applyMatrix4(lens.matrixWorld);   // on the axis at the objective, looking down the gun
   lens.getWorldQuaternion(P.cam.quaternion); P.cam.updateMatrixWorld(true);
