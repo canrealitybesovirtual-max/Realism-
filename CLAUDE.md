@@ -2321,3 +2321,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: stair balustrade pickets end inside the top rail
 - Cause: the pickets' tops followed the nosing line (one riser above the straight top rail in a U-turn well: nNose at the top was rise + rs, clamped), while the top rail is a straight line between its ends, so pickets stuck up through it. Now every picket top = the rail's own height at that point - 12 mm (railYB in stairBuilderU, railYL in the straight well's flight-1 balustrade). Parse checked only.
+
+## CQC: glass bottles removed
+- The bottle / bottleG props (brown and green glass bottles) and their builder are gone; no room prop list places them. The label material stays (the paint tin uses it). Glass breaking code stays for other glass. Parse + eslint no-undef only.
