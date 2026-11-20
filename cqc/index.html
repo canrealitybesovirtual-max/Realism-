@@ -8104,10 +8104,11 @@ function* roomBuilder(room) {
     [d, null, (m) => { m.rotation.y = Math.PI / 2; m.position.set(-w / 2 + eps, 0, 0); }, (lx) => [-w / 2, -lx, Math.PI / 2]],
     [d, null, (m) => { m.rotation.y = -Math.PI / 2; m.position.set(w / 2 - eps, 0, 0); }, (lx) => [w / 2, lx, -Math.PI / 2]]
   ];
+  const bandMeshes = [null, null, null, null];
   for (const [bi, [len, doorX, place, toRoom]] of bands.entries()) {
     const { geo, segs } = wallBand(len, h, dado, doorX === null ? [] : [[doorX - fw, doorX + fw]], CONFIG.tile.wall);
     const band = mesh(own(wallWearAttr(geo, room, ['back', 'front', 'left', 'right'][bi], 0, doorX)), RM.lower, false, true);   // step 95: same wear as the wall behind
-    place(band); g.add(band);
+    place(band); g.add(band); bandMeshes[bi] = band;
     for (const [a, b] of segs) {
       if (b - a < 0.05) continue;
       const [x, z, ry] = toRoom((a + b) / 2), off = 0.008 + eps;
@@ -8123,6 +8124,8 @@ function* roomBuilder(room) {
       bGeo(G.rail, M.vinyl, x + Math.sin(ry) * off, top, z + Math.cos(ry) * off, 0, ry, 0, 2 * (fw + cw), sy, 1, false);
     }
   }
+
+  rwBuild(room, [back, front, left, right], bandMeshes);         // BREAKABLE ROOM WALLS: masks on the shell, the cavities behind
 
   // --- Vinyl cove base, split around each doorway ---
   const bh = 0.1, bt = 0.012;
@@ -9048,6 +9051,7 @@ function activateRoom(room) {
   weaponsRoomActivated(room);          // step 5: restore saved bullet holes, stock the safe room's bench
   hsRoomOn(room);                      // HOLE SNAP: the drawn-triangle grid, built in the background
   coverRoomActivated(room);            // step 6: crate stacks, boards of crates broken last visit
+  rwActivate(room);                    // BREAKABLE ROOM WALLS: the cells' strength
   enemiesRoomActivated(room);          // step 7: one man per combat room (unless you killed him)
   termRoomActivated(room);             // step 11: the terminal screen, its collider and walk box
   try { wsRoomActivated(room); } catch (e) { console.warn('gunsmith workshop computer not placed', e); }
@@ -28439,6 +28443,383 @@ function pdDepthMaterial(pd) {
   return m;
 }
 /* ---------------------------------------------------------------------------
+ *  BREAKABLE ROOM WALLS (?roomwalls=off: the old solid shell). Most of a combat room's side walls and the
+ *  end walls beside the doorways are drywall linings on steel studs that break like the partitions: one
+ *  mask per wall (PDMG's R8 texture and shader, so no new wall program), the shell plane and its lower paint
+ *  band discard where it is open. Behind each breakable run: the cavity (C-studs every 406 mm, mineral wool
+ *  in most bays, closed at the run's ends, floor and ceiling), then on a side wall the building's concrete
+ *  block wall (faces in running bond over a mortar plane), on an end wall the back of the far board (the
+ *  next room's lining, 0.2 m away). Picked per room slot (own seed: ~80 % of the eligible length in 1.2-2.8 m
+ *  runs, never at door frames, fixtures, vents, conduits, pipes, pilasters or partition ends; holes kept
+ *  between the cove base and 0.3 m under the ceiling, the board under the chair rail stays). Rounds: entry
+ *  sheet, a stud now and then, then the block stops it (side) or it goes on through the far board into
+ *  the next room (end; that room's breakable lining gets the torn exit). Cells (CONFIG.cover.cell / cellHp /
+ *  splash) break out as ragged blobs with the jagged board pieces, crumbs, falling grit and a haze puff.
+ *  Holes and cell damage are kept in room memory (rwh / rwc) and re-stamped on a rebuild. The colliders and
+ *  walk boxes are unchanged (you and the men never walk through). Same on both multiplayer sides (slot seed
+ *  and the shared layout); damage is local.
+ * ------------------------------------------------------------------------- */
+const RW = {
+  on: !/[?&]roomwalls=off\b/.test(QS), share: 0.8, run: [1.2, 2.8], minRun: 0.6, corner: 0.18, doorPad: 0.26,
+  inset: 0.02, y0: 0.14, top: 0.3, railK: 0.04, board: 0.0125, stud: 0.092, block: 0.108, mortar: 0.118, wool: [0.055, 0.7], endWool: [0.135, 0.55],
+  mats: null, res: { E: 0, exit: null, through: 0 }, ex: new THREE.Vector3(), b: new THREE.Vector3(), nn: new THREE.Vector3(), loc: { rw: null, si: 0, u: 0, y: 0 }
+};
+RW.res.exit = RW.ex;
+function rwMats() {
+  if (RW.mats) return RW.mats;
+  const M = KIT.mat, bp = KIT.props && KIT.props.block && KIT.props.block.proto;
+  let block = null;
+  if (bp) bp.traverse((o) => { if (o.isMesh && !block) block = o.material; });
+  const mortar = M.paper.clone(); mortar.color.set('#8d8a83'); mortar.roughness = 0.97;
+  const paper = M.paper.clone(); paper.color.set('#8a7552'); paper.roughness = 0.93;
+  const wool = M.fabric.clone(); wool.color.set('#b59b66'); wool.roughness = 1; wool.normalScale.set(0.9, 0.9);
+  const steel = M.paper.clone(); steel.color.set('#8e9295'); steel.roughness = 0.5;   // galvanised studs (a plain dielectric grey: brushed steel reads black in the dark cavity)
+  return (RW.mats = { steel, block: block || mortar, mortar, paper, wool });
+}
+// Which runs of each wall are breakable, in the wall mesh's own u (= -wallU). [] = solid as before.
+function rwSegments(room) {
+  const L = room.layout, D = CONFIG.door, { w, d } = room, names = ['back', 'front', 'left', 'right'];
+  const R = mulberry32((Math.imul(room.slot + 7, 0x9E3779B1) ^ 0x52574C) >>> 0);
+  const ex = [[], [], [], []];
+  const add = (wall, wu, r) => { const wi = names.indexOf(wall); if (wi >= 0 && Number.isFinite(wu)) ex[wi].push([-wu - r, -wu + r]); };
+  const near = (x, z, r) => {
+    if (x + w / 2 < 0.55) add('left', wallU('left', x, z), r);
+    if (w / 2 - x < 0.55) add('right', wallU('right', x, z), r);
+    if (z + d / 2 < 0.55) add('back', wallU('back', x, z), r);
+    if (d / 2 - z < 0.55) add('front', wallU('front', x, z), r);
+  };
+  ex[0].push([room.exitX - D.width / 2 - RW.doorPad, room.exitX + D.width / 2 + RW.doorPad]);
+  if (room.entryX !== null) ex[1].push([-room.entryX - D.width / 2 - RW.doorPad, -room.entryX + D.width / 2 + RW.doorPad]);
+  for (const f of L.fixtures || []) add(f.wall, f.u, 0.45);
+  if (L.vent) add(L.vent.wall, L.vent.u, 0.45);
+  if (L.conduit) { const wl = L.conduit.side < 0 ? 'left' : 'right'; add(wl, wallU(wl, 0, L.conduit.dropZ), 0.25); }
+  if (L.pipes && L.pipes.drop !== null && L.pipes.drop !== undefined) add(L.pipes.wall, wallU(L.pipes.wall, 0, L.pipes.drop), 0.45);
+  if (L.switch && L.switch.x !== undefined) add(L.switch.wall || 'front', wallU('front', L.switch.x, 0), 0.3);
+  if (L.plateX !== undefined) add('back', wallU('back', L.plateX, 0), 0.25);
+  for (const f of L.decor || []) if (f.x !== undefined) near(f.x, f.z, 0.6);
+  for (const f of L.furniture || []) if (f.type === 'pilaster') near(f.x, f.z, 0.55);
+  for (const sp of L.partitions || []) for (const e of [-1, 1]) near(sp.x + e * sp.len / 2, sp.z, 0.3);
+  return ex.map((E, wi) => {
+    const half = (wi < 2 ? w : d) / 2, iv = [[-half + RW.corner, half - RW.corner]];
+    for (const [a, b] of E) for (let k = iv.length - 1; k >= 0; k--) {
+      const [c0, c1] = iv[k];
+      if (b <= c0 || a >= c1) continue;
+      iv.splice(k, 1, ...[[c0, a], [b, c1]].filter(([p, q]) => q - p > 1e-3));
+    }
+    iv.sort((p, q) => p[0] - q[0]);
+    const out = [];
+    for (const [a, b] of iv) {
+      let x = a;
+      while (x < b - 1e-6) {
+        let c = Math.min(b, x + RW.run[0] + R() * (RW.run[1] - RW.run[0]));
+        if (b - c < RW.minRun) c = b;
+        if (R() < RW.share && c - x >= RW.minRun) {
+          const last = out[out.length - 1];
+          if (last && Math.abs(last[1] - x) < 1e-6) last[1] = c; else out.push([x, c]);
+        }
+        x = c;
+      }
+    }
+    return out;
+  });
+}
+function rwMake(len, h) {
+  const PX = Math.min(PDMG.px, Math.floor(4000 / len)), W = Math.ceil(len * PX) + 2, Hf = Math.ceil(h * PX) + 1, H = Hf + 2;
+  const data = new Uint8Array(W * H), tex = new THREE.DataTexture(data, W, H, THREE.RedFormat, THREE.UnsignedByteType);
+  tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
+  return { W, Hf, H2: H, PX, L2: len / 2, data, tex, uD: { value: new THREE.Vector4(len / 2, PX, Hf, H) }, uW: { value: W }, uM: { value: tex } };
+}
+// pdStamp, clipped to the run (the cavity is only behind it) and kept off the chair rail and the cove base.
+function rwStamp(rw, si, x, y, R, crush, seed) {
+  const pd = rw.pd, seg = rw.segs[si], { W, PX, L2, data } = pd;
+  const s1 = seed * 1.7, s2 = seed * 2.9, s3 = seed * 4.3, edge = 0.012, ring = R * 1.3 * crush + 0.015 * crush, reach = R * 1.45 + ring;
+  const cx0 = seg[0] + RW.inset, cx1 = seg[1] - RW.inset, rl0 = CONFIG.gen.dado - RW.railK, rl1 = CONFIG.gen.dado + RW.railK;
+  const px0 = Math.max(0, Math.ceil((Math.max(x - reach, cx0) + L2) * PX)), px1 = Math.min(W - 1, Math.floor((Math.min(x + reach, cx1) + L2) * PX));
+  const py0 = Math.max(0, Math.ceil(Math.max(y - reach, rw.y0) * PX)), py1 = Math.min(pd.Hf - 1, Math.floor(Math.min(y + reach, rw.y1) * PX));
+  for (let j = py0; j <= py1; j++) {
+    const yy0 = j / PX; if (yy0 > rl0 && yy0 < rl1) continue;
+    const yy = yy0 - y, o = (1 + j) * W;
+    for (let i = px0; i <= px1; i++) {
+      const xx = i / PX - L2 - x, d = Math.hypot(xx, yy), th = Math.atan2(yy, xx);
+      const Rt = R * (1 + 0.26 * Math.sin(3 * th + s1) + 0.16 * Math.sin(5 * th + s2) + 0.09 * Math.sin(9 * th + s3));
+      const open = clamp((Rt - d) / edge * 0.5 + 0.5), rim = ring > 0 ? clamp(1 - (d - Rt) / ring) : 0;
+      const v = Math.max(open * 255, rim * rim * 115) | 0;
+      if (v > data[o + i]) data[o + i] = v;
+    }
+  }
+  pd.tex.needsUpdate = true;
+}
+function rwHole(room, rw, si, x, y, R, crush) {
+  const seed = Math.random() * 100;
+  rwStamp(rw, si, x, y, R, crush, seed);
+  const m = roomMem(room), H = (m.rwh || (m.rwh = {})), L = H[rw.wi] || (H[rw.wi] = []);
+  if (L.length < 600) L.push([si, +x.toFixed(3), +y.toFixed(3), +R.toFixed(4), crush, +seed.toFixed(2)]);
+}
+// Wall-local (u along the mesh, y up, s behind the board) -> world; the board's normal into the room.
+function rwWorld(room, wi, u, y, s, out) {
+  const { w, d } = room;
+  const lx = wi === 0 ? u : wi === 1 ? -u : wi === 2 ? -w / 2 - s : w / 2 + s;
+  const lz = wi === 0 ? -d / 2 - s : wi === 1 ? d / 2 + s : wi === 2 ? -u : u;
+  return rWP(room, lx, y, lz, out);
+}
+function rwNormal(room, wi, out) {
+  const fr = rF(room);
+  return out.set(wi === 2 ? fr : wi === 3 ? -fr : 0, 0, wi === 0 ? fr : wi === 1 ? -fr : 0);
+}
+function rwTangent(room, wi, out) {                               // the world direction of +u
+  const fr = rF(room);
+  return out.set(wi === 0 ? fr : wi === 1 ? -fr : 0, 0, wi === 2 ? -fr : wi === 3 ? fr : 0);
+}
+
+// Built with the room's shell (roomBuilder): the masks on the walls and bands, the cavities behind.
+function rwBuild(room, walls, bands) {
+  room.rw = null;
+  if (!RW.on || room.kind !== 'normal' || !room.layout || room.layout.fac || room.stair || !KIT.mat.paper) return;
+  const segsAll = rwSegments(room), { w, d, h } = room, T = CONFIG.stream.wallT, MT = rwMats(), mem = roomMemory.get(memKey(room));
+  const parts = { steel: [], block: null, mortar: null, paper: null, wool: null };
+  const acc = () => ({ p: [], n: [], t: [], i: [] });
+  for (const k of ['block', 'mortar', 'paper', 'wool']) parts[k] = acc();
+  const R = mulberry32((Math.imul(room.slot + 11, 0x85EBCA6B) ^ 0x3C6EF372) >>> 0);
+  let any = false;
+  room.rw = [null, null, null, null];
+  for (let wi = 0; wi < 4; wi++) {
+    const segs = segsAll[wi], wall = walls[wi];
+    if (!segs.length || !wall) continue;
+    any = true;
+    const len = wi < 2 ? w : d, side = wi >= 2;
+    if (Math.abs(wall.position.y - h / 2) < 1e-4) { wall.geometry.translate(0, h / 2, 0); wall.position.y = 0; }   // a centred plane: put its floor at y 0 like the doorway walls
+    const pd = rwMake(len, h);
+    const rw = { wi, len, h, pd, segs, side, y0: RW.y0, y1: h - RW.top, studs: [], cols: Math.ceil(len / CONFIG.cover.cell), rows: Math.ceil(h / CONFIG.cover.cell), hp: null, lastHit: { x: 0, y: 0 } };
+    room.rw[wi] = rw;
+    const zero = (g) => { if (!g.attributes.pdf) g.setAttribute('pdf', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count), 1)); };
+    zero(wall.geometry); wall.geometry.computeBoundingSphere();
+    const wm = pdMaterial(wall.material, pd), dm = pdDepthMaterial(pd);
+    wall.material = wm; wall.customDepthMaterial = dm;
+    room.ownMat.push(wm, dm, pd.tex);
+    const band = bands[wi];
+    if (band) { zero(band.geometry); const bm = pdMaterial(band.material, pd); band.material = bm; room.ownMat.push(bm); }
+    const holes = mem && mem.rwh && mem.rwh[wi];
+    if (holes) for (const q of holes) if (segs[q[0]]) rwStamp(rw, q[0], q[1], q[2], q[3], q[4], q[5]);
+
+    // The cavity, in the wall mesh's frame (board at z 0 facing +z, s = -z behind it), moved into the room after.
+    wall.updateMatrix();
+    const back = side ? RW.mortar : T - 0.0125, s0 = parts.steel.length;
+    const n0 = { block: parts.block.p.length, mortar: parts.mortar.p.length, paper: parts.paper.p.length, wool: parts.wool.p.length };
+    const quad = (A, a, b, c, e, nx, ny, nz, tu, tv, du = 0, dv = 0) => {   // corners counter-clockwise seen from the normal
+      const base = A.p.length / 3;
+      for (const q of [a, b, c, e]) { A.p.push(q[0], q[1], q[2]); A.n.push(nx, ny, nz); }
+      A.t.push(du, dv, du + tu, dv, du + tu, dv + tv, du, dv + tv);
+      A.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    };
+    const front = (A, x0, y0, x1, y1, s, tile, du = 0, dv = 0) => quad(A, [x0, y0, -s], [x1, y0, -s], [x1, y1, -s], [x0, y1, -s], 0, 0, 1, (x1 - x0) / tile, (y1 - y0) / tile, du, dv);
+    const sbox = (sx, sy, sz, x, y, z) => parts.steel.push(placed(boxUV(new THREE.BoxGeometry(sx, sy, sz), CONFIG.tile.prop), x, y, z));
+    for (const [u0, u1] of segs) {
+      // studs: both ends of the run and every 406 mm between (web across the cavity, flanges on the board and at the back)
+      const xs = [u0 + 0.0175];
+      for (let x = u0 + 0.406; x < u1 - 0.1; x += 0.406) xs.push(x);
+      xs.push(u1 - 0.0175);
+      for (const x of xs) {
+        rw.studs.push(x);
+        sbox(0.0008, h, RW.stud, x, h / 2, -RW.board - RW.stud / 2);   // behind the 12.5 mm board, never through the wall's face
+        for (const s of [0.0006, RW.stud - 0.0006]) sbox(0.035, h, 0.0008, x, h / 2, -RW.board - s);
+      }
+      // mineral wool in most bays (sagging a little at the top now and then)
+      const wl = side ? RW.wool : RW.endWool;
+      for (let k = 0; k + 1 < xs.length; k++) {
+        if (R() > wl[1]) continue;
+        const top = h - (R() < 0.3 ? 0.05 + R() * 0.45 : 0.01);
+        front(parts.wool, xs[k] + 0.019, 0.01, xs[k + 1] - 0.019, top, wl[0] + R() * 0.01, 0.45, R(), R());
+      }
+      // the back: block faces in running bond over mortar (side walls), or the far board's paper back (end walls)
+      if (side) {
+        front(parts.mortar, u0, 0, u1, h, RW.mortar, 0.6);
+        for (let r = 0, y = 0; y < h - 0.005; r++, y += 0.2) {
+          const y1 = Math.min(h, y + 0.19), off = r % 2 ? 0.2 : 0;
+          for (let x = u0 - off; x < u1; x += 0.4) {
+            const a = Math.max(u0, x), b = Math.min(u1, x + 0.39);
+            if (b - a > 0.01) front(parts.block, a, y, b, y1, RW.block, 0.6, R() * 3, R() * 3);
+          }
+        }
+      } else front(parts.paper, u0, 0, u1, h, back, 1.2);
+      // closed at the run's ends, top and bottom
+      const sb = back, cap = side ? parts.mortar : parts.paper;
+      quad(cap, [u0, 0, -sb], [u0, 0, 0], [u0, h, 0], [u0, h, -sb], 1, 0, 0, sb / 0.6, h / 0.6);
+      quad(cap, [u1, 0, 0], [u1, 0, -sb], [u1, h, -sb], [u1, h, 0], -1, 0, 0, sb / 0.6, h / 0.6);
+      quad(parts.mortar, [u0, h, 0], [u1, h, 0], [u1, h, -sb], [u0, h, -sb], 0, -1, 0, (u1 - u0) / 0.6, sb / 0.6);
+      quad(parts.mortar, [u0, 0, -sb], [u1, 0, -sb], [u1, 0, 0], [u0, 0, 0], 0, 1, 0, (u1 - u0) / 0.6, sb / 0.6);
+    }
+    rw.studs.sort((a, b) => a - b);
+    // into the room's frame (the wall's own transform)
+    const e = wall.matrix.elements;
+    for (let i = s0; i < parts.steel.length; i++) parts.steel[i].applyMatrix4(wall.matrix);
+    for (const k of ['block', 'mortar', 'paper', 'wool']) {
+      const p = parts[k].p, n = parts[k].n;
+      for (let i = n0[k]; i < p.length; i += 3) {
+        const x = p[i], y = p[i + 1], z = p[i + 2];
+        p[i] = e[0] * x + e[4] * y + e[8] * z + e[12]; p[i + 1] = e[1] * x + e[5] * y + e[9] * z + e[13]; p[i + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+        const nx = n[i], ny = n[i + 1], nz = n[i + 2];
+        n[i] = e[0] * nx + e[4] * ny + e[8] * nz; n[i + 1] = e[1] * nx + e[5] * ny + e[9] * nz; n[i + 2] = e[2] * nx + e[6] * ny + e[10] * nz;
+      }
+    }
+  }
+  if (!any) { room.rw = null; return; }
+  const cav = new THREE.Group(); cav.name = 'room wall cavities';
+  if (parts.steel.length) { const m = merged(parts.steel, MT.steel, false); room.ownGeo.push(m.geometry); cav.add(m); }
+  for (const k of ['block', 'mortar', 'paper', 'wool']) {
+    const A = parts[k];
+    if (!A.p.length) continue;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(A.p, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(A.n, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(A.t, 2));
+    g.setIndex(A.i); g.computeBoundingSphere();
+    room.ownGeo.push(g);
+    cav.add(mesh(g, MT[k], false, true));
+  }
+  room.group.add(cav);
+  try { renderer.compileAsync(room.group, camera, scene).catch(() => {}); } catch (e) { /* compiled on first draw */ }
+}
+// Activation: the cells' strength (from memory).
+function rwActivate(room) {
+  if (!room.rw) return;
+  const m = roomMemory.get(memKey(room)), C = CONFIG.cover;
+  for (const rw of room.rw) {
+    if (!rw) continue;
+    rw.hp = new Float32Array(rw.cols * rw.rows).fill(C.cellHp);
+    const saved = m && m.rwc && m.rwc[rw.wi];
+    if (saved) for (const [b, v] of Object.entries(saved)) rw.hp[+b] = v;
+  }
+}
+// A world point on one of the room's wall faces (N = the face's normal into the room): which wall, run, u, height.
+function rwLocate(room, P, N) {
+  if (!room || !room.rw) return null;
+  const fr = rF(room), lx = rLX(room, P.x), lz = rLZ(room, P.z), ly = P.y - room.origin.y, nx = fr * N.x, nz = fr * N.z;
+  let wi, dist, u;
+  if (nx > 0.7) { wi = 2; dist = lx + room.w / 2; u = -lz; }
+  else if (nx < -0.7) { wi = 3; dist = room.w / 2 - lx; u = lz; }
+  else if (nz > 0.7) { wi = 0; dist = lz + room.d / 2; u = lx; }
+  else if (nz < -0.7) { wi = 1; dist = room.d / 2 - lz; u = -lx; }
+  else return null;
+  const rw = room.rw[wi];
+  if (!rw || Math.abs(dist) > 0.012 || ly < rw.y0 || ly > rw.y1) return null;
+  const si = rw.segs.findIndex((s) => u > s[0] + RW.inset && u < s[1] - RW.inset);
+  if (si < 0) return null;
+  const L = RW.loc; L.rw = rw; L.si = si; L.u = u; L.y = ly;
+  return L;
+}
+const rwOpen = (rw, u, y) => pdOpen(rw.pd, 0, u, y);
+// One board face: an open hole lets it through; else its own hole, the cell's damage, the marks.
+function rwSheet(room, rw, si, u, y, P, N, E, dir, exit) {
+  if (rwOpen(rw, u, y)) return E;
+  const hs = exit ? penXS() : PEN.live ? PEN.holeS : 1;
+  rwHole(room, rw, si, u, y, (exit ? 0.024 : 0.009) * hs * (0.8 + Math.random() * 0.4), exit ? 1 : 0.55);
+  rw.lastHit.x = u; rw.lastHit.y = y;
+  const col = clamp(Math.floor((u + rw.len / 2) / CONFIG.cover.cell), 0, rw.cols - 1), row = clamp(Math.floor(y / CONFIG.cover.cell), 0, rw.rows - 1), b = row * rw.cols + col;
+  addRoomHole(room, exit ? penX('plaster') : 'plaster', P, N, true, `w${rw.wi}:${b}`, hs);
+  impactFx('plaster', P, N);
+  if (exit) penCoverExit('plaster', P, dir);
+  else if (TRICKLE.on) trickleAdd(room, 'plaster', P, N);
+  coverSfx('plaster', E);
+  rwDamage(room, rw, si, b, E, dir);
+  const sp = E * CONFIG.cover.splash;
+  for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const c2 = col + dc, r2 = row + dr;
+    if (c2 >= 0 && c2 < rw.cols && r2 >= 0 && r2 < rw.rows) rwDamage(room, rw, si, r2 * rw.cols + c2, sp, dir);
+  }
+  return E - CONFIG.cover.resist.sheet;
+}
+function rwDamage(room, rw, si, b, dmg, dir) {
+  if (!rw.hp || rw.hp[b] <= 0) return;
+  rw.hp[b] -= dmg;
+  const m = roomMem(room), C = (m.rwc || (m.rwc = {})), S = C[rw.wi] || (C[rw.wi] = {});
+  S[b] = Math.max(0, +rw.hp[b].toFixed(3));
+  if (rw.hp[b] <= 0) rwBreak(room, rw, si, b, dir);
+}
+const _rwP = new THREE.Vector3(), _rwN = new THREE.Vector3(), _rwN2 = new THREE.Vector3(), _rwQ = new THREE.Quaternion(), _rwV = new THREE.Vector3(), _rwS = new THREE.Vector3();
+function rwBreak(room, rw, si, b, dir) {
+  rw.hp[b] = 0;
+  const cell = CONFIG.cover.cell, c = b % rw.cols, r = Math.floor(b / rw.cols);
+  const cx = -rw.len / 2 + (c + 0.5) * cell, cy = (r + 0.5) * cell, lh = rw.lastHit;
+  const seg = rw.segs[si], hx = clamp(mix(cx, clamp(lh.x, cx - cell / 2, cx + cell / 2), 0.6), seg[0], seg[1]), hy = mix(cy, clamp(lh.y, cy - cell / 2, cy + cell / 2), 0.6);
+  const R = 0.42 * cell * (0.8 + Math.random() * 0.45);
+  rwHole(room, rw, si, hx, hy, R, 1);
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {   // decals the break swallows go with it
+    const c2 = c + dc, r2 = r + dr;
+    if (c2 < 0 || c2 >= rw.cols || r2 < 0 || r2 >= rw.rows) continue;
+    const nx0 = -rw.len / 2 + c2 * cell, ny0 = r2 * cell;
+    if (Math.hypot(Math.max(nx0 - hx, 0, hx - (nx0 + cell)), Math.max(ny0 - hy, 0, hy - (ny0 + cell))) < R * 0.9) purgeTag(room, `w${rw.wi}:${r2 * rw.cols + c2}`);
+  }
+  rwWorld(room, rw.wi, hx, hy, 0, _rwP); rwNormal(room, rw.wi, _rwN);
+  impactFx('plaster', _rwP, _rwN); impactFx('plaster', _rwP, _rwN);
+  // the broken board falls out of the hole into the room (the cavity behind is inside the wall's collider)
+  if (Math.random() < 0.85) {
+    const def = COVER.kit.chunks[Math.floor(Math.random() * COVER.kit.chunks.length)];
+    _rwS.copy(_rwP).addScaledVector(_rwN, 0.07);
+    _rwQ.setFromEuler(_cv.e.set((Math.random() - 0.5) * 0.6, Math.atan2(_rwN.x, _rwN.z) + (Math.random() - 0.5) * 0.6, Math.random() * Math.PI));
+    _rwV.copy(_rwN).multiplyScalar(0.25 + Math.random() * 0.7); _rwV.addScaledVector(dir, -0.2); _rwV.y += 0.1 + Math.random() * 0.4;
+    spawnDebris(room, def, _rwS, _rwQ, _rwV, _rwN2.set((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10));
+  }
+  if (WEAPON.fx) {
+    _rwN2.copy(_rwN).multiplyScalar(0.35); _rwN2.y -= 1;
+    fxEmit(_rwP, _rwN2, 0.5, 18, PEN_FX.plaster.bits);
+    fxEmit(_rwP, _rwN2, 0.6, 12, PEN_FX.plaster.dust);
+    fxEmit(_rwP, _rwN, 0.5, 8, PEN_FX.plaster.dust);
+  }
+  hazeEmit(_rwP, _rwN, PEN_HAZE.plaster);
+  if (COVER.kit.crumbs) for (let k = 0, nk = 1 + (Math.random() < 0.5 ? 1 : 0); k < nk; k++) {
+    const cd = COVER.kit.crumbs[Math.floor(Math.random() * COVER.kit.crumbs.length)];
+    _rwS.copy(_rwP).addScaledVector(_rwN, 0.04);
+    _rwQ.setFromEuler(_cv.e.set(Math.random() * 6.28, Math.random() * 6.28, Math.random() * 6.28));
+    _rwV.copy(_rwN).multiplyScalar(0.3 + Math.random() * 0.6); _rwV.y += 0.2;
+    spawnDebris(room, cd, _rwS, _rwQ, _rwV, _rwN2.set((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14));
+  }
+  coverSfx('cellBreak');
+  dirtyShadows();
+}
+// traceBullet0, before cover: a round on a breakable run of a room wall. Null = not one (the old paths).
+function rwHit(hit, toi, P, N, dir, d, E) {
+  if (!RW.on) return null;
+  const info = colliderInfo.get(hit.collider.handle);
+  if (!info || info.kind !== 'plaster' || !info.room || !info.room.rw || info.sbox) return null;
+  if (toi < 0.003 && PEN.n > 0) return null;                       // still inside a slab it just left
+  const room = info.room, cosI = -dir.dot(N);
+  if (cosI < 0.2) return null;                                     // glancing: as before
+  const L = rwLocate(room, P, N);
+  if (!L) return null;
+  const rw = L.rw, si = L.si, u = L.u, y = L.y, wasOpen = rwOpen(rw, u, y);
+  E = rwSheet(room, rw, si, u, y, P, N, E, dir, false);
+  if (E <= 0.02) return STOP;
+  // through the cavity: a stud in the way?
+  const du = rwTangent(room, rw.wi, _rwV).dot(dir) / cosI, dy = dir.y / cosI;
+  const ua = u + du * RW.board, ub = u + du * (RW.board + RW.stud);
+  for (const sx of rw.studs) if (sx > Math.min(ua, ub) - 0.018 && sx < Math.max(ua, ub) + 0.018) {
+    const s = clamp(Math.abs(du) > 1e-4 ? (sx - u) / du : RW.board, RW.board, RW.board + RW.stud);
+    if (wasOpen || rwOpen(rw, sx, y + dy * s)) { rwWorld(room, rw.wi, sx, y + dy * s, s, _rwP); impactFx('metal', _rwP, rwNormal(room, rw.wi, _rwN)); }
+    E -= CONFIG.cover.resist.stud;
+    break;
+  }
+  if (E <= 0.02) return STOP;
+  if (rw.side) {                                                   // the block wall behind stops it
+    const ue = u + du * RW.block, ye = y + dy * RW.block;
+    if (rwOpen(rw, ue, ye)) { RW.b.copy(P).addScaledVector(dir, RW.block / cosI); addRoomHole(room, 'concrete', RW.b, N, true, `w${rw.wi}:blk`); impactFx('concrete', RW.b, N); }
+    return STOP;
+  }
+  // an end wall: on through the far board into the next room
+  const th = CONFIG.stream.wallT / cosI;
+  RW.ex.copy(P).addScaledVector(dir, th);
+  RW.nn.copy(N).negate();
+  const nb = roomContaining(RW.ex.x + dir.x * 0.05, RW.ex.z + dir.z * 0.05, 0, RW.ex.y + dir.y * 0.05);
+  const L2 = nb && nb !== room && nb.active ? rwLocate(nb, RW.ex, RW.nn) : null;
+  if (L2) E = rwSheet(nb, L2.rw, L2.si, L2.u, L2.y, RW.ex, RW.nn, E, dir, true);
+  else {
+    E -= CONFIG.cover.resist.sheet;
+    if (E > 0.02 && nb && nb !== room && nb.active) { addRoomHole(nb, penX('plaster'), RW.ex, RW.nn, true, undefined, penXS()); impactFx('plaster', RW.ex, RW.nn); penCoverExit('plaster', RW.ex, dir); }
+  }
+  if (E <= 0.02) return STOP;
+  const res = RW.res; res.E = E; res.through = th;
+  return res;
+}
+/* ---------------------------------------------------------------------------
  *  PARTITIONS — built in the room builder. One mesh for both faces (wall
  *  material), one merged mesh for the studs (steel), a wooden cap on half walls.
  *  Local frame: x along the wall, y up from the floor, z through it.
@@ -28822,7 +29203,7 @@ function traceBullet0(origin, dir, d, type, opts = null) {
     if (_cv.n.lengthSq() < 0.25) _cv.n.copy(dir).negate();     // started inside something (stacked cover): face the shooter
     else if (_cv.n.dot(dir) > 0) _cv.n.negate();
     const Eb = E;                                                // step 119: what it had going in
-    const r = coverHit(hit, _cv.p, _cv.n, dir, d, E) || (PEN.live ? penHit(hit, toi, _cv.p, _cv.n, dir, d, E) : null);   // step 119: walls, doors, props
+    const r = rwHit(hit, toi, _cv.p, _cv.n, dir, d, E) || coverHit(hit, _cv.p, _cv.n, dir, d, E) || (PEN.live ? penHit(hit, toi, _cv.p, _cv.n, dir, d, E) : null);   // step 119: walls, doors, props
     if (TRC.rec >= 0) trcSeg(_tbo, dir, toi, r && !r.stop ? 3 : 1, _cv.n);   // step 121: a tracer's path (stopped here or through)
     if (!r) { bulletHit(hit, dir, d, E); return false; }
     if (r.stop) return false;
@@ -36078,7 +36459,7 @@ const OPT_GROUPS = [
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
     ['facility', 'Facility rooms'], ['enade', 'Enemies throw grenades'], ['fallback', 'Men fall back under fire'],
-    ['reinf', 'Reinforcements'], ['tbody', 'Tactical body motion'], ['idlelife', 'Men busy before contact'], ['unstick', 'Men unstick, avoid boxes / leaves'], ['spawnchk', 'Clear spawn spots']]],
+    ['reinf', 'Reinforcements'], ['tbody', 'Tactical body motion'], ['idlelife', 'Men busy before contact'], ['unstick', 'Men unstick, avoid boxes / leaves'], ['spawnchk', 'Clear spawn spots'], ['roomwalls', 'Breakable room walls']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['mv', 'Multiview stereo (VR, experimental)', 'on'], ['bounce', 'Bounce light in rooms'], ['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
@@ -55790,7 +56171,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
     WATCH.hits.push({ id, x, y, w: bw, h: bh });
   });
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { SURF, buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, 
+if (window.__cqcDev) Object.assign(window.__cqcDev, { RW, rwSegments, rwBuild, rwHit, rwLocate, rwOpen, rwStamp, traceBullet, SURF, buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, 
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees });
 
 
