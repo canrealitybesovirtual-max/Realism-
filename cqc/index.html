@@ -7015,6 +7015,7 @@ function chairPick(root, room, s) {
   if (v.scuffed || (sd >>> 5) % 3 === 0) root.children[1].material = KIT.chairScuff;   // scuffed base
   const k = 0.975 + ((sd >>> 9) % 50) / 1000, O = KIT.props.chair.y;                    // seat height +-2.5 cm (feet stay on the floor)
   for (const c of root.children) { c.scale.y = k; c.position.y = (k - 1) * O; }
+  root.userData.ck = k;
 }
 // The variant of a desk / cabinet / whiteboard for piece fi of a room (same each visit, same on both sides).
 function offrPick(P, type, room, fi) {
@@ -8918,10 +8919,11 @@ function* roomBuilder(room) {
     _bM.compose(_bP.set(x, y, z), _bQ.setFromEuler(_bE.set(rx, ry, rz)), _bS.set(sx, sy, sz));
     bAdd(geo, mat, _bM, cast);
   };
+  let glassSkip = false;
   const bProto = (proto, x, y, z, ry = 0) => {
     _bM.compose(_bP.set(x, y, z), _bQ.setFromAxisAngle(Y_AXIS, ry), _bS.set(1, 1, 1));
     proto.updateMatrixWorld(true);
-    proto.traverse((o) => { if (o.isMesh) bAdd(o.geometry, o.material, _bM2.multiplyMatrices(_bM, o.matrixWorld), o.castShadow); });
+    proto.traverse((o) => { if (o.isMesh && !(glassSkip && o.material === KIT.mat.glass)) bAdd(o.geometry, o.material, _bM2.multiplyMatrices(_bM, o.matrixWorld), o.castShadow); });
   };
 
   // --- Shell. Walls cast shadows now: they stop the next room's light leaking through. ---
@@ -9171,7 +9173,8 @@ function* roomBuilder(room) {
       if (crateBrokenInMemory(room, fi)) obj.visible = false;   // step 6: shot to pieces last visit
       room.furnObj.push(obj);
     } else {
-      bProto(f.finish ? P[`${f.type}_${f.finish}`] : offrPick(P, f.type, room, fi), f.x, FURN[f.type].y, f.z, f.ry);   // step 17: column_bare, pilaster_sage...; office realism: variants
+      if ((f.type === 'glass' || f.type === 'glass6') && ogInit().on) { glassSkip = true; ogAdd(room, g, f, fi); }   // OFFICE GLASS BREAKS: the pane drawn on its own
+      bProto(f.finish ? P[`${f.type}_${f.finish}`] : offrPick(P, f.type, room, fi), f.x, FURN[f.type].y, f.z, f.ry); glassSkip = false;   // step 17: column_bare, pilaster_sage...; office realism: variants
       if (OFFR.on && f.type === 'desk') {                                         // office realism: poster / calendar on the wall behind a desk
         const ws = offrWallSpot(f, w, d);
         if (ws && offrWallFree(L, f, ws) && !(L.fixtures || []).some((x) => { const q = fixtureAt(x.wall, x.u, w, d); return Math.hypot(q[0] - ws[0], q[1] - ws[1]) < 1.0; })) bProto(offrPick(P, 'wall', room, fi), ws[0], 0, ws[1], f.ry);
@@ -9944,6 +9947,7 @@ function removeProp(p) {
 }
 
 function unloadRoom(room) {
+  ogRoomOff(room);                                   // OFFICE GLASS BREAKS
   probeRoomUnloaded(room);   // step 37
   hitchNote('room off', `${room.kind} ${room.slot}`);   // step 34
   termRoomUnloaded(room);                         // step 11
@@ -11353,7 +11357,30 @@ function spawnProp(room, s) {
   });
   prop.spawnRoom = room;
   if (def.brk) prop.brk = def.brk;       // step 71
+  if (s.type === 'chair' && CHAIRCOL) chairColliders(prop, root.userData.ck || 1);   // CHAIR COLLIDER: its real shape, not a 0.6 m box
   return prop;
+}
+// CHAIR COLLIDER (?chaircol=off = the old 0.6 x 1.05 x 0.6 box). The box's faces stood 2-6 cm off the drawn chair, so a
+// chair knocked over (or pushed off a desk it overlapped) rested on air. Now: the five-star base (cylinder, bottom on the
+// casters' bottom), the column, the seat, the tilted back and both arm rests, each scaled with the seat height k.
+const CHAIRCOL = !/[?&]chaircol=off\b/.test(QS);
+function chairColliders(p, k) {
+  const O = KIT.props.chair.y, body = p.body;
+  propByCollider.delete(p.collider.handle); world.removeCollider(p.collider, false);
+  const mk = (desc, x, h, z, m, qz = 0) => {
+    desc.setTranslation(x, k * h - O, z).setMass(m).setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.prop);
+    if (qz) desc.setRotation({ x: 0, y: 0, z: Math.sin(qz / 2), w: Math.cos(qz / 2) });
+    const c = world.createCollider(desc, body); propByCollider.set(c.handle, p); return c;
+  };
+  p.collider = mk(RAPIER.ColliderDesc.cylinder(k * 0.0485, 0.3), 0, 0.0515, 0, 4.5);     // base: casters' bottom at 0.003 x k
+  p.extra = [
+    mk(RAPIER.ColliderDesc.cylinder(k * 0.165, 0.03), 0, 0.265, 0, 1.2),                 // gas lift
+    mk(RAPIER.ColliderDesc.cuboid(0.24, k * 0.055, 0.24), 0, 0.47, 0, 3),                // seat
+    mk(RAPIER.ColliderDesc.cuboid(0.035, k * 0.27, 0.22), -0.25, 0.8, 0, 1.8, 0.12),     // back
+    mk(RAPIER.ColliderDesc.cuboid(0.12, k * 0.03, 0.03), 0.02, 0.66, 0.25, 0.25),        // arm rests
+    mk(RAPIER.ColliderDesc.cuboid(0.12, k * 0.03, 0.03), 0.02, 0.66, -0.25, 0.25)
+  ];
+  p.chairEx = true;
 }
 
 /* ============================================================================
@@ -16436,6 +16463,7 @@ function grab(hand, prop, snap = false) {
   if (!prop.holders.length) {
     prop.body.setGravityScale(0, true);        // weight is applied as sag + force limit instead
     prop.collider.setCollisionGroups(COLL.held);
+    if (prop.chairEx) for (const c of prop.extra) c.setCollisionGroups(COLL.held);   // CHAIR COLLIDER
     prop.restoreAt = 0;
   }
   prop.hasPrev = false;                        // the hold point just changed: no velocity spike
@@ -16775,6 +16803,7 @@ function pushAfter(dt) {
     for (const s of S) {
       let touch = false;
       world.contactPair(s.col, p.collider, (m) => { if (m.numContacts() > 0) touch = true; });
+      if (!touch && p.extra) for (const c of p.extra) { world.contactPair(s.col, c, (m) => { if (m.numContacts() > 0) touch = true; }); if (touch) break; }   // chairs, tables: every part
       if (touch) gain = Math.max(gain, (s.d.length() / dt) * s.M * e1 / (s.M + p.mass));
     }
     if (gain < 0) continue;
@@ -16810,7 +16839,7 @@ function stepPhysics(dt) {
     const p = props[i];
     if (DROPFIX.on && p.item && dfNow >= (p.dfAt || 0) && (p.item.kind === 'gun' || p.item.kind === 'mag')) dropFixCheck(p, dfNow);   // dropfix: a loose gun / magazine never hangs in the air
     if (p.kinematic) continue;                                  // held / holstered items
-    if (p.restoreAt && now > p.restoreAt && !p.holders.length) { p.collider.setCollisionGroups(COLL.prop); p.restoreAt = 0; }
+    if (p.restoreAt && now > p.restoreAt && !p.holders.length) { p.collider.setCollisionGroups(COLL.prop); if (p.chairEx) for (const c of p.extra) c.setCollisionGroups(COLL.prop); p.restoreAt = 0; }
     if (p.body.isSleeping()) continue;
     awake = true;
     const t = p.body.translation(), r = p.body.rotation();
@@ -19731,6 +19760,7 @@ function fragBlast(P, inHand) {
   nadeSound('frag', P);
   enemiesHear(P);
   fixturesBlast(P, 1);                     // step 87: the tubes stutter, the fittings shed dust
+  ogBlast(P);                              // OFFICE GLASS BREAKS
   shelfBlast(P, 5, 1);                     // SHELF: boxes blown off the shelves (the same blast push as loose props)
   trickleBlast(P);                         // step 88: and the ceiling over it
   // Dust and smoke that hang in the room, a scorch on the floor (step 115: the cloud, soot on the floor and the walls).
@@ -30439,6 +30469,19 @@ function traceBullet0(origin, dir, d, type, opts = null) {
     _rapRay.dir = { x: dir.x, y: dir.y, z: dir.z };
     const hit = world.castRayAndGetNormal(_rapRay, range, true, undefined, fromEnemy ? ENEMY_RAY_GROUPS : RAY_GROUPS);   // APARTMENT DESTRUCTION: breakables only rounds see
     const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : range;
+    if (OG && OG.on) {                                           // OFFICE GLASS BREAKS: a pane before anything else?
+      const gr = ogRay(_tbo, dir, toi);
+      if (gr && (fromEnemy || !enemyRayTest(_tbo, dir, gr.t))) {
+        const gt = gr.t;
+        if (TRC.rec >= 0) trcSeg(_tbo, dir, gt, 3, null);
+        E = ogShot(gr, _tbo, dir, E, type); _tbE = E;
+        range -= gt + 0.004; _tbTravel += gt + 0.004;
+        if (E <= 0.02) return false;
+        if (range <= 0) return true;
+        _tbo.addScaledVector(dir, gt + 0.004);
+        continue;
+      }
+    }
     if (!fromEnemy) {                                            // step 7: a man in the way?
       const eh = enemyRayTest(_tbo, dir, toi);
       const sh = SELF.arm && type !== 'frag' ? selfRayTest(_tbo, dir, eh ? eh.t : toi, pass > 0 || PEN.n > 0) : null;   // SELF HIT: you are in the way
@@ -45313,6 +45356,149 @@ function glassFloor(room, at, k) {
   if (L.length > 24) L.shift();
 }
 // 256 px of irregular shards, denser in the middle, bright edges and glints; its alpha makes the normal map's rims.
+// OFFICE GLASS BREAKS (?glassbreak=off = the old unbreakable panes rounds flew through). The glass office's panes
+// (FURN glass / glass6) are drawn as their own meshes (the same M.glass program as the batch; at most 4 a room) and tested
+// analytically by every round (ogRay in traceBullet0, like enemyRayTest: no Rapier collider, so sight lines, nav and walk
+// boxes are unchanged). The first round cracks it (a spiderweb at the hit, both faces; the floor shards' decal material
+// with its own map: no new program), the 2nd or 3rd shatters it (pane hidden, shards burst along the shot, shards on the
+// floor both sides, glassSfx); a frag within 3.5 m shatters it, within 6 m cracks it; a loose prop flying through it over
+// 3 m/s shatters it. A round loses ~4 % going through. Kept in room memory (gpane), re-applied on a rebuild. The pane
+// never had a collider or walk box (the 1 m sill keeps its own). Multiplayer: local (each side's traced rounds break it).
+var OG = null;
+function ogInit() {
+  if (OG) return OG;
+  OG = { on: !/[?&]glassbreak=off\b/.test(QS), list: [], geo: new THREE.PlaneGeometry(1, 1), inv: new THREE.Matrix4(), o: new THREE.Vector3(),
+    e: new THREE.Vector3(), d: new THREE.Vector3(), p: new THREE.Vector3(), n: new THREE.Vector3(), q: new THREE.Vector3(), crack: null };
+  return OG;
+}
+// From roomBuilder: the pane of furniture piece fi (room-local f), instead of its batched copy.
+function ogAdd(room, g, f, fi) {
+  const G = ogInit(), len = f.type === 'glass6' ? 0.6 : 1.2;
+  const m = new THREE.Mesh(G.geo, KIT.mat.glass);
+  m.position.set(f.x, 1.725, f.z); m.rotation.set(0, (f.ry || 0) + Math.PI / 2, 0); m.scale.set(len - 0.08, 1.37, 1);
+  m.castShadow = false; m.receiveShadow = false;
+  g.add(m);
+  const P = { room, mesh: m, fi, hits: 0, hp: 2 + (cardSeed((room.slot | 0) + 17, fi) % 2), state: 0, cr: [] };
+  const mem = roomMem(room).gpane, st = mem && mem[fi];
+  if (st) {
+    if (st[0] === 2) { P.state = 2; m.visible = false; }
+    else { for (const c of st.slice(1)) ogCrack(P, c[0], c[1], false); P.state = st[0]; P.hits = st[0] ? 1 : 0; }
+  }
+  G.list.push(P);
+}
+function ogRoomOff(room) { if (OG) OG.list = OG.list.filter((P) => P.room !== room); }
+function ogMem(P) {
+  const m = roomMem(P.room), M = m.gpane || (m.gpane = {});
+  M[P.fi] = [P.state].concat(P.state === 2 ? [] : P.cr);
+}
+// Nearest live pane along the ray within maxT (world metres): a scratch { P, t, lx, ly } or null.
+const _ogR = { P: null, t: 0, lx: 0, ly: 0 };
+function ogRay(o, dir, maxT) {
+  if (!OG || !OG.list.length) return null;
+  let best = null;
+  for (const P of OG.list) {
+    if (P.state === 2 || !P.room.active || !P.mesh.parent) continue;
+    OG.inv.copy(P.mesh.matrixWorld).invert();
+    const lo = OG.o.copy(o).applyMatrix4(OG.inv), e = OG.e.copy(o).add(dir).applyMatrix4(OG.inv).sub(lo);   // local step per world metre
+    if (Math.abs(e.z) < 1e-7) continue;
+    const t = -lo.z / e.z;
+    if (t < 1e-4 || t > maxT || (best && t >= _ogR.t)) continue;
+    const x = lo.x + e.x * t, y = lo.y + e.y * t;
+    if (Math.abs(x) > 0.5 || Math.abs(y) > 0.5) continue;
+    best = P; _ogR.t = t; _ogR.lx = x; _ogR.ly = y;
+  }
+  if (!best) return null;
+  _ogR.P = best; return _ogR;
+}
+function ogCrackMat() {
+  if (OG.crack !== null) return OG.crack;
+  const base = WEAPON.decalMat && WEAPON.decalMat.glass;
+  if (!base) return (OG.crack = false);
+  const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const c = cv.getContext('2d'), R = mulberry32(9133), rays = 14, ra = [];
+  c.strokeStyle = 'rgba(235,245,250,0.9)'; c.lineCap = 'round';
+  for (let i = 0; i < rays; i++) {                                 // radial cracks, jagged
+    let a = (i + R() * 0.6) / rays * Math.PI * 2, x = S / 2, y = S / 2;
+    const L = S * (0.28 + R() * 0.2); ra.push(a);
+    c.lineWidth = 1.6; c.beginPath(); c.moveTo(x, y);
+    for (let k = 0; k < 7; k++) { a += (R() - 0.5) * 0.35; x += Math.cos(a) * L / 7; y += Math.sin(a) * L / 7; c.lineTo(x, y); }
+    c.stroke();
+  }
+  for (const r of [0.07, 0.14, 0.23, 0.32]) {                      // rings between the rays
+    c.lineWidth = r < 0.1 ? 1.4 : 0.9; c.beginPath();
+    for (let i = 0; i <= rays; i++) { const a = ra[i % rays], q = S * r * (0.85 + R() * 0.3), x = S / 2 + Math.cos(a) * q, y = S / 2 + Math.sin(a) * q; if (i) c.lineTo(x, y); else c.moveTo(x, y); }
+    c.stroke();
+  }
+  c.fillStyle = 'rgba(240,248,255,0.95)'; c.beginPath(); c.arc(S / 2, S / 2, 5, 0, Math.PI * 2); c.fill();   // the crushed centre
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  OG.crack = base.clone(); OG.crack.map = tex;
+  return OG.crack;
+}
+// A spiderweb at pane-local (lx, ly) (unit square), on both faces.
+function ogCrack(P, lx, ly, save = true) {
+  if (P.cr.length >= 6) return;
+  P.cr.push([+lx.toFixed(3), +ly.toFixed(3)]);
+  const mat = ogCrackMat();
+  if (mat) {
+    const sz = 0.3 + (P.cr.length % 3) * 0.06;
+    for (const zf of [1, -1]) {
+      const q = new THREE.Mesh(OG.geo, mat);
+      q.position.set(lx, ly, zf * 0.002); q.rotation.set(0, zf > 0 ? 0 : Math.PI, (P.cr.length * 2.1) % 6.28);
+      q.scale.set(sz / P.mesh.scale.x, sz / P.mesh.scale.y, 1); q.castShadow = false;
+      P.mesh.add(q);
+    }
+  }
+  if (save) ogMem(P);
+}
+function ogShatter(P, dir) {
+  if (P.state === 2) return;
+  P.state = 2; P.mesh.visible = false; ogMem(P);
+  const M = P.mesh.matrixWorld, n = OG.n.set(0, 0, 1).transformDirection(M);
+  if (dir && n.dot(dir) < 0) n.negate();
+  for (let i = 0; i < 7; i++) impactFx('glass', OG.p.set((Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.9, 0).applyMatrix4(M), n);   // shards along the shot
+  const c = OG.q.set(0, 0, 0).applyMatrix4(M);
+  glassSfx(c);
+  for (const s of [-0.35, 0.35, 0.8]) glassFloor(P.room, OG.p.copy(c).addScaledVector(n, s), s > 0.5 ? 0.8 : 1.1);
+}
+// A round through the pane: crack or shatter; returns the energy it keeps.
+function ogShot(R, o, dir, E, type) {
+  const P = R.P;
+  impactFx('glass', OG.p.copy(o).addScaledVector(dir, R.t), OG.n.copy(dir).negate());
+  P.hits += type === 'frag' ? 0.5 : 1;
+  if (P.hits >= P.hp) ogShatter(P, dir);
+  else { P.state = 1; ogCrack(P, R.lx, R.ly); }
+  return E * 0.96;
+}
+function ogBlast(P0) {
+  if (!OG || !OG.on) return;
+  for (const P of OG.list) {
+    if (P.state === 2 || !P.room.active) continue;
+    OG.inv.copy(P.mesh.matrixWorld).invert();
+    const l = OG.o.copy(P0).applyMatrix4(OG.inv);
+    const d = Math.hypot(Math.max(0, Math.abs(l.x) - 0.5) * P.mesh.scale.x, Math.max(0, Math.abs(l.y) - 0.5) * P.mesh.scale.y, l.z);
+    if (d < 3.5) ogShatter(P, OG.d.set(0, 0, 0).applyMatrix4(P.mesh.matrixWorld).sub(P0).normalize());
+    else if (d < 6 && P.state === 0) { P.state = 1; ogCrack(P, (Math.random() - 0.5) * 0.6, (Math.random() - 0.5) * 0.6); }
+  }
+}
+// A loose prop over 3 m/s whose pane-local z changes sign inside the pane between frames shatters it.
+function ogPropTick() {
+  if (!OG || !OG.list.length) return;
+  for (const p of props) {
+    if (p.item || p.holders.length || p.removing || !p.body || p.body.isSleeping()) { p.gpZ = null; continue; }
+    const v = p.body.linvel();
+    if (v.x * v.x + v.y * v.y + v.z * v.z < 9) { p.gpZ = null; continue; }
+    const t = p.body.translation();
+    for (let i = 0; i < OG.list.length; i++) {
+      const P = OG.list[i];
+      if (P.state === 2 || !P.room.active) continue;
+      OG.inv.copy(P.mesh.matrixWorld).invert();
+      const l = OG.o.set(t.x, t.y, t.z).applyMatrix4(OG.inv), k = p.gpZ ? p.gpZ[i] : undefined;
+      if (k !== undefined && (k < 0) !== (l.z < 0) && Math.abs(l.x) < 0.55 && Math.abs(l.y) < 0.55) ogShatter(P, OG.d.set(v.x, v.y, v.z).normalize());
+      (p.gpZ || (p.gpZ = []))[i] = l.z;
+    }
+  }
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcOG = { get OG() { return OG; }, ogInit, ogAdd, ogShot, ogShatter, ogBlast, traceBullet: (o, d, w, t) => traceBullet(o, d, w, t), spawnProp: (r, s) => spawnProp(r, s), get props() { return props; }, get stream() { return stream; }, get world() { return world; }, get scene() { return scene; }, get camera() { return camera; }, get renderer() { return renderer; }, WEAPON };
 function glassCanvas(seed) {
   const S = 256, cv = document.createElement('canvas');
   cv.width = cv.height = S;
@@ -51144,6 +51330,7 @@ function tick(timeMs) {
   profMark('weapons');
   stepPhysics(dtW);      // step 45: world time
   enemiesPostPhysics(Math.min(dtW, 1 / 30));  // step 7: ragdolls drive the bones
+  ogPropTick();          // OFFICE GLASS BREAKS: a prop thrown through a pane
   propsBreakTick();      // step 71: glass breaks on a hard knock
   if (SHELF.live.length) shelfTick(dt);   // SHELF: woken boxes knock the next ones off
   wbUpdate();            // step 73: the gunsmith bench
