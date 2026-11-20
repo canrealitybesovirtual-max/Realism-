@@ -9137,7 +9137,7 @@ function rebuildWalk() {
       if (plugged) list.push(r.plugWalk);
     }
     for (const b of list) colliders.push({ x: rWX(r, b.x), z: rWZ(r, b.z), c: Math.cos(b.a), s: Math.sin(b.a), hx: b.hx, hz: b.hz, top: r.origin.y + b.top,
-      bot: b.bot !== undefined ? r.origin.y + b.bot : (r.stair ? undefined : r.origin.y), lvTop: b.lvTop !== undefined ? r.origin.y + b.lvTop : undefined });   // step 83: level-bound boxes (U-turn stairwells); step 89: a plain room's boxes start at its floor
+      bot: b.bot !== undefined ? r.origin.y + b.bot : r.origin.y, lvTop: b.lvTop !== undefined ? r.origin.y + b.lvTop : undefined });   // step 83: level-bound boxes (U-turn stairwells); step 89: a plain room's boxes start at its floor; a stairwell's too (nothing of it is under its lowest floor: two U wells in a row put a well right over a safe room, whose walls then walled the room below)
   }
   for (const dr of doors) colliders.push(dr.walk);
 }
@@ -9759,7 +9759,7 @@ function updateDoorsPre(now) {
       if (now < door.drive.until) { if (now >= (door.drive.from || 0)) { target = door.drive.target; k = door.drive.k; c = door.drive.c; mode = 'drive'; } }   // step 54: from = the lever is down
       else door.drive = null;
     }
-    if (mode === 'closer' && door.netT && now - door.netT < 0.5) { target = door.netA; k = 40; c = 10; mode = 'net'; }   // multiplayer: the other player moves this leaf (netDoorTx)
+    if (mode === 'closer' && door.netT && now - door.netT < 0.5 && !(door.kickUntil > now)) { target = door.netA; k = 40; c = 10; mode = 'net'; }   // multiplayer: the other player moves this leaf (netDoorTx)
     // Step 24: a kicked leaf swings free (light damping) before the closer takes it back.
     if (mode === 'closer' && door.kickUntil > now) { target = (door.kickDir || 1) > 0 ? P.maxOpen : -P.maxBack; k = 0; c = CONFIG.kick.doorDamping; mode = 'kick'; }
     // Step 8.1: the closer's last stretch ignores spent brass, so a casing on the
@@ -12014,7 +12014,7 @@ function netStart() {
   if (NET.dial) NET.dial.fin('ok');
   NET.call = null; setTimeout(netVoiceStart, 800);                 // voice chat (the joiner calls; the host answers)
   NET.st = 'on'; NET.buf.length = 0; NET.off = null; NET.pbT = null; NET.lastRx = performance.now();
-  if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own
+  if (!netHostAI()) { for (const e of [...ENEMY.list]) if (!e.net && !e.puppet) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }   // the joiner / versus: no AI of his own (the host's copies stay: a rejoin keeps the bodies)
   if (NET.mode === 'vs' && NET.role === 'host' && !VS.on) { for (const e of [...ENEMY.list]) if (!e.net) removeEnemy(e); for (const r of stream.rooms.values()) if (r.enemies) r.enemies.length = 0; }
   netSay(re ? 'Multiplayer: reconnected' : `Multiplayer: connected (${NET.mode === 'vs' ? 'versus' : 'together'})`, 3);
   if (NET.role === 'host') {
@@ -12057,7 +12057,7 @@ function netSoftDrop(why) {
   netKillChans();
   NET.buf.length = 0; NET.off = null; NET.pbT = null; NET.remOk = false; NET.tgt = null; NET.remPeer = null; NET.relQ.length = 0; NET.link.discAt = 0;
   if (NET.av) { try { removeEnemy(NET.av); } catch (e) { /* gone */ } NET.av = null; }
-  for (const e of NET.pup.values()) { try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } } NET.pup.clear();
+  for (const [id, e] of NET.pup) { if (e.dead && ENEMY.list.includes(e)) continue; try { if (ENEMY.list.includes(e)) removeEnemy(e); } catch (er) { /* gone */ } NET.pup.delete(id); }   // bodies stay (same session; their rooms' netBodies stop a re-ask, so a removed body never came back)
   if (NET_SPOT) NET_SPOT.intensity = 0;
   netVoiceStop();
   if (NET.role === 'host') { NET.st = 'host'; NET.codeAt = performance.now(); netSay(`Multiplayer: ${why}. Waiting for him to rejoin with ${NET.code}`, 5); return; }
@@ -12601,6 +12601,7 @@ function netRx(m) {
   else if (m.t === 'nade') netNadeRx(m);
   else if (m.t === 'nb') netNadeBoomRx(m);
   else if (m.t === 'dr') netDoorRx(m);
+  else if (m.t === 'drr') netDoorRestRx(m);
   else if (m.t === 'lt') netLootRx(m);
   else if (m.t === 'edet') { if (NET.role === 'host') netDetainRx(m); }
   else if (m.t === 'ebq') { if (NET.role === 'host') netBodyReqRx(m); }
@@ -13237,11 +13238,17 @@ function netVsApply(m, side) {
   RANGE.armed = false;
   roomPlan(m.B + 4);
   const R = mulberry32(m.r >>> 0);
+  // Two stairwells in a row must go the same way: down then up (or up then down) folds the second U-turn well and his safe
+  // room back into the first well and your safe room (measured: 4.8 x 3.6 x 2.7 m overlaps; he could not walk out of his
+  // safe room). Same way: no overlap (built and checked for every kind pair).
+  const two = m.k[0] === 'stair' && m.k[1] === 'stair'; let dir0 = 0;
   for (let j = 1; j <= 3; j++) {                                   // B+1, B+2 the rooms between you (random kind or a stairwell), B+3 his safe room
     const s = m.B + j, p = _plans[s], prev = _plans[s - 1], lv = prev.level;
     const want = j < 3 ? m.k[j - 1] : 'room';
     if (want === 'stair') {
-      const SC = CONFIG.stairs; let dir = R() < 0.5 ? 1 : -1; if (lv + dir > SC.levels[1]) dir = -1; if (lv + dir < SC.levels[0]) dir = 1;
+      const SC = CONFIG.stairs, n = two ? 2 : 1; let dir = R() < 0.5 ? 1 : -1;
+      if (two && j === 2 && dir0) dir = dir0;
+      else { if (lv + n * dir > SC.levels[1]) dir = -1; if (lv + n * dir < SC.levels[0]) dir = 1; dir0 = dir; }
       _plans[s] = { slot: s, wing: p.wing, k: p.k, type: 'stair', dir, entryLevel: lv, level: lv + dir, number: `${p.wing.letter}-${floorDigit(lv)}00` };
     } else {
       // The kind comes from the match seed, never from this side's own plan (an AWP picked up, a facility run planned
@@ -14060,6 +14067,29 @@ function netDoorTx(dt) {
     if (now < (door.netTxUntil || 0) || moving) { (L || (L = [])).push(door.room.slot, +door.angle.toFixed(3)); K += mpwK(door.room); }
   }
   if (L) netSendFast({ t: 'dr', n: ++NET.drN, L, K });              // K: room kind per leaf (MPSYNC)
+  // Host, once a second: every leaf at rest that nobody moves, so two sides that both moved one leaf at once (each side's own
+  // move wins locally and ignores the other's) end on the host's angle, not on two angles for good (seen: -0.97 / -0.31).
+  if (host && now - (NET.drrAt || 0) > 1) {
+    NET.drrAt = now; let R = null, KR = '';
+    for (const door of doors) {
+      if (door.sec || !door.room || !door.room.active || !door.body || now < (door.netTxUntil || 0) || (door.netT && now - door.netT < 0.5)) continue;
+      (R || (R = [])).push(door.room.slot, +door.angle.toFixed(3)); KR += mpwK(door.room);
+    }
+    if (R) netSendFast({ t: 'drr', L: R, K: KR });
+  }
+}
+// Joiner: the host's resting leaves (above). Held there (net mode) until the next one; your own move, a hand or a kick wins.
+function netDoorRestRx(m) {
+  if (NET.role !== 'join' || !m.L) return;
+  const now = performance.now() / 1000;
+  for (let i = 0; i + 1 < m.L.length; i += 2) {
+    const r = stream.rooms.get(m.L[i]), door = r && r.active && r.door; if (!door || !door.body || door.sec) continue;
+    if (typeof m.K === 'string' && !mpwKindOk(r, m.K[i >> 1] === '1')) continue;
+    if (door.holder || now < (door.netTxUntil || 0) || door.kickUntil > now || (door.netT && now - door.netT < 0.5 && !door.netRest)) continue;
+    const a = clamp(+m.L[i + 1] || 0, -CONFIG.doorPhys.maxBack, CONFIG.doorPhys.maxOpen);
+    door.netA = a; door.netT = now + 0.7; door.netRest = true;
+    if (Math.abs(door.angle - a) > 0.015) door.body.wakeUp();
+  }
 }
 function netDoorRx(m) {
   if (!m.L || m.n <= NET.drRx) return;                              // unordered channel: an older one
@@ -14069,7 +14099,7 @@ function netDoorRx(m) {
     const r = stream.rooms.get(m.L[i]), door = r && r.active && r.door; if (!door || !door.body || door.sec) continue;
     if (typeof m.K === 'string' && !mpwKindOk(r, m.K[i >> 1] === '1')) continue;   // MPSYNC: that slot is the other kind of room here
     if (door.holder || now < (door.netTxUntil || 0)) continue;     // you have it: yours wins
-    door.netA = clamp(+m.L[i + 1] || 0, -CONFIG.doorPhys.maxBack, CONFIG.doorPhys.maxOpen); door.netT = now; door.body.wakeUp();
+    door.netA = clamp(+m.L[i + 1] || 0, -CONFIG.doorPhys.maxBack, CONFIG.doorPhys.maxOpen); door.netT = now; door.netRest = false; door.body.wakeUp();
   }
 }
 // --- versus: first to VS_RULES.kills, or the most kills when the clock runs out; the host's count settles it ---
