@@ -2389,3 +2389,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: racking ejects live rounds (?liveeject=off)
 - ejectChambered (non-pump): a chambered round racked out is a real cartridge (emoRoundMesh case + bullet, own small Rapier body, up to 10, gone after 45 s), slower than a fired case, not counted as brass. Fired cases unchanged. Parse checked only.
+## CQC: title screen-size polish
+- Checked headless at 390x844, 844x390, 820x1180, 1280x720, 1366x768, 1920x1080, 2560x1440 and ?xbox=on 1920x1080 (steps 1 and 2, no horizontal scroll anywhere).
+- Fixed: the Safe room plate stretched tall on a tablet (grid row stretch); phone landscape showed only the footage on the first screen (the reel is hidden under 561 px tall); the loader was 520 px wide in a full-width column on small screens; an empty dark sticky band stayed after loading (foot hidden once #loader is hidden); touch pills (play space, Xbox mode, browse list) 36 -> 44+ px on coarse pointers; 1440p and up: cards, labels, loader and pills one size up (text was laptop-sized). CSS only.
