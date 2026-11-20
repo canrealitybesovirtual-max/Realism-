@@ -5153,11 +5153,19 @@ function crateFreshEnds(geo, k) {
 }
 // Rusty nail heads: a small noise map on the old nail material's place.
 function crateNailMat() {
-  const S = 64, cv = document.createElement('canvas'); cv.width = S; cv.height = S;
-  const ctx = cv.getContext('2d'), img = ctx.createImageData(S, S), d = img.data;
-  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-    const n = fbm(x / S, y / S, 6, 6, 3, 31), i = (y * S + x) * 4;
-    d[i] = 70 + n * 110; d[i + 1] = 42 + n * 50; d[i + 2] = 24 + n * 22; d[i + 3] = 255;
+  // Left half: the rusty head. Right half: the streak washed down from it (makeCrate maps it there): dark rust under
+  // the head, thinning to a brown-grey stain the colour of weathered pine, streaky along its length.
+  const S = 64, W = S * 2, cv = document.createElement('canvas'); cv.width = W; cv.height = S;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(W, S), d = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4;
+    if (x < S) { const n = fbm(x / S, y / S, 6, 6, 3, 31); d[i] = 70 + n * 110; d[i + 1] = 42 + n * 50; d[i + 2] = 24 + n * 22; }
+    else {
+      const u = (x - S) / S, t = y / S, n = fbm(u * 3, t, 6, 6, 3, 57), lane = 0.75 + 0.25 * Math.sin(u * 19 + n * 4);   // t 0 = top (under the head)
+      const k = Math.min(1, (0.25 + t * 0.85) * (0.85 + n * 0.3)) * lane;                                              // 0 dark rust .. 1 faded stain
+      d[i] = 78 + k * 48; d[i + 1] = 44 + k * 52; d[i + 2] = 26 + k * 44;
+    }
+    d[i + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace;
@@ -5418,6 +5426,7 @@ function makeCrate({ w, h, d, baseY = 0, seed = 1, stencil = null }, woodMat, na
   };
   const nail = (x, y, z, axis) => {
     const g = new THREE.CylinderGeometry(0.0042, 0.0042, 0.003, 8);
+    if (CRW.on) { const u = g.attributes.uv; for (let i = 0; i < u.count; i++) u.setX(i, u.getX(i) * 0.5); }   // the head's half of the nail texture
     if (axis === 'z') g.rotateX(Math.PI / 2); else g.rotateZ(Math.PI / 2);
     const nx = x + j(0.004), ny = y + j(0.004);
     g.translate(nx, ny, z);
@@ -5425,8 +5434,8 @@ function makeCrate({ w, h, d, baseY = 0, seed = 1, stencil = null }, woodMat, na
     if (CRW.on && rnd() < 0.75) {                        // CRATE WEAR: a rust streak washed down from this nail head
       const L = Math.min(0.012 + rnd() * 0.03, ny + h / 2 - 0.006);
       if (L > 0.006) {
-        const st = new THREE.PlaneGeometry(0.0066, L, 1, 2), sp = st.attributes.position;
-        for (let i = 0; i < sp.count; i++) { const f = 0.5 - sp.getY(i) / L; sp.setX(i, sp.getX(i) * (1 - 0.65 * f)); }   // tapering as it runs down
+        const st = new THREE.PlaneGeometry(0.0075, L, 1, 2), sp = st.attributes.position, su = st.attributes.uv;
+        for (let i = 0; i < sp.count; i++) { const f = 0.5 - sp.getY(i) / L; sp.setX(i, sp.getX(i) * (1 - 0.6 * f)); su.setXY(i, 0.5 + su.getX(i) * 0.5, su.getY(i)); }   // tapering as it runs down; the streak half of the texture
         st.translate((rnd() - 0.5) * 0.001, -0.0035 - L / 2, 0);
         const sg = Math.sign(axis === 'z' ? z : x) || 1;
         if (axis === 'z') { if (sg < 0) st.rotateY(Math.PI); st.translate(nx, ny, z + sg * 0.0006); }
@@ -10969,9 +10978,9 @@ function buildPropKit() {
     g.add(mesh(placed(new THREE.CylinderGeometry(r + 0.0006, r + 0.0006, 0.12, 28, 1, true), 0, -0.01, 0), label));
     K.paint = { proto: g, name: 'paint tin', mass: 2.6, shape: 'cylinder', half: [r, h / 2, r], friction: 0.45, restitution: 0.12, y: h / 2 + 0.001 }; }
   // a torn cardboard flap (what a shot-up box comes apart into)
-  { const g = new THREE.Group(); g.add(mesh(cardUV(rbox(0.3, 0.006, 0.26, 0.002), 913), KIT.mat.cardboard || M.wood));
+  { const g = new THREE.Group(); g.add(mesh(toneWood(cardUV(rbox(0.3, 0.006, 0.26, 0.002), 913), 0.92), KIT.mat.cardboard || M.wood));
     K.flap = { proto: g, name: 'cardboard flap', mass: 0.06, half: [0.15, 0.004, 0.13] };
-    if (CARD.on) K.flapV = [0, 1, 2, 3, 4, 5].map((v) => { const h = new THREE.Group(); h.add(mesh(cardUV(rbox(0.3, 0.006, 0.26, 0.002), cardSeed(913 + v * 41, v)), KIT.mat.cardboard || M.wood)); return { ...K.flap, proto: h }; }); }   // CARDBOARD ATLAS: each flap its own face   // 0.3 x 0.26 m of corrugated board (~0.75 kg/m2)
+    if (CARD.on) K.flapV = [0, 1, 2, 3, 4, 5].map((v) => { const h = new THREE.Group(); h.add(mesh(toneWood(cardUV(rbox(0.3, 0.006, 0.26, 0.002), cardSeed(913 + v * 41, v)), 0.82 + v * 0.045), KIT.mat.cardboard || M.wood)); return { ...K.flap, proto: h }; }); }   // CARDBOARD ATLAS: each flap its own face   // 0.3 x 0.26 m of corrugated board (~0.75 kg/m2)
   if (K.box) K.box.brk = { hp: 2.4, fx: 'wood', flaps: 3 };
   if (K.smallCrate) K.smallCrate.brk = { hp: 3.5, fx: 'wood', boards: 4 };
 }
