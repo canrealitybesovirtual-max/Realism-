@@ -2476,3 +2476,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: XP and room-clear in the top-right corner (update 1.06)
 - The +XP feed (XPPOP, xpEl) sits top right under the body cam OSD line, right-aligned; the room-clear line ("Room clear +pts · streak") is its first line instead of the centre toast. Headset: the XP line is upper right of the view (0.2, 0.13, -0.85). Parse checked only.
+
+## CQC: drums show at once, shield bought (update 1.07)
+- drumSwap(t) (from drumStore): fitting / removing a drum swaps the magazine seated in every gun of that type (full, not one in a hand) and the gun locker shelf's spares (removed, restocked), so the 50 / 75 / 100 drum shows right away. Before, only new magazines were drums.
+- Shield (SHD.own, cqc.shield.v1 own): bought once at GUNSMITH SUPPLIES for $400 (BUY button; III plates $600 more as before); shdBuy puts it leaning by the gun locker of the safe room you are in at once, and every safe-room restock after. Not owned = not placed. Old saves that bought III keep it. Headless: Glock seated + 2 locker mags became 50-round drums; shield bought, placed at room-local (3.8, -1.22).
