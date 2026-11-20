@@ -22098,6 +22098,7 @@ function itemRelease(hand, vel) {
     return;
   }
   if (it.kind === 'att' && !p.removing && wbAttRelease(p)) return;   // step 73: on the clamped gun, or back on a peg
+  if (it.kind === 'att' && !p.removing && wbReturnNear(p)) return;   // dispenser: back in its tray
   if (!p.removing && hand.ctrl) {
     hand.source.getWorldPosition(_wv);
     if (it.kind === 'nade' ? (nadePouchAt(_wv) && stowItem(p)) : (inPouchZone(_wv) && stowItem(p))) return;
@@ -25986,8 +25987,13 @@ function wbHomePose(p, room, P, Q) {
 }
 // Back to its spot on the table, resting (kinematic until you pick it up).
 function wbHome(p, room = WB.room) {
+  if (!p.item.tableSpot && p.item.homeT) p.item.tableSpot = p.item.homeT;   // dispenser: back to the spot it came from
   const t = p.item.tableSpot;
   if (!t) return false;
+  if (!WB.noDedup) for (const q of WB.atts.slice()) {               // dispenser: the fresh one there makes room for it
+    if (q === p || q.removing || q.holders.length || q.item.stuck || q.item.hook || q.item.tableSpot !== t) continue;
+    WB.atts = WB.atts.filter((x) => x !== q); removeProp(q);
+  }
   const g = p.item.stuck && p.item.stuck.g;
   wbHomePose(p, room, _wbP, _wbQ);
   p.item.stuck = null; p.item.hook = null;
@@ -26474,7 +26480,41 @@ function optSight(g, own) {
   } else if (!(own && (g.type === 'm4a1s' || g.type === 'awp'))) { if (g._optOver.scope) { P.scope = g._optOver.scope; P.scopeLens = g._optOver.lens; } else { delete P.scope; delete P.scopeLens; } }
   g.akLens = it.akKey === 'akx2' && it.pip ? it.pip : (g.type === 'akmn' ? g.akLens : null);
 }
+// Dispenser (?dispense=off): a part taken from its bench spot leaves a fresh one there; let go near a spot of its kind
+// (or clicked off the gun) it goes back in it and the fresh one goes.
+const WBD = { on: !/[?&]dispense=off\b/.test(QS), r: 0.16 };
+function wbAtHome(p) {
+  const it = p.item;
+  if (!it.tableSpot || it.stuck || it.hook || !p.kinematic || !WB.room) return false;
+  return p.root.position.distanceTo(wbHomePose(p, WB.room, _wbP, _wbQ)) < 0.02;
+}
+function wbDispense(p) {
+  const it = p.item, t = it.tableSpot;
+  if (!WBD.on || !t || !WB.room || !WB.room.active) return;
+  it.homeT = t; it.tableSpot = null;
+  const q = wbMakeAtt(t[0], t[1], t[5] || null);
+  if (!q) { it.tableSpot = t; return; }
+  q.item.tableSpot = t; WB.atts.push(q);
+  WB.noDedup = true; try { wbHome(q); } finally { WB.noDedup = false; }
+}
+function wbReturnNear(p) {
+  if (!WBD.on || !WB.room || !WB.room.active) return false;
+  const it = p.item; p.root.updateMatrixWorld(true);
+  _wbPa.copy(p.center).applyQuaternion(p.root.quaternion).add(p.root.position);
+  let best = null, bd = WBD.r;
+  for (const t of wbTable()) {
+    if (t !== it.homeT && !wbSpotFits(it, t)) continue;
+    rWP(WB.room, t[2], 0.92, t[3], _wbPb);
+    const d = Math.hypot(_wbPa.x - _wbPb.x, _wbPa.z - _wbPb.z) + Math.max(0, Math.abs(_wbPa.y - _wbPb.y) - 0.08);
+    if (d < bd) { bd = d; best = t; }
+  }
+  if (!best) return false;
+  it.tableSpot = best; it.homeT = best;
+  wbHome(p); sfx('pMagIn', 0.3);
+  return true;
+}
 function wbGrabbed(it) {
+  if (WBD.on && it.prop && wbAtHome(it.prop)) wbDispense(it.prop);   // dispenser
   if (RAIL.on && it.pl2 && !it.tableSpot) it.tableSpot = railPl2Spot();   // step 112: a PL-2 off a gun keeps a place on the table
   it.rail = null; it.snapped = false;                                // any-gun fit
   if (it.optMount) { it.optMount.parent?.remove(it.optMount); it.optMount.traverse((o) => o.geometry?.dispose()); it.optMount = null; }   // its riser comes off with it
@@ -26559,6 +26599,11 @@ function wbUnfreeze(g, p) {
 // Computer: no free hands to place it, so a click puts it on the clamped gun at a sensible spot
 // (light under the front of the gun, laser on its right side); clicking it there hangs it back up.
 function wbDeskAtt(p) {
+  const home = WBD.on && wbAtHome(p);
+  wbDeskAtt0(p);
+  if (home && p.item.stuck && p.item.tableSpot) wbDispense(p);       // dispenser: fitted from its spot, a fresh one takes it
+}
+function wbDeskAtt0(p) {
   const it = p.item;
   if (it.stuck && muzIsDev(it) && it.stuck.g) { const g = it.stuck.g; muzOff(g, p); muzStow(p); muzRefresh(g); sfx('pMagOut', 0.4); return; }   // step 103: it and what is in front of it
   if (RAIL.on && it.stuck && !it.tableSpot && railDevOf(it) && railDeskOff(p)) return;   // step 112: came with the gun (the PL-2 gets a table spot)
