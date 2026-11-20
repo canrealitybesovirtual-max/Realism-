@@ -2324,3 +2324,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: glass bottles removed
 - The bottle / bottleG props (brown and green glass bottles) and their builder are gone; no room prop list places them. The label material stays (the paint tin uses it). Glass breaking code stays for other glass. Parse + eslint no-undef only.
+
+## CQC: room walls break through between rooms (?rwthrough=off = the old fixed paper back; headset check needed)
+- End-wall masks (RW) have a second face: face 0 = this room's own lining, face 1 = the far board (the next room's lining) seen from this cavity. The far board's paper back and the end-wall wool are now their own meshes per wall (pdMaterial with pdf 1, same program key as the walls), so they discard where face 1 is open. Side walls (block behind) unchanged.
+- rwPartner(room, rw, u, y): the room built 0.2 m behind that wall point (same floor, any built room, active or not; turned rooms through rwWorld / rwLocate). Every hole in a lining (rwHole: rounds, exits, cell breaks, memory) is mirrored into the partner's face 1 (rwMirror: mirrored stamp, clipped to both runs), so open on both faces = see-through. rwSyncPairs at activation pulls both rooms' saved holes into each other's face 1. Only the own holes are saved (rwh), face 1 is rebuilt from the partner.
+- Rounds: the exit tears the partner's lining (active: full rwSheet; built but not active: hole in its mask and memory). A cell break also does 0.55 x cellHp to the partner's matching cell (two breaks open it through).
+- Sight and sound: clearLine (men's sight) and occluded (sound) skip a room wall where a hole goes right through (rwRayPass: own face 0 and face 1 open along the ray); roomCanSense lets men in the next room sense you once a through-hole was made between the two (roomMem.rwThru). Walking collision unchanged.
