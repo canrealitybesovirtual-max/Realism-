@@ -29412,6 +29412,7 @@ function pdDepthMaterial(pd) {
  * ------------------------------------------------------------------------- */
 const RW = {
   on: !/[?&]roomwalls=off\b/.test(QS), share: 0.8, run: [1.2, 2.8], minRun: 0.6, corner: 0.18, doorPad: 0.26,
+  thru: !/[?&]rwthrough=off\b/.test(QS), chain: false, lp: new THREE.Vector3(), pin: new THREE.Vector3(), pn: new THREE.Vector3(), ploc: { room: null, rw: null, si: 0, u: 0, y: 0 },
   inset: 0.02, y0: 0.14, top: 0.3, railK: 0.04, board: 0.0125, stud: 0.092, block: 0.108, mortar: 0.118, wool: [0.055, 0.7], endWool: [0.135, 0.55],
   mats: null, res: { E: 0, exit: null, through: 0 }, ex: new THREE.Vector3(), b: new THREE.Vector3(), nn: new THREE.Vector3(), loc: { rw: null, si: 0, u: 0, y: 0 }
 };
@@ -29474,24 +29475,29 @@ function rwSegments(room) {
     return out;
   });
 }
-function rwMake(len, h) {
-  const PX = Math.min(PDMG.px, Math.floor(4000 / len)), W = Math.ceil(len * PX) + 2, Hf = Math.ceil(h * PX) + 1, H = Hf + 2;
+function rwMake(len, h, faces = 1) {
+  const PX = Math.min(PDMG.px, Math.floor(4000 / len)), W = Math.ceil(len * PX) + 2, Hf = Math.ceil(h * PX) + 1, H = faces * (Hf + 2);
   const data = new Uint8Array(W * H), tex = new THREE.DataTexture(data, W, H, THREE.RedFormat, THREE.UnsignedByteType);
   tex.magFilter = tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false; tex.needsUpdate = true;
   return { W, Hf, H2: H, PX, L2: len / 2, data, tex, uD: { value: new THREE.Vector4(len / 2, PX, Hf, H) }, uW: { value: W }, uM: { value: tex } };
 }
 // pdStamp, clipped to the run (the cavity is only behind it) and kept off the chair rail and the cove base.
-function rwStamp(rw, si, x, y, R, crush, seed) {
+// face 1 (end walls, ?rwthrough): the far board (the next room's lining) seen from this room's cavity; mir = the
+// partner's hole drawn mirrored (its u runs the other way), clip = { u0, u1, y0, y1 } (both boards' breakable area).
+function rwStamp(rw, si, x, y, R, crush, seed, face = 0, mir = false, clip = null) {
   const pd = rw.pd, seg = rw.segs[si], { W, PX, L2, data } = pd;
   const s1 = seed * 1.7, s2 = seed * 2.9, s3 = seed * 4.3, edge = 0.012, ring = R * 1.3 * crush + 0.015 * crush, reach = R * 1.45 + ring;
-  const cx0 = seg[0] + RW.inset, cx1 = seg[1] - RW.inset, rl0 = CONFIG.gen.dado - RW.railK, rl1 = CONFIG.gen.dado + RW.railK;
+  let cx0 = seg[0] + RW.inset, cx1 = seg[1] - RW.inset, cy0 = rw.y0, cy1 = rw.y1;
+  if (clip) { cx0 = Math.max(cx0, clip.u0); cx1 = Math.min(cx1, clip.u1); cy0 = Math.max(cy0, clip.y0); cy1 = Math.min(cy1, clip.y1); }
+  const rl0 = CONFIG.gen.dado - RW.railK, rl1 = CONFIG.gen.dado + RW.railK, fo = face * (pd.Hf + 2);
+  if (face && pd.H2 < 2 * (pd.Hf + 2)) return;
   const px0 = Math.max(0, Math.ceil((Math.max(x - reach, cx0) + L2) * PX)), px1 = Math.min(W - 1, Math.floor((Math.min(x + reach, cx1) + L2) * PX));
-  const py0 = Math.max(0, Math.ceil(Math.max(y - reach, rw.y0) * PX)), py1 = Math.min(pd.Hf - 1, Math.floor(Math.min(y + reach, rw.y1) * PX));
+  const py0 = Math.max(0, Math.ceil(Math.max(y - reach, cy0) * PX)), py1 = Math.min(pd.Hf - 1, Math.floor(Math.min(y + reach, cy1) * PX));
   for (let j = py0; j <= py1; j++) {
     const yy0 = j / PX; if (yy0 > rl0 && yy0 < rl1) continue;
-    const yy = yy0 - y, o = (1 + j) * W;
+    const yy = yy0 - y, o = (fo + 1 + j) * W;
     for (let i = px0; i <= px1; i++) {
-      const xx = i / PX - L2 - x, d = Math.hypot(xx, yy), th = Math.atan2(yy, xx);
+      const xx = (mir ? -1 : 1) * (i / PX - L2 - x), d = Math.hypot(xx, yy), th = Math.atan2(yy, xx);
       const Rt = R * (1 + 0.26 * Math.sin(3 * th + s1) + 0.16 * Math.sin(5 * th + s2) + 0.09 * Math.sin(9 * th + s3));
       const open = clamp((Rt - d) / edge * 0.5 + 0.5), rim = ring > 0 ? clamp(1 - (d - Rt) / ring) : 0;
       const v = Math.max(open * 255, rim * rim * 115) | 0;
@@ -29505,6 +29511,60 @@ function rwHole(room, rw, si, x, y, R, crush) {
   rwStamp(rw, si, x, y, R, crush, seed);
   const m = roomMem(room), H = (m.rwh || (m.rwh = {})), L = H[rw.wi] || (H[rw.wi] = []);
   if (L.length < 600) L.push([si, +x.toFixed(3), +y.toFixed(3), +R.toFixed(4), crush, +seed.toFixed(2)]);
+  if (RW.thru && !rw.side) rwMirror(room, rw, si, x, y, R, crush, seed);
+}
+// THROUGH WALLS (?rwthrough=off): an end-wall lining and the next room's lining 0.2 m behind it are one wall.
+// The board across the wall from this room's (wall wi, u, y): the other room built at that spot (active or not).
+function rwPartner(room, rw, u, y) {
+  if (!RW.thru || rw.side || !stream || !stream.rooms) return null;
+  const T = CONFIG.stream.wallT;
+  rwWorld(room, rw.wi, u, y, T, RW.pin); rwNormal(room, rw.wi, RW.pn).negate();
+  for (const r of stream.rooms.values()) {
+    if (r === room || !r.rw || Math.abs(r.origin.y - room.origin.y) > 0.05) continue;
+    if (!insideRoom(r, RW.pin.x + RW.pn.x * 0.05, RW.pin.z + RW.pn.z * 0.05, 0)) continue;
+    const L = rwLocate(r, RW.pin, RW.pn);
+    if (!L || L.rw.side) continue;
+    const P = RW.ploc; P.room = r; P.rw = L.rw; P.si = L.si; P.u = L.u; P.y = L.y;
+    return P;
+  }
+  return null;
+}
+// A hole in this lining shows in the partner's cavity (its face 1, mirrored, clipped to both runs); open on both = through.
+function rwMirror(room, rw, si, x, y, R, crush, seed) {
+  const P = rwPartner(room, rw, x, y);
+  if (!P) return;
+  const prw = P.rw, c = x + P.u, seg = rw.segs[si], dy = P.y - y;
+  const clip = { u0: c - seg[1] + RW.inset, u1: c - seg[0] - RW.inset, y0: rw.y0 + dy, y1: rw.y1 + dy };
+  rwStamp(prw, P.si, P.u, P.y, R, crush, seed, 1, true, clip);
+  if (rwOpen(rw, x, y) && rwOpen(prw, P.u, P.y)) { roomMem(room).rwThru = 1; roomMem(P.room).rwThru = 1; }
+}
+// Both rooms of a shared end wall built: each one's own holes into the other's face 1 (at activation; idempotent).
+function rwSyncPairs(room) {
+  if (!RW.thru || !room.rw) return;
+  const pull = (r) => {
+    const m = roomMemory.get(memKey(r));
+    if (!r.rw || !m || !m.rwh) return;
+    for (const wi of [0, 1]) {
+      const rw = r.rw[wi], H = m.rwh[wi];
+      if (!rw || !H) continue;
+      for (const q of H) if (rw.segs[q[0]]) rwMirror(r, rw, q[0], q[1], q[2], q[3], q[4], q[5]);
+    }
+  };
+  pull(room);
+  for (const r of stream.rooms.values()) if (r !== room && r.rw && Math.abs(r.slot - room.slot) === 1) pull(r);
+}
+// A ray (sight, sound) that met a breakable end wall where a hole goes right through: how far to skip on (0 = blocked).
+function rwRayPass(handle, P, N, dir) {
+  if (!RW.on || !RW.thru) return 0;
+  const info = colliderInfo.get(handle);
+  if (!info || info.kind !== 'plaster' || !info.room || !info.room.rw || info.sbox) return 0;
+  const room = info.room, cosI = -(dir.x * N.x + dir.y * N.y + dir.z * N.z);
+  if (cosI < 0.2) return 0;
+  const L = rwLocate(room, P, N);
+  if (!L || L.rw.side) return 0;
+  const rw = L.rw, T = CONFIG.stream.wallT, du = rwTangent(room, rw.wi, _rwV).dot(dir) / cosI, dy = dir.y / cosI;
+  if (!rwOpen(rw, L.u, L.y) || !pdOpen(rw.pd, 1, L.u + du * T, L.y + dy * T)) return 0;
+  return T / cosI + 0.01;
 }
 // Wall-local (u along the mesh, y up, s behind the board) -> world; the board's normal into the room.
 function rwWorld(room, wi, u, y, s, out) {
@@ -29539,7 +29599,7 @@ function rwBuild(room, walls, bands) {
     any = true;
     const len = wi < 2 ? w : d, side = wi >= 2;
     if (Math.abs(wall.position.y - h / 2) < 1e-4) { wall.geometry.translate(0, h / 2, 0); wall.position.y = 0; }   // a centred plane: put its floor at y 0 like the doorway walls
-    const pd = rwMake(len, h);
+    const pd = rwMake(len, h, RW.thru && !side ? 2 : 1), sep = RW.thru && !side;
     const rw = { wi, len, h, pd, segs, side, y0: RW.y0, y1: h - RW.top, studs: [], cols: Math.ceil(len / CONFIG.cover.cell), rows: Math.ceil(h / CONFIG.cover.cell), hp: null, lastHit: { x: 0, y: 0 } };
     room.rw[wi] = rw;
     const zero = (g) => { if (!g.attributes.pdf) g.setAttribute('pdf', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count), 1)); };
@@ -29556,6 +29616,7 @@ function rwBuild(room, walls, bands) {
     wall.updateMatrix();
     const back = side ? RW.mortar : T - 0.0125, s0 = parts.steel.length;
     const n0 = { block: parts.block.p.length, mortar: parts.mortar.p.length, paper: parts.paper.p.length, wool: parts.wool.p.length };
+    const own = sep ? { paper: acc(), wool: acc() } : null;      // through walls: the far board and the wool carry the face-1 mask (own meshes, wall frame)
     const quad = (A, a, b, c, e, nx, ny, nz, tu, tv, du = 0, dv = 0) => {   // corners counter-clockwise seen from the normal
       const base = A.p.length / 3;
       for (const q of [a, b, c, e]) { A.p.push(q[0], q[1], q[2]); A.n.push(nx, ny, nz); }
@@ -29579,7 +29640,7 @@ function rwBuild(room, walls, bands) {
       for (let k = 0; k + 1 < xs.length; k++) {
         if (R() > wl[1]) continue;
         const top = h - (R() < 0.3 ? 0.05 + R() * 0.45 : 0.01);
-        front(parts.wool, xs[k] + 0.019, 0.01, xs[k + 1] - 0.019, top, wl[0] + R() * 0.01, 0.45, R(), R());
+        front(own ? own.wool : parts.wool, xs[k] + 0.019, 0.01, xs[k + 1] - 0.019, top, wl[0] + R() * 0.01, 0.45, R(), R());
       }
       // the back: block faces in running bond over mortar (side walls), or the far board's paper back (end walls)
       if (side) {
@@ -29591,15 +29652,29 @@ function rwBuild(room, walls, bands) {
             if (b - a > 0.01) front(parts.block, a, y, b, y1, RW.block, 0.6, R() * 3, R() * 3);
           }
         }
-      } else front(parts.paper, u0, 0, u1, h, back, 1.2);
+      } else front(own ? own.paper : parts.paper, u0, 0, u1, h, back, 1.2);
       // closed at the run's ends, top and bottom
-      const sb = back, cap = side ? parts.mortar : parts.paper;
+      const sb = back, cap = side ? parts.mortar : own ? own.paper : parts.paper;
       quad(cap, [u0, 0, -sb], [u0, 0, 0], [u0, h, 0], [u0, h, -sb], 1, 0, 0, sb / 0.6, h / 0.6);
       quad(cap, [u1, 0, 0], [u1, 0, -sb], [u1, h, -sb], [u1, h, 0], -1, 0, 0, sb / 0.6, h / 0.6);
       quad(parts.mortar, [u0, h, 0], [u1, h, 0], [u1, h, -sb], [u0, h, -sb], 0, -1, 0, (u1 - u0) / 0.6, sb / 0.6);
       quad(parts.mortar, [u0, 0, -sb], [u1, 0, -sb], [u1, 0, 0], [u0, 0, 0], 0, 1, 0, (u1 - u0) / 0.6, sb / 0.6);
     }
     rw.studs.sort((a, b) => a - b);
+    if (own) for (const k of ['paper', 'wool']) {
+      const A = own[k]; if (!A.p.length) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(A.p, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(A.n, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(A.t, 2));
+      g.setAttribute('pdf', new THREE.BufferAttribute(new Float32Array(A.p.length / 3).fill(1), 1));
+      g.setIndex(A.i); g.computeBoundingSphere();
+      const pm = pdMaterial(MT[k], pd), fm = mesh(g, pm, false, true);
+      fm.customDepthMaterial = dm;
+      fm.matrixAutoUpdate = false; fm.matrix.copy(wall.matrix);
+      room.ownGeo.push(g); room.ownMat.push(pm);
+      (rw.farMeshes || (rw.farMeshes = [])).push(fm);
+    }
     // into the room's frame (the wall's own transform)
     const e = wall.matrix.elements;
     for (let i = s0; i < parts.steel.length; i++) parts.steel[i].applyMatrix4(wall.matrix);
@@ -29627,6 +29702,7 @@ function rwBuild(room, walls, bands) {
     room.ownGeo.push(g);
     cav.add(mesh(g, MT[k], false, true));
   }
+  for (const rw of room.rw) if (rw && rw.farMeshes) for (const fm of rw.farMeshes) cav.add(fm);
   room.group.add(cav);
   try { renderer.compileAsync(room.group, camera, scene).catch(() => {}); } catch (e) { /* compiled on first draw */ }
 }
@@ -29640,6 +29716,7 @@ function rwActivate(room) {
     const saved = m && m.rwc && m.rwc[rw.wi];
     if (saved) for (const [b, v] of Object.entries(saved)) rw.hp[+b] = v;
   }
+  rwSyncPairs(room);
 }
 // A world point on one of the room's wall faces (N = the face's normal into the room): which wall, run, u, height.
 function rwLocate(room, P, N) {
@@ -29726,6 +29803,16 @@ function rwBreak(room, rw, si, b, dir) {
   }
   coverSfx('cellBreak');
   dirtyShadows();
+  if (RW.thru && !rw.side && !RW.chain) {                         // the blast through the cavity: the far board's cell takes a beating (two breaks open it)
+    const P = rwPartner(room, rw, hx, hy);
+    if (P && P.rw.hp) {
+      const prw = P.rw, pr = P.room, cell2 = CONFIG.cover.cell;
+      const pc = clamp(Math.floor((P.u + prw.len / 2) / cell2), 0, prw.cols - 1), prow = clamp(Math.floor(P.y / cell2), 0, prw.rows - 1);
+      prw.lastHit.x = P.u; prw.lastHit.y = P.y;
+      RW.chain = true;
+      try { rwDamage(pr, prw, P.si, prow * prw.cols + pc, CONFIG.cover.cellHp * 0.55, dir); } finally { RW.chain = false; }
+    }
+  }
 }
 // traceBullet0, before cover: a round on a breakable run of a room wall. Null = not one (the old paths).
 function rwHit(hit, toi, P, N, dir, d, E) {
@@ -29759,10 +29846,13 @@ function rwHit(hit, toi, P, N, dir, d, E) {
   const th = CONFIG.stream.wallT / cosI;
   RW.ex.copy(P).addScaledVector(dir, th);
   RW.nn.copy(N).negate();
-  const nb = roomContaining(RW.ex.x + dir.x * 0.05, RW.ex.z + dir.z * 0.05, 0, RW.ex.y + dir.y * 0.05);
-  const L2 = nb && nb !== room && nb.active ? rwLocate(nb, RW.ex, RW.nn) : null;
-  if (L2) E = rwSheet(nb, L2.rw, L2.si, L2.u, L2.y, RW.ex, RW.nn, E, dir, true);
-  else {
+  const Pt = RW.thru ? rwPartner(room, rw, u + du * CONFIG.stream.wallT, y + dy * CONFIG.stream.wallT) : null;
+  const nb = Pt ? Pt.room : roomContaining(RW.ex.x + dir.x * 0.05, RW.ex.z + dir.z * 0.05, 0, RW.ex.y + dir.y * 0.05);
+  const L2 = Pt ? Pt : nb && nb !== room && nb.active ? rwLocate(nb, RW.ex, RW.nn) : null;
+  if (L2 && nb.active) E = rwSheet(nb, L2.rw, L2.si, L2.u, L2.y, RW.ex, RW.nn, E, dir, true);
+  else if (L2) {                                                   // the next room is built but not switched on: its board still tears (mask and memory)
+    if (!rwOpen(L2.rw, L2.u, L2.y)) { rwHole(nb, L2.rw, L2.si, L2.u, L2.y, 0.024 * penXS() * (0.8 + Math.random() * 0.4), 1); E -= CONFIG.cover.resist.sheet; }
+  } else {
     E -= CONFIG.cover.resist.sheet;
     if (E > 0.02 && nb && nb !== room && nb.active) { addRoomHole(nb, penX('plaster'), RW.ex, RW.nn, true, undefined, penXS()); impactFx('plaster', RW.ex, RW.nn); penCoverExit('plaster', RW.ex, dir); }
   }
@@ -33053,8 +33143,18 @@ function clearLine(a, b, slack = 0.15) {
   if (!_losRay) _losRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
   _ev.d.subVectors(b, a); const L = _ev.d.length(); if (L < 1e-4) return true; _ev.d.multiplyScalar(1 / L);
   _losRay.origin = { x: a.x, y: a.y, z: a.z }; _losRay.dir = { x: _ev.d.x, y: _ev.d.y, z: _ev.d.z };
-  const hit = world.castRay(_losRay, L - slack, true, undefined, LOS_GROUPS);
-  return !hit;
+  if (!(RW.on && RW.thru)) return !world.castRay(_losRay, L - slack, true, undefined, LOS_GROUPS);
+  let t0 = 0;
+  for (let k = 0; k < 4; k++) {                                  // through-holes in room walls do not block (THROUGH WALLS)
+    const hit = world.castRayAndGetNormal(_losRay, L - slack - t0, true, undefined, LOS_GROUPS);
+    if (!hit) return true;
+    const t = t0 + p10Toi(hit), sk = rwRayPass(hit.collider.handle, RW.lp.copy(a).addScaledVector(_ev.d, t), hit.normal, _ev.d);
+    if (!sk) return false;
+    t0 = t + sk;
+    if (t0 >= L - slack) return true;
+    _losRay.origin = { x: a.x + _ev.d.x * t0, y: a.y + _ev.d.y * t0, z: a.z + _ev.d.z * t0 };
+  }
+  return false;
 }
 function enemySees(e) {
   if (!roomCanSense(e.room)) return false;                      // step 22.3: not through a shut door, not through a crack
@@ -33076,6 +33176,10 @@ function roomCanSense(room) {
   if (!room || !room.active) return false;
   headWorld(_rs);
   if (insideRoom(room, _rs.x, _rs.z, 0, _rs.y)) return true;
+  if (RW.on && RW.thru) {                                        // THROUGH WALLS: a hole right through the wall to the room next door
+    const mm = roomMemory.get(memKey(room)), hr = mm && mm.rwThru ? roomContaining(_rs.x, _rs.z, 0, _rs.y) : null;
+    if (hr && Math.abs(hr.slot - room.slot) === 1) return true;
+  }
   const C = CONFIG.ai.doorSense;
   for (const s of [room.slot - 1, room.slot]) {
     if (s < 0 || s >= anchors.length) continue;
@@ -42826,7 +42930,7 @@ const P10 = {
 };
 const _p10 = {
   a: new THREE.Vector3(), b: new THREE.Vector3(), c: new THREE.Vector3(), d: new THREE.Vector3(), h: new THREE.Vector3(),
-  n: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), s: new THREE.Vector3(),
+  n: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), s: new THREE.Vector3(), o: new THREE.Vector3(),
   q: new THREE.Quaternion(), q2: new THREE.Quaternion(), m: new THREE.Matrix4(), m2: new THREE.Matrix4()
 };
 const P10_STATIC_RAY = groups(GROUP.PROP, GROUP.STATIC);
@@ -44507,7 +44611,18 @@ function occluded(from, to) {
   const L = _p10.c.length();
   if (L < 0.6) return false;
   _p10.c.multiplyScalar(1 / L);
-  return !!p10Ray(from, _p10.c, L - 0.25, P10_OCCLUDE_RAY);
+  if (!(RW.on && RW.thru)) return !!p10Ray(from, _p10.c, L - 0.25, P10_OCCLUDE_RAY);
+  let t0 = 0;
+  for (let k = 0; k < 4; k++) {                                  // a hole right through a room wall lets the sound through
+    _p10.o.copy(from).addScaledVector(_p10.c, t0);
+    const hit = p10Ray(_p10.o, _p10.c, L - 0.25 - t0, P10_OCCLUDE_RAY);
+    if (!hit) return false;
+    const t = t0 + p10Toi(hit), sk = rwRayPass(hit.collider.handle, _p10.o.copy(from).addScaledVector(_p10.c, t), hit.normal, _p10.c);
+    if (!sk) return true;
+    t0 = t + sk;
+    if (t0 >= L - 0.25) return false;
+  }
+  return true;
 }
 const SPORT = { on: !/[?&]portal=off\b/.test(QS), a: new THREE.Vector3(), b: new THREE.Vector3(), out: { x: 0, y: 0, z: 0, L: 0, k: 0 } };
 // The shortest way from a source behind a wall to you through one doorway with both legs clear (null = none)
@@ -57345,7 +57460,7 @@ function yardWatchCells(c, x0, top, bw, bh, gap, cols) {
     WATCH.hits.push({ id, x, y, w: bw, h: bh });
   });
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { RW, rwSegments, rwBuild, rwHit, rwLocate, rwOpen, rwStamp, traceBullet, SURF, buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, 
+if (window.__cqcDev) Object.assign(window.__cqcDev, { RW, rwSegments, rwBuild, rwHit, rwLocate, rwOpen, rwStamp, rwPartner, rwMirror, rwRayPass, rwSyncPairs, clearLine, occluded, traceBullet, SURF, buildPartition, partitionDims, partSheet, coverRegisterPartition, PDMG, pdStamp, pdHole, pdOpen, TFILL, tfillTick, roomMem, locomote, updateFloor, stepPhysics, restartToSafe, respawnPlayer, playerState, enemiesUpdate, 
   STEALTH: () => stealthState(), STEALTH_DIFF, stealthLight, stealthK, stealthSees });
 
 
