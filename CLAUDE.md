@@ -2324,3 +2324,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: glass bottles removed
 - The bottle / bottleG props (brown and green glass bottles) and their builder are gone; no room prop list places them. The label material stays (the paint tin uses it). Glass breaking code stays for other glass. Parse + eslint no-undef only.
+
+## CQC: CompM4-class red dot is see-through (headset check needed)
+- Cause: the M4's red dot (M4_SPEC.dot, also the AWM's default dot and any riser-mounted copy on another gun) had its ring round the tube built as a solid cylinder on the tube axis (16 mm long at z 0), so an opaque disc sat across the window 4 cm in front of the reticle glass. Found by a ray from g.wr.eye along the bore through every fitted optic (hit the ring at opt z 8 mm). Now a hollow ring (tube wall 3.5 mm).
+- Checked headless (riser fits through seatPart + wbFreeze): Glock dot on AKM / M4, AKM dot / holo on Glock / M4, M4 holo on AKM / AWM: the first thing on the sight line is the reticle glass, nothing opaque behind it; eye placement (optSight) on the window axis, riser below the line. Not seen in a headset.
