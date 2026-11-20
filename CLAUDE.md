@@ -2357,3 +2357,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: gun internals less dark
 - FEED materials (chamber tube, ejection-port backing, bolt face, carrier): steel 0x2c2d30 metal 0.85 -> 0x6b6d72 metal 0.6 with a faint emissive; bore / backing 0x17181a -> 0x45474b, metal 0.5, faint emissive, so the inside of the port reads as dim steel instead of black. Same programs (material values only). Parse checked only.
+
+## CQC: dark smoked oak tables (DARKWOOD, ?darkwood=off = the old pale pine; not run in a browser)
+- New texture set 'smoked oak' (shadeTableWood, in SHADE_FNS so it is made on the workers and cached in IndexedDB under its own recipe hash; size CONFIG.texSize.surface like the other sets, so Lite / Xbox halve it the same way): near-black brown (#33281e base, pores ~#16110d), long open-pore lanes along the board at two scales broken up along their length, gentle waviness, faint growth bands that wander into arcs, short lighter ray flecks and fine speckle; pores sunken in the normal map and rougher (roughness ~0.58 satin, pores ~0.74).
+- M.tableWood (same makeSurfaceMaterial + prop wear 'wood' program as M.wood, only textures differ: no new program) on the utility table top, the kit workbench top and shelf, and the half-wall caps. Crates, boards, pallets, the gun rack keep the pine / crate wear. Laminate desks unchanged.
+- Checked: node --check, eslint no-undef (browser globals only). Not seen by eye (browser run skipped at the user's request).
