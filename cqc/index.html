@@ -19218,18 +19218,19 @@ function itemFromWorld(p) {
 }
 
 function createMag(type, rounds) {
-  const md = MAG_DEFS[type], m = buildMagModel(type);
-  if (EXT.mag[type]) magStretch(m, type);                          // step 78: the extended one
+  const md0 = MAG_DEFS[type], m = buildMagModel(type), dr = drumOn(type);   // step 126: a drum
+  if (EXT.mag[type] && !dr) magStretch(m, type);                          // step 78: the extended one
   else if (type === 'm4' && M4A.mag20) magStretch(m, type, M4_MAG20.k);   // step 105: the 20-round one
   if (type === 'awp' && AWMA.ready) awmMagDress(m);               // step 113: the 10-round body
   if (type === 'm1911') m19MagDress(m);                            // step 108: 8 / 10 rounds (base pad, longer body)
-  if (GUNPHYS.phys || GUNPHYS.contact) contactCloud('mag:' + type, m.root, null);   // step 26
-  const item = { kind: 'mag', type, label: md.label, rounds, roundMesh: m.round };
+  const md = dr ? drumDress(m, type, md0) : md0;                  // step 126: the drum on its tower (own label, mass, collider)
+  if ((GUNPHYS.phys || GUNPHYS.contact) && !dr) contactCloud('mag:' + type, m.root, null);   // step 26
+  const item = { kind: 'mag', type, label: md.label, rounds, roundMesh: m.round, drum: dr ? DRUM.T[type] : null, mvar: dr ? 'd' : '' };
   const p = makeItem(m.root, item, { mass: md.mass, half: md.half, center: new THREE.Vector3(...md.center), restitution: 0.08 });
   updateMagVisual(item);
   return p;
 }
-function updateMagVisual(item) { item.roundMesh.visible = item.rounds > 0; if (item.roundMesh.userData.g17) g17MagRounds(item.roundMesh, item.rounds); }   // step 98: the stack and follower
+function updateMagVisual(item) { item.roundMesh.visible = item.rounds > 0; if (item.roundMesh.userData.g17) g17MagRounds(item.roundMesh, item.drum ? Math.min(item.rounds, 17) : item.rounds); if (item.drum) drumVisual(item); }   // step 126: a drum's tower, its window   // step 98: the stack and follower
 function createShell() {
   const root = buildShellModel();
   const item = { kind: 'shell', type: 'shell', label: SHELL_DEF.label };
@@ -21699,6 +21700,7 @@ function refillInventory() {
   inv.shells = 0;
   inv.frag = I.frag ?? 2; inv.flash = I.flash ?? 2; inv.smoke = SMK_ON ? I.smoke ?? 2 : 0;   // step 23; step 125 smoke
   inv.med = 2;                                          // step 79: two auto-injectors on your arm
+  drumInvCap();                                         // step 126: one spare drum
   panel.dirty = true;
 }
 function takeMag(type) {
@@ -21887,7 +21889,7 @@ function itemGrab(hand, p) {
 const MAG_STRIP = { on: !/[?&]magstrip=off/.test(QS), reach: 0.06, bias: 0.01, exposed: 0.75, pistolLip: 0.028 };
 const MS_box = new Map(), MS_inv = new THREE.Matrix4(), MS_M = new THREE.Matrix4(), MS_p = new THREE.Vector3(), MS_c = new THREE.Vector3();
 function magLocalBox(m) {
-  const t = m.item.type;
+  const t = m.item.type + (m.item.mvar || '');                        // step 126: a drum has its own box
   let B = MS_box.get(t);
   if (B) return B;
   B = new THREE.Box3();
@@ -27325,7 +27327,7 @@ function extApplyCaps(restock) {
   for (const t of Object.keys(EXT.mag)) {
     if (!MAG_DEFS[t]) continue;
     if (EXT.base[t] === undefined) EXT.base[t] = MAG_DEFS[t].capacity;
-    const cap = EXT.mag[t] ? EXT_CAP[t] : t === 'm4' && M4A.mag20 ? M4_MAG20.cap : EXT.base[t];   // step 105: the M4's 20-round
+    const cap = drumCap(t) || (EXT.mag[t] ? EXT_CAP[t] : t === 'm4' && M4A.mag20 ? M4_MAG20.cap : EXT.base[t]);   // step 105: the M4's 20-round (step 126: a drum first)
     if (MAG_DEFS[t].capacity !== cap) { MAG_DEFS[t].capacity = cap; if (restock && inv[t]) inv[t] = inv[t].map(() => cap); }
   }
   panel.dirty = true;
@@ -38508,7 +38510,11 @@ const WS_ITEMS = [
   { id: 'awp.bipod', gun: 'awp', cat: 'bipod', name: 'Bipod (6-9 in)', price: 250, desc: 'Deploys over a surface: rested sway -75 %, recoil -50 %; heavy carried', requires: ['awp.bipodif'], model: 'bipod', fx: { sway: 2, ads: -3, move: -3, wt: 0.36 } },
   { id: 'awp.cheek', gun: 'awp', cat: 'stock', name: 'Cheek riser', price: 120, desc: 'Head on the scope line: steadier picture, bigger eye box', requires: ['awp.stockmod'], model: 'cheek', fx: { sway: -5, acc: 2, wt: 0.12 } },
   { id: 'awp.mag10', gun: 'awp', cat: 'mag', name: '10-round magazine', price: 140, desc: 'Twice the factory 5; 45 mm longer, heavier, slower to seat', requires: [], model: 'mag10', fx: { rel: -4, wt: 0.3 }, owned: true },
-  { id: 'awp.sling', gun: 'awp', cat: 'sling', cosmetic: true, name: 'Sling', price: 60, desc: 'Cosmetic: QD strap on the left (the chest sling still carries it)', requires: ['awp.slingpts'], model: 'sling', fx: {} }
+  { id: 'awp.sling', gun: 'awp', cat: 'sling', cosmetic: true, name: 'Sling', price: 60, desc: 'Cosmetic: QD strap on the left (the chest sling still carries it)', requires: ['awp.slingpts'], model: 'sling', fx: {} },
+  // step 126 (DRUM): drum magazines; one spare rides with you (a drum does not fit a magazine pouch)
+  { id: 'g17.d50', gun: 'g17', cat: 'mag', name: '50-round drum (D-50 class)', price: 130, desc: 'Polymer drum under a full-length feed tower: 50 rounds; heavy, slow to seat, one spare', requires: [], model: 'd50', fx: {}, owned: true },
+  { id: 'akmn.d75', gun: 'akmn', cat: 'mag', name: '75-round steel drum', price: 180, desc: 'Stamped steel drum with a winding key: 75 rounds; very heavy, slow to seat, one spare', requires: [], model: 'd75', fx: {}, owned: true },
+  { id: 'm4a1s.d100', gun: 'm4a1s', cat: 'mag', name: '100-round double drum (C-Mag class)', price: 320, desc: 'A drum each side of the feed tower: 100 rounds; heavy, slow to seat, one spare', requires: [], model: 'd100', fx: {}, owned: true }
 ];
 /* ===========================================================================
  *  GUN INTERNALS (GI; ?internals=off = none): trigger groups in the GUNSMITH store, a new TRIGGER GROUP slot per gun.
@@ -38914,6 +38920,7 @@ function wsFit(id, quiet = false) {
   }
   wsSave(); W.dirty = true;
   if (WS_REAL[it.gun] && !quiet) WS_REAL[it.gun].changed(it);       // step 100 / 102 / 105 / 108 (a quiet fit is part of a buy or a swap: the caller syncs)
+  drumStore(it);                                                    // step 126: a drum takes the magazine slot
   return true;
 }
 
@@ -52756,6 +52763,7 @@ const GLOCK_FX = {
   'g17.pl2': { m: 0.085, ads: 1.02, sway: 1.03, lever: 0.1, stat: { acc: 1, vis: 10 } },        // step 112: the factory light, a part now
   'g17.wrap': { m: 0.06, sway: 1.01, lever: 0.1 },                                              // step 112: the wrap-around rail
   'g17.mag33': { m: 0.13, rel: 1.15, sway: 1.03, lever: 0.04 },
+  'g17.d50': { m: 0.85, rel: 1.45, sway: 1.12, ads: 1.06, aim: 1.08, lever: 0.07 },   // step 126
   'g17.sear': { stat: { rec: 14, acc: -6, hip: -5 } }
 };
 const GLOCK_FX_VR = { k: 1.45, max: 0.02 };                                   // s per kg m^2 of added inertia; the most lag (20 ms; step 105: every gun's table)
@@ -52820,7 +52828,7 @@ function g17GunIds(g, out = new Set()) {
   if (EXT.sw) out.add('g17.sear');
   const ch = muzChain(g);
   for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== ch[0]) continue; const id = g17PartId(p.item); if (id) out.add(id); }   // step 103: the rest of a chain: muzFx
-  return out;
+  return drumIds(g, out);                                          // step 126
 }
 
 /* --- the measured Glock (design space, metres) --- */
@@ -54832,6 +54840,7 @@ const AKM_FX = {
   'akmn.light': { m: 0.13, ads: 1.03, sway: 1.03, lever: 0.3, stat: { acc: 2, vis: 12 } },
   'akmn.laser': { m: 0.10, ads: 1.02, sway: 1.02, lever: 0.33, stat: { hip: 12, vis: 8 } },
   'akmn.mag40': { m: 0.20, rel: 1.12, sway: 1.03, lever: 0.14 },
+  'akmn.d75': { m: 1.85, rel: 1.5, sway: 1.14, ads: 1.07, aim: 1.08, lever: 0.14 },   // step 126
   'akmn.stock': { m: 0.15, kick: 0.94, climb: 0.9, dkick: 0.9, sway: 0.92, aim: 0.85, lever: 0.2 },
   'akmn.wrap': { m: 0.09, sway: 1.01, lever: 0.42 }                 // step 112: the clamp-on rail section
 };
@@ -55269,7 +55278,7 @@ function akmGunIds(g, out) {
   if (chain.length) out.add('akmn.muzzle');
   if (EXT.mag.akmn) out.add('akmn.mag40');
   for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== chain[0]) continue; const id = akmPartId(p.item); if (id) out.add(id); }   // the rest of a chain: muzFx
-  return out;
+  return drumIds(g, out);                                          // step 126
 }
 // After anything changed on this AKM: the kit's parts shown, the sight line, the support hold, the muzzle, the effects.
 function akmRefresh(g) { const r = akmRefresh0(g); optSight(g, true); foreignFx(g, true); return r; }   // any-gun fit: a snapped optic's sight line
@@ -56149,6 +56158,7 @@ const M4_FX = {
   'm4a1s.afg': { m: 0.07, climb: 0.9, sway: 0.95, aim: 0.97, ads: 0.98, lever: 0.31 },
   'm4a1s.mag20': { m: -0.12, rel: 0.9, sway: 0.98 },
   'm4a1s.mag60': { m: 0.45, rel: 1.18, sway: 1.06, ads: 1.04 },
+  'm4a1s.d100': { m: 1.95, rel: 1.55, sway: 1.16, ads: 1.08, aim: 1.1 },   // step 126
   'm4a1s.sopmod': { m: 0.14, kick: 0.97, sway: 0.93, aim: 0.95, ads: 1.03, lever: 0.2 },
   'm4a1s.ctr': { m: -0.05, sway: 1.03, ads: 0.96, lever: 0.2 },
   'm4a1s.sling': {}, 'm4a1s.covers': {}                                           // rule 10: cosmetic
@@ -56558,7 +56568,7 @@ function m4GunIds(g, out = new Set()) {
   if (EXT.mag.m4) out.add('m4a1s.mag60'); else if (M4A.mag20) out.add('m4a1s.mag20');
   const ch = muzChain(g);
   for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== ch[0]) continue; const id = m4PartId(p.item); if (id) out.add(id); }   // the rest of a chain: muzFx
-  return out;
+  return drumIds(g, out);                                          // step 126
 }
 
 /* --- the sling: a 25 mm black nylon strap from the front sight base's swivel to the stock, hanging --- */
@@ -58088,6 +58098,250 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { RAIL, RAIL_DEV, RAIL_WRAP,
   railWrapKit, railRingKit, railPistolKit, railM19Kit, railHw, railBenchFit, railClash, railBump, railMakePl2, railLead, railLasers, railWire, railUnwire, railToggleLight,
   railToggleLaser, railFx, railTick, railSync, railWant, railSaveGun, railSyncType, railZones, railObstacles, railXBox });
 if (window.__cqcDev) Object.assign(window.__cqcDev, { BRASS, BRASS_CAL, BRASS_BIN, BRASS_TYPE, brassCalOf, brassSettle, brassAdd, brassMerge, brassBuild, brassUf, brassBinSpawn, brassBinFill, brassHeapPeak, brassHeapVol, brassSell, brassSupplies, brassTick, brassVol, brassSum });   // step 116
+/* ===========================================================================
+ *  STEP 126 — DRUM MAGAZINES (?drums=off; headset check needed)
+ *  GUNSMITH rows (cat 'mag', one per slot, so a drum replaces the 33 / 40 / 60-round kits): Glock 17 50-round drum
+ *  (D-50 class: the full-length 17-round body is the feed tower, a polymer drum under a flared neck), AKM 75-round
+ *  steel drum (the top 52 mm of the AK magazine is the tower, a stamped steel drum with rolled rims, stamped rings,
+ *  rivets, winding key, rear-cover latch and hinge), M4A1-S 100-round double drum (C-Mag class: the top 84 mm of
+ *  the STANAG body, a central bridge, a drum each side). The tower is the magazine's own geometry above the cut
+ *  (triangles filtered once per geometry, attributes shared), so it fits the well exactly as the factory magazine.
+ *  Polymer drums: face rings, radial ribs, rim grip ribs, cap screws, a load knob (D-50) and a round-count window
+ *  whose brass shows how full it is (per-magazine draw range, no new program).
+ *  Capacity via extApplyCaps (drumCap first), collider / mass / label from the dressed model (drumDress), the gun's
+ *  heft from GLOCK_FX / AKM_FX / M4_FX (mass, sway, aim, ADS, reload time 1.45-1.55x). A drum does not fit a
+ *  magazine pouch: one spare rides with you (drumInvCap). Every magazine of the type is a drum while it is fitted,
+ *  like the extended kits; the ones already in the world stay as they were.
+ *  Geometry and materials are built once per type and shared (3-4 draws a drum).
+ * ========================================================================= */
+const DRUM = {
+  on: !/[?&]drums=off\b/.test(QS), d: { g17: false, akmn: false, m4: false }, kit: {}, cutGeo: new Map(), M: null, spare: 1,
+  T: {
+    g17: { row: 'g17.d50', ext: 'g17.mag33', gun: 'g17', cap: 50, mass: 1.05, label: '50-round drum', cut: null, R: 0.056, W: 0.054, kind: 'poly' },
+    akmn: { row: 'akmn.d75', ext: 'akmn.mag40', gun: 'akmn', cap: 75, mass: 2.3, label: '75-round steel drum', cut: 0.052, R: 0.073, W: 0.066, kind: 'steel' },
+    m4: { row: 'm4a1s.d100', ext: 'm4a1s.mag60', gun: 'm4a1s', cap: 100, mass: 2.4, label: '100-round double drum', cut: 0.084, R: 0.058, W: 0.05, kind: 'double' }
+  }
+};
+function drumOn(t) { try { return DRUM.on && !!DRUM.d[t]; } catch (e) { return false; } }
+function drumCap(t) { try { return DRUM.on && DRUM.d[t] ? DRUM.T[t].cap : 0; } catch (e) { return 0; } }
+function drumInvCap() { try { for (const t of Object.keys(DRUM.d)) if (DRUM.on && DRUM.d[t] && inv[t] && inv[t].length > DRUM.spare) inv[t].length = DRUM.spare; } catch (e) { /* before this section */ } }
+function drumIds(g, out) {
+  try { const D = DRUM.T[g.def.magType]; if (D && drumOn(g.def.magType)) { out.add(D.row); out.delete(D.ext); } } catch (e) { /* before this section */ }
+  return out;
+}
+function drumSync() {
+  for (const t of Object.keys(DRUM.T)) DRUM.d[t] = DRUM.on && wsWanted(DRUM.T[t].row);
+}
+// wsFit / a buy: a drum takes the magazine slot (the extended kit off), every gun of the type re-reads its heft.
+function drumStore(it) {
+  try {
+    if (!DRUM.on || !it) return;
+    const was = Object.assign({}, DRUM.d); drumSync();
+    let ch = false;
+    for (const t of Object.keys(DRUM.T)) {
+      if (DRUM.d[t] && EXT.mag[t]) { EXT.mag[t] = false; ch = true; }
+      if (was[t] !== DRUM.d[t]) ch = true;
+    }
+    if (!ch) return;
+    extApplyCaps(true); drumInvCap(); extSave();
+    for (const t of Object.keys(DRUM.T)) if (was[t] !== DRUM.d[t]) {
+      const D = DRUM.T[t];
+      for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === D.gun && !q.removing) { try { attRefresh(q.item); } catch (e) { /* */ } }
+      toast(DRUM.d[t] ? `${D.label}: ${D.cap} rounds, one spare (a drum does not fit a pouch)` : `Drum off: standard magazines again`, 2600);
+    }
+  } catch (e) { console.warn('step 126: drum store sync', e); }
+}
+
+/* --- geometry (magazine space: +y to the lips, -z forward, x across) --- */
+function drumMats() {
+  if (DRUM.M) return DRUM.M;
+  const S = (c, r, m) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+  return (DRUM.M = { poly: S(0x1c1d1f, 0.7, 0), steel: S(0x2b2c2b, 0.5, 0.75), steelB: S(0x56585a, 0.36, 0.9), blk: S(0x141516, 0.5, 0.45),
+    win: S(0x050506, 0.25, 0), brass: S(0xb58b43, 0.34, 1) });
+}
+// The magazine's drawn points (its round stack left out), magazine space.
+function drumPts(m) {
+  const out = [], v = new THREE.Vector3(), skip = new Set();
+  m.round.traverse((o) => skip.add(o));
+  m.root.updateMatrixWorld(true);
+  m.root.traverse((o) => {
+    if (!o.isMesh || skip.has(o) || !o.geometry || !o.geometry.attributes.position) return;
+    const G = o.geometry, P = G.attributes.position, I = G.index, n0 = Math.max(0, G.drawRange.start), n = Math.min(I ? I.count : P.count, n0 + G.drawRange.count);
+    for (let i = n0; i < n; i++) { v.fromBufferAttribute(P, I ? I.getX(i) : i).applyMatrix4(o.matrixWorld); out.push(v.x, v.y, v.z); }
+  });
+  return out;
+}
+function drumSec(P, y0, y1) {
+  const s = { hx: 0, z0: Infinity, z1: -Infinity, y0: Infinity, n: 0 };
+  for (let i = 0; i < P.length; i += 3) {
+    const y = P[i + 1]; if (y < y0 || y > y1) continue;
+    s.hx = Math.max(s.hx, Math.abs(P[i])); s.z0 = Math.min(s.z0, P[i + 2]); s.z1 = Math.max(s.z1, P[i + 2]); s.y0 = Math.min(s.y0, y); s.n++;
+  }
+  return s;
+}
+// The tower: only the triangles reaching above the cut (shared attributes, a new index; material groups kept).
+function drumCut(m, cut) {
+  const skip = new Set(); m.round.traverse((o) => skip.add(o));
+  m.root.updateMatrixWorld(true);
+  m.root.traverse((o) => {
+    if (!o.isMesh || skip.has(o) || !o.geometry || o.userData.drum) return;
+    const G = o.geometry, key = G.uuid + '|' + cut;
+    let C = DRUM.cutGeo.get(key);
+    if (!C) {
+      const P = G.attributes.position, I = G.index, e = o.matrixWorld.elements, keep = [];
+      const yOf = (i) => e[1] * P.getX(i) + e[5] * P.getY(i) + e[9] * P.getZ(i) + e[13];
+      const tri = (a, b, c) => { if (Math.max(yOf(a), yOf(b), yOf(c)) >= cut) keep.push(a, b, c); };
+      const range = (s0, n) => { const k0 = keep.length; for (let t = s0; t + 2 < s0 + n; t += 3) tri(I ? I.getX(t) : t, I ? I.getX(t + 1) : t + 1, I ? I.getX(t + 2) : t + 2); return [k0, keep.length - k0]; };
+      C = new THREE.BufferGeometry();
+      for (const k of Object.keys(G.attributes)) C.setAttribute(k, G.attributes[k]);
+      const total = I ? I.count : P.count;
+      if (G.groups.length) for (const gr of G.groups) { const [s, n] = range(gr.start, Math.min(gr.count, total - gr.start)); C.addGroup(s, n, gr.materialIndex); }
+      else range(Math.max(0, G.drawRange.start), Math.min(total, G.drawRange.count));
+      C.setIndex(keep);
+      C.boundingBox = null; C.computeBoundingSphere();
+      DRUM.cutGeo.set(key, C);
+    }
+    o.geometry = C;
+  });
+}
+const _drQ = new THREE.Quaternion(), _drE = new THREE.Euler();
+function drPl(geo, x, y, z, rx = 0, ry = 0, rz = 0) { geo.applyQuaternion(_drQ.setFromEuler(_drE.set(rx, ry, rz))); geo.translate(x, y, z); return geo; }
+function drBox(w, h, d, r) { return new RoundedBoxGeometry(w, h, d, 2, Math.min(r, w / 2 - 1e-5, h / 2 - 1e-5, d / 2 - 1e-5)); }
+function drMerge(parts) {
+  const flat = parts.map((p) => { const q = p.index ? p.toNonIndexed() : p; for (const k of Object.keys(q.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') q.deleteAttribute(k); return q; });
+  const g = mergeGeometries(flat); g.computeBoundingSphere(); g.computeBoundingBox(); return g;
+}
+// A drum shell (axis x): a lathe with rounded edges, centre (0, cy, cz) on x = cx.
+function drShell(R, W, e, cx, cy, cz) {
+  const pts = [new THREE.Vector2(0, -W / 2)];
+  for (let k = 0; k <= 6; k++) { const a = -Math.PI / 2 + k / 6 * Math.PI / 2; pts.push(new THREE.Vector2(R - e + e * Math.cos(a), -W / 2 + e + e * Math.sin(a))); }
+  for (let k = 0; k <= 6; k++) { const a = k / 6 * Math.PI / 2; pts.push(new THREE.Vector2(R - e + e * Math.cos(a), W / 2 - e + e * Math.sin(a))); }
+  pts.push(new THREE.Vector2(0, W / 2));
+  return drPl(new THREE.LatheGeometry(pts, 56).rotateZ(-Math.PI / 2), cx, cy, cz);
+}
+const drDir = (a) => [Math.cos(a), Math.sin(a)];                    // radial direction in (y, z) at angle a (0 = up, pi/2 = back)
+function drTorusX(r, t, x, cy, cz, seg = 56) { return drPl(new THREE.TorusGeometry(r, t, 6, seg).rotateY(Math.PI / 2), x, cy, cz); }
+function drCylX(r, h, x, cy, cz, seg = 24) { return drPl(new THREE.CylinderGeometry(r, r, h, seg).rotateZ(Math.PI / 2), x, cy, cz); }
+// Face details of a polymer drum on its face at x = fx (s = which way the face looks): rings, ribs, screws.
+function drPolyFace(A, B, R, fx, s, cy, cz, winA) {
+  A.push(drTorusX(R - 0.0095, 0.0016, fx, cy, cz), drTorusX(0.03 * R / 0.056, 0.0011, fx + s * 0.0002, cy, cz));
+  A.push(drCylX(0.0155, 0.003, fx + s * 0.0013, cy, cz, 32));      // hub boss
+  for (let k = 0; k < 8; k++) {
+    const a = k / 8 * Math.PI * 2 + 0.2;
+    if (winA && Math.abs(Math.atan2(Math.sin(a - winA[2]), Math.cos(a - winA[2]))) < winA[3]) continue;   // the window's place
+    const r0 = 0.018, r1 = R - 0.0125, rm = (r0 + r1) / 2, [c, sn] = drDir(a);
+    A.push(drPl(new THREE.BoxGeometry(0.0016, r1 - r0, 0.0026), fx + s * 0.0008, cy + c * rm, cz + sn * rm, a));
+  }
+  for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + 0.52, [c, sn] = drDir(a), r = R - 0.0135; B.push(drCylX(0.0021, 0.0012, fx + s * 0.0006, cy + c * r, cz + sn * r, 6)); }
+  B.push(drCylX(0.006, 0.002, fx + s * 0.0035, cy, cz, 6));         // the hub's centre screw
+}
+// Grip ribs round the rim, except where the tower comes in (the top, |a| < gap).
+function drRimRibs(A, R, W, e, cx, cy, cz, gap, n = 30) {
+  for (let k = 0; k < n; k++) {
+    const a = k / n * Math.PI * 2; if (Math.abs(Math.atan2(Math.sin(a), Math.cos(a))) < gap) continue;
+    const [c, s] = drDir(a), r = R + 0.0004;
+    A.push(drPl(new THREE.BoxGeometry(W - 2 * e - 0.004, 0.0017, 0.0028), cx, cy + c * r, cz + s * r, a));
+  }
+}
+// The round-count window: a dark slot and the brass behind it (the brass is per magazine: its draw range = how full).
+function drWindow(Wn, Br, R, fx, s, cy, cz, a0, a1) {
+  const n = 8, r = R - 0.0205;
+  for (let k = 0; k < n; k++) {
+    const a = a0 + (k + 0.5) / n * (a1 - a0), [c, sn] = drDir(a), ch = r * (a1 - a0) / n;
+    Wn.push(drPl(new THREE.BoxGeometry(0.0012, 0.0074, ch * 1.02), fx + s * 0.0006, cy + c * r, cz + sn * r, a));
+    Br.push(drPl(new THREE.CylinderGeometry(0.0026, 0.0026, 0.0011, 10).rotateZ(Math.PI / 2), fx + s * 0.0013, cy + c * r, cz + sn * r));
+  }
+}
+function drumKit(type, m) {
+  if (DRUM.kit[type]) return DRUM.kit[type];
+  const D = DRUM.T[type], M = drumMats(), P = drumPts(m), A = [], B = [], Wn = [], Br = [], S2 = [], S3 = [];
+  const ys = []; for (let i = 1; i < P.length; i += 3) ys.push(P[i]);
+  ys.sort((a, b) => a - b);
+  const yMin = ys[Math.floor(ys.length * 0.002)], yMax = ys[Math.floor(ys.length * 0.998)];   // stray points (parked parts) left out
+  const cut = D.cut === null ? null : yMax - D.cut;                   // D.cut = the tower's length under the lips
+  const R = D.R, W = D.W, box = new THREE.Box3();
+  const keepTop = cut === null ? (type === 'g17' && m.root.children[2] ? new THREE.Box3().setFromObject(m.root.children[2], true).min.y - 0.001 : yMin) : cut;
+  const sec = (y) => { let w = 0.004, s; do { s = drumSec(P, y - w, y + w); w *= 2; } while (!s.n && w < 0.05); return s; };
+  for (let i = 0; i < P.length; i += 3) if (P[i + 1] >= keepTop) box.expandByPoint(new THREE.Vector3(P[i], P[i + 1], P[i + 2]));
+  if (D.kind === 'poly') {                                            // Glock D-50: neck under the 17-round body, one drum
+    const pl = m.root.children[2], pb = pl && pl.isMesh ? new THREE.Box3().setFromObject(pl, true) : null;   // g17MagModel: body, strip, plate
+    const yb = pb ? pb.min.y : Math.max(yMin, G17M.PY - 0.0016), s = pb ? { hx: Math.max(-pb.min.x, pb.max.x), z0: pb.min.z, z1: pb.max.z } : sec(yb + 0.005);
+    const zc = (s.z0 + s.z1) / 2, dz = s.z1 - s.z0, top = pb ? pb.max.y - 0.0008 : yb + 0.004;   // the neck wraps the baseplate (below the grip)
+    A.push(drPl(drBox(2 * (s.hx + 0.0016), top - yb + 0.022, dz + 0.003, 0.0028), 0, (top + yb - 0.022) / 2, zc));
+    A.push(drPl(drBox(2 * (s.hx + 0.0062), 0.014, dz + 0.016, 0.0045), 0, yb - 0.019, zc - 0.002));
+    const cy = yb - 0.022 - R * 0.72, cz = zc - 0.008, e = 0.008;
+    A.push(drShell(R, W, e, 0, cy, cz));
+    drRimRibs(A, R, W, e, 0, cy, cz, 0.62);
+    const win = [0, 0, 2.35, 0.62];
+    drPolyFace(A, B, R, -W / 2, -1, cy, cz, null); drPolyFace(A, B, R, W / 2, 1, cy, cz, win);
+    drWindow(Wn, Br, R, W / 2, 1, cy, cz, 1.8, 2.9);
+    B.push(drCylX(0.0085, 0.0055, -W / 2 - 0.0044, cy, cz, 28), drPl(drBox(0.004, 0.024, 0.0055, 0.0015), -W / 2 - 0.0085, cy, cz));   // load-assist knob and its lever
+    box.expandByPoint(new THREE.Vector3(-W / 2 - 0.011, cy - R, cz - R)).expandByPoint(new THREE.Vector3(W / 2 + 0.003, cy + R, cz + R));
+  } else if (D.kind === 'double') {                                   // M4 C-Mag: the tower, a bridge, a drum each side
+    const s = sec(cut), zc = (s.z0 + s.z1) / 2, dz = s.z1 - s.z0, e = 0.0075;
+    const cx = s.hx + 0.006 + W / 2, cy = cut - 0.028 - R * 0.55, cz = zc + 0.004;
+    A.push(drPl(drBox(2 * (s.hx + 0.0022), 0.036, dz + 0.0044, 0.003), 0, cut - 0.014, zc));
+    const bt = cut - 0.004, bb = cy - R * 0.72;
+    A.push(drPl(drBox(2 * (s.hx + 0.0068), bt - bb, R * 1.45, 0.006), 0, (bt + bb) / 2, cz));
+    for (const sx of [-1, 1]) {
+      A.push(drShell(R, W, e, sx * cx, cy, cz));
+      drRimRibs(A, R, W, e, sx * cx, cy, cz, 0.5, 28);
+      drPolyFace(A, B, R, sx * (cx + W / 2), sx, cy, cz, [0, 0, 2.35, 0.62]);
+      drWindow(Wn, Br, R, sx * (cx + W / 2), sx, cy, cz, 1.8, 2.9);
+    }
+    box.expandByPoint(new THREE.Vector3(-cx - W / 2 - 0.004, cy - R, cz - R)).expandByPoint(new THREE.Vector3(cx + W / 2 + 0.004, cy + R, cz + R));
+  } else {                                                            // AKM 75: stamped steel, a collar, winding key, rivets
+    const s = sec(cut), zc = (s.z0 + s.z1) / 2, dz = s.z1 - s.z0, e = 0.006;
+    const cy = cut - 0.014 - R * 0.8, cz = zc + 0.006;
+    A.push(drPl(drBox(2 * (s.hx + 0.0025), 0.024, dz + 0.005, 0.0025), 0, cut - 0.006, zc));   // the tower's steel collar
+    A.push(drShell(R, W, e, 0, cy, cz));
+    for (const sx of [-1, 1]) {
+      A.push(drTorusX(R - 0.0032, 0.0033, sx * (W / 2 - 0.0034), cy, cz, 64));   // rolled rims
+      A.push(drTorusX(0.05, 0.0024, sx * W / 2, cy, cz, 56), drTorusX(0.029, 0.0018, sx * W / 2, cy, cz, 40));   // stamped rings
+      for (let k = 0; k < 16; k++) { const a = k / 16 * Math.PI * 2, [c, sn] = drDir(a), r = R - 0.0105; S2.push(drPl(new THREE.SphereGeometry(0.002, 8, 5), sx * (W / 2 + 0.0002), cy + c * r, cz + sn * r)); }
+    }
+    for (let k = 0; k < 6; k++) { const a = k / 6 * Math.PI * 2 + 0.26, [c, sn] = drDir(a); A.push(drPl(new THREE.BoxGeometry(0.0018, 0.012, 0.004), W / 2 + 0.0008, cy + c * 0.04, cz + sn * 0.04, a)); }   // the rear cover's stiffening ribs
+    // winding key on the left face: hub, knurled boss, wing; rear cover latch and hinge on the right
+    S3.push(drCylX(0.0195, 0.004, -W / 2 - 0.002, cy, cz, 36), drCylX(0.0108, 0.008, -W / 2 - 0.006, cy, cz, 28));
+    for (let k = 0; k < 20; k++) { const a = k / 20 * Math.PI * 2, [c, sn] = drDir(a); S3.push(drPl(new THREE.BoxGeometry(0.0074, 0.0013, 0.0013), -W / 2 - 0.006, cy + c * 0.0111, cz + sn * 0.0111, a)); }
+    S3.push(drPl(drBox(0.0048, 0.034, 0.0072, 0.002), -W / 2 - 0.0122, cy, cz));
+    { const a = 0.75, [c, sn] = drDir(a), r = R - 0.014; A.push(drPl(drBox(0.0075, 0.016, 0.011, 0.0018), W / 2 + 0.0028, cy + c * r, cz + sn * r, a)); }
+    for (let k = -1; k <= 1; k++) S3.push(drPl(new THREE.CylinderGeometry(0.0029, 0.0029, 0.0095, 12).rotateX(Math.PI / 2), W / 2 - 0.0015, cy - (R - 0.004), cz - 0.006 + k * 0.0112));
+    box.expandByPoint(new THREE.Vector3(-W / 2 - 0.016, cy - R, cz - R)).expandByPoint(new THREE.Vector3(W / 2 + 0.006, cy + R, cz + R));
+  }
+  const meshes = [];
+  const body = D.kind === 'steel' ? M.steel : M.poly;
+  meshes.push([drMerge(A), body]);
+  if (B.length) meshes.push([drMerge(B), M.blk]);
+  if (S2.length) meshes.push([drMerge(S2), M.steel]);
+  if (S3.length) meshes.push([drMerge(S3), M.steelB]);
+  if (Wn.length) meshes.push([drMerge(Wn), M.win]);
+  const brass = Br.length ? drMerge(Br) : null;
+  const size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+  return (DRUM.kit[type] = { cut, yMin, yMax, meshes, brass, nBr: Br.length / (D.kind === 'double' ? 2 : 1), per: brass ? brass.attributes.position.count / Br.length : 0, dbl: D.kind === 'double', half: [size.x / 2, size.y / 2, size.z / 2], center: [c.x, c.y, c.z] });
+}
+// createMag: the tower cut, the drum on it; returns the drum's magazine def (label, capacity, mass, collider).
+function drumDress(m, type, md0) {
+  const D = DRUM.T[type];
+  try {
+    const K = drumKit(type, m);
+    if (K.cut !== null) drumCut(m, K.cut);
+    for (const [geo, mat] of K.meshes) { const o = new THREE.Mesh(geo, mat); o.castShadow = true; o.receiveShadow = true; o.userData.drum = true; m.root.add(o); }
+    if (K.brass) { const o = new THREE.Mesh(K.brass.clone(), drumMats().brass); o.receiveShadow = true; o.userData.drum = true; m.root.add(o); m.root.userData.brass = o; }
+    return Object.assign({}, md0, { label: D.label, capacity: D.cap, mass: D.mass, half: K.half, center: K.center });
+  } catch (e) { console.warn('step 126: drum not built', e); return md0; }
+}
+// The window's brass: how full it is (per magazine; both drums of the double drum show the same).
+function drumVisual(item) {
+  const o = item.roundMesh && item.roundMesh.parent && item.roundMesh.parent.userData.brass, K = DRUM.kit[item.type];
+  if (!o || !K) return;
+  const n = Math.ceil(K.nBr * clamp(item.rounds / Math.max(1, item.drum.cap), 0, 1)), v = n * K.per;
+  o.geometry.setDrawRange(0, K.dbl ? Infinity : v);
+  if (K.dbl) { const half = o.geometry.attributes.position.count / 2; o.geometry.clearGroups(); o.geometry.addGroup(0, v, 0); o.geometry.addGroup(half, v, 0); o.material = [drumMats().brass]; }
+}
+drumSync();
+if (Object.values(DRUM.d).some(Boolean)) { for (const t of Object.keys(DRUM.T)) if (DRUM.d[t]) EXT.mag[t] = false; extApplyCaps(false); }
+if (/[?&]dev\b/.test(QS)) window.__cqcDrum = { DRUM, drumOn, drumCap, drumKit, drumDress, drumCut, drumStore, drumSync, drumVisual, drumPts, drumSec, createMag, extApplyCaps, WORKSHOP, wsFit, wsStats };
 /* ===========================================================================
  *  ATTACHMENTS COLLIDE (doors, walls; ?attclip=off = exactly as before)
  *  The step 30 clip tested a held gun's own box (def.col) and, since step 103, its muzzle chain (g.muzClip); the step 8.1
