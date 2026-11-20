@@ -2380,3 +2380,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Also fixed: the "off by default" edit had commented out RW.share / run / minRun / corner / doorPad on the same line.
 - RW on by default again (?roomwalls=off = the old solid shell).
 - Checked headless (?dev&lite=on&lowmem=on): no cavity vertex inside room 1's box (was 52, up to 3.5 m in); AKM rounds at each wall open holes in all four masks. Only room 1 was checked (no storage / turned room built in the run).
+
+## CQC: smaller drywall debris
+- Broken wall pieces 1.5-7 cm (were 3-15 cm), crumbs 0.6-1.4 cm (were 1.2-2.4). Parse checked only.
