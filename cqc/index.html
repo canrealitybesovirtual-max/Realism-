@@ -12800,6 +12800,7 @@ function padPoll(dt) {
   let gp = null; const all = navigator.getGamepads();
   for (let i = 0; i < all.length; i++) { const g = all[i]; if (g && g.connected && g.mapping === 'standard') { gp = g; break; } }
   if (!gp) for (let i = 0; i < all.length; i++) if (all[i] && all[i].connected) { gp = all[i]; break; }
+  if (gp && gameStarted) { try { if (clPadPoll(gp)) return; } catch (e) { /* not ready */ } }   // classes: the picker has the pad
   const menu = document.body.classList.contains('modOpen') || !gameStarted;
   if (!gp || menu) {
     if (gp && menu && gameStarted) padMenu(gp);
@@ -39373,7 +39374,7 @@ function termDraw(now) {
     // tabs
     const tw = (W - 32 - (TERM_PAGES.length - 1) * 8) / TERM_PAGES.length;
     TERM_PAGES.forEach(([k, label], i) => tBtn(`tab:${k}`, 16 + i * (tw + 8), 64, tw, 58, label, { sel: TERM.page === k, size: 21, fn: () => termPage(k) }));
-    ({ ops: termOps, director: termDirector, opfor: termOpfor, loadout: termLoadout, comfort: termComfort, records: termRecords, system: termSystem, options: termOptions })[TERM.page](TERM_PW, H, now);   // step 56: the page column
+    ({ ops: termOps, director: termDirector, opfor: termOpfor, loadout: termLoadout, comfort: termComfort, records: termRecords, system: termSystem, options: termOptions, classes: clTermPage })[TERM.page](TERM_PW, H, now);   // step 56: the page column
     termQuick(W, H, now);                                        // step 56: always on screen
     // footer: the last thing a press did, or how to press
     ctx.fillStyle = TC.line; ctx.fillRect(16, H - 50, W - 32, 1);
@@ -39530,9 +39531,9 @@ function termLoadout(W, H, now) {
     if (LEVEL.on) { const L = levelOf(); tText(`${levelRank(L.n)}  ·  Level ${L.n}${L.next ? `  ·  ${L.into} / ${L.next} XP` : '  ·  max'}`, 36, 368, 16, TC.dim, 'left', 600, TC.mono, 600); }   // levels
     tText(fmtMoney(WALLET.money), 988, 342, 28, TC.ok, 'right', 700, TC.mono, 216);
   } else tBtn('restock', 16, 304, 992, 76, 'RESTOCK', { size: 28, fn: termRestock });
-  tHead('Guns', 28, 410);
+  tHead('Class / loadout', 28, 410);                              // classes: preset builds for the guns
+  tBtn('classes', 16, 426, 992, 62, 'CHOOSE CLASS / LOADOUT', { size: 24, fn: () => clOpen() });
   brassTermDraw();                                               // step 116: the brass bag and bin
-  tWrap(`M1911, .45 ACP, 7+1: on the bench beside the locker, with two magazines. ${WORKSHOP.on ? 'Restock ammo at the GUNSMITH brings it back' : 'Restock brings it back'} if it is lost. More guns go here.`, 28, 440, 960, 22, TC.dim, 30);   // step 59
 }
 
 // Step 11: the comfort settings that used to sit on the face buttons (where a stray press mid-fight changed them).
@@ -42395,6 +42396,7 @@ function mwBuild(grid) {
   }
   // Game
   mwButton('game', null, 'Resume', 'Back to the game (M, Esc)', () => modPanelToggle(false));
+  mwButton('game', null, 'Choose class / loadout', 'Preset builds for your guns: free, real parts (also on the terminal, GEAR)', () => clOpen());   // classes
   const rb = mwButton('game', 'mwRestart', 'Restart in safe room', 'Two presses within 3 s. The run ends: banked points stay, at-risk points are lost', () => restartTap());
   rb.classList.add('mw-restart');
   mwButton('game', null, 'Controls panel', 'Every key and button (H)', () => { ui.hud.classList.toggle('hidden'); });
@@ -52659,6 +52661,7 @@ function startGame(mode) {
   try { const mp = window.CQC_MP ? window.CQC_MP() : null; if (mp && (mp.sel === 'host' || mp.sel === 'join' || mp.sel === 'quick') && NET.on && NET.voice && MIC.mode !== 'off') netVoiceMic(true); } catch (e) { /* no mic */ }   // MIC: asked inside the Start press
   if (mode !== 'vr') setTimeout(pcWarm, 3000);                   // PERF pass 3: the arms view's shaders in the background
   setTimeout(netTitleBegin, 1200);                   // multiplayer chosen on the title (Host / Join)
+  setTimeout(clFirst, 2500);                         // classes: the picker, once on a save
   const title = window.CQC_TITLE;
   if (mode === 'vr') {
     const entering = VRSTART.enter();               // requestSession runs now, before anything else
@@ -54807,6 +54810,7 @@ function g17VrHeft(g, dt, Q) {
 
 /* --- sounds: the can / comp threading on, a rail clamp, the dot's screws, the cover's snap (synth) --- */
 function g17Sfx(kind, pos) {
+  if (globalThis.__clMute) return;                                 // classes: a build applied at once plays one cue
   if (!audio.ctx || audio.ctx.state !== 'running') return;
   const play = () => {
     const t = audio.ctx.currentTime + 0.004;
@@ -57588,6 +57592,7 @@ function m19MagDress(m) {
 
 /* --- sounds: rail clamp, threads, the dot's screws (the Glock's synth), grip screws, a sight drifted in, a magazine --- */
 function m19Sfx(kind, pos) {
+  if (globalThis.__clMute) return;                                 // classes
   if (kind !== 'grip' && kind !== 'sight' && kind !== 'mag') { g17Sfx(kind, pos); return; }
   if (!audio.ctx || audio.ctx.state !== 'running') return;
   const play = () => {
@@ -63840,6 +63845,379 @@ function ubPadRB(p, was) {
 }
 document.addEventListener('mousedown', (e) => { if (e.button === 1 && document.pointerLockElement === canvas && ubDeskKey()) e.preventDefault(); });
 if (window.__cqcDev) Object.assign(window.__cqcDev, { get UB() { return UB; }, UB_PARTS, UB_ROWS, UB_FX, UB_LUG, UB_SPEC, ubInit, ubTpl, ubMakeAtt, ubSeat, ubClash, ubSyncGun, ubBenchFit, ubFire, ubLoad, ubElev, ubStabDesk, ubAfter, wbFreeze, railFaces, gunSpan, createGun, itemToWorld, WORKSHOP, attRefresh, wbMakeAtt, ubPose, removeProp });
+/* ============================================================================
+ *  CLASS / LOADOUT PICKER (?classes=off). Shown once on a save (cqc.class.v1 { seen, last }) the first time a run starts in
+ *  the safe room; again from the M menu (Game: "Choose class / loadout") and the terminal's GEAR tab. A class is a set of
+ *  real GUNSMITH rows for its primary and sidearm: choosing it owns them (free) and makes them the store's fitted build for
+ *  those two guns (every gun of the type, the locker's too, through each gun's own store sync). Previews: each class's
+ *  primary is built for a moment, mirrored (vmMirSync) into a small studio scene, drawn once to the canvas and copied out,
+ *  then the store goes back to what it was. Computer / phone / pad: a DOM overlay (title design system). Headset: a page on
+ *  the terminal (pressed by fingertip like every terminal page).
+ * ========================================================================== */
+const CL = { on: !/[?&]classes=off\b/.test(QS), key: 'cqc.class.v1', seen: false, last: null, open: false, el: null, foc: 0, thumbs: {}, stats: {},
+  busy: false, scene: null, cam: null, pivot: null, hold: null, cv: null, prepAt: -1e9, padPrev: [], padT: 0 };
+try { const o = JSON.parse(localStorage.getItem(CL.key) || 'null'); if (o && typeof o === 'object') { CL.seen = !!o.seen; CL.last = typeof o.last === 'string' ? o.last : null; } } catch (e) { /* defaults */ }
+const CL_CLASSES = [
+  { id: 'assault', name: 'Assault', tag: 'Entry rifleman', role: 'Fast entries at any range: a suppressed carbine with a holo, a foregrip light and 100 rounds on board.', pri: 'm4a1s', sec: 'g17',
+    p: ['m4a1s.flattop', 'm4a1s.ras', 'm4a1s.holo', 'm4a1s.vfgl|m4a1s.vfg', 'm4a1s.laser', 'm4a1s.can', 'm4a1s.d100', 'm4a1s.sopmod', 'm4a1s.sst'],
+    s: ['g17.plate', 'g17.dot', 'g17.light'] },
+  { id: 'breacher', name: 'Breacher', tag: 'Door kicker', role: 'First through the door: railed AKM with an underbarrel launcher, a 75-round drum and two C4 charges.', pri: 'akmn', sec: 'm1911',
+    p: ['akmn.kit', 'akmn.muzzle', 'akmn.dot', 'akmn.gp25|akmn.vfgl|akmn.vg', 'akmn.comp', 'akmn.light', 'akmn.d75', 'akmn.stock'],
+    s: ['m1911.frame', 'm1911.thread', 'm1911.light', 'm1911.comp', 'm1911.mag10'], c4: true },
+  { id: 'marksman', name: 'Marksman', tag: 'Overwatch', role: 'Long sight lines: AWM with a 3-25x under a sunshade and killflash, bipod, cheek riser and a .338 can.', pri: 'awp', sec: 'g17',
+    p: ['awp.mount', 'awp.bipodif', 'awp.stockmod', 'awp.muzzle', 'awp.scope', 'awp.shade', 'awp.kf', 'awp.bipod', 'awp.cheek', 'awp.sup', 'awp.mag10'],
+    s: ['g17.thread', 'g17.plate', 'g17.dot', 'g17.sup2'] },
+  { id: 'operator', name: 'Operator', tag: 'Pistol specialist', role: 'Full-auto Glock: red dot, compensator, weapon light and a 50-round drum, a .45 backup.', pri: 'g17', sec: 'm1911',
+    p: ['g17.plate', 'g17.thread', 'g17.dot', 'g17.comp', 'g17.light', 'g17.d50', 'g17.sear', 'g17.ftrig', 'g17.sights'],
+    s: ['m1911.plate', 'm1911.frame', 'm1911.dot', 'm1911.laser', 'm1911.mag8', 'm1911.coco'] },
+  { id: 'stealth', name: 'Stealth', tag: 'Ghost', role: 'Unseen and unheard: suppressed rifle and pistol, lasers (IR when you own night vision).', pri: 'm4a1s', sec: 'g17',
+    p: ['m4a1s.flattop', 'm4a1s.ras', 'm4a1s.dot', 'm4a1s.can', 'm4a1s.laser', 'm4a1s.afg', 'm4a1s.ctr', 'm4a1s.sst'],
+    s: ['g17.thread', 'g17.plate', 'g17.dot', 'g17.sup', 'g17.laser', 'g17.sights'], ir: true }
+];
+const CL_GUN = { m4a1s: 'M4A1-S', akmn: 'AKM', awp: 'AWM', g17: 'Glock 17', m1911: 'M1911' };
+const CL_ICON = {   // 24 x 24 stroke icons per store slot
+  optic: '<rect x="3" y="8" width="14" height="8" rx="2"/><path d="M17 10h4v4h-4M7 16v3M13 16v3"/>',
+  sights: '<path d="M4 16h16M8 16V9M16 16V9M12 9v7"/>',
+  muzzle: '<rect x="3" y="9" width="14" height="6" rx="1.5"/><path d="M17 12h4M7 9v6M11 9v6"/>',
+  tactical: '<path d="M3 9h9l4-3v12l-4-3H3z"/><path d="M19 9l2-1M19 15l2 1M19 12h2"/>',
+  underbarrel: '<path d="M4 6h16M9 6l1 13h4l1-13"/>',
+  mag: '<path d="M8 3h8l-1 18H9z"/><path d="M9 8h6M9 13h6"/>',
+  stock: '<path d="M3 8h9l9 3v6h-5l-4-4H3z"/>',
+  trigger: '<path d="M6 5h12v6H6z"/><path d="M11 11c0 4 2 6 5 7"/>',
+  fcg: '<path d="M6 5h12v6H6z"/><path d="M11 11c0 4 2 6 5 7"/>',
+  bipod: '<path d="M4 6h16M12 6l-6 14M12 6l6 14"/>',
+  grip: '<path d="M7 4h9l-2 16H9z"/><path d="M9 9h5M9 13h5"/>',
+  hardware: '<circle cx="12" cy="12" r="3"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>'
+};
+const clIcon = (cat) => `<svg viewBox="0 0 24 24" aria-hidden="true">${CL_ICON[cat] || CL_ICON.hardware}</svg>`;
+const clEsc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+// a class's rows for one gun: the first existing of each "a|b" choice; parts without a model can't be fitted (skipped)
+function clRows(list) {
+  const out = [];
+  for (const k of list) { for (const id of k.split('|')) { const it = WORKSHOP.byId.get(id); if (it && (it.hw || it.model)) { out.push(it); break; } } }
+  return out;
+}
+function clSave() { try { localStorage.setItem(CL.key, JSON.stringify({ seen: CL.seen, last: CL.last })); } catch (e) { /* this visit */ } }
+// One gun's store state: owned (hardware switches on) and the exact fitted set; each gun's own sync runs once for rows that
+// carry their own state (muzzle chain, magazines, sear, launchers), then once for the rest.
+function clSetGun(gun, owned, fitted, fitOrder) {
+  const W = WORKSHOP, ch = [];
+  for (const it of WS_ITEMS) if (it.gun === gun) { const o = !!owned(it); if (o !== it.owned) { it.owned = o; ch.push(it); } }
+  for (const id of [...W.fitted]) { const it = W.byId.get(id); if (it && it.gun === gun && !fitted.has(id)) { W.fitted.delete(id); ch.push(it); } }
+  for (const id of fitOrder) if (!W.fitted.has(id)) { W.fitted.add(id); ch.push(W.byId.get(id)); }
+  wsSave(); W.dirty = true;
+  if (!ch.length) return;
+  const R = WS_REAL[gun];
+  globalThis.__clMute = true;
+  try {
+    const special = (it) => it.cat === 'muzzle' || it.cat === 'mag' || it.cat === 'trigger' || it.cat === 'fcg' || (typeof UB_ROW_IDS !== 'undefined' && UB_ROW_IDS.has(it.id));
+    let generic = null;
+    for (const it of ch) {
+      if (R) { if (special(it)) { try { R.changed(it, false); } catch (e) { console.warn('classes: sync', it.id, e); } } else generic = generic || it; }
+      try { drumStore(it); } catch (e) { /* */ }
+      if (it.hw && RAIL.on && RAIL_WRAP[gun] && RAIL_WRAP[gun].id === it.id) railSyncType(gun);
+    }
+    if (R && generic) try { R.changed(generic, false); } catch (e) { console.warn('classes: sync', e); }
+    try { wbTableFill(); } catch (e) { /* no bench yet */ }
+  } finally { globalThis.__clMute = false; }
+}
+// A class onto its two guns: everything owned (free), exactly these rows fitted.
+function clApplyGun(gun, list) {
+  const rows = clRows(list), want = new Set(rows.map((r) => r.id));
+  const fit = rows.filter((r) => !r.hw).map((r) => r.id);
+  clSetGun(gun, (it) => it.owned || want.has(it.id), new Set(fit), fit);
+}
+function clApply(c, take = true) {
+  clApplyGun(c.pri, c.p); clApplyGun(c.sec, c.s);
+  if (c.c4) try { if (C4.on) c4Refill({}); } catch (e) { /* */ }
+  if (c.ir) try { if (NVG.owned && !NVG.irLaser) nvgSetIr('laser', true); } catch (e) { /* */ }
+  CL.last = c.id; CL.seen = true; clSave();
+  try { playBuy(); } catch (e) { /* */ }
+  let took = false;
+  if (take && !renderer.xr.isPresenting && stream.current && stream.current.kind === 'safe' && !deskHand.prop) {   // the primary into your hands
+    let best = null, bd = 1e9; const h = camera.getWorldPosition(_clV);
+    for (const q of props) if (q.item && q.item.kind === 'gun' && q.item.type === c.pri && !q.removing && !q.holders.length && !q.item.slot && !q.item.netFin) {
+      const d = q.root.position.distanceTo(h); if (d < bd) { bd = d; best = q; } }
+    if (best && bd < 12) try { itemGrab(deskHand, best); took = true; } catch (e) { console.warn('classes: take', e); }
+  }
+  const msg = `${c.name}: ${CL_GUN[c.pri]} and ${CL_GUN[c.sec]} built${took ? `. ${CL_GUN[c.pri]} in your hands` : '. Both are in the gun locker'}`;
+  toast(msg, 3200); try { vrNote(msg, 3.2); } catch (e) { /* */ } try { termMsg(msg); } catch (e) { /* */ }
+}
+
+/* --- previews: the built primary mirrored into a studio scene, drawn once, copied out ------------------------ */
+function clStudio() {
+  if (CL.scene) return;
+  const S = CL.scene = new THREE.Scene();
+  S.background = new THREE.Color(0x0a0e0e);
+  try { S.environment = bvStudioEnv(); } catch (e) { S.environment = scene.environment || null; }
+  S.environmentIntensity = 0.85;
+  const key = new THREE.DirectionalLight(0xfff1e0, 2.2); key.position.set(2.2, 3, 2.4);
+  const rim = new THREE.DirectionalLight(0xd4e4ff, 1.5); rim.position.set(-2.6, 1.8, -1.4);
+  CL.cam = new THREE.PerspectiveCamera(22, 16 / 9, 0.02, 40);
+  CL.pivot = new THREE.Object3D(); CL.hold = new THREE.Object3D(); CL.pivot.add(CL.hold);
+  S.add(CL.cam, key, rim, CL.pivot);
+  CL.cv = document.createElement('canvas'); CL.cv.width = 640; CL.cv.height = 360;
+}
+function clSource(k) {
+  let best = null, bs = -1;
+  for (const q of props) {
+    const g = q.item; if (!g || g.kind !== 'gun' || g.type !== k || q.removing || !g.model || g.netFin) continue;
+    const s = (q.holders.length || g.slot ? 4 : 0) + (g.paintOff ? 0 : 1); if (s > bs) { bs = s; best = g; }
+  }
+  return best;
+}
+const _clB = new THREE.Box3(), _clT = new THREE.Box3(), _clV = new THREE.Vector3(), _clS = new THREE.Vector2(), _clZ = new THREE.Vector3();
+function _clAdd(o) {
+  if (!o.isMesh || !o.geometry || !(o.layers.mask & 1)) return;
+  if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+  _clB.union(_clT.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
+}
+function clShot(k) {
+  const g = clSource(k);
+  if (!g) return null;
+  clStudio();
+  const mir = new THREE.Object3D();
+  CL.hold.add(mir); CL.hold.position.set(0, 0, 0); CL.pivot.rotation.set(0, 0, 0);
+  try {
+    vmMirSync(g.prop.root, mir, true); mir.visible = true;
+    CL.pivot.updateMatrixWorld(true);
+    _clB.makeEmpty(); mir.traverseVisible(_clAdd);
+    if (_clB.isEmpty()) return null;
+    _clB.getCenter(_clV); CL.hold.position.copy(_clV).negate();
+    CL.pivot.rotation.set(0, -0.36, 0); CL.pivot.updateMatrixWorld(true);
+    _clB.getSize(_clZ);
+    const rh = Math.max(0.05, Math.hypot(_clZ.x, _clZ.z) / 2), hy = _clZ.y / 2, P = 0.14;
+    const vt = Math.tan(CL.cam.fov * Math.PI / 360), ht = vt * CL.cam.aspect;
+    const dist = Math.max(rh / ht, (hy + rh * Math.abs(Math.sin(P))) / vt) * 1.0 + rh * 0.25;
+    CL.cam.position.set(dist * Math.cos(P), dist * Math.sin(P), 0); CL.cam.lookAt(0, 0, 0);
+    // drawn straight to the canvas (tone mapped like the game), a 16:9 corner, copied out at once
+    renderer.getSize(_clS);
+    const vw = Math.min(_clS.x, Math.round(_clS.y * 16 / 9)), vh = Math.round(vw * 9 / 16), pr = renderer.getPixelRatio();
+    const xrOn = renderer.xr.enabled, sm = renderer.shadowMap, su = sm.needsUpdate, prevRT = renderer.getRenderTarget(), ac = renderer.autoClear;
+    try {
+      renderer.xr.enabled = false; sm.needsUpdate = false; renderer.setRenderTarget(null); renderer.autoClear = true;
+      renderer.setViewport(0, 0, vw, vh); renderer.setScissor(0, 0, vw, vh); renderer.setScissorTest(true);
+      renderer.render(CL.scene, CL.cam);
+      const c = renderer.domElement, x = CL.cv.getContext('2d');
+      x.clearRect(0, 0, CL.cv.width, CL.cv.height);
+      x.drawImage(c, 0, c.height - vh * pr, vw * pr, vh * pr, 0, 0, CL.cv.width, CL.cv.height);
+    } finally {
+      renderer.setScissorTest(false); renderer.setViewport(0, 0, _clS.x, _clS.y); renderer.setScissor(0, 0, _clS.x, _clS.y);
+      renderer.autoClear = ac; renderer.setRenderTarget(prevRT); renderer.xr.enabled = xrOn; sm.needsUpdate = su;
+    }
+    return CL.cv.toDataURL('image/jpeg', 0.88);
+  } catch (e) { console.warn('classes: preview', e); return null; }
+  finally { CL.hold.remove(mir); }
+}
+// Every class built for a moment (its primary), shot and measured; then the store exactly as it was.
+function clPrepare() {
+  if (CL.busy) return;
+  CL.busy = true;
+  const W = WORKSHOP, guns = new Set(CL_CLASSES.map((c) => c.pri));
+  const own = new Map(WS_ITEMS.map((it) => [it.id, it.owned])), fit = new Set(W.fitted), muz = JSON.parse(JSON.stringify(MUZ.saved || {}));
+  try {
+    for (const c of CL_CLASSES) {
+      try { clApplyGun(c.pri, c.p); } catch (e) { console.warn('classes: build', c.id, e); }
+      const st = new Float32Array(WS_NS); try { wsStats(c.pri, st); } catch (e) { /* */ }
+      CL.stats[c.id] = st;
+      const shot = clShot(c.pri); if (shot) CL.thumbs[c.id] = shot;
+    }
+  } finally {
+    for (const k of guns) { const f = [...fit].filter((id) => { const it = W.byId.get(id); return it && it.gun === k; }); try { clSetGun(k, (it) => own.get(it.id), new Set(f), f); } catch (e) { console.warn('classes: restore', e); } }
+    MUZ.saved = muz; try { muzSave(); } catch (e) { /* */ }
+    for (const q of props) if (q.item && q.item.kind === 'gun' && guns.has(q.item.type) && !q.removing) try { muzSync(q.item); } catch (e) { /* */ }
+    CL.busy = false; CL.prepAt = performance.now(); TERM.dirty = true;
+  }
+}
+
+/* --- the overlay (computer / phone / pad) ------------------------------------------------------------------- */
+const CL_CSS = `
+#clsPick{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:radial-gradient(ellipse 80% 70% at 50% 30%,rgba(16,24,22,.94),rgba(3,5,6,.97));color:#ece8de;font:500 16px/1.3 "Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif}
+#clsPick.on{display:grid}
+#clsPick .cl-box{width:min(1280px,calc(100vw - 32px));max-height:calc(100vh - 32px);display:grid;grid-template-rows:auto minmax(0,1fr) auto;border:1px solid rgba(140,255,215,.2);border-radius:12px;background:rgba(6,10,10,.9);box-shadow:0 30px 90px rgba(0,0,0,.7);overflow:hidden}
+#clsPick .cl-head{display:flex;align-items:center;gap:18px;padding:18px 22px 16px 26px;border-bottom:1px solid rgba(140,255,215,.13)}
+#clsPick h2{margin:0;font:800 30px/1 "Archivo","Arial Black",sans-serif;font-stretch:125%;letter-spacing:-.01em;text-transform:uppercase;white-space:nowrap}
+#clsPick .cl-sub{flex:1;min-width:0;margin:0;color:#7fa89a;font-size:16px}
+#clsPick .cl-x{min-height:44px;padding:0 20px;border-radius:6px;border:1px solid rgba(140,255,215,.25);background:none;color:#c4f5e2;font:700 16px/1 "Barlow Semi Condensed",sans-serif;cursor:pointer}
+#clsPick .cl-x:hover{background:rgba(140,255,215,.09)}
+#clsPick .cl-body{display:grid;grid-template-columns:minmax(260px,330px) minmax(0,1fr);min-height:0}
+#clsPick .cl-list{display:flex;flex-direction:column;gap:8px;padding:16px;overflow-y:auto;border-right:1px solid rgba(140,255,215,.1)}
+#clsPick .cl-card{display:grid;grid-template-columns:112px minmax(0,1fr);gap:12px;align-items:center;padding:8px;border-radius:8px;border:1px solid rgba(140,255,215,.12);background:rgba(140,255,215,.025);color:inherit;text-align:left;cursor:pointer;position:relative;font:inherit}
+#clsPick .cl-card:hover{border-color:rgba(140,255,215,.35);background:rgba(140,255,215,.07)}
+#clsPick .cl-card[aria-selected="true"]{border-color:#d9ecd2;background:rgba(217,236,210,.1)}
+#clsPick .cl-card[aria-selected="true"]::before{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;border-radius:2px;background:#d9ecd2}
+#clsPick .cl-card:focus-visible,#clsPick button:focus-visible{outline:2px solid #e8b46a;outline-offset:2px}
+#clsPick .cl-th{width:112px;aspect-ratio:16/9;border-radius:5px;background:#0d1312 center/cover no-repeat;border:1px solid rgba(140,255,215,.08)}
+#clsPick .cl-cn{font:800 18px/1 "Archivo","Arial Black",sans-serif;font-stretch:112%;text-transform:uppercase}
+#clsPick .cl-ct{margin-top:4px;color:#7fa89a;font-size:14px}
+#clsPick .cl-cg{margin-top:5px;color:#c4f5e2;font:700 12px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.04em}
+#clsPick .cl-last{position:absolute;right:8px;top:8px;padding:2px 6px;border-radius:3px;background:#d9ecd2;color:#0e120e;font:700 10px/1.2 ui-monospace,monospace;letter-spacing:.06em}
+#clsPick .cl-main{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,1fr);gap:20px;padding:18px 22px;overflow-y:auto;align-content:start}
+#clsPick .cl-view{grid-column:1/-1;position:relative;height:clamp(190px,34vh,440px);border-radius:10px;overflow:hidden;border:1px solid rgba(140,255,215,.12);background:#0a0e0e center/cover no-repeat}
+#clsPick .cl-view::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(6,10,10,0) 55%,rgba(6,10,10,.82));pointer-events:none}
+#clsPick .cl-view .cl-vt{position:absolute;left:20px;bottom:16px;right:20px;z-index:1}
+#clsPick .cl-view .cl-vn{font:800 44px/1 "Archivo","Arial Black",sans-serif;font-stretch:125%;text-transform:uppercase;text-shadow:0 2px 18px rgba(0,0,0,.7)}
+#clsPick .cl-view .cl-vr{margin-top:6px;max-width:680px;color:#d6f6ea;font-size:17px;text-shadow:0 1px 10px rgba(0,0,0,.8)}
+#clsPick .cl-view .cl-vg{position:absolute;right:16px;top:14px;z-index:1;padding:5px 10px;border-radius:14px;background:rgba(6,10,10,.72);border:1px solid rgba(140,255,215,.2);font:700 13px/1 ui-monospace,Menlo,monospace;letter-spacing:.05em;color:#c4f5e2}
+#clsPick .cl-wait{position:absolute;inset:0;display:grid;place-items:center;color:#7fa89a;font-size:15px}
+#clsPick h5{margin:0 0 8px;color:#7fa89a;font:700 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase}
+#clsPick .cl-parts{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}
+#clsPick .cl-chip{display:flex;align-items:center;gap:9px;min-height:40px;padding:6px 10px;border-radius:6px;background:rgba(140,255,215,.045);border:1px solid rgba(140,255,215,.1);font-weight:600;font-size:15px}
+#clsPick .cl-chip.hw{opacity:.62;font-weight:500}
+#clsPick .cl-chip svg{flex:none;width:20px;height:20px;fill:none;stroke:#d9ecd2;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+#clsPick .cl-side{margin-top:14px;padding:10px 12px;border-radius:6px;border:1px dashed rgba(140,255,215,.16);color:#c4f5e2;font-size:15px;line-height:1.5}
+#clsPick .cl-side b{font-family:"Archivo",sans-serif;font-stretch:112%;text-transform:uppercase;font-size:13px;margin-right:6px;color:#ece8de}
+#clsPick .cl-stats{display:grid;grid-template-columns:1fr;gap:6px}
+#clsPick .cl-st{display:grid;grid-template-columns:110px minmax(0,1fr) 50px;white-space:nowrap;align-items:center;gap:8px;font-size:14px}
+#clsPick .cl-bar{height:8px;border-radius:4px;background:rgba(140,255,215,.08);overflow:hidden}
+#clsPick .cl-bar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#8fb5a5,#d9ecd2)}
+#clsPick .cl-st span:last-child{text-align:right;color:#7fa89a;font:600 12px/1 ui-monospace,monospace}
+#clsPick .cl-foot{display:flex;align-items:center;gap:16px;padding:14px 22px;border-top:1px solid rgba(140,255,215,.13)}
+#clsPick .cl-keys{flex:1;min-width:0;color:#7fa89a;font-size:14px}
+#clsPick .cl-keys kbd{display:inline-block;min-width:22px;padding:2px 6px;margin:0 3px;border-radius:4px;border:1px solid rgba(140,255,215,.25);color:#c4f5e2;font:700 12px/1.2 ui-monospace,monospace;text-align:center}
+#clsPick .cl-go{min-height:52px;padding:0 30px;border-radius:7px;border:1px solid #d9ecd2;background:#d9ecd2;color:#0e120e;font:800 18px/1 "Archivo","Arial Black",sans-serif;font-stretch:112%;text-transform:uppercase;letter-spacing:.02em;cursor:pointer}
+#clsPick .cl-go:hover{background:#eef8ea}
+@media (max-width:860px){#clsPick .cl-body{grid-template-columns:1fr}#clsPick .cl-list{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid rgba(140,255,215,.1)}#clsPick .cl-card{grid-template-columns:1fr;min-width:150px}#clsPick .cl-th{width:100%}#clsPick .cl-main{grid-template-columns:1fr}#clsPick .cl-view .cl-vn{font-size:32px}#clsPick .cl-stats{grid-template-columns:1fr}#clsPick .cl-sub{display:none}}
+@media (min-width:1900px){#clsPick{font-size:18px}#clsPick .cl-box{width:min(1560px,calc(100vw - 48px))}}
+`;
+function clBuild() {
+  if (CL.el) return CL.el;
+  const st = document.createElement('style'); st.textContent = CL_CSS; document.head.appendChild(st);
+  const el = CL.el = document.createElement('div'); el.id = 'clsPick'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'Choose class');
+  el.innerHTML = `<div class="cl-box"><div class="cl-head"><h2>Choose your class</h2><p class="cl-sub">Every part is a real part on your guns. Change any of it later at the GUNSMITH computer.</p><button type="button" class="cl-x">Close</button></div>
+    <div class="cl-body"><div class="cl-list" role="listbox" aria-label="Classes"></div><div class="cl-main"></div></div>
+    <div class="cl-foot"><div class="cl-keys"></div><button type="button" class="cl-go">Select</button></div></div>`;
+  document.body.appendChild(el);
+  const list = el.querySelector('.cl-list');
+  CL_CLASSES.forEach((c, i) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'cl-card'; b.setAttribute('role', 'option'); b.dataset.i = i;
+    b.innerHTML = `<div class="cl-th"></div><div><div class="cl-cn">${clEsc(c.name)}</div><div class="cl-ct">${clEsc(c.tag)}</div><div class="cl-cg">${clEsc(CL_GUN[c.pri])} + ${clEsc(CL_GUN[c.sec])}</div></div>`;
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); if (CL.foc === i && ev.detail > 1) clChoose(); else clFocus(i); });
+    b.addEventListener('dblclick', (ev) => { ev.stopPropagation(); clFocus(i); clChoose(); });
+    b.addEventListener('focus', () => { if (CL.foc !== i) clFocus(i); });
+    list.appendChild(b);
+  });
+  el.querySelector('.cl-x').addEventListener('click', (ev) => { ev.stopPropagation(); clClose(); });
+  el.querySelector('.cl-go').addEventListener('click', (ev) => { ev.stopPropagation(); clChoose(); });
+  for (const t of ['mousedown', 'mouseup', 'click', 'wheel', 'pointerdown']) el.addEventListener(t, (ev) => ev.stopPropagation());
+  return el;
+}
+function clFocus(i) {
+  CL.foc = (i + CL_CLASSES.length) % CL_CLASSES.length;
+  clRender();
+}
+function clRender() {
+  const el = CL.el; if (!el) return;
+  const c = CL_CLASSES[CL.foc];
+  el.querySelectorAll('.cl-card').forEach((b, i) => {
+    const k = CL_CLASSES[i];
+    b.setAttribute('aria-selected', i === CL.foc ? 'true' : 'false');
+    const th = b.querySelector('.cl-th'); if (CL.thumbs[k.id]) th.style.backgroundImage = `url(${CL.thumbs[k.id]})`;
+    let tag = b.querySelector('.cl-last');
+    if (CL.last === k.id && !tag) { tag = document.createElement('span'); tag.className = 'cl-last'; tag.textContent = 'CURRENT'; b.appendChild(tag); } else if (tag && CL.last !== k.id) tag.remove();
+  });
+  const rows = clRows(c.p), side = clRows(c.s), st = CL.stats[c.id];
+  const chip = (it) => `<div class="cl-chip${it.hw ? ' hw' : ''}">${clIcon(it.hw ? 'hardware' : it.cat)}<span>${clEsc(bvShort(it))}</span></div>`;
+  const parts = rows.filter((r) => !r.hw).map(chip).join('') + rows.filter((r) => r.hw).map(chip).join('');
+  const bars = st ? WS_STATS.map(([, label], i) => `<div class="cl-st"><span>${clEsc(label)}</span><div class="cl-bar"><i style="width:${Math.max(2, Math.min(100, st[i])).toFixed(1)}%"></i></div><span>${i === WS_WT ? (st[i] / WS_KG).toFixed(1) + ' kg' : Math.round(st[i])}</span></div>`).join('') : '<p class="cl-ct">Stats appear once the guns are built</p>';
+  const im = CL.thumbs[c.id];
+  el.querySelector('.cl-main').innerHTML = `
+    <div class="cl-view" style="${im ? `background-image:url(${im})` : ''}">${im ? '' : `<div class="cl-wait">${CL.busy ? 'Building the guns…' : 'The preview shows once the guns are in the locker'}</div>`}
+      <div class="cl-vg">${clEsc(CL_GUN[c.pri])}  ·  ${rows.filter((r) => !r.hw).length} PARTS</div>
+      <div class="cl-vt"><div class="cl-vn">${clEsc(c.name)}</div><div class="cl-vr">${clEsc(c.role)}</div></div></div>
+    <div><h5>${clEsc(CL_GUN[c.pri])} build</h5><div class="cl-parts">${parts}</div>
+      <div class="cl-side"><b>Sidearm</b>${clEsc(CL_GUN[c.sec])}: ${side.filter((r) => !r.hw).map((r) => clEsc(bvShort(r))).join(' · ') || 'factory'}${c.c4 ? '<br><b>Kit</b>2 C4 breaching charges' : ''}${c.ir ? '<br><b>Kit</b>IR lasers with night vision' : ''}</div></div>
+    <div><h5>${clEsc(CL_GUN[c.pri])} stats</h5><div class="cl-stats">${bars}</div></div>`;
+  el.querySelector('.cl-go').textContent = `Select ${c.name}`;
+  const pad = typeof PAD !== 'undefined' && PAD.active;
+  el.querySelector('.cl-keys').innerHTML = pad ? '<kbd>D-pad</kbd> choose <kbd>A</kbd> select <kbd>B</kbd> close · free, pick again any time'
+    : IS_TOUCH ? 'Tap a class, then Select · free, pick again any time' : '<kbd>↑</kbd><kbd>↓</kbd> choose <kbd>Enter</kbd> select <kbd>Esc</kbd> close · free: pick again any time (M menu, terminal GEAR)';
+}
+function clOpen() {
+  if (!CL.on || !WORKSHOP.on) return;
+  if (renderer.xr.isPresenting) {
+    try { TERM.awake = true; termPage('classes'); vrNote('Choose your class on the terminal', 3); } catch (e) { /* */ }
+    if (!CL.busy && performance.now() - CL.prepAt > 4000) setTimeout(clPrepare, 50);
+    return;
+  }
+  clBuild();
+  try { if (document.body.classList.contains('modOpen')) modPanelToggle(false); } catch (e) { /* */ }
+  const li = CL_CLASSES.findIndex((c) => c.id === CL.last);
+  CL.foc = li >= 0 ? li : 0;
+  CL.open = true; CL.el.classList.add('on');
+  try { if (document.pointerLockElement) document.exitPointerLock(); } catch (e) { /* */ }
+  const prep = !CL.busy && performance.now() - CL.prepAt > 4000;
+  if (prep) CL.busy = true;                                         // the panel says "Building the guns…" until the shots are in
+  clRender();
+  setTimeout(() => { const b = CL.el.querySelectorAll('.cl-card')[CL.foc]; if (b) b.focus({ preventScroll: true }); }, 0);
+  if (prep) setTimeout(() => { CL.busy = false; clPrepare(); clRender(); }, 80);   // previews: a short hitch while the menu is up
+}
+function clClose() {
+  if (!CL.open) return;
+  CL.open = false; if (CL.el) CL.el.classList.remove('on');
+  if (!CL.seen) { CL.seen = true; clSave(); }
+  if (!IS_TOUCH && gameStarted && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* click the view */ } }
+}
+function clChoose() { const c = CL_CLASSES[CL.foc]; clClose(); clApply(c); }
+window.addEventListener('keydown', (e) => {
+  if (!CL.open) return;
+  const k = e.code;
+  if (k === 'ArrowDown' || k === 'ArrowRight' || k === 'KeyS' || k === 'KeyD') clFocus(CL.foc + 1);
+  else if (k === 'ArrowUp' || k === 'ArrowLeft' || k === 'KeyW' || k === 'KeyA') clFocus(CL.foc - 1);
+  else if (k === 'Enter' || k === 'NumpadEnter') { if (document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('cl-x')) clClose(); else clChoose(); }
+  else if (k === 'Escape' || k === 'KeyM') clClose();
+  else if (k !== 'Tab' && k !== 'Space') { e.stopImmediatePropagation(); return; }   // no game keys behind the panel
+  else return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  const b = CL.open && CL.el.querySelectorAll('.cl-card')[CL.foc]; if (b && document.activeElement !== b && k.startsWith('Arrow')) b.focus({ preventScroll: true });
+}, true);
+// The pad while the overlay is up (padPoll hook): D-pad / left stick choose, A select, B / Menu close.
+function clPadPoll(gp) {
+  if (!CL.open) return false;
+  const B = gp.buttons, P = CL.padPrev, now = performance.now() / 1000, on = (i) => !!(B[i] && B[i].pressed), edge = (i) => on(i) && !P[i];
+  const sy = gp.axes[1] || 0, sx = gp.axes[0] || 0, s = Math.abs(sy) > Math.abs(sx) ? sy : sx;
+  if (edge(13) || edge(15) || (s > 0.6 && now > CL.padT)) { clFocus(CL.foc + 1); CL.padT = now + 0.28; }
+  else if (edge(12) || edge(14) || (s < -0.6 && now > CL.padT)) { clFocus(CL.foc - 1); CL.padT = now + 0.28; }
+  if (Math.abs(s) < 0.3) CL.padT = 0;
+  if (edge(0)) clChoose(); else if (edge(1) || edge(9)) clClose();
+  for (const i of [0, 1, 9, 12, 13, 14, 15]) P[i] = on(i);
+  if (!CL.open) { PAD.eat = PAD.eat || {}; for (const i of [0, 1, 9]) if (on(i)) PAD.eat[i] = true; }
+  return true;
+}
+
+/* --- the headset: a terminal page (TERM.page 'classes') ------------------------------------------------------- */
+const _clImg = {};
+function clImg(id) {
+  const u = CL.thumbs[id]; if (!u) return null;
+  let im = _clImg[id]; if (!im || im.src !== u) { im = _clImg[id] = new Image(); im.onload = () => { TERM.dirty = true; }; im.src = u; }
+  return im.complete && im.naturalWidth ? im : null;
+}
+function clTermPage(W) {
+  const ctx = TERM.ctx, n = CL_CLASSES.length, gw = 8, cw = (W - 32 - gw * (n - 1)) / n;
+  tText('CHOOSE YOUR CLASS', 28, 152, 26, TC.hi, 'left', 700, TC.mono, 520);
+  tText(CL.busy ? 'Building the guns…' : 'Free · real parts · change any of it at the GUNSMITH', 1008, 152, 17, TC.dim, 'right', 600, TC.sans, 440);
+  CL_CLASSES.forEach((c, i) => {
+    const x = 16 + i * (cw + gw), y = 172, h = 408, sel = CL.last === c.id, ih = (cw - 8) * 9 / 16;
+    tBox(x, y, cw, h, sel ? 'rgba(217, 236, 210, 0.08)' : TC.faint, sel ? TC.hi : TC.line);
+    const im = clImg(c.id);
+    if (im) ctx.drawImage(im, x + 4, y + 4, cw - 8, ih); else tBox(x + 4, y + 4, cw - 8, ih, 'rgba(0, 0, 0, 0.3)', null, 4);
+    tText(c.name.toUpperCase(), x + 10, y + ih + 26, 22, TC.text, 'left', 700, TC.mono, cw - 18);
+    tText(c.tag, x + 10, y + ih + 50, 16, TC.dim, 'left', 600, TC.sans, cw - 18);
+    tText(`${CL_GUN[c.pri]} + ${CL_GUN[c.sec]}`, x + 10, y + ih + 74, 15, TC.hi, 'left', 600, TC.mono, cw - 18);
+    clRows(c.p).filter((r) => !r.hw).slice(0, 6).forEach((r, j) => tText('· ' + bvShort(r), x + 10, y + ih + 100 + j * 21, 14, TC.text, 'left', 500, TC.sans, cw - 18));
+    tBtn(`cl:${c.id}`, x + 8, y + h - 58, cw - 16, 50, sel ? 'CURRENT' : 'SELECT', { size: 19, sel, fn: () => { clApply(c, false); TERM.dirty = true; } });
+  });
+}
+// First run on this save: once the safe room's locker guns are there (up to 25 s); never in multiplayer.
+function clFirst(t0 = performance.now()) {
+  if (!CL.on || !WORKSHOP.on || CL.seen || CL.open) return;
+  if (typeof NET !== 'undefined' && NET.st !== 'off') return;
+  const ready = stream.current && stream.current.kind === 'safe' && props.some((q) => q.item && q.item.kind === 'gun' && q.item.type === 'm4a1s');
+  if (!ready) { if (performance.now() - t0 < 25000) setTimeout(() => clFirst(t0), 700); return; }
+  if (renderer.xr.isPresenting) { CL.seen = true; clSave(); }
+  clOpen();
+}
+if (window.__cqcDev) Object.assign(window.__cqcDev, { CL, CL_CLASSES, clOpen, clClose, clApply, clPrepare, clShot, clRows, clFirst, clChoose });
 </script>
 </body>
 </html>
