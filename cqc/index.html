@@ -5084,8 +5084,7 @@ function crateWearTex() {
     const u = x / S, v = y / S, i = (y * S + x) * 4;
     const wthr = smoothstep(0.42, 0.72, fbm(u, v, 4, 4, 4, 77));                               // grey weathering patches
     const strk = smoothstep(0.55, 0.85, fbm(u, v * 0.12, 24, 2, 3, 91)) * (0.4 + 0.6 * fbm(u, v, 8, 8, 2, 13));   // grime runs along the grain
-    const rust = smoothstep(0.78, 0.95, fbm(u, v * 0.08, 40, 2, 3, 205));
-    d[i] = wthr * 255; d[i + 1] = strk * 200; d[i + 2] = rust * 110; d[i + 3] = 255;   // B < 0.45: rust, chalk adds over it (alpha stays 1: a canvas premultiplies)
+    d[i] = wthr * 255; d[i + 1] = strk * 200; d[i + 2] = 0; d[i + 3] = 255;   // B: chalk only (rust runs come from the nails now); alpha stays 1: a canvas premultiplies
   }
   ctx.putImageData(img, 0, 0);
   const R = mulberry32(0xC4A7E);
@@ -5097,12 +5096,12 @@ function crateWearTex() {
     ctx.strokeStyle = `rgba(0,${Math.round(rr(90, 160))},0,1)`; ctx.lineWidth = rr(1.5, 4) * k;
     for (let j = 0; j < 3; j++) { ctx.beginPath(); ctx.moveTo(x, y + j * 3 * k); ctx.lineTo(x + Math.cos(a) * L, y + j * 3 * k + Math.sin(a) * L); ctx.stroke(); }
   }
-  ctx.fillStyle = 'rgba(0,0,255,1)'; ctx.strokeStyle = 'rgba(0,0,230,1)'; ctx.lineWidth = 2.5 * k;
+  ctx.fillStyle = 'rgba(0,0,255,1)'; ctx.strokeStyle = 'rgba(0,0,240,1)'; ctx.lineWidth = 3.4 * k;
   const marks = ['17', 'X', 'B4', '||||', 'OK', '3/12', 'LOT 9', 'RJ', '→', '44'];
   for (let i = 0; i < 6; i++) {
     const x = rr(0.05, 0.85) * S, y = rr(0.1, 0.9) * S;
     ctx.save(); ctx.translate(x, y); ctx.rotate(rr(-0.4, 0.4));
-    ctx.font = `700 ${Math.round(rr(22, 40) * k)}px "Comic Sans MS", cursive, Arial, sans-serif`;
+    ctx.font = `700 ${Math.round(rr(26, 44) * k)}px "Comic Sans MS", cursive, Arial, sans-serif`;
     const m = marks[Math.floor(R() * marks.length)];
     if (m === '||||') for (let j = 0; j < 5; j++) { ctx.beginPath(); ctx.moveTo(j * 7 * k, 0); ctx.lineTo(j * 7 * k + 2 * k, -24 * k); ctx.stroke(); if (j === 4) { ctx.beginPath(); ctx.moveTo(-4 * k, -6 * k); ctx.lineTo(32 * k, -18 * k); ctx.stroke(); } }
     else ctx.fillText(m, 0, 0);
@@ -5130,14 +5129,27 @@ cwT = texture2D(uCrW, vMapUv * 0.37 + vec2(0.13, 0.71));
   diffuseColor.rgb *= 1.0 - cwT.g * 0.5;                                                             // grime runs, scrapes
   float cch = smoothstep(0.55, 0.85, cwT.b), crs = clamp(cwT.b / 0.43, 0.0, 1.0) * (1.0 - cch);
   diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.13, 0.05) * (0.6 + cl), crs * 0.6);          // rust runs
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80, 0.79, 0.74), cch * 0.7);
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.87, 0.86, 0.81), cch * 0.88);
   cwT.b = cch; }                                                                                     // chalk / marker
 #endif`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 roughnessFactor = min(1.0, roughnessFactor + cwT.r * 0.1 + cwT.b * 0.15 - cwT.g * 0.05);`);
   };
-  mat.customProgramCacheKey = () => (prevKey ? prevKey.call(mat) : '') + '|crw1';
+  mat.customProgramCacheKey = () => (prevKey ? prevKey.call(mat) : '') + '|crw2';
   return mat;
+}
+// CRATE WEAR: a broken board's snapped end faces show fresh, unweathered pine (lighter, yellower vertex colour).
+function crateFreshEnds(geo, k) {
+  if (!CRW.on) return geo;
+  geo.computeBoundingBox();
+  const b = geo.boundingBox, e = [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z], ax = e.indexOf(Math.max(...e));
+  const n = geo.attributes.normal, c = geo.attributes.color;
+  for (let i = 0; i < n.count; i++) {
+    const a = Math.abs(ax === 0 ? n.getX(i) : ax === 1 ? n.getY(i) : n.getZ(i));
+    if (a > 0.7) c.setXYZ(i, k * 1.42, k * 1.28, k * 0.98);
+  }
+  c.needsUpdate = true;
+  return geo;
 }
 // Rusty nail heads: a small noise map on the old nail material's place.
 function crateNailMat() {
@@ -5407,8 +5419,21 @@ function makeCrate({ w, h, d, baseY = 0, seed = 1, stencil = null }, woodMat, na
   const nail = (x, y, z, axis) => {
     const g = new THREE.CylinderGeometry(0.0042, 0.0042, 0.003, 8);
     if (axis === 'z') g.rotateX(Math.PI / 2); else g.rotateZ(Math.PI / 2);
-    g.translate(x + j(0.004), y + j(0.004), z);
+    const nx = x + j(0.004), ny = y + j(0.004);
+    g.translate(nx, ny, z);
     nails.push(g);
+    if (CRW.on && rnd() < 0.75) {                        // CRATE WEAR: a rust streak washed down from this nail head
+      const L = Math.min(0.012 + rnd() * 0.03, ny + h / 2 - 0.006);
+      if (L > 0.006) {
+        const st = new THREE.PlaneGeometry(0.0066, L, 1, 2), sp = st.attributes.position;
+        for (let i = 0; i < sp.count; i++) { const f = 0.5 - sp.getY(i) / L; sp.setX(i, sp.getX(i) * (1 - 0.65 * f)); }   // tapering as it runs down
+        st.translate((rnd() - 0.5) * 0.001, -0.0035 - L / 2, 0);
+        const sg = Math.sign(axis === 'z' ? z : x) || 1;
+        if (axis === 'z') { if (sg < 0) st.rotateY(Math.PI); st.translate(nx, ny, z + sg * 0.0006); }
+        else { st.rotateY(sg * Math.PI / 2); st.translate(x + sg * 0.0006, ny, z); }
+        nails.push(st);
+      }
+    }
   };
 
   // Dark inner box: what you see through the gaps.
@@ -6247,6 +6272,7 @@ function buildFurnitureKit(macro) {
     const fabric = [placed(rbox(0.48, 0.08, 0.48, 0.03), 0, y(0.47), 0), placed(rbox(0.06, 0.5, 0.44, 0.03), -0.25, y(0.8), 0, 0, 0, 0.12)];
     const chair = kitGroup(merged(fabric, M.fabric), merged(base, M.blackPlastic), merged(steel, M.steel));
     KIT.props.chair = { proto: chair, name: 'office chair', mass: 11, half: [0.3, O, 0.3], friction: 0.5, restitution: 0.05, y: O };
+    if (OFFR.on) chairVariants(chair, y);                  // office realism: every chair its own (spawnProp picks one)
   }
 
   // --- Taped cardboard box (loose prop), 40 x 30 x 30 cm, packed. ---
@@ -6464,6 +6490,19 @@ function buildFurnitureKit(macro) {
         tape.push(placed(fbox(0.492, 0.002, 0.05), x, y + 0.151, z, 0, ry, 0));
       }
       addProto('pallet', kitGroup(merged(wood, M.wood), merged(cart, M.cardboard), merged(tape, M.tape, false)));
+      if (CARD.on) {                                                   // CARDBOARD ATLAS: 4 carton loads, the room picks one per pallet (offrPick)
+        P.pallet_v0 = P.pallet;
+        for (let v = 1; v < 4; v++) {
+          const Rv = mulberry32(0x9a11e7 + v * 131), c2 = [], t2 = [];
+          for (let layer = 0; layer < 3; layer++) for (let i = 0; i < 2; i++) for (let j = 0; j < 3; j++) {
+            if (layer === 2 && Rv() < 0.3) continue;
+            const x = -0.25 + i * 0.5 + (Rv() - 0.5) * 0.012, z = -0.4 + j * 0.4 + (Rv() - 0.5) * 0.012, y = 0.122 + layer * 0.31 + 0.15, ry = (Rv() - 0.5) * 0.03;
+            c2.push(toneWood(placed(cardUV(lbox(0.49, 0.3, 0.39, 0.004), cardSeed(5150 + v * 977, c2.length)), x, y, z, 0, ry, 0), 0.8 + Rv() * 0.24));
+            t2.push(placed(fbox(0.492, 0.002, 0.05), x, y + 0.151, z, 0, ry, 0));
+          }
+          P['pallet_v' + v] = kitGroup(P.pallet.children[0].clone(), merged(c2, M.cardboard), merged(t2, M.tape, false));
+        }
+      }
     }
     addProto('palletLow', kitGroup(merged([0, 1, 2, 3].flatMap((k) => palletParts(k * 0.124).map((g) => g.rotateY(0).translate((R() - 0.5) * 0.02, 0, (R() - 0.5) * 0.02))), M.wood)));
     // Locker-room bench: three hardwood slats on two steel pedestals, 1.5 m x 45 cm high.
@@ -6845,8 +6884,50 @@ function offrKit() {
   }
   GEN.kit17.push('desk_v0', 'cabinet_v0', 'whiteboard_v0', 'offWall_v0');   // compiled at load with the kit (two atlas programs)
 }
+// OFFICE REALISM: office chairs. 8 upholstery variants built once (one merged fabric geometry each: seat and back in
+// their own colour as vertex colours, back tilt varied, sometimes a jacket over the back or a seat cushion) on one
+// chair material (M.fabric with vertexColors: one program, compiled at load through the proto) and a scuffed base
+// material (a uniform-only copy of the black plastic: same program). spawnProp picks a variant from the room slot +
+// the chair's spot and sets a small seat height difference, so chairs differ but draw calls stay three a chair.
+function chairVariants(chair, y) {
+  const M = KIT.mat, copyFns = (src, m) => { m.onBeforeCompile = src.onBeforeCompile; m.customProgramCacheKey = src.customProgramCacheKey; if (PROP_WEAR.mats) PROP_WEAR.mats.add(m); return m; };
+  const fab = copyFns(M.fabric, M.fabric.clone()); fab.vertexColors = true; fab.color.set(0xffffff);
+  const scuff = copyFns(M.blackPlastic, M.blackPlastic.clone()); scuff.color.multiplyScalar(1.55); scuff.roughness = Math.min(1, (scuff.roughness || 0.5) + 0.12);
+  const cols = ['#2c2f34', '#1f2a3d', '#3a3d42', '#19191b', '#3b2526', '#383d33', '#24333a', '#4a4640'];
+  const jack = ['#22293a', '#4f4232', '#2a2c2a', '#5a2f2a'], cush = ['#6b2f2a', '#4e5a6b', '#7a6a4a'];
+  const paint = (g, hex, R, k = 0.06) => {
+    const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { const f = 1 + (R() - 0.5) * k; a[i * 3] = c.r * f; a[i * 3 + 1] = c.g * f; a[i * 3 + 2] = c.b * f; }
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g;
+  };
+  KIT.chairV = [];
+  for (let v = 0; v < 8; v++) {
+    const R = mulberry32(0xc4a1 + v * 7919), tilt = 0.12 + (R() - 0.4) * 0.12, col = cols[v];
+    const parts = [paint(placed(rbox(0.48, 0.08, 0.48, 0.03), 0, y(0.47), 0), col, R), paint(placed(rbox(0.06, 0.5, 0.44, 0.03), -0.25 - (tilt - 0.12) * 0.3, y(0.8), 0, 0, 0, tilt), col, R)];
+    if (v === 2 || v === 5) {                              // a jacket over the back: collar roll on top, body hanging behind
+      const jc = jack[v % jack.length], top = y(1.05), bx = -0.27 - (tilt - 0.12) * 0.3;
+      parts.push(paint(placed(rbox(0.11, 0.055, 0.47, 0.025), bx - 0.01, top, 0, 0, 0, tilt), jc, R, 0.12));
+      parts.push(paint(placed(rbox(0.026, 0.4, 0.45, 0.012), bx - 0.035 - 0.025, top - 0.2, 0.01, 0.03, 0, tilt + 0.05), jc, R, 0.14));
+      parts.push(paint(placed(rbox(0.024, 0.34, 0.07, 0.012), bx - 0.02, top - 0.17, 0.25, 0, 0.2, tilt), jc, R, 0.14));   // a sleeve over the side
+    }
+    if (v === 3 || v === 6) parts.push(paint(placed(rbox(0.36, 0.055, 0.36, 0.025), 0.02, y(0.535), 0, 0, (R() - 0.5) * 0.4, 0), cush[v % cush.length], R, 0.1));   // seat cushion
+    const m = merged(parts, fab);
+    KIT.chairV.push({ geo: m.geometry, scuffed: v % 3 === 1 });
+  }
+  KIT.chairFab = fab; KIT.chairScuff = scuff;
+  chair.children[0].geometry = KIT.chairV[0].geo; chair.children[0].material = fab;   // the proto: compiles the chair program at load
+}
+function chairPick(root, room, s) {
+  const V = KIT.chairV; if (!V || !root.children[0]) return;
+  const sd = cardSeed((room.slot | 0) + 31, Math.round(s.x * 53 + s.z * 97)), v = V[sd % V.length];
+  root.children[0].geometry = v.geo; root.children[0].material = KIT.chairFab;
+  if (v.scuffed || (sd >>> 5) % 3 === 0) root.children[1].material = KIT.chairScuff;   // scuffed base
+  const k = 0.975 + ((sd >>> 9) % 50) / 1000, O = KIT.props.chair.y;                    // seat height +-2.5 cm (feet stay on the floor)
+  for (const c of root.children) { c.scale.y = k; c.position.y = (k - 1) * O; }
+}
 // The variant of a desk / cabinet / whiteboard for piece fi of a room (same each visit, same on both sides).
 function offrPick(P, type, room, fi) {
+  if (type === 'pallet' && P.pallet_v3) return P['pallet_v' + ((((room.slot | 0) * 7 + fi) % 4) + 4) % 4];   // CARDBOARD ATLAS: carton loads
   const n = OFFR.on && OFFR.N[type];
   if (!n) return P[type];
   const h0 = (Math.imul((room.slot | 0) ^ 0x5f3759df, 2654435761) >>> 7) % n;   // per room; consecutive pieces (a run) always differ
@@ -10889,7 +10970,8 @@ function buildPropKit() {
     K.paint = { proto: g, name: 'paint tin', mass: 2.6, shape: 'cylinder', half: [r, h / 2, r], friction: 0.45, restitution: 0.12, y: h / 2 + 0.001 }; }
   // a torn cardboard flap (what a shot-up box comes apart into)
   { const g = new THREE.Group(); g.add(mesh(cardUV(rbox(0.3, 0.006, 0.26, 0.002), 913), KIT.mat.cardboard || M.wood));
-    K.flap = { proto: g, name: 'cardboard flap', mass: 0.06, half: [0.15, 0.004, 0.13] }; }   // 0.3 x 0.26 m of corrugated board (~0.75 kg/m2)
+    K.flap = { proto: g, name: 'cardboard flap', mass: 0.06, half: [0.15, 0.004, 0.13] };
+    if (CARD.on) K.flapV = [0, 1, 2, 3, 4, 5].map((v) => { const h = new THREE.Group(); h.add(mesh(cardUV(rbox(0.3, 0.006, 0.26, 0.002), cardSeed(913 + v * 41, v)), KIT.mat.cardboard || M.wood)); return { ...K.flap, proto: h }; }); }   // CARDBOARD ATLAS: each flap its own face   // 0.3 x 0.26 m of corrugated board (~0.75 kg/m2)
   if (K.box) K.box.brk = { hp: 2.4, fx: 'wood', flaps: 3 };
   if (K.smallCrate) K.smallCrate.brk = { hp: 3.5, fx: 'wood', boards: 4 };
 }
@@ -10905,7 +10987,7 @@ function propBreak(p, dir) {
   else coverSfx('crateBreak');
   const kids = b.flaps ? KIT.props.flap : b.boards && COVER.kit ? COVER.kit.boards[0] : null, m = b.flaps || b.boards || 0;
   if (kids && room) for (let i = 0; i < m; i++) {
-    const def = b.boards ? COVER.kit.boards[i % COVER.kit.boards.length] : kids;
+    const def = b.boards ? COVER.kit.boards[i % COVER.kit.boards.length] : (KIT.props.flapV ? KIT.props.flapV[(Math.abs(Math.round(at.x * 71 + at.z * 113)) + i) % KIT.props.flapV.length] : kids);
     _bkP.set(at.x + (Math.random() - 0.5) * 0.2, at.y + (Math.random() - 0.3) * 0.15, at.z + (Math.random() - 0.5) * 0.2);
     _bkQ2.copy(q).multiply(_bkQ.setFromEuler(_cv.e.set(Math.random() * 3, Math.random() * 3, Math.random() * 3)));
     _bkV.copy(dir || Y_AXIS).multiplyScalar(0.6 + Math.random() * 1.6); _bkV.y += 0.5 + Math.random();
@@ -11055,6 +11137,7 @@ function spawnProp(room, s) {
   if (s.type === 'table') return spawnTable(room, s);   // step 6: compound body, can start tipped over
   const def = KIT.props[s.type], o = room.origin;
   const root = def.proto.clone();
+  if (OFFR.on && s.type === 'chair') chairPick(root, room, s);   // office realism: chair variants
   if (CARD.on && s.type === 'box') { const sd = cardSeed(room.slot, Math.round(s.x * 37 + s.z * 101)); for (const c of root.children) if (c.material === KIT.mat.cardboard) c.geometry = cardUV(c.geometry.clone(), sd); }   // CARDBOARD ATLAS: each loose box its own faces
   for (const c of root.children) freezeStatic(c);       // parts never move inside a prop; only the root does
   const prop = addProp(root, {
@@ -29113,7 +29196,7 @@ function buildCoverKit() {
   const M = KIT.mat;
   COVER.boxTpl = new THREE.BoxGeometry(1, 1, 1);
   crateRand = 8080;
-  const board = (len, t, wd, k) => { const g = new THREE.Group(); g.add(mesh(toneWood(plankGeo(len, t, wd, 0.002), k), M.crateWood || M.wood)); return g; };   // CRATE WEAR: the crates' own weathered pine
+  const board = (len, t, wd, k) => { const g = new THREE.Group(); g.add(mesh(crateFreshEnds(toneWood(plankGeo(len, t, wd, 0.002), k), k), M.crateWood || M.wood)); return g; };   // CRATE WEAR: the crates' own weathered pine
   let crSeed = 4242; const crandBits = () => ((crSeed = (crSeed * 16807) % 2147483647) / 2147483647);
   // Broken drywall (was a flat painted box that read as a floor tile): a jagged outline, 12.5 mm thick, the painted
   // paper face on both caps (the wall's own material) and the crumbly gypsum core round the edge (M.paper, off-white).
