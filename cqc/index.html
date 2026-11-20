@@ -6933,6 +6933,7 @@ function chairPick(root, room, s) {
   if (v.scuffed || (sd >>> 5) % 3 === 0) root.children[1].material = KIT.chairScuff;   // scuffed base
   const k = 0.975 + ((sd >>> 9) % 50) / 1000, O = KIT.props.chair.y;                    // seat height +-2.5 cm (feet stay on the floor)
   for (const c of root.children) { c.scale.y = k; c.position.y = (k - 1) * O; }
+  root.userData.ck = k;
 }
 // The variant of a desk / cabinet / whiteboard for piece fi of a room (same each visit, same on both sides).
 function offrPick(P, type, room, fi) {
@@ -11146,7 +11147,30 @@ function spawnProp(room, s) {
   });
   prop.spawnRoom = room;
   if (def.brk) prop.brk = def.brk;       // step 71
+  if (s.type === 'chair' && CHAIRCOL) chairColliders(prop, root.userData.ck || 1);   // CHAIR COLLIDER: its real shape, not a 0.6 m box
   return prop;
+}
+// CHAIR COLLIDER (?chaircol=off = the old 0.6 x 1.05 x 0.6 box). The box's faces stood 2-6 cm off the drawn chair, so a
+// chair knocked over (or pushed off a desk it overlapped) rested on air. Now: the five-star base (cylinder, bottom on the
+// casters' bottom), the column, the seat, the tilted back and both arm rests, each scaled with the seat height k.
+const CHAIRCOL = !/[?&]chaircol=off\b/.test(QS);
+function chairColliders(p, k) {
+  const O = KIT.props.chair.y, body = p.body;
+  propByCollider.delete(p.collider.handle); world.removeCollider(p.collider, false);
+  const mk = (desc, x, h, z, m, qz = 0) => {
+    desc.setTranslation(x, k * h - O, z).setMass(m).setFriction(0.5).setRestitution(0.05).setCollisionGroups(COLL.prop);
+    if (qz) desc.setRotation({ x: 0, y: 0, z: Math.sin(qz / 2), w: Math.cos(qz / 2) });
+    const c = world.createCollider(desc, body); propByCollider.set(c.handle, p); return c;
+  };
+  p.collider = mk(RAPIER.ColliderDesc.cylinder(k * 0.0485, 0.3), 0, 0.0515, 0, 4.5);     // base: casters' bottom at 0.003 x k
+  p.extra = [
+    mk(RAPIER.ColliderDesc.cylinder(k * 0.165, 0.03), 0, 0.265, 0, 1.2),                 // gas lift
+    mk(RAPIER.ColliderDesc.cuboid(0.24, k * 0.055, 0.24), 0, 0.47, 0, 3),                // seat
+    mk(RAPIER.ColliderDesc.cuboid(0.035, k * 0.27, 0.22), -0.25, 0.8, 0, 1.8, 0.12),     // back
+    mk(RAPIER.ColliderDesc.cuboid(0.12, k * 0.03, 0.03), 0.02, 0.66, 0.25, 0.25),        // arm rests
+    mk(RAPIER.ColliderDesc.cuboid(0.12, k * 0.03, 0.03), 0.02, 0.66, -0.25, 0.25)
+  ];
+  p.chairEx = true;
 }
 
 /* ============================================================================
@@ -16229,6 +16253,7 @@ function grab(hand, prop, snap = false) {
   if (!prop.holders.length) {
     prop.body.setGravityScale(0, true);        // weight is applied as sag + force limit instead
     prop.collider.setCollisionGroups(COLL.held);
+    if (prop.chairEx) for (const c of prop.extra) c.setCollisionGroups(COLL.held);   // CHAIR COLLIDER
     prop.restoreAt = 0;
   }
   prop.hasPrev = false;                        // the hold point just changed: no velocity spike
@@ -16568,6 +16593,7 @@ function pushAfter(dt) {
     for (const s of S) {
       let touch = false;
       world.contactPair(s.col, p.collider, (m) => { if (m.numContacts() > 0) touch = true; });
+      if (!touch && p.extra) for (const c of p.extra) { world.contactPair(s.col, c, (m) => { if (m.numContacts() > 0) touch = true; }); if (touch) break; }   // chairs, tables: every part
       if (touch) gain = Math.max(gain, (s.d.length() / dt) * s.M * e1 / (s.M + p.mass));
     }
     if (gain < 0) continue;
@@ -16603,7 +16629,7 @@ function stepPhysics(dt) {
     const p = props[i];
     if (DROPFIX.on && p.item && dfNow >= (p.dfAt || 0) && (p.item.kind === 'gun' || p.item.kind === 'mag')) dropFixCheck(p, dfNow);   // dropfix: a loose gun / magazine never hangs in the air
     if (p.kinematic) continue;                                  // held / holstered items
-    if (p.restoreAt && now > p.restoreAt && !p.holders.length) { p.collider.setCollisionGroups(COLL.prop); p.restoreAt = 0; }
+    if (p.restoreAt && now > p.restoreAt && !p.holders.length) { p.collider.setCollisionGroups(COLL.prop); if (p.chairEx) for (const c of p.extra) c.setCollisionGroups(COLL.prop); p.restoreAt = 0; }
     if (p.body.isSleeping()) continue;
     awake = true;
     const t = p.body.translation(), r = p.body.rotation();
