@@ -2309,3 +2309,12 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: jerry can (gas can) removed
 - Its prop builder (K.jerry), every room's prop list entry, LOOSE_BLOCK, KNOCK_MAT and the surface map entries are gone; rooms no longer place it. Old room memory naming it builds nothing. Parse + eslint no-undef only.
+## CQC: office and crate leftovers (headset check needed)
+- Office chairs (chairVariants / chairPick, OFFR on): 8 upholstery geometries built once (seat and back colour as vertex colours on one chair copy of M.fabric: one program, compiled with the proto at load; back tilt varied; a jacket over the back in 2, a seat cushion in 2), a scuffed base copy of the black plastic (uniform only). spawnProp picks by room slot + spot; seat height +-2.5 cm (feet stay on the floor). Still three draws a chair. Pilling / wear is step 97's (per position).
+- Desk screens: deskScreen_v0..3 (offrPick, decor index 2000 + i): sheets, notes, sometimes a calendar pinned on both faces above the desks, never overlapping.
+- Desk cables (offrCable): sampled and clamped; behind the back edge (x -0.38) the cable stays under the top: measured 29 mm clearance (OFFR.cabMax).
+- Whiteboard sheets / notes only in the free zones of the board's writing (top right, bottom middle, bottom right), never overlapping each other.
+- Wall decor behind a desk: offrWallFree skips it when furniture over 0.9 m tall, a partition or a desk screen is in the 1.9 m x 0.15 m strip in front of the wall.
+- Crates (CRW): rust streaks under 75 % of nail heads (tapered strips on the nail material's streak half; the wear texture's random rust runs are gone), chalk stronger (key |crw2), break boards' snapped end faces fresh lighter pine (crateFreshEnds).
+- Cartons (CARD): pallet_v0..3 carton loads picked per pallet; 6 torn-flap variants (KIT.props.flapV) picked per break. Fix: flaps had no vertex colours on the vertex-coloured cardboard material and drew black.
+- Checked: module parse, eslint no-undef (browser globals only), headless (?dev&lite=on&lowmem=on): no page errors, programs linked, protos rendered in a test scene. Not checked: an office room built in play, Quest. Streaks still read a bit orange in a strongly lit test render.
