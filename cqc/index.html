@@ -22303,7 +22303,7 @@ function ejectChambered(g) {
     if (g.chamber === 'spent') spawnCasing(g, 'hull');
     else if (g.chamber === 'live') ejectLiveShell(g);
     g.chamber = null;
-  } else if (g.chambered) { g.chambered = false; spawnCasing(g, 'c9'); }
+  } else if (g.chambered) { g.chambered = false; if (LIVEEJ.on && ejectLiveRound(g)) return; spawnCasing(g, 'c9'); }   // a racked-out round is a live round, not an empty case
 }
 function rackBackEvent(g) { g.racked = true; ejectChambered(g); if (g.spent) { g.spent = false; spawnCasing(g, g.def.casing); }   // step 64
   gunSfx(g, 'rackBack', g.def.cls === 'pistol' ? 'pRackBack' : 'rackBack');   // step 99
@@ -23206,6 +23206,7 @@ function parkCasing(P, e) {
   P.dirty = true;
 }
 function updateCasings() {
+  liveRoundsTick();
   for (const P of Object.values(WEAPON.debris)) {
     for (const e of P.list) {
       if (BRASS.on && e.active && brassSettle(P, e, false)) continue;   // step 116: at rest = kept in room memory
@@ -23223,6 +23224,45 @@ function updateCasings() {
     if (P.dirty) { for (const m of P.im) m.instanceMatrix.needsUpdate = true; P.dirty = false; }
     let top = 0; for (const e of P.list) if (e.active && e.idx + 1 > top) top = e.idx + 1;   // PERF: only up to the last case in use is drawn (all slots used to be, every frame)
     for (const m of P.im) if (m.count !== top) m.count = top;
+  }
+}
+// Racked-out live rounds (?liveeject=off = the old empty case): a real cartridge (case + bullet, emoRoundMesh) on its own small body.
+const LIVEEJ = { on: !/[?&]liveeject=off\b/.test(QS), list: [], max: 10, life: 45 };
+function ejectLiveRound(g) {
+  try {
+    const c = typeof brassCalOf === 'function' ? brassCalOf(g) : 0;
+    if (c == null || !BRASS_CAL[c] || BRASS_CAL[c].hull) return false;
+    let L = LIVEEJ.list.length >= LIVEEJ.max ? LIVEEJ.list.shift() : null;
+    if (L && L.c !== c) { world.removeRigidBody(L.body); scene.remove(L.mesh); L = null; }
+    if (!L) {
+      const mesh = emoRoundMesh(c); if (!mesh) return false;
+      const C = BRASS_CAL[c];
+      const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setCcdEnabled(true).setLinearDamping(0.15).setAngularDamping(0.4));
+      world.createCollider(RAPIER.ColliderDesc.cylinder(C.L * 0.62, C.rb).setMass(C.m + 0.008).setFriction(0.6).setRestitution(0.3)
+        .setCollisionGroups(groups(GROUP.DEBRIS, GROUP.STATIC | GROUP.PROP | GROUP.DOOR)), body);
+      L = { c, mesh, body };
+    }
+    const root = g.prop.root; root.updateMatrixWorld(true);
+    _wv.copy(g.wr.eject).applyMatrix4(root.matrixWorld); root.getWorldQuaternion(_wq);
+    const ev = g.def.ejectVel;
+    _wv2.set(ev[0] * 0.55, ev[1] * 0.6, ev[2] * 0.5).applyQuaternion(_wq);   // a racked round leaves slower than a fired case
+    if (g.primary && g.primary.hist && g.primary.hist.length) _wv2.add(g.primary.hist[g.primary.hist.length - 1]);
+    _wq2.copy(_wq).multiply(_wq.setFromEuler(_we.set(Math.PI / 2, 0, 0)));
+    L.body.setEnabled(true); L.body.setTranslation(_wv, true); L.body.setRotation(_wq2, true); L.body.setLinvel(_wv2, true);
+    L.body.setAngvel({ x: (Math.random() - 0.5) * 14, y: (Math.random() - 0.5) * 14, z: (Math.random() - 0.5) * 14 }, true);
+    L.mesh.visible = true; L.t = performance.now() / 1000;
+    LIVEEJ.list.push(L);
+    return true;
+  } catch (err) { return false; }
+}
+function liveRoundsTick() {
+  if (!LIVEEJ.list.length) return;
+  const now = performance.now() / 1000;
+  for (let i = LIVEEJ.list.length - 1; i >= 0; i--) {
+    const L = LIVEEJ.list[i];
+    if (now - L.t > LIVEEJ.life) { world.removeRigidBody(L.body); scene.remove(L.mesh); LIVEEJ.list.splice(i, 1); continue; }
+    const t = L.body.translation(), r = L.body.rotation();
+    L.mesh.position.set(t.x, t.y, t.z); L.mesh.quaternion.set(r.x, r.y, r.z, r.w);
   }
 }
 function ejectLiveShell(g) {

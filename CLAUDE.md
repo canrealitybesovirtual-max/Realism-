@@ -2386,3 +2386,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: update number
 - Title screen shows "UPDATE 1.04" bottom right (#verTag); the M / pad menu header shows "Update 1.04". Bump both on each update.
+
+## CQC: racking ejects live rounds (?liveeject=off)
+- ejectChambered (non-pump): a chambered round racked out is a real cartridge (emoRoundMesh case + bullet, own small Rapier body, up to 10, gone after 45 s), slower than a fired case, not counted as brass. Fired cases unchanged. Parse checked only.
