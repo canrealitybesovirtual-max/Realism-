@@ -1590,6 +1590,7 @@
     <tr><td>Weapon light / laser</td><td>F / T. Hold them to switch to infrared (seen only through night vision)</td></tr>
     <tr><td>Night vision</td><td>N flips it down or up once you wear it (bought at the GUNSMITH computer, kept in your locker)</td></tr>
     <tr><td>Grenades</td><td>3 frag, 4 flashbang. Hold the key: your left hand draws it and pulls the pin. Let go to throw it overhand; hold Space or right mouse for an underhand lob. E or click on a live one at your feet throws it back. 5: smoke grenade (thick white smoke for 40 s; the men cannot see through it)</td></tr>
+    <tr><td>C4 breaching charge</td><td>6 with the dot on a door or wall within 1.5 m places a charge (you carry 2; more at the GUNSMITH computer). Step back and press 6 again (or hold it) to fire every charge you placed: it blows a door off its hinges. Stay out of the blast. E on a placed charge takes it back. Headset: take one from the pouch on your left hip and press it on the door; the firing device is on the right of your belt: trigger flips the safety bail, trigger again fires</td></tr>
     <tr><td>Doors</td><td>Aim at a door: click or E turns the handle and pushes it slowly away from you. Hold the click or E to pull it toward you. Run into a shut door to breach it</td></tr>
     <tr><td>Lean</td><td>Hold Z (left) or C (right). Stops short of walls</td></tr>
     <tr><td>Crouch</td><td>Caps Lock (toggle)</td></tr>
@@ -1609,7 +1610,7 @@
     <tr><td>Y</td><td>Switch between hip and chest gun (hold: night vision)</td></tr>
     <tr><td>RB / LB</td><td>Frag / flashbang: hold to pull the pin, let go to throw</td></tr>
     <tr><td>D-pad right (hold)</td><td>Smoke grenade (tap: injector)</td></tr>
-    <tr><td>D-pad</td><td>Up light (hold: IR), down laser, left fire selector, right auto-injector</td></tr>
+    <tr><td>D-pad</td><td>Up light (hold: IR), down laser (hold: C4 place / fire), left fire selector, right auto-injector</td></tr>
     <tr><td>RS click / View / Menu</td><td>Kick / shove (hold: this help) / watch menu (the cursor comes back while it is open; Menu or B closes it)</td></tr>
   </table>
   <p class="group">The safe room</p>
@@ -10700,6 +10701,7 @@ const paceBusy = (now) => PACE_ON && (now < PACE.moveUntil || now < PACE.revealU
 function updateDoorsPre(now) {
   const P = CONFIG.doorPhys;
   for (const door of doors) {
+    if (door.blown) continue;                                     // C4: off its hinges
     let target = 0, k = P.closerStiffness, c = P.closerDamping, mode = 'closer';
     if (door.free) { target = door.angle; k = 0; c = 3; }               // apartment doors: no closer, a leaf stays where you leave it
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
@@ -10755,6 +10757,7 @@ const _dvP = new THREE.Vector3(), _dvQ = new THREE.Quaternion();                
 function updateDoorsPost(dt = 0) {
   const DC = CONFIG.polish.audio.doors, ck = CREAK.on && DOORSND.on && DC && DC.on && DC.gain && DC.creak;   // step 88
   for (const door of doors) {
+    if (door.blown) { if (!door.body.isSleeping()) c4LeafPost(door); continue; }   // C4: a blown leaf
     const sleeping = door.body.isSleeping();
     if (sleeping && door.settled) continue;
     const t = door.body.translation(), r = door.body.rotation(), o = door.room.origin;
@@ -10804,7 +10807,7 @@ function updateDoorsPost(dt = 0) {
 function nearestDoorHandle(point, reach) {
   let best = null, bestD = reach;
   for (const door of doors) {
-    if (!door.room.doorGroup.visible) continue;
+    if (!door.room.doorGroup.visible || door.blown) continue;   // C4: no lever on a blown leaf
     for (const s of [-1, 1]) {
       _lv.set(door.sw / 2 - 0.12, 1.0 - door.cy, s * 0.055);
       door.group.localToWorld(_lv);
@@ -12726,6 +12729,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Digit3' && !e.repeat) dnadeStart('frag');      // step 23: hold to draw + pull the pin, release to throw
   if (e.code === 'Digit4' && !e.repeat) dnadeStart('flash');
   if (e.code === 'Digit5' && !e.repeat && SMK_ON) dnadeStart('smoke');   // step 125
+  if (e.code === 'Digit6' && !e.repeat) c4Key(true);             // C4: tap = place / fire, hold = fire
   if (e.code === 'BracketLeft') setExposure(renderer.toneMappingExposure - 0.05);
   if (e.code === 'BracketRight') setExposure(renderer.toneMappingExposure + 0.05);
   syncButtons();
@@ -12733,6 +12737,7 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
   keys.delete(e.code); if ((e.code === 'Digit3' || e.code === 'Digit4' || e.code === 'Digit5') && DNADE.active) DNADE.release = true;
   if (e.code === 'KeyY') voxKey(false);
+  if (e.code === 'Digit6') c4Key(false);                          // C4
   if (e.code === 'Space') { DESK_ADS.key = false; deskAdsSync(); }   // step 89
   if (e.code === 'CapsLock' && IS_MAC_KB && !renderer.xr.isPresenting) stance.crouchOn = !stance.crouchOn;   // step 89: macOS sends Caps Lock off as a keyup only
 });
@@ -12748,12 +12753,13 @@ const PAD = { on: !/[?&]pad=off\b/.test(QS), active: false, idx: -1, lx: 0, ly: 
   prev: [], downAt: [], held: [], fire: false, ads: false, emu: '', lastSeen: 0, swapT: 0, swap: (() => { try { return localStorage.getItem('cqc.padswap.v1') === '1'; } catch (e) { return false; } })(),
   // tap / hold buttons: [code on tap, code on hold, hold s]; plain buttons: code (keydown on press, keyup on release)
   map: { 0: 'KeyE', 2: ['KeyR', 'KeyV', 0.45], 1: ['KeyM', 'crouch', 0.35], 3: ['padSwap', 'nvg', 0.5], 4: 'Digit4', 5: 'Digit3',
-    8: ['KeyG', 'KeyH', 0.5], 9: 'KeyM', 11: 'kick', 12: 'KeyF', 13: 'KeyT', 14: ['KeyX', 'talk', 0.35], 15: ['KeyI', 'smoke', 0.4] },   // step 125: D-pad right held = smoke grenade   // VOX: D-pad left held = push to talk
+    8: ['KeyG', 'KeyH', 0.5], 9: 'KeyM', 11: 'kick', 12: 'KeyF', 13: ['KeyT', 'c4', 0.45], 14: ['KeyX', 'talk', 0.35], 15: ['KeyI', 'smoke', 0.4] },   // step 125: D-pad right held = smoke grenade   // VOX: D-pad left held = push to talk
   lookYaw: 3.3, lookPitch: 2.3, dead: 0.14 };
 function padKey(code, down, shift = false) {
   if (code === 'padSwap') { if (down) padSwap(); return; }
   if (code === 'kick') { if (down) kickStart(); return; }
   if (code === 'smoke') { if (down && SMK_ON) dnadeStart('smoke', true); return; }
+  if (code === 'c4') { if (down) c4Pad(); return; }                // C4: D-pad down held
   if (code === 'crouch') { if (down) stance.crouchOn = !stance.crouchOn; return; }
   if (code === 'nvg') { if (down) { if (NVG.on && NVG.worn) nvgFlip(); else toast('No night vision on (personal locker)'); } return; }
   window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code, shiftKey: shift, bubbles: true }));
@@ -13813,6 +13819,7 @@ function netRx(m) {
   else if (m.t === 'drest') netRestRx(m);
   else if (m.t === 'nade') netNadeRx(m);
   else if (m.t === 'nb') netNadeBoomRx(m);
+  else if (m.t === 'c4p' || m.t === 'c4u' || m.t === 'c4b') c4NetRx(m);   // C4
   else if (m.t === 'dr') netDoorRx(m);
   else if (m.t === 'drr') netDoorRestRx(m);
   else if (m.t === 'lt') netLootRx(m);
@@ -20266,6 +20273,7 @@ function nadesUpdate(dt, now) {
   nadeFlyUpdate(dt);
   fireUpdate(dt);
   smokeTick(dt);                                                  // step 125
+  c4Tick(dt, now);                                                // C4 breaching charge
   nadePouches();
   nadeOverlay(dt);
 }
@@ -20391,6 +20399,602 @@ function smokeFog(dt) {
   F.density = SMK.fogD;
   if (F.density > 0) F.color.setScalar(Math.min(0.78, clamp(P10U.uAmb.value, 0.04, 1.4) * 0.6 + (flashlightOn ? 0.06 : 0)));
 }
+
+/* ===========================================================================
+ *  C4 BREACHING CHARGE (?c4=off = none; OPTIONS PHYSICS "C4 breaching charges")
+ *  The item: an M112 block (1.25 lb Composition C-4, 279 x 51 x 38 mm, olive Mylar wrapper with its stencil, the
+ *  adhesive pad on the back), a blasting cap in its end on a short det cord lead from a wireless receiver taped to
+ *  it (antenna, red LED), fired from an M57-style firing device (squeeze lever, wire safety bail, stub antenna).
+ *  inv.c4 (C4_C.carry), refilled with the grenades in the safe room; GUNSMITH SUPPLIES "Breaching charges" sells more.
+ *  Place  VR: grip the demo pouch on your left hip and press the charge's pad against a door leaf, wall or any surface:
+ *         it sticks flush (a ray along the pad). Computer: tap 6 with the dot on a surface within C4_C.reach m.
+ *         A placed charge rides what it is on (room group or the door leaf: room-local, world shifts safe).
+ *         E / click (computer) or a grip (VR) takes it back into the pouch.
+ *  Fire   VR: grip the firing device on your right belt; trigger = the bail flips (beep), trigger again = fire.
+ *         Computer: tap 6 with the dot not on a surface in reach, or hold 6. Pad: D-pad down held. A beep, then
+ *         every charge you placed goes (C4_C.delay s).
+ *  Blast  ~0.76 kg TNT: peak overpressure by Kinney-Graham (c4Kpa) x exposure (clear line from the charge's face = 1,
+ *         through the door leaf it tears out = leafX, no line in the same room = 0.45, behind a wall 0.08). Men:
+ *         >= 300 kPa dead (grenade gore paths), 140-300 down alive (step 91) or dead, 45-140 hurt, knocked about and
+ *         stunned (the flashbang reaction, 3.5-6 s), 12-45 staggered / stunned 1-2.5 s, beyond: they heard it. You:
+ *         playerHit by the same pressure, ears (earsBlast), shake, a white flash, haptics. Door leaf: its hinge joint
+ *         removed, a dynamic 38 kg body thrown off at 9-12 m/s (it now meets the room's static colliders), the walk box
+ *         gone, counted fully open; scorch on the floor and the frame, splinters, drywall chunks. On a breakable room
+ *         wall (RW) it punches a hole; elsewhere soot. Sound: the grenade recordings two layers deep and pitched down,
+ *         a long sub, crack, wall slaps, debris. Smoke: the step 124 cloud.
+ *  Multiplayer: 'c4p' (placed, anchor-local pose), 'c4u' (taken back), 'c4b' (went off). The owner fires; each side
+ *  hurts what it owns (you on both, the host's men on the host), each side blows its own copy of the leaf.
+ *  Materials: two programs (map + normal map like the grenade labels, plain standard), compiled at load
+ *  (weaponsPrecompile -> c4Precompile, so the Xbox warm-up list too).
+ * ========================================================================== */
+const C4 = { on: !/[?&]c4=off\b/.test(QS), mats: null, list: [], pend: [], kAt: 0, kDown: false, kHold: false, ui: false, net: new Map(), seq: 0,
+  safe: true, det: null, warm: null, slotC4: null, slotDet: null, tplC: null, tplD: null,
+  v: new THREE.Vector3(), w: new THREE.Vector3(), n: new THREE.Vector3(), c: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion(),
+  m: new THREE.Matrix4(), m2: new THREE.Matrix4(), s: new THREE.Vector3(1, 1, 1), x: new THREE.Vector3(), y: new THREE.Vector3() };
+const C4_C = { carry: 2, max: 6, buy: 2, price: 350, reach: 1.5, delay: 0.28, W: 0.76, leafX: 0.8, hold: 0.45,
+  kill: 300, down: 140, hurt: 45, stagger: 12, alertR: 30, impulse: [9, 12] };
+const C4_RAY = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR);
+// Peak overpressure (kPa) at r m from C4_C.W kg TNT (Kinney-Graham, free air).
+function c4Kpa(r) {
+  const Z = Math.max(0.2, r) / Math.cbrt(C4_C.W), a = Z / 4.5, b = Z / 0.048, c = Z / 0.32, d = Z / 1.35;
+  return 101.3 * 808 * (1 + a * a) / Math.sqrt((1 + b * b) * (1 + c * c) * (1 + d * d));
+}
+const c4I = (d) => (d >= 8 ? 0 : 390 / Math.max(d, 0.6) * (1 - (d / 8) * (d / 8)));   // blast impulse Pa s (the frag's blastI scaled by W^(2/3))
+// --- models (C4-MODEL-BEGIN) ---
+function c4NormalTex(S, seed, fn) {                               // a height field -> tangent-space normal map (canvas, linear)
+  const R = mulberry32(seed), H = new Float32Array(S * S);
+  fn(H, S, R);
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d'), im = g.createImageData(S, S), k = 2.2;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const hx = H[y * S + (x + 1) % S] - H[y * S + (x + S - 1) % S], hy = H[((y + 1) % S) * S + x] - H[((y + S - 1) % S) * S + x];
+    let nx = -hx * k, ny = hy * k, nz = 1; const L = Math.hypot(nx, ny, nz); nx /= L; ny /= L; nz /= L;
+    const o = (y * S + x) * 4; im.data[o] = (nx * 0.5 + 0.5) * 255; im.data[o + 1] = (ny * 0.5 + 0.5) * 255; im.data[o + 2] = (nz * 0.5 + 0.5) * 255; im.data[o + 3] = 255;
+  }
+  g.putImageData(im, 0, 0);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.NoColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4;
+  return t;
+}
+function c4Mats() {
+  if (C4.mats) return C4.mats;
+  const tex = (w, h, draw) => { const cv = document.createElement('canvas'); cv.width = w; cv.height = h; draw(cv.getContext('2d'), w, h); const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t; };
+  const blur = (H, S, n) => { const T = new Float32Array(S * S); for (let p = 0; p < n; p++) { for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) T[y * S + x] = (H[y * S + x] * 2 + H[y * S + (x + 1) % S] + H[y * S + (x + S - 1) % S] + H[((y + 1) % S) * S + x] + H[((y + S - 1) % S) * S + x]) / 6; H.set(T); } };
+  const crinkle = c4NormalTex(256, 4401, (H, S, R) => {           // Mylar: long soft creases and a fine crinkle
+    for (let i = 0; i < 70; i++) { const x0 = R() * S, y0 = R() * S, a = (R() - 0.5) * 0.9 + (R() < 0.3 ? Math.PI / 2 : 0), L = 20 + R() * 120, h = (R() - 0.5) * 0.9;
+      for (let t = 0; t < L; t++) { const x = (x0 + Math.cos(a) * t + S) % S | 0, y = (y0 + Math.sin(a) * t + S) % S | 0; H[y * S + x] += h; } }
+    for (let i = 0; i < S * S; i++) H[i] += (R() - 0.5) * 0.25;
+    blur(H, S, 2);
+  });
+  const weave = c4NormalTex(128, 4402, (H, S, R) => { for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) H[y * S + x] = 0.35 * Math.sin(x * 1.6) * Math.sin(y * 1.6) + (R() - 0.5) * 0.15; });
+  const stip = c4NormalTex(128, 4403, (H, S, R) => { for (let i = 0; i < S * S; i++) H[i] = R(); blur(H, S, 1); });
+  const wrapMap = tex(1024, 512, (g, W, Hh) => {                   // top half = the front face (stencil), bottom half = the other faces
+    const R = mulberry32(4410);
+    g.fillStyle = '#4a5131'; g.fillRect(0, 0, W, Hh);
+    for (let i = 0; i < 2600; i++) { g.fillStyle = `rgba(${R() < 0.5 ? '200,205,170' : '15,18,8'},${0.02 + R() * 0.05})`; g.fillRect(R() * W, R() * Hh, 1 + R() * 9, 1 + R() * 2); }
+    for (let i = 0; i < 26; i++) { const x = R() * W, y = R() * Hh, q = g.createLinearGradient(x, y, x + 120, y + 40); q.addColorStop(0, 'rgba(255,255,230,0)'); q.addColorStop(0.5, `rgba(255,255,230,${0.04 + R() * 0.05})`); q.addColorStop(1, 'rgba(255,255,230,0)'); g.fillStyle = q; g.fillRect(x - 60, y - 30, 240, 100); }   // Mylar sheen
+    g.save(); g.translate(W * 0.67, Hh * 0.25); g.scale(0.73, 1);
+    g.fillStyle = '#d4c055'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = '700 50px Impact, Arial Black, sans-serif'; g.fillText('CHARGE, DEMOLITION: M112', 0, -62);
+    g.font = '700 40px Impact, Arial Black, sans-serif'; g.fillText('1-1/4 LB  COMPOSITION C-4', 0, -10);
+    g.font = '600 24px Arial, sans-serif'; g.fillText('LOT MA-21J014-057   MIL-C-45010A', 0, 34); g.fillText('HIGH EXPLOSIVE  -  CLASS 1.1D', 0, 66);
+    g.restore();
+    g.strokeStyle = 'rgba(212,192,85,0.85)'; g.lineWidth = 5; g.strokeRect(W * 0.37, 16, W * 0.61, Hh * 0.5 - 32);
+    g.fillStyle = 'rgba(10,12,6,0.25)'; for (let i = 0; i < 12; i++) g.fillRect(0, Hh * 0.5 + i * 22, W, 2);   // folds on the sides
+  });
+  const tapeMap = tex(128, 128, (g, W) => { const R = mulberry32(4411); g.fillStyle = '#545b39'; g.fillRect(0, 0, W, W); for (let i = 0; i < 500; i++) { g.fillStyle = `rgba(${R() < 0.5 ? '220,220,190' : '0,0,0'},${0.04 + R() * 0.06})`; g.fillRect(R() * W, R() * W, 1 + R() * 3, 1); } });
+  tapeMap.wrapS = tapeMap.wrapT = THREE.RepeatWrapping;
+  const cordMap = tex(64, 64, (g, W) => { g.fillStyle = '#4f6a2a'; g.fillRect(0, 0, W, W); g.strokeStyle = '#c9b63d'; g.lineWidth = 3; for (let i = -W; i < W * 2; i += 16) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i + W, W); g.stroke(); } g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 2; for (let i = -W; i < W * 2; i += 8) { g.beginPath(); g.moveTo(i, W); g.lineTo(i + W, 0); g.stroke(); } });
+  cordMap.wrapS = cordMap.wrapT = THREE.RepeatWrapping;
+  const detMap = tex(512, 256, (g, W, Hh) => {                      // M57 body: moulded olive plastic, raised lettering on the sides
+    const R = mulberry32(4412);
+    g.fillStyle = '#4c5332'; g.fillRect(0, 0, W, Hh);
+    for (let i = 0; i < 900; i++) { g.fillStyle = `rgba(${R() < 0.5 ? '210,210,180' : '0,0,0'},${0.03 + R() * 0.05})`; g.fillRect(R() * W, R() * Hh, 1 + R() * 4, 1 + R() * 2); }
+    g.save(); g.translate(W * 0.25, Hh * 0.5); g.rotate(-Math.PI / 2); g.fillStyle = '#c9c3a0'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = '700 40px Arial Black, sans-serif'; g.fillText('M57', 0, -34); g.font = '600 15px Arial, sans-serif'; g.fillText('FIRING DEVICE', 0, 4); g.fillText('ELECTRIC BLASTING CAP', 0, 24);
+    g.fillStyle = '#c23c22'; g.font = '700 16px Arial, sans-serif'; g.fillText('SAFE  /  FIRE', 0, 52);
+    g.restore();
+  });
+  const S = (o) => new THREE.MeshStandardMaterial(o);
+  C4.mats = {
+    wrap: S({ map: wrapMap, normalMap: crinkle, normalScale: new THREE.Vector2(0.55, 0.55), roughness: 0.38, metalness: 0.12 }),
+    tape: S({ map: tapeMap, normalMap: weave, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 0.82, metalness: 0 }),
+    cord: S({ map: cordMap, normalMap: weave, normalScale: new THREE.Vector2(0.8, 0.8), roughness: 0.7, metalness: 0 }),
+    det: S({ map: detMap, normalMap: stip, normalScale: new THREE.Vector2(0.25, 0.25), roughness: 0.6, metalness: 0 }),
+    pad: S({ color: 0x5a554c, roughness: 0.95, metalness: 0 }),
+    alu: S({ color: 0xb9bcc0, roughness: 0.32, metalness: 1 }),
+    box: S({ color: 0x1d1e20, roughness: 0.5, metalness: 0.1 }),
+    rub: S({ color: 0x111112, roughness: 0.75, metalness: 0 }),
+    wire: S({ color: 0x9a9c9f, roughness: 0.28, metalness: 1 }),
+    led: S({ color: 0x3a0606, emissive: 0xff2412, emissiveIntensity: 0, roughness: 0.3, metalness: 0 })
+  };
+  return C4.mats;
+}
+const c4Box = (w, h, d, r, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => placed(new RoundedBoxGeometry(w, h, d, 2, Math.min(r, Math.min(w, h, d) * 0.45)), x, y, z, rx, ry, rz);
+function c4Merge(list, mat) {
+  const flat = list.map((g) => (g.index ? g.toNonIndexed() : g));
+  for (const g of flat) { if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2)); for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k); }
+  const m = new THREE.Mesh(mergeGeometries(flat), mat); m.castShadow = false; m.receiveShadow = true; return m;
+}
+const c4UVm = (g, tile) => { const p = g.attributes.position, n = g.attributes.normal, uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) { const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+    uv.setXY(i, (ax >= ay && ax >= az ? p.getZ(i) : p.getX(i)) / tile, (ay >= ax && ay >= az ? p.getZ(i) : p.getY(i)) / tile); } return g; };
+// Charge: origin at the block's centre, long axis x, the pad on -z (it goes against the surface), the cap in the +x end.
+function c4ChargeModel() {
+  const M = c4Mats(), root = new THREE.Group(), w = 0.279, h = 0.051, d = 0.038;
+  const blk = new RoundedBoxGeometry(w, h, d, 3, 0.005), p = blk.attributes.position, n = blk.attributes.normal, uv = blk.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i), ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = n.getZ(i);
+    if (az > 0.5) uv.setXY(i, (x + w / 2) / w, 0.5 + 0.5 * (y + h / 2) / h);
+    else if (ay >= ax) uv.setXY(i, (x + w / 2) / w, 0.03 + 0.42 * (z + d / 2) / d);
+    else uv.setXY(i, 0.02 + 0.12 * (z + d / 2) / d, 0.03 + 0.42 * (y + h / 2) / h);
+  }
+  root.add(c4Merge([blk], M.wrap));
+  root.add(c4Merge([c4Box(0.262, 0.044, 0.003, 0.0012, 0, 0, -d / 2 - 0.0012)], M.pad));                  // adhesive foam pad
+  const bx = -0.075, bz = d / 2 + 0.0095;                                                                 // the wireless receiver, taped on
+  root.add(c4Merge([c4Box(0.058, 0.034, 0.019, 0.003, bx, 0, bz), c4Box(0.012, 0.012, 0.004, 0.001, bx + 0.032, 0.006, bz)], M.box));
+  const ant = new THREE.CylinderGeometry(0.0016, 0.0024, 0.11, 8); ant.rotateZ(Math.PI / 2 - 0.35); ant.translate(bx - 0.075, 0.03, bz + 0.002);
+  root.add(c4Merge([ant, c4Box(0.007, 0.008, 0.008, 0.002, bx - 0.027, 0.012, bz)], M.rub));
+  const led = new THREE.SphereGeometry(0.0028, 10, 8); led.translate(bx + 0.016, 0.0105, bz + 0.0095);
+  root.add(c4Merge([led], M.led));
+  const tape = [c4Box(0.026, h + 0.0025, d + 0.0025, 0.002, 0.07, 0, 0), c4Box(0.02, 0.0365, 0.0035, 0.0012, bx - 0.012, 0, bz + 0.0095), c4Box(0.02, 0.0365, 0.0035, 0.0012, bx + 0.018, 0, bz + 0.0095)];
+  root.add(c4Merge(tape.map((g) => c4UVm(g, 0.04)), M.tape));
+  const cap = new THREE.CylinderGeometry(0.0036, 0.0036, 0.026, 14); cap.rotateZ(Math.PI / 2); cap.translate(w / 2 + 0.011, 0.009, 0.004);   // the blasting cap in the end, crimped
+  const crimp = new THREE.CylinderGeometry(0.0041, 0.0041, 0.004, 14); crimp.rotateZ(Math.PI / 2); crimp.translate(w / 2 + 0.018, 0.009, 0.004);
+  root.add(c4Merge([cap, crimp], M.alu));
+  const path = new THREE.CatmullRomCurve3([new THREE.Vector3(bx + 0.03, 0.004, bz), new THREE.Vector3(bx + 0.07, 0.014, d / 2 + 0.006), new THREE.Vector3(0.05, 0.02, d / 2 + 0.004),
+    new THREE.Vector3(0.12, 0.03, d / 2 + 0.006), new THREE.Vector3(w / 2 + 0.03, 0.022, 0.014), new THREE.Vector3(w / 2 + 0.025, 0.01, 0.004)]);
+  const cord = new THREE.TubeGeometry(path, 40, 0.0027, 8, false), cu = cord.attributes.uv;     // the det cord lead
+  for (let i = 0; i < cu.count; i++) cu.setXY(i, cu.getX(i) * 22, cu.getY(i));
+  root.add(c4Merge([cord], M.cord));
+  return root;
+}
+// Firing device: origin at the grip, long axis y, the squeeze lever on -z (under the fingers), the bail at the top.
+function c4DetModel() {
+  const M = c4Mats(), root = new THREE.Group();
+  const body = new RoundedBoxGeometry(0.034, 0.118, 0.026, 3, 0.007), p = body.attributes.position, n = body.attributes.normal, uv = body.attributes.uv;
+  for (let i = 0; i < p.count; i++) { const ax = Math.abs(n.getX(i)); uv.setXY(i, ax > 0.5 ? 0.5 * (p.getZ(i) + 0.013) / 0.026 : 0.55 + 0.4 * (p.getX(i) + 0.017) / 0.034, (p.getY(i) + 0.059) / 0.118); }
+  body.translate(0, 0, 0.006);
+  root.add(c4Merge([body], M.det));
+  const cap = new THREE.CylinderGeometry(0.0085, 0.0085, 0.012, 16); cap.translate(-0.004, 0.065, 0.006);
+  const ant = new THREE.CylinderGeometry(0.0035, 0.0045, 0.06, 10); ant.translate(0.009, 0.088, 0.01);
+  root.add(c4Merge([cap, ant, c4Box(0.03, 0.006, 0.01, 0.002, 0, -0.06, -0.006)], M.rub));
+  const lever = new THREE.Group(); lever.position.set(0, -0.052, -0.008);
+  const lv = [c4Box(0.03, 0.104, 0.008, 0.003, 0, 0.052, -0.004)];
+  for (let i = 0; i < 6; i++) lv.push(c4Box(0.031, 0.004, 0.003, 0.0012, 0, 0.022 + i * 0.012, -0.0085));
+  lever.add(c4Merge(lv, M.det)); root.add(lever);
+  const bail = new THREE.Group(); bail.position.set(0, 0.047, 0.002);
+  const bp = new THREE.CatmullRomCurve3([new THREE.Vector3(-0.019, 0, 0), new THREE.Vector3(-0.02, -0.008, -0.016), new THREE.Vector3(-0.012, -0.012, -0.026), new THREE.Vector3(0.012, -0.012, -0.026), new THREE.Vector3(0.02, -0.008, -0.016), new THREE.Vector3(0.019, 0, 0)]);
+  bail.add(c4Merge([new THREE.TubeGeometry(bp, 24, 0.0012, 6, false)], M.wire)); root.add(bail);
+  return root;
+}
+function c4DetPose(root, squeeze, armed) {                        // children: body, rubber parts, lever, bail
+  const lever = root.children[2], bail = root.children[3]; if (!lever || !bail) return;
+  lever.rotation.x = -0.3 * (1 - squeeze); bail.rotation.x = armed ? 1.9 : 0;
+}
+// --- (C4-MODEL-END) ---
+function c4Tpl() { if (!C4.tplC) { C4.tplC = c4ChargeModel(); C4.tplD = c4DetModel(); c4DetPose(C4.tplD, 0, false); } return C4; }
+const C4_HOLD = { c4: null, det: null };
+function c4Holds() {
+  if (C4_HOLD.c4) return C4_HOLD;
+  const rake = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.36, 0, 0));
+  C4_HOLD.c4 = { p: new THREE.Vector3(0, -0.006, 0.006), q: rake.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)) };   // long axis up the fist, the pad forward
+  C4_HOLD.det = { p: new THREE.Vector3(0, -0.0066, 0.0045), q: rake.clone() };
+  return C4_HOLD;
+}
+function c4Create(kind) {
+  c4Tpl(); c4Holds();
+  const det = kind === 'det', root = (det ? C4.tplD : C4.tplC).clone(true);
+  const it = { kind: det ? 'c4det' : 'c4', type: kind, label: det ? 'firing device' : 'C4 breaching charge', hold: det ? C4_HOLD.det : C4_HOLD.c4 };
+  return makeItem(root, it, det ? { mass: 0.3, half: [0.017, 0.06, 0.016], center: new THREE.Vector3(0, 0, 0) } : { mass: 0.6, half: [0.1395, 0.0255, 0.0195], center: new THREE.Vector3() });
+}
+// --- placing ---
+// Stick p on the surface at H (world) with normal N: pad on it, long axis level on walls; anchored to the room group or the leaf.
+function c4Stick(p, H, N, door, room, roll = null) {
+  const it = p.item;
+  C4.n.copy(N).normalize();
+  if (Math.abs(C4.n.y) < 0.8) C4.x.set(0, 1, 0).cross(C4.n).normalize();
+  else { C4.x.copy(roll || camera.getWorldDirection(C4.x)).projectOnPlane(C4.n); if (C4.x.lengthSq() < 1e-6) C4.x.set(1, 0, 0).projectOnPlane(C4.n); C4.x.normalize(); }
+  C4.y.crossVectors(C4.n, C4.x);
+  C4.m.makeBasis(C4.x, C4.y, C4.n).setPosition(C4.v.copy(H).addScaledVector(C4.n, 0.0205));
+  const anchor = door ? door.group : room.group;
+  anchor.updateWorldMatrix(true, false);
+  it.c4local = new THREE.Matrix4().copy(anchor.matrixWorld).invert().multiply(C4.m);
+  it.c4anchor = anchor; it.c4door = door || null; it.c4room = room; it.c4stuck = true;
+  if (!p.inWorld) { C4.m.decompose(C4.v, C4.q, C4.s); itemToWorld(p, C4.v, C4.q, room); }
+  setKinematic(p);
+  c4Pose(p);
+  if (!C4.list.includes(p)) C4.list.push(p);
+  if (audio.ctx && audio.ctx.state === 'running') soundAt(p.root.position, () => KNOCK_SND.plaster(audio.ctx.currentTime + 0.003, 1.6, 0.25, 1));
+}
+function c4Pose(p) {
+  const it = p.item; if (!it.c4anchor) return;
+  it.c4anchor.updateWorldMatrix(true, false);
+  C4.m2.multiplyMatrices(it.c4anchor.matrixWorld, it.c4local).decompose(C4.w, C4.q, C4.s);
+  p.root.position.copy(C4.w); p.root.quaternion.copy(C4.q); p.root.updateMatrixWorld(true);
+  p.body.setNextKinematicTranslation(C4.w); p.body.setNextKinematicRotation(C4.q);
+}
+// A ray from o along d (world) onto something a charge sticks to: { p, n, t, door, room } or null.
+function c4Surface(o, d, maxT) {
+  const hit = p10Ray(o, d, maxT, C4_RAY);
+  if (!hit) return null;
+  const t = p10Toi(hit), door = doorByCollider.get(hit.collider.handle) || null, info = door ? null : colliderInfo.get(hit.collider.handle);
+  const P = new THREE.Vector3().copy(o).addScaledVector(d, t), n = new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z);
+  if (n.dot(d) > 0) n.negate();
+  const room = door ? door.room : (info && info.room) || roomContaining(P.x, P.z, 0.1, P.y);
+  if (!room || !room.group) return null;
+  return { p: P, n, t, door, room };
+}
+function c4DeskPlace(quiet) {
+  if (renderer.xr.isPresenting || playerState.dead) return false;
+  camera.getWorldPosition(C4.v); camera.getWorldDirection(C4.d);
+  const S = c4Surface(C4.v, C4.d, C4_C.reach);
+  if (!S || (S.door && S.door.blown)) { if (!quiet) toast('Point the dot at a door or a wall within 1.5 m to place a charge'); return false; }
+  if ((inv.c4 || 0) <= 0) { if (!quiet) toast('No breaching charges left. Restock in the safe room'); return false; }
+  inv.c4--; panel.dirty = true;
+  const p = c4Create('c4'); p.item.c4mine = true;
+  c4Stick(p, S.p, S.n, S.door, S.room, camera.getWorldDirection(new THREE.Vector3()));
+  c4NetPlace(p);
+  sfx('pouch');
+  toast(`Charge placed (${inv.c4} left). Step back and press 6 to fire`, 2600);
+  return true;
+}
+// 6 tapped: place when the dot is on a surface in reach, else fire. Held C4_C.hold s: fire.
+function c4Key(down) {
+  if (!C4.on) return;
+  if (down) { if (!C4.kDown) { C4.kDown = true; C4.kAt = wnow(); C4.kHold = false; } return; }
+  if (!C4.kDown) return;
+  C4.kDown = false;
+  if (!C4.kHold) c4Pad();
+}
+function c4Pad() { if (!C4.on) return; if (!c4DeskPlace(true)) { if (c4Mine().length) c4Fire(null); else c4DeskPlace(false); } }
+const c4Mine = () => C4.list.filter((p) => p.item.c4mine && p.item.c4stuck && p.inWorld && !p.removing && !p.item.c4fireAt);
+// Into the pouch (stowItem: computer E / click on a placed charge; a VR let-go at the pouch).
+function c4Stow(p) {
+  const it = p.item;
+  if (it.kind === 'c4' && !it.netRem) { inv.c4 = (inv.c4 || 0) + 1; panel.dirty = true; if (!renderer.xr.isPresenting) toast(`Charge back in the pouch (${inv.c4})`); }
+  if (it.c4stuck) c4NetTake(p);
+  sfx('pouch'); removeProp(p);
+  return true;
+}
+// VR: the demo pouch (a charge) or the firing device on the belt.
+function c4PouchGrab(hand) {
+  if (!C4.on || !RIG.ready || !C4.slotC4) return false;
+  hand.source.getWorldPosition(C4.v);
+  const dc = C4.v.distanceTo(C4.w.set(0, 0, -0.02).applyMatrix4(C4.slotC4.g.matrix)), dd = C4.slotDet ? C4.v.distanceTo(C4.w.set(0, 0, -0.02).applyMatrix4(C4.slotDet.g.matrix)) : 9;
+  if (Math.min(dc, dd) > 0.11) return false;
+  let p;
+  if (dd < dc) { if (C4.det && C4.det.inWorld) return false; p = C4.det = c4Create('det'); C4.safe = true; }
+  else { if ((inv.c4 || 0) <= 0) { pulse(hand, 0.6, 60); return true; } inv.c4--; panel.dirty = true; p = c4Create('c4'); p.item.c4mine = true; }
+  handPose(hand, _palm, _palmQ);
+  itemToWorld(p, _palm, _palmQ, stream.current);
+  itemGrab(hand, p); p.item.blend = 0;
+  sfx('pouch');
+  return true;
+}
+// --- firing ---
+function c4Beep(k = 1) {
+  if (!audio.ctx || audio.ctx.state !== 'running') return;
+  const t = audio.ctx.currentTime + 0.003; tone(t, 2900, 2900, 0.09, 0.05 * k, 'square', 0.04); tone(t + 0.12, 2900, 2900, 0.09, 0.05 * k, 'square', 0.04);
+}
+function c4Fire(hand) {
+  const L = c4Mine();
+  if (!L.length) { if (hand) pulse(hand, 0.3, 30); else toast('No charge placed'); return; }
+  c4Beep(1.2);
+  if (hand) pulse(hand, 0.9, 50);
+  const at = wnow() + C4_C.delay;
+  for (const p of L) { p.item.c4fireAt = at; C4.pend.push(p); }
+  if (!renderer.xr.isPresenting) toast('Firing', 900);
+}
+function c4Detonate(p) {
+  const it = p.item; if (!p.inWorld || p.removing || it.c4gone) return;
+  it.c4gone = true;
+  c4Pose(p);
+  const P = p.root.position.clone(), N = new THREE.Vector3(0, 0, 1).applyQuaternion(p.root.quaternion), door = it.c4door && !it.c4door.blown ? it.c4door : null, room = it.c4room;
+  c4NetBoom(p);
+  const i = C4.list.indexOf(p); if (i >= 0) C4.list.splice(i, 1);
+  removeProp(p);
+  c4Blast(P, N, door, room);
+}
+// --- the blast ---
+// How much of the blast reaches T: a clear line from the charge's face 1, through the leaf it tears out leafX (a hole 0.5),
+// round a corner in the room it went off in 0.45, behind the wall 0.08, the next room 0.12.
+function c4Expose(T, P, Pf, Pb, n, door, hole) {
+  const side = (T.x - P.x) * n.x + (T.y - P.y) * n.y + (T.z - P.z) * n.z;
+  if (side >= 0 && clearLine(Pf, T, 0.1)) return 1;
+  if (side < 0 && (door || hole) && clearLine(Pb, T, 0.1)) return door ? C4_C.leafX : 0.5;
+  const rc = roomContaining(Pf.x, Pf.z, 0.1, Pf.y);
+  if (rc && side >= 0 && insideRoom(rc, T.x, T.z, 0, T.y)) return 0.45;
+  return side < 0 ? 0.08 : 0.12;
+}
+function c4Blast(P, N, door, room) {
+  const now = wnow(), Pf = P.clone().addScaledVector(N, 0.09), Pb = P.clone().addScaledVector(N, door ? -0.13 : -0.3), NN = CONFIG.polish.nade;
+  dynresHint(60); bodyCamFxBlast(P);
+  blastLight(Pf, [1, 0.7, 0.4], CONFIG.nade.fragLight * NN.flash.light * 2.4, 0.2 * NN.flash.dur, 24);
+  fireball(Pf, 'fire', 2.4, 0.34);
+  if (door) fireball(Pb, 'fire', 1.6, 0.28);
+  blastSparks(Pf, 90);
+  c4Sound(Pf);
+  enemiesHear(P);
+  fixturesBlast(P, 1.5); ogBlast(P); shelfBlast(P, 7, 1.6); trickleBlast(P);
+  if (!nadeSmoke(Pf)) hazeEmit(Pf, N, { n: 30, c: [0.32, 0.31, 0.29], a: 0.5, sp: [0.5, 2.6], life: [6, 12], size: [0.08, 0.16], grow: 0.45, drag: 2.0, buoy: 0.05 });
+  hazeEmit(Pf, N, { n: 16, c: CONFIG.polish.haze.concrete, a: 0.32, sp: [0.8, 3], life: [4, 8], size: [0.06, 0.12], grow: 0.35, drag: 2.4, buoy: -0.02 });
+  if (door) hazeEmit(Pb, new THREE.Vector3().copy(N).negate(), { n: 14, c: [0.3, 0.29, 0.27], a: 0.45, sp: [1, 3.5], life: [5, 10], size: [0.08, 0.15], grow: 0.4, drag: 2.0, buoy: 0.05 });
+  let hole = false;
+  P10.muteImpact = true;
+  try {
+    const Ps = P.clone().addScaledVector(N, -0.0205);
+    if (!door && RW.on && room) { const L = rwLocate(room, Ps, N); if (L) { const rw = L.rw, si = L.si, u = L.u, y = L.y; rwHole(room, rw, si, u, y, 0.28, 1); for (let i = 0; i < 4; i++) rwHole(room, rw, si, u + rnd2(-0.18, 0.18), y + rnd2(-0.16, 0.16), rnd2(0.08, 0.14), 1); hole = true; } }
+    if (!door && room && !hole) addBloodDecal(room, 'scorch', Ps, N.clone(), Math.random() * Math.PI * 2, 1.1);
+    if (!nadeScorchX(Pf)) nadeScorch(Pf);
+    for (let i = 0; i < 4; i++) impactFx(hole ? 'plaster' : door ? 'metal' : 'concrete', Pf, N);
+    if (door) c4Frame(door, P, N);
+  } finally { P10.muteImpact = false; }
+  const hurt = nadeGoreScan(door ? Pb : Pf), G = NN.gore;
+  NADE.blastT = now;
+  for (const e of ENEMY.list) {
+    if ((e.dead && !e.downed) || !e.room || !e.room.active || e.net || e.puppet || !e.B) continue;   // each side hurts what it owns
+    if (e.downed && e.downAt >= now) continue;
+    e.B.chest.getWorldPosition(C4.c);
+    const r = C4.c.distanceTo(P); if (r > C4_C.alertR) continue;
+    e.lastKnown.set(rLX(e.room, P.x), enemyBaseY(e) + 1.3, rLZ(e.room, P.z)); e.hasKnown = true;
+    if (!e.engaged) e.heard = true;
+    e.suppress = 3;
+    const kpa = c4Kpa(r) * (e.c4x = c4Expose(C4.c, P, Pf, Pb, N, door, hole));
+    if (kpa < C4_C.stagger) continue;
+    const dir = new THREE.Vector3().subVectors(C4.c, P).normalize(), at = C4.c.clone();
+    e.flashYaw = Math.atan2(-(at.x - P.x), -(at.z - P.z)); e.engaged = true; e.hitT = now;
+    const Hm = hurt && hurt.get(e);
+    if (kpa >= C4_C.hurt) {
+      const dmg = kpa >= C4_C.kill ? 1e4 : kpa >= C4_C.down ? 120 + 200 * (kpa - C4_C.down) / (C4_C.kill - C4_C.down) : 25 + 55 * (kpa - C4_C.hurt) / (C4_C.down - C4_C.hurt);
+      e.hp -= dmg; aiHurt(e, false, now);
+      e.flashUntil = Math.max(e.flashUntil || 0, now + rnd2(3.5, 6)); e.stumble = 1;
+      if (e.hp <= 0) {
+        let h = null;
+        if (kpa < C4_C.kill && downedFor(e) && !e.downed && Math.random() < 0.5) {
+          if (Hm && Hm.hit && Hm.hit.h.part !== 'head' && Hm.hit.h.part !== 'neck') h = Hm.hit;
+          else { const x = (e.hit || HITBOX).find((q) => q.b === 'spine'); if (x) h = { e, h: x, p: e.B.spine.getWorldPosition(new THREE.Vector3()) }; }
+        }
+        if (h) { e.killPart = h.h.part; if (Math.random() < 0.8) voxGrunt(e, 1, true); enemyDown(e, h.h, dir, h.p); }
+        else { e.killPart = 'torso'; enemyDie(e, 'spine', dir, at, (10 + 16 * clamp(1 - r / 3)) * (Hm && Hm.severe ? G.throw : 1)); }
+      }
+    } else {
+      e.hp -= 8 * (kpa - C4_C.stagger) / (C4_C.hurt - C4_C.stagger); aiHurt(e, false, now);
+      e.flashUntil = Math.max(e.flashUntil || 0, now + rnd2(1, 2.5)); e.stumble = Math.min(0.9, (e.stumble || 0) + 0.6);
+    }
+  }
+  for (const e of ENEMY.list) if (e.rag) {                         // bodies, loose things and other doors: shoved
+    const x = e.c4x || 0.45, Hm = hurt && hurt.get(e), kx = Hm && Hm.severe ? G.throw : 1;
+    for (const q of e.rag) {
+      const t = q.body.translation(); C4.c.set(t.x, t.y, t.z);
+      const I = c4I(C4.c.distanceTo(P)) * x; if (I <= 0) continue;
+      const J = Math.min(I * colArea(q.col) * kx, q.body.mass() * 12 * kx); C4.d.subVectors(C4.c, P).normalize().multiplyScalar(J);
+      q.body.applyImpulse({ x: C4.d.x, y: C4.d.y + J * 0.15, z: C4.d.z }, true);
+    }
+  }
+  nadeGoreAfter(hurt);
+  NADE.blastT = Infinity;
+  for (const q of props) {
+    if (q.kinematic || !q.inWorld || q.removing) continue;
+    const t = q.body.translation(); C4.c.set(t.x, t.y, t.z);
+    const d = C4.c.distanceTo(P); if (d > 8) continue;
+    const I = c4I(d) * c4Expose(C4.c, P, Pf, Pb, N, door, hole); if (I <= 0) continue;
+    const J = Math.min(I * colArea(q.collider), q.mass * 22); C4.d.subVectors(C4.c, P).normalize().multiplyScalar(J);
+    q.body.applyImpulse({ x: C4.d.x, y: C4.d.y + J * 0.15, z: C4.d.z }, true);
+  }
+  for (const rm of stream.rooms.values()) {
+    const dr = rm.door; if (!rm.active || !dr || !dr.body || dr === door || dr.blown) continue;
+    const t = dr.body.translation(); C4.c.set(t.x, t.y, t.z);
+    const I = c4I(C4.c.distanceTo(P)); if (I <= 0) continue;
+    C4.d.subVectors(C4.c, P).normalize();
+    const q = dr.body.rotation(), nx = 2 * (q.x * q.z + q.w * q.y), nz = 1 - 2 * (q.x * q.x + q.y * q.y);
+    const J = Math.min(I * 1.8 * Math.abs(C4.d.x * nx + C4.d.z * nz), 260);
+    dr.body.applyImpulse({ x: C4.d.x * J, y: 0, z: C4.d.z * J }, true); dr.drive = null; dr.body.wakeUp();
+  }
+  if (door) c4DoorBlow(door, P, N);
+  // you
+  headWorld(C4.w); C4.c.copy(C4.w); C4.c.y -= 0.35;
+  const r = C4.c.distanceTo(P), x = Math.max(c4Expose(C4.c, P, Pf, Pb, N, door, hole), c4Expose(C4.w, P, Pf, Pb, N, door, hole)), kpa = c4Kpa(r) * x;
+  const dmg = kpa >= C4_C.kill ? 999 : kpa >= C4_C.down ? 70 + 30 * (kpa - C4_C.down) / (C4_C.kill - C4_C.down) : kpa >= C4_C.hurt ? 20 + 50 * (kpa - C4_C.hurt) / (C4_C.down - C4_C.hurt) : kpa >= C4_C.stagger ? 3 + 12 * (kpa - C4_C.stagger) / (C4_C.hurt - C4_C.stagger) : 0;
+  C4.d.subVectors(C4.c, P).normalize();
+  if (dmg > 0.5) playerHit('body', C4.d, 1, dmg / CONFIG.enemy.playerDmg.body);
+  const k = clamp(2 - r / 7) * clamp(x * 1.6);
+  NADE.shake = Math.max(NADE.shake, k * NN.flash.shake * 1.3);
+  if (x >= 0.45 && r < 9) { NADE.white = Math.max(NADE.white, 0.5 * clamp(1 - r / 9)); NADE.hold = Math.max(NADE.hold, 0.12); }
+  for (const h of vrHands) pulse(h, clamp(1.4 - r / 12), 320);
+  earsHit(9 * clamp(1.6 - r / 14) * clamp(x * 2));
+  earsBlast(clamp(1.15 - r / 16) * (x >= 0.45 ? 1 : 0.5), clamp(1.4 - r / 12) * 1.2);
+  C4.last = { r, kpa, x, dmg };
+}
+// The frame round a blown leaf: splinters and paint off the jambs, soot on the wall face either side, drywall chunks.
+function c4Frame(door, P, N) {
+  const w = door.walk, tx = w.c, tz = -w.s, half = door.sw / 2 + 0.05;
+  for (const s of [-1, 1]) for (const dy of [-0.7, 0, 0.6]) {
+    C4.c.set(w.x + tx * half * s, Math.max(w.bot + 0.15, P.y + dy), w.z + tz * half * s);
+    impactFx(Math.random() < 0.5 ? 'wood' : 'metal', C4.c, N);
+  }
+  for (const s of [-1, 1]) {
+    C4.c.set(w.x + tx * (half + 0.22) * s, P.y, w.z + tz * (half + 0.22) * s).addScaledVector(N, 0.35);
+    const S = c4Surface(C4.c, new THREE.Vector3().copy(N).negate(), 0.7);
+    if (S && !S.door) addBloodDecal(S.room, 'scorchW', S.p, S.n, rollAlong(S.n, C4.y.set(0, 1, 0)), 0.85);
+  }
+  const K = COVER.kit && COVER.kit.chunks;
+  if (K && K.length) for (let i = 0; i < 6; i++) {
+    const s = Math.random() < 0.5 ? -1 : 1;
+    C4.c.set(w.x + tx * (half + 0.08) * s, P.y + rnd2(-0.6, 0.8), w.z + tz * (half + 0.08) * s).addScaledVector(N, rnd2(-0.25, 0.25));
+    C4.q.setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6));
+    C4.d.copy(N).multiplyScalar(-rnd2(1.5, 4)); C4.d.x += rnd2(-1.2, 1.2); C4.d.y += rnd2(0, 2); C4.d.z += rnd2(-1.2, 1.2);
+    spawnDebris(door.room, K[(Math.random() * K.length) | 0], C4.c, C4.q, C4.d, C4.w.set(rnd2(-12, 12), rnd2(-12, 12), rnd2(-12, 12)));
+  }
+}
+// The leaf off its hinges: the joint goes, it flies (CCD, the room's statics now stop it), no walk box, counted open.
+function c4DoorBlow(door, P, N) {
+  if (door.blown || !door.body) return;
+  const next = stream.rooms.get(door.room.slot + 1);
+  if (!next || !next.active || VS.lock) { door.body.applyImpulse({ x: -N.x * 120, y: 0, z: -N.z * 120 }, true); door.body.wakeUp(); return; }   // nothing built behind it (or a versus countdown): the frame holds
+  if (door.holder) releaseDoor(door.holder);
+  try { world.removeImpulseJoint(door.joint, true); } catch (e) { /* gone */ }
+  door.joint = null; door.blown = true; door.drive = null; door.angle = Math.PI / 2; door.mode = 'blown';
+  try { door.col.setCollisionGroups(groups(GROUP.DOOR, GROUP.STATIC | GROUP.PROP | GROUP.PLAYER | GROUP.HAND | GROUP.DEBRIS | GROUP.ENEMY)); } catch (e) { /* gone */ }
+  try { door.body.enableCcd(true); door.body.setLinearDamping(0.08); door.body.setAngularDamping(0.5); } catch (e) { /* older rapier */ }
+  const v = rnd2(C4_C.impulse[0], C4_C.impulse[1]) * 38;
+  door.body.applyImpulseAtPoint({ x: -N.x * v, y: 0.12 * v, z: -N.z * v }, { x: P.x, y: P.y, z: P.z }, true);
+  door.body.applyTorqueImpulse({ x: rnd2(-8, 8), y: rnd2(-8, 8), z: rnd2(-8, 8) }, true);
+  door.body.wakeUp();
+  c4LeafPost(door);
+  motionShadows(); dirtyShadows();
+}
+// updateDoorsPost for a blown leaf: the drawn leaf follows its body, its walk box is out of the way.
+function c4LeafPost(door) {
+  const t = door.body.translation(), r = door.body.rotation(), o = door.room.origin;
+  _dvP.set(rLX(door.room, t.x), t.y - o.y, rLZ(door.room, t.z));
+  _dvQ.set(r.x, r.y, r.z, r.w);
+  if ((rF(door.room) < 0) !== !!door.vis) _dvQ.premultiply(_qTurn);
+  door.group.position.copy(_dvP); door.group.quaternion.copy(_dvQ); door.drawn = true;
+  const w = door.walk; w.x = w.z = 1e6; w.top = -1e6; w.bot = -1e6 - 1;
+  door.angle = Math.PI / 2;
+  if (!door.body.isSleeping()) motionShadows();
+}
+// --- sound: the grenade takes two deep, a long sub, the crack, slaps off the walls, debris for seconds ---
+const C4B = { a: null, b: null };
+function c4BoomPlay(d, occl) {
+  const R = CONFIG.polish.nade.rec, t = audio.ctx.currentTime + 0.003, G = R.gain, dk = clamp(6 / (d + 2), 0.4, 2), near = clamp(1 - d / 14);
+  const o = { ls: 7 + (occl ? 3 : 0), hs: -3, lp: 9000, hp: 0, lsF: 110, verb: R.verb * 1.3, echo: R.echo * GUN_MIX.echo * 1.25, at: 0, dur: 0 };
+  if (C4B.a) hrecPlay(C4B.a, 0.95 * G * dk, 0.74, o);
+  if (C4B.b) hrecPlay(C4B.b, 0.6 * G * dk, 0.88, Object.assign({}, o, { ls: 3, hs: 1, lp: 12000, at: 0.006 }));
+  tone(t, 46, 17, 1.7, 0.75 * G * dk * (occl ? 1.5 : 1), 'sine', 0.15);
+  tone(t, 90, 30, 0.5, 0.35 * G * dk, 'triangle', 0.1);
+  if (!occl && near > 0) { const k = G * Math.pow(near, 1.3) * 1.6; nBurst(t, 0.04, 'highpass', 1800, 0.7, 0.6 * k, 0.02, 0.5, 0.3); tone(t, 1200, 90, 0.05, 0.25 * k, 'triangle', 0.3); }
+  if (C4B.a) for (let i = 0; i < NB.ns; i++) hrecPlay(C4B.a, 0.7 * G * dk * NB.slaps[i * 2 + 1], 0.74, { ls: 0, hs: -2, lp: occl ? 800 : 2200, hp: 120, verb: 0.3, echo: 0, at: NB.slaps[i * 2], dur: 0.3 });
+  if (d < 22) {
+    const g = G * clamp(1.5 - d / 14, 0.2, 1.2) * (occl ? 0.5 : 1), t0 = t + 0.25;
+    for (let i = 0; i < 26; i++) nBurst(t0 + Math.pow(Math.random(), 1.6) * 3.2, 0.03, 'highpass', 2500 + Math.random() * 3000, 0.8, rnd2(0.03, 0.07) * g, 0.015, 0.2);
+    for (let i = 0; i < 9; i++) KNOCK_SND.plaster(t0 + Math.pow(Math.random(), 1.3) * 2.4, rnd2(0.7, 1.3), 0.4 * g, 1);
+    for (let i = 0; i < 4; i++) KNOCK_SND.wood(t0 + 0.2 + Math.random() * 1.8, rnd2(0.8, 1.2), 0.35 * g, 1);
+  }
+}
+function c4Sound(P) {
+  if (!audio.ctx || audio.ctx.state !== 'running') return;
+  C4B.a = NREC.bufs.nadeBoom1 || NREC.bufs.nadeBoom2 || null; C4B.b = NREC.bufs.nadeBoom2 || null;
+  if (!nrecOn() || !C4B.a) { nadeSound('frag', P); soundAt(P, () => tone(audio.ctx.currentTime + 0.003, 46, 17, 1.6, 0.8, 'sine', 0.2)); return; }
+  nadeSlaps(P);
+  soundAt(P, c4BoomPlay);
+}
+// --- per frame (from nadesUpdate) ---
+function c4Tick(dt, now) {
+  if (!C4.on) return;
+  if (!C4.ui && WORKSHOP && WORKSHOP.supplies) {
+    C4.ui = true;
+    WORKSHOP.supplies.push({ id: 'c4', name: 'Breaching charges', price: C4_C.price, buy: c4Buy,
+      desc: `M112 C-4 blocks with cap and wireless receiver, ${C4_C.buy} for ${fmtMoney(C4_C.price)} (carry up to ${C4_C.max})` });
+  }
+  if (C4.kDown && !C4.kHold && now - C4.kAt >= C4_C.hold) { C4.kHold = true; c4Fire(null); }
+  for (let i = C4.pend.length - 1; i >= 0; i--) { const p = C4.pend[i]; if (now >= p.item.c4fireAt) { C4.pend.splice(i, 1); c4Detonate(p); } }
+  for (let i = C4.list.length - 1; i >= 0; i--) {
+    const p = C4.list[i], it = p.item;
+    if (!p.inWorld || p.removing) { C4.list.splice(i, 1); if (it.c4stuck && !it.c4gone) c4NetTake(p); continue; }
+    if (p.holders.length) { if (it.c4stuck) { it.c4stuck = false; it.c4anchor = null; c4NetTake(p); } C4.list.splice(i, 1); continue; }
+    if (it.c4stuck) c4Pose(p);
+  }
+  if (C4.mats) C4.mats.led.emissiveIntensity = C4.list.length && (now * 1.5) % 1 < 0.12 ? 3 : 0;   // the receivers blink while armed on a surface
+  for (const h of vrHands) {                                       // VR: a charge pressed against something sticks; the firing device's trigger
+    const p = h.prop, it = p && p.item;
+    if (!it || (it.kind !== 'c4' && it.kind !== 'c4det')) continue;
+    if (it.kind === 'c4') {
+      p.root.updateMatrixWorld(true);
+      C4.n.set(0, 0, -1).transformDirection(p.root.matrixWorld);
+      C4.v.setFromMatrixPosition(p.root.matrixWorld).addScaledVector(C4.n, -0.02);
+      const S = c4Surface(C4.v, C4.n, 0.065);
+      if (S && S.t < 0.046 && S.n.dot(C4.n) < -0.55 && !(S.door && S.door.blown)) {
+        freeForget(h, it); h.prop = null; h.role = null; p.holders.length = 0;
+        it.c4mine = true;
+        c4Stick(p, S.p, S.n, S.door, S.room, C4.x.set(1, 0, 0).transformDirection(p.root.matrixWorld).clone());
+        c4NetPlace(p); pulse(h, 0.7, 40);
+      }
+      continue;
+    }
+    const gp = h.ctrl && h.ctrl.userData.gamepad, b = gp && gp.buttons[0], v = b ? Math.max(b.value || 0, b.pressed ? 1 : 0) : 0;
+    c4DetPose(p.root, v, !C4.safe);
+    const on = v > 0.75, edge = on && !h.c4Trig; h.c4Trig = on;
+    if (edge) { if (C4.safe) { C4.safe = false; c4Beep(0.6); pulse(h, 0.4, 25); } else { c4Fire(h); C4.safe = true; } }
+  }
+  // let go: the firing device goes back on its clip, a charge at the pouch goes back in (one in the air just drops)
+  if (C4.det && C4.det.inWorld && !C4.det.holders.length && !C4.det.removing) { removeProp(C4.det); C4.det = null; C4.safe = true; }
+  if (RIG.ready && C4.slotC4) {
+    for (const q of props) {
+      if (!q.item || q.item.kind !== 'c4' || q.holders.length || q.item.c4stuck || q.removing || !q.item.c4mine) continue;
+      if (q.root.position.distanceTo(C4.w.set(0, 0, -0.02).applyMatrix4(C4.slotC4.g.matrix)) < 0.16) c4Stow(q);
+    }
+    if (C4.slotC4.blk) C4.slotC4.blk.visible = (inv.c4 || 0) > 0;
+    if (C4.slotDet && C4.slotDet.dev) C4.slotDet.dev.visible = !(C4.det && C4.det.inWorld);
+  }
+}
+function c4Buy() {
+  if (WALLET.money < C4_C.price) { wsMsg(`Not enough money: breaching charges cost ${fmtMoney(C4_C.price)}, you have ${fmtMoney(WALLET.money)}`); wsDeny(); return false; }
+  if ((inv.c4 || 0) >= C4_C.max) { wsMsg(`Breaching charges: you already carry ${C4_C.max}, nothing charged`); return false; }
+  inv.c4 = Math.min(C4_C.max, (inv.c4 || 0) + C4_C.buy); panel.dirty = true;
+  walletSpend(C4_C.price); playBuy();
+  wsMsg(`Breaching charges: you carry ${inv.c4}. ${fmtMoney(C4_C.price)} paid, ${fmtMoney(WALLET.money)} left`);
+  return true;
+}
+function c4Refill(I) { inv.c4 = C4.on ? Math.max(inv.c4 || 0, I.c4 ?? C4_C.carry) : 0; }
+// rigBuild: the demo pouch on the left hip (a block showing in it) and the firing device clipped on the right of the belt.
+function c4Rig(add, pouch, V, UP) {
+  if (!C4.on) return;
+  c4Tpl();
+  const s = add({ kind: 'c4', type: 'c4', bone: BB.pelvis, local: rigLocal(BB.pelvis, V(-0.175, 0.9, 0.085), V(-1, 0, 0), UP) });
+  s.g.add(pouch(0.29, 0.06, 0.05));
+  const b = C4.tplC.clone(true); b.position.set(0, 0.012, -0.024); s.g.add(b); s.blk = b;
+  C4.slotC4 = s;
+  const sd = add({ kind: 'c4det', type: 'c4det', bone: BB.pelvis, local: rigLocal(BB.pelvis, V(0.105, 0.93, -0.112), V(0.55, 0, -0.83), UP) });
+  const dv = C4.tplD.clone(true); dv.position.set(0, 0, -0.02); sd.g.add(dv); sd.dev = dv;
+  C4.slotDet = sd;
+}
+// weaponsPrecompile: the models in view once, so nothing compiles when you first take or place one.
+function c4Precompile(on) {
+  if (!C4.on) return;
+  c4Tpl();
+  if (on) { camera.updateMatrixWorld(true); const g = C4.warm || (C4.warm = new THREE.Group()); if (!g.children.length) g.add(C4.tplC.clone(true), C4.tplD.clone(true)); g.position.set(0, 0, -1.4).applyMatrix4(camera.matrixWorld); g.scale.setScalar(0.05); scene.add(g); }
+  else if (C4.warm) scene.remove(C4.warm);
+}
+// --- multiplayer ---
+function c4AnchorMsg(p) {
+  const it = p.item, room = it.c4door ? it.c4door.room : it.c4room, rd = (x) => +x.toFixed(4);
+  it.c4local.decompose(C4.v, C4.q, C4.s);
+  return { a: it.c4door ? 'd' : 'r', s: room.slot, rk: mpwK(room), o: [rd(C4.v.x), rd(C4.v.y), rd(C4.v.z)], q: [rd(C4.q.x), rd(C4.q.y), rd(C4.q.z), rd(C4.q.w)] };
+}
+function c4NetPlace(p) {
+  if (!netLive()) return;
+  const it = p.item; if (!it.c4netId) it.c4netId = (NET.role === 'host' ? 'hc' : 'jc') + (++C4.seq) + '-' + (Math.random() * 1e6 | 0).toString(36);
+  netSendRel(Object.assign({ t: 'c4p', id: it.c4netId }, c4AnchorMsg(p)));
+}
+function c4NetTake(p) { const id = p.item.c4netId; if (id && netLive() && p.item.c4mine) netSendRel({ t: 'c4u', id }); p.item.c4netId = null; }
+function c4NetBoom(p) { const it = p.item; if (netLive() && it.c4mine && it.c4netId) netSendRel(Object.assign({ t: 'c4b', id: it.c4netId }, c4AnchorMsg(p))); }
+function c4NetRx(m) {
+  if (!C4.on) return;
+  const r = stream.rooms.get(m.s), old = C4.net.get(m.id);
+  if (m.t === 'c4u') { if (old) { C4.net.delete(m.id); if (old.inWorld && !old.removing) removeProp(old); } return; }
+  if (!r || !r.active || !mpwKindOk(r, m.rk)) return;
+  const door = m.a === 'd' ? r.door : null, anchor = door ? door.group : r.group; if (!anchor) return;
+  const L = new THREE.Matrix4().compose(new THREE.Vector3(m.o[0], m.o[1], m.o[2]), new THREE.Quaternion(m.q[0], m.q[1], m.q[2], m.q[3]).normalize(), new THREE.Vector3(1, 1, 1));
+  anchor.updateWorldMatrix(true, false);
+  C4.m2.multiplyMatrices(anchor.matrixWorld, L).decompose(C4.v, C4.q, C4.s);
+  if (m.t === 'c4p') {
+    if (old && old.inWorld) return;
+    const p = c4Create('c4'), it = p.item;
+    itemToWorld(p, C4.v, C4.q, r); setKinematic(p);
+    Object.assign(it, { c4local: L, c4anchor: anchor, c4door: door, c4room: r, c4stuck: true, netRem: true, c4netId: m.id });
+    p.netFixed = true;                                             // his: not yours to take
+    C4.list.push(p); C4.net.set(m.id, p);
+    return;
+  }
+  if (m.t === 'c4b') {
+    const P = C4.v.clone(), N = new THREE.Vector3(0, 0, 1).applyQuaternion(C4.q);
+    if (old) { C4.net.delete(m.id); if (old.inWorld && !old.removing) removeProp(old); }
+    const ehF = NET.ehFrom; if (netCoop() && NET.role === 'host') NET.ehFrom = true;   // co-op host: the joiner's charge: the men it kills are his
+    try { c4Blast(P, N, door && !door.blown ? door : null, r); } finally { NET.ehFrom = ehF; }
+  }
+}
+if (/[?&]dev\b/.test(QS)) window.__cqcC4 = { C4, C4_C, c4Kpa, c4I, c4Create, c4Stick, c4Surface, c4DeskPlace, c4Key, c4Pad, c4Fire, c4Detonate, c4Blast, c4DoorBlow, c4Expose, c4ChargeModel, c4DetModel, c4Mats, c4NetRx, c4Mine, c4Tick };
 
 /* ---------------------------------------------------------------------------
  *  COMPUTER / PHONE THROW — your left hand does it, the gun stays in your right.
@@ -21699,6 +22303,7 @@ function refillInventory() {
   inv.shells = 0;
   inv.frag = I.frag ?? 2; inv.flash = I.flash ?? 2; inv.smoke = SMK_ON ? I.smoke ?? 2 : 0;   // step 23; step 125 smoke
   inv.med = 2;                                          // step 79: two auto-injectors on your arm
+  c4Refill(I);                                          // C4 breaching charges
   panel.dirty = true;
 }
 function takeMag(type) {
@@ -22023,6 +22628,7 @@ function updateRackHover() {
 }
 function stowItem(p) {
   const it = p.item;
+  if (it.kind === 'c4' || it.kind === 'c4det') return c4Stow(p);   // C4: a charge back in the pouch
   if (it.kind === 'light' || it.kind === 'att') return false;      // lights aren't pouched
   if (it.kind === 'med') { inv.med = (inv.med || 0) + 1; panel.dirty = true; sfx('pouch'); removeProp(p); return true; }   // step 79: they go on a gun or down
   if (it.kind === 'nade') {                                        // step 23: only a safe grenade goes back in a pouch
@@ -22287,6 +22893,7 @@ function stowGun(g) {
 function tryPouch(hand) {
   if (nadePouchGrab(hand)) return true;                            // step 23: grenade pouches (step 79: belt and thigh)
   if (rigMedGrab(hand)) return true;                               // step 79: an auto-injector off your arm
+  if (c4PouchGrab(hand)) return true;                              // C4: a charge or the firing device
   hand.source.getWorldPosition(_wv);
   if (!inPouchZone(_wv)) return false;
   const other = vrHands.find((h) => h !== hand && gunOf(h));
@@ -27714,6 +28321,7 @@ function rigBuild() {
     s.g.add(patch);
     s.pens = [-0.016, 0.016].map((x) => { const p = medModel(); p.position.set(x, 0.035, -0.015); s.g.add(p); return p; });
     RIG.med = s; }
+  c4Rig(add, pouch, V, UP);                                        // C4: demo pouch, firing device
   // the sling's anchor and the invisible torso / thighs it bumps against
   RIG.anchor = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, -20, 0));
   const tg = groups(GROUP_TORSO, GROUP.PROP);
@@ -36755,6 +37363,7 @@ function weaponsPrecompile(on) {
   m4Precompile(on);                                 // step 105: the M4A1-S's reticle glasses and scope eyepiece
   railPrecompile(on);                               // step 112: the light glow cones
   trcPrecompile(on);                                // step 121: the tracer streaks (built now, always in the scene)
+  c4Precompile(on);                                 // C4: charge and firing device
 }
 
 /* ============================================================================
@@ -38127,7 +38736,7 @@ const OPT_GROUPS = [
     ['shelfbox', 'Real boxes on shelves'], ['attclip', 'Attachments collide'], ['ragself', 'Ragdoll limbs collide'], ['raglim', 'Ragdoll joint limits'], ['ragsleep', 'Bodies come to rest'],
     ['headguard', 'Recentre / wall guard'], ['canheat', 'Suppressor heat'], ['muzchain', 'Stack muzzle devices'], ['rails', 'Rail stacking'], ['brass', 'Brass stays on the floor'],
     ['facility', 'Facility rooms'], ['enade', 'Enemies throw grenades'], ['fallback', 'Men fall back under fire'],
-    ['reinf', 'Reinforcements'], ['tbody', 'Tactical body motion'], ['idlelife', 'Men busy before contact'], ['unstick', 'Men unstick, avoid boxes / leaves'], ['spawnchk', 'Clear spawn spots'], ['roomwalls', 'Breakable room walls']]],
+    ['reinf', 'Reinforcements'], ['tbody', 'Tactical body motion'], ['idlelife', 'Men busy before contact'], ['unstick', 'Men unstick, avoid boxes / leaves'], ['spawnchk', 'Clear spawn spots'], ['roomwalls', 'Breakable room walls'], ['c4', 'C4 breaching charges']]],
   ['gore', 'GORE', [['wetstep', 'Bloody footprints'], ['splash', 'Puddles splash'], ['bodywear', 'Damp, worn clothes']]],
   ['look', 'GRAPHICS', [['mv', 'Multiview stereo (VR, experimental)', 'on'], ['bounce', 'Bounce light in rooms'], ['lite', 'Lite graphics (laptops)'], ['surf', 'Scanned surfaces'], ['tfill', 'Fill light, big rooms'], ['pdmg', 'Shaped drywall holes'], ['wear', 'Floor wear and water'], ['wallwear', 'Worn walls'],
     ['propwear', 'Worn furniture'], ['glass', 'Broken glass on floors'], ['fixtures', 'Shoot-out ceiling lights'], ['handshadow', 'Hand shadows (VR)'], ['dazzle', 'Flashlight glare'],
