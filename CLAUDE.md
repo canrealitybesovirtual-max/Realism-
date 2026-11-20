@@ -2383,3 +2383,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: smaller drywall debris
 - Broken wall pieces 1.5-7 cm (were 3-15 cm), crumbs 0.6-1.4 cm (were 1.2-2.4). Parse checked only.
+
+## CQC: update number
+- Title screen shows "UPDATE 1.04" bottom right (#verTag); the M / pad menu header shows "Update 1.04". Bump both on each update.
