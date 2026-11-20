@@ -3049,13 +3049,13 @@ const CONFIG = {
     // e = its energy in the game's 9 mm units (CONFIG.cover.energy wins where it lists the gun), defl deg it turns going
     // through something (pistol rounds yaw easily), tum how readily it starts to tumble (5.56 the most).
     rounds: {
-      '9mm': { m: 8.0, v: 360, d: 9.0, form: 1, e: 1, defl: 4, tum: 0.6 },
-      '380': { m: 6.2, v: 290, d: 9.0, form: 1, e: 0.7, defl: 5, tum: 0.6 },
-      '45': { m: 14.9, v: 255, d: 11.5, form: 1, e: 1.1, defl: 4, tum: 0.5 },
-      '556': { m: 4.0, v: 930, d: 5.7, form: 0.8, e: 1.9, defl: 2.5, tum: 1 },
-      '762': { m: 7.9, v: 715, d: 7.9, form: 1, e: 2.3, defl: 2, tum: 0.8 },
-      '338': { m: 16.2, v: 900, d: 8.6, form: 1.1, e: 4.5, defl: 1, tum: 0.35 },
-      buck: { m: 3.5, v: 400, d: 8.4, form: 0.55, e: 0.45, defl: 7, tum: 0 },     // one 00 pellet: a lead ball
+      '9mm': { m: 8.0, v: 360, d: 9.0, form: 1, e: 1, defl: 4, tum: 0.6, bc: 0.15 },
+      '380': { m: 6.2, v: 290, d: 9.0, form: 1, e: 0.7, defl: 5, tum: 0.6, bc: 0.1 },
+      '45': { m: 14.9, v: 255, d: 11.5, form: 1, e: 1.1, defl: 4, tum: 0.5, bc: 0.19 },
+      '556': { m: 4.0, v: 930, d: 5.7, form: 0.8, e: 1.9, defl: 2.5, tum: 1, bc: 0.3 },
+      '762': { m: 7.9, v: 715, d: 7.9, form: 1, e: 2.3, defl: 2, tum: 0.8, bc: 0.29 },
+      '338': { m: 16.2, v: 900, d: 8.6, form: 1.1, e: 4.5, defl: 1, tum: 0.35, bc: 0.67 },
+      buck: { m: 3.5, v: 400, d: 8.4, form: 0.55, e: 0.45, defl: 7, tum: 0, bc: 0.05 },     // one 00 pellet: a lead ball
       frag: { m: 0.6, v: 1000, d: 6.0, form: 0.35, e: 0.8, defl: 10, tum: 0 }      // a grenade fragment
     },
     gun: { pistol: '9mm', smg: '9mm', fn509: '9mm', g17: '9mm', ppk: '380', m1911: '45', rifle: '556', m4a1s: '556', akm: '762', akmn: '762', awp: '338', shotgun: 'buck', frag: 'frag' },
@@ -3073,6 +3073,10 @@ const CONFIG = {
     tumbleWound: 0.6,          // ... and its wound is x (1 + this x tumble) (damage x half of that)
     exitSize: { plaster: 0.11, wood: 0.085, metal: 0.045, concrete: 0.13 },   // m: the exit decals (x calibre, x tumble)
     fxRate: 24, fxCap: 10,     // exit puffs a second / at once (a grenade's 70 fragments share them)
+    // TRAJECTORY (?ballistics=off = straight lines): bc = G1 ballistic coefficient (lb/in2) of each round above (frag:
+    // none = a straight line). Gravity drop and G1 drag in pieces of `piece` s of flight (min / max m); energy falls with v^2.
+    drop: true, g: 9.81, rho: 1.2, sound: 343, piece: 0.02, pieceMin: 3, pieceMax: 15,
+    wind: { speed: 0, from: 0, minRoom: 40 },   // m/s, heading it blows toward (rad, world); only in a room this long (indoors the air is still)
     ai: { malus: 2.2, memory: 120 }   // men who saw rounds come through soft cover score it down (x your gun: rifles 1, pistols 0.55, buckshot 0.35); s to forget
   },
 
@@ -22469,7 +22473,7 @@ function fireGun(g, now) {
   _fo.copy(g.wr.chamber).applyMatrix4(root.matrixWorld);
   // Step 8.1: zeroed. The sights sit above the bore, so the bore is angled up a hair
   // and the bullet crosses the sight line at d.zero metres (CQC: a few cm low up close).
-  _fd.set(d.zero ? (g.sightX || 0) / d.zero : 0, d.zero ? (g.sightY ?? d.eye[1]) / d.zero : 0, -1).normalize().applyQuaternion(_wq);   // step 100: a red dot / tall sights move the sight line
+  _fd.set(d.zero ? (g.sightX || 0) / d.zero : 0, d.zero ? (g.sightY ?? d.eye[1]) / d.zero + balZeroUp(g.type, d.zero) : 0, -1).normalize().applyQuaternion(_wq);   // step 100: a red dot / tall sights move the sight line
   const AF = g.afx || AFX0;                                        // step 100: the fitted parts (GLOCK_FX)
   _fx.set(1, 0, 0).applyQuaternion(_wq); _fy.set(0, 1, 0).applyQuaternion(_wq);
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
@@ -30613,6 +30617,110 @@ function selfBleedTick(now) {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ *  TRAJECTORY (CONFIG.ballistics drop / bc / wind, ?ballistics=off = straight lines)
+ *  A round no longer flies a straight line: traceBullet0 casts it in short straight
+ *  pieces (balPiece: `piece` s of flight, 3-15 m) along the chord of a real path,
+ *  each with all the usual hit logic (glass, you, men, cover, walls, props). Between
+ *  pieces the velocity takes gravity and G1 drag: a = rho Cd_G1(Mach) pi v^2 /
+ *  (8 BC 703.07) on the speed through the air (wind only in a room longer than
+ *  wind.minRoom; 0 m/s by default). The trace's energy E is v^2 (E = vk v^2), so a
+ *  hit far away does less, and anything it goes through slows it (its speed comes
+ *  back from E). Sights are zeroed with the drop: fireGun adds balZeroUp (the
+ *  launch angle that puts the round on the sight line at the zero), and his aimed
+ *  rounds hold over by the drop to you. Time of flight: BAL.tof (not delayed).
+ *  Frag fragments stay straight (no bc). No per-frame or per-shot allocation.
+ * ------------------------------------------------------------------------- */
+const BAL_ON = !/[?&]ballistics=off\b/.test(QS) && !!CONFIG.ballistics && CONFIG.ballistics.drop !== false;
+// G1 standard drag function: Mach, Cd.
+const BAL_GM = new Float32Array([0, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.5, 1.6, 1.8, 2.0, 2.2, 2.5, 3.0, 4.0, 5.0]);
+const BAL_GC = new Float32Array([0.2629, 0.2032, 0.2034, 0.2165, 0.2313, 0.2546, 0.2901, 0.3415, 0.4084, 0.4805, 0.5427, 0.5883, 0.6191, 0.6393, 0.6589, 0.6625, 0.6573, 0.6474, 0.6210, 0.5934, 0.5685, 0.5397, 0.5133, 0.4988, 0.4811]);
+function balCd(M) {
+  const X = BAL_GM, Y = BAL_GC, n = X.length;
+  if (M <= X[0]) return Y[0];
+  if (M >= X[n - 1]) return Y[n - 1];
+  let i = 1; while (X[i] < M) i++;
+  const f = (M - X[i - 1]) / (X[i] - X[i - 1]);
+  return Y[i - 1] + (Y[i] - Y[i - 1]) * f;
+}
+const BAL = {
+  live: false, kb: 0, vk: 1, ef: 1, tp: 0, tof: 0, pc: 0, wind: false, zc: {},
+  V: new THREE.Vector3(), W: new THREE.Vector3(), R: new THREE.Vector3(), t: new THREE.Vector3(), d: new THREE.Vector3()
+};
+// The drag factor without the Cd: rho pi / (8 BC 703.07) per m.
+const balK = (bc) => CONFIG.ballistics.rho * Math.PI / (8 * bc * 703.07);
+const balL = (v) => { const B = CONFIG.ballistics; return clamp(v * B.piece, B.pieceMin, B.pieceMax); };
+// One piece of flight: from speed v along s m of air, the speed at its end and the time it took (dv/ds = -k Cd v).
+function balAir(kb, v, s) {
+  const k = kb * balCd(v / CONFIG.ballistics.sound), f = Math.exp(-k * s);
+  BAL.ef = f; BAL.tp = k * s > 1e-6 ? (1 / f - 1) / (k * v) : s / v;
+  return v * f;
+}
+// The drop (m, negative = below the line it left on) of a round launched level at v, kb, after x m.
+// Same pieces as the trace (scalars only), so the zero matches what the trace does.
+function balDropAt(kb, v0, x) {
+  const g = CONFIG.ballistics.g;
+  let px = 0, py = 0, vx = v0, vy = 0;
+  for (let n = 0; n < 400 && px < x; n++) {
+    const v = Math.hypot(vx, vy), s = Math.min(balL(v), (x - px) * v / Math.max(vx, 1e-3));
+    const ve = balAir(kb, v, s), t = BAL.tp, f = ve / v;
+    const ex = vx * f, ey = vy * f - g * t;
+    const cx = vx + ex, cy = vy + ey, cl = Math.hypot(cx, cy);
+    px += cx / cl * s; py += cy / cl * s; vx = ex; vy = ey;
+  }
+  return py;
+}
+// fireGun: the extra launch angle (rad, up) so a level round meets its sight line again at the zero.
+function balZeroUp(type, zero) {
+  if (!BAL_ON || !(zero > 0)) return 0;
+  const B = CONFIG.ballistics, key = B.gun[type] || '9mm', ck = key + '|' + zero;
+  let a = BAL.zc[ck];
+  if (a === undefined) {
+    const R = B.rounds[key];
+    a = BAL.zc[ck] = R && R.bc ? -balDropAt(balK(R.bc), R.v, zero) / zero : 0;
+  }
+  return a;
+}
+// traceBullet1: a round of this gun starts flying (its own copy of the path). His aimed rounds hold over for the drop.
+function balBegin(dir, type, opts) {
+  const B = CONFIG.ballistics, key = B.gun[type], R = key ? B.rounds[key] : null;
+  BAL.live = false;
+  if (!R || !R.bc || type === 'frag') return dir;
+  const E0 = CONFIG.cover.energy[type] !== undefined ? CONFIG.cover.energy[type] : PEN_ON ? R.e : 1;   // what traceBullet0 starts with
+  BAL.kb = balK(R.bc); BAL.vk = R.v * R.v / E0; BAL.tof = 0; BAL.pc = 0; BAL.live = true;
+  const D = BAL.d.copy(dir);
+  if (opts && opts.enemy && opts.range !== undefined && opts.range < CONFIG.weapons.rayRange) {   // he holds over for the drop to you
+    const a = -balDropAt(BAL.kb, R.v, opts.range) / Math.max(opts.range, 0.5), hz = Math.hypot(D.x, D.z);
+    D.y += a * hz; D.normalize();
+  }
+  const W = B.wind, room = typeof stream !== 'undefined' ? stream.current : null;
+  BAL.wind = !!(W && W.speed > 0 && room && Math.max(room.w || 0, room.d || 0) >= W.minRoom);
+  if (BAL.wind) BAL.W.set(Math.sin(W.from) * W.speed, 0, -Math.cos(W.from) * W.speed);
+  return D;
+}
+// traceBullet0, top of each pass: the next piece from here (speed from E). dir becomes the piece's chord;
+// BAL.t its end direction, BAL.ef the energy factor over the whole piece. Returns its length.
+function balPiece(dir, E, range) {
+  const V = BAL.V, v = Math.sqrt(Math.max(BAL.vk * E, 1));
+  V.copy(dir).multiplyScalar(v);
+  const s = Math.min(range, balL(v));
+  let ve;
+  if (BAL.wind) {                                                 // the air moves: drag acts on the speed through it
+    const Rv = BAL.R.copy(V).sub(BAL.W), vr = Rv.length();
+    balAir(BAL.kb, vr, s * vr / v);
+    V.copy(BAL.W).addScaledVector(Rv, BAL.ef);
+  } else { balAir(BAL.kb, v, s); V.multiplyScalar(BAL.ef); }
+  V.y -= CONFIG.ballistics.g * BAL.tp;
+  ve = V.length();
+  BAL.ef = ve * ve / (v * v); BAL.tof += BAL.tp;
+  BAL.t.copy(V).divideScalar(ve);
+  dir.multiplyScalar(v).add(V).normalize();                       // the chord: mean of the start and end velocity
+  return s;
+}
+// After a trace (enemyShoot / fireGun may read it): s the round took to get where it ended.
+const balTof = () => BAL.tof;
+if (BAL_ON && /[?&]dev\b/.test(QS)) window.__cqcBal = { BAL, balCd, balK, balAir, balDropAt, balZeroUp, balBegin, balPiece };
+
 function traceBullet0(origin, dir, d, type, opts = null) {
   let E = CONFIG.cover.energy[type] !== undefined ? CONFIG.cover.energy[type] : PEN.live ? PEN.e0 : 1;   // step 119: guns not listed there use their cartridge
   let range = opts && opts.range !== undefined ? opts.range : CONFIG.weapons.rayRange;
@@ -30620,10 +30728,12 @@ function traceBullet0(origin, dir, d, type, opts = null) {
   if (!_rapRay) _rapRay = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
   _tbo.copy(origin); _tbE = E; _tbTravel = 0;
   for (let pass = 0; pass < 6; pass++) {
+    const cl = BAL.live ? balPiece(dir, E, range) : range;     // TRAJECTORY: the next straight piece of a curved path (dir = its chord)
     _rapRay.origin = { x: _tbo.x, y: _tbo.y, z: _tbo.z };
     _rapRay.dir = { x: dir.x, y: dir.y, z: dir.z };
-    const hit = world.castRayAndGetNormal(_rapRay, range, true, undefined, fromEnemy ? ENEMY_RAY_GROUPS : RAY_GROUPS);   // APARTMENT DESTRUCTION: breakables only rounds see
-    const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : range;
+    const hit = world.castRayAndGetNormal(_rapRay, cl, true, undefined, fromEnemy ? ENEMY_RAY_GROUPS : RAY_GROUPS);   // APARTMENT DESTRUCTION: breakables only rounds see
+    const toi = hit ? (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit.toi) : cl;
+    if (BAL.live) { E = _tbE = E * Math.pow(BAL.ef, toi / Math.max(cl, 1e-6)); }   // TRAJECTORY: drag over the way to here (E ~ v^2)
     if (OG && OG.on) {                                           // OFFICE GLASS BREAKS: a pane before anything else?
       const gr = ogRay(_tbo, dir, toi);
       if (gr && (fromEnemy || !enemyRayTest(_tbo, dir, gr.t))) {
@@ -30654,6 +30764,7 @@ function traceBullet0(origin, dir, d, type, opts = null) {
       if (eh) { _tbTravel += eh.t; if (TRC.rec >= 0) trcSeg(_tbo, dir, eh.t, 2, null); enemyShot(eh, dir, d, E); return false; }   // step 121: a tracer's path
       aiRoundPassed(_tbo, dir, toi);                             // step 11: a crack past his head suppresses him
     }
+    if (!hit && BAL.live && cl < range - 1e-4) { if (TRC.rec >= 0) trcSeg(_tbo, dir, cl, 0, null); _tbTravel += cl; range -= cl; _tbo.addScaledVector(dir, cl); dir.copy(BAL.t); pass--; if (++BAL.pc > 120) return true; continue; }   // TRAJECTORY: flew the piece, bends on
     if (!hit) { if (TRC.rec >= 0) trcSeg(_tbo, dir, range, 0, null); _tbTravel += range; _tbE = E; return true; }   // step 121
     _tbTravel += toi;
     _cv.p.copy(_tbo).addScaledVector(dir, toi);
@@ -30719,6 +30830,10 @@ function traceBulletT(origin, dir, d, type, opts) {
   return traceBullet1(origin, dir, d, type, opts);
 }
 function traceBullet1(origin, dir, d, type, opts) {
+  if (BAL_ON) { const bd = balBegin(dir, type, opts); try { return traceBulletP(origin, bd, d, type, opts); } finally { BAL.live = false; } }   // TRAJECTORY: its own copy, bent by gravity and drag
+  return traceBulletP(origin, dir, d, type, opts);
+}
+function traceBulletP(origin, dir, d, type, opts) {
   if (!PEN_ON) return traceBullet0(origin, dir, d, type, opts);
   penStart(type, opts);
   try { return traceBullet0(origin, PEN.d.copy(dir), d, type, opts); } finally { PEN.live = false; }   // its own copy of the path: it may turn
@@ -31404,7 +31519,7 @@ CONFIG.tracer = Object.assign({
   nvgI: 6                                    // into the night-vision gate like a muzzle light of this size
 }, CONFIG.tracer || {});
 const TRC_ON = !/[?&]tracer=off\b/.test(QS) && CONFIG.tracer.on !== false;
-const TRC_SEG = 6;
+const TRC_SEG = BAL_ON ? 14 : 6;                              // TRAJECTORY: a curved path is more pieces
 const TRC = {
   n: CONFIG.tracer.n | 0 || 24, every: CONFIG.tracer.every, arm: -1, key: '762', his: false, rec: -1, next: 0, mesh: null, mat: null, uiDone: false,
   youT: -99, youP: new THREE.Vector3(), h: new THREE.Vector3(), v: new THREE.Vector3(), w: new THREE.Vector3(), q: new THREE.Vector3(),
