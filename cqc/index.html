@@ -5933,6 +5933,7 @@ async function buildKit() {
   setLoad('Building furniture and fixtures', 0.91);
   await yieldFrame();
   buildFurnitureKit(macro);        // step 8: cabinets, shelving, desks, fixtures, finishes
+  offrKit();                       // office realism: atlas, desk / cabinet / whiteboard variants
 
   setLoad('Building loose objects', 0.93);
   await yieldFrame();
@@ -6571,6 +6572,241 @@ function wallBand(len, hWall, y1, gaps, tile) {
   g.setAttribute('macroUv', new THREE.Float32BufferAttribute(muv, 2));
   g.setIndex(idx);
   return { geo: g, segs };
+}
+
+/* ============================================================================
+ *  OFFICE REALISM (?officereal=off = the old desks, cabinets and whiteboards)
+ *  One painted atlas made once at load (fixed seed, so both multiplayer sides
+ *  draw the same): printed documents with text, sticky notes, ID badges, a
+ *  mouse pad with a coffee ring, crumpled paper, six monitor pictures (desktop,
+ *  spreadsheet, CCTV quad, mail, console, login), keyboard and phone legends,
+ *  posters, wall calendars, binder spines, filing labels, coffee. Two
+ *  materials use it (paper: opaque, polygon offset; screen: dim emissive), so
+ *  an office room adds two draws. Desks, filing cabinets and whiteboards get
+ *  variants (P.desk_v0..5, cabinet_v0..3, whiteboard_v0..2) that pick different
+ *  cells and layouts; the room builder picks one per piece from the slot and
+ *  the piece's index (offrPick), so no two neighbours are clones and a room
+ *  looks the same each visit and on both sides. A desk against a wall gets a
+ *  poster, calendar and notes on the wall behind it (offWall_v0..3).
+ *  Atlas 2048 px (1024 on Lite / Xbox / low memory). Desk laminate edge wear,
+ *  chair fabric pilling and cabinet scuffs are step 97's prop wear.
+ * ========================================================================== */
+const OFFR = { on: !/[?&]officereal=off\b/.test(QS), N: { desk: 6, cabinet: 4, whiteboard: 3, wall: 4 }, tex: null, paper: null, scr: null, cell: null };
+function offrAtlas() {
+  const S = (LITE.on || LOWMEM.on) ? 1024 : 2048, C = S / 8, R = mulberry32(0x0ff1ce);
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const c = cv.getContext('2d');
+  const pick = (a) => a[Math.floor(R() * a.length)];
+  const hand = '"Segoe Print", "Bradley Hand", "Comic Sans MS", cursive', sans = 'Arial, Helvetica, sans-serif', mono = '"Courier New", monospace';
+  const WORDS = 'the of and to in for on with as by stock report wing room access level key shift check order site plant hall keep door store cabinet file records review safety notice please all staff must sign return items before after week month total units weight count ref no date item status open closed hold pending approved logged moved'.split(' ');
+  const line = () => { let s = ''; const n = 5 + Math.floor(R() * 7); for (let i = 0; i < n; i++) s += (i ? ' ' : '') + pick(WORDS); return s; };
+  // draw(fn, col, row, vw, vh): fn gets a context whose units are a virtual vw x vh page that fills the cell.
+  const cell = (col, row, vw, vh, fn) => {
+    c.save(); c.translate(col * C, row * C); c.scale(C / vw, C / vh);
+    c.beginPath(); c.rect(0, 0, vw, vh); c.clip(); fn(vw, vh); c.restore();
+  };
+  const text = (s, x, y, size, col = '#1c1c1c', font = sans, w = 0) => { c.fillStyle = col; c.font = `${size}px ${font}`; if (w) c.fillText(s, x, y, w); else c.fillText(s, x, y); };
+  const paperBase = (W, H, tone) => {
+    c.fillStyle = tone || `rgb(${238 + R() * 10 | 0},${236 + R() * 10 | 0},${228 + R() * 8 | 0})`; c.fillRect(0, 0, W, H);
+    c.globalAlpha = 0.05; for (let i = 0; i < 40; i++) { c.fillStyle = R() < 0.5 ? '#000' : '#fff'; c.fillRect(R() * W, R() * H, 2 + R() * 30, 1 + R() * 20); } c.globalAlpha = 1;
+  };
+  const ring = (x, y, r, a = 0.35) => {                 // coffee ring: dark rim, faint stain inside
+    c.globalAlpha = a * 0.25; c.fillStyle = '#6b4220'; c.beginPath(); c.arc(x, y, r, 0, 7); c.fill();
+    c.globalAlpha = a; c.strokeStyle = '#5a3415'; c.lineWidth = r * 0.06;
+    c.beginPath(); c.arc(x, y, r, R() * 2, R() * 2 + 5.2); c.stroke(); c.globalAlpha = 1;
+  };
+  const crease = (W, H) => { c.globalAlpha = 0.08; c.strokeStyle = '#000'; c.lineWidth = 1; c.beginPath(); c.moveTo(0, H * 0.33); c.lineTo(W, H * 0.34); c.stroke(); c.globalAlpha = 1; };
+  // Row 0: eight printed A4 documents (210 x 297).
+  const docs = [
+    (W, H) => { text('MEMORANDUM', 18, 30, 15, '#111', sans); text('TO: All staff   FROM: Facilities', 18, 50, 7); for (let i = 0; i < 22; i++) text(line(), 18, 70 + i * 9.5, 6.4, '#333', sans, W - 36); },
+    (W, H) => { text('INVENTORY - BAY 3', 14, 22, 10, '#111', sans); c.strokeStyle = '#999'; c.lineWidth = 0.5; for (let r = 0; r < 26; r++) { c.strokeRect(12, 30 + r * 9.5, W - 24, 9.5); for (let k = 0; k < 4; k++) text(k ? String(Math.floor(R() * 900)) : pick(WORDS).toUpperCase(), 15 + k * 46, 37 + r * 9.5, 6, '#222', mono); } },
+    (W, H) => { text('ACCESS REQUEST FORM', 16, 26, 11, '#123', sans); for (let i = 0; i < 9; i++) { text(pick(['Name', 'Badge no', 'Dept', 'Level', 'Reason', 'Signed', 'Date', 'Approved', 'Room']) + ':', 16, 54 + i * 24, 7); c.strokeStyle = '#555'; c.beginPath(); c.moveTo(70, 56 + i * 24); c.lineTo(W - 16, 56 + i * 24); c.stroke(); if (R() < 0.6) text(line().slice(0, 18), 74, 53 + i * 24, 9, '#1d2a6a', hand); } },
+    (W, H) => { c.fillStyle = '#2a4a7a'; c.fillRect(14, 14, 40, 14); text('NOTICE', 64, 26, 12, '#2a4a7a'); for (let i = 0; i < 18; i++) text(line(), 16, 52 + i * 11, 7, '#333', sans, W - 32); text('Regards,', 16, 260, 8); text('J. M.', 16, 278, 12, '#122', hand); },
+    (W, H) => { text('INVOICE  #' + (10000 + Math.floor(R() * 89999)), 14, 26, 10); for (let i = 0; i < 14; i++) { text(line().slice(0, 26), 14, 52 + i * 12, 6.5); text('$' + (R() * 900).toFixed(2), W - 50, 52 + i * 12, 6.5, '#222', mono); } c.fillStyle = '#ddd'; c.fillRect(14, 230, W - 28, 16); text('TOTAL  $' + (2000 + R() * 9000).toFixed(2), W - 110, 242, 8); },
+    (W, H) => { text('QUARTERLY REPORT', 16, 26, 11); for (let i = 0; i < 6; i++) text(line(), 16, 42 + i * 9, 6.4, '#333', sans, W - 32); c.strokeStyle = '#333'; c.beginPath(); c.moveTo(24, 210); c.lineTo(24, 110); c.moveTo(24, 210); c.lineTo(W - 20, 210); c.stroke(); for (let k = 0; k < 7; k++) { const hgt = 20 + R() * 80; c.fillStyle = k % 2 ? '#4a6fa5' : '#a54a4a'; c.fillRect(32 + k * 23, 210 - hgt, 15, hgt); } for (let i = 0; i < 6; i++) text(line(), 16, 228 + i * 9, 6.4, '#333', sans, W - 32); },
+    (W, H) => { text('SHIFT ROSTER', 16, 24, 11); const days = ['MON', 'TUE', 'WED', 'THU', 'FRI']; days.forEach((d, k) => text(d, 60 + k * 30, 42, 6.5, '#222')); for (let r = 0; r < 12; r++) { text(pick(['ADAMS', 'BAKER', 'COLE', 'DIAZ', 'EVANS', 'FOX', 'GRANT', 'HOLT', 'IVES', 'KANE']), 14, 58 + r * 17, 6.5); days.forEach((d, k) => { if (R() < 0.65) { c.fillStyle = pick(['#cfe3cf', '#e9d8b0', '#c9d6ea']); c.fillRect(58 + k * 30, 50 + r * 17, 26, 11); } }); } },
+    (W, H) => { text('SITE SAFETY BRIEFING', 16, 26, 10); for (let i = 0; i < 20; i++) text(line(), 16, 46 + i * 10, 6.4, '#333', sans, W - 32); ring(140, 210, 34, 0.55); ring(150, 190, 33, 0.25); }
+  ];
+  docs.forEach((fn, k) => cell(k, 0, 210, 297, (W, H) => { paperBase(W, H); fn(W, H); crease(W, H); if (k !== 7 && R() < 0.3) ring(40 + R() * 130, 60 + R() * 200, 30, 0.3); }));
+  // Row 1: sticky notes x4, ID badges x2, mouse pad, crumpled paper.
+  ['#f7e463', '#f59ab6', '#9fd3f0', '#b6eb8c'].forEach((col, k) => cell(k, 1, 100, 100, (W, H) => {
+    c.fillStyle = col; c.fillRect(0, 0, W, H); c.globalAlpha = 0.12; c.fillStyle = '#000'; c.fillRect(0, 0, W, 10); c.globalAlpha = 1;
+    const n = 2 + Math.floor(R() * 3); for (let i = 0; i < n; i++) text(pick(['call ext 24', 'keys?', 'ladder!', 'pw: ********', 'bay 3 done', 'lights - fac.', 'mtg 2pm', 'DO NOT MOVE', 'order toner']), 8, 32 + i * 20, 13, '#1d2a4a', hand, W - 14);
+  }));
+  for (let k = 0; k < 2; k++) cell(4 + k, 1, 54, 86, (W, H) => {
+    c.fillStyle = '#f4f4f2'; c.fillRect(0, 0, W, H); c.fillStyle = k ? '#7a1a1a' : '#1a3a6a'; c.fillRect(0, 0, W, 16);
+    text(k ? 'CONTRACTOR' : 'STAFF', 5, 12, 8, '#fff'); c.fillStyle = '#8a9099'; c.fillRect(13, 22, 28, 32);
+    c.fillStyle = '#c9b29a'; c.beginPath(); c.arc(27, 34, 7, 0, 7); c.fill(); c.fillRect(17, 44, 20, 10);
+    text(pick(['R. HOLT', 'D. KANE', 'S. IVES', 'M. COLE']), 6, 64, 6.5, '#111'); text('ID ' + (1000 + Math.floor(R() * 8999)), 6, 73, 5.5, '#444', mono);
+    for (let i = 0; i < 18; i++) { c.fillStyle = R() < 0.5 ? '#111' : '#f4f4f2'; c.fillRect(6 + i * 2.3, 77, 2.3, 6); }
+  });
+  cell(6, 1, 100, 100, (W, H) => { c.fillStyle = '#26292e'; c.fillRect(0, 0, W, H); c.globalAlpha = 0.25; for (let i = 0; i < 300; i++) { c.fillStyle = R() < 0.5 ? '#000' : '#555'; c.fillRect(R() * W, R() * H, 1, 1); } c.globalAlpha = 1; c.fillStyle = '#3b3f46'; c.fillRect(0, 0, W, 2); ring(70, 30, 18, 0.35); });
+  cell(7, 1, 100, 100, (W, H) => { paperBase(W, H, '#e9e7df'); for (let i = 0; i < 8; i++) text(line(), 6, 12 + i * 11, 6, '#666', sans, W - 12); c.globalAlpha = 0.28; c.strokeStyle = '#555'; c.lineWidth = 1.2; for (let i = 0; i < 26; i++) { c.beginPath(); c.moveTo(R() * W, R() * H); c.lineTo(R() * W, R() * H); c.stroke(); } c.globalAlpha = 1; });
+  // Row 2: six screens (16:9 desktop pictures), keyboard legends, phone keypad.
+  const scr = [
+    (W, H) => { const g = c.createLinearGradient(0, 0, W, H); g.addColorStop(0, '#16314f'); g.addColorStop(1, '#0a1626'); c.fillStyle = g; c.fillRect(0, 0, W, H); for (let i = 0; i < 6; i++) { c.fillStyle = '#c9d4e2'; c.fillRect(8, 8 + i * 18, 10, 10); text(pick(['Files', 'Mail', 'Docs', 'Roster', 'CCTV', 'Bin']), 4, 26 + i * 18, 5, '#dde'); } c.fillStyle = '#0d0f12'; c.fillRect(0, H - 9, W, 9); text('09:14', W - 22, H - 2.5, 5.5, '#ccd'); },
+    (W, H) => { c.fillStyle = '#f2f2f2'; c.fillRect(0, 0, W, H); c.fillStyle = '#217346'; c.fillRect(0, 0, W, 10); c.strokeStyle = '#ccc'; c.lineWidth = 0.4; for (let x = 0; x < W; x += 16) { c.beginPath(); c.moveTo(x, 14); c.lineTo(x, H); c.stroke(); } for (let y = 14; y < H; y += 6) { c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); if (R() < 0.85) for (let x = 0; x < W; x += 16) if (R() < 0.7) text(String(Math.floor(R() * 999)), x + 2, y + 5, 4.2, '#222', mono); } },
+    (W, H) => { c.fillStyle = '#050505'; c.fillRect(0, 0, W, H); for (let q = 0; q < 4; q++) { const x0 = (q % 2) * W / 2 + 1, y0 = Math.floor(q / 2) * H / 2 + 1, w = W / 2 - 2, h = H / 2 - 2; c.fillStyle = `rgb(${50 + R() * 30 | 0},${55 + R() * 30 | 0},${52 + R() * 25 | 0})`; c.fillRect(x0, y0, w, h); c.fillStyle = 'rgba(0,0,0,0.35)'; c.beginPath(); c.moveTo(x0, y0 + h); c.lineTo(x0 + w * 0.35, y0 + h * 0.45); c.lineTo(x0 + w * 0.65, y0 + h * 0.45); c.lineTo(x0 + w, y0 + h); c.fill(); c.fillStyle = 'rgba(200,210,200,0.35)'; c.fillRect(x0 + w * 0.3, y0 + h * 0.2, w * 0.4, h * 0.25); text('CAM ' + (q + 1), x0 + 2, y0 + 6, 4.5, '#e8e8e8', mono); text('REC', x0 + w - 12, y0 + 6, 4, '#e33', mono); } c.globalAlpha = 0.15; for (let y = 0; y < H; y += 2) { c.fillStyle = '#000'; c.fillRect(0, y, W, 1); } c.globalAlpha = 1; },
+    (W, H) => { c.fillStyle = '#ffffff'; c.fillRect(0, 0, W, H); c.fillStyle = '#e8eef6'; c.fillRect(0, 0, 40, H); c.fillStyle = '#2b5797'; c.fillRect(0, 0, W, 9); for (let i = 0; i < 9; i++) { text(pick(['Facilities', 'Security', 'HR', 'Stores', 'IT desk']), 44, 18 + i * 9, 4.6, R() < 0.3 ? '#000' : '#555'); text(line().slice(0, 34), 82, 18 + i * 9, 4.2, '#666', sans, W - 86); } },
+    (W, H) => { c.fillStyle = '#0b0c0b'; c.fillRect(0, 0, W, H); for (let i = 0; i < 13; i++) text('> ' + line().slice(0, 40), 3, 8 + i * 6.6, 4.4, R() < 0.2 ? '#e0c060' : '#7fdc7f', mono); },
+    (W, H) => { const g = c.createRadialGradient(W / 2, H / 2, 5, W / 2, H / 2, W / 1.4); g.addColorStop(0, '#2c4a5e'); g.addColorStop(1, '#0c141c'); c.fillStyle = g; c.fillRect(0, 0, W, H); c.fillStyle = '#d6dce4'; c.beginPath(); c.arc(W / 2, H * 0.36, 9, 0, 7); c.fill(); c.fillStyle = 'rgba(255,255,255,0.85)'; c.fillRect(W / 2 - 28, H * 0.58, 56, 8); text('Locked', W / 2 - 9, H * 0.53, 5.5, '#eef'); }
+  ];
+  scr.forEach((fn, k) => cell(k, 2, 160, 90, fn));
+  cell(6, 2, 440, 150, (W, H) => {                    // keyboard legends: dark keycaps, light letters, shiny worn keys
+    c.fillStyle = '#121314'; c.fillRect(0, 0, W, H);
+    const rows = ['` 1 2 3 4 5 6 7 8 9 0 - =', 'Q W E R T Y U I O P [ ]', 'A S D F G H J K L ; \'', 'Z X C V B N M , . /'];
+    rows.forEach((r, j) => r.split(' ').forEach((k, i) => { const x = 10 + j * 9 + i * 22, y = 14 + j * 26; c.fillStyle = (k === 'W' || k === 'A' || k === 'S' || k === 'D') ? '#2a2c2e' : '#1d1f21'; c.fillRect(x, y, 19, 21); text(k, x + 4, y + 11, 9, '#bfc3c7'); }));
+    c.fillStyle = '#1d1f21'; c.fillRect(90, 118, 150, 21); for (let i = 0; i < 4; i++) { c.fillRect(300 + (i % 3) * 22, 14 + Math.floor(i / 3) * 26, 19, 21); }
+    for (let i = 0; i < 12; i++) { c.fillStyle = '#1d1f21'; c.fillRect(300 + (i % 3) * 22, 66 + Math.floor(i / 3) * 18, 19, 15); text(String(9 - i).replace('-', ''), 305 + (i % 3) * 22, 76 + Math.floor(i / 3) * 18, 7, '#bfc3c7'); }
+  });
+  cell(7, 2, 100, 100, (W, H) => { c.fillStyle = '#1a1b1c'; c.fillRect(0, 0, W, H); c.fillStyle = '#9fb59a'; c.fillRect(10, 8, 80, 18); text('EXT 214', 14, 21, 9, '#223'); for (let i = 0; i < 12; i++) { const x = 18 + (i % 3) * 24, y = 34 + Math.floor(i / 3) * 16; c.fillStyle = '#2e3033'; c.fillRect(x, y, 18, 12); text('123456789*0#'[i], x + 6, y + 9, 8, '#ddd'); } });
+  // Row 3: posters x4 (A2 ratio 420 x 594), calendars x2 (300 x 420), coffee, binder cover.
+  const posters = [
+    (W, H) => { c.fillStyle = '#f2d230'; c.fillRect(0, 0, W, H); c.fillStyle = '#111'; c.beginPath(); c.moveTo(W / 2, 60); c.lineTo(W - 70, 300); c.lineTo(70, 300); c.closePath(); c.fill(); c.fillStyle = '#f2d230'; c.beginPath(); c.moveTo(W / 2, 100); c.lineTo(W - 110, 278); c.lineTo(110, 278); c.closePath(); c.fill(); text('!', W / 2 - 14, 260, 140, '#111', 'Arial Black, sans-serif'); text('CAUTION', 70, 400, 64, '#111', 'Arial Black, sans-serif'); text('HIGH VOLTAGE AREA', 60, 460, 30, '#111', sans); },
+    (W, H) => { c.fillStyle = '#fff'; c.fillRect(0, 0, W, H); c.fillStyle = '#b01818'; c.fillRect(0, 0, W, 130); text('AUTHORIZED', 40, 82, 56, '#fff', 'Arial Black, sans-serif'); text('PERSONNEL ONLY', 30, 220, 44, '#111', 'Arial Black, sans-serif'); for (let i = 0; i < 8; i++) text(line(), 30, 300 + i * 30, 18, '#333', sans, W - 60); },
+    (W, H) => { c.fillStyle = '#f6f6f2'; c.fillRect(0, 0, W, H); c.fillStyle = '#167a3a'; c.fillRect(0, 0, W, 70); text('FIRE EVACUATION PLAN', 26, 46, 30, '#fff', sans); c.strokeStyle = '#333'; c.lineWidth = 5; c.strokeRect(40, 110, W - 80, 380); c.lineWidth = 3; for (let i = 0; i < 6; i++) { c.beginPath(); c.moveTo(40 + R() * (W - 80), 110); c.lineTo(40 + R() * (W - 80), 490); c.stroke(); } c.strokeStyle = '#167a3a'; c.lineWidth = 8; c.beginPath(); c.moveTo(120, 420); c.lineTo(200, 300); c.lineTo(350, 300); c.lineTo(350, 140); c.stroke(); c.fillStyle = '#d22'; c.beginPath(); c.arc(120, 420, 12, 0, 7); c.fill(); text('YOU ARE HERE', 90, 540, 26, '#d22', sans); },
+    (W, H) => { c.fillStyle = '#20324a'; c.fillRect(0, 0, W, H); c.fillStyle = '#e8e2d0'; c.fillRect(30, 30, W - 60, 300); c.fillStyle = '#5c7a5a'; c.beginPath(); c.moveTo(30, 330); c.lineTo(160, 160); c.lineTo(260, 260); c.lineTo(330, 190); c.lineTo(W - 30, 330); c.fill(); text('TEAMWORK', 70, 420, 54, '#e8e2d0', 'Georgia, serif'); text(line(), 50, 470, 20, '#aab', 'Georgia, serif', W - 100); }
+  ];
+  posters.forEach((fn, k) => cell(k, 3, 420, 594, (W, H) => { fn(W, H); c.globalAlpha = 0.08; c.fillStyle = '#000'; c.fillRect(0, 0, W, H); c.globalAlpha = 1; }));
+  for (let k = 0; k < 2; k++) cell(4 + k, 3, 300, 420, (W, H) => {
+    c.fillStyle = '#fbfbf8'; c.fillRect(0, 0, W, H); c.fillStyle = k ? '#3a5a7a' : '#6a3a2a'; c.fillRect(0, 0, W, 170);
+    c.fillStyle = 'rgba(255,255,255,0.18)'; c.beginPath(); c.arc(220, 70, 60, 0, 7); c.fill();
+    text(k ? 'MARCH' : 'OCTOBER', 20, 205, 26, '#222', sans); ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach((d, i) => text(d, 18 + i * 39, 232, 13, '#666'));
+    for (let i = 0; i < 31; i++) { const x = 16 + ((i + 2) % 7) * 39, y = 258 + Math.floor((i + 2) / 7) * 32; text(String(i + 1), x, y, 15, i % 7 === 4 ? '#b22' : '#222'); if (R() < 0.08) { c.strokeStyle = '#b22'; c.lineWidth = 2; c.beginPath(); c.arc(x + 8, y - 5, 13, 0, 7); c.stroke(); } if (i < 12 && R() < 0.3) { c.strokeStyle = '#333'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(x - 2, y - 14); c.lineTo(x + 22, y + 4); c.stroke(); } }
+  });
+  cell(6, 3, 100, 100, (W, H) => { const g = c.createRadialGradient(50, 50, 4, 50, 50, 50); g.addColorStop(0, '#2a160a'); g.addColorStop(0.8, '#3b200e'); g.addColorStop(1, '#6a4428'); c.fillStyle = g; c.fillRect(0, 0, W, H); c.globalAlpha = 0.3; c.fillStyle = '#fff'; c.beginPath(); c.ellipse(36, 34, 10, 5, -0.5, 0, 7); c.fill(); c.globalAlpha = 1; });
+  cell(7, 3, 100, 100, (W, H) => { c.fillStyle = '#d9d9d4'; c.fillRect(0, 0, W, H); });
+  // Row 4: binder spines x8 (50 x 290), their colour fills the bottom tenth for the other faces.
+  const BCOL = ['#1f3f78', '#7a1f1f', '#1f5a32', '#202020', '#c8a020', '#5a2a6a', '#3a5a6a', '#e6e6e0'];
+  BCOL.forEach((col, k) => cell(k, 4, 50, 290, (W, H) => {
+    c.fillStyle = col; c.fillRect(0, 0, W, H); c.globalAlpha = 0.15; c.fillStyle = '#000'; for (let i = 0; i < 6; i++) c.fillRect(R() * W, R() * H, 3, 20 + R() * 40); c.globalAlpha = 1;
+    c.fillStyle = '#f2f0e8'; c.fillRect(6, 30, W - 12, 120); c.save(); c.translate(31, 140); c.rotate(-Math.PI / 2);
+    text(pick(['INVOICES 23', 'ROSTERS', 'H&S LOG', 'KEYS', 'ORDERS Q3', 'STOCK', 'ACCESS', 'POLICIES']), 4, 0, 15, '#111', sans, 104); text(String(2017 + Math.floor(R() * 8)), 4, -14, 10, '#444'); c.restore();
+    c.fillStyle = '#ddd'; c.beginPath(); c.arc(W / 2, 220, 11, 0, 7); c.fill(); c.fillStyle = '#111'; c.beginPath(); c.arc(W / 2, 220, 6, 0, 7); c.fill();
+  }));
+  // Row 5: filing labels (4 per cell, 85 x 40 each), 8 cells.
+  for (let k = 0; k < 8; k++) cell(k, 5, 85, 160, (W, H) => {
+    for (let j = 0; j < 4; j++) { c.fillStyle = R() < 0.25 ? '#efe2a8' : '#f4f3ee'; c.fillRect(0, j * 40, W, 40); c.strokeStyle = '#999'; c.lineWidth = 0.6; c.strokeRect(1, j * 40 + 1, W - 2, 38);
+      if (R() < 0.85) R() < 0.5 ? text(pick(['A - D', 'E - K', 'L - R', 'S - Z', 'PERSONNEL', 'INVOICES', 'KEYS', 'MISC', 'CLOSED']), 7, j * 40 + 25, 13, '#111', sans, W - 12) : text(pick(['old stuff', 'tax', 'spare keys', 'do not open', 'archive']), 6, j * 40 + 26, 14, '#1d2a6a', hand, W - 10); }
+  });
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
+  OFFR.tex = tex;
+  const e = 2 / S;                                     // inset against bleeding between cells
+  OFFR.cell = (col, row, sub) => {                     // [u0, v0, u1, v1]; sub = [a, b, c, d] fractions of the cell (top-left origin)
+    const s = sub || [0, 0, 1, 1];
+    return [(col + s[0]) / 8 + e, 1 - (row + s[3]) / 8 + e, (col + s[2]) / 8 - e, 1 - (row + s[1]) / 8 - e];
+  };
+  OFFR.paper = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.78, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+  OFFR.scr = new THREE.MeshStandardMaterial({ map: tex, color: 0x101010, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.6, roughness: 0.12, metalness: 0, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
+}
+// UV of a whole geometry (0..1 planes) into an atlas rect.
+function offrUV(geo, r) { const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, r[0] + uv.getX(i) * (r[2] - r[0]), r[1] + uv.getY(i) * (r[3] - r[1])); uv.needsUpdate = true; return geo; }
+// A plane lying on a desk (image top away from someone sitting at +x).
+function offrFlat(w, h, r, x, y, z, yaw = 0) { const g = offrUV(new THREE.PlaneGeometry(w, h), r); g.rotateX(-Math.PI / 2); g.rotateY(Math.PI / 2 + yaw); g.translate(x, y, z); return g; }
+// A plane on a wall / face looking along +x.
+function offrUp(w, h, r, x, y, z, roll = 0) { const g = offrUV(new THREE.PlaneGeometry(w, h), r); g.rotateZ(roll); g.rotateY(Math.PI / 2); g.translate(x, y, z); return g; }
+// A box: face +x = rect a, every other face = rect b (BoxGeometry face order +x, -x, +y, -y, +z, -z).
+function offrBox(w, h, d, a, b) {
+  const g = new THREE.BoxGeometry(w, h, d), uv = g.attributes.uv;
+  for (let f = 0; f < 6; f++) { const r = f === 0 ? a : b; for (let i = f * 4; i < f * 4 + 4; i++) uv.setXY(i, r[0] + uv.getX(i) * (r[2] - r[0]), r[1] + uv.getY(i) * (r[3] - r[1])); }
+  return g;
+}
+function offrKit() {
+  if (!OFFR.on) return;
+  offrAtlas();
+  const M = KIT.mat, P = KIT.proto, A = OFFR.cell, Mp = OFFR.paper;
+  const base = (proto, skip) => proto.children.filter((m) => !skip.includes(m.material)).map((m) => { const n = new THREE.Mesh(m.geometry, m.material); n.castShadow = m.castShadow; n.receiveShadow = m.receiveShadow; n.position.copy(m.position); n.quaternion.copy(m.quaternion); n.scale.copy(m.scale); return n; });
+  const ball = (R, x, y, z, r) => {                    // crumpled paper ball
+    const g = new THREE.IcosahedronGeometry(r, 1).toNonIndexed(), p = g.attributes.position, rc = A(7, 1);
+    const uv = new Float32Array(p.count * 2);
+    for (let i = 0; i < p.count; i++) { const k = 0.7 + R() * 0.45; p.setXYZ(i, p.getX(i) * k, p.getY(i) * k, p.getZ(i) * k); uv[i * 2] = rc[0] + (rc[2] - rc[0]) * R(); uv[i * 2 + 1] = rc[1] + (rc[3] - rc[1]) * R(); }
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.computeVertexNormals(); g.translate(x, y, z); return g;
+  };
+  const flipIn = (g) => { const ix = g.index.array; for (let i = 0; i < ix.length; i += 3) { const t = ix[i]; ix[i] = ix[i + 2]; ix[i + 2] = t; } const n = g.attributes.normal; for (let i = 0; i < n.count; i++) n.setXYZ(i, -n.getX(i), -n.getY(i), -n.getZ(i)); return g; };
+  // --- Desks ---
+  for (let k = 0; k < OFFR.N.desk; k++) {
+    const R = mulberry32(0xd35c + k * 977), rr = (a, b) => a + R() * (b - a), ri = (n) => Math.floor(R() * n);
+    const paper = [], scr = [], black = [], plastic = [];
+    scr.push(offrUp(0.52, 0.3, A(ri(6), 2), -0.1655, 1.075, 0.18));
+    paper.push(offrFlat(0.44, 0.15, A(6, 2), 0.13, 0.7675, 0.16));                                 // key legends
+    paper.push(offrFlat(0.22, 0.19, A(6, 1), 0.13, 0.7457, 0.5, rr(-0.12, 0.12)));                // mouse pad (coffee ring)
+    const nd = 1 + ri(3);
+    for (let i = 0; i < nd; i++) {                                                                 // documents, some piled
+      const y = 0.7456 + i * 0.0006, x = rr(-0.05, 0.22), z = rr(-0.5, -0.25);
+      paper.push(offrFlat(0.21, 0.297, A(ri(8), 0), x, y, z, rr(-0.5, 0.5)));
+    }
+    if (R() < 0.7) for (let i = 0, n = 1 + ri(3); i < n; i++) paper.push(offrUp(0.076, 0.076, A(ri(4), 1), -0.1645, rr(0.93, 1.2), 0.18 + (R() < 0.5 ? -0.24 : 0.24) + rr(-0.03, 0.03), rr(-0.15, 0.15)));
+    if (R() < 0.5) paper.push(offrFlat(0.054, 0.086, A(4 + ri(2), 1), rr(0.15, 0.3), 0.7462, rr(-0.72, -0.6), rr(-1, 1)));   // ID badge
+    if (R() < 0.6) {                                                                               // binders at the back edge
+      const nb = 2 + ri(3); let z = -0.74;
+      for (let i = 0; i < nb; i++) { const c = ri(8), g = offrBox(0.26, 0.29, 0.055, A(c, 4), A(c, 4, [0, 0.9, 1, 1])); g.rotateZ(i === nb - 1 && R() < 0.5 ? 0.18 : 0); g.translate(-0.24, 0.745 + 0.145, z + 0.03); paper.push(g); z += 0.058; }
+    }
+    if (R() < 0.6) {                                                                               // desk phone with handset and keypad
+      black.push(placed(lbox(0.16, 0.05, 0.18, 0.012), -0.2, 0.77, -0.08));
+      black.push(placed(lbox(0.05, 0.035, 0.2, 0.012), -0.25, 0.81, -0.08));
+      paper.push(offrFlat(0.09, 0.1, A(7, 2), -0.16, 0.7955, -0.08));
+    }
+    plastic.push(placed(new THREE.TorusGeometry(0.024, 0.006, 6, 12, Math.PI), 0.08, 0.7925, -0.2, 0, 0, -Math.PI / 2));   // mug handle
+    { const g = offrUV(new THREE.CircleGeometry(0.036, 16), A(6, 3)); g.rotateX(-Math.PI / 2); g.translate(0.08, 0.8406, -0.16); paper.push(g); }                              // coffee in the mug
+    // Bin under the desk with crumpled paper; a ball on the floor sometimes.
+    const bin = new THREE.CylinderGeometry(0.135, 0.115, 0.32, 18, 1, true), binIn = flipIn(new THREE.CylinderGeometry(0.131, 0.111, 0.31, 18, 1, true));
+    bin.translate(0.12, 0.16, 0.56); binIn.translate(0.12, 0.165, 0.56);
+    black.push(bin, binIn, placed(new THREE.CylinderGeometry(0.111, 0.111, 0.01, 18), 0.12, 0.01, 0.56));
+    for (let i = 0, n = 2 + ri(4); i < n; i++) paper.push(ball(R, 0.12 + rr(-0.05, 0.05), 0.2 + R() * 0.12, 0.56 + rr(-0.05, 0.05), rr(0.03, 0.045)));
+    if (R() < 0.4) paper.push(ball(R, rr(0.25, 0.45), 0.03, rr(0.3, 0.75), 0.035));
+    // Cables from the monitor and phone over the back edge to the floor.
+    for (const [z0, z1] of [[0.18, 0.32], [-0.08, -0.02]]) {
+      const cur = new THREE.CatmullRomCurve3([new THREE.Vector3(-0.22, 0.76, z0), new THREE.Vector3(-0.37, 0.75, z0 + 0.02), new THREE.Vector3(-0.395, 0.6, z0 + 0.06), new THREE.Vector3(-0.385, 0.05, z1), new THREE.Vector3(-0.34, 0.006, z1 + 0.15), new THREE.Vector3(-0.36, 0.006, z1 + 0.45)]);
+      black.push(new THREE.TubeGeometry(cur, 28, 0.0035, 5, false));
+    }
+    P['desk_v' + k] = kitGroup(...base(P.desk, [M.paper, M.screen]), merged(paper, Mp, false), merged(scr, OFFR.scr, false), merged(black, M.blackPlastic), merged(plastic, M.plastic));
+  }
+  // --- Filing cabinets: labels in the card holders, sometimes paper / binders on top ---
+  for (let k = 0; k < OFFR.N.cabinet; k++) {
+    const R = mulberry32(0xcab1 + k * 613), paper = [];
+    for (let i = 0; i < 4; i++) { const y = 0.07 + 0.31 * i + 0.155 + 0.112, j = Math.floor(R() * 8), s = Math.floor(R() * 4); paper.push(offrUp(0.078, 0.034, A(j, 5, [0, s / 4, 1, (s + 1) / 4]), 0.3595, y, 0)); }
+    if (R() < 0.6) for (let i = 0, n = 1 + Math.floor(R() * 4); i < n; i++) paper.push(offrFlat(0.21, 0.297, A(Math.floor(R() * 8), 0), -0.03 + (R() - 0.5) * 0.08, 1.3306 + i * 0.002, (R() - 0.5) * 0.08, (R() - 0.5) * 0.4));
+    else { const c = Math.floor(R() * 8), g = offrBox(0.26, 0.055, 0.29, A(c, 4, [0, 0.9, 1, 1]), A(c, 4, [0, 0.9, 1, 1])); g.translate(-0.05, 1.3575, 0.02); paper.push(g); }
+    P['cabinet_v' + k] = kitGroup(...base(P.cabinet, []), merged(paper, Mp, false));
+  }
+  // --- Whiteboards: pinned sheets and notes, magnets ---
+  for (let k = 0; k < OFFR.N.whiteboard; k++) {
+    const R = mulberry32(0xb0a7d + k * 331), paper = [], mag = [];
+    for (let i = 0, n = 1 + Math.floor(R() * 3); i < n; i++) {
+      const x = -0.5 + R() * 1.0, y = 1.2 + R() * 0.5, doc = R() < 0.5, s = doc ? [0.21, 0.297] : [0.076, 0.076];
+      const g = offrUV(new THREE.PlaneGeometry(s[0], s[1]), doc ? A(Math.floor(R() * 8), 0) : A(Math.floor(R() * 4), 1)); g.rotateZ((R() - 0.5) * 0.12); g.translate(x, y, 0.0285); paper.push(g);
+      mag.push(placed(new THREE.CylinderGeometry(0.012, 0.012, 0.008, 12), x, y + s[1] / 2 - 0.02, 0.033, Math.PI / 2, 0, 0));
+    }
+    P['whiteboard_v' + k] = kitGroup(...base(P.whiteboard, []), merged(paper, Mp, false), merged(mag, M.redPaint));
+  }
+  // --- Wall behind a desk against a wall: poster, calendar, notes (origin on the wall, facing +x). ---
+  for (let k = 0; k < OFFR.N.wall; k++) {
+    const R = mulberry32(0x3a11 + k * 271), paper = [], pin = [];
+    const pz = (R() - 0.5) * 0.9;
+    paper.push(offrUp(0.42, 0.594, A(Math.floor(R() * 4), 3), 0.003, 1.55, pz, (R() - 0.5) * 0.04));
+    if (R() < 0.7) paper.push(offrUp(0.3, 0.42, A(4 + Math.floor(R() * 2), 3), 0.003, 1.45, pz < 0 ? pz + 0.45 : pz - 0.45));
+    for (let i = 0, n = Math.floor(R() * 3); i < n; i++) paper.push(offrUp(0.076, 0.076, A(Math.floor(R() * 4), 1), 0.0035, 1.0 + R() * 0.15, (R() - 0.5) * 1.2, (R() - 0.5) * 0.2));
+    for (const g of paper) { g.computeBoundingBox(); const b = g.boundingBox; pin.push(placed(new THREE.SphereGeometry(0.005, 6, 4), 0.006, b.max.y - 0.015, (b.min.z + b.max.z) / 2)); }
+    P['offWall_v' + k] = kitGroup(merged(paper, Mp, false), merged(pin, M.redPaint, false));
+  }
+  GEN.kit17.push('desk_v0', 'cabinet_v0', 'whiteboard_v0', 'offWall_v0');   // compiled at load with the kit (two atlas programs)
+}
+// The variant of a desk / cabinet / whiteboard for piece fi of a room (same each visit, same on both sides).
+function offrPick(P, type, room, fi) {
+  const n = OFFR.on && OFFR.N[type];
+  if (!n) return P[type];
+  const h0 = (Math.imul((room.slot | 0) ^ 0x5f3759df, 2654435761) >>> 7) % n;   // per room; consecutive pieces (a run) always differ
+  return P[`${type === 'wall' ? 'offWall' : type}_v${(h0 + fi) % n}`] || P[type];
+}
+// A desk whose back is within 0.5 m of a room wall: the wall decor behind it, on the wall.
+function offrWallSpot(f, w, d) {
+  const nx = Math.cos(f.ry || 0), nz = -Math.sin(f.ry || 0);
+  let t = Infinity;
+  if (Math.abs(nx) > 0.9) t = (w / 2 - Math.sign(-nx) * f.x);
+  else if (Math.abs(nz) > 0.9) t = (d / 2 - Math.sign(-nz) * f.z);
+  if (!(t < 0.5)) return null;
+  return [f.x - nx * (t - 0.001), f.z - nz * (t - 0.001)];
 }
 
 // Load-time shader warm-up: one of every step 8 piece and finish in view while compiling.
@@ -8589,9 +8825,9 @@ function* roomBuilder(room) {
     bProto(P.switch, L.switch.x, 0, onBack ? -d / 2 : d / 2, onBack ? 0 : Math.PI);
   }
   if (L.sign) put(g, P.sign.clone(), L.sign.x, L.sign.y, -d / 2 + 0.003);
-  for (const f of L.fixtures || []) {
-    const [x, z, ry] = fixtureAt(f.wall, f.u, w, d);
-    bProto(P[f.type], x, 0, z, ry);
+  for (let xi = 0; xi < (L.fixtures || []).length; xi++) {
+    const f = L.fixtures[xi], [x, z, ry] = fixtureAt(f.wall, f.u, w, d);
+    bProto(offrPick(P, f.type, room, 1000 + xi), x, 0, z, ry);   // office realism: whiteboard variants
   }
   if (L.exitSign) bProto(P.exitSign, ex, 0, -d / 2 + (room.kind === 'safe' ? 0.02 : 0), 0);   // safe room: in front of the slats
   if (L.terminal && P.terminal) bProto(P.terminal, L.terminal.x, 0, L.terminal.z, L.terminal.ry);   // step 11: enclosure (screen attaches on activation)
@@ -8697,7 +8933,11 @@ function* roomBuilder(room) {
       if (crateBrokenInMemory(room, fi)) obj.visible = false;   // step 6: shot to pieces last visit
       room.furnObj.push(obj);
     } else {
-      bProto(P[f.finish ? `${f.type}_${f.finish}` : f.type], f.x, FURN[f.type].y, f.z, f.ry);   // step 17: column_bare, pilaster_sage...
+      bProto(f.finish ? P[`${f.type}_${f.finish}`] : offrPick(P, f.type, room, fi), f.x, FURN[f.type].y, f.z, f.ry);   // step 17: column_bare, pilaster_sage...; office realism: variants
+      if (OFFR.on && f.type === 'desk') {                                         // office realism: poster / calendar on the wall behind a desk
+        const ws = offrWallSpot(f, w, d);
+        if (ws && !(L.fixtures || []).some((x) => { const q = fixtureAt(x.wall, x.u, w, d); return Math.hypot(q[0] - ws[0], q[1] - ws[1]) < 1.0; })) bProto(offrPick(P, 'wall', room, fi), ws[0], 0, ws[1], f.ry);
+      }
       room.furnObj.push(null);
     }
     yield;
