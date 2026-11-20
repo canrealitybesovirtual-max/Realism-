@@ -2306,3 +2306,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - offrPick(P, type, room, fi): variant (slot hash + piece index) % n, so pieces in a run always differ, a room is the same each visit and on both multiplayer sides (layout untouched). Hooks: roomBuilder's furniture loop and fixtures loop.
 - Desk laminate edge wear, chair fabric pilling and cabinet scuffs are step 97's prop wear (unchanged).
 - Checked: module parse, eslint no-undef (browser globals only), headless Chromium (?dev&lite=on&lowmem=on): every variant built, programs link, no page errors; protos rendered in a test scene (screenshots in the session scratchpad). An office room itself was not built headless (first office at slot 6).
+
+## CQC: jerry can (gas can) removed
+- Its prop builder (K.jerry), every room's prop list entry, LOOSE_BLOCK, KNOCK_MAT and the surface map entries are gone; rooms no longer place it. Old room memory naming it builds nothing. Parse + eslint no-undef only.
