@@ -22363,7 +22363,7 @@ function cycleSelector(g) {
   g.mode = modes[(modes.indexOf(g.mode) + 1) % 3];
   mechPulse(g.primary, 0.18, 9);   // step 87: selector detent
   selSfx(g);                       // step 101
-  if (!renderer.xr.isPresenting) toast(`Fire mode: ${g.mode}`);
+  if (!renderer.xr.isPresenting) toast(`Fire mode: ${giModeName(g)}`);
 }
 // Step 11: the gun a hand is on, as its grip, its handguard / forend or its slide. Face buttons
 // on either hand work it, so your support hand's X / Y drop the magazine like the gun hand's A / B.
@@ -22496,7 +22496,7 @@ function fireGun(g, now) {
   const j = 0.9 + Math.random() * 0.2;
   g.rec.vz += d.recoil.kick * AF.kick * two * j;
   g.rec.vp += d.recoil.climb * AF.climb * two * j;
-  g.rec.vy += (Math.random() - 0.5) * 2 * d.recoil.yaw * two;
+  g.rec.vy += (Math.random() - 0.5) * 2 * d.recoil.yaw * two * giYaw(g);   // GI: a crisp trigger jerks the gun less
   if (!renderer.xr.isPresenting) {
     look.pitch = clamp(look.pitch + d.deskKick * AF.dkick * (0.8 + Math.random() * 0.4), -1.45, 1.45);
     look.yaw += (Math.random() - 0.5) * d.deskKick * AF.dkick * 0.5;
@@ -24096,13 +24096,13 @@ function updateGun(g, dt, now) {
   if (g.parts.trigger) g.parts.trigger.rotation.x = g.parts.triggerPull * g.trigger;
   if (g.parts.selector) g.parts.selector.rotation.x += ((g.def.selAngles || SEL_ANGLES)[g.mode] - g.parts.selector.rotation.x) * (1 - Math.exp(-25 * dt));
   const W = CONFIG.weapons;
-  if (pull < W.triggerReset) { if (!g.triggerReset && g.rstArm) dryResetSfx(g); g.rstArm = false; g.triggerReset = true; g.dry = false; }   // step 101: the reset tick after a pistol shot
+  if (pull < W.triggerReset) { if (g.giBinArm) giReleased(g, now); if (!g.triggerReset && g.rstArm) dryResetSfx(g); g.rstArm = false; g.triggerReset = true; g.dry = false; }   // step 101: the reset tick after a pistol shot
   if (g.primary && pull > W.triggerPull) {
-    const autoOn = (d.auto || g.sw) && g.mode === 'auto';           // step 78: a Glock with the auto sear
+    const autoOn = (d.auto || g.sw) && g.mode === 'auto' && !giBin(g);   // step 78: a Glock with the auto sear (GI: a binary trigger's AUTO is BINARY)
     if (g.triggerReset || (autoOn && now >= g.nextShot)) {
       if (canFire(g)) {
         fireGun(g, now);
-        g.nextShot = now + (autoOn ? 60 / (g.sw ? 1200 : d.rpm) : 0.08);
+        g.nextShot = now + (autoOn ? 60 / (g.sw ? 1200 : d.rpm) : giIv(g)); giPulled(g, autoOn);   // GI: a lighter trigger resets sooner
         g.rstArm = d.cls === 'pistol' && !autoOn;                   // step 101
       } else if (g.triggerReset && !g.dry) { if (!dryFireSfx(g)) sfx('dry'); g.dry = true; if (g.primary) pulse(g.primary, 0.2, 12); }   // step 101: recorded
       g.triggerReset = false;
@@ -38508,6 +38508,66 @@ const WS_ITEMS = [
   { id: 'awp.mag10', gun: 'awp', cat: 'mag', name: '10-round magazine', price: 140, desc: 'Twice the factory 5; 45 mm longer, heavier, slower to seat', requires: [], model: 'mag10', fx: { rel: -4, wt: 0.3 }, owned: true },
   { id: 'awp.sling', gun: 'awp', cat: 'sling', cosmetic: true, name: 'Sling', price: 60, desc: 'Cosmetic: QD strap on the left (the chest sling still carries it)', requires: ['awp.slingpts'], model: 'sling', fx: {} }
 ];
+/* ===========================================================================
+ *  GUN INTERNALS (GI; ?internals=off = none): trigger groups in the GUNSMITH store, a new TRIGGER GROUP slot per gun.
+ *  Glock 17 flat-faced trigger, M1911 skeleton trigger, M4A1-S / AKM single-stage drop-in and binary trigger.
+ *  Effects come from the store's fitted set (one build per gun type, like every part): a lighter, crisper pull = a shorter
+ *  wait before the next semi shot (GI_T.iv) and less sideways jerk on the shot (recoil yaw x GI_T.yaw); the bars read the
+ *  gun's own FX table (entries added at first use, giFxInstall). Binary: the selector's 'auto' position becomes BINARY,
+ *  one round on the pull and one on the release (no full auto). Internal parts: no visible model yet (store only).
+ * ========================================================================= */
+const GI = { on: !/[?&]internals=off\b/.test(QS), fx: false };
+const GI_ROWS = [
+  { id: 'g17.ftrig', gun: 'g17', cat: 'fcg', name: 'Flat-faced trigger', price: 160, desc: 'Flat shoe, ~4.5 lb, short crisp reset: quicker follow-ups, less pull on the sights', requires: [], model: 'gi', fx: {} },
+  { id: 'm1911.strig', gun: 'm1911', cat: 'fcg', name: 'Skeleton trigger', price: 140, desc: 'Long aluminium bow, overtravel stop, ~3.5 lb: the cleanest break', requires: [], model: 'gi', fx: {} },
+  { id: 'm4a1s.sst', gun: 'm4a1s', cat: 'fcg', name: 'Single-stage drop-in trigger', price: 240, desc: 'Flat bow, 4.5 lb, no creep: faster, steadier semi', requires: [], model: 'gi', fx: {} },
+  { id: 'm4a1s.bin', gun: 'm4a1s', cat: 'fcg', name: 'Binary trigger', price: 420, desc: 'Selector AUTO = BINARY: one round on the pull, one on the release', requires: [], model: 'gi', fx: {} },
+  { id: 'akmn.sst', gun: 'akmn', cat: 'fcg', name: 'Single-stage drop-in trigger', price: 190, desc: 'Polished, 4 lb, positive reset: faster, steadier semi', requires: [], model: 'gi', fx: {} },
+  { id: 'akmn.bin', gun: 'akmn', cat: 'fcg', name: 'Binary trigger', price: 390, desc: 'Selector AUTO = BINARY: fires on the pull and on the release', requires: [], model: 'gi', fx: {} }
+];
+// Per row: iv = the semi follow-up wait (s, factory 0.08), yaw = recoil yaw x, bin = binary; fx = the gun table's entry (store bars).
+const GI_T = {
+  'g17.ftrig': { iv: 0.06, yaw: 0.8, fx: { m: 0.004, stat: { acc: 3, hip: 2, rec: -3 } } },
+  'm1911.strig': { iv: 0.065, yaw: 0.8, fx: { m: -0.003, stat: { acc: 4, hip: 1, rec: -2 } } },
+  'm4a1s.sst': { iv: 0.06, yaw: 0.82, fx: { stat: { acc: 3, hip: 2, rec: -3 } } },
+  'm4a1s.bin': { iv: 0.08, yaw: 0.95, bin: true, fx: { m: 0.02, stat: { rec: 8, acc: -2, hip: -2 } } },
+  'akmn.sst': { iv: 0.062, yaw: 0.82, fx: { stat: { acc: 3, hip: 2, rec: -3 } } },
+  'akmn.bin': { iv: 0.08, yaw: 0.95, bin: true, fx: { m: 0.02, stat: { rec: 8, acc: -2, hip: -2 } } }
+};
+if (GI.on) {
+  WS_CAT_NAME.fcg = 'Trigger group';
+  for (const r of GI_ROWS) { WS_ITEMS.push(r); const G = WS_GUNS[r.gun]; if (G && !G.slots.includes('fcg')) { G.slots.push('fcg'); (G.factory || (G.factory = {})).fcg = r.gun === 'm1911' ? 'GI trigger' : 'factory trigger'; } }
+}
+// The gun tables get their entries once (afxStats hook; the tables are declared further down).
+function giFxInstall() {
+  if (GI.fx || !GI.on) return;
+  const T = {};
+  for (const [k, f] of [['g17', () => GLOCK_FX], ['m1911', () => M1911_FX], ['m4a1s', () => M4_FX], ['akmn', () => AKM_FX]]) {
+    try { T[k] = f(); } catch (e) { return; }                     // a table still before its declaration (load): next call
+  }
+  GI.fx = true;
+  for (const r of GI_ROWS) if (T[r.gun]) T[r.gun][r.id] = GI_T[r.id].fx;
+  if (window.__cqcDev) Object.assign(window.__cqcDev, { GI, GI_ROWS, GI_T, giOf, giBin, giIv, giYaw, giFxInstall, giReleased });   // ?dev (made later than this section)
+}
+// The trigger group fitted on gun type t now (the store build), or null.
+function giOf(t) {
+  if (!GI.on || !t) return null;
+  for (const r of GI_ROWS) if (r.gun === t && r.owned && WORKSHOP.fitted.has(r.id)) return GI_T[r.id];
+  return null;
+}
+function giBin(g) { const T = giOf(g.type); return !!(T && T.bin); }
+function giYaw(g) { const T = giOf(g.type); return T ? T.yaw : 1; }
+function giIv(g) { const T = giOf(g.type); return T ? T.iv : 0.08; }
+function giModeName(g) { return g.mode === 'auto' && giBin(g) ? 'binary' : g.mode; }
+// Trigger block: a shot on the pull in the binary position arms the release shot; the trigger let go fires it.
+function giPulled(g, autoOn) { g.giBinArm = !autoOn && g.mode === 'auto' && giBin(g); }
+function giReleased(g, now) {
+  if (!g.giBinArm) return;
+  g.giBinArm = false;
+  if (!g.primary || g.mode !== 'auto' || !giBin(g) || now < g.nextShot - 0.03 || !canFire(g)) return;
+  fireGun(g, now);
+  g.nextShot = now + 0.06;
+}
 const WORKSHOP = {
   on: CONFIG.workshop.on !== false && !/[?&]workshop=off\b/.test(QS),
   key: 'cqc.workshop.v1',
@@ -38945,7 +39005,7 @@ function wsDrawGun(k, now) {
       if (mine) { ctx.fillStyle = TC.ok; ctx.beginPath(); ctx.arc(x + tw - 10, y + 10, 4.5, 0, Math.PI * 2); ctx.fill(); }
     }
     const rows = WS_ITEMS.filter((it) => it.gun === k && (cat === 'hardware' ? it.hw : it.cat === cat));
-    if (cat !== 'hardware') for (const it of WS_ITEMS) if (it.gun !== k && !it.hw && it.model && it.cat === cat && WS_GUNS[it.gun]) rows.push(it);   // any-gun fit: every gun's parts for this slot (fitted at the vise)
+    if (cat !== 'hardware') for (const it of WS_ITEMS) if (it.gun !== k && !it.hw && it.model && it.cat === cat && cat !== 'fcg' && WS_GUNS[it.gun]) rows.push(it);   // any-gun fit: every gun's parts for this slot (fitted at the vise)
     const pages = Math.max(1, Math.ceil(rows.length / WS_SLOTS_MAX)), pg = W.anyPage = (W.anyCat === k + cat ? Math.min(W.anyPage || 0, pages - 1) : 0); W.anyCat = k + cat;
     if (pages > 1) { tBtn('anypg:prev', x0 + pw - 150, 256, 70, 28, '\u25b2', { size: 15, disabled: pg <= 0, fn: () => { W.anyPage = pg - 1; W.dirty = true; } }); tBtn('anypg:next', x0 + pw - 74, 256, 70, 28, '\u25bc', { size: 15, disabled: pg >= pages - 1, fn: () => { W.anyPage = pg + 1; W.dirty = true; } }); }
     tHead(cat === 'hardware' ? 'HARDWARE  ·  mounting parts: they enable, mostly weight' : `${WS_CAT_NAME[cat].toUpperCase()}  ·  factory: ${(G.factory || {})[cat] || '—'}`, x0, 272);
@@ -52718,6 +52778,7 @@ const g17FxOf = (ids, out = {}) => afxOf(GLOCK_FX, ids, out);
 // recoil, then the report, flash, aim time, sway and reload multipliers, then the stat points. Exactly what fireGun & co. apply.
 const _afxSt = {};
 function afxStats(k, T, ids, out) {
+  giFxInstall();                                                   // GI: the trigger rows in the gun tables
   const d = WEAPON_DEFS[k], F = afxOf(T, ids, _afxSt), sup = [...ids].some((id) => T[id] && T[id].can);
   const R = d.recoil, eff = Object.assign({}, d, { mass: d.mass + F.mass, recoil: { kick: R.kick * F.kick, climb: R.climb * F.climb } });
   wsBaseStats(k, out, eff);
