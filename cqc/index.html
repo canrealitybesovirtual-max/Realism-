@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.79</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.80</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.79</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.80</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -25867,7 +25867,7 @@ function* chamberCheckTask(g) {
 // Measured chamber rears (gun root space): the AKM's port runs z -0.215 .. -0.115 (its carrier side fills it), the chamber
 // at its front edge; the old ejection-point guess (-0.154, mid-port) put the press-check case and the chamber stand-in
 // floating in the middle of the open port.
-const CH_REAR = { akmn: -0.207, akm: -0.207 };
+const CH_REAR = { akmn: -0.207, akm: -0.207, m4a1s: -0.152 };   // the M4: its port's front edge, where its barrel extension starts (measured by rays down the bore)
 const chRearKnown = (g) => !!(g.parts && g.parts.g17barrel) || CH_REAR[g.type] !== undefined;
 function chamberRear(g) {
   if (g._chR !== undefined) return g._chR;
@@ -25922,7 +25922,7 @@ function chkRoundTick(g) {
 // closes after going back past the top round (a rack, a release, every shot) the live round of the gun's calibre (emoRoundMesh)
 // rides the bolt face off the magazine lips, nose up the ramp, into the chamber; until the rack is finished the magazine shows
 // one round less with its stack rising to the lips. Cases and live rounds leaving are spawnCasing / ejectLiveShell as before.
-const FEED = { on: !/[?&]feed=off/.test(QS), b: new THREE.Box3(), b2: new THREE.Box3(), m: new THREE.Matrix4(), ri: new THREE.Matrix4(), mats: null, geo: {}, car: { akmn: 0.06, akm: 0.06 }, own: { akmn: 1, akm: 1, m4a1s: 1, rifle: 1, awp: 1 }, port: { m4a1s: { len: 0.08, h: 0.019, y: 0.0035, dz: -0.02, x: 0.0011 } } };
+const FEED = { on: !/[?&]feed=off/.test(QS), b: new THREE.Box3(), b2: new THREE.Box3(), m: new THREE.Matrix4(), ri: new THREE.Matrix4(), mats: null, geo: {}, car: { akmn: 0.06, akm: 0.06 }, own: { akmn: 1, akm: 1, m4a1s: 1, rifle: 1, awp: 1 }, mouth: { akmn: 0.004, akm: 0.004, m4a1s: -0.002, awp: 0 }, port: { m4a1s: { len: 0.08, h: 0.019, y: 0.0035, dz: -0.02, x: 0.0011 } } };
 function feedMats() {
   if (!FEED.mats) FEED.mats = {
     steel: new THREE.MeshStandardMaterial({ color: 0x6b6d72, metalness: 0.6, roughness: 0.34, emissive: 0x121314 }),   // lighter: the bolt face / carrier read black inside the receiver
@@ -26049,21 +26049,29 @@ function feedBolt(g, fd, bz, mag, rounds, tNow) {
     for (const o of magTopR(mag)) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); _fbM.copy(FEED.ri).multiply(o.matrixWorld); _fbB.union(_fbB2.copy(o.geometry.boundingBox).applyMatrix4(_fbM)); }
     if (_fbB.isEmpty()) return false;
     fd.bY0 = (_fbB.min.y + _fbB.max.y) / 2 - fd.by; fd.bZ0 = (_fbB.min.z + _fbB.max.z) / 2;   // centre of the round in the magazine
-    fd.bZl = cz + fd.so - C.L / 2;                                  // where the bolt face meets its rim
+    fd.bSo = clamp(fd.bZ0 + C.L / 2 - cz, 0.01, g.def.travel);       // the bolt face meets its rim where it lies (no jump)
     fd.bOn = true; fd.bRise = 0; fd.bT = tNow;
     feedMagShow(fd, mag, rounds - 1, 0);
   }
   fd.bRise = Math.min(1, (tNow - fd.bT) / 0.2);
   const up = smoothstep(0, 1, fd.bRise), yl = -C.rb * 1.6;          // the lips: just under the bore line, rim in the bolt face's path
   r.visible = true;
-  if (bz >= fd.so) {                                               // lying in the lips, rising, waiting for the bolt
-    r.position.set(fd.bx, fd.by + fd.bY0 + (yl - fd.bY0) * up, fd.bZ0 + (fd.bZl - fd.bZ0) * up);
+  const so = fd.bSo;
+  if (bz >= so) {                                                  // lying in the lips, rising, waiting for the bolt
+    r.position.set(fd.bx, fd.by + fd.bY0 + (yl - fd.bY0) * up, fd.bZ0);
     r.rotation.x = -Math.PI / 2 + 0.05 * up;
   } else {                                                         // the bolt face drives it up the ramp into the chamber
-    // on the bore line before its nose reaches the chamber mouth (nose at cz - L when bz = 0; it reaches the mouth at bz = L)
-    const a0 = Math.min(fd.so * 0.85, C.L * 1.05), u = clamp((fd.so - bz) / Math.max(fd.so - a0, 0.004)), k = 1 - smoothstep(0, 1, u);
-    r.position.set(fd.bx, fd.by + yl * k, cz + bz - C.L / 2);
-    r.rotation.x = Math.sin(Math.PI * u) * 0.12 - Math.PI / 2;     // nose up the ramp, level again on the bore line
+    // The nose leads: it climbs the ramp onto the bore line by the time it reaches the barrel's mouth (FEED.mouth, measured
+    // from each model's bore), the case head rises behind it on the bolt face; the round pivots between the two.
+    // (The round's origin is the case middle; its bullet sticks out F past that, so the old path entered the barrel low.)
+    if (fd.bF === undefined) { const B = new THREE.Box3(); r.updateMatrixWorld(true); const iv = new THREE.Matrix4().copy(r.matrixWorld).invert(); r.traverse((o) => { if (o.isMesh) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); B.union(_fbB2.copy(o.geometry.boundingBox).applyMatrix4(_fbM.copy(iv).multiply(o.matrixWorld))); } }); fd.bF = B.isEmpty() ? C.L / 2 : B.max.y; }
+    const H = C.L / 2, F = fd.bF, Lt = H + F, lo = cz - H - F + 0.012, hi = cz + so - H - F - 0.02;   // nose on the line 12 mm before home at the latest, and at least 20 mm of ramp after the bolt picks it up
+    const mouth = Math.min(Math.max(cz + (FEED.mouth[g.type] ?? 0), lo), Math.max(hi, lo));
+    const s0 = cz + so - H - F - mouth, ramp = clamp(s0, 0.004, 0.03), sn = cz + bz - H - F - mouth;   // nose behind the mouth
+    const yn = yl * smoothstep(0, 1, clamp(sn / ramp)), uh = clamp((so - bz) / Math.max(so * 0.8, 0.004));
+    const yh = yl * (1 - smoothstep(0, 1, uh));
+    r.position.set(fd.bx, fd.by + yh + (yn - yh) * (H / Lt), cz + bz - H);
+    r.rotation.x = Math.atan2(yn - yh, Lt) - Math.PI / 2;          // nose up the ramp, level again on the bore line
   }
   if (bz < 0.004) { fd.bOn = false; r.visible = false; feedMagEnd(fd); }   // home: chambered (finishRack counts it)
   return true;
@@ -27013,14 +27021,18 @@ function wbTable() {
 function wbVar(it) { return it.drumT ? 'drum:' + it.drumT : it.o2 ? 'o2:' + it.o2 : it.ub ? it.ub : it.awmDot ? 'awm:dot' : it.awm ? 'awm:' + it.awm : it.pl2 ? 'pl2' : it.k45 ? 'c45' : it.akKey ? it.akKey : it.can === 'sb100' || it.can === 'm4s' ? it.can : it.sub === 'm4part' || it.sub === 'fh' ? it.part : null; }
 function wbSpotFits(it, t) { return it.sub === t[0] && (t[0] !== 'sup' || !!it.big === t[1]) && wbVar(it) === (t[5] || null); }
 // Step 100 / 105: spots a store purchase just opened get their part.
-function wbTableFill() {
-  if (!WB.room || !WB.room.active) return;
+function wbTableFill(lazy = false) {
+  if (!WB.room || !WB.room.active) return 0;
+  let n = 0;
   for (const t of wbTable()) {
     if (WB.atts.some((p) => p.item.tableSpot === t && !p.removing)) continue;
+    if (lazy && WBFILL.bad.has(t)) continue;                        // its part could not be made (kit not loaded / no model): not every 2 s
     const p = wbMakeAtt(t[0], t[1], t[5] || null);
-    if (p) { p.item.tableSpot = t; WB.atts.push(p); wbHome(p, WB.room); }
+    if (p) { p.item.tableSpot = t; WB.atts.push(p); wbHome(p, WB.room); n++; WBFILL.bad.delete(t); warmSoon(p.root); } else WBFILL.bad.add(t);
   }
-  try { wbTrays(WB.room); } catch (e) { console.warn('bench trays not built', e); }
+  if (!lazy || n) { try { wbTrays(WB.room); } catch (e) { console.warn('bench trays not built', e); } }   // the trays only when something was added (they were rebuilt every 2 s)
+  WBFILL.made += n; WBFILL.calls++;
+  return n;
 }
 WB.btnLocal = new THREE.Vector3(2.84, 0.905, 2.44);
 // Bench fix: how far a part is from where a fit would put it, measured between its middles (p.center) now and at the seat
@@ -27718,6 +27730,7 @@ function attRefresh(g) {
   else if (g.type === 'm4a1s' && M4A.ready) m4Refresh(g);
   else if (g.type === 'awp' && AWMA.ready) awmRefresh(g);           // step 113
   else { optSight(g, false); foreignFx(g, false); }                // any-gun fit: guns without their own build
+  warmSoon(g.prop.root);                                           // LAG FIX: its new parts' shaders in the background
 }
 function wbSupSnap(g, p, reach) {
   const root = g.prop.root; root.updateMatrixWorld(true);
@@ -34683,6 +34696,27 @@ function enemyLodSig(g) {
   for (let i = 0; i < 64; i++) { const v = a[Math.floor(i * (n - 1) / 63)]; h = (h * 31 + Math.round(v * 1e5)) | 0; }
   return (g.index ? 'i' + g.index.count : 'n') + ':' + n + ':' + h + ':' + g.groups.length;
 }
+// LAG FIX: an uncached gun part's LODs (weld + simplify: ~0.4 s for a whole gun) are made in idle time, one part per
+// slice, instead of in the frame that first sees his gun; he draws the full part meanwhile.
+const LODQ = { q: [], s: new Set(), done: 0, busy: false };
+function lodGeoLazy(g) {
+  if (ENEMY_LOD.map.has(g)) return ENEMY_LOD.map.get(g);
+  const sig = enemyLodSig(g), hit = sig && ENEMY_LOD_SIG.get(sig);
+  if (hit !== undefined) return enemyLodGeo(g);
+  if (!LODQ.s.has(g)) { LODQ.s.add(g); LODQ.q.push(g); lodQRun(); }
+  return undefined;
+}
+function lodQRun() {
+  if (LODQ.busy || !LODQ.q.length) return;
+  LODQ.busy = true;
+  const step = () => {
+    const g = LODQ.q.shift();
+    if (g) { try { enemyLodGeo(g); } catch (e) { ENEMY_LOD.map.set(g, null); } LODQ.s.delete(g); }
+    if (LODQ.q.length) later(step); else { LODQ.busy = false; LODQ.done++; }
+  };
+  const later = (f) => (window.requestIdleCallback ? requestIdleCallback(f, { timeout: 300 }) : setTimeout(f, 30));
+  later(step);
+}
 function enemyLodGeo(g) {
   const L = ENEMY_LOD;
   if (L.map.has(g)) return L.map.get(g);
@@ -34726,9 +34760,10 @@ function enemyLodTick(e) {
   if (S.lodGun !== groot) {                                        // a new gun in his hands (or none): its parts' LODs
     if (S.gunList) for (const [o, l] of S.gunList) o.geometry = l[0];
     S.lodGun = groot; S.gunList = [];
-    if (groot && ENEMY_LOD.MS) groot.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) { const l = enemyLodGeo(o.geometry); if (l) S.gunList.push([o, l]); } });
-    S.lodSet = false;
-  }
+    S.lodQ = LODQ.done; let pend = false;
+    if (groot && ENEMY_LOD.MS) groot.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) { const l = lodGeoLazy(o.geometry); if (l === undefined) pend = true; else if (l) S.gunList.push([o, l]); } });
+    S.lodPend = pend; S.lodSet = false;
+  } else if (S.lodPend && S.lodQ !== LODQ.done) { S.lodGun = undefined; return; }   // parts made in idle time since: list them next frame
   if (!S.lodList && !(S.gunList && S.gunList.length)) return;
   const L = ENEMY_LOD, D = renderer.xr.isPresenting || LITE.on ? L.dXR : L.d;   // PERF: lite = the headset's nearer LOD steps
   e.root.getWorldPosition(L.p); camera.getWorldPosition(L.c);
@@ -41534,13 +41569,14 @@ function wsBuyItem(id, anyGun = false) {
   return true;
 }
 // A table spot with no part (its kit loaded after the safe room was stocked, or a part bought before): fill it, every 2 s.
-var WBFILL = { t: 0 };
+var WBFILL = { t: 0, bad: new Set(), retry: 20, made: 0, calls: 0 };
 function wbFillTick(dt) {
   if ((WBFILL.t -= dt) > 0) return; WBFILL.t = 2;
   try {
     if (!WB.room || !WB.room.active || !WB.room.group || !WB.room.group.visible) return;
     const L = wbTable();
-    if (L.some((t) => !WB.atts.some((p) => p.item.tableSpot === t && !p.removing))) wbTableFill();
+    if (L.some((t) => !WBFILL.bad.has(t) && !WB.atts.some((p) => p.item.tableSpot === t && !p.removing))) wbTableFill(true);
+    if ((WBFILL.retry -= 2) <= 0) { WBFILL.retry = 20; WBFILL.bad.clear(); }   // a kit that loaded late: tried again every 20 s
   } catch (e) { /* not fatal */ }
 }
 // Bought parts that have their own bench spot go on the table (not straight onto the guns).
@@ -54079,6 +54115,47 @@ async function xboxWarm(say) {
 // variants there: the first pickup of each gun type (and its first shot) compiled 2-4 programs mid-game, and loaded / fitted
 // the rig on the spot. On a computer the rigs are loaded and those variants compiled in the background a few seconds after
 // the start (parallel compile only: a blocking compile would just move the stall; ?pcwarm=on forces it, ?pcwarm=off = never).
+// LAG FIX: a gun whose parts changed (attRefresh: store FIT, the vise, a pickup's build) and new bench parts get their shaders
+// compiled in the background, in the room's light and (computer) the arms view's light, instead of in the frame they first
+// show (each new program was a stall of a few hundred ms, several per fitted part). Batched: one root per 150 ms, hidden
+// pieces shown for the traversal. ?warmq=off = as before.
+const WARMQ = { on: !/[?&]warmq=off\b/.test(QS), q: [], s: new Set(), busy: false, n: 0 };
+function warmSoon(root) {
+  if (!WARMQ.on || !root || WARMQ.s.has(root) || typeof renderer === 'undefined') return;
+  WARMQ.s.add(root); WARMQ.q.push(root);
+  if (!WARMQ.busy) { WARMQ.busy = true; setTimeout(warmRun, 150); }
+}
+async function warmRun() {
+  const root = WARMQ.q.shift();
+  if (root) {
+    WARMQ.s.delete(root);
+    try {
+      if (root.parent) {
+        const flip = []; root.traverse((o) => { if (!o.visible) { flip.push(o); o.visible = true; } });
+        const ps = [];
+        try { ps.push(renderer.compileAsync(root, camera, scene)); } catch (e) { /* compiles when it shows */ }
+        if (!renderer.xr.isPresenting && VM.on && VM.scene && VM.cam) try { ps.push(renderer.compileAsync(root, VM.cam, VM.scene)); } catch (e) { /* idem */ }
+        for (const o of flip) o.visible = false;                    // the traversal above was synchronous
+        await Promise.race([Promise.all(ps), new Promise((r) => setTimeout(r, 3000))]);
+        WARMQ.n++;
+      }
+    } catch (e) { /* not fatal */ }
+  }
+  if (WARMQ.q.length) setTimeout(warmRun, 150); else WARMQ.busy = false;
+}
+// LAG FIX (headset): each gun type's fitted hand (pack hand bake, scale and seat solve, slide clearance) was made at its first
+// VR pickup (a stall of a few hundred ms in your hand). In the headset, one gun type lying in the world is fitted every 2 s
+// in the background until all are, and its shaders warmed. ?vrwarm=off = as before.
+const VRWARM = { on: !/[?&]vrwarm=off\b/.test(QS), n: 0 };
+setInterval(() => {
+  try {
+    if (!VRWARM.on || typeof renderer === 'undefined' || !renderer.xr.isPresenting || !VMH.on) return;
+    if (ENEMY.list.some((e) => !e.dead && e.engaged)) return;       // not in a fight
+    const q = props.find((p) => p.item && p.item.kind === 'gun' && !p.removing && p.item.prop === p && VMH.byType[p.item.type] && VMH.fits[p.item.type] === undefined);
+    if (!q) return;
+    vmhFit(q.item); warmSoon(q.root); VRWARM.n++;
+  } catch (e) { /* fitted at pickup */ }
+}, 2000);
 const PCW = { on: !/[?&]pcwarm=off\b/.test(QS), force: /[?&]pcwarm=on\b/.test(QS), busy: false, done: false, n: 0 };
 async function pcWarm() {
   if (!PCW.on || PCW.busy || PCW.done || LITE.xbox || IS_TOUCH || !VM.on) return;
@@ -54109,6 +54186,7 @@ async function pcWarm() {
       const p = comp(R);                                           // the traversal is synchronous: hidden pieces back at once
       for (const o of flip) o.visible = false;
       await p; await idle();
+      if (key && q.item.prop === q && VM.byType[q.item.type]) { try { vmGunFit(q.item, vmKey(q.item)); } catch (e) { /* fitted at pickup */ } await idle(); await idle(); }   // LAG FIX: its arms-view fit (hand bake + solve, ~0.15-0.3 s) now, not at the first pickup
     }
   } catch (e) { console.warn('[pc warm]', e); }
   PCW.busy = false; PCW.done = true;
@@ -62472,7 +62550,7 @@ function xtraGripRemember(g, it) {
   (XTRA.grips[g.type] || (XTRA.grips[g.type] = {}))[k] = { f: it.rail.f, k: it.rail.k };
   xtraGripSave();
 }
-if (window.__cqcDev) Object.assign(window.__cqcDev, { XTRA, XTRA_FX, xtraSync, xtraHw, xtraPistolMeasure, xtraPostOf, railGripDev, xtraGripKey, xtraRailCycle, railSpots, railFaces, RAIL_DEV, attRefresh, drumOn });
+if (window.__cqcDev) Object.assign(window.__cqcDev, { WBFILL, wbTable, XTRA, XTRA_FX, xtraSync, xtraHw, xtraPistolMeasure, xtraPostOf, railGripDev, xtraGripKey, xtraRailCycle, railSpots, railFaces, RAIL_DEV, attRefresh, drumOn });
 /* ===========================================================================
  *  ATTACHMENTS COLLIDE (doors, walls; ?attclip=off = exactly as before)
  *  The step 30 clip tested a held gun's own box (def.col) and, since step 103, its muzzle chain (g.muzClip); the step 8.1
