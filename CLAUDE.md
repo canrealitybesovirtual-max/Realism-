@@ -2677,3 +2677,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: guns go back to the locker in stock form (update 1.49; ?glstock=off)
 - glStock (from gunLockerRestock: every safe-room visit, respawn, restart, new run, terminal restock): a locker gun that is not in your hands / holster / sling / vise goes back stock: its type's store build is cleared (bought rows stay owned, hardware stays) with clSetGun, its saved muzzle chain, rail layout and grip spots go, and a gun still wearing bench-fitted parts is replaced by a fresh one. Parts land back on the bench table (wbTableFill).
 - Checked headless: a Glock with a store-fitted comp moved off its peg comes back on it bare, comp still owned.
+
+## CQC: no round lodged in the AKM's port (update 1.50)
+- Cause: FEED showed the feeding round whenever the action sat between 0.8 mm and the lips; an action resting a few mm short of home (the AKM's bolt after a VR rack) kept it on for good: a round lodged in the port, and the magazine kept one round hidden (its stack held for the feed).
+- Now the round shows only while the action is moving (it moved in the last 0.3 s) and more than 4 mm back; a stalled or near-home action hides it and gives the magazine its rounds back (feedMagEnd). Checked headless: AKM resting 2.5 mm open: no round, magazine full; a real stroke still feeds.
