@@ -2597,3 +2597,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: press-check round shows in the port, not in the grip (update 1.32; headset check needed)
 - Cause: chkRound placed the chambered case at 35 % of wr.eject measured from the gun root, which is the palm, not the bore; on pistols it sat ~4 cm under the slide, inside the frame by the fingers (seen in VR while racking slowly). Now from the bore line (wr.muzzle x / y) toward the port, as FEED does. Checked headless: Glock, M1911, M4A1-S show the case in the ejection port; AKM behind its dust cover.
+
+## CQC: drum window feed you can see (update 1.33; headset check needed)
+- Before: each shot jolted the window's brass 0.6 of a round step in 35 ms and sprang back over 150 ms (2-3 headset frames, unreadable), and with unlimited ammo the count never dropped, so it never played. Now every round chambered from a drum (chamberFromMag sets item._drKick) slides the stack one full round toward the tower over 85 ms (eased), then rests: the next round sits where this one was, so it reads as the stack feeding round after round.
+- Checked headless: the kick fires with and without unlimited ammo (pivot found); the motion itself runs in play only.
