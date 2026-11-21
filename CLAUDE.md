@@ -2587,3 +2587,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: bench work mat no longer shows the bench through it in VR (update 1.29)
 - Cause: the mat's polygonOffset (factor 1, units 2) pushes it back by its slope; at shallow angles (more in the headset) that pushed it behind the bench's vinyl top 0.7 mm under it, so patches of the bench showed through, changing as you moved. The mat has no offset now; the tray bins pull forward instead (factor -1, units -2), so they still win over the mat they stand on. Parse checked only.
+
+## CQC: pistol skeleton stock clamps the grip (update 1.30; headset check needed)
+- The stock hung on a thin shoe and two small lugs behind the back strap (looked like it floated). xtraStockSpec now builds a grip clamp: a spine on the back strap, two cheeks a side (top and bottom of the strap) hugging the grip's sides on rubber pads, joined along the strap, cross bolts with hex heads behind it; hinge and lower lugs on the spine. xtraPistolMeasure also measures the grip's half width over the cheeks (hT / hB, from the drawn frame, magazine left out).
+- Checked headless: close-up renders on the Glock 17 and M1911, the cheeks sit on the grip sides.
