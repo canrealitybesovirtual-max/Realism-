@@ -2710,3 +2710,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: pistols take grips, any suppressor and the sniper scopes (update 1.57)
 - GFIT changed at the user's request: every suppressor fits every gun; vertical / angled grips, the hand stop and the foregrip light fit the pistols too (on a rail face only: a pistol with no rail refuses a grip with "A grip needs a rail"; before, the generic seat put it 12 cm ahead of the hand in the air); the AWM 3-25x / 10x (and its shade / killflash) fit the pistols on the riser; rifle stocks stay rifle-only. Pistol skeleton stocks are store rows as before.
+
+## CQC: a body by a door no longer holds it shut against you (update 1.58)
+- Found by the 5-room bot: DBODY (update 1.47) also stopped the leaf in 'drive' (your press opening it), so a body lying by the door held it at 26 deg and the way on was blocked. Now only a closing leaf (closer, lock, the other player's packets, target nearer shut than the leaf) stops on a body; opening it pushes him.
