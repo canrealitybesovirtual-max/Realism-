@@ -2580,3 +2580,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: bought parts go on the bench table (update 1.27; ?buytable=off = auto-fit; headset check needed)
 - Cause: buying a part that has its own bench spot (Glock / AKM / M1911 / M4 / AWM parts, new optics, underbarrel) fitted it straight onto the store build; every gun synced except the one clamped in the vise, so it only showed after RELEASE and re-clamp. Now wsBuyItem (wsBenchSpot) leaves it unfitted and wbTableFill lays it on the table: fit it at the vise. Store-only rows (magazines, triggers, kits, hardware) still apply at once.
 - Checked headless: g17.comp, m4a1s.ctr, o2.lpvo bought: not fitted, one part on the table each.
+
+## CQC: bench table refills late parts (update 1.28)
+- wbFillTick (weaponsUpdate, every 2 s while the bench's safe room is active and drawn): a table spot of an owned part with no part on it (its kit loaded after the room was stocked) gets filled (wbTableFill).
+- Measured headless, everything owned: 50 parts on the table; 58 owned rows have no bench spot (store-only: magazines and drums, triggers, sight styles, M1911 grip panels, AKM kit / stock / sling, skeleton stocks, slings, covers, M16A1 parts; lights / lasers / cans use the bench's always-stocked spares). Those are fitted with FIT on the screen.
