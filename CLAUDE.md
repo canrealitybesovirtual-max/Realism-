@@ -2763,3 +2763,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: AWM magazine shows one top round (update 1.65)
 - 1.64 put two extra lip rounds (MTR) on the AWM magazine on top of its model's own two, staggered like a double stack, so 4 rounds showed and two stuck out of the single-stack lips. awp is out of MTR again; its model's top round shows. While a round feeds (racking), that top round (case + bullet) hides so the feeding round takes its place (feedMagShow / feedMagEnd, AWM only). Checked headless: one round in the lips.
+
+## CQC: every barrel device fits the pistols (update 1.66)
+- GFIT: the Glock comp, barrel extension, AK flash hider / comp, M4 A2 / comp now fit every gun (cans already did), so with a Glock or M1911 in the vise every owned muzzle device stays on the table and threads on (the muzzle chain has no thread / calibre refusals). Node check of the table: all muzzle keys true for g17 / m1911. Not seen in a headset.
