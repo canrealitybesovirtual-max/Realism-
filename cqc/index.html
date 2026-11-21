@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.40</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.41</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.40</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.41</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -27143,6 +27143,53 @@ function gunMeshes(g) {
 // Highest / lowest drawn point of the gun over z0..z1 within |x| < xw, by rays down / up in design space (any mesh density).
 const _gsRC = new THREE.Raycaster(), _gsO = new THREE.Vector3(), _gsD = new THREE.Vector3();
 function gunSpan(g, z0, z1, xw, ymin = -0.5, ymax = 0.5) {
+  if (GFIELD.on) { const F = gunField(g); if (F) return gunFieldSpan(F, z0, z1, xw, ymin, ymax); }
+  return gunSpanRays(g, z0, z1, xw, ymin, ymax);
+}
+// The same answers as rays, from a field built once per set of drawn meshes (rays against full meshes cost ~4 s when an optic was
+// fitted to a pistol: optTopRun asks ~40 spans of 54 rays each). Model space, 1.2 mm cells: top / bottom y per (x, z) column,
+// widest |x| per (y, z) row; filled by sampling every drawn triangle at ~0.8 mm.
+var GFIELD = { on: !/[?&]gfield=off\b/.test(QS), c: 0.0012 };
+function gunField(g) {
+  const list = gunMeshes(g);
+  if (g._vfield && g._vfield.src === list) return g._vfield;
+  if (!list.length) return null;
+  g.model.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), M = new THREE.Matrix4(), b = new THREE.Box3(), t = new THREE.Box3();
+  for (const o of list) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); b.union(t.copy(o.geometry.boundingBox).applyMatrix4(M)); }
+  const c = GFIELD.c, nx = Math.ceil((b.max.x - b.min.x) / c) + 1, ny = Math.ceil((b.max.y - b.min.y) / c) + 1, nz = Math.ceil((b.max.z - b.min.z) / c) + 1;
+  if (nx * nz > 4e6 || ny * nz > 4e6) return null;
+  const top = new Float32Array(nx * nz).fill(-Infinity), bot = new Float32Array(nx * nz).fill(Infinity), side = new Float32Array(ny * nz).fill(0);
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+  const put = (x, y, z) => {
+    const ix = Math.round((x - b.min.x) / c), iy = Math.round((y - b.min.y) / c), iz = Math.round((z - b.min.z) / c), k = iz * nx + ix, kk = iz * ny + iy, ax = Math.abs(x);
+    if (y > top[k]) top[k] = y; if (y < bot[k]) bot[k] = y; if (ax > side[kk]) side[kk] = ax;
+  };
+  for (const o of list) {
+    M.multiplyMatrices(inv, o.matrixWorld);
+    const G = o.geometry, P = G.attributes.position, I = G.index, s0 = Math.max(0, G.drawRange.start), n = Math.min(I ? I.count : P.count, s0 + G.drawRange.count);
+    for (let q = s0; q + 2 < n; q += 3) {
+      A.fromBufferAttribute(P, I ? I.getX(q) : q).applyMatrix4(M); B.fromBufferAttribute(P, I ? I.getX(q + 1) : q + 1).applyMatrix4(M); C.fromBufferAttribute(P, I ? I.getX(q + 2) : q + 2).applyMatrix4(M);
+      const L = Math.max(A.distanceTo(B), B.distanceTo(C), C.distanceTo(A)), m = Math.min(40, Math.max(1, Math.ceil(L / (c * 0.7))));
+      for (let u = 0; u <= m; u++) for (let v = 0; v <= m - u; v++) { const w = m - u - v; put((A.x * u + B.x * v + C.x * w) / m, (A.y * u + B.y * v + C.y * w) / m, (A.z * u + B.z * v + C.z * w) / m); }
+    }
+  }
+  return (g._vfield = { src: list, b, c, nx, ny, nz, top, bot, side });
+}
+function gunFieldSpan(F, z0, z1, xw, ymin, ymax) {
+  let top = -Infinity, bot = Infinity;
+  for (let a = 0; a <= 8; a++) for (const x of [-xw * 0.5, 0, xw * 0.5]) {
+    const z = z0 + (z1 - z0) * a / 8, ix = Math.round((x - F.b.min.x) / F.c), iz = Math.round((z - F.b.min.z) / F.c);
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {            // the ray's column and its neighbours (a ray never slips between samples)
+      const X = ix + dx, Z = iz + dz; if (X < 0 || Z < 0 || X >= F.nx || Z >= F.nz) continue;
+      const k = Z * F.nx + X, tp = F.top[k], bt = F.bot[k];
+      if (tp > -Infinity && tp <= ymax && tp >= ymin && tp > top) top = tp;
+      if ((dx === 0 && dz === 0) && bt < Infinity && bt >= ymin && bt <= ymax && bt < bot) bot = bt;
+    }
+  }
+  return top === -Infinity ? null : { top, bot };
+}
+function gunSpanRays(g, z0, z1, xw, ymin = -0.5, ymax = 0.5) {
   const list = gunMeshes(g), W = g.model.matrixWorld, inv = new THREE.Matrix4().copy(W).invert();
   g.model.updateMatrixWorld(true);
   let top = -Infinity, bot = Infinity;
@@ -27211,6 +27258,9 @@ function optMountMat() {
 }
 // Half width of the gun's top at height y, model z: rays in from both sides (default 11.5 mm).
 function optGunHalf(g, y, z) {
+  if (GFIELD.on) { const F = gunField(g); if (F) { const iy = Math.round((y - F.b.min.y) / F.c), iz = Math.round((z - F.b.min.z) / F.c); let hx = 0;
+    for (let d = -1; d <= 1; d++) { const Z = iz + d; if (Z < 0 || Z >= F.nz || iy < 0 || iy >= F.ny) continue; hx = Math.max(hx, F.side[Z * F.ny + iy]); }
+    return hx > 0.004 && hx < 0.03 ? hx : 0.0115; } }
   const list = gunMeshes(g), W = g.model.matrixWorld, inv = new THREE.Matrix4().copy(W).invert(); let hx = 0;
   for (const sx of [1, -1]) {
     _gsO.set(sx * 0.12, y, z).applyMatrix4(W); _gsD.set(-sx, 0, 0).transformDirection(W);
