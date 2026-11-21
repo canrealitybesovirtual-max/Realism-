@@ -2694,3 +2694,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: workshop screen text no longer runs under buttons (update 1.53)
 - The slot header ("OPTIC · factory: ...") had no width limit and ran under the page ▲▼ buttons; it now stops before them. tText with a width limit: text over 1.4x the room is cut with an ellipsis instead of being squashed into a smear (it was drawn into its neighbours). Stats: weight as "3.1kg" with a wider value column (it read "3.10…").
 - Checked by headless renders of the M1911 optic, M4A1-S muzzle and AWM optic pages (the M1911's optic page no longer lists AKM parts: update 1.52).
+
+## CQC: red dot / holo dot only inside the sight window in VR (update 1.54; headset check needed)
+- Cause: the both-eyes reticle overlay (RETOV, update 1.22) is a plane larger than the glass with no depth test; it drew the dot wherever the view lined up with the sight's axis, so with the head a little off the axis the dot floated beside or below the window (or out in the room).
+- The overlay now discards every fragment outside the glass's own window box (fragment world position into the glass mesh's frame, onBeforeRender per overlay). Same for every reticle glass (Glock / M4 / AKM dot, holo). Checked headless: the 6 overlay programs (AKM / M4 dot and holo) link. Not seen in a headset.
