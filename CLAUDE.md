@@ -2766,3 +2766,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: every barrel device fits the pistols (update 1.66)
 - GFIT: the Glock comp, barrel extension, AK flash hider / comp, M4 A2 / comp now fit every gun (cans already did), so with a Glock or M1911 in the vise every owned muzzle device stays on the table and threads on (the muzzle chain has no thread / calibre refusals). Node check of the table: all muzzle keys true for g17 / m1911. Not seen in a headset.
+
+## CQC: grips held at their own angle (update 1.67; headset check needed)
+- A vertical grip on a side or top rail (or snapped on anywhere) was still held as if it hung under the gun. The hold now turns with the grip about the bore: def.vfgRoll from the grip's hang axis (vfgRollOf: its own -y, 0 under the gun, +-90 deg on a side rail, 180 on top), set by xtraGripHold (rifles), xtraPistolVfg (pistols) and foreignGrip (snapped grips); vfgFrame rotates the VFG_SUP hand frame by it (VR and computer support hand, fingers wrap via the same contact). Bottom grips unchanged. Checked: parse; headless Glock with a bottom grip unchanged. Side-rail hold not seen (the headless bench found no free side spot for the grip).
