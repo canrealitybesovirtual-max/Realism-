@@ -2646,3 +2646,15 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: drywall breaks look like real gypsum board (update 1.43)
 - Breakable room wall cavities have no yellow insulation by default (?wool=on brings it back): you see the galvanised studs and, behind, the block wall (side walls) or the far board's back (end walls), its liner paper now grey (#7e7c77, was brown).
 - Torn edges (pdMaterial, GRITH): crushed zone darker (x 0.24-0.5), flaked paint chips are dull dusty gypsum (0.52) over a smaller area instead of white, the torn core a grey gritty gypsum with uneven grain (0.44 x noise), crumbs dimmer; the inside of a sheet seen through a hole is grey back paper.
+- Measured and darkened again after renders (update 1.44): flaked paint chips 0.25, torn core 0.22 (x grain 0.7-1.25), crumbs rarer (1.5 % of crushed pixels) and grey; the old (?gritholes=off) core also grey.
+
+## CQC: review fixes (update 1.44)
+- An independent review of this session's ~28 commits (diffs read, eslint no-undef, GLBs decoded) found, fixed here:
+  - CRITICAL: wbFreeze used an undeclared `it` since 1.40 (the optic-on-slide edit dropped `const it = p.item`), so every freeze threw: vise RELEASE left the gun kinematic in mid-air without saving its build, new guns spawned without their store build (the sync functions caught it), multiplayer gun builds dropped their parts. Fixed; checked headless: clamp, fit, release on Glock (dot, light), AKM (light), M1911 (dot): no errors, dots on the slide, lights on the frame. A full-module eslint no-undef / dupe-keys / redeclare / const-assign check is now clean.
+  - AKM vise clamp at -0.491 sat on the bayonet lug / gas block (GLB decoded: no vertices z -0.50..-0.555 = bare barrel); now -0.527.
+  - g17BarrelSplit ran after paintGunInit and the contact cloud: the barrel never took finishes and the hand cloud counted it as slide. Now before both; the split geometries are registered in the finish part map (barrel follows the slide's finish group).
+  - The UNDERBARREL bench group was in WB_GROUPS and pushed again by ubInit: laid out twice (two headers, wasted space). The push is gone.
+  - vmhFingSolve (1-2 s, more on Quest) could run on the first VR pickup of guns not in FING_TABLE (smg, rifle, shotgun); now only with ?fingsolve=force; those keep their fitted angles.
+  - Racked-out live rounds (LIVEEJ) move with world shifts and go with their room.
+  - optMount's cached gun length (g._gunZ) is reset wherever the drawn-mesh cache is; brassUnder reuses one Rapier ray and predicate (no allocation per settling case); a dead term in optTopRun removed.
+- Kept as asked: the VR trigger finger rests on the trigger while you hold the gun (?trigdisc=on = only on a controller touch).
