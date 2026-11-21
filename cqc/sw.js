@@ -13,7 +13,7 @@
  *    "check now" (cheap 304s), not thrown away, so a bump never re-downloads the game on a slow link.
  *  - ?sw=off on the page unregisters it.
  */
-const BUILD = '2026-11-11a';
+const BUILD = '2026-11-21a';
 const CACHE = 'cqc-' + BUILD;
 const REVAL = 6 * 3600 * 1000;   // ms between background checks of one file
 const PAGE_WAIT = 6000;          // ms the page request waits for the network before the cached page is used

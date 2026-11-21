@@ -2833,3 +2833,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Cause of the tan boxes in his hands: the support hand on a gun sent 'o' (other), drawn as a 10 cm tan box, and every attachment / magazine / grenade was a coloured stand-in box.
 - A hand on a gun now counts as on the gun (no stand-in). The pose packet adds `hd` [right, left] (only when a hand holds something): `a|sub|big|variant` (attachments and bench drums, wbMakeAtt's ids), `m|type|rounds|drum`, `n|type`, `s` (syringe). The receiver builds that item once per avatar hand and id (narmReal: no body, no collider, not raycast, no shadow, long axis along the fist, centred in it; 24 kept) and draws it in his fist; unknown ids keep the stand-in.
 - Checked headless: 38 bench / locker item ids (every attachment kind, drums, magazines) build with no errors. Not seen between two devices.
+
+## CQC: Russia patches removed from the soldiers (update 1.83)
+- The soldier model's "РОССИЯ" flag patches (plate carrier front and back: a small patch mesh; both helmet sides) all read two regions of the Mark_Helmet1 texture. tools-style one-off script (scratchpad depatch.py) painted those regions (x 460-512 / y 322-354 and x 35-70 / y 434-490 of 512) as a plain dark blank loop patch with a lighter stitched edge, in models/enemy-soldier.glb and models/lite/enemy-soldier.glb (GLB rebuilt, nothing else changed). sw.js BUILD bumped so cached copies are re-checked.
+- Checked by headless renders of chest, back and both helmet sides (blank patches, no text).
