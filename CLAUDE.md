@@ -2665,3 +2665,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: skeleton stock grip bands without screw heads (update 1.46)
 - The socket-cap screw heads at the front ends of the grip bands stood off the band (floating pins); removed. Bands, spine, hinge / lower lugs and their pins unchanged. Checked by headless render (Glock).
+
+## CQC: walls by the doors break, bodies stop door leaves (update 1.47; headset check needed)
+- Breakable room walls (RW): every free stretch of wall breaks now (share 1, was 0.8 at random), right up to the door casing (doorPad 0.075, was 0.26), and a fixture keeps only its own width solid (RW_FIXH: outlet 6 cm, switch 9 cm; was 45 / 30 cm each side), so the wall beside a door and round its outlet / switch breaks.
+- DBODY (?doorbody=off): a dead man's ragdoll part within 16 cm of a door leaf makes the leaf's motor let go (mode 'body': the closer, a lock, a drive or the other player's door packets no longer push it through him); a part whose centre is inside the leaf slab is put back on the side his pelvis lies. Checked headless: a head placed inside a leaf being driven shut ends outside it, the leaf stops on the body.

@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.46</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.47</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.46</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.47</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -10710,6 +10710,7 @@ function updateDoorsPre(now) {
   const P = CONFIG.doorPhys;
   for (const door of doors) {
     if (door.blown) continue;                                     // C4: off its hinges
+    const bodyIn = DBODY.on && doorBodyCheck(door);                // a body in the leaf's way: it stops there, a limb inside it is put back on its own side
     let target = 0, k = P.closerStiffness, c = P.closerDamping, mode = 'closer';
     if (door.free) { target = door.angle; k = 0; c = 3; }               // apartment doors: no closer, a leaf stays where you leave it
     // A door whose next room hasn't finished building stays latched (it never leads into nothing).
@@ -10752,6 +10753,7 @@ function updateDoorsPre(now) {
       door.latching = latch;
       door.body.wakeUp();                  // a door asleep against a casing must notice it's free
     }
+    if (bodyIn && (mode === 'closer' || mode === 'locked' || mode === 'net' || mode === 'drive')) { target = door.angle; k = 0; c = 6; mode = 'body'; }
     if (mode !== door.mode || Math.abs(target - door.target) > 0.003) {
       door.joint.configureMotorPosition(target, k, c);
       door.body.wakeUp();
@@ -10759,6 +10761,33 @@ function updateDoorsPre(now) {
     }
     doorPace(door, now);                                         // step 52: before the step, so a kick never gets a free frame
   }
+}
+// A dead man's ragdoll against a door leaf: the closer, a lock or the other player's door packets drove the leaf through
+// him (acceleration motor, thin leaf) and limbs ended up inside it. While a ragdoll part is within reach of the leaf the
+// motor lets go of it (it stays where the body holds it), and a part whose centre is in the leaf slab is put back on the
+// side his pelvis lies (?doorbody=off = as before).
+const DBODY = { on: !/[?&]doorbody=off\b/.test(QS), q: new THREE.Quaternion(), v: new THREE.Vector3(), reach: 0.16, deep: 0.06, out: 0.11 };
+function doorBodyCheck(door) {
+  const L = ENEMY.list; if (!L || !L.length) return false;
+  const t = door.body.translation(), r = door.body.rotation(), hx = door.sw / 2 + 0.05, hy = (CONFIG.door.height - 0.02) / 2, hz = 0.0225, Q = DBODY.q.set(r.x, r.y, r.z, r.w).invert(), v = DBODY.v;
+  let hit = false;
+  for (const e of L) {
+    if (!e.rag || !e.rag.length) continue;
+    const p0 = e.rag[0].body.translation(); if ((p0.x - t.x) ** 2 + (p0.z - t.z) ** 2 > 4) continue;   // pelvis within 2 m of the leaf
+    let side = 0;
+    v.set(p0.x - t.x, p0.y - t.y, p0.z - t.z).applyQuaternion(Q); side = v.z;
+    for (const g of e.rag) {
+      const p = g.body.translation(); v.set(p.x - t.x, p.y - t.y, p.z - t.z).applyQuaternion(Q);
+      if (Math.abs(v.x) > hx || Math.abs(v.y) > hy + 0.1 || Math.abs(v.z) > hz + DBODY.reach) continue;
+      hit = true;
+      if (Math.abs(v.z) < hz + DBODY.deep && Math.abs(side) > hz + DBODY.deep) {                // a limb inside the leaf: out on his side
+        v.z = Math.sign(side) * (hz + DBODY.out); v.applyQuaternion(DBODY.q.invert()); DBODY.q.invert();
+        g.body.setTranslation({ x: t.x + v.x, y: t.y + v.y, z: t.z + v.z }, true); g.body.setLinvel({ x: 0, y: 0, z: 0 }, true); g.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      }
+    }
+  }
+  if (hit && door.body.isSleeping()) door.body.wakeUp();
+  return hit;
 }
 const _qTurn = new THREE.Quaternion(0, 1, 0, 0);
 const _dvP = new THREE.Vector3(), _dvQ = new THREE.Quaternion();                 // step 83: half a turn about y
@@ -30979,7 +31008,7 @@ function pdDepthMaterial(pd) {
  * ------------------------------------------------------------------------- */
 var RWWOOL = /[?&]wool=on\b/.test(QS);
 const RW = {
-  on: !/[?&]roomwalls=off\b/.test(QS), share: 0.8, run: [1.2, 2.8], minRun: 0.6, corner: 0.18, doorPad: 0.26,
+  on: !/[?&]roomwalls=off\b/.test(QS), share: 1, run: [1.2, 2.8], minRun: 0.35, corner: 0.18, doorPad: 0.075,
   thru: !/[?&]rwthrough=off\b/.test(QS), chain: false, lp: new THREE.Vector3(), pin: new THREE.Vector3(), pn: new THREE.Vector3(), ploc: { room: null, rw: null, si: 0, u: 0, y: 0 },
   inset: 0.02, y0: 0.14, top: 0.3, railK: 0.04, board: 0.0125, stud: 0.092, block: 0.108, mortar: 0.118, wool: [0.055, RWWOOL ? 0.7 : 0], endWool: [0.135, RWWOOL ? 0.55 : 0],   // no yellow insulation by default (?wool=on): studs and the far board / block show
   mats: null, res: { E: 0, exit: null, through: 0 }, ex: new THREE.Vector3(), b: new THREE.Vector3(), nn: new THREE.Vector3(), loc: { rw: null, si: 0, u: 0, y: 0 }
@@ -30997,6 +31026,7 @@ function rwMats() {
   return (RW.mats = { steel, block: block || mortar, mortar, paper, wool });
 }
 // Which runs of each wall are breakable, in the wall mesh's own u (= -wallU). [] = solid as before.
+const RW_FIXH = { outlet: 0.06, extinguisher: 0.16, panel: 0.3, whiteboard: 0.65, clock: 0.2 };
 function rwSegments(room) {
   const L = room.layout, D = CONFIG.door, { w, d } = room, names = ['back', 'front', 'left', 'right'];
   const R = mulberry32((Math.imul(room.slot + 7, 0x9E3779B1) ^ 0x52574C) >>> 0);
@@ -31010,11 +31040,11 @@ function rwSegments(room) {
   };
   ex[0].push([room.exitX - D.width / 2 - RW.doorPad, room.exitX + D.width / 2 + RW.doorPad]);
   if (room.entryX !== null) ex[1].push([-room.entryX - D.width / 2 - RW.doorPad, -room.entryX + D.width / 2 + RW.doorPad]);
-  for (const f of L.fixtures || []) add(f.wall, f.u, 0.45);
+  for (const f of L.fixtures || []) add(f.wall, f.u, (RW_FIXH[f.type] ?? 0.4) + 0.05);   // the fixture's own half width (an outlet no longer keeps a metre of wall solid)
   if (L.vent) add(L.vent.wall, L.vent.u, 0.45);
   if (L.conduit) { const wl = L.conduit.side < 0 ? 'left' : 'right'; add(wl, wallU(wl, 0, L.conduit.dropZ), 0.25); }
   if (L.pipes && L.pipes.drop !== null && L.pipes.drop !== undefined) add(L.pipes.wall, wallU(L.pipes.wall, 0, L.pipes.drop), 0.45);
-  if (L.switch && L.switch.x !== undefined) add(L.switch.wall || 'front', wallU('front', L.switch.x, 0), 0.3);
+  if (L.switch && L.switch.x !== undefined) add(L.switch.wall || 'front', wallU('front', L.switch.x, 0), 0.09);
   if (L.plateX !== undefined) add('back', wallU('back', L.plateX, 0), 0.25);
   for (const f of L.decor || []) if (f.x !== undefined) near(f.x, f.z, 0.6);
   for (const f of L.furniture || []) if (f.type === 'pilaster') near(f.x, f.z, 0.55);
