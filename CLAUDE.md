@@ -2760,3 +2760,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Bare concrete columns: the yellow guard paint, black band and column corners are real 22-26 mm rounds (3 segments, cbox); the one-facet 12 mm chamfer was a sub-pixel strip that flickered / looked dashed in the headset.
 - Safe room: no wall switch; the extinguisher moved left of the exit door (it hung into the brass bin's open lid); the bin is a clean OD powder coat (it used the ammo can's worn paint: rust runs and silver chips everywhere).
 - Sprinklers: grid ~4.6 m (was 2.6 m), at least one a room; stairwell one head (was two); facility corridors every other bay (was two a bay).
+
+## CQC: AWM magazine shows one top round (update 1.65)
+- 1.64 put two extra lip rounds (MTR) on the AWM magazine on top of its model's own two, staggered like a double stack, so 4 rounds showed and two stuck out of the single-stack lips. awp is out of MTR again; its model's top round shows. While a round feeds (racking), that top round (case + bullet) hides so the feeding round takes its place (feedMagShow / feedMagEnd, AWM only). Checked headless: one round in the lips.
