@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.80</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.81</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.80</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.81</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -10372,6 +10372,17 @@ function sbOk(room) { if (SB.fails.has(room.slot) && SB.fails.get(room.slot).kin
 
 // Portal visibility: you see a room only through open doors, at most 2 rooms away.
 function doorOpen(slot) { const r = stream.rooms.get(slot); return !!(r && r.door && Math.abs(r.door.angle) > 0.012); }   // step 53: either way
+// See through holes: a room next to yours is drawn when you have shot a hole right through the wall between you (rwThru
+// on both rooms' memory) and you are within RWSEE.d (15 m) of that wall's doorway point; the portal light then lights it.
+// It was only drawn with every door between open, so a breached wall showed black. ?rwsee=off.
+const RWSEE = { on: !/[?&]rwsee=off\b/.test(QS), d: 15 };
+function rwSeeInto(cur, r) {
+  if (!cur || !r || !r.active) return false;
+  const a = roomMemory.get(memKey(cur)), b = roomMemory.get(memKey(r));
+  if (!a || !b || !a.rwThru || !b.rwThru) return false;
+  const A = anchor(Math.min(cur.slot, r.slot));
+  return Math.hypot(A.x - _sh.x, A.y - _sh.z) < RWSEE.d;
+}
 function updateVisibility() {
   const c = stream.current.slot;
   headWorld(_sh);
@@ -10380,6 +10391,7 @@ function updateVisibility() {
     let vis = r.active && r.slot - c <= CONFIG.stream.ahead && c - r.slot <= Math.max(CONFIG.stream.behind, CONFIG.stream.safeBehind);
     if (vis && r.slot !== c) {
       for (let s = Math.min(c, r.slot); s < Math.max(c, r.slot); s++) if (!doorOpen(s)) { vis = false; break; }
+      if (!vis && RWSEE.on && Math.abs(r.slot - c) === 1 && rwSeeInto(stream.current, r)) vis = true;   // a hole shot through the wall between you: the room behind it is drawn (and lit)
     }
     if (vis !== r.visible) { r.visible = vis; r.group.visible = vis; dirtyShadows(); if (vis) { dynresHint(24); PACE.revealUntil = performance.now() / 1000 + CONFIG.pace.revealWindow; } }   // step 52   // step 37: a room coming into view
     if (vis && Math.abs(r.slot - c) === 1) {
@@ -32187,7 +32199,7 @@ if (BAL_ON && /[?&]dev\b/.test(QS)) window.__cqcBal = { BAL, balCd, balK, balAir
 // ---- BALLISTIC SHIELD: the model (built once; every shield shares the geometry, each has its own glass and marks) ----
 // Local frame: the front faces -z (toward the threat), the holder stands at +z, x = his right, y up, origin = the middle of
 // the front face. The plate is bent about a vertical axis SHD_D.R behind it (convex front), so its edges curve back.
-const SHD_D = { W: 0.5, H: 0.9, T: 0.014, R: 1.0, crTop: 0.065, crBot: 0.05, vpW: 0.26, vpH: 0.105, vpY: 0.265, vpR: 0.014,
+const SHD_D = { W: 0.55, H: 0.99, T: 0.014, R: 1.0, crTop: 0.065, crBot: 0.05, vpW: 0.26, vpH: 0.105, vpY: 0.265, vpR: 0.014,
   gT: 0.03, gZ: 0.0015, hx: -0.05, hy: -0.085, hz: 0.092, cuff: [-0.05, -0.135, 0.255], led: [0.165, 0.392] };
 let _shdS = 1;
 const shdRnd = () => { _shdS = (_shdS * 16807) % 2147483647; return _shdS / 2147483647; };
@@ -32708,7 +32720,7 @@ function shdEnsure() {
   if (!SHD.me) { SHD.me = shdMake(SHD.kit, SHD.lvl); SHD.me.mine = true; }
   if (!SHD.body && world) {
     SHD.body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, -30, 0));
-    SHD.col = world.createCollider(RAPIER.ColliderDesc.cuboid(0.25, 0.45, 0.03).setTranslation(0, 0, SHD_PZ).setCollisionGroups(groups(GROUP.HAND, GROUP.PROP | GROUP.DOOR)), SHD.body);
+    SHD.col = world.createCollider(RAPIER.ColliderDesc.cuboid(0.275, 0.495, 0.03).setTranslation(0, 0, SHD_PZ).setCollisionGroups(groups(GROUP.HAND, GROUP.PROP | GROUP.DOOR)), SHD.body);
   }
   return SHD.me;
 }
@@ -32838,7 +32850,7 @@ function shdDrop(placeRoom = null) {                                 // let go: 
   S.root.updateMatrixWorld(true);
   const pos = S.root.getWorldPosition(new THREE.Vector3()), rot = new THREE.Euler().setFromQuaternion(S.root.getWorldQuaternion(new THREE.Quaternion()));
   S.root.removeFromParent();
-  const p = addProp(S.root, { name: 'ballistic shield', mass: SHD.mass[SHD.lvl], half: [0.25, 0.45, 0.115], friction: 0.7, restitution: 0.05, pos: [pos.x, pos.y, pos.z], rot });
+  const p = addProp(S.root, { name: 'ballistic shield', mass: SHD.mass[SHD.lvl], half: [0.275, 0.495, 0.115], friction: 0.7, restitution: 0.05, pos: [pos.x, pos.y, pos.z], rot });
   p.shield = true; p.debris = true;                                  // no home of its own (the safe room puts it back), never frozen in multiplayer
   SHD.prop = p; shdPark();
   if (placeRoom) { setKinematic(p); SHD.room = placeRoom; }
@@ -32970,32 +32982,39 @@ function shdTick(dt) {
 // The carried shield stays out of walls, floors, cover, tables, door leaves and your own body. Its plate is a box (the
 // collider's own shape, 1 cm smaller so a leaf it touches still gets pushed); a blocked pose slides back along the line
 // from the last free pose (kept relative to your head, so it moves with you) toward the wanted one; your body pushes it out.
-var SHDC = { on: !/[?&]shieldclip=off\b/.test(QS), shape: null, grp: 0, has: false, rel: new THREE.Vector3(), relQ: new THREE.Quaternion(),
+var SHDC = { on: !/[?&]shieldclip=off\b/.test(QS), parts: [1, 2, 9, 10, 11, 12, 13, 14], shape: null, grp: 0, has: false, rel: new THREE.Vector3(), relQ: new THREE.Quaternion(),
   h: new THREE.Vector3(), a: new THREE.Vector3(), m: new THREE.Vector3(), c: new THREE.Vector3(), w: new THREE.Vector3(), q: new THREE.Quaternion(), qa: new THREE.Quaternion(), pts: [] };
 function shdClipFree(P, Q) {
-  if (!SHDC.shape) { SHDC.shape = new RAPIER.Cuboid(0.24, 0.44, 0.026); SHDC.grp = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR); }
+  if (!SHDC.shape) { SHDC.shape = new RAPIER.Cuboid(0.265, 0.485, 0.026); SHDC.grp = groups(GROUP.PROP, GROUP.STATIC | GROUP.DOOR); }
   SHDC.c.set(0, 0, SHD_PZ).applyQuaternion(Q).add(P);
   try { return world.intersectionWithShape(SHDC.c, Q, SHDC.shape, undefined, SHDC.grp, undefined, undefined, (c) => { const b = c.parent(); return !b || b !== SHD.body; }) === null; }
   catch (e) { console.warn('shield clip off', e); SHDC.on = false; return true; }
 }
 function shdBodyPush(S) {
-  // your body: a vertical column under your head (radius 0.21 m), from the floor to the head; the plate's outline points pushed out
-  headWorld(SHDC.h);
-  const fy = (level && Number.isFinite(level.floor) ? level.floor : SHDC.h.y - 1.6) + 0.05, r = 0.21;
-  if (!SHDC.pts.length) for (const [x, y] of [[-0.25, -0.45], [0, -0.45], [0.25, -0.45], [-0.25, 0], [0, 0], [0.25, 0], [-0.25, 0.45], [0, 0.45], [0.25, 0.45]]) SHDC.pts.push(new THREE.Vector3(x, y, SHD_PZ));
-  let px = 0, pz = 0;
-  for (const L of SHDC.pts) {
-    SHDC.w.copy(L).applyQuaternion(S.root.quaternion).add(S.root.position);
-    if (SHDC.w.y < fy || SHDC.w.y > SHDC.h.y + 0.12) continue;
-    const dx = SHDC.w.x - SHDC.h.x, dz = SHDC.w.z - SHDC.h.z, d = Math.hypot(dx, dz);
-    if (d >= r) continue;
-    const k = (r - d) / Math.max(d, 1e-4);
-    let ux = dx * k, uz = dz * k;
-    if (d < 1e-3) { SHDC.w.set(0, 0, -1).applyQuaternion(S.root.quaternion); ux = SHDC.w.x * r; uz = SHDC.w.z * r; }
-    if (Math.abs(ux) > Math.abs(px)) px = ux;
-    if (Math.abs(uz) > Math.abs(pz)) pz = uz;
+  // Your drawn body only (torso, thighs, shins, feet: the self-hit capsules on the body's bones), not a column under your
+  // head: that column reached the floor wherever your head was, so legs that were nowhere near it pushed the shield (a
+  // phantom). No body drawn = no push. A plate point inside a limb (radius + 1 cm) moves the shield straight out of it.
+  if (!selfBody() || !BODY.root || !BODY.root.visible) return;
+  if (!SHDC.pts.length) for (let i = 0; i <= 4; i++) for (let j = 0; j <= 6; j++) SHDC.pts.push(new THREE.Vector3((i / 4 - 0.5) * SHD_D.W * 0.94, (j / 6 - 0.5) * SHD_D.H * 0.94, SHD_PZ));
+  let px = 0, py = 0, pz = 0;
+  for (const i of SHDC.parts) {
+    if (!selfSeg(i)) continue;
+    const r = SELF_PARTS[i][2] + 0.01, A = SELF.a, B = SELF.b;
+    SHDC.c.subVectors(B, A); const L2 = Math.max(SHDC.c.lengthSq(), 1e-8);
+    for (const L of SHDC.pts) {
+      SHDC.w.copy(L).applyQuaternion(S.root.quaternion).add(S.root.position);
+      const t = clamp(SHDC.m.subVectors(SHDC.w, A).dot(SHDC.c) / L2);
+      SHDC.m.copy(A).addScaledVector(SHDC.c, t);                     // nearest point on the limb's axis
+      SHDC.m.subVectors(SHDC.w, SHDC.m); const d = SHDC.m.length();
+      if (d >= r) continue;
+      if (d < 1e-4) SHDC.m.set(0, 0, -1).applyQuaternion(S.root.quaternion); else SHDC.m.multiplyScalar(1 / d);
+      const k = r - d, ux = SHDC.m.x * k, uy = SHDC.m.y * k, uz = SHDC.m.z * k;
+      if (Math.abs(ux) > Math.abs(px)) px = ux;
+      if (Math.abs(uy) > Math.abs(py)) py = uy;
+      if (Math.abs(uz) > Math.abs(pz)) pz = uz;
+    }
   }
-  if (px || pz) S.root.position.x += px, S.root.position.z += pz;
+  if (px || py || pz) { S.root.position.x += px; S.root.position.y += py; S.root.position.z += pz; }
 }
 function shdClip(S) {
   // Swept, so a thin door leaf can never be jumped: the plate is moved out from your own body (always on your side of any

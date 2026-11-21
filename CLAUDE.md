@@ -2823,3 +2823,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
   - Enemy gun LODs made in idle time (LODQ / lodGeoLazy, one part per slice); full detail meanwhile.
   - wbTableFill(lazy): a spot whose part cannot be made is retried every 20 s, and trays only rebuild when a part was added.
 - Measured after (CPU only): M4 / AWM / M1911 pickups no frame over 60 ms (were up to 0.4 s); bot 4 rooms PASS.
+
+## CQC: see into rooms through shot-through walls; riot shield bigger, no phantom body push (update 1.81; headset check needed)
+- updateVisibility drew a room only when every door between was open, so a hole shot right through the wall into the next room showed black. RWSEE / rwSeeInto: a neighbouring room is drawn when both rooms' memory has rwThru (a through-hole was made) and your head is within 15 m of the doorway point of the shared wall; it becomes the portal room, so the portal spot lights its fitting nearest that wall. ?rwsee=off. Checked headless: neighbour hidden with the door shut, drawn and lit (portal 30) once marked.
+- Shield 55 x 99 cm (was 50 x 90; SHD_D W / H, push collider, prop box and clip box with it).
+- shdBodyPush: the shield was pushed out of a 21 cm column under your head from the floor to the head (legs that were nowhere near it pushed it). Now only your drawn body: the self-hit capsules on the body's bones (torso, thighs, shins, feet; not the arms holding it), radius + 1 cm, a 5 x 7 grid of plate points; no body drawn = no push. Not checked in a headset.
