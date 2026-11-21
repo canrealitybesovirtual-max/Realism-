@@ -2527,3 +2527,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Torn exit decals (penExitCanvas): gritPass over the colour canvas (grain, pits, crumbs, grainy edges); plaster paper flaps shorter, narrower and greyer.
 - Drywall holes (pdMaterial, partitions and breakable room walls; key +|pdg): the torn edge is ragged at a fine scale, paint flakes off in chips round the hole showing gypsum, hairline cracks, crumbs, a dark lead-wipe lip on the gypsum core, grain; fine detail fades with pixel size.
 - Checked: module parse; headless close-ups of holes in the safe room walls. Drywall and exit holes not seen by eye.
+
+## CQC: bench parts no longer lie inside each other (update 1.17)
+- Cause: the underbarrel parts (M203, GP-25, bayonets, foregrip light) are kind 'ub', which had no WB_GROUPS entry, so wbLayout threw on the first one; wbRestock caught it ("bench trays not built") and every part stayed at its old fixed spot, overlapping (a stock inside the M203).
+- Fix: an UNDERBARREL group; unknown kinds fall back to 'other'; trays packed tighter (margin 7 mm, gap 8 mm, row gap 10 mm, label 20 mm); overflow zones M / N on the far-left front-wall bench (either side of its grenades), set from the room size in wbLayout.
+- Headless with every store row owned: 53 trays, no overlaps, no "no room left" warnings.
