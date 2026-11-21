@@ -2601,3 +2601,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: drum window feed you can see (update 1.33; headset check needed)
 - Before: each shot jolted the window's brass 0.6 of a round step in 35 ms and sprang back over 150 ms (2-3 headset frames, unreadable), and with unlimited ammo the count never dropped, so it never played. Now every round chambered from a drum (chamberFromMag sets item._drKick) slides the stack one full round toward the tower over 85 ms (eased), then rests: the next round sits where this one was, so it reads as the stack feeding round after round.
 - Checked headless: the kick fires with and without unlimited ammo (pivot found); the motion itself runs in play only.
+
+## CQC: ballistic shield held upright, no cuff, stays out of walls and you (update 1.34; headset check needed)
+- VR angle: the shield took 55 % of the controller grip's pitch (a held controller sits pitched, so the plate leaned back and aimed high); now 18 % clamped to -0.18..+0.12 rad, roll 35 % clamped to 0.35: upright whatever the wrist does.
+- The forearm cuff, its arm, gusset and plate are not built (SHD_CUFF, ?shieldcuff=on brings them back); the vertical grip alone holds it.
+- SHDC / shdClip (?shieldclip=off), every frame it is carried (VR and computer): its plate as a Rapier box (0.48 x 0.88 x 0.06 m, 1 cm inside the push collider so a touched leaf still swings) against statics (walls, floor, ceilings, cover, tables) and door leaves; a blocked pose slides back along the line from the last free pose (kept relative to your head) by bisection, a turn into a wall keeps the last free turn. VR: nine outline points are pushed out of a 0.21 m column round your body first.
+- Checked headless: a shield pose 0.34 m into the safe room floor comes back to rest on it (centre 0.442 m up).
