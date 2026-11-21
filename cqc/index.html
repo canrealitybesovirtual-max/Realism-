@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.81</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.82</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.81</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.82</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -13806,14 +13806,63 @@ function netHeldCode(h) {
   const p = h && h.prop; if (!p) return '-';
   const it = p.item; if (!it) return 'o';
   const k = it.kind;
-  return k === 'gun' ? (it.primary === h ? '-' : 'o') : k === 'mag' ? 'm' : k === 'nade' ? 'n' : k === 'med' ? 's' : k === 'att' ? 'a' : k === 'shell' ? 'h' : k === 'kit' ? 'k' : k === 'wear' ? 'w' : 'o';
+  return k === 'gun' ? '-' : k === 'mag' ? 'm' : k === 'nade' ? 'n' : k === 'med' ? 's' : k === 'att' ? 'a' : k === 'shell' ? 'h' : k === 'kit' ? 'k' : k === 'wear' ? 'w' : 'o';
 }
 function netHeldTx() {
   let R = '-', L = '-';
   if (renderer.xr.isPresenting) { for (const h of vrHands) { if (!h || !h.ctrl) continue; const c = netHeldCode(h); if (h.ctrl.userData.handedness === 'left') L = c; else R = c; } }
   else { R = netHeldCode(deskHand); if (typeof DNADE !== 'undefined' && DNADE.active) L = 'n'; }
   if (SHD.carry) { if (SHD.carry === 'desk' || SHD.carry.ctrl.userData.handedness === 'left') L = 'b'; else R = 'b'; }   // BALLISTIC SHIELD
-  return R === '-' && L === '-' ? {} : { hi: R + L };
+  if (R === '-' && L === '-') return {};
+  const o = { hi: R + L };
+  if (NARMREAL.on) {                                               // NARMREAL: which item, so his copy holds the real thing
+    let dR = '', dL = '';
+    if (renderer.xr.isPresenting) { for (const h of vrHands) { if (!h || !h.ctrl) continue; const d = netHeldDesc(h); if (h.ctrl.userData.handedness === 'left') dL = d; else dR = d; } }
+    else { dR = netHeldDesc(deskHand); if (typeof DNADE !== 'undefined' && DNADE.active && DNADE.type) dL = 'n|' + DNADE.type; }
+    if (dR || dL) o.hd = [dR, dL];
+  }
+  return o;
+}
+// NARMREAL (?netheld=off = the stand-in boxes): what a hand holds, as a short id the other side can build.
+const NARMREAL = { on: !/[?&]netheld=off\b/.test(QS), cache: new Map(), max: 24 };
+function netHeldDesc(h) {
+  const it = h && h.prop && h.prop.item; if (!it) return '';
+  try {
+    if (it.kind === 'att' || it.sub === 'drum') return 'a|' + (it.sub || it.type || '') + '|' + (it.big ? 1 : 0) + '|' + (wbVar(it) || '');
+    if (it.kind === 'mag') return 'm|' + it.type + '|' + (it.rounds | 0) + '|' + (it.drum ? 1 : 0);
+    if (it.kind === 'nade') return 'n|' + it.type;
+    if (it.kind === 'med') return 's';
+  } catch (e) { /* unknown item: the stand-in */ }
+  return '';
+}
+// Receiver: a display copy of that item (no physics), or null (the stand-in box).
+function narmReal(desc) {
+  const f = desc.split('|');
+  let p = null;
+  try {
+    if (f[0] === 'a') p = wbMakeAtt(f[1], f[2] === '1', f[3] || null);
+    else if (f[0] === 'm' && MAG_DEFS[f[1]]) p = createMag(f[1], +f[2] || 0, f[3] === '1');
+    else if (f[0] === 'n' && NADE_DEFS[f[1]]) p = createNade(f[1]);
+    else if (f[0] === 's') p = createMed();
+  } catch (e) { p = null; }
+  if (!p || !p.root) return null;
+  p.removing = true;
+  try { world.removeRigidBody(p.body); } catch (e) { /* gone */ }
+  if (p.extra) for (const c of p.extra) propByCollider.delete(c.handle);
+  try { propByCollider.delete(p.collider.handle); } catch (e) { /* none */ }
+  const i = props.indexOf(p); if (i >= 0) props.splice(i, 1);
+  const root = p.root; if (root.parent) root.parent.remove(root);
+  root.position.set(0, 0, 0); root.quaternion.identity(); root.updateMatrixWorld(true);
+  const bb = new THREE.Box3();
+  root.traverse((o) => { o.raycast = () => {}; if (o.isMesh) { o.castShadow = false; o.updateWorldMatrix(true, false); if (o.geometry) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); bb.union(o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld)); } } });
+  const c = bb.isEmpty() ? new THREE.Vector3() : bb.getCenter(new THREE.Vector3()), sz = bb.isEmpty() ? new THREE.Vector3(0.05, 0.05, 0.05) : bb.getSize(new THREE.Vector3());
+  // long axis along the fist (the stand-in's y)
+  const q = new THREE.Quaternion(), ax = sz.x >= sz.y && sz.x >= sz.z ? 0 : sz.y >= sz.z ? 1 : 2;
+  if (ax === 0) q.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2); else if (ax === 2) q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+  const wrap = new THREE.Group(); wrap.add(root);
+  root.quaternion.copy(q); root.position.copy(c).applyQuaternion(q).negate();
+  wrap.userData.narm = true; wrap.userData.narmReal = true;
+  return wrap;
 }
 // VR: both hands (room-local palm points) and the held gun's turn, so his copy of you moves its arms and aims where you
 // really do (a computer player sends none: his copy keeps the aimed pose from the head).
@@ -14594,7 +14643,7 @@ const nsWrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 function nsFrom(a) {
   const o = NSO;
   o.s = a.s; o.k = a.k; o.x = a.x; o.y = a.y; o.z = a.z; o.yw = a.yw; o.p = a.p; o.e = a.e; o.g = a.g; o.d = a.d; o.r = a.r; o.a = a.a;
-  o.hL = a.hL; o.hR = a.hR; o.gq = a.gq; o.gp = a.gp; o.gh = a.gh; o.gt = a.gt; o.gb = a.gb; o.ls = a.ls; o.ir = a.ir; o.hi = a.hi; o.by = a.by != null ? a.by : null;
+  o.hL = a.hL; o.hR = a.hR; o.gq = a.gq; o.gp = a.gp; o.gh = a.gh; o.gt = a.gt; o.gb = a.gb; o.ls = a.ls; o.ir = a.ir; o.hi = a.hi; o.hd = a.hd; o.by = a.by != null ? a.by : null;
   return o;
 }
 // Tangent (units per ms) at buffer sample i: the sent rate, else the central difference over same-slot neighbours.
@@ -14656,7 +14705,7 @@ function netSample(rt) {
   if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); const q = NSA.gq; q[0] = _nsQa.x; q[1] = _nsQa.y; q[2] = _nsQa.z; q[3] = _nsQa.w; o.gq = q; }
   const same = a.gh === b.gh && a.gt === b.gt;
   o.gp = same ? nsL3(a.gp, b.gp, k, NSA.gp) : b.gp;
-  o.gh = b.gh; o.gt = b.gt; o.gb = b.gb; o.ls = b.ls; o.ir = b.ir; o.hi = b.hi;
+  o.gh = b.gh; o.gt = b.gt; o.gb = b.gb; o.ls = b.ls; o.ir = b.ir; o.hi = b.hi; o.hd = b.hd;
   return o;
 }
 function netSample0(rt) {                                        // the old linear sampler (?netsmooth=off)
@@ -14675,7 +14724,7 @@ function netSample0(rt) {                                        // the old line
   if (a.gq && b.gq && a.gh === b.gh) { _nsQa.set(a.gq[0], a.gq[1], a.gq[2], a.gq[3]); _nsQb.set(b.gq[0], b.gq[1], b.gq[2], b.gq[3]); _nsQa.slerp(_nsQb, k); gq = [_nsQa.x, _nsQa.y, _nsQa.z, _nsQa.w]; }
   const same = a.gh === b.gh && a.gt === b.gt;
   return { s: a.s, k: a.k, x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, z: a.z + (b.z - a.z) * k, yw: ang(a.yw, b.yw), p: a.p + (b.p - a.p) * k, e: a.e + (b.e - a.e) * k, g: a.g, d: a.d, r: b.r, a: b.a,
-    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir, hi: b.hi, by: a.by != null && b.by != null ? ang(a.by, b.by) : b.by };
+    hL: l3(a.hL, b.hL), hR: l3(a.hR, b.hR), gq, gp: same ? l3(a.gp, b.gp) : b.gp, gh: b.gh, gt: b.gt, gb: b.gb, ls: b.ls, ir: b.ir, hi: b.hi, hd: b.hd, by: a.by != null && b.by != null ? ang(a.by, b.by) : b.by };
 }
 const _nsQa = new THREE.Quaternion(), _nsQb = new THREE.Quaternion();
 // Multiplayer: heavy loose props (crates, chairs, drums, boxes you cannot walk through) are frozen at their room spot while
@@ -14807,7 +14856,7 @@ function netAvApply(s, dt) {
   { const L = NET.buf[NET.buf.length - 1];                         // NARM: his hand data is stale (packets stopped): his arms fall back to relaxed / the head-based pose
     e.netFresh = !L || NET.pbT == null || NET.pbT - L.c < NARM.stale; if (!e.netFresh) e.netH = null; }
   if (MPP.on && e.netH) netAvHandsOk(e, s, r, e.netH);            // MPPOSE: a hand that cannot be his (put down, behind him, out of reach) drops to the relaxed / gun pose
-  e.netHi = s.hi || ''; e.netGunOn = !!s.g;                        // NARM: what each hand holds besides a gun ('' = nothing)
+  e.netHi = s.hi || ''; e.netHd = s.hd || null; e.netGunOn = !!s.g;                        // NARM: what each hand holds besides a gun ('' = nothing)
   e.reloadT = s.r ? 0.5 : 0;                                      // the reload pose (support hand at the magwell, gun canted)
   netAvGunTick(e, s);                                             // the real gun he holds, its lights and lasers
   if (e.gun && e.gun.root) e.gun.root.visible = !!s.g;
@@ -36674,7 +36723,7 @@ function narmSide(e, si, s, SN, dt, NH, cr) {
 }
 const NARM_GEO = { m: [0.026, 0.12, 0.07, 0x1d1f1e], n: [0.032, 0.1, 0, 0x4b5232], s: [0.009, 0.15, 0, 0xc8ccd0], a: [0.034, 0.1, 0.034, 0x16181a],
   h: [0.011, 0.07, 0, 0x8e1c16], b: [0.001, 0.001, 0.001, 0], k: [0.06, 0.03, 0.09, 0x3a3d3a], w: [0.07, 0.03, 0.1, 0x262a24], o: [0.1, 0.1, 0.1, 0x8a6c48] };
-if (/[?&]dev\b/.test(QS) && window.__cqcNet) window.__cqcNet.NARM = NARM;   // after NARM exists (the net ?dev line runs earlier)
+if (/[?&]dev\b/.test(QS) && window.__cqcNet) window.__cqcNet.NARM = NARM; window.__cqcNet.narmReal = (d) => narmReal(d); window.__cqcNet.netHeldDesc = (h) => netHeldDesc(h);   // after NARM exists (the net ?dev line runs earlier)
 function narmProxy(code) {
   if (!NARM.geo) { NARM.geo = {}; NARM.mats = {}; }
   if (!NARM.geo[code]) {
@@ -36694,11 +36743,20 @@ function narmAfter(e, dt) {
   for (let si = 0; si < 2; si++) {
     const code = (e.netHi || '')[si] || '-', SN = si ? POSE_L : POSE_R, s = si ? -1 : 1;
     const vrSup = !!(NH && (si ? NH.hasL : NH.hasR));
+    const desc = NARMREAL.on && e.netHd && typeof e.netHd[si] === 'string' ? e.netHd[si].slice(0, 80) : '', key = code + desc;
     const show = code !== '-' && (A.w[si] > 0.5 || vrSup);
     if (A.w[si] < 0.5) ct = 1; else if (code !== '-' && ct < 0.85) ct = 0.85;
-    if (A.pr[si] && (A.prK[si] !== code || !show)) { A.pr[si].removeFromParent(); A.pr[si] = null; A.prK[si] = ''; }
+    if (A.pr[si] && (A.prK[si] !== key || !show)) { A.pr[si].removeFromParent(); A.pr[si] = null; A.prK[si] = ''; }
     if (!show) continue;
-    if (!A.pr[si]) { A.pr[si] = narmProxy(code); A.prK[si] = code; e.root.add(A.pr[si]); }
+    if (!A.pr[si]) {
+      let m = null;
+      if (desc) {                                                   // NARMREAL: the real item (one copy per avatar hand and id, kept for swaps back)
+        const ck = e.root.uuid + ':' + si + ':' + desc, C = NARMREAL.cache;
+        m = C.get(ck);
+        if (m === undefined) { m = narmReal(desc); C.set(ck, m); if (C.size > NARMREAL.max) { const k0 = C.keys().next().value; const o = C.get(k0); if (o && o.parent) o.parent.remove(o); C.delete(k0); } }
+      }
+      A.pr[si] = m || narmProxy(code); A.prK[si] = key; e.root.add(A.pr[si]);
+    }
     const H = e.B[SN.hand]; H.updateWorldMatrix(true, false);
     H.matrixWorld.decompose(V.hp, V.hq, V.s);
     V.d.set(-s * 0.025, -0.07, -0.005).applyQuaternion(V.hq).add(V.hp);   // in the fist (the hand's fingers run along its -y)
