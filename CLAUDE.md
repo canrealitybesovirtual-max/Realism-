@@ -2532,3 +2532,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Cause: the underbarrel parts (M203, GP-25, bayonets, foregrip light) are kind 'ub', which had no WB_GROUPS entry, so wbLayout threw on the first one; wbRestock caught it ("bench trays not built") and every part stayed at its old fixed spot, overlapping (a stock inside the M203).
 - Fix: an UNDERBARREL group; unknown kinds fall back to 'other'; trays packed tighter (margin 7 mm, gap 8 mm, row gap 10 mm, label 20 mm); overflow zones M / N on the far-left front-wall bench (either side of its grenades), set from the room size in wbLayout.
 - Headless with every store row owned: 53 trays, no overlaps, no "no room left" warnings.
+
+## CQC: foregrip light remodelled, fits any gun (update 1.18)
+- Model (UB_SPEC.vfgl): short rail grabber (fits pistol rails) with cross-bolt, thumb nut and bolt head, a neck into a turned light head (cooling fins, flared bezel, crenellations, a polished reflector cone, lens), a turned grip with finger grooves and a domed battery cap, contoured pressure pads and a tail rocker. Lens / lamp / hold points moved to match.
+- Fitting: the foregrip light is a step 112 rail device (ubRailDev, RAIL_DEV.vfgl, grip-type: no hand / sight refusals): any rail face of any gun, pistols included; the Glock's PL-2 makes way. Bench clicks and drops go through railBenchFit for it. No rail (bare AKM, M4 without the quad rail, M1911 without its clamp rail, AWM): it clamps tight under the handguard / dust cover at the support hand (pistols at 72 % of the muzzle distance), on the highest underside there.
+- Headless: seats on Glock (rail, PL-2 bumped), AKM, M1911, M4A1-S, AWM; renders checked. Not checked in the headset (hold on a side-rail grip).
