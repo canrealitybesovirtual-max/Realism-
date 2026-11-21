@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.15</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.16</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.15</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.16</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -18755,7 +18755,109 @@ function canvasTex(size, draw, srgb = true) {
   return t;
 }
 // Bullet hole: dark centre, a crater of exposed material, a ring of chipped paint / dust.
+// GRITTY HOLES (?gritholes=off = the old soft rings): built per pixel from value noise (one field gives colour,
+// alpha and height, so the normal map matches): a ragged hole, a grey lead-wipe ring, a broken crushed zone
+// (paint flaked off to chalky gypsum / grey spall / pale wood fibre / bright scraped steel), chips that do not
+// close into a ring, crumbs and grit, hairline cracks running out, a fine powder halo, grain over all of it.
+const GRITH = { on: !/[?&]gritholes=off\b/.test(QS) };
+function gritNoise(seed) {                                        // tileable-enough value noise on a 256 lattice
+  const P = new Float32Array(65536), R = mulberry32(seed);
+  for (let i = 0; i < 65536; i++) P[i] = R();
+  const h = (x, y) => P[((y & 255) << 8) | (x & 255)];
+  const n = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+    return (h(xi, yi) * (1 - u) + h(xi + 1, yi) * u) * (1 - v) + (h(xi, yi + 1) * (1 - u) + h(xi + 1, yi + 1) * u) * v; };
+  n.fbm = (x, y, o = 4) => { let s = 0, a = 0.5, f = 1, t = 0; for (let k = 0; k < o; k++) { s += a * n(x * f + k * 17.3, y * f - k * 9.1); t += a; a *= 0.5; f *= 2.03; } return s / t; };
+  n.h = h;
+  return n;
+}
 function holeTextures(kind, seed) {
+  if (!GRITH.on) return holeTextures0(kind, seed);
+  const S = 256, c = S / 2, R = mulberry32(seed), N = gritNoise(seed * 7 + 3);
+  const K = {
+    plaster: { hole: 0.13, crush: 0.27, halo: 0.47, chip: [0.84, 0.81, 0.75], core: [0.62, 0.59, 0.53], lip: [0.36, 0.34, 0.31], dust: [0.9, 0.88, 0.83], wipe: 0.55, cracks: 7, stretch: 1 },
+    concrete: { hole: 0.09, crush: 0.33, halo: 0.48, chip: [0.6, 0.58, 0.54], core: [0.44, 0.42, 0.39], lip: [0.26, 0.25, 0.23], dust: [0.7, 0.68, 0.64], wipe: 0.4, cracks: 9, stretch: 1 },
+    wood: { hole: 0.12, crush: 0.3, halo: 0.42, chip: [0.8, 0.67, 0.47], core: [0.55, 0.42, 0.26], lip: [0.2, 0.14, 0.08], dust: [0.82, 0.72, 0.55], wipe: 0.45, cracks: 0, stretch: 1.55 },
+    metal: { hole: 0.15, crush: 0.24, halo: 0.36, chip: [0.74, 0.75, 0.77], core: [0.5, 0.51, 0.53], lip: [0.18, 0.18, 0.19], dust: [0.62, 0.63, 0.65], wipe: 0.7, cracks: 0, stretch: 1 }
+  }[kind];
+  const col = new Float32Array(S * S * 3), al = new Float32Array(S * S), Hh = new Float32Array(S * S).fill(0.5);
+  const ph = R() * 50, ph2 = R() * 50;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const dx = (x + 0.5 - c) / S, dy = (y + 0.5 - c) / S, i = y * S + x;
+    const ex = dx / Math.sqrt(K.stretch), ey = dy * Math.sqrt(K.stretch), d = Math.hypot(ex, ey), th = Math.atan2(ey, ex);
+    const ang = N.fbm(Math.cos(th) * 2.2 + ph, Math.sin(th) * 2.2 + ph2, 3);           // ragged outline round the hole
+    const g1 = N.fbm(x * 0.09, y * 0.09, 3), g2 = N(x * 0.45, y * 0.45), g3 = N.h(x * 3 + 11, y * 5 + 7);   // blotch, grain, per-pixel speckle
+    const rh = K.hole * (0.78 + 0.5 * ang) + (g2 - 0.5) * 0.012;
+    const rc = K.crush * (0.7 + 0.6 * N.fbm(Math.cos(th) * 3.1 - ph2, Math.sin(th) * 3.1 + ph, 3)) + (g1 - 0.5) * 0.05;
+    let r = 0, g = 0, b = 0, a = 0, hgt = 0.5;
+    const grain = 0.82 + 0.3 * g2 + 0.18 * (g3 - 0.5);
+    if (d < rh) {                                                   // the hole: near black, crumbs caught on its wall
+      const t = d / rh, wall = Math.pow(t, 3);
+      const k = 0.025 + 0.11 * wall * (g2 > 0.55 ? 1.6 : 0.6) + (g3 > 0.93 ? 0.12 * t : 0);
+      r = K.core[0] * k * 4; g = K.core[1] * k * 4; b = K.core[2] * k * 4; a = 1; hgt = 0.06 + 0.3 * wall;
+    } else if (d < rh + 0.022 + 0.012 * g1) {                        // lead wipe / burnt lip right at the edge
+      const t = (d - rh) / (0.022 + 0.012 * g1);
+      const k = (1 - t * 0.5) * (0.75 + 0.5 * g2);
+      r = K.lip[0] * k; g = K.lip[1] * k; b = K.lip[2] * k; a = K.wipe + (1 - K.wipe) * (1 - t); hgt = 0.42 + 0.12 * g2;
+      if (g3 > 0.86) { r = K.core[0]; g = K.core[1]; b = K.core[2]; a = 1; }   // bright crumbs on the lip
+    } else if (d < rc) {                                             // crushed zone: broken chips, never a clean ring
+      const t = (d - rh) / Math.max(0.01, rc - rh);
+      const chipN = N.fbm(x * 0.16 + 31, y * 0.16 - 5, 3) + (N(x * 0.6, y * 0.6) - 0.5) * 0.25;
+      const keep = chipN > 0.34 + t * 0.32;                         // the paint is gone here (chip shows the core)
+      if (keep) {
+        const depth = clamp((chipN - (0.34 + t * 0.32)) * 4);
+        const k = grain * (0.92 - 0.25 * depth * (1 - t));
+        const cc = depth > 0.45 && kind !== 'metal' ? K.core : K.chip;
+        r = cc[0] * k; g = cc[1] * k; b = cc[2] * k; a = 1; hgt = 0.5 - 0.22 * depth - 0.1 * (1 - t);
+        if (g3 > 0.9) { r *= 0.55; g *= 0.55; b *= 0.55; hgt -= 0.08; }   // pits
+      } else if (g3 > 0.965 - 0.05 * (1 - t)) { r = K.dust[0] * grain; g = K.dust[1] * grain; b = K.dust[2] * grain; a = 0.85; hgt = 0.56; }   // crumbs on the paint
+      else { const sm = (1 - t) * 0.22 * g1; r = 0.12; g = 0.11; b = 0.1; a = sm; }   // faint grime on the paint round it
+    } else if (d < K.halo) {                                         // powder halo: sparse, grainy, thinning out
+      const t = (d - rc) / Math.max(0.01, K.halo - rc), p = (1 - t) * (1 - t);
+      if (g3 > 1 - 0.09 * p) { r = K.dust[0]; g = K.dust[1]; b = K.dust[2]; a = 0.4 + 0.5 * g2; hgt = 0.54; }
+      else { r = K.dust[0]; g = K.dust[1]; b = K.dust[2]; a = 0.18 * p * g1 * g1; }
+    }
+    col[i * 3] = r; col[i * 3 + 1] = g; col[i * 3 + 2] = b; al[i] = a; Hh[i] = hgt;
+  }
+  // hairline cracks running out of the crushed zone (plaster, concrete), with a little spall along them
+  for (let k = 0; k < K.cracks; k++) {
+    let ang = R() * Math.PI * 2, rr = K.hole * S * (1 + R() * 0.4);
+    const len = S * (K.crush + 0.05 + R() * 0.14);
+    while (rr < len) {
+      rr += 1; ang += (R() - 0.5) * 0.09;
+      const x = Math.round(c + Math.cos(ang) * rr), y = Math.round(c + Math.sin(ang) * rr);
+      if (x < 1 || y < 1 || x >= S - 1 || y >= S - 1) break;
+      const i = y * S + x, f = 1 - rr / len;
+      col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = 0.05; al[i] = Math.max(al[i], 0.55 + 0.4 * f); Hh[i] = 0.3;
+      if (R() < 0.12 * f) { const j = i + (R() < 0.5 ? 1 : S); col[j * 3] = K.chip[0]; col[j * 3 + 1] = K.chip[1]; col[j * 3 + 2] = K.chip[2]; al[j] = 1; Hh[j] = 0.42; }
+    }
+  }
+  const map = canvasTex(S, (ctx) => {
+    const img = ctx.createImageData(S, S), D = img.data;
+    for (let i = 0; i < S * S; i++) {
+      D[i * 4] = clamp(col[i * 3]) * 255; D[i * 4 + 1] = clamp(col[i * 3 + 1]) * 255; D[i * 4 + 2] = clamp(col[i * 3 + 2]) * 255; D[i * 4 + 3] = clamp(al[i]) * 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    if (kind === 'wood') {                                          // splinters along the grain, lifted out of the face
+      for (let i = 0; i < 18; i++) {
+        const y = c + (R() - 0.5) * S * 0.28, x0 = c + (R() < 0.5 ? -1 : 1) * S * (0.1 + R() * 0.08), x1 = x0 + (x0 < c ? -1 : 1) * S * (0.06 + R() * 0.2);
+        ctx.strokeStyle = R() < 0.5 ? '#e0c79a' : '#b8925e'; ctx.globalAlpha = 0.7; ctx.lineWidth = 1 + R() * 2.2;
+        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y + (R() - 0.5) * 5); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  });
+  const normalMap = canvasTex(S, (ctx) => {
+    const img = ctx.createImageData(S, S), D = img.data, k = 3.2;
+    const hh = (x, y) => Hh[Math.min(S - 1, Math.max(0, y)) * S + Math.min(S - 1, Math.max(0, x))];
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const nx = -(hh(x + 1, y) - hh(x - 1, y)) * k, ny = (hh(x, y + 1) - hh(x, y - 1)) * k, l = Math.hypot(nx, ny, 1), j = (y * S + x) * 4;
+      D[j] = (nx / l * 0.5 + 0.5) * 255; D[j + 1] = (ny / l * 0.5 + 0.5) * 255; D[j + 2] = (1 / l * 0.5 + 0.5) * 255; D[j + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }, false);
+  return { map, normalMap };
+}
+function holeTextures0(kind, seed) {
   const R = mulberry32(seed);
   const ring = { plaster: '#f1eee6', concrete: '#a9a49b', metal: '#c8c9cb', wood: '#d7b98a' }[kind];
   const map = canvasTex(128, (ctx, S) => {
@@ -30465,20 +30567,39 @@ function pdMaterial(src, pd) {
     pdUniforms(sh, pd);
     sh.vertexShader = pdVertex(sh.vertexShader);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\n' + PD_GLSL)
+      .replace('#include <common>', '#include <common>\n#define GRITH_PD ' + (GRITH.on ? 'true' : 'false') + '\n' + PD_GLSL)
       .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
   float pdN0; float pdM = pdMask(pdN0);
-  if (pdM > 0.5 + (pdN0 - 0.5) * 0.32) discard;`)
+  float pdFw = length(fwidth(vPd.xy)), pdFine = 1.0 - smoothstep(0.0006, 0.003, pdFw);   // fine grit only where a pixel can hold it
+  if (pdM > 0.5 + (pdN0 - 0.5) * 0.32 + (pdN(vPd.xy * 640.0) - 0.5) * 0.12 * pdFine) discard;`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
   if (vPd.z > 1.5) { diffuseColor.rgb = vec3(0.30, 0.24, 0.16) * (0.85 + 0.3 * pdN0); roughnessFactor = 0.95; }   // the sheet's inside: brown paper
   else if (pdM > 0.05) {
     float crush = smoothstep(0.05, 0.42, pdM), core = smoothstep(0.36, 0.5, pdM + (pdN0 - 0.5) * 0.1);
+    if (GRITH_PD) {
+      // gritty: paint flaked off in chips (chalky gypsum shows), hairline cracks, crumbs, a dark torn lip, grain
+      float pg = 0.78 + 0.34 * mix(0.5, pdN(vPd.xy * 1300.0), pdFine) + 0.14 * (pdN(vPd.xy * 380.0) - 0.5);
+      float chipN = pdN(vPd.xy * 150.0) * 0.65 + pdN(vPd.xy * 470.0) * 0.35;
+      float chip = smoothstep(0.02, 0.06, chipN - (0.78 - crush * 0.62));
+      float crk = (1.0 - smoothstep(0.0, 0.018, abs(pdN(vPd.xy * 85.0 + 3.1) - 0.5))) * crush * (1.0 - core);
+      float sp = step(0.94, pdH(floor(vPd.xy * 1800.0))) * pdFine * crush;
+      diffuseColor.rgb *= 1.0 - crush * (0.12 + 0.2 * pdN0);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.80, 0.77, 0.71) * pg, chip * (1.0 - core));
+      diffuseColor.rgb *= 1.0 - 0.75 * crk;
+      vec3 gy = vec3(0.62, 0.59, 0.53) * pg;                                 // the gypsum core at the torn edge
+      float lip = smoothstep(0.43, 0.49, pdM + (pdN(vPd.xy * 900.0) - 0.5) * 0.04);
+      gy = mix(gy, vec3(0.16, 0.15, 0.14) * pg, lip * 0.8);                 // scorched, grey lead wipe at the very edge
+      diffuseColor.rgb = mix(diffuseColor.rgb, gy, core);
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.9, 0.88, 0.83), sp * 0.8);
+      roughnessFactor = mix(roughnessFactor, 0.97, max(crush, chip));
+    } else {
     diffuseColor.rgb *= 1.0 - crush * (0.18 + 0.22 * pdN0);                  // crushed, cracked paint round the hole
     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.60, 0.58, 0.53), core);  // the gypsum core at the torn edge
     roughnessFactor = mix(roughnessFactor, 0.97, crush);
+    }
   }`);
   };
-  m.customProgramCacheKey = () => (key ? key.call(src) : 'wall') + '|pd';
+  m.customProgramCacheKey = () => (key ? key.call(src) : 'wall') + '|pd' + (GRITH.on ? 'g' : '');
   return m;
 }
 function pdDepthMaterial(pd) {
@@ -32725,6 +32846,19 @@ function penSpike(g, c, R, a, w, r0, r1) {
   g.lineTo(...at(a + w, r0));
   g.closePath();
 }
+// Gritty pass over a drawn decal canvas: per-pixel grain, darker pits, pale crumbs, ragged (not anti-aliased) edges.
+function gritPass(g, S, seed) {
+  const N = gritNoise(seed * 13 + 5), img = g.getImageData(0, 0, S, S), D = img.data;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const j = (y * S + x) * 4, a = D[j + 3]; if (!a) continue;
+    const gr = 0.78 + 0.34 * N(x * 0.5, y * 0.5) + 0.16 * (N.h(x * 3 + 1, y * 7 + 2) - 0.5), bl = 0.85 + 0.3 * N.fbm(x * 0.06, y * 0.06, 3);
+    let k = gr * bl; const sp = N.h(x * 5 + 3, y * 11 + 9);
+    if (sp > 0.97) k *= 0.45; else if (sp < 0.025) k *= 1.35;     // pits and crumbs
+    D[j] = Math.min(255, D[j] * k); D[j + 1] = Math.min(255, D[j + 1] * k); D[j + 2] = Math.min(255, D[j + 2] * k);
+    if (a < 250) D[j + 3] = a * clamp(0.35 + 1.3 * N(x * 0.35 + 7, y * 0.35 - 3));   // edges break up into grains
+  }
+  g.putImageData(img, 0, 0);
+}
 function penExitCanvas(kind, seed) {
   const S = 256, c = S / 2, R = mulberry32(seed);
   const hc = document.createElement('canvas'); hc.width = hc.height = S;
@@ -32749,8 +32883,8 @@ function penExitCanvas(kind, seed) {
       }
       const nF = 5 + Math.floor(R() * 4);
       for (let i = 0; i < nF; i++) {
-        const a = (i + R() * 0.5) / nF * Math.PI * 2, w = 0.22 + R() * 0.3, r1 = 52 + R() * 36, sd = R() * 1e9 | 0;
-        both('#efebe2', 0.95, (x) => penSpike(x, c, mulberry32(sd), a, w, 33, r1));
+        const a = (i + R() * 0.5) / nF * Math.PI * 2, w = (GRITH.on ? 0.14 : 0.22) + R() * 0.3, r1 = (GRITH.on ? 42 : 52) + R() * (GRITH.on ? 26 : 36), sd = R() * 1e9 | 0;
+        both(GRITH.on ? '#cbc4b5' : '#efebe2', 0.95, (x) => penSpike(x, c, mulberry32(sd), a, w, 33, r1));
         g.strokeStyle = 'rgba(60,55,48,0.35)'; g.lineWidth = 1.5; g.stroke();
       }
       const hole = penBlob(R, 16, 26, 38);
@@ -32811,6 +32945,7 @@ function penExitCanvas(kind, seed) {
       const hole = penBlob(R, 12, 8, 14);
       both('#080808', 0, (x) => penPoly(x, c, hole));
     }
+    if (GRITH.on) gritPass(g, S, seed);                             // gritty: grain, pits, crumbs, broken edges
   });
   const id = h.getImageData(0, 0, S, S), px = id.data;            // grey -> alpha: bloodNormalTex reads the alpha as height
   for (let i = 0; i < px.length; i += 4) px[i + 3] = px[i];

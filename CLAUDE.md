@@ -2521,3 +2521,9 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - LKL (?lockerlight=off; OPTIONS GRAPHICS "Light inside the gun locker"): one unshadowed SpotLight added at load (lockerLightInit beside benchLampInit, light count fixed), placed each frame under the locker's top, front edge, aimed down-back (lockerLightTick); intensity 4.6 only while the locker's safe room is active and drawn, else 0. Shelf light cards a little brighter (gain 0.32).
 - Vise: jaw pads 36 x 36 mm (were 62 x 58), carrier 40 x 44 mm, cradle 32 mm along the gun; WB.padH / padL / cradleL follow (0.034 / 0.017 / 0.016), so the clamp point is measured over the smaller pads.
 - Checked: module parse; headless renders of the vise and the lit locker.
+
+## CQC: gritty bullet holes (GRITH, ?gritholes=off = the old soft decals; update 1.16)
+- holeTextures (old one kept as holeTextures0): 256 px, built per pixel from value noise (gritNoise) per surface (plaster / concrete / wood / metal): ragged hole with crumbs on its wall, grey lead-wipe lip, crushed zone of broken chips (chalky gypsum / grey spall / pale fibre / scraped steel) that never closes into a ring, pits and crumbs, hairline cracks running out (plaster, concrete), sparse powder halo; the normal map comes from the same height field.
+- Torn exit decals (penExitCanvas): gritPass over the colour canvas (grain, pits, crumbs, grainy edges); plaster paper flaps shorter, narrower and greyer.
+- Drywall holes (pdMaterial, partitions and breakable room walls; key +|pdg): the torn edge is ragged at a fine scale, paint flakes off in chips round the hole showing gypsum, hairline cracks, crumbs, a dark lead-wipe lip on the gypsum core, grain; fine detail fades with pixel size.
+- Checked: module parse; headless close-ups of holes in the safe room walls. Drywall and exit holes not seen by eye.
