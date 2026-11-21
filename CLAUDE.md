@@ -2786,3 +2786,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: no static round in the AWM's port (update 1.72; headset check needed)
 - The AWM magazine model's own top round sits high, in the bolt's path, and never moves, so with the bolt open it lay in the port in the way of the animated feed round. While the magazine is seated in an AWM (item.inAwp, set in seatMag / cleared in ejectMag) that round is not drawn; feedBolt's round shows the feed. Out of the gun the magazine shows it again. Checked headless: no magazine round in the port at rest or open; the feed round still rises and chambers.
+
+## CQC: feed animation on every rifle, no static lip rounds (update 1.73; headset check needed)
+- FEED_RISE (awp, akmn, akm, m4a1s, rifle): a hand rack (g.racked) on any of them runs feedBolt: bolt / carrier back throws the case out, the top round rises from the magazine to the lips (0.2 s) once the bolt face is behind it, waits there while held open, and rides the bolt into the chamber. Shots keep the quick default feed.
+- magHideTop (seatMag / ejectMag): a magazine seated in one of them does not draw its static top rounds (the AK / M4 lip rounds of MTR, the AWM model's own round), so nothing sits still in the port; out of the gun they show again (MTR's group is made hidden if it is built while seated). Pistols unchanged (their stack already feeds with the slide). Checked headless: M4 / AK / AWM: no brass in the port at rest, the feed round rises and chambers (M4 renders).
