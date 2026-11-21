@@ -2584,3 +2584,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: bench table refills late parts (update 1.28)
 - wbFillTick (weaponsUpdate, every 2 s while the bench's safe room is active and drawn): a table spot of an owned part with no part on it (its kit loaded after the room was stocked) gets filled (wbTableFill).
 - Measured headless, everything owned: 50 parts on the table; 58 owned rows have no bench spot (store-only: magazines and drums, triggers, sight styles, M1911 grip panels, AKM kit / stock / sling, skeleton stocks, slings, covers, M16A1 parts; lights / lasers / cans use the bench's always-stocked spares). Those are fitted with FIT on the screen.
+
+## CQC: bench work mat no longer shows the bench through it in VR (update 1.29)
+- Cause: the mat's polygonOffset (factor 1, units 2) pushes it back by its slope; at shallow angles (more in the headset) that pushed it behind the bench's vinyl top 0.7 mm under it, so patches of the bench showed through, changing as you moved. The mat has no offset now; the tray bins pull forward instead (factor -1, units -2), so they still win over the mat they stand on. Parse checked only.
