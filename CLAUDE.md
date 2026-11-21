@@ -2591,3 +2591,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: pistol skeleton stock clamps the grip (update 1.30; headset check needed)
 - The stock hung on a thin shoe and two small lugs behind the back strap (looked like it floated). xtraStockSpec now builds a grip clamp: a spine on the back strap, two cheeks a side (top and bottom of the strap) hugging the grip's sides on rubber pads, joined along the strap, cross bolts with hex heads behind it; hinge and lower lugs on the spine. xtraPistolMeasure also measures the grip's half width over the cheeks (hT / hB, from the drawn frame, magazine left out).
 - Checked headless: close-up renders on the Glock 17 and M1911, the cheeks sit on the grip sides.
+
+## CQC: skeleton stock QD socket attached (update 1.31)
+- The QD socket was a 34 mm cylinder hanging 8 mm in front of the butt plate, touching nothing. Now a boss welded to the plate's front over the bottom tube, the socket through it, flush with its sides. Checked by headless render (Glock, M1911).
