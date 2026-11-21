@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.11</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.12</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.11</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.12</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -24468,8 +24468,9 @@ function deskGunPose(g, dt, P, Q) {
   // Step 18: compressed ready, not the hip. The gun's eye point sits just under and right of your
   // eye; looking down it pitches about your shoulder line (out ahead of the chest, so the arms
   // and sleeves never fold into your face); the sight line runs to whatever the dot is on.
-  const pistol = d.cls === 'pistol', R = pistol ? A.readyPistol : A.readyLong, S = pistol ? A.pivotPistol : A.pivotLong;
+  const pistol = d.cls === 'pistol' || !!g.oneHand, R = pistol ? A.readyPistol : A.readyLong, S = pistol ? A.pivotPistol : A.pivotLong;   // STOCKS: no stock = the pistol ready
   _rdyP.set(R[0], R[1], R[2]);
+  if (g.oneHand) _rdyP.z += Math.min(0, wr.eye.z);                 // STOCKS: a stockless rifle at the pistol ready, its palm where a pistol's is
   const down = Math.min(0, look.pitch);
   if (down < 0) { _rdyS.set(S[0], S[1], S[2]); _rdyP.add(_rdyV.copy(_rdyS).applyAxisAngle(_XAXIS, -down).sub(_rdyS)); }
   // Breathing sway at ready, nearly none aimed.
@@ -24481,6 +24482,7 @@ function deskGunPose(g, dt, P, Q) {
   _hipP.copy(wr.eye).applyQuaternion(_hipQ);
   _hipP.subVectors(_rdyP, _hipP);                                // root = ready eye point - Q * eye
   _adsP.copy(wr.eye).negate();
+  if (g.oneHand) _adsP.z += Math.min(0, wr.eye.z);                // STOCKS: no stock to the cheek: the palm where a pistol's is, the sights out ahead on the eye's axis
   P.lerpVectors(_hipP, _adsP, t);
   Q.copy(_hipQ).slerp(_wq.identity(), t);
   const ck = g.sgAnim ? smoothstep(0, 1, g.sgAnim.pose) : 0;     // step 15: canted for loading
@@ -28926,8 +28928,8 @@ function vmArmColor(out) {
 // in a headset, on a phone, or if its rig failed to load / its fit failed.
 function vmGun() {
   if (!VM.on || renderer.xr.isPresenting || IS_TOUCH) return null;
-  const g = gunOf(deskHand), key = g && VM.byType[g.type];
-  if (!key || VM.bad[key] || VM.fit[g.type] === null) return null;
+  const g = gunOf(deskHand), key = g && vmKey(g);
+  if (!key || VM.bad[key] || VM.fit[vmFitKey(g)] === null) return null;
   return g;
 }
 // The real gun out of the picture while its viewmodel shows (layer 9 is never drawn).
@@ -28964,7 +28966,7 @@ function vmTick(dt) {
   VM.sway.y += (clamp(-dp * 0.9, -0.05, 0.05) - VM.sway.y) * Math.min(1, dt * 5);
   if (!g) { if (VM.gun) { vmHideGun(VM.gun, false); VM.gun = null; } VM.vis = false; return; }
   vmSetup();
-  const key = VM.byType[g.type];
+  const key = vmKey(g);
   const pending = vmLoad(key), F = vmGunFit(g, key);                // step 89: where your gun sits in the rig
   if (!VM.cur || VM.cur.key !== key) {
     pending.then(V => { if (V) { VM.ready = VM.ready || {}; VM.ready[key] = V; } else VM.bad[key] = true; });   // step 89: a failed rig = your own hands
@@ -29044,7 +29046,7 @@ function vmRender() {
   const sz = renderer.getSize(_vmS2);
   VM.cam.fov = VM.fovNow;                                          // step 89: aimed, the world camera's (the sights stay true)
   VM.cam.aspect = sz.x / Math.max(1, sz.y);
-  { const vg = vmGun(), nk = vg && VM.byType[vg.type] === 'sniper' ? 0.15 : 0.06; VM.cam.near = 0.01 + nk * Math.min(1, Math.max(0, vg?.ads || 0)); }   // screenshot pass: aimed, the take's sleeve (AWM) crossed the eye; clip what is within 7 cm
+  { const vg = vmGun(), nk = vg && vmKey(vg) === 'sniper' ? 0.15 : 0.06; VM.cam.near = 0.01 + nk * Math.min(1, Math.max(0, vg?.ads || 0)); }   // screenshot pass: aimed, the take's sleeve (AWM) crossed the eye; clip what is within 7 cm
   VM.cam.updateProjectionMatrix();
   const ac = renderer.autoClear; renderer.autoClear = false;
   renderer.setRenderTarget(null); renderer.clearDepth(); renderer.render(VM.scene, VM.cam);
@@ -29111,15 +29113,18 @@ function vmSupportFix(B, g, M) {
     M.multiply(Rp.invert());
   } catch (e) { /* keep the solved fit */ }
 }
+// STOCKS: a stockless rifle (g.oneHand) is held on the pistol take, one hand; its fit is the M1911's (both roots are the palm).
+const vmKey = (g) => (g.oneHand && VM.byType[g.type] === 'ak' ? 'pistol2' : VM.byType[g.type]);
+const vmFitKey = (g) => (g.oneHand && VM.byType[g.type] === 'ak' ? g.type + '|1h' : g.type);
 function vmGunFit(g, key) {
-  const t = g.type, F = VM.fit[t];
+  const t = vmFitKey(g), base = t === g.type ? t : 'm1911', F = VM.fit[t];
   if (F !== undefined) return F;
   VM.fit[t] = false;
   vmhBake(key).then((B) => {
     const R = VM.rigs[key], N0 = B && R.gunNode ? B.root.getObjectByName(R.gunNode) : null;
     if (!N0 || !B.sides.R) { VM.fit[t] = null; return; }
-    const S = VMH_FIT[t], X = key === 'sniper' ? VM_FIT[t] : null;   // VM_FIT was solved on the sniper take only
-    const M = X ? new THREE.Matrix4().fromArray(X.M) : S && S.R && VMH.byType[t] === key ? new THREE.Matrix4().fromArray(S.R) : vmhSolve(B, 'R', g, vmhRegister(B, g).m).m;
+    const S = VMH_FIT[base], X = key === 'sniper' ? VM_FIT[g.type] : null;   // VM_FIT was solved on the sniper take only
+    const M = X ? new THREE.Matrix4().fromArray(X.M) : S && S.R && VMH.byType[base] === key ? new THREE.Matrix4().fromArray(S.R) : vmhSolve(B, 'R', g, vmhRegister(B, g).m).m;
     if (key === 'ak' || key === 'sniper') vmSupportFix(B, g, M);                       // the AK take's support hand onto this gun's handguard
     const s = (X && X.s) || 1, Ni = N0.matrixWorld.clone().invert();
     // the idle frame: gun root in rig units = U^-1 x M^-1 (x your gun's scale, about its grip); then into the node's frame
@@ -40136,6 +40141,7 @@ const WS_ITEMS = [
   { id: 'akmn.laser', gun: 'akmn', cat: 'tactical', name: 'Laser module', price: 350, desc: 'On the left rail; hip-fire reference, shows you when on', requires: ['akmn.kit'], model: 'laser', fx: {} },
   { id: 'akmn.mag40', gun: 'akmn', cat: 'mag', name: '40-round magazine', price: 40, desc: '+10 rounds (RPK length); heavier, slower to seat', requires: [], model: 'ext-akmn', fx: {}, owned: true },
   { id: 'akmn.stock', gun: 'akmn', cat: 'stock', name: 'Adjustable stock', price: 140, desc: 'Stock adapter, buffer tube, adjustable stock: steadier, less aim movement', requires: ['akmn.kit'], model: 'stock', fx: {} },
+  { id: 'akmn.nostock', gun: 'akmn', cat: 'stock', name: 'No stock (one-handed)', price: 0, owned: true, desc: 'Stock off, a cap on the receiver: lighter, held one-handed like a pistol; more kick and climb', requires: [], model: 'nostock', fx: {} },
   { id: 'akmn.sling', gun: 'akmn', cat: 'sling', cosmetic: true, name: 'Two-point sling', price: 50, desc: 'Cosmetic: carry only, no accuracy effect', requires: [], model: 'sling', fx: {} },
   // --- M4A1-S (step 105): every row a real part; M4_FX holds what each one does (fx below is derived from it at load) ---
   { id: 'm4a1s.flattop', gun: 'm4a1s', cat: 'hardware', hw: true, name: 'Flat-top rail + flip-up sight', price: 220, desc: 'Carry handle off: a Picatinny rail on the upper, a folding rear sight', requires: [], model: 'flattop', fx: {} },
@@ -40155,6 +40161,7 @@ const WS_ITEMS = [
   { id: 'm4a1s.mag60', gun: 'm4a1s', cat: 'mag', name: '60-round magazine', price: 160, desc: 'Twice the rounds; heavy, slower to seat', requires: [], model: 'ext-m4', fx: {}, owned: true },
   { id: 'm4a1s.sopmod', gun: 'm4a1s', cat: 'stock', name: 'SOPMOD stock', price: 120, desc: 'Wide cheek weld, steadier; heavier', requires: [], model: 'sopmod', fx: {} },
   { id: 'm4a1s.ctr', gun: 'm4a1s', cat: 'stock', name: 'Slim carbine stock (CTR class)', price: 90, desc: 'Lighter, quicker to the shoulder; a little less steady', requires: [], model: 'ctr', fx: {} },
+  { id: 'm4a1s.nostock', gun: 'm4a1s', cat: 'stock', name: 'No stock (one-handed)', price: 0, owned: true, desc: 'Stock off, the bare buffer tube with a foam sleeve: lighter, held one-handed like a pistol; more kick and climb', requires: [], model: 'nostock', fx: {} },
   { id: 'm4a1s.sling', gun: 'm4a1s', cat: 'accessories', cosmetic: true, name: 'Two-point sling', price: 40, desc: 'Cosmetic: front sight swivel to the stock (the chest sling still carries it)', requires: [], model: 'sling', fx: {} },
   { id: 'm4a1s.covers', gun: 'm4a1s', cat: 'accessories', cosmetic: true, name: 'Rail covers', price: 30, desc: 'Cosmetic: ladder covers on the free rail sections', requires: ['m4a1s.ras'], model: 'covers', fx: {} },
   // --- AWM (the scope is on it today) ---
@@ -49749,6 +49756,7 @@ function handsUpdate(dt, now) {
         HD_hM.compose(g.lh.P, g.lh.Q, HD_hpS).premultiply(g.prop.root.matrixWorld).decompose(HD_hP, HD_hQ, HD_hv);
         lhFingers(L, g);
         placeHand(L, 'desk' + g.type, HD_hP, HD_hQ, dt); applyFingers(L, dt); used.add(L);
+      } else if (g.oneHand) {                             // STOCKS: a stockless rifle in one hand: the other hand is free
       } else if (g.def.cls === 'pistol') {                // step 16.1: thumbs-forward support hand
         const L = HANDS.list[1];
         pistolSupFrame(g, L, HD_hP, HD_hQ);
@@ -52712,11 +52720,11 @@ async function xboxWarm(say) {
       try {
         const t0 = performance.now(), done = new Set();
         for (const q of props) {
-          const g = q.item && q.item.kind === 'gun' ? q.item : null, key = g && VM.byType[g.type];
+          const g = q.item && q.item.kind === 'gun' ? q.item : null, key = g && vmKey(g);
           if (!key || done.has(g.type) || VM.bad[key]) continue;
           done.add(g.type); if (cap) { say('Preparing the arms… ' + done.size); await wait(); }
           vmGunFit(g, key);
-          while (VM.fit[g.type] === false && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));
+          while (VM.fit[vmFitKey(g)] === false && performance.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 50));
         }
       } catch (e) { console.warn('[xbox] fits', e); }
     };
@@ -56515,7 +56523,7 @@ const AKM_ITEM = {
   akfh: { id: 'akmn.fh', slot: 'muzzle', label: 'AKM flash hider', mass: 0.06, r: 0.011, flash: 0.3 }
 };
 const AKM_RAIL_PART = { light: ['right', -0.300], laser: ['left', -0.330] };   // the bench light / laser on the kit's side rails
-const AKM_HW = { kit: 'akmn.kit', stock: 'akmn.stock', covers: 'akmn.covers', sling: 'akmn.sling' };   // store rows built on the gun
+const AKM_HW = { kit: 'akmn.kit', stock: 'akmn.stock', covers: 'akmn.covers', sling: 'akmn.sling', nostock: 'akmn.nostock' };   // store rows built on the gun
 const AKM_MUZ = {}, AKM_KEY = {};                                   // store row -> chain kind; store row -> part key
 for (const [k, I] of Object.entries(AKM_ITEM)) { AKM_KEY[I.id] = k; if (I.slot === 'muzzle') { AKM_MUZ[I.id] = k; MUZ_DEV[k] = { m: I.mass, r: I.r, vent: !!I.vent, flash: I.flash || 0 }; } }
 const AKM_BENCH = [...Object.keys(AKM_KEY), 'akmn.light', 'akmn.laser'];   // rows a RELEASE at the vise writes back
@@ -56546,6 +56554,7 @@ const AKM_FX = {
   'akmn.mag40': { m: 0.20, rel: 1.12, sway: 1.03, lever: 0.14 },
   'akmn.d75': { m: 1.85, rel: 1.5, sway: 1.14, ads: 1.07, aim: 1.08, lever: 0.14 },   // step 126
   'akmn.stock': { m: 0.15, kick: 0.94, climb: 0.9, dkick: 0.9, sway: 0.92, aim: 0.85, lever: 0.2 },
+  'akmn.nostock': { m: -0.38, kick: 1.3, climb: 1.5, dkick: 1.35, sway: 1.4, aim: 1.3, ads: 0.78, lever: 0.2, stat: { hip: 6 } },   // STOCKS: one-handed
   'akmn.wrap': { m: 0.09, sway: 1.01, lever: 0.42 }                 // step 112: the clamp-on rail section
 };
 const AKM_FX_VR = { k: 0.12, max: 0.045 };                         // s per kg m^2 (a rifle's own inertia dwarfs a pistol's)
@@ -56864,7 +56873,7 @@ function akmKit() {
 // gun's own wood / stock / brake meshes it swaps.
 function akmHw(g) {
   if (g.akm) return g.akm;
-  const K = akmKit(), H = { kit: false, stock: false, covers: false, sling: false, wood: [], woodStock: [], brake: [] };
+  const K = akmKit(), H = { kit: false, stock: false, covers: false, sling: false, nostock: false, wood: [], woodStock: [], brake: [] };
   g.model.traverse((o) => { const t = o.isMesh && o.geometry.userData.akm; if (t && H[t]) H[t].push(o); });
   const grp = (...pairs) => {
     const G = new THREE.Group(); G.visible = false;
@@ -56873,7 +56882,9 @@ function akmHw(g) {
   };
   H.rails = grp([K.hgGeo, K.alu], [K.mountGeo, K.alu]);
   H.collar = grp([K.collarGeo, K.steel]);
-  H.newStock = grp([K.adapterGeo, K.alu], [K.tubeGeo, K.steel], [K.stockGeo, K.poly], [K.padGeo, K.rubber]);
+  H.newStock = grp([K.adapterGeo, K.alu], [K.tubeGeo, K.steel]);
+  H.newStock.add(stkTpl('akStock', akmStockSpec).clone());           // STOCKS: the sculpted CTR-class stock on the tube
+  H.cap = stkTpl('akCap', akmCapSpec).clone(); H.cap.visible = false; g.model.add(H.cap);
   H.coverMesh = grp([K.coverGeo, K.rubber]);
   H.slings = {};
   for (const k of Object.keys(K.sling)) H.slings[k] = grp([K.sling[k], K.strap]);
@@ -56978,7 +56989,7 @@ function akmGunIds(g, out) {
   const H = akmHw(g), chain = muzChain(g);
   if (H.kit) out.add('akmn.kit');
   if (akmOwned('akmn.wrap')) out.add('akmn.wrap');                  // step 112
-  if (H.stock) out.add('akmn.stock');
+  if (H.stock) out.add('akmn.stock'); else if (H.nostock) out.add('akmn.nostock');
   if (chain.length) out.add('akmn.muzzle');
   if (EXT.mag.akmn) out.add('akmn.mag40');
   for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== chain[0]) continue; const id = akmPartId(p.item); if (id) out.add(id); }   // the rest of a chain: muzFx
@@ -56990,8 +57001,9 @@ function akmRefresh0(g) {
   if (!AKMA.ready || !g || g.type !== 'akmn' || !g.prop) return;
   const H = akmHw(g), d = WEAPON_DEFS.akmn, chain = muzState(g), dev = chain.length > 0, show = (list, v) => { for (const o of list) o.visible = v; };
   show(H.wood, !H.kit); H.rails.visible = H.kit; H.coverMesh.visible = H.kit && H.covers;
-  show(H.woodStock, !H.stock); H.newStock.visible = H.stock;
-  for (const k of Object.keys(H.slings)) H.slings[k].visible = H.sling && k === `${+H.kit}${+H.stock}`;
+  const noStock = !H.stock && H.nostock; g.oneHand = noStock;      // STOCKS: no stock = the rear cap, held one-handed
+  show(H.woodStock, !H.stock && !noStock); H.newStock.visible = H.stock; H.cap.visible = noStock;
+  for (const k of Object.keys(H.slings)) H.slings[k].visible = H.sling && !noStock && k === `${+H.kit}${+H.stock}`;
   show(H.brake, !dev); H.collar.visible = dev;                     // a device on: the brake off, the collar on
   let optic = null, grip = null;
   for (const p of g.atts || []) { const s = akmSlot(p.item); if (s === 'optic') optic = p.item; else if (s === 'grip') grip = p.item; }
@@ -57866,6 +57878,7 @@ const M4_FX = {
   'm4a1s.d100': { m: 1.95, rel: 1.55, sway: 1.16, ads: 1.08, aim: 1.1 },   // step 126
   'm4a1s.sopmod': { m: 0.14, kick: 0.97, sway: 0.93, aim: 0.95, ads: 1.03, lever: 0.2 },
   'm4a1s.ctr': { m: -0.05, sway: 1.03, ads: 0.96, lever: 0.2 },
+  'm4a1s.nostock': { m: -0.3, kick: 1.3, climb: 1.45, dkick: 1.35, sway: 1.4, aim: 1.3, ads: 0.78, lever: 0.2, stat: { hip: 6 } },   // STOCKS: one-handed
   'm4a1s.sling': {}, 'm4a1s.covers': {}                                           // rule 10: cosmetic
 };
 const M4_MAG20 = { cap: 20, k: 0.64 };                                // the 30-round body from its lips: 0.177 -> 0.113 m
@@ -58042,24 +58055,14 @@ const M4_SPEC = {
     return [...m4Jaws(0.07, -1), pE('furn', 0.026, gpath().M(0.036, 0).L(-0.036, 0).L(-0.04, -0.008).Q(-0.02, -0.012, 0.012, -0.024).L(0.03, -0.034)
       .Q(0.04, -0.037, 0.042, -0.028).L(0.04, -0.004).Z(), { bevel: 0.002 })];
   },
-  // slim carbine stock (CTR class) over the buffer tube: channel, comb, butt with its pad, latch, QD socket (design space)
-  ctr() {
-    const M = M4A.M, yt = M.tubeTop, yb = M.tubeBot, z0 = M.stock.z0;
-    return [pE('furn', 2 * M.tubeHalf + 0.008, gpath().M(z0, yt + 0.003).L(z0 + 0.11, yt + 0.0045).L(z0 + 0.135, yt + 0.007).L(z0 + 0.135, -0.066)
-      .Q(z0 + 0.1, -0.06, z0 + 0.06, yb - 0.004).L(z0, yb - 0.004).Z(), { bevel: 0.003 }),
-      pE('rubber', 0.036, rrP(z0 + 0.135, -0.068, z0 + 0.146, yt + 0.008, 0.003), { bevel: 0.001 }),
-      pB('steel', 0.006, 0.006, 0.02, 0, yb - 0.006, z0 + 0.015, 0, 0, 0, 0.001), pCX('steel', 0.0045, 0.036, 0, -0.04, z0 + 0.105, 16)];
-  },
-  // SOPMOD stock: wide cheek weld, a battery tube each side, deep butt and pad (design space)
-  sopmod() {
-    const M = M4A.M, yt = M.tubeTop, yb = M.tubeBot, yc = (yt + yb) / 2, z0 = M.stock.z0, p = [];
-    p.push(pE('furn', 0.044, gpath().M(z0, yt + 0.004).L(z0 + 0.03, yt + 0.009).L(z0 + 0.128, yt + 0.011).L(z0 + 0.138, yt + 0.009).L(z0 + 0.138, -0.072)
-      .Q(z0 + 0.1, -0.066, z0 + 0.06, yb - 0.006).L(z0, yb - 0.006).Z(), { bevel: 0.004 }),
-      pE('rubber', 0.046, rrP(z0 + 0.138, -0.074, z0 + 0.151, yt + 0.011, 0.004), { bevel: 0.0012 }),
-      pB('steel', 0.006, 0.006, 0.02, 0, yb - 0.008, z0 + 0.015, 0, 0, 0, 0.001), pCX('steel', 0.0045, 0.046, 0, -0.045, z0 + 0.1, 16));
-    for (const sx of [-1, 1]) p.push(pC('furn', 0.0085, 0.0085, 0.085, sx * 0.0215, yc + 0.002, z0 + 0.075, 24), pC('rubber', 0.009, 0.009, 0.006, sx * 0.0215, yc + 0.002, z0 + 0.035, 24));   // battery tubes
-    return p;
-  },
+  // slim carbine stock (CTR class) on the buffer tube (STOCKS section: shared with the AKM's stock) (design space)
+  ctr() { const M = M4A.M; return stockCTR(M.stock.z0 + STK.m4.front, M.stock.z0 + STK.m4.butt, M.tubeTop, M.tubeBot, STK.m4.toe, 0.036); },
+  // SOPMOD stock: wide cheek weld, battery tubes in its sides, solid toe, deep pad (design space)
+  sopmod() { const M = M4A.M; return stockSOPMOD(M.stock.z0 + STK.m4.front, M.stock.z0 + STK.m4.butt, M.tubeTop, M.tubeBot, STK.m4.toe - 0.004, 0.040); },
+  // hardware: the buffer tube a fitted stock rides on (receiver end plate with a sling loop, castle nut, the tube, its key rib with the position holes)
+  m4tube() { const M = M4A.M; return stockTube(M.stock.z0, M.stock.z0 + STK.m4.tubeEnd, (M.tubeTop + M.tubeBot) / 2, M.tubeHalf, 0.033, 0.041); },
+  // hardware, no stock: a ribbed foam sleeve on the tube and its rubber end cap (the pistol look)
+  m4cap() { const M = M4A.M; return stockCap(M.stock.z0, M.stock.z0 + STK.m4.tubeEnd, (M.tubeTop + M.tubeBot) / 2, M.tubeHalf); },
   // A2 birdcage: 22.2 x 57.5 mm, five slots, none underneath (the closed bottom) (origin: rear face, on the shoulder)
   a2() {
     const R = 0.0111, L = 0.0575, p = [M4_LATHE([[0.0062, 0], [R - 0.0005, 0], [R, 0.0005], [R, L - 0.0012], [R - 0.0012, L], [0.0052, L], [0.005, L - 0.004]])];
@@ -58102,6 +58105,96 @@ const M4_SPEC = {
     return p;
   }
 };
+/* ---------------------------------------------------------------------------
+ *  STOCKS (?stockshape=off is not offered: the old slabs are gone). Shared by the M4A1-S parts and the AKM kit's stock:
+ *  a sculpted upper housing round the buffer tube, an open strut to the toe (CTR) or a solid toe with battery tubes
+ *  (SOPMOD), a ribbed rubber pad, QD sockets, the adjustment latch and friction lock under the front. The tube itself
+ *  (castle nut, end plate, key rib with the position holes) is the gun's hardware, shown with any stock or with none.
+ *  No stock (store row <gun>.nostock): the tube with a foam sleeve and an end cap (M4), or a rear cap plate (AKM), and
+ *  the gun is held one-handed (g.oneHand: the pistol ready / reach, the pistol viewmodel take, more kick and climb).
+ * ------------------------------------------------------------------------- */
+const STK = { m4: { front: 0.034, butt: 0.152, tubeEnd: 0.150, toe: -0.075 } };
+// CTR class: s0..s1 along z (front of the housing .. butt face), yt / yb the tube's top / bottom, toe the butt's bottom, W width.
+function stockCTR(s0, s1, yt, yb, toe, W) {
+  const L = s1 - s0, yc = (yt + yb) / 2, p = [];
+  p.push(pG('furn', W, gpath().M(s0, yt + 0.0026).L(s0 + 0.2 * L, yt + 0.0048).L(s1 - 0.006, yt + 0.0088).Q(s1, yt + 0.0088, s1, yt + 0.004)
+    .L(s1, yb - 0.004).L(s0 + 0.006, yb - 0.0042).Q(s0, yb - 0.004, s0, yb + 0.002).Z(), {
+    key: `stk.ctr.${W}.${L.toFixed(3)}`, round: 0.0075, gs: 0.004, scale: (z) => mix(0.84, 1, smoothstep(s0, s0 + 0.35 * L, z)),
+    open: (z) => z < s0 + 0.0008 || z > s1 - 0.0008
+  }));
+  // the strut down to the toe and the butt's column, an open triangle between (the CTR's skeleton)
+  const zA = s0 + 0.3 * L, k = 0.009;
+  p.push(pE('furn', W * 0.66, gpath().M(zA, yb - 0.003).L(s1, yb - 0.003).L(s1, toe).Q(s1 - 0.006, toe, s1 - 0.016, toe + 0.003).L(zA, yb - 0.003).Z(),
+    { bevel: 0.0022, holes: [gpath().M(zA + 2.6 * k, yb - 0.003 - 0.5 * k).L(s1 - k, yb - 0.003 - 0.5 * k).L(s1 - k, toe + 1.7 * k).Z()] }));
+  // pad: rubber, rounded, horizontal ribs on its face
+  p.push(pG('rubber', W + 0.0015, rrP(s1, toe - 0.0015, s1 + 0.0125, yt + 0.0095, 0.004), { key: `stk.pad.${W}.${(yt - toe).toFixed(3)}`, round: 0.004, gs: 0.003 }));
+  for (let y = toe + 0.006; y < yt + 0.004; y += 0.0055) p.push(pB('furnD', W - 0.004, 0.0011, 0.0016, 0, y, s1 + 0.0124, 0, 0, 0, 0.0003));
+  // under the front: the adjustment latch (a lever on its pivot) and the friction lock
+  p.push(pB('furnD', 0.011, 0.0045, 0.026, 0, yb - 0.0066, s0 + 0.018, 0.1, 0, 0, 0.0014), pB('furn', 0.009, 0.004, 0.02, 0, yb - 0.0062, s0 + 0.047, -0.14, 0, 0, 0.0014));
+  p.push(pCX('steel', 0.0015, W * 0.5, 0, yb - 0.0045, s0 + 0.036, 10));
+  // QD sockets both sides (steel cups with a dark centre) and a sling slot through the toe
+  p.push(pCX('steel', 0.0049, W + 0.004, 0, yc - 0.004, s1 - 0.024, 18), pCX('anodD', 0.0026, W + 0.0045, 0, yc - 0.004, s1 - 0.024, 12));
+  p.push(pB('furnD', W * 0.5, 0.0035, 0.011, 0, toe + 0.0085, s1 - 0.007, 0, 0, 0, 0.0005));
+  // a shallow recessed panel on each side of the housing (the moulded logo pocket)
+  for (const sx of [-1, 1]) p.push(pB('furnD', 0.0008, (yt - yb) * 0.42, L * 0.36, sx * W * 0.47, yc + 0.001, s0 + 0.55 * L, 0, 0, 0, 0.0003));
+  return p;
+}
+// SOPMOD class: a tall housing with the cheek weld, battery tubes in its sides, a solid toe, a deep pad.
+function stockSOPMOD(s0, s1, yt, yb, toe, W) {
+  const L = s1 - s0, yc = (yt + yb) / 2, p = [];
+  p.push(pG('furn', W, gpath().M(s0, yt + 0.003).L(s0 + 0.25 * L, yt + 0.0125).L(s1 - 0.006, yt + 0.0135).Q(s1, yt + 0.0135, s1, yt + 0.009).L(s1, toe)
+    .L(s1 - 0.02, toe).Q(s0 + 0.55 * L, (yb + toe) / 2 + 0.006, s0 + 0.38 * L, yb - 0.006).L(s0 + 0.006, yb - 0.006).Q(s0, yb - 0.006, s0, yb - 0.001).Z(), {
+    key: `stk.sop.${W}.${L.toFixed(3)}`, round: 0.0095, gs: 0.004,
+    scale: (z, y) => mix(0.8, 1, smoothstep(s0, s0 + 0.3 * L, z)) * mix(0.72, 1, smoothstep(toe, yb - 0.01, y)),
+    open: (z) => z < s0 + 0.0008 || z > s1 - 0.0008
+  }));
+  for (const sx of [-1, 1]) {                                          // battery tubes, knurled caps front and back, seam rings
+    const x = sx * (W * 0.5 + 0.0028), y = yc + 0.0035, zc = s0 + 0.52 * L, lt = 0.62 * L;
+    p.push(pC('furn', 0.0086, 0.0086, lt, x, y, zc, 24), pC('rubber', 0.0091, 0.0091, 0.007, x, y, zc - lt / 2 - 0.003, 24), pC('rubber', 0.0089, 0.0084, 0.005, x, y, zc + lt / 2 + 0.002, 24));
+    for (const dz of [-0.34, 0.34]) p.push(pT('furnD', 0.0087, 0.0006, x, y, zc + dz * lt));
+  }
+  p.push(pG('rubber', W + 0.002, rrP(s1, toe - 0.002, s1 + 0.0145, yt + 0.0145, 0.005), { key: `stk.pad.${W}.${(yt - toe).toFixed(3)}s`, round: 0.0048, gs: 0.003 }));
+  for (let y = toe + 0.006; y < yt + 0.011; y += 0.0055) p.push(pB('furnD', W - 0.005, 0.0011, 0.0016, 0, y, s1 + 0.0146, 0, 0, 0, 0.0003));
+  p.push(pB('furnD', 0.011, 0.0045, 0.026, 0, yb - 0.0085, s0 + 0.018, 0.1, 0, 0, 0.0014), pB('furn', 0.009, 0.004, 0.02, 0, yb - 0.008, s0 + 0.046, -0.14, 0, 0, 0.0014));
+  p.push(pCX('steel', 0.0049, W + 0.012, 0, (yb + toe) / 2 + 0.004, s1 - 0.026, 18), pCX('anodD', 0.0026, W + 0.0125, 0, (yb + toe) / 2 + 0.004, s1 - 0.026, 12));
+  p.push(pB('furnD', W * 0.55, 0.0035, 0.012, 0, toe + 0.0075, s1 - 0.008, 0, 0, 0, 0.0005));   // sling slot
+  for (const sx of [-1, 1]) p.push(pB('furnD', 0.0008, 0.011, L * 0.3, sx * W * 0.47, yt + 0.004, s0 + 0.62 * L, 0, 0, 0, 0.0003));   // cheek-piece seam
+  return p;
+}
+// The buffer tube: receiver end plate (sling loop on the left), castle nut with its notches, the tube, the key rib under it
+// with the position holes, the end. z0 = receiver rear, z1 = tube end, yc its axis, r its radius; plate w x h.
+function stockTube(z0, z1, yc, r, pw, ph) {
+  const p = [pB('steelB', pw, ph, 0.003, 0, yc - 0.002, z0 + 0.0015, 0, 0, 0, 0.004)];
+  p.push(pT('steel', 0.0062, 0.0015, -pw * 0.5 - 0.004, yc - 0.012, z0 + 0.003, 0, Math.PI / 2, 0));
+  p.push(pC('anod', r + 0.0042, r + 0.0042, 0.0085, 0, yc, z0 + 0.0075, 28));
+  for (let i = 0; i < 3; i++) { const a = Math.PI / 2 + i * 2 * Math.PI / 3; p.push(pB('anodD', 0.0042, 0.0034, 0.0088, Math.cos(a) * (r + 0.0034), yc + Math.sin(a) * (r + 0.0034), z0 + 0.0075, 0, 0, a - Math.PI / 2, 0.0003)); }
+  const t0 = z0 + 0.012, Lt = z1 - t0;
+  p.push(pC('anod', r, r, Lt, 0, yc, t0 + Lt / 2, 32));
+  p.push(pB('anod', 0.0078, 0.0042, Lt - 0.004, 0, yc - r - 0.0012, t0 + Lt / 2 + 0.002, 0, 0, 0, 0.0008));
+  for (let i = 0; i < 6; i++) p.push(pB('anodD', 0.0034, 0.0024, 0.0042, 0, yc - r - 0.0032, t0 + 0.04 + i * (Lt - 0.05) / 5, 0, 0, 0, 0.0005));
+  p.push(pC('anod', r - 0.0006, r - 0.0018, 0.003, 0, yc, z1 + 0.0012, 32));
+  return p;
+}
+// No stock on the M4: a ribbed foam sleeve over the tube's rear two thirds and a rounded rubber end cap.
+function stockCap(z0, z1, yc, r) {
+  const p = [], a = z0 + 0.045, L = z1 - a;
+  p.push(pC('rubber', r + 0.0028, r + 0.0028, L, 0, yc, a + L / 2, 32));
+  for (let i = 1; i < 8; i++) p.push(pT('furnD', r + 0.0029, 0.0007, 0, yc, a + i * L / 8));
+  p.push(pC('rubber', r + 0.0026, r + 0.0006, 0.009, 0, yc, z1 + 0.0045, 32), pC('rubber', r + 0.0006, r - 0.004, 0.003, 0, yc, z1 + 0.0105, 32));
+  return p;
+}
+// The AKM kit's stock (the CTR shape on its tube) and, with no stock, the cap plate on the receiver's rear (design space).
+function akmStockSpec() { const ST = AKM_DIM.stock; return stockCTR(ST.front, ST.butt, ST.tubeY + ST.tubeR, ST.tubeY - ST.tubeR, -0.084, ST.w); }
+function akmCapSpec() {
+  const M = AKMA.M, a0 = M.recRear, hy = M.recY1 - M.recY0, yc = (M.recY0 + M.recY1) / 2;
+  return [pB('akBlk', 2 * M.recX + 0.0016, hy + 0.0016, 0.007, 0, yc, a0 + 0.0035, 0, 0, 0, 0.003),
+    pB('akBlk', 2 * M.recX - 0.006, hy - 0.008, 0.003, 0, yc, a0 + 0.0085, 0, 0, 0, 0.0015),
+    pC('steel', 0.0028, 0.0028, 0.0022, -0.006, yc + hy * 0.22, a0 + 0.0081, 12), pC('steel', 0.0028, 0.0028, 0.0022, 0.006, yc - hy * 0.22, a0 + 0.0081, 12),
+    pT('steel', 0.0075, 0.0018, -M.recX - 0.005, yc - hy * 0.2, a0 + 0.006, 0, Math.PI / 2, 0)];   // the rear sling loop
+}
+// A template built once from a spec (clones share geometry and materials).
+const STK_TPL = {};
+function stkTpl(name, fn) { if (!STK_TPL[name]) { const G = new THREE.Group(); addSpecParts(G, fn()); G.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); G.updateMatrixWorld(true); STK_TPL[name] = G; } return STK_TPL[name]; }
 const M4_COVERS = [[Math.PI / 2, 0.075], [-Math.PI / 2, 0.075], [Math.PI, 0.051]];   // [turn from 12 o'clock, length]: left, right, bottom (clear of the grips)
 // A kind's template (built once; clones share geometry and materials). Glass and eyepiece meshes are named.
 function m4Tpl(name) {
@@ -58171,10 +58264,10 @@ function m4NewGun(g) {
 function m4Hw(g) {
   if (g.m4) return g.m4;
   const mk = (name) => { const o = m4Tpl(name).clone(); o.visible = false; g.model.add(o); return o; };
-  const flat = mk('flattop'), ras = mk('ras'), covers = mk('covers'), leaf = m4Tpl('buisLeaf').clone();
+  const flat = mk('flattop'), ras = mk('ras'), covers = mk('covers'), tube = mk('m4tube'), cap = mk('m4cap'), leaf = m4Tpl('buisLeaf').clone();
   leaf.position.copy(M4A.S.buis); flat.add(leaf);
   const sling = new THREE.Mesh(m4SlingGeo('factory'), gunMat('rubber')); sling.visible = false; sling.castShadow = true; sling.userData.kind = 'factory'; g.model.add(sling);
-  return (g.m4 = { flat, leaf, ras, covers, sling });
+  return (g.m4 = { flat, leaf, ras, covers, sling, tube, cap });
 }
 const m4Owned = (id) => { const it = WORKSHOP.byId.get(id); return !!(it && it.owned); };
 const m4Fitted = (id) => m4Owned(id) && WORKSHOP.fitted.has(id);
@@ -58247,8 +58340,11 @@ function m4Refresh0(g) {
   H.flat.visible = flat; H.leaf.rotation.x = optic ? M4_BUIS.down : 0;
   if (P.hg) P.hg.visible = !ras;
   H.ras.visible = ras; H.covers.visible = ras && m4Fitted('m4a1s.covers');
-  if (P.stock) P.stock.visible = !stock;
+  const noStock = !stock && m4Fitted('m4a1s.nostock');              // STOCKS: no stock = the bare tube, held one-handed
+  if (P.stock) P.stock.visible = !stock && !noStock;
+  H.tube.visible = !!stock || noStock; H.cap.visible = noStock; g.oneHand = noStock;
   m4Sling(H, stock ? stock.item.part : 'factory');
+  if (noStock) H.sling.visible = false;
   g.sightY = optic ? S.rt + S.h[optic.item.part] : flat ? M.post : WEAPON_DEFS.m4a1s.eye[1];
   const acog = optic && optic.item.part === 'acog' && optic.item.gun === g ? optic.item : null;   // looked through once it is locked on
   if (acog) { P.scopeLens = acog.eyepiece; P.scope = m4AcogDesc(); } else { delete P.scopeLens; delete P.scope; }
@@ -58270,6 +58366,7 @@ function m4GunIds(g, out = new Set()) {
   out.clear();
   for (const id of ['m4a1s.flattop', 'm4a1s.ras']) if (m4Owned(id)) out.add(id);
   if (m4Owned('m4a1s.wrap') && !m4Owned('m4a1s.ras')) out.add('m4a1s.wrap');   // step 112
+  if (g.oneHand) out.add('m4a1s.nostock');                          // STOCKS
   if (EXT.mag.m4) out.add('m4a1s.mag60'); else if (M4A.mag20) out.add('m4a1s.mag20');
   const ch = muzChain(g);
   for (const p of g.atts || []) { if (muzIsDev(p.item) && p !== ch[0]) continue; const id = m4PartId(p.item); if (id) out.add(id); }   // the rest of a chain: muzFx
