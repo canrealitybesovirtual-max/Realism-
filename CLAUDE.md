@@ -2738,3 +2738,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - VR: the shield turns rigidly with the hand in every direction (neutral = how you held it when you took it; the old clamps that kept it upright are gone); tremor filtered (rotation 16/s, position 24/s; a big move follows at 40 / 60/s).
 - Computer: mouse wheel cants it (+-75 deg), Shift+wheel tilts it (-34..+26 deg); reset when you take it again. Desktop sway about a third of before.
 - Checked: module parse, eslint, the headless door test. Not checked in a headset.
+
+## CQC: Glock racking: no floating metal, press-check brass in the chamber (update 1.62; headset check needed)
+- Since 1.40 the Glock has its own barrel (g17BarrelSplit), but FEED still drew its stand-in chamber tube and breech face from the ejection point (eject.z -0.045), which is 2.2 cm ahead of the real barrel's rear face (-0.0227, measured from its drawn vertices): the breech face sat inside the barrel and showed as a floating grey cylinder in the port with the slide back, and the press-check case sat 2 cm forward and 6 mm up, over the barrel ("brass far away in the slide").
+- chamberRear(g): the split barrel's rear z (cached; other guns keep eject.z). Glock: no stand-in tube (the real barrel is there); breech face, feeding round and feed stroke (feedLip) measured from the chamber rear; the press-check case lies on the bore with its head at the chamber's rear and is drawn out with the slide up to 45 % of its length (the extractor), so brass shows between the barrel and the breech face.
+- Checked by headless renders: slide 30 % (case head in the gap), 90 % and locked (no floating parts; the magazine's top round in the open action), a round feeding into the barrel. Not seen in a headset.

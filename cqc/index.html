@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.61</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.62</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.61</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.62</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -25802,6 +25802,21 @@ function* chamberCheckTask(g) {
 // The round seen in the port while the action is held part way back by hand (VR rack hand, desktop check / rack). The
 // M1911 has its own (parts.round). A brass case of the gun's calibre (step 116's lathe) under g.model, so the desktop
 // viewmodel mirror shows it and vmHideGun hides it with the gun; made the first time it is needed.
+// The chamber's rear face (case head) along the bore in the gun root's frame: the Glock's split barrel (its rear end, drawn
+// vertices only); other guns keep the ejection point's z (tuned per gun).
+function chamberRear(g) {
+  if (g._chR !== undefined) return g._chR;
+  const br = g.parts && g.parts.g17barrel;
+  let z = g.wr.eject.z;
+  if (br && br.geometry) {
+    const G = br.geometry, P = G.attributes.position, I = G.index, n = I ? I.count : P.count, v = new THREE.Vector3();
+    g.prop.root.updateMatrixWorld(true); br.updateMatrixWorld(true);
+    const M = new THREE.Matrix4().copy(g.prop.root.matrixWorld).invert().multiply(br.matrixWorld);
+    let mz = -Infinity; for (let i = 0; i < n; i++) { v.fromBufferAttribute(P, I ? I.getX(i) : i).applyMatrix4(M); if (v.z > mz) mz = v.z; }
+    if (Number.isFinite(mz)) z = mz;
+  }
+  return (g._chR = z);
+}
 function chkRound(g) {
   if (g.chk !== undefined) return g.chk;
   const K = brassKit(), c = brassCalOf(g), C = BRASS_CAL[c], w = g.wr;
@@ -25810,14 +25825,18 @@ function chkRound(g) {
   m.castShadow = m.receiveShadow = false; m.visible = false;
   // root space: along the bore, its head at the port's z (cases leave from there), a little toward the port; into g.model
   const bm = w.muzzle, bx = bm ? bm.x : 0, by = bm ? bm.y : 0;   // the bore line (the root is the palm, not the bore: the case sat 4 cm low, in the grip)
-  const M = new THREE.Matrix4().compose(new THREE.Vector3(bx + (w.eject.x - bx) * 0.35, by + (w.eject.y - by) * 0.35, w.eject.z - C.L / 2),
+  const real = !!(g.parts && g.parts.g17barrel), cz = chamberRear(g);   // a real barrel: the case on the bore, its head at the chamber's rear face
+  const M = new THREE.Matrix4().compose(real ? new THREE.Vector3(bx, by, cz - C.L / 2) : new THREE.Vector3(bx + (w.eject.x - bx) * 0.35, by + (w.eject.y - by) * 0.35, w.eject.z - C.L / 2),
     new THREE.Quaternion().setFromAxisAngle(_XAXIS, -Math.PI / 2), new THREE.Vector3(1, 1, 1));   // the lathe's +y (mouth) forward
   g.prop.root.updateMatrixWorld(true);
-  M.premultiply(g.prop.root.matrixWorld).premultiply(new THREE.Matrix4().copy(g.model.matrixWorld).invert());
+  const R2M = new THREE.Matrix4().copy(g.model.matrixWorld).invert().multiply(g.prop.root.matrixWorld);
+  M.premultiply(R2M);
   M.decompose(m.position, m.quaternion, m.scale);
+  if (real) { m.userData.p0 = m.position.clone(); m.userData.ax = new THREE.Vector3(0, 0, 1).transformDirection(R2M); m.userData.k = new THREE.Vector3(0, 0, 1).applyMatrix4(R2M).sub(new THREE.Vector3().applyMatrix4(R2M)).length(); }   // drawn out with the breech face
   g.model.add(m);
   return m;
 }
+const fdC = (g) => { const c = brassCalOf(g); return (BRASS_CAL[c] && BRASS_CAL[c].L) || 0.02; };
 function chkRoundTick(g) {
   const d = g.def;
   if (g.parts.round || d.action === 'pump') return;
@@ -25828,6 +25847,7 @@ function chkRoundTick(g) {
   if (!m) return;
   if (show && !m.visible && g.rack) pulseSoft(g.rack, 0.12, 14);  // the headset: a tick as the brass comes into sight
   m.visible = show;
+  if (show && m.userData.p0) m.position.copy(m.userData.p0).addScaledVector(m.userData.ax, m.userData.k * Math.min(g.slideOff || 0, fdC(g) * 0.45));   // the extractor draws it part way out with the slide: brass shows between the barrel and the breech face
 }
 // FEED (?feed=off): what is inside the action, and the round going home. Per gun, built once (g.fd) under g.model in the
 // gun root's frame (so the desktop viewmodel mirror shows it and vmHideGun hides it): a chamber / barrel hood stand-in (an
@@ -25852,21 +25872,21 @@ function feedBuild(g) {
   if (!K) return undefined;                                       // brass kit not made yet: next frame
   const c = brassCalOf(g), C = BRASS_CAL[c];
   if (C.hull) return (g.fd = null);
-  const M = feedMats(), hz = g.wr.eject.z, rc = C.rb, rifle = d.cls !== 'pistol' && !d.manual;
+  const M = feedMats(), hz = g.wr.eject.z, rc = C.rb, rifle = d.cls !== 'pistol' && !d.manual, realB = !!g.parts.g17barrel, cz = realB ? chamberRear(g) : hz;   // the Glock's split barrel: its rear face is the chamber
   const grp = new THREE.Group(); grp.matrixAutoUpdate = false;
   g.prop.root.updateMatrixWorld(true);
   grp.matrix.copy(g.model.matrixWorld).invert().multiply(g.prop.root.matrixWorld);
   const mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = false; m.raycast = () => {}; grp.add(m); return m; };
   const bm = g.wr.muzzle, bx = bm ? bm.x : 0, by = bm ? bm.y : 0;   // the bore line in the gun root's frame (the root is the palm, not the bore)
-  const fd = { grp, hz, bx, by, C, so: d.travel * 0.6, lipX: 0, lipY: -0.02, open: false, prev: 0, max: 0, arm: false, on: false, mi: null, y0: 0, face: null, car: null, carH: 0, round: null };
-  if (g.type !== 'm1911') {                                       // the chamber and barrel hood, ahead of the case head (a press check sees the rim)
+  const fd = { grp, hz, cz, bx, by, C, so: d.travel * 0.6, lipX: 0, lipY: -0.02, open: false, prev: 0, max: 0, arm: false, on: false, mi: null, y0: 0, face: null, car: null, carH: 0, round: null };
+  if (g.type !== 'm1911' && !realB) {                            // the chamber and barrel hood (not with a real barrel: it floated in the Glock's port), ahead of the case head (a press check sees the rim)
     const len = C.L * 0.8;
     const t = mk(feedGeo('t' + c, () => new THREE.CylinderGeometry(rc + 0.0013, rc + 0.0013, len, 18, 1, true).rotateX(Math.PI / 2)), M.bore);
     t.position.set(bx, by, hz - C.L * 0.35 - len / 2);
   }
   if (!d.manual) {                                                // the breech / bolt face (the AWM has its own bolt)
     fd.face = mk(feedGeo('f2' + c, () => new THREE.CylinderGeometry(rc + 0.0012, rc + 0.0012, 0.01, 18).rotateX(Math.PI / 2)), M.face || (M.face = new THREE.MeshStandardMaterial({ color: 0x3a3c40, metalness: 0.7, roughness: 0.38, emissive: 0x08090a })));   // the breech face: just over the case head, dark machined steel (it read as a big pale disc through an open port)
-    fd.face.position.set(bx, by, hz + 0.007);
+    fd.face.position.set(bx, by, cz + 0.0055);
   }
   if (rifle) {                                                    // the bolt carrier behind it
     const cl = FEED.car[g.type] || 0.1;
@@ -25891,8 +25911,8 @@ function feedPortBuild(g, fd, grp, mk, M) {
 }
 // Where the top round sits: the magazine's round visuals (top of their box) in the gun root's frame. Once per closing stroke.
 function feedLip(g, fd) {
-  const rm = g.mag && g.mag.item.roundMesh, C = fd.C, T = g.def.travel;
-  let z = fd.hz - C.L / 2;
+  const rm = g.mag && g.mag.item.roundMesh, C = fd.C, T = g.def.travel, cz = fd.cz ?? fd.hz;
+  let z = cz - C.L / 2;
   fd.lipX = 0; fd.lipY = -(C.rb * 2.4);
   if (rm) {
     g.prop.root.updateMatrixWorld(true);
@@ -25909,10 +25929,10 @@ function feedLip(g, fd) {
     const ty = B.max.y - fd.by;
     if (!B.isEmpty() && B.max.y - B.min.y < 0.14 && ty < C.rb && ty > -C.rb * 4) {
       fd.lipY = clamp(ty - C.rb, -C.rb * 3, -C.rb * 1.2);
-      z = clamp((B.min.z + B.max.z) / 2, fd.hz - C.L * 1.2, fd.hz);
+      z = clamp((B.min.z + B.max.z) / 2, cz - C.L * 1.2, cz);
     }
   }
-  fd.so = clamp(z + C.L / 2 - fd.hz + 0.003, T * 0.25, T * 0.95);
+  fd.so = clamp(z + C.L / 2 - cz + 0.003, T * 0.25, T * 0.95);
 }
 function feedMagShow(fd, it, n, lift) {
   const rm = it.roundMesh;
@@ -25941,7 +25961,7 @@ function feedTick(g) {
   if (bz > fd.prev + 1e-5) { fd.open = true; fd.max = Math.max(fd.max, bz); }
   else if (bz < fd.prev - 1e-5 && fd.open) { fd.open = false; feedLip(g, fd); fd.arm = fd.max >= fd.so * 0.98; fd.max = 0; }   // closing starts
   fd.prev = bz;
-  if (fd.face) fd.face.position.z = fd.hz + 0.007 + bz;
+  if (fd.face) fd.face.position.z = (fd.cz ?? fd.hz) + 0.0055 + bz;
   if (fd.car) fd.car.position.z = fd.hz + 0.014 + fd.carH + bz;
   if (g.parts.bolt) g.parts.bolt.position.z = bz;                // the model's carrier runs back through the port
   const mag = g.mag && g.mag.item, rounds = mag ? mag.rounds : 0;
@@ -25957,7 +25977,7 @@ function feedTick(g) {
   fd.on = true;
   const C = fd.C, u = 1 - bz / fd.so, k = 1 - smoothstep(0, 0.75, u), r = fd.round;
   r.visible = true;
-  r.position.set(fd.bx + fd.lipX * k, fd.by + fd.lipY * k, fd.hz + bz - C.L / 2);
+  r.position.set(fd.bx + fd.lipX * k, fd.by + fd.lipY * k, (fd.cz ?? fd.hz) + bz - C.L / 2);
   r.rotation.x = Math.sin(Math.PI * Math.min(1, u / 0.85)) * 0.22 - Math.PI / 2;   // nose up the feed ramp, level in the chamber
   if (g.racked && mag && mag.roundMesh) feedMagShow(fd, mag, rounds - 1, C.rb * 1.8 * (1 - smoothstep(0, 0.35, u)));   // the stack rises to the lips
   else feedMagEnd(fd);
