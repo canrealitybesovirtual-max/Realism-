@@ -2780,3 +2780,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: VR grab takes the part your hand touches (update 1.70; headset check needed)
 - The VR squeeze used hand.hover first: the box-based pick updateHands keeps for the reach tick (nearestProp). A hand by a grip under a clamped M4A1-S, outside the grip's small box but inside the rifle's big one, picked the rifle, so the grip could not be taken off. The squeeze now always uses the touch pick (TOUCH: nearest drawn surface); hover only drives the tick. Headless: every grip (M4 vertical / angled, AK vertical / angled, hand stop) fitted on a clamped M4 is picked by both and comes off with a VR grab. ?dev exports touchPick, touchDist, nearestProp2.
+
+## CQC: extinguisher empties over ~15 s (update 1.71; not heard or seen in a headset)
+- A punctured can discharges for 14-16 s: full pressure for 60 % of it, then sputters out. Jet 9-14 m/s at full pressure (drag 1.6: ~6-8 m throw), falling with the pressure. Hiss: three looped noise bands (5.2 kHz, 7 kHz, 900 Hz) on their own HRTF panner at the hole (a long sound on a shared voice would be re-aimed by other sounds), steady then fading with the jet. Still once per can per room build.

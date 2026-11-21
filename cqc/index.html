@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.70</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.71</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.70</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.71</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -48525,7 +48525,7 @@ function exShot(X, P, dir, E) {
   const done = X.room.exSpent || (X.room.exSpent = new Set());     // once per extinguisher per room build: an emptied can only takes holes
   if (!done.has(X.fi)) {
     done.add(X.fi);
-    const T = 2.8 + Math.random() * 1.4;
+    const T = 14 + Math.random() * 2;                                // a 6 kg can empties in ~15 s
     EXH.vent.push({ p: P.clone(), n: n.clone(), t: 0, T, acc: 1 });
     exHiss(P, T);
   }
@@ -48533,24 +48533,44 @@ function exShot(X, P, dir, E) {
 }
 // The jet: pressurised powder straight out of the entry hole, a narrow fast cone that carries metres before it slows and
 // spreads; weaker as the can empties. No burst round the hole.
-const EX_JET = { n: 4, c: [0.92, 0.92, 0.89], a: 0.26, sp: [6, 10], life: [1.6, 2.8], size: [0.012, 0.025], grow: 0.42, drag: 1.25, buoy: -0.02, force: true };
+const EX_JET = { n: 3, c: [0.92, 0.92, 0.89], a: 0.26, sp: [9, 14], life: [1.8, 3.0], size: [0.012, 0.025], grow: 0.5, drag: 1.6, buoy: -0.02, force: true };   // ~6-8 m throw at full pressure
 const _exJ = new THREE.Vector3();
 function exPowder(P, n, k) {
   EX_JET.n = Math.max(1, Math.round(3 * k)); EX_JET.a = 0.26 * Math.min(1, k + 0.3);   // ~60 puffs a second at first: the haze pool (150) keeps room
-  EX_JET.sp[0] = 2 + 4 * k; EX_JET.sp[1] = 3 + 7 * k;
+  EX_JET.sp[0] = 3 + 7 * k; EX_JET.sp[1] = 4 + 10 * k;
   _exJ.set(n.x + (Math.random() - 0.5) * 0.08, n.y + (Math.random() - 0.5) * 0.08, n.z + (Math.random() - 0.5) * 0.08).normalize();
   try { hazeEmit(P, _exJ, EX_JET); } catch (e) { /* haze off */ }
 }
 function exHiss(P, T) {
   if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
-  const play = () => { const t = audio.ctx.currentTime + 0.002; nBurst(t, 0.05, 'highpass', 2500, 0.8, 0.3, 0.04, 0.2); nBurst(t + 0.02, T, 'bandpass', 5200, 0.7, 0.17, T * 0.85, 0.4); nBurst(t + 0.02, T, 'highpass', 7000, 0.6, 0.07, T * 0.8, 0.3); };
-  if (SPAT.ok) soundAt(P, play); else play();
+  const c = audio.ctx;
+  let out = audio.out;                                              // its own panner: a 15 s sound must not ride a shared voice other sounds re-aim
+  if (SPAT.ok && CONFIG.polish.audio.spatial) {
+    const pn = c.createPanner(); pn.panningModel = 'HRTF'; pn.distanceModel = 'inverse'; pn.refDistance = 1.2; pn.rolloffFactor = 0.9;
+    setPannerPos(pn, P.x, P.y, P.z); pn.connect(audio.out); out = pn;
+    setTimeout(() => { try { pn.disconnect(); } catch (e) { /* gone */ } }, (T + 1) * 1000);
+  }
+  const play = () => {
+    const t = c.currentTime + 0.002;
+    nBurst(t, 0.05, 'highpass', 2500, 0.8, 0.3, 0.04, 0.2);        // the puncture
+    for (const [type, fq, q, gn] of [['bandpass', 5200, 0.7, 0.17], ['highpass', 7000, 0.6, 0.07], ['bandpass', 900, 0.8, 0.05]]) {   // steady discharge, sputtering out over the last 40 %
+      const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+      src.buffer = audio.noise; src.loop = true; src.playbackRate.value = 0.9 + Math.random() * 0.2;
+      f.type = type; f.frequency.value = fq; f.Q.value = q;
+      g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(gn, t + 0.05); g.gain.setValueAtTime(gn, t + T * 0.6);
+      g.gain.linearRampToValueAtTime(gn * 0.45, t + T * 0.9); g.gain.linearRampToValueAtTime(0.0001, t + T);
+      src.connect(f); f.connect(g); g.connect(out);
+      const v = c.createGain(); v.gain.value = 0.35; g.connect(v); v.connect(audio.verb);
+      src.start(t, Math.random() * 0.5); src.stop(t + T + 0.05);
+    }
+  };
+  play();
 }
 function exTick(dt) {
   if (!EXH.vent.length) return;
   for (let i = EXH.vent.length - 1; i >= 0; i--) {
     const v = EXH.vent[i]; v.t += dt; v.acc += dt;
-    if (v.acc > 0.05) { v.acc = 0; exPowder(v.p, v.n, Math.max(0.12, 1 - Math.pow(v.t / v.T, 1.6))); }
+    if (v.acc > 0.06) { v.acc = 0; const u = v.t / v.T; exPowder(v.p, v.n, Math.max(0.1, u < 0.6 ? 1 - 0.25 * u / 0.6 : 0.75 * (1 - (u - 0.6) / 0.4))); }   // full for most of it, sputters out at the end
     if (v.t > v.T) EXH.vent.splice(i, 1);
   }
 }
