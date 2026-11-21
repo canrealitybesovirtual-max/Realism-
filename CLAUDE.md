@@ -2726,3 +2726,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
   - ?mountshape=off riser box now fills from the gun to the teeth; gunLockerRestock is guarded against re-entry (drum swap inside a stock reset).
 - Kept as designed: a pistol drum is all magazine grab (no support cup on it); a grip on a pistol needs a rail.
 - Checked headless: 5-room bot (Glock) PASS; fit table, drum grab, stock reset, fresh load tests pass.
+
+## CQC: bug check (update 1.60)
+- Module parse and eslint no-undef / dupe keys / redeclare / const-assign: clean. 5-room bot runs: M4A1-S and M1911 PASS (all rooms cleared, no errors, all shader programs linked); Glock and AKM passed in 1.59.
+- Fixed: glNearLocker (1.59) wrote the shared GL.v vector that glWorld returns its result in; it has its own vector now.
+- Not checked: headset, two real devices.
