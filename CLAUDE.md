@@ -2619,3 +2619,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: skeleton stock clamp moulded to the grip (update 1.37; headset check needed)
 - The 1.30 clamp was flat boxes, square and standing off the curved grip. xtraPistolMeasure now cuts the drawn grip at every 2 mm of height (triangle / plane intersections, 72 angle bins round the slice's middle, rear = +z, gaps filled, smoothed outward: M.rings). xtraBand builds shells offset 0.8 mm off that outline (blended between slices, rounded edges): a band round the back and sides at the top and bottom of the back strap (open at the front for the fingers) and a spine down the strap joining them; socket-cap screws at the bands' front ends; the hinge and lower lug stay on the spine. One merged mesh (gun material). Checked by close-up renders on the Glock 17 and M1911: the bands sit on the grip all round.
+
+## CQC: vise holds the AKM / M4 by the barrel, slimmer vise (update 1.38; headset check needed)
+- The jaws closed under the middle of the handguard (AKM -0.294, M4 -0.266), right where a vertical / angled grip or rail part mounts, so taking a grip off in VR meant reaching between the jaws. WB_CLAMP now puts them on the bare barrel ahead of the handguard (measured: AKM -0.491 design z, barrel 9 mm half width; M4 -0.445, 8.7 mm); the handguard's underside is free. AWM unchanged (fore-end).
+- Vise slimmed (same heights and clamp point): base plate r 5 cm (was 8), swivel 4, column 1.7-2.2 cm (was 2.7-3.4), ball 1.9 cm, slide rail 3.6 x 1.4 x 17 cm, smaller screw blocks, lead screw, T-handle, levers and jaw carriers.
+- Checked headless: jaw points measured on the barrel; the slimmer vise rendered in the safe room.
