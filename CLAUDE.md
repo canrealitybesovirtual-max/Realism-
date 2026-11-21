@@ -2607,3 +2607,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - The forearm cuff, its arm, gusset and plate are not built (SHD_CUFF, ?shieldcuff=on brings them back); the vertical grip alone holds it.
 - SHDC / shdClip (?shieldclip=off), every frame it is carried (VR and computer): its plate as a Rapier box (0.48 x 0.88 x 0.06 m, 1 cm inside the push collider so a touched leaf still swings) against statics (walls, floor, ceilings, cover, tables) and door leaves; a blocked pose slides back along the line from the last free pose (kept relative to your head) by bisection, a turn into a wall keeps the last free turn. VR: nine outline points are pushed out of a 0.21 m column round your body first.
 - Checked headless: a shield pose 0.34 m into the safe room floor comes back to rest on it (centre 0.442 m up).
+
+## CQC: GUNSMITH supplies page in pages of 4 (update 1.35)
+- Cause: every new supply (night vision, tracer mix, shield, C4, launcher rounds) added a row to the one page, so with nine rows each was ~50 px tall and the name / description / status lines (and the rows that draw themselves) overlapped. brassSupplies now shows SUPPLY_PAGE (4) rows at ~120 px with a Page n / m and ◂ PREV / NEXT ▸ (W.supPage) in the header.
+- Checked headless: both pages rendered, no overlapping text.

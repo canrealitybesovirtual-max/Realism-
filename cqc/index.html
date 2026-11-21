@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.34</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.35</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.34</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.35</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -24493,20 +24493,31 @@ function brassSell() {
   return true;
 }
 // SUPPLIES with a fourth row: the three restocks (same text as wsDrawSupplies, rows shorter) and SELL BRASS.
+const SUPPLY_PAGE = 4;                                              // supply rows per page on the GUNSMITH screen
 function brassSupplies(now) {
   if (!BRASS.on) return false;
   const W = WORKSHOP, x0 = 320, pw = WS_LW - 16 - 320, I = CONFIG.weapons.inventory;
   tText('Supplies', x0, 96, 36, TC.text, 'left', 700, TC.sans, 560);
-  tText('Restocks cost money from your wallet. Every case you fire goes into the brass bin and sells here. Entering the safe room still refills you.', x0, 132, 19, TC.dim, 'left', 600, TC.sans, pw);
+  tText('Restocks cost money from your wallet. Every case you fire goes into the brass bin and sells here. Entering the safe room still refills you.', x0, 132, 19, TC.dim, 'left', 600, TC.sans, pw - 20);
   const [mags, full] = wsMagStats();
   const status = {
     ammo: `${mags} magazines in your pouches, ${full} full${inv.shells ? `  ·  ${inv.shells} shells` : ''}`,
     nades: `Pouches: frag ${inv.frag} / ${I.frag ?? 2}, flashbang ${inv.flash} / ${I.flash ?? 2}, smoke ${inv.smoke || 0} / ${I.smoke ?? 2}  ·  bench: ${nadeCount('frag')} + ${nadeCount('flash')}`,
     med: `Auto-injectors ${inv.med} / 2`
   };
-  const rows = W.supplies.length + 1, top = 152, gap = 8, h = Math.floor((WS_LH - 56 - top - gap * (rows - 1)) / rows);
+  // pages of SUPPLY_PAGE rows (nine rows on one page left ~50 px each and the text overlapped)
+  const all = W.supplies.length + 1, per = SUPPLY_PAGE, pages = Math.ceil(all / per);
+  W.supPage = clamp(W.supPage || 0, 0, pages - 1);
+  const first = W.supPage * per, top = 152, gap = 10, h = Math.floor((WS_LH - 56 - top - gap * (per - 1)) / per);
+  if (pages > 1) {
+    tText(`Page ${W.supPage + 1} / ${pages}`, x0 + pw - 300, 96, 22, TC.dim, 'right', 600, TC.sans, 200);
+    tBtn('sup:prev', x0 + pw - 286, 74, 130, 46, '◂ PREV', { size: 22, sel: W.supPage > 0, fn: () => { W.supPage = Math.max(0, W.supPage - 1); W.dirty = true; } });
+    tBtn('sup:next', x0 + pw - 146, 74, 130, 46, 'NEXT ▸', { size: 22, sel: W.supPage < pages - 1, fn: () => { W.supPage = Math.min(pages - 1, W.supPage + 1); W.dirty = true; } });
+  }
+  const shown = (i) => i >= first && i < first + per;
   const row = (i, name, desc, stat, price, pcol, sub, scol, id, label, sel, fn) => {
-    const y = top + i * (h + gap);
+    if (!shown(i)) return;
+    const y = top + (i - first) * (h + gap);
     tBox(x0, y, pw, h, TC.faint, TC.line);
     tText(name, x0 + 22, y + 28, 27, TC.text, 'left', 700, TC.sans, pw - 420);
     tText(desc, x0 + 22, y + 58, 18, TC.dim, 'left', 600, TC.sans, pw - 420);
@@ -24516,7 +24527,8 @@ function brassSupplies(now) {
     tBtn(id, x0 + pw - 226, y + 16, 204, h - 32, label, { size: 28, sel, fn });
   };
   W.supplies.forEach((s, i) => {
-    if (s.rowDraw) { s.rowDraw(s, x0, top + i * (h + gap), pw, h); return; }   // step 121: the tracer mix switch
+    if (!shown(i)) return;
+    if (s.rowDraw) { s.rowDraw(s, x0, top + (i - first) * (h + gap), pw, h); return; }   // step 121: the tracer mix switch
     const rich = WALLET.money >= s.price;
     row(i, s.name, s.desc, status[s.id] || '', fmtMoney(s.price), rich ? TC.hi : TC.warn, rich ? '' : `need ${fmtMoney(s.price - WALLET.money)} more`, TC.warn, `sup:${s.id}`, 'BUY', rich, () => wsBuySupply(s.id));
   });
