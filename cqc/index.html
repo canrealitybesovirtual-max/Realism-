@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.10</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.11</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.10</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.11</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -3276,7 +3276,7 @@ const CONFIG = {
                                // The layout is drawn in 1536 x 640 units and scaled. PERFORMANCE: pxLow is ~4 MB per redraw on the Quest. Don't raise it
     glow: 1.35,                // emissive strength of the screen
     reach: 2.8,                // m: desktop aim reach
-    wake: 4.6,                 // m: closer than this the screen is live (2 Hz refresh); further it sleeps
+    wake: 5.5,                 // m (reading zoom from this far): closer than this the screen is live (2 Hz refresh); further it sleeps
     tip: 0.012,                // m in front of the controller's ray origin that counts as your fingertip
     touch: 0.006, hover: 0.08, rearm: 0.025,   // m from the glass: press, show the ring, re-arm after a press
     refresh: 0.5               // s between live redraws (clock, run timer)
@@ -3304,7 +3304,7 @@ const CONFIG = {
     px: 1920, pxLow: 1280,     // canvas pixels across on a computer / headset and phones. PERFORMANCE: pxLow is ~3.7 MB per redraw on the Quest
     glow: 1.3,                 // emissive strength of the screen
     reach: 2.4,                // m: desktop aim reach
-    wake: 3.2,                 // m: closer than this the screen is live; further it sleeps
+    wake: 5.5,                 // m: closer than this the screen is live (and the reading zoom works); further it sleeps
     check: 0.5                 // s between checks for a changed wallet / pouches while live (redraw only on a change)
   },
   replay: {                   // step 58: the recorder and the TV are deleted; only the body cam look (bcr) is left
@@ -39207,6 +39207,25 @@ const TC = {
 };
 const _tm = { h: new THREE.Vector3(), c: new THREE.Vector3(), p: new THREE.Vector3(), l: new THREE.Vector3(), o: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4() };
 
+// Screen glass (terminal, GUNSMITH): the canvas text is sampled 4 times per pixel on a rotated grid with half-size
+// gradients (a sharper mip each), so text seen from afar is smooth and crisp, not a blocky / mushy patch (?glasssharp=off).
+const GLASS_SHARP = !/[?&]glasssharp=off\b/.test(QS);
+function glassSharp(mat) {
+  if (!GLASS_SHARP) return mat;
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#ifdef USE_EMISSIVEMAP
+  vec2 gsX = dFdx(vEmissiveMapUv), gsY = dFdy(vEmissiveMapUv);
+  vec2 gsGx = gsX * 0.5, gsGy = gsY * 0.5;
+  vec4 emissiveColor = 0.25 * (textureGrad(emissiveMap, vEmissiveMapUv + gsX * 0.125 + gsY * 0.375, gsGx, gsGy)
+    + textureGrad(emissiveMap, vEmissiveMapUv + gsX * 0.375 - gsY * 0.125, gsGx, gsGy)
+    + textureGrad(emissiveMap, vEmissiveMapUv - gsX * 0.125 - gsY * 0.375, gsGx, gsGy)
+    + textureGrad(emissiveMap, vEmissiveMapUv - gsX * 0.375 + gsY * 0.125, gsGx, gsGy));
+  totalEmissiveRadiance *= emissiveColor.rgb;
+#endif`);
+  };
+  mat.customProgramCacheKey = () => 'glassSharp1';
+  return mat;
+}
 function buildTerminalKit() {
   const C = CONFIG.terminal, M = KIT.mat;
   try { if (!localStorage.getItem('cqc.flickoff.v1')) { localStorage.setItem('cqc.flickoff.v1', '1'); MENU.flicker = false; } } catch (e) { /* */ }   // once: the failing tube off (players read it as a glitch); L turns it back on
@@ -39220,6 +39239,7 @@ function buildTerminalKit() {
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
   // Glass: a dark, glossy panel that reflects the baked room, lit from inside by the canvas.
   TERM.mat = new THREE.MeshStandardMaterial({ color: 0x020304, roughness: 0.14, metalness: 0, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: C.glow });
+  glassSharp(TERM.mat);                                          // crisp text from afar
   TERM.screen = new THREE.Mesh(new THREE.PlaneGeometry(C.w, C.h), TERM.mat);
   TERM.screen.castShadow = false; TERM.screen.receiveShadow = false;
   const cm = new THREE.MeshBasicMaterial({ color: 0xa8ffe4, transparent: true, opacity: 0.85, depthWrite: false, toneMapped: false });
@@ -39945,6 +39965,7 @@ function termUpdate(dt) {
       _tm.o.applyMatrix4(_tm.m); _tm.d.transformDirection(_tm.m);
       if (_tm.d.z < -1e-3) {
         const t = -_tm.o.z / _tm.d.z, x = _tm.o.x + _tm.d.x * t, y = _tm.o.y + _tm.d.y * t;
+        if (t > 0 && t < C.wake && Math.abs(x) < C.w / 2 && Math.abs(y) < C.h / 2) wzSeen(t, C.w, C.h);   // reading zoom from afar
         if (t > 0 && t < C.reach && Math.abs(x) < C.w / 2 && Math.abs(y) < C.h / 2) {
           const u = (x / C.w + 0.5) * TERM_LW, v = (0.5 - y / C.h) * TERM_LH;
           TERM.deskHit = { u, v }; hover = termHitAt(u, v); show = true; cx = x; cy = y;
@@ -40295,6 +40316,7 @@ function wsBuild() {
   const tex = W.tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = maxAniso;
   W.mat = TERM.mat.clone();                                    // the terminal's glass: same shader program, own canvas
+  glassSharp(W.mat);
   W.mat.roughness = 0.6;                                       // matte: no mirrored second image of the text on the glass
   W.mat.emissiveMap = tex; W.mat.emissiveIntensity = C.glow;
   W.screen = new THREE.Mesh(new THREE.PlaneGeometry(C.w, C.h), W.mat);
@@ -40842,11 +40864,11 @@ function wsUpdate(dt) {
       _wsv.o.applyMatrix4(_wsv.m); _wsv.d.transformDirection(_wsv.m);
       if (_wsv.d.z < -1e-3) {
         const t = -_wsv.o.z / _wsv.d.z, x = _wsv.o.x + _wsv.d.x * t, y = _wsv.o.y + _wsv.d.y * t;
+        if (t > 0 && t < C.wake && Math.abs(x) < C.w / 2 && Math.abs(y) < C.h / 2) wzSeen(t, C.w, C.h);   // reading zoom from afar
         if (t > 0 && t < C.reach && Math.abs(x) < C.w / 2 && Math.abs(y) < C.h / 2) {
           const u = (x / C.w + 0.5) * WS_LW, v = (0.5 - y / C.h) * WS_LH;
           if (!W.deskHitO) W.deskHitO = { u: 0, v: 0 };
           W.deskHitO.u = u; W.deskHitO.v = v; W.deskHit = W.deskHitO;
-          if (t < WZ.near) { WZ.seenT = performance.now() / 1000; WZ.d = t; }   // workshop zoom: you are using it
           hover = wsHitAt(u, v); show = true; cx = x; cy = y;
           reticle.classList.toggle('on', !!hover);
           if (!W.deskHinted) { W.deskHinted = true; toast(IS_TOUCH ? 'Gunsmith: aim the dot at a button, tap Grab' : 'Gunsmith: aim the dot at a button, press E or click. Scroll: next gun', 2600); }
@@ -55493,19 +55515,29 @@ function bzCan() {
 // Workshop zoom (computer, ?wszoom=off): the dot on the GUNSMITH glass within WZ.near m narrows the field of view
 // (eased 0.35 s) so about WZ.span m of the glass fills the view height: the text reads large, the dot still aims
 // (the view's centre ray does not move), you look about to reach the other buttons. Off the glass for 0.6 s = back.
-const WZ = { on: !/[?&]wszoom=off\b/.test(QS), near: 1.6, span: 0.62, fovMin: 22, k: 0, seenT: -9, d: 1, bFov: 0, applied: false, hold: 0.6, dur: 0.35 };
+const WZ = { on: !/[?&]wszoom=off\b/.test(QS), near: 1.6, span: 0.62, fovMin: 22, k: 0, seenT: -9, firstT: -9, dwell: 0.3, d: 1, w: 1.6, h: 0.9, fit: 1.1, bFov: 0, applied: false, hold: 0.8, dur: 0.35 };
+// Reading zoom: the dot on the GUNSMITH or terminal glass (any distance within its reach, computer and touch) narrows the
+// view so the whole glass fills it: the text gets the whole frame's pixels instead of a small blurry patch.
+function wzSeen(t, w, h) {
+  const now = performance.now() / 1000;
+  if (now - WZ.seenT > WZ.hold) WZ.firstT = now;
+  WZ.seenT = now; WZ.d = t; WZ.w = w; WZ.h = h;
+}
 function wzPre() {
   if (!WZ.applied) return;
   camera.fov = WZ.bFov; camera.updateProjectionMatrix(); WZ.applied = false;
 }
 function wzApply(dt) {
-  if (!WZ.on || renderer.xr.isPresenting || IS_TOUCH || (BZ.applied)) { WZ.k = 0; return; }
-  const want = WORKSHOP.on && WORKSHOP.awake && performance.now() / 1000 - WZ.seenT < WZ.hold;
+  if (!WZ.on || renderer.xr.isPresenting || (BZ.applied)) { WZ.k = 0; return; }
+  const now = performance.now() / 1000;
+  const want = ((WORKSHOP.on && WORKSHOP.awake) || TERM.awake) && now - WZ.seenT < WZ.hold && WZ.seenT - WZ.firstT > WZ.dwell;
   const st = Math.min(Math.max(dt || 0, 0), 0.1) / WZ.dur;
   WZ.k = want ? Math.min(1, WZ.k + st) : Math.max(0, WZ.k - st);
   if (WZ.k <= 0) return;
   WZ.bFov = camera.fov;
-  const tf = Math.max(WZ.fovMin, Math.min(WZ.bFov, 2 * Math.atan(WZ.span / 2 / Math.max(0.3, WZ.d)) * 180 / Math.PI));
+  const d = Math.max(0.3, WZ.d), asp = camera.aspect || 1.6;
+  const fv = 2 * Math.atan(WZ.h * WZ.fit / 2 / d), fh = 2 * Math.atan(Math.tan(Math.atan(WZ.w * WZ.fit / 2 / d)) / asp);
+  const tf = Math.max(WZ.fovMin, Math.min(WZ.bFov, Math.max(fv, fh) * 180 / Math.PI));
   const e = WZ.k * WZ.k * (3 - 2 * WZ.k);
   camera.fov = WZ.bFov + (tf - WZ.bFov) * e; camera.updateProjectionMatrix(); WZ.applied = true;
 }
@@ -56117,7 +56149,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { bodyPre, bodyArms, rigTick
 if (window.__cqcDev) Object.assign(window.__cqcDev, { G17M, G17L, g17MagKit, g17MagModel, g17MagRounds, g17RoundY, g17RoundZ, g17StockLight, SUP_TIP, supTip, wbSupSnap, wbMakeAtt, wbFreeze, createMag, updateMagVisual, seatMag, LIGHT_LENS, LIGHT_BUTTONS, LASER_SW, nearLightSwitch, updateLightMount, emittingGun, gunSwitch, EXTG });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { flashBlast, fragBlast, NADE });   // grenade effect tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { KIT, PANELLOOK, panelAtlasMat });   // PANELLOOK tests
-if (window.__cqcDev) Object.assign(window.__cqcDev, { roomFloorAt, rLX, rLZ, enemyDown, surrStart, enemiesDyingUpdate, enemiesPostPhysics, stepPhysics, DROPFIX, dropFixCheck, dropFixSupported, EGC, egcClip, egcDropFree, enemyDropGun });   // dropped-gun tests
+if (window.__cqcDev) Object.assign(window.__cqcDev, { roomFloorAt, rLX, rLZ, enemyDown, surrStart, enemiesDyingUpdate, enemiesPostPhysics, stepPhysics, DROPFIX, dropFixCheck, dropFixSupported, EGC, egcClip, egcDropFree, enemyDropGun, WZ: () => WZ, TERM });   // dropped-gun tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { DG, locomote, stepPhysics, updateDoorsPost, headGuard, HG, netDoorGhost, rWX, rWZ, rLX, rLZ, netDoorRx, nudgeDoor, pushOutOf, doorSide, rebuildWalk, MIC, netVoiceMic, voxPress, voxKey, voxApply, applyMenu, MENU, MOD, MENU_BASE });   // DOORGHOST / VOX / one speed tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { MFL, mflProfile, mflChain, flashBurst, fireGun, BHEAD, bodyHeadYaw, rigNadeAt, enemyShoot, muzSync, muzChain, getMUZ: () => MUZ });   // muzzle flash by device, VR body heading
 if (window.__cqcDev) Object.assign(window.__cqcDev, { clock, loop, playerState, keys, headRoom, headWorld, roomMem, doorPress, safeSlotNow, aimedProp, isReady: () => ready, isStarted: () => gameStarted, findPath, exitLeaf, applyLook, RAY_GROUPS, colliderInfo, rapierRay: (o, d) => new RAPIER.Ray({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z }) });   // automatic 5-room test run (cqc/tools/autorun.js)
@@ -64190,7 +64222,7 @@ function clPrepare() {
 const CL_CSS = `
 #clsPick{position:fixed;inset:0;z-index:70;display:none;place-items:center;background:radial-gradient(ellipse 80% 70% at 50% 30%,rgba(16,24,22,.94),rgba(3,5,6,.97));color:#ece8de;font:500 16px/1.3 "Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif}
 #clsPick.on{display:grid}
-#clsPick .cl-box{width:min(1280px,calc(100vw - 32px));max-height:calc(100vh - 32px);display:grid;grid-template-rows:auto minmax(0,1fr) auto;border:1px solid rgba(140,255,215,.2);border-radius:12px;background:rgba(6,10,10,.9);box-shadow:0 30px 90px rgba(0,0,0,.7);overflow:hidden}
+#clsPick .cl-box{width:min(1280px,calc(100vw - 32px));max-height:calc(100vh - 32px);display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;border:1px solid rgba(140,255,215,.2);border-radius:12px;background:rgba(6,10,10,.9);box-shadow:0 30px 90px rgba(0,0,0,.7);overflow:hidden}
 #clsPick .cl-head{display:flex;align-items:center;gap:18px;padding:18px 22px 16px 26px;border-bottom:1px solid rgba(140,255,215,.13)}
 #clsPick h2{margin:0;font:800 30px/1 "Archivo","Arial Black",sans-serif;font-stretch:125%;letter-spacing:-.01em;text-transform:uppercase;white-space:nowrap}
 #clsPick .cl-sub{flex:1;min-width:0;margin:0;color:#7fa89a;font-size:16px}
@@ -64235,6 +64267,7 @@ const CL_CSS = `
 #clsPick .cl-go:hover{background:#eef8ea}
 @media (max-width:860px){#clsPick .cl-body{grid-template-columns:1fr}#clsPick .cl-list{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid rgba(140,255,215,.1)}#clsPick .cl-card{grid-template-columns:1fr;min-width:150px}#clsPick .cl-th{width:100%}#clsPick .cl-main{grid-template-columns:1fr}#clsPick .cl-view .cl-vn{font-size:32px}#clsPick .cl-stats{grid-template-columns:1fr}#clsPick .cl-sub{display:none}}
 @media (max-height:820px){#clsPick .cl-box{max-height:calc(100vh - 16px)}#clsPick .cl-head{padding:10px 18px}#clsPick h2{font-size:24px}#clsPick .cl-main{padding:12px 18px;gap:14px}#clsPick .cl-view{height:clamp(140px,26vh,240px)}#clsPick .cl-view .cl-vn{font-size:34px}#clsPick .cl-view .cl-vr{font-size:15px}#clsPick .cl-chip{min-height:32px;padding:4px 9px;font-size:14px}#clsPick .cl-parts{gap:5px}#clsPick .cl-stats{gap:3px}#clsPick .cl-st{font-size:13px}#clsPick .cl-side{margin-top:8px;padding:7px 10px;font-size:14px}#clsPick .cl-card{padding:6px}#clsPick .cl-list{gap:6px;padding:12px}#clsPick .cl-foot{padding:10px 18px}#clsPick .cl-go{min-height:44px}}
+@media (max-width:600px){#clsPick .cl-box{width:calc(100vw - 16px);max-height:calc(100vh - 16px)}#clsPick .cl-head{gap:10px;padding:12px 14px}#clsPick h2{font-size:20px;white-space:normal;flex:1;min-width:0}#clsPick .cl-x{padding:0 14px}#clsPick .cl-list{padding:10px}#clsPick .cl-card{min-width:132px}#clsPick .cl-main{padding:12px 14px;gap:12px}#clsPick .cl-view{height:clamp(150px,28vh,240px)}#clsPick .cl-view .cl-vn{font-size:26px}#clsPick .cl-view .cl-vr{font-size:14px}#clsPick .cl-parts{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}#clsPick .cl-st{grid-template-columns:92px minmax(0,1fr) 44px}#clsPick .cl-foot{flex-wrap:wrap;gap:10px;padding:10px 14px}#clsPick .cl-keys{flex-basis:100%;font-size:13px}#clsPick .cl-go{flex:1}}
 @media (min-width:1900px){#clsPick{font-size:18px}#clsPick .cl-box{width:min(1560px,calc(100vw - 48px))}}
 `;
 function clBuild() {

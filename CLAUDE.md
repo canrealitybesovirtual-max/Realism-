@@ -2493,3 +2493,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - egcDropFree (enemyDropGun, after itemToWorld): a dropped gun whose box is inside a wall or leaf is slid back toward his chest until free (turned 90 deg if needed).
 - Autorun (AKM, 4 rooms): 340 poses fixed, 2 drops moved out of walls, 3 poses still through (grip itself inside a swinging leaf). Pass, no errors. autorun.js prints the counts.
 - Update 1.10: the muzzle is a small solid sphere (2.2 cm, EGC.tipR) swept down the bore (Rapier castShape against walls, cover, leaves) instead of a thin ray, so a barrel's edge can't slip past a door edge or corner either. ?egunclip=ray = the ray. Autorun (AKM, 4 rooms): pass, no errors.
+
+## CQC: screens readable from afar, also on phones (update 1.11)
+- Cause (headless, Pixel 7 landscape): the game draws at 1x CSS pixels on a phone (the phone shows 2.6x), so the 1.6 m GUNSMITH glass at 3 m was ~140 rendered pixels wide: blocky, unreadable.
+- Reading zoom (WZ, ?wszoom=off): looking at the GUNSMITH or terminal glass for 0.3 s from anywhere within 5.5 m (computer, phone, pad; not the headset, not with the bench zoom) narrows the view so the whole glass fills it (both its width and height, 10 % margin, fov at least 22 deg); the centre ray does not move, so E / Grab aim as before; looking away 0.8 s = back. Presses still need the old reach. Both screens stay awake to 5.5 m (were 4.6 / 3.2).
+- glassSharp (?glasssharp=off): the screens' canvas is sampled 4 times a pixel (rotated grid, half gradients) instead of once, so text is smooth from afar. One program key glassSharp1.
+- Class picker on a portrait phone: the box grew to its title's width and was cut off at the right; now one shrinking column, wrapping title, smaller rows under 600 px.
+- Checked headless (Pixel 7 landscape, SwiftShader): GUNSMITH from 2.9 m zoomed to fill the view, gun names, slots and stats readable; no page errors. Not checked: a real phone, the portrait picker by eye, a headset (unchanged there).
