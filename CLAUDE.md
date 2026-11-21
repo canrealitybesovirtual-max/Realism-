@@ -2673,3 +2673,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: fresh guns on every page load (update 1.48; ?keepbuild = keep builds)
 - Cause of the long locker peg: the gun locker measures each pistol (createGun with its store build) once at load, so a saved muzzle chain stretched its peg out of the cabinet.
 - FRESH_BUILD: at load every fitted attachment comes off (bought parts stay owned and lie on the bench): cqc.workshop.v1 keeps only hardware rows (rails, flat-top), cqc.muzzle.v1 / cqc.gripspots.v1 / cqc.ext.v1 are removed, rail layouts emptied (the Glock's PL-2 is not refitted). Checked headless: a saved comp / can / PL-2 build loads bare, pegs 9.5 / 12.4 cm.
+
+## CQC: guns go back to the locker in stock form (update 1.49; ?glstock=off)
+- glStock (from gunLockerRestock: every safe-room visit, respawn, restart, new run, terminal restock): a locker gun that is not in your hands / holster / sling / vise goes back stock: its type's store build is cleared (bought rows stay owned, hardware stays) with clSetGun, its saved muzzle chain, rail layout and grip spots go, and a gun still wearing bench-fitted parts is replaced by a fresh one. Parts land back on the bench table (wbTableFill).
+- Checked headless: a Glock with a store-fitted comp moved off its peg comes back on it bare, comp still owned.
