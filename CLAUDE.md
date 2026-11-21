@@ -2731,3 +2731,10 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Module parse and eslint no-undef / dupe keys / redeclare / const-assign: clean. 5-room bot runs: M4A1-S and M1911 PASS (all rooms cleared, no errors, all shader programs linked); Glock and AKM passed in 1.59.
 - Fixed: glNearLocker (1.59) wrote the shared GL.v vector that glWorld returns its result in; it has its own vector now.
 - Not checked: headset, two real devices.
+
+## CQC: riot shield steadier, turns, no ghosting through doors (update 1.61; headset check needed)
+- Ghosting cause: the shield's clip box and push collider sat at root z +0.1, but the drawn plate is at root z -0.116..-0.077 (measured), so the plate itself was 20 cm ahead of its collision: it went into doors and walls. Both now at SHD_PZ -0.097 (clip box half depth 2.6 cm).
+- shdClip is swept: the plate moves out from your own body (always on your side of any door / wall) to where it wants to be in 4 cm steps (+ 4 bisections), stopping at the first obstacle (shdSweepT), so a thin leaf can never be jumped; body anchor blocked = swept from last frame's free pose. Headless: head 32 cm before a shut leaf, shield wanted 12-40 cm beyond it, both sides: plate stops on your side, touching (centre 5 cm from the leaf's middle).
+- VR: the shield turns rigidly with the hand in every direction (neutral = how you held it when you took it; the old clamps that kept it upright are gone); tremor filtered (rotation 16/s, position 24/s; a big move follows at 40 / 60/s).
+- Computer: mouse wheel cants it (+-75 deg), Shift+wheel tilts it (-34..+26 deg); reset when you take it again. Desktop sway about a third of before.
+- Checked: module parse, eslint, the headless door test. Not checked in a headset.
