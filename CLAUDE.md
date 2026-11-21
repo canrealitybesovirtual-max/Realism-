@@ -2783,3 +2783,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: extinguisher empties over ~15 s (update 1.71; not heard or seen in a headset)
 - A punctured can discharges for 14-16 s: full pressure for 60 % of it, then sputters out. Jet 9-14 m/s at full pressure (drag 1.6: ~6-8 m throw), falling with the pressure. Hiss: three looped noise bands (5.2 kHz, 7 kHz, 900 Hz) on their own HRTF panner at the hole (a long sound on a shared voice would be re-aimed by other sounds), steady then fading with the jet. Still once per can per room build.
+
+## CQC: no static round in the AWM's port (update 1.72; headset check needed)
+- The AWM magazine model's own top round sits high, in the bolt's path, and never moves, so with the bolt open it lay in the port in the way of the animated feed round. While the magazine is seated in an AWM (item.inAwp, set in seatMag / cleared in ejectMag) that round is not drawn; feedBolt's round shows the feed. Out of the gun the magazine shows it again. Checked headless: no magazine round in the port at rest or open; the feed round still rises and chambers.
