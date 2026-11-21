@@ -2641,3 +2641,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: pistol firing hand clears the slide's travel (update 1.42; measurement pending; headset check needed)
 - The fitted firing hand sat high enough that the slide ran through the web of the hand when it moved back. vmhSlideClear (vmhFit, pistols, ?slideclear=off): the slide's rear half as surface points with outward normals (root space) swept back over def.travel; hand vertices tested by signed distance (fingSd); the hand is lowered in 0.5 mm steps until none is within 1.2 mm of / inside it. Cached per type (SLIDECLR.dy, log in SLIDECLR.log). FING_TABLE to be re-solved for the moved hand.
+- Measured (update 1.43): Glock 17 hand lowered 4 mm (12 hand points in / against the swept slide -> 5, touching its side only), M1911 already clear (0). SLIDECLR: gap 0.3 mm, up to 6 touching points allowed (a high grip's skin on the slide's side), at most 6 mm. FING_TABLE.g17 re-solved for it (pad on the blade, 0 mm miss, no penetration); the table is only used with SLIDECLR on.
+
+## CQC: drywall breaks look like real gypsum board (update 1.43)
+- Breakable room wall cavities have no yellow insulation by default (?wool=on brings it back): you see the galvanised studs and, behind, the block wall (side walls) or the far board's back (end walls), its liner paper now grey (#7e7c77, was brown).
+- Torn edges (pdMaterial, GRITH): crushed zone darker (x 0.24-0.5), flaked paint chips are dull dusty gypsum (0.52) over a smaller area instead of white, the torn core a grey gritty gypsum with uneven grain (0.44 x noise), crumbs dimmer; the inside of a sheet seen through a hole is grey back paper.
