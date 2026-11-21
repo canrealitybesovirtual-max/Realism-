@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.23</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.24</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.23</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.24</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -16518,6 +16518,50 @@ function handTarget(hand) {
 
 // Distance from a point to each prop's box, in the prop's own space. Returns the closest within reach.
 const _inv = new THREE.Matrix4(), _lp = new THREE.Vector3();
+// TOUCH (?touchgrab=off): a VR grab takes what the hand is actually touching: each candidate (its box within reach) is
+// scored by the distance from the palm to its drawn surface (a sparse cloud of its visible vertices, item frame, cached),
+// so a gun's big box no longer wins over the magazine in the hand's palm.
+var TOUCH = { on: !/[?&]touchgrab=off\b/.test(location.search), touch: 0.035, mag: 0.022, n: 1600, v: null, m: null };
+function touchCloud(p) {
+  let n = 0; p.root.traverse((o) => { if (o.isMesh && o.visible) n++; });
+  if (p._tc && p._tcN === n) return p._tc;
+  TOUCH.v = TOUCH.v || new THREE.Vector3(); TOUCH.m = TOUCH.m || new THREE.Matrix4();
+  p.root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(p.root.matrixWorld).invert(), list = [];
+  let tot = 0;
+  p.root.traverse((o) => { if (!o.isMesh || !o.geometry || !o.geometry.attributes.position) return; for (let q = o; q && q !== p.root; q = q.parent) if (!q.visible) return; if (o.material && o.material.blending === THREE.AdditiveBlending) return; list.push(o); tot += o.geometry.attributes.position.count; });
+  const st = Math.max(1, Math.floor(tot / TOUCH.n)), out = [];
+  for (const o of list) {
+    TOUCH.m.multiplyMatrices(inv, o.matrixWorld);
+    const P = o.geometry.attributes.position;
+    for (let i = 0; i < P.count; i += st) { TOUCH.v.fromBufferAttribute(P, i).applyMatrix4(TOUCH.m); out.push(TOUCH.v.x, TOUCH.v.y, TOUCH.v.z); }
+  }
+  p._tc = new Float32Array(out); p._tcN = n;
+  return p._tc;
+}
+const _tcL = new THREE.Vector3(), _tcI = new THREE.Matrix4();
+function touchDist(p, point) {
+  const C = touchCloud(p); if (!C.length) return Infinity;
+  _tcL.copy(point).applyMatrix4(_tcI.copy(p.root.matrixWorld).invert());
+  let m = Infinity;
+  for (let i = 0; i < C.length; i += 3) { const dx = C[i] - _tcL.x, dy = C[i + 1] - _tcL.y, dz = C[i + 2] - _tcL.z, d = dx * dx + dy * dy + dz * dz; if (d < m) m = d; }
+  return Math.sqrt(m);
+}
+function touchPick(point, reach) {
+  let best = null, bd = Infinity;
+  for (const p of props) {
+    if (p.removing) continue;
+    const e = p.root.matrixWorld.elements, ex = point.x - e[12], ey = point.y - e[13], ez = point.z - e[14];
+    const R = (reach + p.half.length() + (p.center ? p.center.length() : 0)) * 1.25;
+    if (ex * ex + ey * ey + ez * ez > R * R) continue;
+    _inv.copy(p.root.matrixWorld).invert(); _lp.copy(point).applyMatrix4(_inv); if (p.center) _lp.sub(p.center);
+    const bx = Math.hypot(Math.max(Math.abs(_lp.x) - p.half.x, 0), Math.max(Math.abs(_lp.y) - p.half.y, 0), Math.max(Math.abs(_lp.z) - p.half.z, 0));
+    if (bx >= reach) continue;
+    const d = p.item ? touchDist(p, point) : bx;                    // items by their drawn surface; furniture props by their box
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
 function nearestProp(point, reach) {
   let best = null, bestD = reach;
   for (const p of props) {
@@ -22589,7 +22633,7 @@ function itemGrab(hand, p) {
     if (hand.ctrl && g.def.cls === 'pistol' && mpbTry(hand, _wv2, g)) return;   // pistol baseplate grab (MPB): before the support grip
     // Step 30: closing on the exposed magazine pulls it out into this hand.
     const md = magStripDist(g, _wv2);
-    if (md < MAG_STRIP.reach && md < sd - MAG_STRIP.bias && md <= rd) { stripMag(g, hand); return; }
+    if (md < MAG_STRIP.reach && (md < sd - MAG_STRIP.bias || (TOUCH.on && md < TOUCH.mag)) && md <= rd) { stripMag(g, hand); return; }   // TOUCH: a hand on the magazine takes the magazine
     const needs = g.def.action !== 'pump' && (!g.chambered || g.slideLocked);
     if (rd < rackReachOf(g) && (rd < sd || (needs && rd < sd + 0.03))) {
       g.rack = hand; hand.role = 'rack';
@@ -45530,14 +45574,73 @@ const p10Toi = (hit) => (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit
 // Blood decals are painted on a canvas. Spatter: the shot travels +x (the decal is
 // rolled so +x follows the round), a dense core, tear-shaped droplets thrown forward
 // and a fine mist. Pool: one lobed body, thicker and darker in the middle.
+const POOLVAR = { on: !/[?&]poolvar=off\b/.test(QS) };
+// One pool shape in an S x S square: v 0 round, 1 an oval run, 2 two bodies that met, 3 a thin wide spread.
+function poolShape(g, S, R, col, v) {
+  const c = S / 2, bodies = v === 2 ? [[-0.09, 0.03, 0.78], [0.1, -0.05, 0.62]] : [[0, 0, v === 3 ? 0.92 : 1]];
+  const sx = v === 1 ? 1.32 : v === 3 ? 1.12 : 1, sy = v === 1 ? 0.7 : v === 3 ? 0.92 : 1, rot = R() * 6.283;
+  const rims = [];
+  for (const [ox, oy, k] of bodies) {
+    const hs = [];
+    for (let n = 2; n <= 9; n++) hs.push([n, R() * 6.283, (v === 3 ? 0.11 : 0.085) / Math.pow(n, 1.05) * (0.4 + R() * 1.2)]);   // smooth lobes, not spikes
+    const rim = (a) => { let r = 1; for (const [n, ph, am] of hs) r += am * Math.sin(n * a + ph); return S * 0.25 * k * r; };
+    rims.push([ox * S, oy * S, rim]);
+    g.fillStyle = col(1); g.beginPath();
+    for (let i = 0; i <= 260; i++) {
+      const a = i / 260 * Math.PI * 2, r = rim(a), x = Math.cos(a) * r * sx, y = Math.sin(a) * r * sy;
+      const X = c + ox * S + x * Math.cos(rot) - y * Math.sin(rot), Y = c + oy * S + x * Math.sin(rot) + y * Math.cos(rot);
+      if (i) g.lineTo(X, Y); else g.moveTo(X, Y);
+    }
+    g.fill();
+  }
+  const at = (ox, oy, a, d) => { const x = Math.cos(a) * d * sx, y = Math.sin(a) * d * sy; return [c + ox + x * Math.cos(rot) - y * Math.sin(rot), c + oy + x * Math.sin(rot) + y * Math.cos(rot)]; };
+  const nT = v === 3 ? 4 : v === 1 ? 2 : 2 + Math.floor(R() * 3);
+  for (let i = 0; i < nT; i++) {                                    // tongues that crept along the floor's low spots
+    const [ox, oy, rim] = rims[Math.floor(R() * rims.length)], a = R() * Math.PI * 2, r0 = rim(a) * 0.85, len = S * (0.03 + R() * (v === 3 ? 0.12 : 0.08));
+    const w = S * (0.035 + R() * 0.035), bend = (R() - 0.5) * 0.4;
+    for (let k = 0; k <= 12; k++) {
+      const f = k / 12, aa = a + bend * f * f, d = r0 + len * f, rr = w * (1 - 0.55 * f) * (0.9 + 0.2 * R());
+      const [X, Y] = at(ox, oy, aa, d);
+      if (Math.hypot(X - c, Y - c) + rr > S * 0.44) break;
+      g.fillStyle = col(1); g.beginPath(); g.ellipse(X, Y, rr * 1.3, rr, aa + rot, 0, Math.PI * 2); g.fill();
+    }
+  }
+  const nD = v === 3 ? 10 : 12 + Math.floor(R() * 14);
+  for (let i = 0; i < nD; i++) {                                    // drops that fell round it (more close in, some in a line where he moved)
+    const [ox, oy, rim] = rims[Math.floor(R() * rims.length)], a = R() * Math.PI * 2, d = rim(a) + S * (0.008 + Math.pow(R(), 1.8) * 0.15), rr = S * (0.002 + R() * R() * 0.012);
+    const [X, Y] = at(ox, oy, a, d);
+    if (Math.hypot(X - c, Y - c) + rr * 2 > S * 0.44) continue;
+    g.fillStyle = col(0.75 + R() * 0.25); g.beginPath(); g.ellipse(X, Y, rr * (1 + R() * 0.8), rr, R() * 3.14, 0, Math.PI * 2); g.fill();
+  }
+  if (v !== 3) {                                                    // a darker, thicker middle off centre (the blood ran from there)
+    g.globalCompositeOperation = 'source-atop';
+    const [X, Y] = at(rims[0][0], rims[0][1], R() * 6.283, S * 0.05 * R());
+    const gr = g.createRadialGradient(X, Y, 0, X, Y, S * (0.16 + R() * 0.1)); gr.addColorStop(0, 'rgba(14, 0, 0, 0.55)'); gr.addColorStop(1, 'rgba(14, 0, 0, 0)');
+    g.fillStyle = gr; g.fillRect(0, 0, S, S); g.globalCompositeOperation = 'source-over';
+  } else {                                                          // a thin spread: lighter, patchy
+    g.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(0,0,0,${(0.08 + R() * 0.2).toFixed(2)})`; g.beginPath(); g.arc(c + (R() - 0.5) * S * 0.6, c + (R() - 0.5) * S * 0.6, S * (0.02 + R() * 0.05), 0, Math.PI * 2); g.fill(); }
+    g.globalCompositeOperation = 'source-over';
+  }
+}
 function bloodCanvas(kind, seed) {
-  const S = kind === 'pool' || kind === 'smear' || kind === 'run' ? 512 : 256, cv = document.createElement('canvas');   // step 67: bigger for the big ones
+  const S = kind === 'pool' && BGRIT.on && POOLVAR.on ? 1024 : kind === 'pool' || kind === 'smear' || kind === 'run' ? 512 : 256, cv = document.createElement('canvas');   // step 67: bigger for the big ones
   cv.width = cv.height = S;
   const g = cv.getContext('2d');
   let s = seed;
   const R = () => (s = (s * 16807) % 2147483647) / 2147483647;
   const col = (a) => `rgba(${(34 + R() * 14) | 0}, ${(1 + R() * 2) | 0}, ${(1 + R() * 2) | 0}, ${a.toFixed(3)})`;
-  if (kind === 'pool' && BGRIT.on) {
+  if (kind === 'pool' && BGRIT.on && POOLVAR.on) {
+    // POOL VARIETY: four different pools in a 2 x 2 atlas (each instance shows one, by its index): one round body, an
+    // oval run toward a low spot, two bodies that met, and a thin wide spread; tongues, satellite drops and a darker centre vary.
+    const H = S / 2;
+    cv.width = cv.height = S; g.clearRect(0, 0, S, S);
+    for (let q = 0; q < 4; q++) {
+      g.save(); g.translate((q % 2) * H, Math.floor(q / 2) * H); g.beginPath(); g.rect(0, 0, H, H); g.clip();
+      poolShape(g, H, R, col, q);
+      g.restore();
+    }
+  } else if (kind === 'pool' && BGRIT.on) {
     // GRITTY BLOOD: one body with an uneven rim (a few angular harmonics), tongues that crept along the floor's
     // low spots, and satellite drops that fell around it. Thickness, clots, crust and grit come from bloodGrit.
     const c = S / 2, hs = [];
@@ -46164,10 +46267,11 @@ function polishKit() {
     transparent: true, depthWrite: false, roughness: 0.55, metalness: 0, envMapIntensity: 0.4,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4
   });
-  WEAPON.decalMat.pool = bloodMat(bloodCanvas('pool', 777777), { seed: 7771, blur: 60, oldNor: 0.9, ns: 0.8 }, {   // step 67: a low meniscus, no bright ring (step 70)
+  WEAPON.decalMat.pool = bloodMat(bloodCanvas('pool', 777777), { seed: 7771, blur: BGRIT.on && POOLVAR.on ? 120 : 60, oldNor: 0.9, ns: 0.8 }, {   // step 67: a low meniscus, no bright ring (step 70)
     transparent: true, depthWrite: false, roughness: 0.58, metalness: 0, envMapIntensity: 0.15,   // step 70: wet but not a mirror
     polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -6
   });
+  if (BGRIT.on && POOLVAR.on) poolAtlasMat(WEAPON.decalMat.pool);   // each pool instance shows one of the four shapes
   // Step 67: drag trails (heavy, then thinning) and runs down walls; the spatter's shader, nothing new compiles.
   DECAL_SIZE.smear1 = DECAL_SIZE.smear2 = CONFIG.gore.smearSize; DECAL_SIZE.run = B.runSize;
   for (const [k, a, kind] of [['smear1', 1, 'smear'], ['smear2', 0.55, 'smear'], ['run', 1, 'run']]) {
@@ -46449,14 +46553,37 @@ function poolAt(at, s1, slow) {
     const m = roomMem(info.room), h = m.holes[m.holes.length - 1], cap = Math.min(d.cx || 9, d.cz || 9) / DECAL_SIZE.pool;
     if (h && h[0] === 'pool') { h[7] = 0; h[8] = Math.min(s1, cap); }
   }
-  P10.pools.push(Object.assign(d, { room: info.room, s1, t: 0, T: C.poolTime * slow * (0.8 + Math.random() * 0.4) }));
+  P10.pools.push(Object.assign(d, { room: info.room, s1, t: 0, T: C.poolTime * slow * (0.8 + Math.random() * 0.4), ax: POOLVAR.on ? 0.82 + Math.random() * 0.36 : 1, az: POOLVAR.on ? 0.82 + Math.random() * 0.36 : 1 }));
   setPoolScale(P10.pools[P10.pools.length - 1], 0.08);
   goreFreshPool(P10.pools[P10.pools.length - 1]);   // step 41: fresh now, dark later
+}
+// POOL VARIETY: the pool decals sample one quarter of the 2 x 2 atlas, picked by the instance's index.
+function poolAtlasMat(m) {
+  const b0 = m.onBeforeCompile;
+  m.onBeforeCompile = (sh, r) => {
+    if (b0) b0.call(m, sh, r);
+    sh.vertexShader = sh.vertexShader.replace('#include <uv_vertex>', `#include <uv_vertex>
+#ifdef USE_INSTANCING
+  { vec2 qo = vec2(float(gl_InstanceID % 2), float((gl_InstanceID / 2) % 2)) * 0.5;
+  #ifdef USE_MAP
+    vMapUv = vMapUv * 0.5 + qo;
+  #endif
+  #ifdef USE_NORMALMAP
+    vNormalMapUv = vNormalMapUv * 0.5 + qo;
+  #endif
+  #ifdef USE_ROUGHNESSMAP
+    vRoughnessMapUv = vRoughnessMapUv * 0.5 + qo;
+  #endif
+  }
+#endif`);
+  };
+  const k0 = m.customProgramCacheKey;
+  m.customProgramCacheKey = () => (k0 ? k0.call(m) : '') + '|poolq';
 }
 function setPoolScale(g, k) {
   const size = DECAL_SIZE.pool * g.s1 * k;
   _p10.q.setFromUnitVectors(_dz, _p10.up).multiply(_p10.q2.setFromAxisAngle(_dz, g.roll));
-  _p10.m.compose(_p10.a.set(g.lx, g.ly + 0.0012, g.lz), _p10.q, _p10.s.set(g.cx ? Math.min(size, g.cx) : size, g.cz ? Math.min(size, g.cz) : size, 1));   // STAIR BLOOD: held to its tread
+  _p10.m.compose(_p10.a.set(g.lx, g.ly + 0.0012, g.lz), _p10.q, _p10.s.set(g.cx ? Math.min(size, g.cx) : size * (g.ax || 1), g.cz ? Math.min(size, g.cz) : size * (g.az || 1), 1));   // STAIR BLOOD: held to its tread
   g.L.im.setMatrixAt(g.idx, _p10.m);
   g.L.im.instanceMatrix.needsUpdate = true;
 }
@@ -52181,7 +52308,8 @@ for (let i = 0; i < 2; i++) {
     if (FLIP.on && FLIP.list.length) hand.flipArm = wnow() + FLIP.arm;   // squeezed just before it arrives: stays armed
     if (!hand.prop && mpbTry(hand, _cur)) return;                   // pistol baseplate grab (MPB)
     if (shdGrab(hand, _cur)) return;                               // BALLISTIC SHIELD: its grip
-    const p = hand.hover || nearestProp(_cur, CONFIG.physics.reach) || slungNear(_cur);   // animated sling: anywhere on the rifle on your chest
+    let p = hand.hover || (TOUCH.on ? touchPick(_cur, CONFIG.physics.reach) : nearestProp(_cur, CONFIG.physics.reach)) || slungNear(_cur);   // animated sling: anywhere on the rifle on your chest
+    if (TOUCH.on && p && !hand.prop && touchDist(p, _cur) > TOUCH.touch && (inPouchZone(_cur) || p.holders.length || p.item && p.item.slot) && tryPouch(hand)) return;   // TOUCH: at a pouch and not touching that gun: the pouch (a magazine), never the gun's grip
     if (p) { grab(hand, p); return; }
     const d = nearestDoorHandle(_cur, CONFIG.doorPhys.grabReach);   // step 4: or a door lever
     if (d) { grabDoor(hand, d); return; }
