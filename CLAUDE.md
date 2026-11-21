@@ -2809,3 +2809,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: AKM feed lines up with the chamber; magazine rounds visible (update 1.78; headset check needed)
 - feedBolt: the riding round reached the bore line only at the end of the stroke, so its nose went into the chamber mouth low (into the trunnion). It is now on the bore line before its nose reaches the mouth (aligned by bz = min(0.85 so, 1.05 L), nose-up tilt 0.12 rad at most), every rifle.
 - magHideTop no longer hides the AK / M4 lip rounds (MTR) while seated: the magazine shows its rounds when racking; the next round shows in the lips while the fed one rides in (magTopSet with rounds - 1). Only the AWM model's own top round stays hidden while seated. Checked by headless renders of an AKM rack (round on the bore line into the chamber mouth; rounds in the magazine).
+
+## CQC: VR support hand takes a vertical grip on any rail (update 1.79; headset check needed)
+- Cause: xtraGripHold (the support hold on a grip) only ran for a grip on a side / top rail and only through xtraGripPlace, which returns when no grip spot is saved. A grip moved along the bottom rail kept the AKM's fixed store spot, and the M4's grip on an AKM bottom rail set no hold at all, so a VR hand closing on the grip found no support grip and was drawn as an open free hand.
+- Now xtraSync calls xtraGripHold every refresh for rifles: any rail face or store-seated grip (not bench-snapped ones, which foreignGrip handles), hold point measured from the grip's real pose, roll 0 on the bottom.
+- Checked headless: AK grip and M4 grip on the AKM's bottom rail, M4 grip on the M4: hold point on the grip after release (was none / fixed spot).
