@@ -2805,3 +2805,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: nothing still in the M4's port (update 1.77; headset check needed)
 - The press-check case (chkRound) sat still in the port while the action moved on a slow VR rack: not drawn on the rifles (FEED_RISE) any more (?chkrifle=on brings it back); the rack throws the live round out and feeds the next as before. FEED's stand-in chamber tube / bolt face / carrier cylinders are hidden on the M4A1-S, M16A1 and AWM too (FEED.own, like the AKM); the M4's dark port backing stays. Headless mesh list in the M4's port: at rest only the carrier; racked open the carrier, the rising feed round and the backing; held mid-stroke with a round chambered nothing static.
+
+## CQC: AKM feed lines up with the chamber; magazine rounds visible (update 1.78; headset check needed)
+- feedBolt: the riding round reached the bore line only at the end of the stroke, so its nose went into the chamber mouth low (into the trunnion). It is now on the bore line before its nose reaches the mouth (aligned by bz = min(0.85 so, 1.05 L), nose-up tilt 0.12 rad at most), every rifle.
+- magHideTop no longer hides the AK / M4 lip rounds (MTR) while seated: the magazine shows its rounds when racking; the next round shows in the lips while the fed one rides in (magTopSet with rounds - 1). Only the AWM model's own top round stays hidden while seated. Checked by headless renders of an AKM rack (round on the bore line into the chamber mouth; rounds in the magazine).
