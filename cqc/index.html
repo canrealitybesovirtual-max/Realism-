@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.25</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.26</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.25</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.26</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -24735,6 +24735,7 @@ let lastAmmoText = '';
 const _bq = new THREE.Quaternion();
 function weaponsUpdate(dt, now) {
   if (DRUMFEED) drumFeedTick();          // drum window feed animation
+  if (EXH && EXH.on) exTick(dt); if (OG && OGS) ogShardTick(dt);   // FIRE EXTINGUISHERS venting; OFFICE GLASS shards falling
   if (!WEAPON.ready) return;
   o2Tick(dt);                                                     // new optics: flips, folds, cant, the VR push
   _aimFix.setFromEuler(_we.set(CONFIG.weapons.aimPitch, 0, 0));
@@ -32587,6 +32588,20 @@ function traceBullet0(origin, dir, d, type, opts = null) {
         if (E <= 0.02) return false;
         if (range <= 0) return true;
         _tbo.addScaledVector(dir, gt + 0.004);
+        continue;
+      }
+    }
+    if (EXH.on && type !== 'frag') {                              // FIRE EXTINGUISHERS: a round glances off the steel body or punches into it
+      const xr = exRay(_tbo, dir, toi);
+      if (xr && (fromEnemy || !enemyRayTest(_tbo, dir, xr.t))) {
+        const xt = xr.t;
+        if (TRC.rec >= 0) trcSeg(_tbo, dir, xt, 3, null);
+        _tbo.addScaledVector(dir, xt);
+        E = exShot(xr, _tbo, dir, E); _tbE = E;
+        range -= xt + 0.006; _tbTravel += xt + 0.006;
+        if (E <= 0.02) return false;
+        if (range <= 0) return true;
+        _tbo.addScaledVector(dir, 0.006);
         continue;
       }
     }
@@ -45593,6 +45608,42 @@ const p10Toi = (hit) => (hit.timeOfImpact !== undefined ? hit.timeOfImpact : hit
 // rolled so +x follows the round), a dense core, tear-shaped droplets thrown forward
 // and a fine mist. Pool: one lobed body, thicker and darker in the middle.
 const POOLVAR = { on: !/[?&]poolvar=off\b/.test(QS) };
+// REAL DROPS (?realdrops=off): passive blood drops on the floor as a 2 x 2 atlas (512 px): a round drop from low (smooth, a
+// raised rim), one from higher (crenated edge with short spines and satellites), a drop that fell while he moved (oval, a tail
+// and a cast-off droplet), two that landed on each other. Each fills ~40 % of its quarter, so a drip mark is a 1-2.5 cm drop.
+var DROPS = { on: !/[?&]realdrops=off\b/.test(QS) };
+function dropCanvas(seed) {
+  const S = 512, H = S / 2, cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const g = cv.getContext('2d'), R = mulberry32(seed);
+  const col = (a) => `rgba(${(44 + R() * 12) | 0}, ${(2 + R() * 3) | 0}, ${(2 + R() * 2) | 0}, ${a.toFixed(3)})`;
+  const blob = (cx, cy, r, harm, spines) => {
+    const hs = []; for (let n = 2; n <= 7; n++) hs.push([n, R() * 6.283, harm / n]);
+    g.fillStyle = col(1); g.beginPath();
+    for (let i = 0; i <= 180; i++) {
+      const a = i / 180 * 6.283; let rr = r; for (const [n, ph, am] of hs) rr += r * am * Math.sin(n * a + ph);
+      if (spines) rr += r * 0.09 * Math.max(0, Math.sin(a * spines + 1.3)) ** 6;   // crenations
+      const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr; if (i) g.lineTo(x, y); else g.moveTo(x, y);
+    }
+    g.fill();
+  };
+  const sats = (cx, cy, r, n, d0, d1) => { for (let i = 0; i < n; i++) { const a = R() * 6.283, d = r * (d0 + R() * (d1 - d0)), rr = r * (0.03 + R() * R() * 0.12); g.fillStyle = col(0.9); g.beginPath(); g.ellipse(cx + Math.cos(a) * d, cy + Math.sin(a) * d, rr * (1 + R() * 0.6), rr, a, 0, 6.283); g.fill(); } };
+  const r0 = H * 0.2;
+  blob(H * 0.5, H * 0.5, r0, 0.05, 0);                                      // low drop: smooth
+  blob(H * 1.5, H * 0.5, r0 * 1.05, 0.06, 22); sats(H * 1.5, H * 0.5, r0, 14, 1.25, 2.1);   // higher: spines, satellites
+  g.save(); g.translate(H * 0.5, H * 1.5); g.rotate(-0.35); g.scale(1.35, 0.78); blob(0, 0, r0 * 0.95, 0.05, 0); g.restore();   // moving: oval
+  g.fillStyle = col(1); g.beginPath(); g.moveTo(H * 0.5 + r0 * 1.15, H * 1.5 - r0 * 0.55); g.quadraticCurveTo(H * 0.5 + r0 * 1.9, H * 1.5 - r0 * 0.95, H * 0.5 + r0 * 2.15, H * 1.5 - r0 * 1.05);
+  g.quadraticCurveTo(H * 0.5 + r0 * 1.8, H * 1.5 - r0 * 0.6, H * 0.5 + r0 * 0.95, H * 1.5 - r0 * 0.1); g.fill();   // its tail
+  g.fillStyle = col(1); g.beginPath(); g.arc(H * 0.5 + r0 * 2.45, H * 1.5 - r0 * 1.2, r0 * 0.13, 0, 6.283); g.fill();   // the cast-off droplet
+  blob(H * 1.42, H * 1.45, r0 * 0.9, 0.06, 0); blob(H * 1.62, H * 1.6, r0 * 0.72, 0.07, 14); sats(H * 1.5, H * 1.5, r0, 6, 1.3, 1.9);   // two on each other
+  // a darker, thicker middle and a thin dried edge (coffee-ring): the drop's dome
+  g.globalCompositeOperation = 'source-atop';
+  for (const [x, y, rr] of [[H * 0.5, H * 0.5, r0], [H * 1.5, H * 0.5, r0], [H * 0.5, H * 1.5, r0 * 1.1], [H * 1.45, H * 1.47, r0], [H * 1.62, H * 1.6, r0 * 0.75]]) {
+    const gr = g.createRadialGradient(x, y, 0, x, y, rr); gr.addColorStop(0, 'rgba(18,0,0,0.5)'); gr.addColorStop(0.75, 'rgba(18,0,0,0.12)'); gr.addColorStop(0.93, 'rgba(70,6,4,0)'); gr.addColorStop(1, 'rgba(10,0,0,0.55)');
+    g.fillStyle = gr; g.fillRect(x - rr * 1.2, y - rr * 1.2, rr * 2.4, rr * 2.4);
+  }
+  g.globalCompositeOperation = 'source-over';
+  return cv;
+}
 // One pool shape in an S x S square: v 0 round, 1 an oval run, 2 two bodies that met, 3 a thin wide spread.
 function poolShape(g, S, R, col, v) {
   const c = S / 2, bodies = v === 2 ? [[-0.09, 0.03, 0.78], [0.1, -0.05, 0.62]] : [[0, 0, v === 3 ? 0.92 : 1]];
@@ -46521,7 +46572,7 @@ function bloodDropLanded(x, z, y) {   // y: where it landed (the floor it fell o
   if (!room) return;
   P10.dropBudget -= 1;
   _p10.a.set(x, Number.isFinite(y) ? y : room.origin.y, z);   // QA: where it landed (stair landings, a floor not at world 0; the apartment-only test was left over)
-  addBloodDecal(room, 'blood', _p10.a, _p10.up, Math.random() * Math.PI * 2, rnd2(0.12, 0.24));
+  addBloodDecal(room, DROPS.on && WEAPON.decalMat.drip && WEAPON.decalMat.drip !== WEAPON.decalMat.blood ? 'drip' : 'blood', _p10.a, _p10.up, Math.random() * Math.PI * 2, rnd2(0.12, 0.24));
 }
 // The pool spreads under him for half a minute. It is saved at full size, so a room
 // you walk back into shows it finished.
@@ -46883,6 +46934,12 @@ function g90Kit() {
   // Spray and bit decals: wet (a normal map from their thickness). Same per-room decal layers; compiled now.
   DECAL_SIZE.spray = DECAL_SIZE.sprayH = X.spray; DECAL_SIZE.gib = X.gib;
   DECAL_SIZE.drip = DECAL_SIZE.blood; WEAPON.decalMat.drip = WEAPON.decalMat.blood;   // drip marks: the spatter, its own layer
+  if (DROPS.on && BGRIT.on) try {                                 // REAL DROPS: four drop shapes (by instance), wet and domed, not little splats
+    const dt = new THREE.CanvasTexture(dropCanvas(80809)); dt.colorSpace = THREE.SRGBColorSpace; dt.anisotropy = maxAniso; dt.userData.canvas = dt.image;
+    WEAPON.decalMat.drip = bloodMat(dt, { seed: 8081, blur: 90, erode: 0.08, specks: 0, rWet: 0.12, rDry: 0.5, crustK: 0.6, bump: 1.4 },
+      { transparent: true, depthWrite: false, roughness: 0.4, metalness: 0, envMapIntensity: 0.35, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+    poolAtlasMat(WEAPON.decalMat.drip);
+  } catch (e) { console.warn('drops', e); WEAPON.decalMat.drip = WEAPON.decalMat.blood; }
   for (const [k, cv] of [['spray', g90SprayCanvas(90901, false)], ['sprayH', g90SprayCanvas(90902, true)], ['gib', g90GibCanvas(90903)]]) {
     const gt = g90Tex(cv); gt.userData.canvas = cv;                // GRITTY BLOOD: clots, crusted rims, grit; tissue and bone keep their colour
     WEAPON.decalMat[k] = bloodMat(gt, k === 'gib' ? { seed: 9093, blur: 30, erode: 0.5, specks: 0.01, rWet: 0.2, rDry: 0.5, bump: 1.6, oldNor: 2.4 }
@@ -47775,6 +47832,77 @@ function glassFloor(room, at, k) {
 // floor both sides, glassSfx); a frag within 3.5 m shatters it, within 6 m cracks it; a loose prop flying through it over
 // 3 m/s shatters it. A round loses ~4 % going through. Kept in room memory (gpane), re-applied on a rebuild. The pane
 // never had a collider or walk box (the 1 m sill keeps its own). Multiplayer: local (each side's traced rounds break it).
+/* FIRE EXTINGUISHERS (?exthit=off): every wall extinguisher of an active room is an analytic steel cylinder (its body from the
+ * kit model's bounds; no collider, so nothing else changes). A round meeting it at a glancing angle (or now and then head-on)
+ * ricochets: sparks, a metal ping, it flies on along the mirrored path with ~40 % of its energy. Otherwise it punches in:
+ * a hole, a burst of white extinguishing powder and a hiss, the can venting a powder plume for a few seconds; the round goes on
+ * weakened. Session-only. */
+var EXH = { on: !/[?&]exthit=off\b/.test(QS), cyl: null, inv: new THREE.Matrix4(), o: new THREE.Vector3(), d: new THREE.Vector3(), n: new THREE.Vector3(), h: { t: 0, room: null, n: new THREE.Vector3() }, vent: [] };
+function exCyl() {
+  if (EXH.cyl) return EXH.cyl;
+  const P = KIT.proto && KIT.proto.extinguisher; if (!P) return null;
+  const b = new THREE.Box3().setFromObject(P), c = b.getCenter(new THREE.Vector3()), z = b.getSize(new THREE.Vector3());
+  const r = Math.min(0.085, Math.min(z.x, z.z) * 0.5 * 0.9);
+  return (EXH.cyl = { cx: c.x, cz: b.max.z - r - 0.004, r, y0: b.min.y + 0.02, y1: b.min.y + Math.max(0.3, (b.max.y - b.min.y) * 0.72) });   // the body (not the valve or bracket)
+}
+function exRay(o, dir, maxT) {
+  const C = exCyl(); if (!C || !stream || !stream.rooms) return null;
+  let best = null;
+  for (const room of stream.rooms.values()) {
+    if (!room.active || !room.group || !room.layout || !room.layout.fixtures) continue;
+    const F = room.layout.fixtures; let any = false; for (const f of F) if (f.type === 'extinguisher') { any = true; break; }
+    if (!any) continue;
+    EXH.inv.copy(room.group.matrixWorld).invert();
+    const lo = EXH.o.copy(o).applyMatrix4(EXH.inv), ld = EXH.d.copy(dir).transformDirection(EXH.inv);
+    for (const f of F) {
+      if (f.type !== 'extinguisher') continue;
+      const [x, z, ry] = fixtureAt(f.wall, f.u, room.w, room.d), cs = Math.cos(ry), sn = Math.sin(ry);
+      const wx = x + C.cx * cs + C.cz * sn, wz = z - C.cx * sn + C.cz * cs;   // the body's axis (room-local)
+      const ox = lo.x - wx, oz = lo.z - wz, a = ld.x * ld.x + ld.z * ld.z; if (a < 1e-8) continue;
+      const bq = ox * ld.x + oz * ld.z, cq = ox * ox + oz * oz - C.r * C.r, disc = bq * bq - a * cq; if (disc < 0) continue;
+      const t = (-bq - Math.sqrt(disc)) / a;
+      if (t < 1e-4 || t > maxT || (best && t >= EXH.h.t)) continue;
+      const y = lo.y + ld.y * t; if (y < C.y0 || y > C.y1) continue;
+      best = room; EXH.h.t = t; EXH.h.room = room;
+      EXH.h.n.set(ox + ld.x * t, 0, oz + ld.z * t).normalize().transformDirection(room.group.matrixWorld);
+    }
+  }
+  return best ? EXH.h : null;
+}
+function exShot(X, P, dir, E) {
+  const n = EXH.n.copy(X.n), cosI = -(dir.x * n.x + dir.y * n.y + dir.z * n.z);
+  if (cosI < 0.55 || Math.random() < 0.15) {                        // glances off: ricochet
+    impactFx('metal', P, n);
+    dir.addScaledVector(n, 2 * cosI);                                // mirrored about the surface
+    dir.x += (Math.random() - 0.5) * 0.12; dir.y += (Math.random() - 0.5) * 0.12 + 0.03; dir.z += (Math.random() - 0.5) * 0.12; dir.normalize();
+    return E * 0.4;
+  }
+  impactFx('metal', P, n);                                          // punched in: hole, powder, hiss
+  try { addRoomHole(X.room, 'metal', P, n, false, null, 0.9); } catch (e) { /* no decal */ }
+  exPowder(P, n, 1);
+  EXH.vent.push({ p: P.clone(), n: n.clone(), t: 0, T: 2.5 + Math.random() * 2 });
+  exHiss(P);
+  return E * 0.35;
+}
+const EX_POWDER = { n: 10, c: [0.9, 0.9, 0.87], a: 0.22, sp: [0.8, 2.6], life: [1.6, 3.2], size: [0.02, 0.05], grow: 0.32, drag: 2.2, buoy: -0.03, force: true };
+function exPowder(P, n, k) {
+  EX_POWDER.n = Math.max(2, Math.round(10 * k)); EX_POWDER.a = 0.22 * Math.min(1, k + 0.25);
+  try { hazeEmit(P, n, EX_POWDER); } catch (e) { /* haze off */ }
+  try { impactFx('plaster', P, n); } catch (e) { /* */ }
+}
+function exHiss(P) {
+  if (!audio.ctx || audio.ctx.state !== 'running' || !audio.noise) return;
+  const play = () => { const t = audio.ctx.currentTime + 0.002; nBurst(t, 0.06, 'highpass', 2500, 0.8, 0.3, 0.05, 0.2); nBurst(t + 0.02, 2.6, 'bandpass', 5200, 0.7, 0.16, 2.3, 0.4); };
+  if (SPAT.ok) soundAt(P, play); else play();
+}
+function exTick(dt) {
+  if (!EXH.vent.length) return;
+  for (let i = EXH.vent.length - 1; i >= 0; i--) {
+    const v = EXH.vent[i]; v.t += dt; v.acc = (v.acc || 0) + dt;
+    if (v.acc > 0.12) { v.acc = 0; exPowder(v.p, v.n, Math.max(0.15, 1 - v.t / v.T)); }
+    if (v.t > v.T) EXH.vent.splice(i, 1);
+  }
+}
 var OG = null;
 function ogInit() {
   if (OG) return OG;
@@ -47861,9 +47989,10 @@ function ogCrack(P, lx, ly, save = true) {
   }
   if (save) ogMem(P);
 }
-function ogShatter(P, dir) {
+function ogShatter(P, dir, hx = 0, hy = 0) {
   if (P.state === 2) return;
   P.state = 2; P.mesh.visible = false; ogMem(P);
+  if (OGS.on) try { ogShards(P, hx, hy, dir); } catch (e) { console.warn('glass shards', e); }   // the pane breaks into real pieces that fall (spread from the hit) and stay on the floor
   const M = P.mesh.matrixWorld, n = OG.n.set(0, 0, 1).transformDirection(M);
   if (dir && n.dot(dir) < 0) n.negate();
   for (let i = 0; i < 7; i++) impactFx('glass', OG.p.set((Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.9, 0).applyMatrix4(M), n);   // shards along the shot
@@ -47871,12 +48000,84 @@ function ogShatter(P, dir) {
   glassSfx(c);
   for (const s of [-0.35, 0.35, 0.8]) glassFloor(P.room, OG.p.copy(c).addScaledVector(n, s), s > 0.5 ? 0.8 : 1.1);
 }
+// GLASS SHARDS (?glassshards=off): a shattered pane becomes ~40 irregular pieces (a jittered grid, each cell split on a random
+// diagonal) in one geometry per pane. Pieces near the frame stay stuck in it (some); the rest let go one after another from the
+// hit outward (0.03-0.7 s), thrown a little along the shot, tumble down, ring on landing and lie flat on the floor for good.
+// CPU-posed while they move (no per-frame allocation), one draw per pane, the pane's glass material (a little more opaque).
+var OGS = { on: !/[?&]glassshards=off\b/.test(QS), list: [], mat: null, q: new THREE.Quaternion(), q2: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), nz: new THREE.Vector3(0, 0, 1) };
+function ogShards(P, hx, hy, dir) {
+  const m = P.mesh, par = m.parent; if (!par) return;
+  m.updateMatrix();
+  const M = m.matrix, nx = m.scale.x < 0.8 ? 3 : 4, ny = 5, R = mulberry32(((P.room.slot | 0) * 131 + P.fi * 17 + 7) >>> 0);
+  const pt = [];
+  for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) {
+    const ex = i === 0 || i === nx, ey = j === 0 || j === ny;
+    pt.push([-0.5 + i / nx + (ex ? 0 : (R() - 0.5) * 0.6 / nx), -0.5 + j / ny + (ey ? 0 : (R() - 0.5) * 0.6 / ny)]);
+  }
+  const tris = [];
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+    if (R() < 0.5) tris.push([a, b, d], [a, d, c]); else tris.push([a, b, c], [b, d, c]);
+  }
+  const n = tris.length, pos = new Float32Array(n * 9), nor = new Float32Array(n * 9);
+  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  if (!OGS.mat) { OGS.mat = KIT.mat.glass.clone(); OGS.mat.opacity = 0.3; }
+  const mesh = new THREE.Mesh(geo, OGS.mat); mesh.frustumCulled = false; mesh.castShadow = false; mesh.renderOrder = 3; par.add(mesh);
+  const N0 = new THREE.Vector3(0, 0, 1).transformDirection(M), sh = [], D = dir ? dir.clone().transformDirection(new THREE.Matrix4().copy(par.matrixWorld).invert()) : N0.clone();
+  if (D.dot(N0) < 0) N0.negate();
+  for (let k = 0; k < n; k++) {
+    const T = tris[k], c = [0, 0]; for (const i of T) { c[0] += pt[i][0] / 3; c[1] += pt[i][1] / 3; }
+    const C = new THREE.Vector3(c[0], c[1], 0).applyMatrix4(M), V = T.map((i) => new THREE.Vector3(pt[i][0], pt[i][1], 0).applyMatrix4(M).sub(C).multiplyScalar(0.97));
+    const edge = T.some((i) => Math.abs(pt[i][0]) > 0.499 || Math.abs(pt[i][1]) > 0.499), dist = Math.hypot(c[0] - hx, c[1] - hy);
+    const stay = edge && R() < 0.45;
+    sh.push({ C, V, q: new THREE.Quaternion(), vel: D.clone().multiplyScalar(stay ? 0 : 0.15 + 1.1 * Math.max(0, 1 - dist * 1.6) * R()).add(new THREE.Vector3((R() - 0.5) * 0.3, R() * 0.3, (R() - 0.5) * 0.3)),
+      w: new THREE.Vector3((R() - 0.5) * 7, (R() - 0.5) * 7, (R() - 0.5) * 7), delay: 0.03 + dist * 0.6 + R() * 0.18, stay, done: stay, moved: true });
+  }
+  const S = { P, mesh, geo, sh, t: 0, N0, live: true, landN: 0 };
+  ogShardWrite(S, true); OGS.list.push(S);
+}
+function ogShardWrite(S, all) {
+  const pos = S.geo.attributes.position.array, nor = S.geo.attributes.normal.array, v = OGS.v, w = OGS.w;
+  for (let k = 0; k < S.sh.length; k++) {
+    const s = S.sh[k]; if (!all && !s.moved) continue;
+    w.copy(S.N0).applyQuaternion(s.q);
+    for (let j = 0; j < 3; j++) { v.copy(s.V[j]).applyQuaternion(s.q).add(s.C); const o = k * 9 + j * 3; pos[o] = v.x; pos[o + 1] = v.y; pos[o + 2] = v.z; nor[o] = w.x; nor[o + 1] = w.y; nor[o + 2] = w.z; }
+    s.moved = false;
+  }
+  S.geo.attributes.position.needsUpdate = true; S.geo.attributes.normal.needsUpdate = true;
+}
+function ogShardTick(dt) {
+  if (!OGS.list.length) return;
+  dt = Math.min(dt, 0.05);
+  for (let i = OGS.list.length - 1; i >= 0; i--) {
+    const S = OGS.list[i];
+    if (!S.mesh.parent || !S.P.room.active) { if (!S.P.room.active) { S.mesh.parent?.remove(S.mesh); S.geo.dispose(); OGS.list.splice(i, 1); } continue; }
+    if (!S.live) continue;
+    S.t += dt; let busy = false;
+    for (const s of S.sh) {
+      if (s.done) continue;
+      busy = true;
+      if (S.t < s.delay) continue;
+      s.vel.y -= 9.81 * dt; s.C.addScaledVector(s.vel, dt);
+      OGS.q2.setFromAxisAngle(OGS.w.copy(s.w).normalize(), s.w.length() * dt); s.q.premultiply(OGS.q2); s.moved = true;
+      let low = Infinity; for (const V of s.V) { const y = OGS.v.copy(V).applyQuaternion(s.q).y + s.C.y; if (y < low) low = y; }
+      if (low <= 0.002) {                                           // on the floor: it lies flat where it landed
+        OGS.w.copy(S.N0).applyQuaternion(s.q); OGS.q2.setFromUnitVectors(OGS.w, OGS.w.y >= 0 ? OGS.up : OGS.v.set(0, -1, 0)); s.q.premultiply(OGS.q2);
+        let lo2 = Infinity; for (const V of s.V) { const y = OGS.v.copy(V).applyQuaternion(s.q).y; if (y < lo2) lo2 = y; }
+        s.C.y = 0.0015 - lo2; s.done = true;
+        if (S.landN++ % 4 === 0) { const wp = S.mesh.parent.localToWorld(OGS.v.copy(s.C)); try { impactSound('glass', wp); } catch (e) { /* */ } }
+      }
+    }
+    ogShardWrite(S, false);
+    if (!busy) S.live = false;
+  }
+}
 // A round through the pane: crack or shatter; returns the energy it keeps.
 function ogShot(R, o, dir, E, type) {
   const P = R.P;
   impactFx('glass', OG.p.copy(o).addScaledVector(dir, R.t), OG.n.copy(dir).negate());
   P.hits += type === 'frag' ? 0.5 : 1;
-  if (P.hits >= P.hp) ogShatter(P, dir);
+  if (P.hits >= P.hp) ogShatter(P, dir, R.lx, R.ly);
   else { P.state = 1; ogCrack(P, R.lx, R.ly); }
   return E * 0.96;
 }
@@ -47909,7 +48110,7 @@ function ogPropTick() {
     }
   }
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcOG = { get OG() { return OG; }, ogInit, ogAdd, ogShot, ogShatter, ogBlast, traceBullet: (o, d, w, t) => traceBullet(o, d, w, t), spawnProp: (r, s) => spawnProp(r, s), get props() { return props; }, get stream() { return stream; }, get world() { return world; }, get scene() { return scene; }, get camera() { return camera; }, get renderer() { return renderer; }, WEAPON };
+if (/[?&]dev\b/.test(QS)) window.__cqcOG = { get OG() { return OG; }, ogInit, ogAdd, ogShot, ogShatter, ogBlast, bloodDropLanded, get EXH() { return EXH; }, exRay, exShot, exTick, get OGS() { return OGS; }, ogShardTick, fixtureAt, addBloodDecal, traceBullet: (o, d, w, t) => traceBullet(o, d, w, t), spawnProp: (r, s) => spawnProp(r, s), get props() { return props; }, get stream() { return stream; }, get world() { return world; }, get scene() { return scene; }, get camera() { return camera; }, get renderer() { return renderer; }, WEAPON };
 function glassCanvas(seed) {
   const S = 256, cv = document.createElement('canvas');
   cv.width = cv.height = S;
