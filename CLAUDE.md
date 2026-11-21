@@ -2551,3 +2551,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Cause: a cross-gun optic's riser was centred under the optic's middle; a long scope on a pistol (AWM 3-25x on the Glock) put it out over the barrel and muzzle devices, floating, and the scope's ring base hung beside it.
 - optTopRun(g): the longest stretch of the gun whose top is within 3 mm of its most common top height (the slide's flat; sights stand above it), from rays every 6 mm. Pistols: seatPart moves the optic so its mounting feet (optFoot: its drawn vertices within 4 mm of its lowest point) sit over that stretch's middle; optMount (every gun) centres the riser under the optic's own feet / rings (length = their span + 12 mm, max 13 cm), on a pistol clamped to the slide's flat. seatBox counts drawn meshes only (not the riser, not hidden parts).
 - Headless renders: 3-25x on the Glock and M1911: ring base on the riser's rail, riser on the slide.
+
+## CQC: scope picture only inside the eyepiece (update 1.22; headset check needed)
+- Cause: in the headset the both-eyes scope window (SWIN) is a disc in the eyepiece's plane placed under your head, up to 9 cm off the axis and ~5 cm wider than the glass, with no depth test; it drew the picture wherever your view pointed along the axis, so with your head off to the side it floated beside the scope (screenshots: the picture hanging off the eyepiece).
+- Now SWIN_FS also discards every fragment outside the eyepiece glass itself (uWC centre, uWR radius in world, from swinTick): the picture is only ever seen through the glass; off axis you see less of it, never next to it. Same for the AWM scopes, ACOG and the 2x.
+- Checked: module parse only (the window shader runs in the headset only).
