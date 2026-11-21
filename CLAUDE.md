@@ -2713,3 +2713,16 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: a body by a door no longer holds it shut against you (update 1.58)
 - Found by the 5-room bot: DBODY (update 1.47) also stopped the leaf in 'drive' (your press opening it), so a body lying by the door held it at 26 deg and the way on was blocked. Now only a closing leaf (closer, lock, the other player's packets, target nearer shut than the leaf) stops on a body; opening it pushes him.
+
+## CQC: review fixes 2 (update 1.59)
+- An independent review of 1.45-1.58 found, fixed here:
+  - CRITICAL (1.48): the FRESH_BUILD block was inserted inside the QS expression, so Lite graphics and the Xbox profile's load-time switches no longer applied (automatic semicolon insertion; the file still parsed). Moved below QS; headless ?lite=on: SURF off again.
+  - The load-time wsSave dropped the ownership of rows added later (underbarrel: M203, GP-25, foregrip light, bayonets): wsSave now keeps saved ids it does not know.
+  - DBODY moved limbs only resting on a door leaf every frame (jitter, never asleep): only a part whose centre is inside the slab or through to the far side moves.
+  - A locked door (next room not built) lost its lock while a body touched it: locked leaves keep their lock.
+  - The stock reset stripped class-picker / store builds waiting in the locker: only a gun that left the locker (not in its slot, not kinematic within 2.2 m of it) goes back stock.
+  - GUN FIT refused (toast) parts let go anywhere with a gun clamped: only at the gun (wbNearGun).
+  - RETOV clip uniforms shared by overlays of one material: uniformsNeedUpdate per overlay.
+  - ?mountshape=off riser box now fills from the gun to the teeth; gunLockerRestock is guarded against re-entry (drum swap inside a stock reset).
+- Kept as designed: a pistol drum is all magazine grab (no support cup on it); a grip on a pistol needs a rail.
+- Checked headless: 5-room bot (Glock) PASS; fit table, drum grab, stock reset, fresh load tests pass.
