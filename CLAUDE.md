@@ -2556,3 +2556,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - Cause: in the headset the both-eyes scope window (SWIN) is a disc in the eyepiece's plane placed under your head, up to 9 cm off the axis and ~5 cm wider than the glass, with no depth test; it drew the picture wherever your view pointed along the axis, so with your head off to the side it floated beside the scope (screenshots: the picture hanging off the eyepiece).
 - Now SWIN_FS also discards every fragment outside the eyepiece glass itself (uWC centre, uWR radius in world, from swinTick): the picture is only ever seen through the glass; off axis you see less of it, never next to it. Same for the AWM scopes, ACOG and the 2x.
 - Checked: module parse only (the window shader runs in the headset only).
+
+## CQC: grabbing picks the part your hand is in (GRABPICK, ?grabpick=off; update 1.23; headset check needed)
+- Cause (screenshot: reaching into the 2x prism's tray took the M4 red dot from the next tray): nearestProp scored every item whose collision box held the hand as distance 0 and kept the first one found, so a neighbour's (or a big part's) overlapping box could win.
+- Now, inside several boxes, the item the hand is deepest in wins (-1 at its centre .. 0 at its skin). The 2x itself is its normal size on the table (9.0 x 8.2 x 5.1 cm with its mount, measured), the same model as in the hand.
