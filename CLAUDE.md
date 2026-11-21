@@ -2541,3 +2541,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: drum window feed animation (DRUMFEED, ?drumfeed=off; update 1.19)
 - Each round a drum feeds (drumVisual sees the count drop) jolts the brass in its round-count window about the drum's axis toward the tower: 0.6 of a round's step in 35 ms, back over 150 ms with a small overshoot (drumFeedTick from weaponsUpdate; Br.piv = drum axis + step from drWindow). Full auto = the stack ripples with every shot; the window still empties as before.
 - Checked headless: a round drawn from a Glock D-50 starts the animation (pivot right); the motion itself too fast to see at SwiftShader frame rates. Not seen on a real GPU or in the headset.
+
+## CQC: metal look on attachments (METAL_LOOK, ?metallook=off; update 1.20)
+- WM.anodized (every 'anod' spec part: M4 / AWM / underbarrel / optic bodies, foregrip light) is hard-anodised aluminium now: the brushed steel set (faint machining grain, normal 0.3) tinted #383a3e, roughness 0.4, metalness 0.72, step 17 edge wear and gloss variation kept (was the painted steel set). WM.can: metallic cerakote (metal 0.6, rough 0.55).
+- The bench lights / lasers (wbKit black), cans (supMat), the Glock's PL-2 body (G17L.mat.anod) and rail sections (railMats alu) use those shared materials instead of their own dull plastic-like ones.
+- Headless renders (Glock with X300, M4 with holo, quad rail, grip): metallic highlights and worn edges. Metal reads darker without a room's reflections; not seen in a real room or the headset.
