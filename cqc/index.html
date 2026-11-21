@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.55</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.56</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.55</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.56</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -37405,6 +37405,44 @@ function enemyOut(e) {                  // step 91: he is out of the fight (dead
   if (STILLS_ON && e.room && !STILLS.shot.has(e.room)) { STILLS.shot.add(e.room); stillsAsk(`${stillsWhere(e.room)} · contact`, 'contact', 0.45); }   // step 42: the first man down in a room
   { const pl = roomMem(e.room).plan; if (pl) pl.dead[e.idx] = true; }   // step 9: per man, not per room
 }
+// BODY OUT OF WALLS (?bodywall=off): a man's pose (kneeling at cover, down on the floor, hands up, the moment he dies)
+// could put his limbs through a wall or a crate; his ragdoll was then built half inside it and stayed there. Rays from
+// his pelvis to each bone (+ its flesh, 6 cm) against static colliders: whatever a ray hits short of the bone is in or
+// behind the wall, and the whole man moves out along the hit normals by the deepest reach (horizontal only).
+const BWO = { on: !/[?&]bodywall=off\b/.test(QS), ray: null, o: new THREE.Vector3(), b: new THREE.Vector3(), d: new THREE.Vector3(), w: new THREE.Vector3(), w2: new THREE.Vector3(), flesh: 0.06 };
+function bodyWallOut(e) {
+  if (!BWO.on || !world || !e.root || !e.B) return false;
+  const pel = e.B.pelvis || e.B.hips || e.B.spine; if (!pel) return false;
+  if (!BWO.ray) BWO.ray = new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+  e.root.updateWorldMatrix(true, true); pel.getWorldPosition(BWO.o);
+  const base = enemyBaseY(e);
+  let px = 0, nx = 0, pz = 0, nz = 0;
+  for (const k in e.B) {
+    const b = e.B[k]; if (!b || b === pel || !b.getWorldPosition) continue;
+    b.getWorldPosition(BWO.b); BWO.d.subVectors(BWO.b, BWO.o); BWO.d.y = 0;   // level rays at the bone's height (kept off the floor): a ray down to a foot met the floor first
+    const L = BWO.d.length(); if (L < 0.03) continue;
+    BWO.d.multiplyScalar(1 / L);
+    const ry = Math.max(BWO.b.y, base + 0.1);
+    const R = BWO.ray; R.origin.x = BWO.o.x; R.origin.y = ry; R.origin.z = BWO.o.z; R.dir.x = BWO.d.x; R.dir.y = BWO.d.y; R.dir.z = BWO.d.z;
+    const h = world.castRayAndGetNormal(R, L + BWO.flesh, true, undefined, P10_STATIC_RAY);
+    const ht = h ? p10Toi(h) : 0;
+    if (!h || !(ht > 1e-4)) continue;                               // nothing, or his pelvis itself inside (no usable normal)
+    const n = h.normal, hy = Math.abs(n.y); if (hy > 0.7) continue;  // floors / tops: not a wall
+    const depth = (L + BWO.flesh - ht) * Math.abs(BWO.d.x * n.x + BWO.d.z * n.z) / Math.max(0.3, Math.hypot(n.x, n.z));
+    const dx = n.x * depth, dz = n.z * depth;
+    if (dx > px) px = dx; if (dx < nx) nx = dx; if (dz > pz) pz = dz; if (dz < nz) nz = dz;
+  }
+  const sx = px + nx, sz = pz + nz;
+  if (Math.hypot(sx, sz) < 0.004) return false;
+  const par = e.root.parent; if (!par) return false;
+  e.root.getWorldPosition(BWO.w); BWO.w2.copy(BWO.w); BWO.w2.x += sx; BWO.w2.z += sz;
+  par.worldToLocal(BWO.w); par.worldToLocal(BWO.w2);
+  const lx = BWO.w2.x - BWO.w.x, lz = BWO.w2.z - BWO.w.z;
+  e.root.position.x += lx; e.root.position.z += lz;
+  if (e.pos && e.pos.isVector2) { e.pos.x += lx; e.pos.y += lz; }
+  e.root.updateWorldMatrix(true, true);
+  return true;
+}
 function enemyDie(e, hitSeg, dir, P, impulse) {
   // Step 91: a man already down (shot again, or bled out) dies where he lies: no fall, no voice, no second score.
   // A head / neck kill (CONFIG.enemy.downed) is limp at once: no muscle phase.
@@ -37414,6 +37452,7 @@ function enemyDie(e, hitSeg, dir, P, impulse) {
   e.dead = true; e.state = 'dead'; e.diedAt = wnow(); e.limp = limp;   // step 41: fresh bodies smear
   if (!down) enemyOut(e);
   e.root.updateWorldMatrix(true, true);
+  try { bodyWallOut(e); } catch (err) { /* the ragdoll as posed */ }   // never built half inside a wall
   const rag = e.rag = [], bySeg = {};
   const ragGroups = groups(GROUP.ENEMY, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | (RAGDBG.self ? GROUP.ENEMY : 0));   // step 69: his own limbs collide (no arm through the chest)
   const v0 = { x: e.vel.x * 0.6, y: 0, z: e.vel.y * 0.6 };
@@ -37815,7 +37854,7 @@ function enemiesDyingUpdate(dt) {
   enemyBloodUpdate();                                            // step 67: wounds on his clothes
   for (const e of ENEMY.list) {
     if (!e.room || !e.room.active) continue;
-    if (e.downed) { downedUpdate(e, dt); continue; }              // step 91: alive on the floor
+    if (e.downed) { downedUpdate(e, dt); if (BWO.on && (e.bwoT = (e.bwoT || 0) - dt) <= 0) { e.bwoT = 0.05; bodyWallOut(e); } continue; }   // BODY OUT OF WALLS              // step 91: alive on the floor
     // Drips from open wounds while he lives.
     if (!e.dead) {
       if (e.wounds && B.on) for (const w of e.wounds) if (Math.random() < dt * B.drip * (w.part === 'limb' ? 0.7 : 1)) {
@@ -38563,7 +38602,7 @@ function enemiesUpdate(dt, now, dtP = dt, nowP = now) {   // step 45: world dt /
     if ((!(e.room.visible || e.room === stream.current) || !e.room.group.visible) && !nearRem || !e.root.parent) continue;     // behind shut doors (or not drawn): frozen
     if (e.net) { e.poseAcc = 0; if (!(EMO.on && emoAvPose(e, dt, now))) enemyPose(e, dt, now); continue; }   // EMOTES: his emote replaces the pose   // multiplayer: the other player (posed from his packets, no AI)
     if (e.puppet) { netPupPose(e, dt, now); continue; }          // multiplayer (together): a copy of one of the host's men
-    if (e.surr) { NET.tgt = null; surrTick(e, dt, now); continue; }   // step 117: he has given up (his own brain, move and pose); co-op: not the last man's target
+    if (e.surr) { NET.tgt = null; surrTick(e, dt, now); if (BWO.on && (e.bwoT = (e.bwoT || 0) - dt) <= 0) { e.bwoT = 0.05; bodyWallOut(e); } continue; }   // step 117: he has given up (his own brain, move and pose); co-op: not the last man's target
     NET.tgt = netTargetFor(e);                                  // multiplayer (together, host): he may be fighting the other player
     enemyThink(e, dt, now);
     if (EFB.on) efbTick(e, dt, now);                            // fall back under fire (CONFIG.enemy.fallback)
@@ -60744,7 +60783,7 @@ function o2Precompile(on) {
     scene.add(g); O2.pre = g;
   } catch (e) { console.warn('new optics not precompiled', e); }
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcO2 = { wbTable, retOvMat, RETICLE, mpbDist, magLocalBox, O2, O2_SPEC, o2MakeAtt, o2BenchFit, o2Seat, o2Sight, o2Flip, o2Cant, o2On, o2Optics, o2Ends, o2Top, o2Tpl, o2ModelBox, wbClose, wbDeskAtt, wbMakeAtt, attRefresh, gunMeshes, WORKSHOP, wbTableFill, SCOPE, optAxis };
+if (/[?&]dev\b/.test(QS)) window.__cqcO2 = { wbTable, retOvMat, RETICLE, mpbDist, magLocalBox, bodyWallOut, BWO, O2, O2_SPEC, o2MakeAtt, o2BenchFit, o2Seat, o2Sight, o2Flip, o2Cant, o2On, o2Optics, o2Ends, o2Top, o2Tpl, o2ModelBox, wbClose, wbDeskAtt, wbMakeAtt, attRefresh, gunMeshes, WORKSHOP, wbTableFill, SCOPE, optAxis };
 /* ===========================================================================
  *  STEP 112 — RAILS: STACKED DEVICES, WRAP-AROUND RAILS, THE GLOCK'S STOCK LIGHT  (?rails=off)
  *  RAIL SPOTS. Every gun with rails lists its rail faces (railFaces, model space = design space): the Glock's
