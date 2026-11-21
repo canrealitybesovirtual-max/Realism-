@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.35</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.36</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.35</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.36</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -29869,6 +29869,11 @@ function vmhFit(g) {
       const geo = H.geo.clone().applyMatrix4(M);
       geo.computeBoundingSphere();
       const FJ = side === 'R' ? vmhFingFrame(H, M, g.def.cls === 'pistol' ? 0.05 : 0.14) : null;
+      if (FJ && FINGSOLVE.on) {                                       // solved offline for the shipped fits (FING_TABLE); else solved here once
+        const T = FING_TABLE[t], same = HANDLOOK.vmhScale === 0.9 && HANDLOOK.extra === 0.92;
+        if (T && same && !FINGSOLVE.force) { FJ.on = T.on.slice(); FJ.pull = T.pull.slice(); FJ.sOn = T.s; }
+        else try { vmhFingSolve(g, FJ); } catch (e) { console.warn('trigger finger solve', e); }
+      }
       const mkMats = (U) => H.mats.map((m) => { const c = m.clone(); if (m.userData.vmBase) c.color.copy(m.userData.vmBase);
         if (H.tan && c.normalScale) c.normalScale.y *= -1;               // polish 2: baked without tangents (GLTFLoader's derivative-tangent rule, as the step 109 sleeves)
         return gloveInside(c, FJ && geo.attributes.aIdxW ? U : null); });
@@ -29921,6 +29926,119 @@ function vmhFingFrame(H, M, rise = 0.05) {
   }
   return FJ;
 }
+// Trigger finger solved against the gun's own surface (per gun type, once, when its fitted hand is made): the index is bent
+// at its three joints and swung about the splay axis (the shader's own maths) until the pad rests on a forward-facing
+// surface on the gun's centre line under the bore (the trigger blade's face) with no part of the finger inside the gun
+// (the surface's points with their outward normals; finger radius 6-7 mm). Pull = curled further, still clear.
+var FINGSOLVE = { on: !/[?&]fingsolve=off\b/.test(QS), disc: /[?&]trigdisc=on\b/.test(QS), force: /[?&]fingsolve=force\b/.test(QS), log: {} };
+// vmhFingSolve's results for the shipped hand fits (HANDLOOK 0.9 x 0.92): [knuckle, middle, end joint] rad, s = splay
+var FING_TABLE = {
+  g17: { on: [-0.3878, 0.65, 0.44], pull: [-0.3578, 0.77, 0.524], s: 0.215 },
+  m1911: { on: [-0.2434, 0.5984, 0.39], pull: [-0.1834, 0.6384, 0.418], s: 0.3788 },
+  akmn: { on: [-0.2378, -0.2922, -0.2175], pull: [-0.1778, -0.2922, -0.2175], s: 0.1763 },
+  m4a1s: { on: [-0.2041, 0.1031, 0.07], pull: [-0.1441, 0.1831, 0.126], s: 0.1288 },
+  awp: { on: [-0.085, -0.1, 0.0075], pull: [-0.085, -0.06, 0.0355], s: -0.1387 } };
+function fingCloud(g, J0) {
+  const root = g.prop.root; root.updateMatrixWorld(true); g.model.updateMatrixWorld(true);
+  const T = new THREE.Matrix4().copy(root.matrixWorld).invert().multiply(g.model.matrixWorld);
+  const pts = [], nrm = [], H = new Map(), A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), N = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), P = new THREE.Vector3();
+  railTris(g, true, (ax, ay, az, bx, by, bz, cx, cy, cz) => {
+    A.set(ax, ay, az).applyMatrix4(T); B.set(bx, by, bz).applyMatrix4(T); C.set(cx, cy, cz).applyMatrix4(T);
+    if (A.distanceTo(J0) > 0.14 && B.distanceTo(J0) > 0.14 && C.distanceTo(J0) > 0.14) return;
+    e1.subVectors(B, A); e2.subVectors(C, A); N.crossVectors(e1, e2); const ar = N.length(); if (ar < 1e-12) return; N.multiplyScalar(1 / ar);
+    const n = Math.min(24, Math.max(1, Math.ceil(Math.max(e1.length(), e2.length(), B.distanceTo(C)) / 0.0018)));
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n - i; j++) {
+      P.copy(A).addScaledVector(e1, i / n).addScaledVector(e2, j / n);
+      const k = (Math.floor(P.x / 0.004) * 73856093) ^ (Math.floor(P.y / 0.004) * 19349663) ^ (Math.floor(P.z / 0.004) * 83492791);
+      let L = H.get(k); if (!L) H.set(k, L = []);
+      L.push(pts.length / 3); pts.push(P.x, P.y, P.z); nrm.push(N.x, N.y, N.z);
+    }
+  });
+  return { pts, nrm, H };
+}
+// signed distance of p from the gun surface (+ outside), searched within 12 mm; +1 when nothing is near
+function fingSd(Cl, p, out) {
+  let bd = Infinity, bi = -1;
+  const cx = Math.floor(p.x / 0.004), cy = Math.floor(p.y / 0.004), cz = Math.floor(p.z / 0.004);
+  for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) for (let dz = -2; dz <= 2; dz++) {
+    const L = Cl.H.get(((cx + dx) * 73856093) ^ ((cy + dy) * 19349663) ^ ((cz + dz) * 83492791)); if (!L) continue;
+    for (const i of L) { const x = Cl.pts[i * 3] - p.x, y = Cl.pts[i * 3 + 1] - p.y, z = Cl.pts[i * 3 + 2] - p.z, d = x * x + y * y + z * z; if (d < bd) { bd = d; bi = i; } }
+  }
+  if (bi < 0) return 1;
+  const d = Math.sqrt(bd), s = (p.x - Cl.pts[bi * 3]) * Cl.nrm[bi * 3] + (p.y - Cl.pts[bi * 3 + 1]) * Cl.nrm[bi * 3 + 1] + (p.z - Cl.pts[bi * 3 + 2]) * Cl.nrm[bi * 3 + 2];
+  if (out) { out.i = bi; }
+  return s >= -0.0005 ? d : -d;
+}
+function vmhFingSolve(g, FJ) {
+  FINGSOLVE.t0 = performance.now();
+  const J = FJ.J, ax = FJ.ax, sx = FJ.sx, Cl = fingCloud(g, J[0]);
+  if (Cl.pts.length < 300) return;
+  const bore = g.wr && g.wr.muzzle ? g.wr.muzzle.y : 0.06;
+  // the trigger blade: forward-facing surface on the centre line, under the bore, with air in front of it and on both sides
+  // (thin; the grip's front strap and the guard's rear wall are wide, so their sides are inside the gun)
+  const q = new THREE.Vector3(), tp = [];
+  let tb = null;                                                            // a gun with its own trigger part: only its points
+  if (g.parts && g.parts.trigger) { g.prop.root.updateMatrixWorld(true); tb = new THREE.Box3().setFromObject(g.parts.trigger); if (tb.isEmpty()) tb = null; else tb.applyMatrix4(new THREE.Matrix4().copy(g.prop.root.matrixWorld).invert()).expandByScalar(0.0015); }
+  for (let i = 0; i < Cl.pts.length / 3; i++) {
+    const x = Cl.pts[i * 3], y = Cl.pts[i * 3 + 1], z = Cl.pts[i * 3 + 2];
+    if (tb) { if (!tb.containsPoint(q.set(x, y, z)) || Cl.nrm[i * 3 + 2] > -0.4) continue; tp.push(i); continue; }
+    if (Math.abs(x) > 0.003 || Cl.nrm[i * 3 + 2] > -0.55 || y > bore - 0.018 || y > J[0].y + 0.01 || z < J[0].z - 0.075 || z > J[0].z + 0.004) continue;   // ahead of the knuckle, under it
+    if (fingSd(Cl, q.set(x, y, z - 0.012)) < 0.006) continue;
+    if (fingSd(Cl, q.set(x + 0.0095, y, z + 0.003)) < 0.002 || fingSd(Cl, q.set(x - 0.0095, y, z + 0.003)) < 0.002) continue;
+    tp.push(i);
+  }
+  if (tp.length < 4) { FINGSOLVE.log[g.type] = { trigger: 'not found', n: tp.length, tb: !!tb, J0: J[0].toArray() }; return; }
+  let y0 = Infinity, y1 = -Infinity; for (const i of tp) { y0 = Math.min(y0, Cl.pts[i * 3 + 1]); y1 = Math.max(y1, Cl.pts[i * 3 + 1]); }
+  const T = new THREE.Vector3(), Tn = new THREE.Vector3(); let n = 0;
+  for (const i of tp) { const y = Cl.pts[i * 3 + 1]; if (y < y0 + (y1 - y0) * 0.25 || y > y0 + (y1 - y0) * 0.65) continue; T.x += Cl.pts[i * 3]; T.y += y; T.z += Cl.pts[i * 3 + 2]; Tn.x += Cl.nrm[i * 3]; Tn.y += Cl.nrm[i * 3 + 1]; Tn.z += Cl.nrm[i * 3 + 2]; n++; }
+  if (!n) return;
+  T.multiplyScalar(1 / n); Tn.normalize();
+  const goal = T.clone().addScaledVector(Tn, 0.0055);                       // the pad's middle, resting on the blade's face
+  const S = [], R = [0.0068, 0.0062, 0.0055];
+  for (let sgi = 0; sgi < 3; sgi++) for (const t of [0.2, 0.5, 0.8, 1]) S.push([sgi, t, R[sgi]]);
+  const v = new THREE.Vector3(), Pj = [0, 0, 0, 0].map(() => new THREE.Vector3());
+  const pose = (a0, a1, a2, sp) => {
+    for (let i = 0; i < 4; i++) Pj[i].copy(J[i]);
+    const rot = (i0, c, a, A) => { for (let i = i0; i < 4; i++) Pj[i].sub(c).applyAxisAngle(A, a).add(c); };
+    rot(3, J[2], a2, ax); rot(2, J[1], a1, ax); rot(1, J[0], a0, ax); rot(1, J[0], sp, sx);
+  };
+  const penOf = (pad) => {
+    let pen = 0;
+    for (const [sgi, t, r] of S) {
+      v.lerpVectors(Pj[sgi], Pj[sgi + 1], t);
+      const near = pad && sgi === 2 && v.distanceTo(goal) < 0.012;       // the pad touches the blade
+      const sd = fingSd(Cl, v), rr = near ? r * 0.5 : r;
+      if (sd < rr) pen += (rr - sd) * (rr - sd);
+    }
+    return pen;
+  };
+  const cost = (a0, a1, a2, sp) => {
+    pose(a0, a1, a2, sp);
+    v.lerpVectors(Pj[2], Pj[3], 0.62);
+    return v.distanceTo(goal) * 1000 + penOf(true) * 4e6 + 0.15 * (Math.abs(sp) + 0.3 * Math.abs(a2 - a1 * 0.7));
+  };
+  let best = null, bc = Infinity;
+  for (let a0 = -0.4; a0 <= 1.5001; a0 += 0.06) for (let a1 = -0.4; a1 <= 1.7001; a1 += 0.1) for (let sp = -0.6; sp <= 0.6001; sp += 0.08) {
+    const c = cost(a0, a1, a1 * 0.7, sp); if (c < bc) { bc = c; best = [a0, a1, a1 * 0.7, sp]; }
+  }
+  let st = [0.03, 0.05, 0.08, 0.04];
+  for (let it = 0; it < 6; it++, st = st.map((x) => x / 2)) for (let k = 0; k < 4; k++) for (const sg of [-1, 1]) {
+    const t = best.slice(); t[k] += sg * st[k]; const c = cost(t[0], t[1], t[2], t[3]); if (c < bc) { bc = c; best = t; }
+  }
+  pose(best[0], best[1], best[2], best[3]); v.lerpVectors(Pj[2], Pj[3], 0.62);
+  const miss = v.distanceTo(goal), pen = penOf(true);
+  FINGSOLVE.log[g.type] = { tb: !!tb, J0: J[0].toArray().map((x) => +x.toFixed(4)), ms: Math.round(performance.now() - FINGSOLVE.t0), on: best.map((x) => +x.toFixed(3)), missMm: +(miss * 1000).toFixed(1), pen: +(pen * 1e6).toFixed(2), trig: T.toArray().map((x) => +x.toFixed(4)) };
+  if (miss > 0.026 || pen > 4e-6) return;                                 // nothing clean found: keep the old angles (a pad short of the blade, clear of the gun, beats one inside it)
+  FJ.on = [best[0], best[1], best[2]]; FJ.sOn = best[3];
+  // pulled: the blade goes back ~5 mm; curl until the pad follows it, still clear of the gun
+  const goal0 = goal.clone(); goal.z += 0.005;
+  let pb = best.slice(), pc = Infinity;
+  for (let d0 = 0; d0 <= 0.3001; d0 += 0.03) for (let d1 = 0; d1 <= 0.4001; d1 += 0.04) {
+    const t = [best[0] + d0, best[1] + d1, best[2] + d1 * 0.7, best[3]], c = cost(t[0], t[1], t[2], t[3]); if (c < pc) { pc = c; pb = t; }
+  }
+  goal.copy(goal0);
+  FJ.pull = [pb[0], pb[1], pb[2]];
+}
 function vmhFingU(FJ) {
   if (!FJ) return null;
   return { uFJ1: { value: FJ.J[0] }, uFJ2: { value: FJ.J[1] }, uFJ3: { value: FJ.J[2] }, uFAx: { value: FJ.ax }, uFA: { value: new THREE.Vector3() }, uFSx: { value: FJ.sx }, uFS: { value: 0 } };
@@ -29929,14 +30047,14 @@ const _vfA = new THREE.Vector3(), _vfB = new THREE.Vector3();
 function vmhFingPose(h, g, role, FJ, U) {
   const gp = h.ctrl && h.ctrl.userData && h.ctrl.userData.gamepad, b = gp && gp.buttons && gp.buttons[0];
   const pull = b ? (b.value || (b.pressed ? 1 : 0)) : (g.trigger || 0);
-  const busy = !!(g.task || (g.lh && g.lh.active)), touch = role === 'primary' && !busy && (b ? (b.touched || pull > 0.02) : true);   // no controller (computer): on the trigger
+  const busy = !!(g.task || (g.lh && g.lh.active)), touch = role === 'primary' && !busy && (!FINGSOLVE.disc || (b ? (b.touched || pull > 0.02) : true));   // on the trigger while you hold it (?trigdisc=on: only while the controller reports a touch)
   if (role !== 'primary') _vfA.set(0, 0, 0);
   else if (!touch) _vfA.fromArray(FJ.along);
   else _vfA.fromArray(FJ.on).lerp(_vfB.fromArray(FJ.pull), clamp(pull));
   const now = performance.now() / 1000, dt = clamp(now - (U.t || now), 0, 0.1); U.t = now;
   const k = U.init ? 1 - Math.exp(-22 * dt) : 1; U.init = true;
   U.uFA.value.lerp(_vfA, k);
-  if (U.uFS) U.uFS.value += ((role === 'primary' && !touch ? FJ.s : 0) - U.uFS.value) * k;   // swung out beside the frame only while along it
+  if (U.uFS) U.uFS.value += ((role !== 'primary' ? 0 : !touch ? FJ.s : (FJ.sOn || 0)) - U.uFS.value) * k;   // swung out beside the frame while along it; the solved splay on the trigger
 }
 const VMH_FING_VS = `
 attribute vec3 aIdxW; uniform vec3 uFJ1, uFJ2, uFJ3, uFAx, uFA, uFSx; uniform float uFS;
@@ -56833,7 +56951,7 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { clock, loop, playerState, 
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { post: () => ({ composer, filmPass, gtaoPass, bloomPass }), bodyCamLivePre, bodyCamLivePost, tickSafe, applyLevel, perf, POSTFAST });   // post chain perf tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
-if (window.__cqcDev) Object.assign(window.__cqcDev, { locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
+if (window.__cqcDev) Object.assign(window.__cqcDev, { FINGSOLVE, vmhFingSolve, locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
 if (window.__cqcDev) Object.assign(window.__cqcDev, { FLIP, flipRecord, flipHandW, flipLaunch, flipTick, flipCatchFind, flipCatch, itemRelease, weaponsUpdate, dropItem });   // gun flip tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
