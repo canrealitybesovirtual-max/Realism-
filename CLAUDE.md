@@ -2662,3 +2662,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: scope riser reaches the slide (update 1.45)
 - Cause: optMount built the riser a fixed lift (11 mm for scopes) under the optic, but seatPart raises a long optic to clear the highest point anywhere under it (sights, muzzle area), so on a pistol the riser and scope hung in the air over the slide. The riser now reaches down to the gun top under its own footprint (gunSpan there), jaws measured at that height.
 - Checked headless (gaps measured, grey-background renders): AWM 3-25x and 10x on the Glock (riser 0.4 mm over the slide), 3-25x and AWM dot on the M1911 (jaws down the round slide top), Glock dot; the optic's base sits on the riser's teeth (0 mm).
+
+## CQC: skeleton stock grip bands without screw heads (update 1.46)
+- The socket-cap screw heads at the front ends of the grip bands stood off the band (floating pins); removed. Bands, spine, hinge / lower lugs and their pins unchanged. Checked by headless render (Glock).
