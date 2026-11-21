@@ -2594,3 +2594,6 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: skeleton stock QD socket attached (update 1.31)
 - The QD socket was a 34 mm cylinder hanging 8 mm in front of the butt plate, touching nothing. Now a boss welded to the plate's front over the bottom tube, the socket through it, flush with its sides. Checked by headless render (Glock, M1911).
+
+## CQC: press-check round shows in the port, not in the grip (update 1.32; headset check needed)
+- Cause: chkRound placed the chambered case at 35 % of wr.eject measured from the gun root, which is the palm, not the bore; on pistols it sat ~4 cm under the slide, inside the frame by the fingers (seen in VR while racking slowly). Now from the bore line (wr.muzzle x / y) toward the port, as FEED does. Checked headless: Glock, M1911, M4A1-S show the case in the ejection port; AKM behind its dust cover.
