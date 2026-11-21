@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.39</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.40</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.39</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.40</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -22637,6 +22637,7 @@ function itemGrab(hand, p) {
     const needs = g.def.action !== 'pump' && (!g.chambered || g.slideLocked);
     if (rd < rackReachOf(g) && (rd < sd || (needs && rd < sd + 0.03))) {
       g.rack = hand; hand.role = 'rack';
+      g.rackStyle = rackStyleOf(g, hand, local);                       // pistols: overhand on the serrations, or slingshot from behind
       g.rackStart = local.z; g.rackBase = g.slideOff; g.racked = g.slideLocked && g.slideOff > g.def.travel * 0.5;   // a locked slide counts as already back (polish 3: an M4's handle is forward: pull it all the way)
       pulse(hand, 0.3, 20);
     } else if (!g.support) {
@@ -25824,7 +25825,7 @@ function feedBuild(g) {
     t.position.set(bx, by, hz - C.L * 0.35 - len / 2);
   }
   if (!d.manual) {                                                // the breech / bolt face (the AWM has its own bolt)
-    fd.face = mk(feedGeo('f' + c, () => new THREE.CylinderGeometry(rc + 0.0028, rc + 0.0028, 0.014, 18).rotateX(Math.PI / 2)), M.steel);
+    fd.face = mk(feedGeo('f2' + c, () => new THREE.CylinderGeometry(rc + 0.0012, rc + 0.0012, 0.01, 18).rotateX(Math.PI / 2)), M.face || (M.face = new THREE.MeshStandardMaterial({ color: 0x3a3c40, metalness: 0.7, roughness: 0.38, emissive: 0x08090a })));   // the breech face: just over the case head, dark machined steel (it read as a big pale disc through an open port)
     fd.face.position.set(bx, by, hz + 0.007);
   }
   if (rifle) {                                                    // the bolt carrier behind it
@@ -27436,7 +27437,8 @@ function wbSupSnap(g, p, reach) {
 }
 // Lock it on: a part of the gun from now on (no body, no grab), wired as its light or laser.
 function wbFreeze(g, p) {
-  const it = p.item, model = m19FreezeParent(g, it) || ((it.sub === 'dot' || it.sub === 'cover') && g.parts.slide ? g.parts.slide : g.model);   // step 100: the dot rides the slide (step 108: a 1911's muzzle devices its barrel)
+  const onSlide = g.parts.slide && g.def.cls === 'pistol' && (it.sub === 'dot' || it.sub === 'cover' || (typeof optIs === 'function' && optIs(it)) || it.o2);   // any optic on a pistol rides the slide (a scope on a riser stayed put while you racked)
+  const it2 = it, model = m19FreezeParent(g, it2) || (onSlide ? g.parts.slide : g.model);   // step 100: the dot rides the slide (step 108: a 1911's muzzle devices its barrel)
   it.stuck = null;
   itemFromWorld(p);
   p.root.updateMatrixWorld(true);
@@ -50152,8 +50154,21 @@ function placeHand(h, mode, P, Q, dt) {
   h.root.visible = true;
 }
 const HD_hP = new THREE.Vector3(), HD_hQ = new THREE.Quaternion();
+// Two natural racking holds on a pistol (?rackstyle=over = always overhand): overhand (palm on the slide's rear serrations,
+// fingers down one side, thumb the other) or slingshot (from behind: thumb and fingers pinch the rear of the slide). Picked
+// when the hand closes: a hand behind the slide's rear, or whose fingers point along the bore, takes the slingshot.
+var RACKSTYLE = { on: !/[?&]rackstyle=over\b/.test(QS) };
+const _rsV2 = new THREE.Vector3(), _rsQ2 = new THREE.Quaternion();
+function rackStyleOf(g, hand, local) {
+  if (!RACKSTYLE.on || g.def.cls !== 'pistol' || !(hand.source || hand.ctrl)) return 'over';
+  const B = g.def.phys && g.def.phys.pick, rearZ = B ? B.c[2] + B.h[2] : 0.04;
+  if (local && local.z > rearZ - 0.012) return 'sling';                 // closed behind the slide's rear
+  (hand.source || hand.ctrl).getWorldQuaternion(_rsQ2); _rsV2.set(0, 0, -1).applyQuaternion(_rsQ2);   // the controller's pointing direction
+  const R = g.prop.root; R.getWorldQuaternion(_rsQ2); const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(_rsQ2);
+  return _rsV2.dot(fwd) > 0.6 ? 'sling' : 'over';                       // hand reaching along the bore from behind
+}
 function gripFor(h, g, role) {
-  const k = g.def.grips[role];
+  const k = role === 'rack' && g.rackStyle === 'sling' && h.grips.pistol_sling ? 'pistol_sling' : g.def.grips[role];
   return k ? h.grips[k] : null;
 }
 // Step 16: the firing hand's grip angle on this gun (baked grip angle + the solved fit), and
@@ -54459,6 +54474,10 @@ MAG_DEFS.m1911 = { label: '7-round magazine', capacity: 7, mass: 0.22, top: [0, 
 // Offline fit (hand rig forward kinematics + skinned mesh against this model): shift / rot place the firing
 // hand, on / pull put the trigger finger's distal pad on the trigger face, along lays it on the frame.
 HAND_FIT.m1911 = { shift: [0.01156, 0.0033, 0.00004], rot: 0.06842, along: [0.578, 0, 0, 0.402], on: [0.418, 1.132, 0.671, 0.083], pull: [0.7, 0.803, 1.053, 0.049] };
+// Racking holds: overhand on the rear serrations (was 2.5 cm above the slide and over the ejection port), slingshot from behind.
+if (!/[?&]rackfix=off\b/.test(QS)) HAND_DATA.grips.pistol_rack.m = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.03, 0.072, 0.018, 1.0];
+HAND_DATA.grips.pistol_sling = { m: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.012, 0.067, 0.046, 1.0],
+  p: { thumb: [-0.4, 0.2, 0.3, 0.4], index: [0.6, 1.2, 0.7, 0.0], middle: [0.9, 1.3, 0.8, 0.0], ring: [0.9, 1.3, 0.8, -0.03], pinky: [0.9, 1.3, 0.8, -0.08] } };
 HAND_DATA.grips.m1911 = {
   m: HAND_DATA.grips.pistol.m.slice(), on: HAND_DATA.grips.pistol.on, pull: HAND_DATA.grips.pistol.pull,
   p: { thumb: HAND_DATA.grips.pistol.p.thumb, index: HAND_DATA.grips.pistol.p.index,
@@ -54587,6 +54606,40 @@ function m1911MagModel() {
 }
 // The guns are props like the old ones were (createGun was removed in step 58): an item record, a
 // dynamic body that turns kinematic in a hand, the step 26 surface cloud for the hands.
+// The Glock model carries its barrel inside the slide mesh (one connected piece: hood flush with the slide top, chamber block,
+// tube to the crown), so racking moved the barrel with the slide and the ejection port never opened. Split once per source
+// geometry: the slide mesh keeps the rest, the barrel becomes its own mesh under g.model at the slide's rest pose.
+var GBARREL = { on: !/[?&]gbarrel=off\b/.test(QS) };
+function g17BarrelSplit(g) {
+  const sl = g.parts.slide; if (!sl || g._barrelSplit) return;
+  let big = null; sl.traverse((o) => { if (o.isMesh && (!big || o.geometry.attributes.position.count > big.geometry.attributes.position.count)) big = o; });
+  if (!big) return;
+  const G = big.geometry;
+  if (G.userData.gbs === undefined) {
+    G.userData.gbs = null;
+    const P = G.attributes.position, I = G.index, N = I ? I.count : P.count, ix = (t) => (I ? I.getX(t) : t);
+    const key = (i) => Math.round(P.getX(i) * 1e5) + ',' + Math.round(P.getY(i) * 1e5) + ',' + Math.round(P.getZ(i) * 1e5);
+    const par = new Map(), f = (k) => { while (par.get(k) !== k) { par.set(k, par.get(par.get(k))); k = par.get(k); } return k; };
+    for (let t = 0; t < N; t += 3) { const k0 = key(ix(t)), k1 = key(ix(t + 1)), k2 = key(ix(t + 2)); for (const k of [k0, k1, k2]) if (!par.has(k)) par.set(k, k); par.set(f(k0), f(k1)); par.set(f(k1), f(k2)); }
+    // the barrel's component in root space: narrow, from the crown (front of everything) back to the hood
+    sl.updateMatrixWorld(true); g.prop.root.updateMatrixWorld(true);
+    const M = g.prop.root.matrixWorld.clone().invert().multiply(big.matrixWorld), v = new THREE.Vector3(), comp = new Map();
+    for (let t = 0; t < N; t += 3) { const r = f(key(ix(t))); let C = comp.get(r); if (!C) comp.set(r, C = { b: new THREE.Box3(), tris: [] }); C.tris.push(t); for (let j = 0; j < 3; j++) C.b.expandByPoint(v.fromBufferAttribute(P, ix(t + j)).applyMatrix4(M)); }
+    let best = null, bz = Infinity;
+    for (const C of comp.values()) { const B = C.b; if (C.tris.length < 60 || B.max.x - B.min.x > 0.02 || B.max.y - B.min.y < 0.015 || B.min.z > -0.1 || B.max.z < -0.04 || B.max.z > 0) continue; if (B.min.z < bz) { bz = B.min.z; best = C; } }
+    if (!best) return;
+    const inB = new Uint8Array(N / 3); for (const t of best.tris) inB[t / 3] = 1;
+    const pick = (want) => { const idx = []; for (let t = 0; t < N; t += 3) if (!!inB[t / 3] === want) idx.push(ix(t), ix(t + 1), ix(t + 2)); const g2 = G.clone(); g2.setIndex(idx); g2.clearGroups(); g2.computeBoundingSphere(); g2.computeBoundingBox(); return g2; };
+    G.userData.gbs = { body: pick(false), barrel: pick(true) };
+  }
+  const S = G.userData.gbs; if (!S) return;
+  big.geometry = S.body;
+  const bm = new THREE.Mesh(S.barrel, big.material); bm.castShadow = big.castShadow; bm.receiveShadow = big.receiveShadow; bm.name = 'barrel';
+  g.model.updateMatrixWorld(true); sl.updateMatrixWorld(true);
+  g.model.worldToLocal(bm.position.setFromMatrixPosition(big.matrixWorld));
+  bm.quaternion.copy(g.model.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(big.getWorldQuaternion(new THREE.Quaternion())));
+  g.model.add(bm); g.parts.g17barrel = bm; g._barrelSplit = true;
+}
 function createGun(type) {
   const d = WEAPON_DEFS[type], b = GUN_BUILD[type](), F = d.phys || M1911_PHYS;   // step 60: per-gun boxes
   const item = {
@@ -54619,6 +54672,7 @@ function createGun(type) {
   if (type === 'm1911') { item.m19 = { h: -0.5, down: true, tr: true, ss: 0, mc: 0, had: true }; m1911Anim(item, 0); }   // stored hammer down on an empty chamber
   if (type === 'g17' && EXT.sw) gunSwitch(item, true);              // step 78
   if (type === 'g17') g17StockLight(item);                         // step 98: its own light, switchable
+  if (type === 'g17' && GBARREL.on) { try { g17BarrelSplit(item); } catch (e) { console.warn('Glock barrel split', e); } }   // the barrel stays on the frame (the port opens when racked)
   if (type === 'g17') { try { g17SyncGun(item); } catch (e) { console.warn('step 100: Glock parts not fitted', e); } }   // step 100: the workshop's build
   if (type === 'akmn') { try { akmSyncGun(item); } catch (e) { console.warn('step 102: AKM parts not fitted', e); } }   // step 102: the workshop's build
   if (type === 'm1911') { try { m19SyncGun(item); } catch (e) { console.warn('step 108: M1911 parts not fitted', e); } }   // step 108: the workshop's build
@@ -56959,6 +57013,15 @@ if (window.__cqcDev) Object.assign(window.__cqcDev, { clock, loop, playerState, 
 if (window.__cqcDev) Object.assign(window.__cqcDev, { pool, shadowSched, flicker, BCX, BCV, MENU, LASER, LAIR, laserAirAdd, laserAirPick });   // step 98
 if (window.__cqcDev) Object.assign(window.__cqcDev, { post: () => ({ composer, filmPass, gtaoPass, bloomPass }), bodyCamLivePre, bodyCamLivePost, tickSafe, applyLevel, perf, POSTFAST });   // post chain perf tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { SURR, surrFrame, surrBoreDist, surrAim, surrWhy, surrChance, surrCheck, surrStart, surrShot, surrTick, surrBack, surrRearmCheck, surrRearmTick, surrRearm, surrDetain, surrDetainGrab, surrDetainDesk, surrCall, surrZip, surrPose, surrSave, surrRestore, nvgUntoned, heatGlowDrop, railSync });   // step 117 (polish 2: surrSave ... railSync)
+if (window.__cqcDev) window.__cqcDev.gripTest = (i, g, name, dz = 0, custom = null) => {   // a hand posed on gun g with grip name (or a custom { m, p } in grip form), fingers settled
+  const h = HANDS.list[i]; if (custom) { const m = new THREE.Matrix4().fromArray(custom.m); h.grips.__t = { m: h.left ? mirrorM4(custom.m) : m, p: custom.p }; name = '__t'; }
+  const G = h.grips[name], P = new THREE.Vector3(), Q = new THREE.Quaternion();
+  gunFrame(g, G, h, P, Q, dz, g.wr.gshift.rack); poseFromGrip(h, G);
+  CONTACT.frame++; h.gcLim = null; try { gunContact(h, g, 'rack', P, Q, GC_WRAP.rack || 0, 0, dz); } catch (e) {}
+  for (let k = 0; k < 20; k++) { h.cur[k] = h.gcLim && h.gcFrame === CONTACT.frame ? Math.min(h.tgt[k], h.gcLim[k]) : h.tgt[k]; h.vel[k] = 0; }
+  writeBones(h); h.root.matrix.compose(P, Q, new THREE.Vector3(1, 1, 1)); h.root.matrixWorldNeedsUpdate = true; h.root.visible = true; h.root.updateMatrixWorld(true);
+  return { left: h.left };
+};
 if (window.__cqcDev) Object.assign(window.__cqcDev, { FINGSOLVE, vmhFingSolve, locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
 if (window.__cqcDev) Object.assign(window.__cqcDev, { FLIP, flipRecord, flipHandW, flipLaunch, flipTick, flipCatchFind, flipCatch, itemRelease, weaponsUpdate, dropItem });   // gun flip tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
