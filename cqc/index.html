@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.51</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.52</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.51</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.52</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -26812,13 +26812,44 @@ const WB_TABLE = [['light', true, 3.24, 2.5, Math.PI], ['light', true, 3.39, 2.5
 // Step 100: the Glock's own parts, each on the table once the workshop store says you own it: [sub, big, x, z, yaw, can, store id]
 const WB_G17 = [['dot', false, 3.69, 2.5, Math.PI / 2, null, 'g17.dot'], ['cover', false, 3.69, 2.6, Math.PI / 2, null, 'g17.cover'],
   ['comp', false, 3.67, 2.71, Math.PI / 2, null, 'g17.comp'], ['sup', false, 2.3, 2.9, Math.PI / 2, 'sb100', 'g17.sup2']];
+// GUN FIT: which bench parts make sense on which gun (?gunfit=off = any part on any gun). Keyed by the part's bench key
+// (wbKey: its variant, else its kind; cans by size). Unlisted keys fit every gun. With a gun in the vise the table lays out
+// only the parts that fit it, the vise refuses the rest, and a gun's store page lists other guns' parts only when they fit.
+const GFIT = (() => {
+  const P = ['g17', 'm1911'], G = ['g17'], R = ['akmn', 'm4a1s', 'rifle'], M4 = ['m4a1s', 'rifle'], AK = ['akmn'], AW = ['awp'], RA = R.concat(AW);
+  const t = { 'sup:S': G, sb100: G, c45: ['m1911'], ext: ['g17', 'm4a1s', 'rifle'], dot: P, cover: P, comp: G,
+    'sup:B': R, ats5: AK, m4s: M4, 'awm:can': AW,
+    akdot: RA, akholo: RA, akx2: R, 'm4:acog': RA, 'm4:holo': RA, 'm4:dot': RA, 'awm:dot': RA, 'awm:scope': AW, 'awm:s10': AW, 'awm:kf': AW, 'awm:shade': AW, 'awm:bipod': AW, 'awm:cheek': AW, 'awm:cover': AW,
+    akvg: R, akag: R, akhs: R, 'm4:vfg': R, 'm4:afg': R, akfh: AK, akcomp: AK, a2: M4, rcomp: M4, 'm4:sopmod': ['m4a1s'], 'm4:ctr': ['m4a1s'],
+    'o2:lpvo': R, 'o2:mag': R, 'o2:odot': RA, 'o2:buisR': RA, 'o2:buisF': RA,
+    m203: ['m4a1s', 'rifle', 'akmn'], gp25: AK, vfgl: R, baym9: M4, bay6h4: AK };
+  const m = {}; for (const k in t) m[k] = new Set(t[k]);
+  return { on: !/[?&]gunfit=off\b/.test(QS), m, rows: null };
+})();
+const gfitKey = (sub, big, v) => (v && sub === 'm4part' && !v.includes(':') ? 'm4:' + v : v) || (sub === 'sup' ? (big ? 'sup:B' : 'sup:S') : sub);   // the M4's parts: m4:<part> (its 'dot' is not the pistols' dot)
+const wbKey = (it) => gfitKey(it.sub, !!it.big, wbVar(it));
+function gfitOk(type, key) { if (!GFIT.on || !type) return true; const S = GFIT.m[key]; return !S || S.has(type); }
+function gfitRowOk(type, it) {                                     // a store row (another gun's part): its bench spot's key
+  if (!GFIT.on) return true;
+  if (!GFIT.rows) { GFIT.rows = new Map(); for (const L of [WB_G17, WB_AKM, WB_AWM, WB_M4, WB_M19, typeof O2_TABLE !== 'undefined' ? O2_TABLE : [], typeof UB_SPOTS !== 'undefined' ? UB_SPOTS : []]) for (const t of L || []) if (t[6]) GFIT.rows.set(t[6], gfitKey(t[0], t[1], t[5])); }
+  const k = GFIT.rows.get(it.id);
+  if (k) return gfitOk(type, k);
+  const pis = (x) => x === 'g17' || x === 'm1911';
+  return it.anyGun ? true : pis(type) === pis(it.gun) && it.gun !== 'awp' && type !== 'awp';   // no spot: same family only
+}
+function gfitRefuse(g, it) {
+  if (gfitOk(g.type, wbKey(it))) return false;
+  toast(`${it.label || 'That part'} doesn't fit the ${(WS_GUNS[g.type] || {}).name || g.type}`); sfx('pMagOut', 0.3);
+  return true;
+}
 function wbTable() {
   const L = WB_TABLE.slice(), own = (t) => { const it = WORKSHOP.byId.get(t[6]); return !!(it && it.owned); };
   if (G17A.ready) for (const t of WB_G17) if (own(t)) L.push(t);
   if (AKMA.ready) for (const t of WB_AKM) if (own(t)) L.push(t);   // step 102
   if (AWMA.ready) for (const t of WB_AWM) if (own(t) && (t[5] !== 'awm:dot' || M4A.ready)) L.push(t);   // step 113: the AWM's parts, the front row of the same bench
   if (M4A.on && M4A.ready) for (const t of WB_M4) if (own(t)) L.push(t);   // step 105: the M4A1-S's parts, on the bench left of the gunsmith's
-  return o2Table(ubTable(m19Table(railTable(L))));   // new optics + UNDERBARREL                                    // step 108: the 1911's own parts (step 112: a PL-2 that came off)
+  const T = o2Table(ubTable(m19Table(railTable(L)))), vg = GFIT.on && WB.open && WB.gun && WB.gun.type;
+  return vg ? T.filter((t) => gfitOk(vg, gfitKey(t[0], t[1], t[5]))) : T;   // GUN FIT: a gun in the vise: only its parts on the table   // new optics + UNDERBARREL                                    // step 108: the 1911's own parts (step 112: a PL-2 that came off)
 }
 // A table spot t ([sub, big, x, z, yaw, variant, store id]) takes part it: the same sub; a can of the same size; the same variant:
 // the AKM's parts (step 102, by key), the .45 parts (step 108), the M4A1-S's (step 105: its can, its parts by kind), the 9 mm compact can.
@@ -27026,6 +27057,7 @@ function wbToggle(hand = null, gIn = null) {
   // its frozen attachments come loose again (still where they were)
   for (const p of g.atts || []) wbUnfreeze(g, p);
   g.atts = [];
+  if (GFIT.on) try { wbRestock(WB.room); } catch (e) { console.warn('gun fit: table', e); }   // GUN FIT: the table now lays out this gun's parts only
   sfx('pMagIn', 0.8); if (hand) pulse(hand, 0.4, 30);
   wbButtonLook();                                                   // step 88
   toast(renderer.xr.isPresenting ? `${g.def.label} in the vise. Put parts on it from the table; RELEASE locks them on` : `${g.def.label} in the vise. Click a part on the table to fit it; click it again to take it off; RELEASE (or B) locks them on`, 3200);
@@ -27051,6 +27083,7 @@ function wbClose(why) {
   if (!g.primary && !g.prop.removing) { setDynamic(g.prop); g.prop.collider.setCollisionGroups(COLL.prop); g.prop.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
   updateLightMount();
   sfx('pMagOut', 0.8);
+  if (GFIT.on) try { wbRestock(WB.room); } catch (e) { console.warn('gun fit: table', e); }   // GUN FIT: every owned part back on the table
   toast(n ? `${n} attachment${n > 1 ? 's' : ''} locked on the ${g.def.label}` : 'MOD mode closed');
 }
 function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
@@ -27058,6 +27091,7 @@ function wbCradlePose(g, P, Q) { wbVisePose(g, P, Q); }
 function wbAttRelease(p) {
   const it = p.item, g = wbStuckGun();
   p.root.updateMatrixWorld(true);
+  if (g && gfitRefuse(g, it)) return false;                      // GUN FIT: not for this gun
   if (g && it.o2 && O2.on) return o2BenchFit(g, p, WB.reach.part);   // new optics: its place on this gun (out of reach: it stays where let go)
   if (g && it.ub && !(it.ub === 'vfgl' && ubRailDev())) { const r = ubBenchFit(g, p, WB.reach.part); if (r !== null) return r; }   // UNDERBARREL: its seat on the clamped gun
   if (g && !muzIsDev(it) && railDevOf(it)) { const r = railBenchFit(g, p, WB.reach.dev); if (r !== null) return r; }   // step 112: the next free rail spot
@@ -27606,6 +27640,7 @@ function wbDeskAtt0(p) {
     if (held) { wbToggle(null, held); g = wbStuckGun(); }
     if (!g) { toast('Hold a gun (or lay it by the vise), then click a part, or press CLAMP'); return; }
   }
+  if (gfitRefuse(g, it)) return;                                   // GUN FIT
   if (it.o2 && O2.on) { wbUnhook(it); if (o2BenchFit(g, p, 0)) toast(`${it.label} on. Click it again to take it off, B to lock`); return; }   // new optics
   if (it.ub && !(it.ub === 'vfgl' && ubRailDev())) { wbUnhook(it); const r = ubBenchFit(g, p, 0); if (r === true) toast(`${it.label} on. Click it again to take it off, B to lock`); return; }   // UNDERBARREL
   if (railDevOf(it)) {                                              // step 112: the next free rail spot (null: no rails on this gun)
@@ -41390,7 +41425,7 @@ function wsDrawGun(k, now) {
       if (mine) { ctx.fillStyle = TC.ok; ctx.beginPath(); ctx.arc(x + tw - 10, y + 10, 4.5, 0, Math.PI * 2); ctx.fill(); }
     }
     const rows = WS_ITEMS.filter((it) => it.gun === k && (cat === 'hardware' ? it.hw : it.cat === cat));
-    if (cat !== 'hardware') for (const it of WS_ITEMS) if (it.gun !== k && !it.hw && it.model && it.cat === cat && cat !== 'fcg' && (WS_GUNS[it.gun] || it.anyGun)) rows.push(it);   // any-gun fit: every gun's parts for this slot (fitted at the vise)
+    if (cat !== 'hardware') for (const it of WS_ITEMS) if (it.gun !== k && !it.hw && it.model && it.cat === cat && cat !== 'fcg' && (WS_GUNS[it.gun] || it.anyGun) && gfitRowOk(k, it)) rows.push(it);   // any-gun fit: every gun's parts for this slot (fitted at the vise)
     const pages = Math.max(1, Math.ceil(rows.length / WS_SLOTS_MAX)), pg = W.anyPage = (W.anyCat === k + cat ? Math.min(W.anyPage || 0, pages - 1) : 0); W.anyCat = k + cat;
     if (pages > 1) { tBtn('anypg:prev', x0 + pw - 150, 256, 70, 28, '\u25b2', { size: 15, disabled: pg <= 0, fn: () => { W.anyPage = pg - 1; W.dirty = true; } }); tBtn('anypg:next', x0 + pw - 74, 256, 70, 28, '\u25bc', { size: 15, disabled: pg >= pages - 1, fn: () => { W.anyPage = pg + 1; W.dirty = true; } }); }
     tHead(cat === 'hardware' ? 'HARDWARE  ·  mounting parts: they enable, mostly weight' : `${WS_CAT_NAME[cat].toUpperCase()}  ·  factory: ${(G.factory || {})[cat] || '—'}`, x0, 272);
@@ -60696,7 +60731,7 @@ function o2Precompile(on) {
     scene.add(g); O2.pre = g;
   } catch (e) { console.warn('new optics not precompiled', e); }
 }
-if (/[?&]dev\b/.test(QS)) window.__cqcO2 = { O2, O2_SPEC, o2MakeAtt, o2BenchFit, o2Seat, o2Sight, o2Flip, o2Cant, o2On, o2Optics, o2Ends, o2Top, o2Tpl, o2ModelBox, wbClose, wbDeskAtt, wbMakeAtt, attRefresh, gunMeshes, WORKSHOP, wbTableFill, SCOPE, optAxis };
+if (/[?&]dev\b/.test(QS)) window.__cqcO2 = { wbTable, O2, O2_SPEC, o2MakeAtt, o2BenchFit, o2Seat, o2Sight, o2Flip, o2Cant, o2On, o2Optics, o2Ends, o2Top, o2Tpl, o2ModelBox, wbClose, wbDeskAtt, wbMakeAtt, attRefresh, gunMeshes, WORKSHOP, wbTableFill, SCOPE, optAxis };
 /* ===========================================================================
  *  STEP 112 — RAILS: STACKED DEVICES, WRAP-AROUND RAILS, THE GLOCK'S STOCK LIGHT  (?rails=off)
  *  RAIL SPOTS. Every gun with rails lists its rail faces (railFaces, model space = design space): the Glock's
