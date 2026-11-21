@@ -2516,3 +2516,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 
 ## CQC: class picker previews lighter (update 1.14)
 - clStudio: light grey studio background (0x6f777d, was near black), environment 1.7, key 4.2, rim 3.0 + a hemisphere fill; clShot renders at a fixed exposure 1.15 (not the room's or night vision's). CSS: preview and thumbnail backgrounds the same grey, the bottom shade of the big preview lighter. Headless: all five guns read clearly (screenshot checked).
+
+## CQC: gun locker light, smaller vise jaws (update 1.15)
+- LKL (?lockerlight=off; OPTIONS GRAPHICS "Light inside the gun locker"): one unshadowed SpotLight added at load (lockerLightInit beside benchLampInit, light count fixed), placed each frame under the locker's top, front edge, aimed down-back (lockerLightTick); intensity 4.6 only while the locker's safe room is active and drawn, else 0. Shelf light cards a little brighter (gain 0.32).
+- Vise: jaw pads 36 x 36 mm (were 62 x 58), carrier 40 x 44 mm, cradle 32 mm along the gun; WB.padH / padL / cradleL follow (0.034 / 0.017 / 0.016), so the clamp point is measured over the smaller pads.
+- Checked: module parse; headless renders of the vise and the lit locker.
