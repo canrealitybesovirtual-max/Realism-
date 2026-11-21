@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.41</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.42</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.41</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.42</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -29908,6 +29908,41 @@ function vmhShrink(B, g, Ms, s) {
   return { R, L };
 }
 // Fit for gun g (both hands), solved once (or taken from VMH_FIT), meshes ready to draw.
+// How far the fitted firing hand must come down (m) so no part of it is inside the slide, at rest or anywhere along its
+// travel back: the slide's drawn surface as points + outward normals (root space), swept back over def.travel; hand vertices
+// tested by signed distance (fingSd's rule). Cached per gun type (SLIDECLR.dy).
+var SLIDECLR = { on: !/[?&]slideclear=off\b/.test(QS), dy: {}, gap: 0.0012 };
+function vmhSlideClear(g, H, M) {
+  if (SLIDECLR.dy[g.type] !== undefined) return SLIDECLR.dy[g.type];
+  const sl = g.parts.slide; if (!sl) return (SLIDECLR.dy[g.type] = 0);
+  const root = g.prop.root; root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert(), Mm = new THREE.Matrix4(), A = new THREE.Vector3(), B2 = new THREE.Vector3(), C = new THREE.Vector3(), N = new THREE.Vector3(), e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), P = new THREE.Vector3();
+  const Cl = { pts: [], nrm: [], H: new Map() }, travel = g.def.travel || 0.03;
+  const add = (x, y, z, nx, ny, nz) => { const k = (Math.floor(x / 0.004) * 73856093) ^ (Math.floor(y / 0.004) * 19349663) ^ (Math.floor(z / 0.004) * 83492791); let L = Cl.H.get(k); if (!L) Cl.H.set(k, L = []); L.push(Cl.pts.length / 3); Cl.pts.push(x, y, z); Cl.nrm.push(nx, ny, nz); };
+  sl.traverse((o) => {
+    if (!o.isMesh || !o.visible || !o.geometry || !o.geometry.attributes.position) return;
+    Mm.multiplyMatrices(inv, o.matrixWorld);
+    const G = o.geometry, Pa = G.attributes.position, I = G.index, n = I ? I.count : Pa.count;
+    for (let q = 0; q + 2 < n; q += 3) {
+      A.fromBufferAttribute(Pa, I ? I.getX(q) : q).applyMatrix4(Mm); B2.fromBufferAttribute(Pa, I ? I.getX(q + 1) : q + 1).applyMatrix4(Mm); C.fromBufferAttribute(Pa, I ? I.getX(q + 2) : q + 2).applyMatrix4(Mm);
+      if (A.z < -0.02 && B2.z < -0.02 && C.z < -0.02) continue;               // only the slide's rear half can meet the hand
+      e1.subVectors(B2, A); e2.subVectors(C, A); N.crossVectors(e1, e2); const ar = N.length(); if (ar < 1e-12) continue; N.multiplyScalar(1 / ar);
+      const m = Math.min(20, Math.max(1, Math.ceil(Math.max(e1.length(), e2.length()) / 0.002)));
+      for (let i = 0; i <= m; i++) for (let j = 0; j <= m - i; j++) {
+        P.copy(A).addScaledVector(e1, i / m).addScaledVector(e2, j / m);
+        for (let s = 0; s <= 3; s++) add(P.x, P.y, P.z + travel * s / 3, N.x, N.y, N.z);   // the slide at rest and back
+      }
+    }
+  });
+  if (Cl.pts.length < 100) return (SLIDECLR.dy[g.type] = 0);
+  const pos = H.geo.attributes.position, v = new THREE.Vector3(), V = [];
+  for (let i = 0; i < pos.count; i += 2) { v.fromBufferAttribute(pos, i).applyMatrix4(M); V.push(v.x, v.y, v.z); }
+  const inside = (dy) => { let n = 0; for (let i = 0; i < V.length; i += 3) { v.set(V[i], V[i + 1] - dy, V[i + 2]); const sd = fingSd(Cl, v); if (sd < SLIDECLR.gap && sd > -0.015) n++; } return n; };
+  let dy = 0, n0 = inside(0);
+  if (n0 > 2) for (dy = 0.0005; dy <= 0.02 && inside(dy) > 2; dy += 0.0005);
+  SLIDECLR.log = SLIDECLR.log || {}; SLIDECLR.log[g.type] = { before: n0, dyMm: +(dy * 1000).toFixed(1), after: inside(dy) };
+  return (SLIDECLR.dy[g.type] = dy > 0.02 ? 0 : dy);
+}
 function vmhFit(g) {
   const t = g.type, F = VMH.fits[t];
   if (F !== undefined) return F;
@@ -29923,6 +29958,9 @@ function vmhFit(g) {
         return new THREE.Matrix4().makeTranslation(C.x, C.y, C.z).multiply(new THREE.Matrix4().makeScale(k, k, k)).multiply(new THREE.Matrix4().makeTranslation(-C.x, -C.y, -C.z)).multiply(M); };
       const R = Ms.R ? sh('R', Ms.R) : null;
       Ms = { R, L: !Ms.L ? null : Ms.L === Ms.R ? R : sh('L', Ms.L) };
+    }
+    if (SLIDECLR.on && Ms.R && g.def.cls === 'pistol' && B.sides.R) {   // the firing hand below the slide's whole travel (the slide ran through the web of the hand)
+      try { const dy = vmhSlideClear(g, B.sides.R, Ms.R); if (dy > 0) { const T = new THREE.Matrix4().makeTranslation(0, -dy, 0), sh = Ms.L === Ms.R; Ms.R = T.multiply(Ms.R); if (sh) Ms.L = Ms.R; } } catch (e) { console.warn('slide clearance', e); }
     }
     for (const side of ['R', 'L']) {
       const H = B.sides[side], M = Ms[side]; if (!H || !M) continue;
@@ -57072,7 +57110,7 @@ if (window.__cqcDev) window.__cqcDev.gripTest = (i, g, name, dz = 0, custom = nu
   writeBones(h); h.root.matrix.compose(P, Q, new THREE.Vector3(1, 1, 1)); h.root.matrixWorldNeedsUpdate = true; h.root.visible = true; h.root.updateMatrixWorld(true);
   return { left: h.left };
 };
-if (window.__cqcDev) Object.assign(window.__cqcDev, { FINGSOLVE, vmhFingSolve, locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
+if (window.__cqcDev) Object.assign(window.__cqcDev, { SLIDECLR, FINGSOLVE, vmhFingSolve, locksOpen, CHK, chkSay, chamberCheckTask, chkRound, chkRoundTick, deskCheck, gunButtonB, paintAttOk, paintMapMean, PAINT });   // release polish 3
 if (window.__cqcDev) Object.assign(window.__cqcDev, { FLIP, flipRecord, flipHandW, flipLaunch, flipTick, flipCatchFind, flipCatch, itemRelease, weaponsUpdate, dropItem });   // gun flip tests
 if (window.__cqcDev) Object.assign(window.__cqcDev, { PEN_ON, PEN, PEN_FX, penRound, penStart, penHit, penThick, penRoomLayers, penDoorLayers, penPropLayers, penCost, penOn, penExitRoom, penLearn, penMem, penCoverMalus, penExitFx, penSound, penKit, penExitCanvas, traceBullet0 });   // step 119
 if (window.__cqcDev) Object.assign(window.__cqcDev, { HEAT, heatShot, canHeatTick, heatChain, heatGlowSet, heatGlowMat, heatWet, heatWater, heatQuench, heatBurn, heatBurnGrab, heatOuch, heatLight, canHeatPrecompile });   // step 107
