@@ -2681,3 +2681,7 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 ## CQC: no round lodged in the AKM's port (update 1.50)
 - Cause: FEED showed the feeding round whenever the action sat between 0.8 mm and the lips; an action resting a few mm short of home (the AKM's bolt after a VR rack) kept it on for good: a round lodged in the port, and the magazine kept one round hidden (its stack held for the feed).
 - Now the round shows only while the action is moving (it moved in the last 0.3 s) and more than 4 mm back; a stalled or near-home action hides it and gives the magazine its rounds back (feedMagEnd). Checked headless: AKM resting 2.5 mm open: no round, magazine full; a real stroke still feeds.
+
+## CQC: press-check round only while the action is barely open (update 1.51)
+- Cause: chkRoundTick showed the chambered round whenever a hand held the action back past 6 % of its travel, with no upper limit, so an AWM bolt or M4 / AKM / pistol action held fully back showed a live round sitting in the open action (it would have been extracted).
+- Now only between 6 % and 60 % of the travel (CHK.max); past that nothing is drawn in the port (with 1.50's feed fix, a stalled action shows no round either). Checked headless on M4A1-S, AWM, AKM, Glock: shown at 15 / 40 %, hidden at 70 / 95 %.
