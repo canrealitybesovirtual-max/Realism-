@@ -2624,3 +2624,8 @@ Lab (6 guns): grip R/L fires, off-angle grips settle, barrel grab can't fire, re
 - The jaws closed under the middle of the handguard (AKM -0.294, M4 -0.266), right where a vertical / angled grip or rail part mounts, so taking a grip off in VR meant reaching between the jaws. WB_CLAMP now puts them on the bare barrel ahead of the handguard (measured: AKM -0.491 design z, barrel 9 mm half width; M4 -0.445, 8.7 mm); the handguard's underside is free. AWM unchanged (fore-end).
 - Vise slimmed (same heights and clamp point): base plate r 5 cm (was 8), swivel 4, column 1.7-2.2 cm (was 2.7-3.4), ball 1.9 cm, slide rail 3.6 x 1.4 x 17 cm, smaller screw blocks, lead screw, T-handle, levers and jaw carriers.
 - Checked headless: jaw points measured on the barrel; the slimmer vise rendered in the safe room.
+
+## CQC: no floating brass by the gun, racked-out rounds visible (update 1.39; headset check needed)
+- Floating case (reported after racking the AKM in VR; not reproduced headless): a fired / racked case that touched the held gun or hand could move under 5 cm/s for the settle time and brassSettle froze it as lying room brass in mid-air beside the gun. Now a case over CONFIG floor height is only kept when something solid that nobody holds is right under it (brassUnder: 6 cm ray down; held / slotted props left out); otherwise it is woken and keeps falling.
+- ejectLiveRound made the live round's mesh but never added it to the scene, so racked-out live rounds were invisible (bodies flew unseen). Added.
+- feedMagShow moves only the Glock's stack; other magazines' top-round mesh is no longer shifted while a round feeds (checked: on the AKM it stayed inside the magazine, but the shift is not needed).

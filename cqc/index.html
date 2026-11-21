@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.38</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.39</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.38</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.39</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -24056,7 +24056,7 @@ function ejectLiveRound(g) {
       const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setCcdEnabled(true).setLinearDamping(0.15).setAngularDamping(0.4));
       world.createCollider(RAPIER.ColliderDesc.cylinder(C.L * 0.62, C.rb).setMass(C.m + 0.008).setFriction(0.6).setRestitution(0.3)
         .setCollisionGroups(groups(GROUP.DEBRIS, GROUP.STATIC | GROUP.PROP | GROUP.DOOR)), body);
-      L = { c, mesh, body };
+      L = { c, mesh, body }; scene.add(mesh);                        // (it was never added: racked-out rounds were invisible)
     }
     const root = g.prop.root; root.updateMatrixWorld(true);
     _wv.copy(g.wr.eject).applyMatrix4(root.matrixWorld); root.getWorldQuaternion(_wq);
@@ -24181,6 +24181,14 @@ function brassSpawned(P, e, g, type) {
   try { const col = e.body.collider(0); col.setHalfHeight(C.L / 2); col.setRadius(C.rb); col.setMass(C.m); } catch (err) { /* keeps the 9 mm body */ }
 }
 // At rest (asleep, or slow after BRASS settle s), or forced (pool slot reused, room unloading): into room memory.
+// Something solid right under a case (a table, a crate, a body; not a gun or part in a hand)
+const _bruRay = { o: { x: 0, y: 0, z: 0 }, d: { x: 0, y: -1, z: 0 } };
+function brassUnder(t, body) {
+  try {
+    const R = new RAPIER.Ray({ x: t.x, y: t.y + 0.005, z: t.z }, _bruRay.d);
+    return !!world.castRay(R, 0.06, true, undefined, groups(GROUP.PROP, GROUP.STATIC | GROUP.PROP | GROUP.DOOR | GROUP.ENEMY), undefined, body, (c) => { const p = propByCollider.get(c.handle); return !p || !(p.holders && p.holders.length) && !(p.item && p.item.slot); });
+  } catch (e) { return true; }
+}
 function brassSettle(P, e, force) {
   const now = performance.now() / 1000, C = CONFIG.brass;
   if (!force && !e.body.isSleeping()) {
@@ -24195,6 +24203,7 @@ function brassSettle(P, e, force) {
     let ly = t.y - room.origin.y;
     BRASS.q.set(r.x, r.y, r.z, r.w);
     const fy = roomFloorAt(room, lx, lz, ly);
+    if (!force && ly - fy > K.L / 2 + 0.03 && !brassUnder(t, e.body)) { e.body.wakeUp(); return false; }   // slow but held up by nothing still (a held gun, a hand): not lying brass yet
     if (force && ly - fy > K.L / 2 + 0.03) {                        // caught in the air: down on the floor, lying
       ly = fy + K.rb;
       BRASS.q.setFromEuler(BRASS.e.set(0, Math.random() * Math.PI * 2, Math.PI / 2, 'YXZ'));
@@ -25867,9 +25876,8 @@ function feedLip(g, fd) {
 function feedMagShow(fd, it, n, lift) {
   const rm = it.roundMesh;
   if (fd.mi !== it) { feedMagEnd(fd); fd.mi = it; fd.y0 = rm.position.y; }
-  if (rm.userData.g17) g17MagRounds(rm, n);
+  if (rm.userData.g17) { g17MagRounds(rm, n); rm.position.y = fd.y0 - lift; }   // the Glock's stack (along its own axis); other magazines' top-round mesh is not moved (on a curved AK magazine its y left the magazine: a round floating beside it)
   rm.visible = n > 0;
-  rm.position.y = fd.y0 - lift;
 }
 function feedMagEnd(fd) {
   const it = fd.mi;
