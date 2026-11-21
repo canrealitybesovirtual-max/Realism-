@@ -1283,7 +1283,7 @@
 </head>
 <body>
 
-<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.20</div>
+<div id="title"><div id="verTag" style="position:absolute;right:12px;bottom:10px;z-index:5;font:600 12px/1 system-ui,sans-serif;letter-spacing:.06em;color:rgba(255,255,255,.55);pointer-events:none">UPDATE 1.21</div>
   <div class="plate"><b>00</b>Safe room</div>
   <section class="reel" aria-label="Body cam stills">
     <header class="reel-head"><span class="rec" aria-hidden="true">Rec</span><span id="reelTitle">Body cam</span><span id="reelUnit" class="reel-unit">OP-1 BWC</span></header>
@@ -1718,7 +1718,7 @@
 </div>
 
 <div id="modWatch" role="dialog" aria-modal="true" aria-labelledby="mwTitle">
-  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.20</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
+  <header class="mw-head"><h3 id="mwTitle">Menu</h3><div class="mw-sub" id="mwSub"></div><span style="opacity:.5;font-size:12px;margin-right:10px;white-space:nowrap">Update 1.21</span><button type="button" class="mw-close" id="mwClose">Resume</button></header>
   <div class="mw-body"><nav class="mw-nav" id="mwNav" role="tablist" aria-orientation="vertical" aria-label="Menu sections"></nav><div class="mw-grid" id="mwGrid"></div></div>
   <footer class="mw-foot" id="mwFoot">&uarr; &darr; move &middot; Enter select &middot; &larr; sections &middot; Esc back</footer>
 </div>
@@ -27088,7 +27088,9 @@ function gunSpan(g, z0, z1, xw, ymin = -0.5, ymax = 0.5) {
 function seatBox(p, out) {                                          // the part's drawn bounds in its own frame
   const inv = new THREE.Matrix4().copy(p.root.matrixWorld).invert(), M = new THREE.Matrix4(), b = new THREE.Box3();
   out.makeEmpty();
-  p.root.traverse((o) => { if (!o.isMesh || !o.geometry) return; if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); out.union(b.copy(o.geometry.boundingBox).applyMatrix4(M)); });
+  p.root.traverse((o) => { if (!o.isMesh || !o.geometry || o.name === 'optMount' || o.parent?.name === 'optMount') return; for (let q = o; q && q !== p.root; q = q.parent) if (!q.visible) return;   // drawn only (a hidden part made the optic float over its riser)
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); out.union(b.copy(o.geometry.boundingBox).applyMatrix4(M)); });
+  if (out.isEmpty()) p.root.traverse((o) => { if (o.isMesh && o.geometry) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); M.multiplyMatrices(inv, o.matrixWorld); out.union(b.copy(o.geometry.boundingBox).applyMatrix4(M)); } });
   return out;
 }
 const _spB = new THREE.Box3(), _spL = new THREE.Vector3();
@@ -27097,7 +27099,40 @@ const _spB = new THREE.Box3(), _spL = new THREE.Vector3();
  * so the optic visibly sits on a part that holds it, clear of the gun's body and sights. Child of the optic (it comes off
  * with it), hidden when the optic is taken off (wbGrabbed). Geometry per size, one shared material. */
 const MSHAPE = { on: !/[?&]mountshape=off\b/.test(QS) };
-const OPTM = { on: !/[?&]optmount=off\b/.test(QS), lift: 0.0065, liftScope: 0.011, jaw: 0.0075, mat: null };
+const OPTM = { on: !/[?&]optmount=off\b/.test(QS), slide: !/[?&]optslide=off\b/.test(QS), lift: 0.0065, liftScope: 0.011, jaw: 0.0075, mat: null };
+// The optic's mounting feet: the z range (its own frame) of its drawn vertices within 4 mm of its lowest point.
+function optFoot(p, B) {
+  const it = p.item; if (it._foot) return it._foot;
+  const inv = new THREE.Matrix4().copy(p.root.matrixWorld).invert(), M = new THREE.Matrix4(), v = new THREE.Vector3();
+  let z0 = Infinity, z1 = -Infinity;
+  p.root.traverse((o) => {
+    if (!o.isMesh || !o.geometry || o.name === 'optMount' || o.parent?.name === 'optMount') return;
+    for (let q = o; q && q !== p.root; q = q.parent) if (!q.visible) return;
+    const P = o.geometry.attributes.position; if (!P) return;
+    M.multiplyMatrices(inv, o.matrixWorld);
+    const st = Math.max(1, Math.floor(P.count / 40000));
+    for (let i = 0; i < P.count; i += st) { v.fromBufferAttribute(P, i).applyMatrix4(M); if (v.y < B.min.y + 0.004) { if (v.z < z0) z0 = v.z; if (v.z > z1) z1 = v.z; } }
+  });
+  return (it._foot = Number.isFinite(z0) && z1 - z0 > 0.008 ? [z0, z1] : null);
+}
+// The longest stretch of the gun (model z) whose top is within 3 mm of its highest top: a pistol's slide (attachments and magazine left out).
+function optTopRun(g) {
+  const list = gunMeshes(g); if (!list.length) return null;
+  const b = new THREE.Box3(), t = new THREE.Box3(), inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), m4 = new THREE.Matrix4();
+  for (const o of list) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); m4.multiplyMatrices(inv, o.matrixWorld); b.union(t.copy(o.geometry.boundingBox).applyMatrix4(m4)); }
+  const st = 0.006, zs = [], tops = [];
+  for (let z = b.min.z + st / 2; z < b.max.z; z += st) { const S = gunSpan(g, z - st * 0.4, z + st * 0.4, 0.01); zs.push(z); tops.push(S ? S.top : -Infinity); }
+  const mx = Math.max(...tops); if (!Number.isFinite(mx)) return null;
+  const H = new Map(); for (const t of tops) if (t > mx - 0.014) { const k = Math.round(t * 1000); H.set(k, (H.get(k) || 0) + 1 + (H.get(k - 1) || 0) * 0 ); }
+  let v = mx, vn = 0; for (const [k, n] of H) { const m = n + (H.get(k - 1) || 0) + (H.get(k + 1) || 0); if (m > vn) { vn = m; v = k / 1000; } }   // the slide's flat (sights stand above it)
+  let best = null, a = -1;
+  for (let i = 0; i <= tops.length; i++) {
+    const ok = i < tops.length && tops[i] >= v - 0.003;
+    if (ok && a < 0) a = i;
+    if (!ok && a >= 0) { const r = { z0: zs[a] - st / 2, z1: zs[i - 1] + st / 2 }; if (!best || r.z1 - r.z0 > best.z1 - best.z0) best = r; a = -1; }
+  }
+  return best && best.z1 - best.z0 > 0.03 ? best : null;
+}
 function optMountMat() {
   return OPTM.mat || (OPTM.mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.012, 0.012, 0.013), roughness: 0.42, metalness: 0.65, name: 'optMount' }));
 }
@@ -27134,11 +27169,15 @@ function optMount(g, p, B, lift, S) {
   const M = new THREE.Group(); M.name = 'optMount'; it.optMount = M;
   const mat = optMountMat(), add = (geo, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; M.add(m); return m; };
   // footprint: under the optic's middle, as long as half the optic (35-110 mm), kept over the gun
-  const len = B.max.z - B.min.z, bl = Math.min(0.11, Math.max(0.035, len * 0.55)), Lz = g.model.worldToLocal(_spL.setFromMatrixPosition(p.root.matrixWorld)).z;
+  const len = B.max.z - B.min.z; let bl = Math.min(0.11, Math.max(0.035, len * 0.55)); const Lz = g.model.worldToLocal(_spL.setFromMatrixPosition(p.root.matrixWorld)).z;
   let cz = (B.min.z + B.max.z) / 2;
   const gb = g._gunZ || (g._gunZ = (() => { const b = new THREE.Box3(), t = new THREE.Box3(), inv = new THREE.Matrix4().copy(g.model.matrixWorld).invert(), m4 = new THREE.Matrix4();
     for (const o of gunMeshes(g)) { if (!o.geometry.boundingBox) o.geometry.computeBoundingBox(); m4.multiplyMatrices(inv, o.matrixWorld); b.union(t.copy(o.geometry.boundingBox).applyMatrix4(m4)); } return [b.min.z, b.max.z]; })());
   cz = Math.min(Math.max(cz, gb[0] - Lz + bl / 2 + 0.008), gb[1] - Lz - bl / 2 - 0.008);
+  const F = optFoot(p, B);
+  if (F) { cz = (F[0] + F[1]) / 2; bl = Math.max(bl, Math.min(0.13, F[1] - F[0] + 0.012)); }   // the riser under the optic's own feet / rings
+  const run = g._optRun;
+  if (run) { bl = Math.max(0.03, Math.min(bl, run.z1 - run.z0 - 0.006)); cz = (run.z0 + run.z1) / 2 - Lz; }   // pistols: the mount on the slide's flat top
   const yTop = B.min.y, ySeat = yTop - lift, tooth = 0.0022, bw = 0.0212;
   const hx = optGunHalf(g, S.top - 0.004, Lz + cz), jw = Math.max(bw / 2, hx + 0.0012);
   if (MSHAPE.on) optMountShaped(add, bl, cz, ySeat, yTop - tooth, bw, jw);                                                // spine + skeletonised cheeks
@@ -27164,8 +27203,18 @@ function seatPart(g, p) {
   const B = seatBox(p, _spB), L = model.worldToLocal(new THREE.Vector3().setFromMatrixPosition(p.root.matrixWorld));
   const len = B.max.z - B.min.z, palmZ = d.palm ? d.palm[2] : 0;
   if (k === 'optic') {
-    const S = gunSpan(g, L.z + B.min.z - 0.004, L.z + B.max.z + 0.004, 0.016);
+    let S = gunSpan(g, L.z + B.min.z - 0.004, L.z + B.max.z + 0.004, 0.016);
     if (!S) return false;
+    g._optRun = null;
+    if (d.cls === 'pistol' && OPTM.slide) {                         // pistols: the optic centred over the slide's flat top, its mount on it (never over the barrel / muzzle devices)
+      const run = optTopRun(g);
+      if (run) {
+        const F = optFoot(p, B), c = F ? (F[0] + F[1]) / 2 : (B.min.z + B.max.z) / 2, rc = (run.z0 + run.z1) / 2;   // its mounting feet over the slide's middle
+        L.z = rc - c;
+        S = gunSpan(g, L.z + B.min.z - 0.004, L.z + B.max.z + 0.004, 0.016) || S;
+        g._optRun = run;
+      }
+    }
     const lift = OPTM.on ? (len > 0.14 ? OPTM.liftScope : OPTM.lift) : 0;   // a riser mount under it (optMount), clamped to the gun
     L.set(0, S.top + 0.0006 + lift - B.min.y, L.z);
     if (lift) { model.getWorldQuaternion(p.root.quaternion); p.root.position.copy(model.localToWorld(_spL.copy(L))); p.root.updateMatrixWorld(true); optMount(g, p, B, lift, S); }
